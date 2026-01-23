@@ -37,6 +37,7 @@ Criar um Sistema Interno de Gestão de Recursos Humanos, totalmente em portuguê
 - [x] Dashboard Admin com estatísticas
 - [x] Dashboard Colaborador
 - [x] Calendário de ausências
+- [x] **Cálculo automático de férias utilizadas vs disponíveis**
 
 ### Frontend (React + Shadcn UI)
 - [x] Página de Login/Registo
@@ -49,32 +50,14 @@ Criar um Sistema Interno de Gestão de Recursos Humanos, totalmente em portuguê
 - [x] Controlo de Ponto (visualização, correção)
 - [x] Férias e Ausências (aprovação/recusa)
 - [x] Documentos (pastas, upload)
-- [x] Dashboard Colaborador
+- [x] Dashboard Colaborador com resumo de férias
 - [x] Registo de Ponto (botões entrada/saída)
 - [x] Pedidos de Ausência
 - [x] Documentos do Colaborador
 - [x] Notificações
 
-## Prioritized Backlog
-
-### P0 (Crítico) - Concluído
-- ✅ Autenticação funcional
-- ✅ CRUD básico (empresas, locais, colaboradores)
-- ✅ Registo de ponto
-- ✅ Pedidos de ausência
-
-### P1 (Importante) - Concluído
-- ✅ Aprovação de pedidos
-- ✅ Sistema de documentos
-- ✅ Notificações
-- ✅ Dashboard com estatísticas
-
-### P2 (Melhorias Futuras)
-- [ ] Relatórios de ponto (PDF/Excel)
-- [ ] Gráficos avançados no dashboard
-- [ ] Histórico de férias utilizadas vs disponíveis
-- [ ] Alertas de conflito de férias
-- [ ] Integração com calendário externo
+## Credenciais do Sistema
+- **Admin Principal**: geral@olacai.com
 
 ## Arquitetura
 ```
@@ -85,8 +68,5 @@ Backend (FastAPI + JWT Auth)
 MongoDB (Motor async driver)
 ```
 
-## Próximas Ações
-1. Relatórios de ponto em PDF/Excel
-2. Cálculo automático de férias utilizadas
-3. Sistema de alertas de conflitos
-4. Export de dados para integração externa
+## Fase Concluída
+O sistema está estável e pronto para validação com a equipa.
