@@ -47,6 +47,7 @@ const navItems = [
   { path: '/admin/ponto', label: 'Controlo de Ponto', icon: Clock },
   { path: '/admin/ausencias', label: 'Férias e Ausências', icon: Calendar },
   { path: '/admin/documentos', label: 'Documentos', icon: FileText },
+  { path: '/admin/registos', label: 'Pedidos de Registo', icon: UserPlus, masterOnly: true },
 ];
 
 export default function AdminLayout() {
@@ -56,6 +57,8 @@ export default function AdminLayout() {
   const [companies, setCompanies] = useState([]);
   const [selectedCompany, setSelectedCompany] = useState(null);
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  const isMasterAdmin = user?.email === MASTER_ADMIN_EMAIL;
 
   useEffect(() => {
     fetchNotifications();
