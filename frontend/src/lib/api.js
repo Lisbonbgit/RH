@@ -31,7 +31,7 @@ export const correctTimeRecord = (id, data) => axios.put(`${API_URL}/time-record
 export const getLeaveRequests = (params) => axios.get(`${API_URL}/leave-requests`, { params });
 export const createLeaveRequest = (data) => axios.post(`${API_URL}/leave-requests`, data);
 export const respondLeaveRequest = (id, status, response) => 
-  axios.put(`${API_URL}/leave-requests/${id}/respond`, null, { params: { status, response } });
+  axios.put(`${API_URL}/leave-requests/${id}/respond`, { status, response });
 
 // Folders
 export const getFolders = (employeeId) => axios.get(`${API_URL}/folders`, { params: { employee_id: employeeId } });
