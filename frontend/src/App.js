@@ -12,6 +12,7 @@ import AdminEmployees from './pages/admin/AdminEmployees';
 import AdminTimeRecords from './pages/admin/AdminTimeRecords';
 import AdminLeaveRequests from './pages/admin/AdminLeaveRequests';
 import AdminDocuments from './pages/admin/AdminDocuments';
+import AdminPendingRegistrations from './pages/admin/AdminPendingRegistrations';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeTimeRecord from './pages/employee/EmployeeTimeRecord';
 import EmployeeLeaveRequests from './pages/employee/EmployeeLeaveRequests';
