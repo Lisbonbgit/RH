@@ -203,22 +203,39 @@ export default function EmployeeDashboard() {
           <CardHeader className="pb-3">
             <CardTitle className="text-base">Informações</CardTitle>
           </CardHeader>
-          <CardContent className="grid grid-cols-2 gap-4">
-            <div>
-              <p className="text-xs text-muted-foreground">Cargo</p>
-              <p className="text-sm font-medium">{data.employee.position}</p>
+          <CardContent className="space-y-4">
+            {/* Vacation Days Summary */}
+            <div className="p-4 bg-blue-50 rounded-lg border border-blue-100">
+              <p className="text-sm font-medium text-blue-900 mb-2">Férias {new Date().getFullYear()}</p>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div>
+                  <p className="text-2xl font-bold text-blue-600">{data.employee.vacation_days}</p>
+                  <p className="text-xs text-blue-700">Total</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-orange-600">{data.employee.vacation_days_used || 0}</p>
+                  <p className="text-xs text-orange-700">Utilizados</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-green-600">{data.employee.vacation_days_available ?? data.employee.vacation_days}</p>
+                  <p className="text-xs text-green-700">Disponíveis</p>
+                </div>
+              </div>
             </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Dias de Férias</p>
-              <p className="text-sm font-medium">{data.employee.vacation_days} dias</p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Data de Entrada</p>
-              <p className="text-sm font-medium">{format(parseISO(data.employee.start_date), 'dd/MM/yyyy')}</p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Contrato</p>
-              <p className="text-sm font-medium capitalize">{data.employee.contract_type.replace('_', ' ')}</p>
+            
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <p className="text-xs text-muted-foreground">Cargo</p>
+                <p className="text-sm font-medium">{data.employee.position}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Data de Entrada</p>
+                <p className="text-sm font-medium">{format(parseISO(data.employee.start_date), 'dd/MM/yyyy')}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Contrato</p>
+                <p className="text-sm font-medium capitalize">{data.employee.contract_type.replace('_', ' ')}</p>
+              </div>
             </div>
           </CardContent>
         </Card>
