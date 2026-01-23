@@ -1145,6 +1145,12 @@ async def get_employee_dashboard(current_user: dict = Depends(get_current_user))
     # Get employee info
     employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
     
+    # Calculate vacation days used and available
+    if employee:
+        vacation_used = await calculate_vacation_days_used(employee_id)
+        employee["vacation_days_used"] = vacation_used
+        employee["vacation_days_available"] = employee["vacation_days"] - vacation_used
+    
     # Upcoming leave
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     upcoming_leave = await db.leave_requests.find(
