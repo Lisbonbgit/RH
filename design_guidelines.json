@@ -1,0 +1,157 @@
+{
+  "identity": {
+    "name": "E1: The Anti-AI Designer",
+    "archetype": "Soft Swiss Utility",
+    "principles": [
+      "Fusion over Imitation: Mix Swiss precision with Organic warmth.",
+      "Content is King: Data density for Admins, clarity for Employees.",
+      "Negative Space: Use whitespace to reduce cognitive load in complex HR tasks.",
+      "Contrast: High contrast for readability, soft backgrounds for comfort."
+    ]
+  },
+  "typography": {
+    "font_family": {
+      "headings": "Manrope, sans-serif",
+      "body": "Public Sans, sans-serif",
+      "mono": "JetBrains Mono, monospace"
+    },
+    "weights": {
+      "light": 300,
+      "regular": 400,
+      "medium": 500,
+      "bold": 700,
+      "black": 900
+    },
+    "scale": {
+      "h1": "text-4xl md:text-5xl font-bold tracking-tight",
+      "h2": "text-3xl md:text-4xl font-bold tracking-tight",
+      "h3": "text-2xl md:text-3xl font-semibold tracking-tight",
+      "h4": "text-xl md:text-2xl font-semibold",
+      "body_lg": "text-lg leading-relaxed",
+      "body_base": "text-base leading-relaxed",
+      "body_sm": "text-sm leading-relaxed",
+      "caption": "text-xs text-muted-foreground uppercase tracking-wider"
+    },
+    "imports": [
+      "@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;700;800&family=Public+Sans:wght@300;400;500;600;700&display=swap');"
+    ]
+  },
+  "colors": {
+    "palette_name": "Slate & Sage Professional",
+    "mode": "light",
+    "base": {
+      "background": "210 40% 98%", 
+      "foreground": "222 47% 11%", 
+      "card": "0 0% 100%",
+      "card_foreground": "222 47% 11%",
+      "popover": "0 0% 100%",
+      "popover_foreground": "222 47% 11%",
+      "primary": "222 47% 11%", 
+      "primary_foreground": "210 40% 98%",
+      "secondary": "210 40% 96.1%",
+      "secondary_foreground": "222 47% 11%",
+      "muted": "210 40% 96.1%",
+      "muted_foreground": "215.4 16.3% 46.9%",
+      "accent": "210 40% 96.1%",
+      "accent_foreground": "222 47% 11%",
+      "destructive": "0 84.2% 60.2%",
+      "destructive_foreground": "210 40% 98%",
+      "border": "214.3 31.8% 91.4%",
+      "input": "214.3 31.8% 91.4%",
+      "ring": "222 47% 11%"
+    },
+    "semantic": {
+      "success": "#10B981",
+      "warning": "#F59E0B",
+      "error": "#EF4444",
+      "info": "#3B82F6",
+      "pending": "#F59E0B",
+      "approved": "#10B981",
+      "rejected": "#EF4444"
+    }
+  },
+  "layout": {
+    "spacing_scale": "Generous (p-6, p-8, p-12)",
+    "container_padding": "px-4 md:px-8 lg:px-12",
+    "border_radius": {
+      "default": "0.5rem",
+      "card": "0.75rem",
+      "button": "0.5rem"
+    },
+    "grids": {
+      "dashboard_admin": "grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6",
+      "dashboard_employee": "grid grid-cols-1 gap-4",
+      "form_layout": "grid grid-cols-1 md:grid-cols-2 gap-6"
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2 rounded-md font-medium transition-all active:scale-95",
+      "secondary": "bg-secondary text-secondary-foreground hover:bg-secondary/80 h-10 px-4 py-2 rounded-md font-medium transition-all active:scale-95",
+      "ghost": "hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2 rounded-md font-medium transition-all"
+    },
+    "cards": {
+      "style": "bg-card text-card-foreground rounded-xl border border-border shadow-sm hover:shadow-md transition-shadow duration-200",
+      "padding": "p-6"
+    },
+    "inputs": {
+      "style": "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+    },
+    "status_badges": {
+      "base": "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+      "approved": "border-transparent bg-green-100 text-green-800 hover:bg-green-200",
+      "pending": "border-transparent bg-yellow-100 text-yellow-800 hover:bg-yellow-200",
+      "rejected": "border-transparent bg-red-100 text-red-800 hover:bg-red-200"
+    }
+  },
+  "visual_enhancers": {
+    "glassmorphism": "backdrop-blur-md bg-white/70 border border-white/20 shadow-sm",
+    "gradients": "None. Use solid colors and subtle textures.",
+    "shadows": "shadow-sm for cards, shadow-md for dropdowns/modals. Avoid large diffuse shadows.",
+    "textures": "Subtle noise overlay on the main background (optional) to reduce digital sterility."
+  },
+  "image_urls": {
+    "login_hero": {
+      "url": "https://images.unsplash.com/photo-1758873268631-fa944fc5cad2?crop=entropy&cs=srgb&fm=jpg&q=85",
+      "description": "Diverse team in modern office, professional and welcoming.",
+      "category": "hero"
+    },
+    "user_avatars": [
+      {
+        "url": "https://images.unsplash.com/photo-1576558656222-ba66febe3dec?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "description": "Professional male headshot",
+        "category": "avatar"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1762522926157-bcc04bf0b10a?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "description": "Professional male headshot white shirt",
+        "category": "avatar"
+      }
+    ],
+    "company_logos": [
+      {
+        "url": "https://images.pexels.com/photos/26576975/pexels-photo-26576975.jpeg",
+        "description": "Abstract geometric shape",
+        "category": "logo"
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "1. UPDATE TAILWIND CONFIG: Replace the 'colors' object in tailwind.config.js with the HSL values provided in 'colors.base'.",
+    "2. UPDATE INDEX.CSS: Add the @import for fonts at the top. Update the :root variables to match the HSL values.",
+    "3. FONT USAGE: Apply 'font-sans' (Manrope) to headings and 'font-body' (Public Sans) to text. You may need to extend the font family in tailwind config.",
+    "4. LAYOUT: For the Admin Dashboard, use a Sidebar Layout (Left fixed sidebar, right scrollable content). For Employee Dashboard, use a Mobile-First Stack Layout.",
+    "5. COMPONENTS: Use Shadcn UI components. Customize them to match the 'Slate & Sage' aesthetic (clean borders, minimal shadows).",
+    "6. LANGUAGE: Ensure all UI text is in Portuguese (PT) as requested.",
+    "7. DATA-TESTID: Add data-testid attributes to all interactive elements (buttons, inputs, links) for testing.",
+    "8. NO MOCKING: Implement actual logic where possible, but if backend is not ready, structure the frontend to easily connect later.",
+    "9. THEME: Enforce Light Mode by default. Do not use dark mode unless explicitly toggled (but design system supports it via variables)."
+  ],
+  "universal_guidelines": [
+    "Avoid generic 'AI slop' designs. Use generous spacing (p-8+).",
+    "Micro-interactions are mandatory (hover, active, focus states).",
+    "Use 'sonner' for toast notifications.",
+    "Do not use 'Inter' for headings. Use 'Manrope'.",
+    "Ensure high contrast for text (WCAG AA compliant)."
+  ]
+}
