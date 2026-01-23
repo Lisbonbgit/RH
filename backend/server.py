@@ -218,6 +218,42 @@ def create_token(user_id: str, email: str, role: str, employee_id: str = None) -
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
+async def calculate_vacation_days_used(employee_id: str) -> int:
+    """Calculate the number of vacation days used by an employee in the current year"""
+    current_year = datetime.now(timezone.utc).year
+    year_start = f"{current_year}-01-01"
+    year_end = f"{current_year}-12-31"
+    
+    # Find all approved vacation requests for the current year
+    vacation_requests = await db.leave_requests.find({
+        "employee_id": employee_id,
+        "leave_type": "ferias",
+        "status": "aprovado",
+        "$or": [
+            {"start_date": {"$gte": year_start, "$lte": year_end}},
+            {"end_date": {"$gte": year_start, "$lte": year_end}},
+            {"$and": [{"start_date": {"$lte": year_start}}, {"end_date": {"$gte": year_end}}]}
+        ]
+    }, {"_id": 0}).to_list(1000)
+    
+    total_days = 0
+    for request in vacation_requests:
+        start = datetime.fromisoformat(request["start_date"])
+        end = datetime.fromisoformat(request["end_date"])
+        
+        # Adjust dates to current year boundaries
+        year_start_date = datetime(current_year, 1, 1)
+        year_end_date = datetime(current_year, 12, 31)
+        
+        effective_start = max(start, year_start_date)
+        effective_end = min(end, year_end_date)
+        
+        if effective_start <= effective_end:
+            days = (effective_end - effective_start).days + 1
+            total_days += days
+    
+    return total_days
+
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
