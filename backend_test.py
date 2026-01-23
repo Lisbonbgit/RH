@@ -388,10 +388,9 @@ class HRSystemTester:
         success, _ = self.run_test(
             "Approve Leave Request",
             "PUT",
-            f"leave-requests/{self.test_data['leave_request_id']}/respond",
+            f"leave-requests/{self.test_data['leave_request_id']}/respond?status=aprovado&response=Aprovado pelo administrador",
             200,
-            headers=headers,
-            params={'status': 'aprovado', 'response': 'Aprovado pelo administrador'}
+            headers=headers
         )
         
         return success
