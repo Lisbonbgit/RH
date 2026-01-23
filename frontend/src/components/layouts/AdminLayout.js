@@ -154,7 +154,7 @@ export default function AdminLayout() {
 
       <ScrollArea className="flex-1 px-3">
         <nav className="space-y-1">
-          {navItems.map((item) => (
+          {navItems.filter(item => !item.masterOnly || isMasterAdmin).map((item) => (
             <NavLink
               key={item.path}
               to={item.path}
