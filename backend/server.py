@@ -801,18 +801,18 @@ async def respond_leave_request(
     
     await db.leave_requests.update_one(
         {"id": request_id},
-        {"$set": {"status": status, "admin_response": response}}
+        {"$set": {"status": data.status, "admin_response": data.response}}
     )
     
     # Notify employee
     employee = await db.employees.find_one({"id": leave_request["employee_id"]}, {"_id": 0})
     if employee:
-        status_label = "aprovado" if status == "aprovado" else "recusado"
+        status_label = "aprovado" if data.status == "aprovado" else "recusado"
         notification_doc = {
             "id": str(uuid.uuid4()),
             "user_id": employee["user_id"],
             "title": f"Pedido {status_label.capitalize()}",
-            "message": f"O seu pedido de ausência foi {status_label}." + (f" Resposta: {response}" if response else ""),
+            "message": f"O seu pedido de ausência foi {status_label}." + (f" Resposta: {data.response}" if data.response else ""),
             "read": False,
             "created_at": datetime.now(timezone.utc).isoformat()
         }
