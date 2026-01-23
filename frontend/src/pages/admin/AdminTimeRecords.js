@@ -128,14 +128,14 @@ export default function AdminTimeRecords() {
             <div className="space-y-2">
               <Label>Colaborador</Label>
               <Select
-                value={filters.employee_id}
-                onValueChange={(value) => setFilters({ ...filters, employee_id: value })}
+                value={filters.employee_id || '__all__'}
+                onValueChange={(value) => setFilters({ ...filters, employee_id: value === '__all__' ? '' : value })}
               >
                 <SelectTrigger data-testid="filter-employee-select">
                   <SelectValue placeholder="Todos" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">Todos</SelectItem>
+                  <SelectItem value="__all__">Todos</SelectItem>
                   {employees.map((emp) => (
                     <SelectItem key={emp.id} value={emp.id}>
                       {emp.name}
