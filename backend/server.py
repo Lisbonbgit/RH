@@ -121,6 +121,8 @@ class EmployeeResponse(BaseModel):
     contract_type: str
     start_date: str
     vacation_days: int
+    vacation_days_used: int = 0
+    vacation_days_available: int = 0
     observations: Optional[str] = None
     created_at: str
 
