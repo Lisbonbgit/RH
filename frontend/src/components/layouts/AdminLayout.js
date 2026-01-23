@@ -32,9 +32,12 @@ import {
   Menu,
   ChevronDown,
   User,
-  Check
+  Check,
+  UserPlus
 } from 'lucide-react';
 import { toast } from 'sonner';
+
+const MASTER_ADMIN_EMAIL = 'geral@olacai.com';
 
 const navItems = [
   { path: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true },
