@@ -48,8 +48,12 @@ export default function LoginPage() {
     e.preventDefault();
     setLoading(true);
     try {
-      await register(registerName, registerEmail, registerPassword, 'admin');
-      toast.success('Conta criada com sucesso! Faça login para continuar.');
+      const response = await register(registerName, registerEmail, registerPassword, 'admin');
+      if (response.status === 'pendente') {
+        toast.success('Pedido enviado! Aguarde aprovação do administrador.');
+      } else {
+        toast.success('Conta criada com sucesso! Faça login para continuar.');
+      }
       setRegisterName('');
       setRegisterEmail('');
       setRegisterPassword('');
