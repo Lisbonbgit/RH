@@ -782,14 +782,17 @@ async def get_leave_requests(
     
     return [LeaveRequestResponse(**r) for r in requests]
 
+class LeaveRequestResponseModel(BaseModel):
+    status: str
+    response: Optional[str] = None
+
 @api_router.put("/leave-requests/{request_id}/respond")
 async def respond_leave_request(
     request_id: str,
-    status: str = Query(..., description="aprovado or recusado"),
-    response: Optional[str] = Query(None),
+    data: LeaveRequestResponseModel,
     current_user: dict = Depends(admin_required)
 ):
-    if status not in ["aprovado", "recusado"]:
+    if data.status not in ["aprovado", "recusado"]:
         raise HTTPException(status_code=400, detail="Status inválido. Use 'aprovado' ou 'recusado'")
     
     leave_request = await db.leave_requests.find_one({"id": request_id}, {"_id": 0})
