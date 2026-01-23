@@ -83,6 +83,7 @@ function AppRoutes() {
         <Route path="ponto" element={<AdminTimeRecords />} />
         <Route path="ausencias" element={<AdminLeaveRequests />} />
         <Route path="documentos" element={<AdminDocuments />} />
+        <Route path="registos" element={<AdminPendingRegistrations />} />
       </Route>
       
       {/* Employee Routes */}
