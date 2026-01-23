@@ -540,12 +540,17 @@ async def get_employees(
     
     employees = await db.employees.find(query, {"_id": 0}).to_list(1000)
     
-    # Get company and location names
+    # Get company and location names and calculate vacation days
     for emp in employees:
         company = await db.companies.find_one({"id": emp["company_id"]}, {"_id": 0})
         location = await db.locations.find_one({"id": emp["location_id"]}, {"_id": 0})
         emp["company_name"] = company["name"] if company else None
         emp["location_name"] = location["name"] if location else None
+        
+        # Calculate vacation days used and available
+        vacation_used = await calculate_vacation_days_used(emp["id"])
+        emp["vacation_days_used"] = vacation_used
+        emp["vacation_days_available"] = emp["vacation_days"] - vacation_used
     
     return [EmployeeResponse(**e) for e in employees]
 
@@ -562,10 +567,15 @@ async def get_employee(employee_id: str, current_user: dict = Depends(get_curren
     company = await db.companies.find_one({"id": employee["company_id"]}, {"_id": 0})
     location = await db.locations.find_one({"id": employee["location_id"]}, {"_id": 0})
     
+    # Calculate vacation days used and available
+    vacation_used = await calculate_vacation_days_used(employee_id)
+    
     return EmployeeResponse(
         **employee,
         company_name=company["name"] if company else None,
-        location_name=location["name"] if location else None
+        location_name=location["name"] if location else None,
+        vacation_days_used=vacation_used,
+        vacation_days_available=employee["vacation_days"] - vacation_used
     )
 
 @api_router.put("/employees/{employee_id}", response_model=EmployeeResponse)
