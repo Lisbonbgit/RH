@@ -270,35 +270,113 @@ async def admin_required(current_user: dict = Depends(get_current_user)):
 
 # ==================== AUTH ROUTES ====================
 
-@api_router.post("/auth/register", response_model=UserResponse)
-async def register_admin(user: UserCreate):
-    # Check if any admin exists
-    existing_admin = await db.users.find_one({"role": "admin"})
-    if existing_admin and user.role == "admin":
-        # Check if this is the first admin
-        admin_count = await db.users.count_documents({"role": "admin"})
-        if admin_count > 0:
-            # Verify request is from an admin (this endpoint is for initial setup)
-            pass
-    
-    # Check if email exists
+MASTER_ADMIN_EMAIL = "geral@olacai.com"
+
+class PendingRegistrationResponse(BaseModel):
+    id: str
+    email: str
+    name: str
+    status: str
+    created_at: str
+
+@api_router.post("/auth/register")
+async def register_user(user: UserCreate):
+    # Check if email exists in users or pending
     existing = await db.users.find_one({"email": user.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email já registado")
     
-    user_id = str(uuid.uuid4())
-    user_doc = {
-        "id": user_id,
+    existing_pending = await db.pending_registrations.find_one({"email": user.email})
+    if existing_pending:
+        raise HTTPException(status_code=400, detail="Registo pendente de aprovação")
+    
+    # Create pending registration
+    pending_id = str(uuid.uuid4())
+    pending_doc = {
+        "id": pending_id,
         "email": user.email,
         "password": hash_password(user.password),
         "name": user.name,
-        "role": user.role,
+        "status": "pendente",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.pending_registrations.insert_one(pending_doc)
+    
+    # Notify master admin
+    master_admin = await db.users.find_one({"email": MASTER_ADMIN_EMAIL}, {"_id": 0})
+    if master_admin:
+        notification_doc = {
+            "id": str(uuid.uuid4()),
+            "user_id": master_admin["id"],
+            "title": "Novo Pedido de Registo",
+            "message": f"{user.name} ({user.email}) solicitou acesso ao sistema.",
+            "read": False,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.notifications.insert_one(notification_doc)
+    
+    return {"message": "Pedido de registo enviado. Aguarde aprovação do administrador.", "status": "pendente"}
+
+@api_router.get("/auth/pending-registrations", response_model=List[PendingRegistrationResponse])
+async def get_pending_registrations(current_user: dict = Depends(admin_required)):
+    # Only master admin can see pending registrations
+    user = await db.users.find_one({"id": current_user["user_id"]}, {"_id": 0})
+    if user["email"] != MASTER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Apenas o administrador master pode gerir registos")
+    
+    pending = await db.pending_registrations.find({"status": "pendente"}, {"_id": 0}).to_list(100)
+    return [PendingRegistrationResponse(**p) for p in pending]
+
+@api_router.post("/auth/approve-registration/{registration_id}")
+async def approve_registration(registration_id: str, role: str = "admin", current_user: dict = Depends(admin_required)):
+    # Only master admin can approve
+    user = await db.users.find_one({"id": current_user["user_id"]}, {"_id": 0})
+    if user["email"] != MASTER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Apenas o administrador master pode aprovar registos")
+    
+    pending = await db.pending_registrations.find_one({"id": registration_id}, {"_id": 0})
+    if not pending:
+        raise HTTPException(status_code=404, detail="Registo não encontrado")
+    
+    # Create user
+    user_id = str(uuid.uuid4())
+    user_doc = {
+        "id": user_id,
+        "email": pending["email"],
+        "password": pending["password"],
+        "name": pending["name"],
+        "role": role,
         "employee_id": None,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.users.insert_one(user_doc)
     
-    return UserResponse(id=user_id, email=user.email, name=user.name, role=user.role)
+    # Update pending status
+    await db.pending_registrations.update_one(
+        {"id": registration_id},
+        {"$set": {"status": "aprovado"}}
+    )
+    
+    return {"message": f"Utilizador {pending['name']} aprovado com sucesso"}
+
+@api_router.post("/auth/reject-registration/{registration_id}")
+async def reject_registration(registration_id: str, current_user: dict = Depends(admin_required)):
+    # Only master admin can reject
+    user = await db.users.find_one({"id": current_user["user_id"]}, {"_id": 0})
+    if user["email"] != MASTER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Apenas o administrador master pode rejeitar registos")
+    
+    pending = await db.pending_registrations.find_one({"id": registration_id}, {"_id": 0})
+    if not pending:
+        raise HTTPException(status_code=404, detail="Registo não encontrado")
+    
+    # Update pending status
+    await db.pending_registrations.update_one(
+        {"id": registration_id},
+        {"$set": {"status": "rejeitado"}}
+    )
+    
+    return {"message": f"Registo de {pending['name']} rejeitado"}
 
 @api_router.post("/auth/login")
 async def login(credentials: UserLogin):
