@@ -70,6 +70,12 @@ export const changePassword = (currentPassword, newPassword) =>
     current_password: currentPassword, 
     new_password: newPassword 
   });
+export const forgotPassword = (email) => 
+  axios.post(`${API_URL}/auth/forgot-password`, { email });
+export const resetPassword = (token, newPassword) => 
+  axios.post(`${API_URL}/auth/reset-password`, { token, new_password: newPassword });
+export const verifyResetToken = (token) => 
+  axios.get(`${API_URL}/auth/verify-reset-token?token=${token}`);
 export const resetEmployeePassword = (employeeId, newPassword) => 
   axios.post(`${API_URL}/employees/${employeeId}/reset-password`, { new_password: newPassword });
 
