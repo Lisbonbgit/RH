@@ -41,11 +41,6 @@ export const AuthProvider = ({ children }) => {
     return userData;
   };
 
-  const register = async (name, email, password, role = 'admin') => {
-    const response = await axios.post(`${API_URL}/auth/register`, { name, email, password, role });
-    return response.data;
-  };
-
   const changePassword = async (currentPassword, newPassword) => {
     const response = await axios.post(`${API_URL}/auth/change-password`, {
       current_password: currentPassword,
