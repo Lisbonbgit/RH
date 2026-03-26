@@ -77,7 +77,6 @@ export const AuthProvider = ({ children }) => {
       token,
       loading,
       login,
-      register,
       logout,
       changePassword,
       isAdmin,
