@@ -549,11 +549,16 @@ class HRSystemTester:
         headers = self.get_auth_headers(self.admin_token)
         
         # Approve leave request
+        approval_data = {
+            "status": "aprovado",
+            "response": "Aprovado pelo administrador"
+        }
         success, _ = self.run_test(
             "Approve Leave Request",
             "PUT",
-            f"leave-requests/{self.test_data['leave_request_id']}/respond?status=aprovado&response=Aprovado pelo administrador",
+            f"leave-requests/{self.test_data['leave_request_id']}/respond",
             200,
+            data=approval_data,
             headers=headers
         )
         
