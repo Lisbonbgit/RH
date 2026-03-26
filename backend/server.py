@@ -7,13 +7,14 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, field_validator
 from typing import List, Optional
 import uuid
 from datetime import datetime, timezone, timedelta
 import jwt
 import bcrypt
 import shutil
+import re
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -28,12 +29,19 @@ JWT_SECRET = os.environ.get('JWT_SECRET', 'hr-system-secret-key-2024')
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 
+# Admin Master Configuration (from environment variables)
+MASTER_ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'geral@olacai.com')
+MASTER_ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD_HASH')
+
+# Password validation configuration
+MIN_PASSWORD_LENGTH = 8
+
 # File upload directory
 UPLOAD_DIR = ROOT_DIR / 'uploads'
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 # Create the main app
-app = FastAPI(title="Sistema de Gestão de RH")
+app = FastAPI(title="RH grupo Lisbonb - Sistema de Gestão")
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
@@ -45,13 +53,52 @@ security = HTTPBearer()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# ==================== PASSWORD UTILITIES ====================
+
+def validate_password_strength(password: str) -> tuple[bool, str]:
+    """Validate password meets minimum security requirements"""
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return False, f"A palavra-passe deve ter pelo menos {MIN_PASSWORD_LENGTH} caracteres"
+    return True, ""
+
+def hash_password(password: str) -> str:
+    """Hash password using bcrypt"""
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verify password against bcrypt hash"""
+    try:
+        return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+    except Exception:
+        return False
+
+def create_token(user_id: str, email: str, role: str, employee_id: str = None, must_change_password: bool = False) -> str:
+    """Create JWT token with user information"""
+    payload = {
+        "user_id": user_id,
+        "email": email,
+        "role": role,
+        "employee_id": employee_id,
+        "must_change_password": must_change_password,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS)
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
 # ==================== MODELS ====================
 
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
     name: str
-    role: str = "colaborador"  # admin or colaborador
+    role: str = "colaborador"
+
+    @field_validator('password')
+    @classmethod
+    def validate_password(cls, v):
+        is_valid, message = validate_password_strength(v)
+        if not is_valid:
+            raise ValueError(message)
+        return v
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -63,6 +110,19 @@ class UserResponse(BaseModel):
     name: str
     role: str
     employee_id: Optional[str] = None
+    must_change_password: bool = False
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_new_password(cls, v):
+        is_valid, message = validate_password_strength(v)
+        if not is_valid:
+            raise ValueError(message)
+        return v
 
 class CompanyCreate(BaseModel):
     name: str
@@ -97,6 +157,14 @@ class EmployeeCreate(BaseModel):
     start_date: str
     vacation_days: int = 22
     observations: Optional[str] = None
+
+    @field_validator('password')
+    @classmethod
+    def validate_password(cls, v):
+        is_valid, message = validate_password_strength(v)
+        if not is_valid:
+            raise ValueError(message)
+        return v
 
 class EmployeeUpdate(BaseModel):
     name: Optional[str] = None
@@ -200,23 +268,7 @@ class DashboardStats(BaseModel):
     employees_by_company: List[dict]
     recent_requests: List[dict]
 
-# ==================== UTILITIES ====================
-
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-def verify_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-
-def create_token(user_id: str, email: str, role: str, employee_id: str = None) -> str:
-    payload = {
-        "user_id": user_id,
-        "email": email,
-        "role": role,
-        "employee_id": employee_id,
-        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS)
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+# ==================== VACATION CALCULATION ====================
 
 async def calculate_vacation_days_used(employee_id: str) -> int:
     """Calculate the number of vacation days used by an employee in the current year"""
@@ -254,7 +306,10 @@ async def calculate_vacation_days_used(employee_id: str) -> int:
     
     return total_days
 
+# ==================== AUTH UTILITIES ====================
+
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Get current user from JWT token"""
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         return payload
@@ -264,13 +319,33 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         raise HTTPException(status_code=401, detail="Token inválido")
 
 async def admin_required(current_user: dict = Depends(get_current_user)):
+    """Require admin role"""
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Acesso negado. Apenas administradores.")
     return current_user
 
-# ==================== AUTH ROUTES ====================
+async def ensure_master_admin_exists():
+    """Ensure master admin exists in database using environment variables"""
+    if not MASTER_ADMIN_PASSWORD_HASH:
+        logger.warning("ADMIN_PASSWORD_HASH not configured. Master admin will not be auto-created.")
+        return
+    
+    existing = await db.users.find_one({"email": MASTER_ADMIN_EMAIL})
+    if not existing:
+        admin_doc = {
+            "id": str(uuid.uuid4()),
+            "email": MASTER_ADMIN_EMAIL,
+            "password": MASTER_ADMIN_PASSWORD_HASH,
+            "name": "Administrador Principal",
+            "role": "admin",
+            "employee_id": None,
+            "must_change_password": False,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.users.insert_one(admin_doc)
+        logger.info(f"Master admin created: {MASTER_ADMIN_EMAIL}")
 
-MASTER_ADMIN_EMAIL = "geral@olacai.com"
+# ==================== AUTH ROUTES ====================
 
 class PendingRegistrationResponse(BaseModel):
     id: str
@@ -281,6 +356,7 @@ class PendingRegistrationResponse(BaseModel):
 
 @api_router.post("/auth/register")
 async def register_user(user: UserCreate):
+    """Register a new user (pending approval)"""
     # Check if email exists in users or pending
     existing = await db.users.find_one({"email": user.email})
     if existing:
@@ -319,6 +395,7 @@ async def register_user(user: UserCreate):
 
 @api_router.get("/auth/pending-registrations", response_model=List[PendingRegistrationResponse])
 async def get_pending_registrations(current_user: dict = Depends(admin_required)):
+    """Get pending registrations (master admin only)"""
     # Only master admin can see pending registrations
     user = await db.users.find_one({"id": current_user["user_id"]}, {"_id": 0})
     if user["email"] != MASTER_ADMIN_EMAIL:
@@ -329,6 +406,7 @@ async def get_pending_registrations(current_user: dict = Depends(admin_required)
 
 @api_router.post("/auth/approve-registration/{registration_id}")
 async def approve_registration(registration_id: str, role: str = "admin", current_user: dict = Depends(admin_required)):
+    """Approve a pending registration (master admin only)"""
     # Only master admin can approve
     user = await db.users.find_one({"id": current_user["user_id"]}, {"_id": 0})
     if user["email"] != MASTER_ADMIN_EMAIL:
@@ -338,7 +416,7 @@ async def approve_registration(registration_id: str, role: str = "admin", curren
     if not pending:
         raise HTTPException(status_code=404, detail="Registo não encontrado")
     
-    # Create user
+    # Create user with must_change_password = False (they set their own password during registration)
     user_id = str(uuid.uuid4())
     user_doc = {
         "id": user_id,
@@ -347,6 +425,7 @@ async def approve_registration(registration_id: str, role: str = "admin", curren
         "name": pending["name"],
         "role": role,
         "employee_id": None,
+        "must_change_password": False,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.users.insert_one(user_doc)
@@ -361,6 +440,7 @@ async def approve_registration(registration_id: str, role: str = "admin", curren
 
 @api_router.post("/auth/reject-registration/{registration_id}")
 async def reject_registration(registration_id: str, current_user: dict = Depends(admin_required)):
+    """Reject a pending registration (master admin only)"""
     # Only master admin can reject
     user = await db.users.find_one({"id": current_user["user_id"]}, {"_id": 0})
     if user["email"] != MASTER_ADMIN_EMAIL:
@@ -380,11 +460,21 @@ async def reject_registration(registration_id: str, current_user: dict = Depends
 
 @api_router.post("/auth/login")
 async def login(credentials: UserLogin):
+    """Authenticate user and return JWT token"""
     user = await db.users.find_one({"email": credentials.email}, {"_id": 0})
     if not user or not verify_password(credentials.password, user["password"]):
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
     
-    token = create_token(user["id"], user["email"], user["role"], user.get("employee_id"))
+    must_change_password = user.get("must_change_password", False)
+    
+    token = create_token(
+        user["id"], 
+        user["email"], 
+        user["role"], 
+        user.get("employee_id"),
+        must_change_password
+    )
+    
     return {
         "token": token,
         "user": {
@@ -392,16 +482,54 @@ async def login(credentials: UserLogin):
             "email": user["email"],
             "name": user["name"],
             "role": user["role"],
-            "employee_id": user.get("employee_id")
+            "employee_id": user.get("employee_id"),
+            "must_change_password": must_change_password
         }
     }
 
 @api_router.get("/auth/me", response_model=UserResponse)
 async def get_me(current_user: dict = Depends(get_current_user)):
+    """Get current user information"""
     user = await db.users.find_one({"id": current_user["user_id"]}, {"_id": 0, "password": 0})
     if not user:
         raise HTTPException(status_code=404, detail="Utilizador não encontrado")
     return UserResponse(**user)
+
+@api_router.post("/auth/change-password")
+async def change_password(request: ChangePasswordRequest, current_user: dict = Depends(get_current_user)):
+    """Change user password"""
+    user = await db.users.find_one({"id": current_user["user_id"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilizador não encontrado")
+    
+    # Verify current password
+    if not verify_password(request.current_password, user["password"]):
+        raise HTTPException(status_code=400, detail="Palavra-passe atual incorreta")
+    
+    # Check if new password is different from current
+    if verify_password(request.new_password, user["password"]):
+        raise HTTPException(status_code=400, detail="A nova palavra-passe deve ser diferente da atual")
+    
+    # Update password and set must_change_password to False
+    new_password_hash = hash_password(request.new_password)
+    await db.users.update_one(
+        {"id": current_user["user_id"]},
+        {"$set": {"password": new_password_hash, "must_change_password": False}}
+    )
+    
+    # Generate new token with must_change_password = False
+    token = create_token(
+        user["id"],
+        user["email"],
+        user["role"],
+        user.get("employee_id"),
+        False
+    )
+    
+    return {
+        "message": "Palavra-passe alterada com sucesso",
+        "token": token
+    }
 
 # ==================== COMPANY ROUTES ====================
 
@@ -518,6 +646,7 @@ async def delete_location(location_id: str, current_user: dict = Depends(admin_r
 
 @api_router.post("/employees", response_model=EmployeeResponse)
 async def create_employee(employee: EmployeeCreate, current_user: dict = Depends(admin_required)):
+    """Create employee with temporary password (must_change_password = true)"""
     # Check if email exists
     existing = await db.users.find_one({"email": employee.email})
     if existing:
@@ -532,7 +661,7 @@ async def create_employee(employee: EmployeeCreate, current_user: dict = Depends
     if not location:
         raise HTTPException(status_code=404, detail="Local não encontrado")
     
-    # Create user account
+    # Create user account with must_change_password = True (temporary password)
     user_id = str(uuid.uuid4())
     employee_id = str(uuid.uuid4())
     
@@ -543,6 +672,7 @@ async def create_employee(employee: EmployeeCreate, current_user: dict = Depends
         "name": employee.name,
         "role": "colaborador",
         "employee_id": employee_id,
+        "must_change_password": True,  # User must change password on first login
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.users.insert_one(user_doc)
@@ -583,12 +713,12 @@ async def create_employee(employee: EmployeeCreate, current_user: dict = Depends
         }
         await db.folders.insert_one(folder_doc)
     
-    # Create welcome notification
+    # Create welcome notification with password change reminder
     notification_doc = {
         "id": str(uuid.uuid4()),
         "user_id": user_id,
         "title": "Bem-vindo!",
-        "message": f"A sua conta foi criada com sucesso. Bem-vindo à {company['name']}!",
+        "message": f"A sua conta foi criada com sucesso. Bem-vindo à {company['name']}! Por favor, altere a sua palavra-passe temporária no primeiro acesso.",
         "read": False,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
@@ -717,6 +847,46 @@ async def delete_employee(employee_id: str, current_user: dict = Depends(admin_r
     await db.notifications.delete_many({"user_id": employee["user_id"]})
     
     return {"message": "Colaborador eliminado com sucesso"}
+
+# ==================== RESET PASSWORD (Admin function) ====================
+
+class ResetPasswordRequest(BaseModel):
+    new_password: str
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_new_password(cls, v):
+        is_valid, message = validate_password_strength(v)
+        if not is_valid:
+            raise ValueError(message)
+        return v
+
+@api_router.post("/employees/{employee_id}/reset-password")
+async def reset_employee_password(employee_id: str, request: ResetPasswordRequest, current_user: dict = Depends(admin_required)):
+    """Admin can reset employee password (sets must_change_password = True)"""
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Colaborador não encontrado")
+    
+    # Update password and set must_change_password to True
+    new_password_hash = hash_password(request.new_password)
+    await db.users.update_one(
+        {"id": employee["user_id"]},
+        {"$set": {"password": new_password_hash, "must_change_password": True}}
+    )
+    
+    # Create notification
+    notification_doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": employee["user_id"],
+        "title": "Palavra-passe Redefinida",
+        "message": "A sua palavra-passe foi redefinida pelo administrador. Por favor, altere-a no próximo acesso.",
+        "read": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.notifications.insert_one(notification_doc)
+    
+    return {"message": "Palavra-passe redefinida com sucesso. O colaborador deverá alterá-la no próximo acesso."}
 
 # ==================== TIME RECORD ROUTES ====================
 
@@ -1316,6 +1486,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize application on startup"""
+    await ensure_master_admin_exists()
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
