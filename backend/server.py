@@ -106,6 +106,112 @@ def create_token(user_id: str, email: str, role: str, employee_id: str = None, m
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
+# ==================== PASSWORD RESET UTILITIES ====================
+
+def generate_reset_token() -> str:
+    """Generate a secure random token for password reset"""
+    return secrets.token_urlsafe(32)
+
+def hash_reset_token(token: str) -> str:
+    """Hash the reset token using SHA256 for storage"""
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+def get_password_reset_email_html(user_name: str, reset_link: str) -> str:
+    """Generate HTML email template for password reset"""
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; background-color: #f4f4f4;">
+        <table role="presentation" style="width: 100%; border-collapse: collapse;">
+            <tr>
+                <td style="padding: 40px 0;">
+                    <table role="presentation" style="width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                        <!-- Header -->
+                        <tr>
+                            <td style="background-color: #1a365d; padding: 30px; text-align: center;">
+                                <h1 style="color: #ffffff; margin: 0; font-size: 24px;">RH grupo Lisbonb</h1>
+                            </td>
+                        </tr>
+                        <!-- Content -->
+                        <tr>
+                            <td style="padding: 40px 30px;">
+                                <h2 style="color: #1a365d; margin: 0 0 20px 0; font-size: 20px;">Redefinição de Palavra-passe</h2>
+                                <p style="color: #4a5568; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                                    Olá <strong>{user_name}</strong>,
+                                </p>
+                                <p style="color: #4a5568; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                                    Recebemos um pedido para redefinir a palavra-passe da sua conta. 
+                                    Clique no botão abaixo para criar uma nova palavra-passe:
+                                </p>
+                                <table role="presentation" style="margin: 30px auto;">
+                                    <tr>
+                                        <td style="background-color: #1a365d; border-radius: 6px;">
+                                            <a href="{reset_link}" style="display: inline-block; padding: 14px 30px; color: #ffffff; text-decoration: none; font-weight: bold; font-size: 16px;">
+                                                Redefinir Palavra-passe
+                                            </a>
+                                        </td>
+                                    </tr>
+                                </table>
+                                <p style="color: #718096; font-size: 14px; line-height: 1.6; margin: 20px 0 0 0;">
+                                    Este link é válido por <strong>1 hora</strong>. Se não solicitou esta alteração, 
+                                    pode ignorar este email em segurança.
+                                </p>
+                                <p style="color: #718096; font-size: 14px; line-height: 1.6; margin: 20px 0 0 0;">
+                                    Se o botão não funcionar, copie e cole o link abaixo no seu navegador:
+                                </p>
+                                <p style="color: #4299e1; font-size: 12px; word-break: break-all; margin: 10px 0 0 0;">
+                                    {reset_link}
+                                </p>
+                            </td>
+                        </tr>
+                        <!-- Footer -->
+                        <tr>
+                            <td style="background-color: #f7fafc; padding: 20px 30px; text-align: center; border-top: 1px solid #e2e8f0;">
+                                <p style="color: #a0aec0; font-size: 12px; margin: 0;">
+                                    © 2024 RH grupo Lisbonb. Todos os direitos reservados.
+                                </p>
+                                <p style="color: #a0aec0; font-size: 12px; margin: 10px 0 0 0;">
+                                    Este é um email automático, por favor não responda.
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
+    </body>
+    </html>
+    """
+
+async def send_password_reset_email(email: str, user_name: str, reset_token: str) -> bool:
+    """Send password reset email using Resend"""
+    if not RESEND_AVAILABLE or not RESEND_API_KEY:
+        logger.warning("Resend not configured. Password reset email not sent.")
+        return False
+    
+    reset_link = f"{FRONTEND_URL}/redefinir-senha?token={reset_token}"
+    html_content = get_password_reset_email_html(user_name, reset_link)
+    
+    params = {
+        "from": SENDER_EMAIL,
+        "to": [email],
+        "subject": "Redefinição de Palavra-passe - RH grupo Lisbonb",
+        "html": html_content
+    }
+    
+    try:
+        # Run sync SDK in thread to keep FastAPI non-blocking
+        email_response = await asyncio.to_thread(resend.Emails.send, params)
+        logger.info(f"Password reset email sent to {email}, ID: {email_response.get('id')}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send password reset email: {str(e)}")
+        return False
+
 # ==================== MODELS ====================
 
 class UserCreate(BaseModel):
