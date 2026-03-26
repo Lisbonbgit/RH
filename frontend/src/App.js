@@ -105,6 +105,8 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/esqueci-senha" element={<ForgotPasswordPage />} />
+      <Route path="/redefinir-senha" element={<ResetPasswordPage />} />
       <Route path="/alterar-senha" element={
         <ChangePasswordRoute>
           <ChangePasswordPage />
