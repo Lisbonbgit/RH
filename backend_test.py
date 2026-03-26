@@ -102,17 +102,14 @@ class HRSystemTester:
         return success
 
     def test_admin_login(self):
-        """Test admin login"""
-        if not self.test_data.get('admin_email'):
-            self.log("❌ Admin Login - No admin email available")
-            return False
-            
+        """Test admin login with master admin credentials"""
+        # Test with master admin credentials from environment
         login_data = {
-            "email": self.test_data['admin_email'],
-            "password": self.test_data['admin_password']
+            "email": "geral@olacai.com",
+            "password": "Admin@123"
         }
         success, response = self.run_test(
-            "Admin Login",
+            "Master Admin Login",
             "POST",
             "auth/login",
             200,
@@ -121,6 +118,120 @@ class HRSystemTester:
         if success:
             self.admin_token = response.get('token')
             self.test_data['admin_user'] = response.get('user')
+            # Verify must_change_password field is present
+            user = response.get('user', {})
+            if 'must_change_password' not in user:
+                self.log("❌ Master Admin Login - must_change_password field missing")
+                return False
+            self.log(f"✅ Master Admin Login - must_change_password: {user.get('must_change_password')}")
+        return success
+
+    def test_login_wrong_password(self):
+        """Test login with wrong password"""
+        login_data = {
+            "email": "geral@olacai.com",
+            "password": "wrongpassword"
+        }
+        success, response = self.run_test(
+            "Login Wrong Password",
+            "POST",
+            "auth/login",
+            401,
+            data=login_data
+        )
+        return success
+
+    def test_password_validation_short(self):
+        """Test password validation - too short"""
+        register_data = {
+            "email": "test@test.com",
+            "password": "short",
+            "name": "Test User"
+        }
+        success, response = self.run_test(
+            "Password Validation - Too Short",
+            "POST",
+            "auth/register",
+            422,
+            data=register_data
+        )
+        return success
+
+    def test_get_current_user_no_password(self):
+        """Test get current user - verify no password in response"""
+        if not self.admin_token:
+            self.log("❌ Get Current User - No admin token")
+            return False
+            
+        headers = self.get_auth_headers(self.admin_token)
+        success, response = self.run_test(
+            "Get Current User",
+            "GET",
+            "auth/me",
+            200,
+            headers=headers
+        )
+        if success:
+            # Verify password field is not in response
+            if 'password' in response:
+                self.log("❌ Get Current User - Password field found in response!")
+                return False
+            self.log("✅ Get Current User - No password field in response")
+        return success
+
+    def test_change_password(self):
+        """Test change password endpoint"""
+        if not self.admin_token:
+            self.log("❌ Change Password - No admin token")
+            return False
+            
+        headers = self.get_auth_headers(self.admin_token)
+        
+        # Test change password
+        change_data = {
+            "current_password": "Admin@123",
+            "new_password": "NewAdmin@456"
+        }
+        success, response = self.run_test(
+            "Change Password",
+            "POST",
+            "auth/change-password",
+            200,
+            data=change_data,
+            headers=headers
+        )
+        if success:
+            # Verify new token is returned
+            new_token = response.get('token')
+            if not new_token:
+                self.log("❌ Change Password - No new token returned")
+                return False
+            self.log("✅ Change Password - New token returned")
+            # Update admin token for future tests
+            self.admin_token = new_token
+        return success
+
+    def test_change_password_wrong_current(self):
+        """Test change password with wrong current password"""
+        if not self.admin_token:
+            self.log("❌ Change Password Wrong Current - No admin token")
+            return False
+            
+        headers = self.get_auth_headers(self.admin_token)
+        
+        # Test with wrong current password
+        change_data = {
+            "current_password": "wrongpassword",
+            "new_password": "NewAdmin@789"
+        }
+        success, response = self.run_test(
+            "Change Password Wrong Current",
+            "POST",
+            "auth/change-password",
+            400,
+            data=change_data,
+            headers=headers
+        )
         return success
 
     def get_auth_headers(self, token):
