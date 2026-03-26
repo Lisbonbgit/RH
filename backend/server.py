@@ -563,6 +563,138 @@ async def change_password(request: ChangePasswordRequest, current_user: dict = D
         "token": token
     }
 
+# ==================== PASSWORD RESET ENDPOINTS ====================
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(request: ForgotPasswordRequest):
+    """
+    Request password reset. Sends email with reset link if user exists.
+    Always returns success to prevent email enumeration attacks.
+    """
+    # Always return the same message to prevent email enumeration
+    success_message = {
+        "message": "Se o email existir no sistema, receberá um link para redefinir a palavra-passe."
+    }
+    
+    # Find user by email
+    user = await db.users.find_one({"email": request.email}, {"_id": 0})
+    
+    if not user:
+        # Return success even if user doesn't exist (security)
+        logger.info(f"Password reset requested for non-existent email: {request.email}")
+        return success_message
+    
+    # Generate secure reset token
+    reset_token = generate_reset_token()
+    token_hash = hash_reset_token(reset_token)
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=RESET_TOKEN_EXPIRATION_HOURS)
+    
+    # Save token hash and expiration to user document
+    await db.users.update_one(
+        {"id": user["id"]},
+        {
+            "$set": {
+                "reset_password_token": token_hash,
+                "reset_password_expires": expires_at.isoformat()
+            }
+        }
+    )
+    
+    # Send email with reset link
+    email_sent = await send_password_reset_email(
+        email=user["email"],
+        user_name=user["name"],
+        reset_token=reset_token  # Send original token, not hash
+    )
+    
+    if email_sent:
+        logger.info(f"Password reset email sent to {request.email}")
+    else:
+        logger.warning(f"Failed to send password reset email to {request.email}")
+    
+    return success_message
+
+@api_router.post("/auth/reset-password")
+async def reset_password(request: ResetPasswordRequest):
+    """
+    Reset password using the token received via email.
+    Token must be valid and not expired.
+    """
+    # Hash the received token to compare with stored hash
+    token_hash = hash_reset_token(request.token)
+    
+    # Find user with matching token and valid expiration
+    user = await db.users.find_one({
+        "reset_password_token": token_hash
+    }, {"_id": 0})
+    
+    if not user:
+        raise HTTPException(
+            status_code=400, 
+            detail="Token inválido ou expirado. Por favor, solicite um novo link de redefinição."
+        )
+    
+    # Check if token has expired
+    expires_at = user.get("reset_password_expires")
+    if expires_at:
+        expires_datetime = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+        if datetime.now(timezone.utc) > expires_datetime:
+            # Clear expired token
+            await db.users.update_one(
+                {"id": user["id"]},
+                {"$unset": {"reset_password_token": "", "reset_password_expires": ""}}
+            )
+            raise HTTPException(
+                status_code=400, 
+                detail="Token expirado. Por favor, solicite um novo link de redefinição."
+            )
+    
+    # Hash new password and update user
+    new_password_hash = hash_password(request.new_password)
+    
+    await db.users.update_one(
+        {"id": user["id"]},
+        {
+            "$set": {
+                "password": new_password_hash,
+                "must_change_password": False
+            },
+            "$unset": {
+                "reset_password_token": "",
+                "reset_password_expires": ""
+            }
+        }
+    )
+    
+    logger.info(f"Password successfully reset for user {user['email']}")
+    
+    return {
+        "message": "Palavra-passe redefinida com sucesso. Pode agora fazer login com a nova palavra-passe."
+    }
+
+@api_router.get("/auth/verify-reset-token")
+async def verify_reset_token(token: str):
+    """
+    Verify if a password reset token is valid (for frontend validation before showing form).
+    """
+    token_hash = hash_reset_token(token)
+    
+    user = await db.users.find_one({
+        "reset_password_token": token_hash
+    }, {"_id": 0})
+    
+    if not user:
+        raise HTTPException(status_code=400, detail="Token inválido")
+    
+    # Check expiration
+    expires_at = user.get("reset_password_expires")
+    if expires_at:
+        expires_datetime = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+        if datetime.now(timezone.utc) > expires_datetime:
+            raise HTTPException(status_code=400, detail="Token expirado")
+    
+    return {"valid": True, "email": user["email"]}
+
 # ==================== ADMIN/MANAGER CREATION ====================
 
 class AdminCreate(BaseModel):
