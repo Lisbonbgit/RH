@@ -252,6 +252,21 @@ class ChangePasswordRequest(BaseModel):
             raise ValueError(message)
         return v
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_new_password(cls, v):
+        is_valid, message = validate_password_strength(v)
+        if not is_valid:
+            raise ValueError(message)
+        return v
+
 class CompanyCreate(BaseModel):
     name: str
     description: Optional[str] = None
