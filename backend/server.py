@@ -420,6 +420,104 @@ async def change_password(request: ChangePasswordRequest, current_user: dict = D
         "token": token
     }
 
+# ==================== ADMIN/MANAGER CREATION ====================
+
+class AdminCreate(BaseModel):
+    email: EmailStr
+    password: str
+    name: str
+    role: str = "admin"  # admin or gerente
+
+    @field_validator('password')
+    @classmethod
+    def validate_password(cls, v):
+        is_valid, message = validate_password_strength(v)
+        if not is_valid:
+            raise ValueError(message)
+        return v
+
+    @field_validator('role')
+    @classmethod
+    def validate_role(cls, v):
+        if v not in ['admin', 'gerente']:
+            raise ValueError("Role deve ser 'admin' ou 'gerente'")
+        return v
+
+class AdminResponse(BaseModel):
+    id: str
+    email: str
+    name: str
+    role: str
+    created_at: str
+
+@api_router.post("/admins", response_model=AdminResponse)
+async def create_admin(admin: AdminCreate, current_user: dict = Depends(admin_required)):
+    """Create a new admin or manager (admin only). Must change password on first login."""
+    # Only master admin can create other admins
+    user = await db.users.find_one({"id": current_user["user_id"]}, {"_id": 0})
+    if user["email"] != MASTER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Apenas o administrador master pode criar outros administradores")
+    
+    # Check if email exists
+    existing = await db.users.find_one({"email": admin.email})
+    if existing:
+        raise HTTPException(status_code=400, detail="Email já registado")
+    
+    # Create admin/manager with must_change_password = True
+    user_id = str(uuid.uuid4())
+    user_doc = {
+        "id": user_id,
+        "email": admin.email,
+        "password": hash_password(admin.password),
+        "name": admin.name,
+        "role": admin.role,
+        "employee_id": None,
+        "must_change_password": True,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.users.insert_one(user_doc)
+    
+    logger.info(f"New {admin.role} created: {admin.email}")
+    
+    return AdminResponse(
+        id=user_id,
+        email=admin.email,
+        name=admin.name,
+        role=admin.role,
+        created_at=user_doc["created_at"]
+    )
+
+@api_router.get("/admins", response_model=List[AdminResponse])
+async def get_admins(current_user: dict = Depends(admin_required)):
+    """Get all admins and managers (master admin only)"""
+    user = await db.users.find_one({"id": current_user["user_id"]}, {"_id": 0})
+    if user["email"] != MASTER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Apenas o administrador master pode ver administradores")
+    
+    admins = await db.users.find(
+        {"role": {"$in": ["admin", "gerente"]}, "email": {"$ne": MASTER_ADMIN_EMAIL}},
+        {"_id": 0, "password": 0}
+    ).to_list(100)
+    
+    return [AdminResponse(**a) for a in admins]
+
+@api_router.delete("/admins/{admin_id}")
+async def delete_admin(admin_id: str, current_user: dict = Depends(admin_required)):
+    """Delete an admin or manager (master admin only)"""
+    user = await db.users.find_one({"id": current_user["user_id"]}, {"_id": 0})
+    if user["email"] != MASTER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Apenas o administrador master pode eliminar administradores")
+    
+    admin = await db.users.find_one({"id": admin_id}, {"_id": 0})
+    if not admin:
+        raise HTTPException(status_code=404, detail="Administrador não encontrado")
+    
+    if admin["email"] == MASTER_ADMIN_EMAIL:
+        raise HTTPException(status_code=400, detail="Não é possível eliminar o administrador master")
+    
+    await db.users.delete_one({"id": admin_id})
+    return {"message": f"Administrador {admin['name']} eliminado com sucesso"}
+
 # ==================== COMPANY ROUTES ====================
 
 @api_router.post("/companies", response_model=CompanyResponse)
