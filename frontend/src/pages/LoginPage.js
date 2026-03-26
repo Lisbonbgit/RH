@@ -5,23 +5,17 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { toast } from 'sonner';
-import { Building2, Users, Lock, Mail, User } from 'lucide-react';
+import { Building2, Users, Lock, Mail } from 'lucide-react';
 
 export default function LoginPage() {
   const navigate = useNavigate();
-  const { login, register, isAuthenticated, user } = useAuth();
+  const { login, isAuthenticated, user } = useAuth();
   const [loading, setLoading] = useState(false);
   
   // Login form
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
-  
-  // Register form
-  const [registerName, setRegisterName] = useState('');
-  const [registerEmail, setRegisterEmail] = useState('');
-  const [registerPassword, setRegisterPassword] = useState('');
 
   // Redirect if already authenticated
   React.useEffect(() => {
@@ -39,26 +33,6 @@ export default function LoginPage() {
       navigate(userData.role === 'admin' ? '/admin' : '/colaborador');
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Erro ao fazer login');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleRegister = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      const response = await register(registerName, registerEmail, registerPassword, 'admin');
-      if (response.status === 'pendente') {
-        toast.success('Pedido enviado! Aguarde aprovação do administrador.');
-      } else {
-        toast.success('Conta criada com sucesso! Faça login para continuar.');
-      }
-      setRegisterName('');
-      setRegisterEmail('');
-      setRegisterPassword('');
-    } catch (error) {
-      toast.error(error.response?.data?.detail || 'Erro ao criar conta');
     } finally {
       setLoading(false);
     }
@@ -102,7 +76,7 @@ export default function LoginPage() {
         </div>
       </div>
 
-      {/* Right side - Form */}
+      {/* Right side - Login Form */}
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="w-full max-w-md animate-fade-in">
           {/* Mobile logo */}
@@ -117,123 +91,52 @@ export default function LoginPage() {
             <CardHeader className="space-y-1 pb-4">
               <CardTitle className="text-2xl font-heading">Bem-vindo</CardTitle>
               <CardDescription>
-                Faça login ou crie uma conta de administrador
+                Introduza as suas credenciais para aceder ao sistema
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <Tabs defaultValue="login" className="w-full">
-                <TabsList className="grid w-full grid-cols-2 mb-6">
-                  <TabsTrigger value="login" data-testid="login-tab">Entrar</TabsTrigger>
-                  <TabsTrigger value="register" data-testid="register-tab">Registar</TabsTrigger>
-                </TabsList>
-                
-                <TabsContent value="login">
-                  <form onSubmit={handleLogin} className="space-y-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="login-email">Email</Label>
-                      <div className="relative">
-                        <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                        <Input
-                          id="login-email"
-                          type="email"
-                          placeholder="seu@email.com"
-                          value={loginEmail}
-                          onChange={(e) => setLoginEmail(e.target.value)}
-                          className="pl-10"
-                          required
-                          data-testid="login-email-input"
-                        />
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="login-password">Palavra-passe</Label>
-                      <div className="relative">
-                        <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                        <Input
-                          id="login-password"
-                          type="password"
-                          placeholder="••••••••"
-                          value={loginPassword}
-                          onChange={(e) => setLoginPassword(e.target.value)}
-                          className="pl-10"
-                          required
-                          data-testid="login-password-input"
-                        />
-                      </div>
-                    </div>
-                    <Button 
-                      type="submit" 
-                      className="w-full" 
-                      disabled={loading}
-                      data-testid="login-submit-btn"
-                    >
-                      {loading ? 'A entrar...' : 'Entrar'}
-                    </Button>
-                  </form>
-                </TabsContent>
-                
-                <TabsContent value="register">
-                  <form onSubmit={handleRegister} className="space-y-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="register-name">Nome</Label>
-                      <div className="relative">
-                        <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                        <Input
-                          id="register-name"
-                          type="text"
-                          placeholder="O seu nome"
-                          value={registerName}
-                          onChange={(e) => setRegisterName(e.target.value)}
-                          className="pl-10"
-                          required
-                          data-testid="register-name-input"
-                        />
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="register-email">Email</Label>
-                      <div className="relative">
-                        <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                        <Input
-                          id="register-email"
-                          type="email"
-                          placeholder="seu@email.com"
-                          value={registerEmail}
-                          onChange={(e) => setRegisterEmail(e.target.value)}
-                          className="pl-10"
-                          required
-                          data-testid="register-email-input"
-                        />
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="register-password">Palavra-passe</Label>
-                      <div className="relative">
-                        <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                        <Input
-                          id="register-password"
-                          type="password"
-                          placeholder="••••••••"
-                          value={registerPassword}
-                          onChange={(e) => setRegisterPassword(e.target.value)}
-                          className="pl-10"
-                          required
-                          minLength={8}
-                          data-testid="register-password-input"
-                        />
-                      </div>
-                    </div>
-                    <Button 
-                      type="submit" 
-                      className="w-full" 
-                      disabled={loading}
-                      data-testid="register-submit-btn"
-                    >
-                      {loading ? 'A criar conta...' : 'Criar Conta Admin'}
-                    </Button>
-                  </form>
-                </TabsContent>
-              </Tabs>
+              <form onSubmit={handleLogin} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="login-email">Email</Label>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      id="login-email"
+                      type="email"
+                      placeholder="seu@email.com"
+                      value={loginEmail}
+                      onChange={(e) => setLoginEmail(e.target.value)}
+                      className="pl-10"
+                      required
+                      data-testid="login-email-input"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="login-password">Palavra-passe</Label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      id="login-password"
+                      type="password"
+                      placeholder="••••••••"
+                      value={loginPassword}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      className="pl-10"
+                      required
+                      data-testid="login-password-input"
+                    />
+                  </div>
+                </div>
+                <Button 
+                  type="submit" 
+                  className="w-full" 
+                  disabled={loading}
+                  data-testid="login-submit-btn"
+                >
+                  {loading ? 'A entrar...' : 'Entrar'}
+                </Button>
+              </form>
             </CardContent>
           </Card>
 
