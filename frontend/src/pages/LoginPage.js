@@ -80,7 +80,7 @@ export default function LoginPage() {
             <div className="p-3 bg-white/10 rounded-xl backdrop-blur-sm">
               <Building2 className="h-8 w-8" />
             </div>
-            <span className="text-2xl font-heading font-bold">RH Portal</span>
+            <span className="text-2xl font-heading font-bold">RH grupo Lisbonb</span>
           </div>
           <h1 className="text-4xl md:text-5xl font-heading font-bold mb-6 leading-tight">
             Sistema de Gestão<br />de Recursos Humanos
@@ -110,7 +110,7 @@ export default function LoginPage() {
             <div className="p-3 bg-primary rounded-xl">
               <Building2 className="h-6 w-6 text-primary-foreground" />
             </div>
-            <span className="text-xl font-heading font-bold">RH Portal</span>
+            <span className="text-xl font-heading font-bold">RH grupo Lisbonb</span>
           </div>
 
           <Card className="border-0 shadow-lg">
