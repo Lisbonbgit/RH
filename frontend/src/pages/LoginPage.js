@@ -218,7 +218,7 @@ export default function LoginPage() {
                           onChange={(e) => setRegisterPassword(e.target.value)}
                           className="pl-10"
                           required
-                          minLength={6}
+                          minLength={8}
                           data-testid="register-password-input"
                         />
                       </div>
