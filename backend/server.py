@@ -15,6 +15,16 @@ import jwt
 import bcrypt
 import shutil
 import re
+import secrets
+import hashlib
+import asyncio
+
+# Resend for email
+try:
+    import resend
+    RESEND_AVAILABLE = True
+except ImportError:
+    RESEND_AVAILABLE = False
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -32,6 +42,18 @@ JWT_EXPIRATION_HOURS = 24
 # Admin Master Configuration (from environment variables)
 MASTER_ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'geral@olacai.com')
 MASTER_ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD_HASH')
+
+# Password Reset Configuration
+RESET_TOKEN_EXPIRATION_HOURS = 1
+
+# Resend Email Configuration
+RESEND_API_KEY = os.environ.get('RESEND_API_KEY')
+SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://github-rh-deploy.preview.emergentagent.com')
+
+# Initialize Resend
+if RESEND_AVAILABLE and RESEND_API_KEY:
+    resend.api_key = RESEND_API_KEY
 
 # Password validation configuration
 MIN_PASSWORD_LENGTH = 8
