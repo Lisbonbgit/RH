@@ -136,6 +136,16 @@ export default function LoginPage() {
                 >
                   {loading ? 'A entrar...' : 'Entrar'}
                 </Button>
+                
+                <div className="text-center">
+                  <Link 
+                    to="/esqueci-senha" 
+                    className="text-sm text-muted-foreground hover:text-primary"
+                    data-testid="forgot-password-link"
+                  >
+                    Esqueci a palavra-passe
+                  </Link>
+                </div>
               </form>
             </CardContent>
           </Card>
