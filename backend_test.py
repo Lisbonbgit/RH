@@ -333,7 +333,7 @@ class HRSystemTester:
         return success
 
     def test_employee_crud(self):
-        """Test employee CRUD operations"""
+        """Test employee CRUD operations with must_change_password verification"""
         if not self.admin_token or not self.test_data.get('company_id') or not self.test_data.get('location_id'):
             self.log("❌ Employee CRUD - Missing required data")
             return False
@@ -378,6 +378,59 @@ class HRSystemTester:
             headers=headers
         )
         
+        return success
+
+    def test_employee_must_change_password(self):
+        """Test that created employee has must_change_password=true"""
+        if not self.test_data.get('employee_email'):
+            self.log("❌ Employee Must Change Password - No employee email available")
+            return False
+            
+        login_data = {
+            "email": self.test_data['employee_email'],
+            "password": self.test_data['employee_password']
+        }
+        success, response = self.run_test(
+            "Employee Login Check Must Change Password",
+            "POST",
+            "auth/login",
+            200,
+            data=login_data
+        )
+        if success:
+            user = response.get('user', {})
+            must_change = user.get('must_change_password', False)
+            if must_change:
+                self.log("✅ Employee Must Change Password - must_change_password is True")
+                return True
+            else:
+                self.log("❌ Employee Must Change Password - must_change_password is False")
+                return False
+        return False
+
+    def test_reset_employee_password(self):
+        """Test admin reset employee password endpoint"""
+        if not self.admin_token or not self.test_data.get('employee_id'):
+            self.log("❌ Reset Employee Password - Missing admin token or employee")
+            return False
+
+        headers = self.get_auth_headers(self.admin_token)
+        
+        # Reset employee password
+        reset_data = {
+            "new_password": "ResetPass123!"
+        }
+        success, response = self.run_test(
+            "Reset Employee Password",
+            "POST",
+            f"employees/{self.test_data['employee_id']}/reset-password",
+            200,
+            data=reset_data,
+            headers=headers
+        )
+        if success:
+            # Update employee password for future tests
+            self.test_data['employee_password'] = reset_data['new_password']
         return success
 
     def test_employee_login(self):
