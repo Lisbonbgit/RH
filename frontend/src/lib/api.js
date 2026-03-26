@@ -68,3 +68,12 @@ export const getCalendarLeaves = (params) => axios.get(`${API_URL}/calendar/leav
 export const getPendingRegistrations = () => axios.get(`${API_URL}/auth/pending-registrations`);
 export const approveRegistration = (id, role = 'admin') => axios.post(`${API_URL}/auth/approve-registration/${id}`, null, { params: { role } });
 export const rejectRegistration = (id) => axios.post(`${API_URL}/auth/reject-registration/${id}`);
+
+// Password Management
+export const changePassword = (currentPassword, newPassword) => 
+  axios.post(`${API_URL}/auth/change-password`, { 
+    current_password: currentPassword, 
+    new_password: newPassword 
+  });
+export const resetEmployeePassword = (employeeId, newPassword) => 
+  axios.post(`${API_URL}/employees/${employeeId}/reset-password`, { new_password: newPassword });
