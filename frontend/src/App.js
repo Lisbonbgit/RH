@@ -5,6 +5,7 @@ import { Toaster } from './components/ui/sonner';
 
 // Pages
 import LoginPage from './pages/LoginPage';
+import ChangePasswordPage from './pages/ChangePasswordPage';
 import AdminDashboard from './pages/admin/AdminDashboard';
 import AdminCompanies from './pages/admin/AdminCompanies';
 import AdminLocations from './pages/admin/AdminLocations';
@@ -22,9 +23,9 @@ import EmployeeDocuments from './pages/employee/EmployeeDocuments';
 import AdminLayout from './components/layouts/AdminLayout';
 import EmployeeLayout from './components/layouts/EmployeeLayout';
 
-// Protected Route Component
+// Protected Route Component - checks for authentication and must_change_password
 const ProtectedRoute = ({ children, allowedRoles }) => {
-  const { user, loading, isAuthenticated } = useAuth();
+  const { user, loading, isAuthenticated, mustChangePassword } = useAuth();
   
   if (loading) {
     return (
@@ -36,6 +37,11 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
   
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
+  }
+  
+  // Redirect to change password if required
+  if (mustChangePassword) {
+    return <Navigate to="/alterar-senha" replace />;
   }
   
   if (allowedRoles && !allowedRoles.includes(user.role)) {
@@ -45,9 +51,9 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
   return children;
 };
 
-// Redirect based on role
-const RoleRedirect = () => {
-  const { user, loading, isAuthenticated } = useAuth();
+// Change Password Route - only accessible when must_change_password is true
+const ChangePasswordRoute = ({ children }) => {
+  const { user, loading, isAuthenticated, mustChangePassword } = useAuth();
   
   if (loading) {
     return (
@@ -61,6 +67,35 @@ const RoleRedirect = () => {
     return <Navigate to="/login" replace />;
   }
   
+  // If user doesn't need to change password, redirect to appropriate dashboard
+  if (!mustChangePassword) {
+    return <Navigate to={user.role === 'admin' ? '/admin' : '/colaborador'} replace />;
+  }
+  
+  return children;
+};
+
+// Redirect based on role
+const RoleRedirect = () => {
+  const { user, loading, isAuthenticated, mustChangePassword } = useAuth();
+  
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
+  
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+  
+  // Redirect to change password if required
+  if (mustChangePassword) {
+    return <Navigate to="/alterar-senha" replace />;
+  }
+  
   return <Navigate to={user.role === 'admin' ? '/admin' : '/colaborador'} replace />;
 };
 
@@ -68,6 +103,11 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/alterar-senha" element={
+        <ChangePasswordRoute>
+          <ChangePasswordPage />
+        </ChangePasswordRoute>
+      } />
       <Route path="/" element={<RoleRedirect />} />
       
       {/* Admin Routes */}
