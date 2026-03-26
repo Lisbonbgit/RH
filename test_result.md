@@ -245,11 +245,7 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Auth - Login with bcrypt password verification"
-    - "Auth - Change Password endpoint"
-    - "Auth - Password validation (min 8 chars)"
-    - "Employees - Create with must_change_password=true"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
