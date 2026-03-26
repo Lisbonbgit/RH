@@ -109,7 +109,7 @@ export default function AdminLayout() {
             <Building2 className="h-5 w-5 text-primary-foreground" />
           </div>
           <div>
-            <h1 className="font-heading font-bold text-lg">RH Portal</h1>
+            <h1 className="font-heading font-bold text-lg">RH grupo Lisbonb</h1>
             <p className="text-xs text-muted-foreground">Administração</p>
           </div>
         </div>
@@ -212,7 +212,7 @@ export default function AdminLayout() {
 
         <div className="flex items-center gap-2">
           <Building2 className="h-5 w-5 text-primary" />
-          <span className="font-heading font-bold">RH Portal</span>
+          <span className="font-heading font-bold">RH grupo Lisbonb</span>
         </div>
 
         <div className="ml-auto flex items-center gap-2">

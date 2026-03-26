@@ -77,7 +77,7 @@ export default function EmployeeLayout() {
           <div className="p-2 bg-primary rounded-lg">
             <Building2 className="h-4 w-4 text-primary-foreground" />
           </div>
-          <span className="font-heading font-bold">RH Portal</span>
+          <span className="font-heading font-bold">RH grupo Lisbonb</span>
         </div>
 
         <div className="flex items-center gap-2">
