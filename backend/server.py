@@ -587,29 +587,50 @@ async def forgot_password(request: ForgotPasswordRequest):
         "message": "Se o email existir no sistema, receberá um link para redefinir a palavra-passe."
     }
     
-    # Find user by email
-    user = await db.users.find_one({"email": request.email}, {"_id": 0})
+    # Normalize email (lowercase and trim)
+    normalized_email = request.email.lower().strip()
+    
+    # DEBUG LOGS - Search
+    logger.info(f"=== FORGOT PASSWORD DEBUG ===")
+    logger.info(f"Email RECEBIDO (raw): '{request.email}'")
+    logger.info(f"Email NORMALIZADO: '{normalized_email}'")
+    
+    # Find user by email (case-insensitive search)
+    user = await db.users.find_one(
+        {"email": {"$regex": f"^{re.escape(normalized_email)}$", "$options": "i"}}, 
+        {"_id": 0}
+    )
+    
+    # Also try exact match
+    if not user:
+        user = await db.users.find_one({"email": normalized_email}, {"_id": 0})
+    
+    # Log all users for debugging
+    all_users = await db.users.find({}, {"_id": 0, "email": 1, "id": 1}).to_list(100)
+    logger.info(f"Total de usuários no banco: {len(all_users)}")
+    for u in all_users:
+        match = u.get('email', '').lower().strip() == normalized_email
+        logger.info(f"  - '{u.get('email')}' | ID: {u.get('id')[:8]}... | MATCH: {match}")
     
     if not user:
         # Return success even if user doesn't exist (security)
-        logger.info(f"Password reset requested for non-existent email: {request.email}")
+        logger.warning(f"Usuário NÃO ENCONTRADO para email: '{normalized_email}'")
+        logger.info(f"=== END FORGOT PASSWORD DEBUG ===")
         return success_message
+    
+    logger.info(f"Usuário ENCONTRADO: {user.get('email')} | ID: {user.get('id')}")
+    logger.info(f"Nome: {user.get('name')}")
     
     # Generate secure reset token
     reset_token = generate_reset_token()
     token_hash = hash_reset_token(reset_token)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=RESET_TOKEN_EXPIRATION_HOURS)
     
-    # DEBUG LOGS - Token Generation
-    logger.info(f"=== PASSWORD RESET DEBUG ===")
-    logger.info(f"User email: {request.email}")
     logger.info(f"Token ORIGINAL gerado: {reset_token}")
-    logger.info(f"Token LENGTH: {len(reset_token)}")
     logger.info(f"Token HASH a salvar: {token_hash}")
-    logger.info(f"Token HASH LENGTH: {len(token_hash)}")
     
     # Save token hash and expiration to user document
-    await db.users.update_one(
+    update_result = await db.users.update_one(
         {"id": user["id"]},
         {
             "$set": {
@@ -619,10 +640,14 @@ async def forgot_password(request: ForgotPasswordRequest):
         }
     )
     
+    logger.info(f"Update result: matched={update_result.matched_count}, modified={update_result.modified_count}")
+    
     # Verify token was saved correctly
-    saved_user = await db.users.find_one({"id": user["id"]}, {"_id": 0, "reset_password_token": 1})
-    logger.info(f"Token HASH salvo no banco: {saved_user.get('reset_password_token')}")
-    logger.info(f"Hashes IGUAIS: {saved_user.get('reset_password_token') == token_hash}")
+    saved_user = await db.users.find_one({"id": user["id"]}, {"_id": 0, "email": 1, "reset_password_token": 1})
+    logger.info(f"Verificação após salvar:")
+    logger.info(f"  Email do usuário salvo: {saved_user.get('email')}")
+    logger.info(f"  Token HASH no banco: {saved_user.get('reset_password_token')}")
+    logger.info(f"  Hashes IGUAIS: {saved_user.get('reset_password_token') == token_hash}")
     
     # Send email with reset link
     email_sent = await send_password_reset_email(
@@ -632,11 +657,11 @@ async def forgot_password(request: ForgotPasswordRequest):
     )
     
     if email_sent:
-        logger.info(f"Password reset email sent to {request.email}")
+        logger.info(f"Email ENVIADO com sucesso para: {user['email']}")
     else:
-        logger.warning(f"Failed to send password reset email to {request.email}")
+        logger.warning(f"FALHA ao enviar email para: {user['email']}")
     
-    logger.info(f"=== END PASSWORD RESET DEBUG ===")
+    logger.info(f"=== END FORGOT PASSWORD DEBUG ===")
     
     return success_message
 
