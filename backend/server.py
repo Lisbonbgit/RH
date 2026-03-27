@@ -194,7 +194,17 @@ async def send_password_reset_email(email: str, user_name: str, reset_token: str
         logger.warning("Resend not configured. Password reset email not sent.")
         return False
     
-    reset_link = f"{FRONTEND_URL}/redefinir-senha?token={reset_token}"
+    # URL encode the token to handle special characters
+    encoded_token = quote(reset_token, safe='')
+    reset_link = f"{FRONTEND_URL}/redefinir-senha?token={encoded_token}"
+    
+    # DEBUG LOG - Link being sent
+    logger.info(f"=== EMAIL LINK DEBUG ===")
+    logger.info(f"Token ORIGINAL: {reset_token}")
+    logger.info(f"Token ENCODED: {encoded_token}")
+    logger.info(f"Link COMPLETO: {reset_link}")
+    logger.info(f"=== END EMAIL LINK DEBUG ===")
+    
     html_content = get_password_reset_email_html(user_name, reset_link)
     
     params = {
