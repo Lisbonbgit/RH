@@ -648,11 +648,16 @@ async def reset_password(request: ResetPasswordRequest):
     """
     # DEBUG LOGS - Token Verification
     logger.info(f"=== RESET PASSWORD DEBUG ===")
-    logger.info(f"Token RECEBIDO: {request.token}")
+    logger.info(f"Token RECEBIDO (raw): {request.token}")
     logger.info(f"Token RECEBIDO LENGTH: {len(request.token)}")
     
+    # Decode URL-encoded token
+    decoded_token = unquote(request.token)
+    logger.info(f"Token DECODED: {decoded_token}")
+    logger.info(f"Token DECODED LENGTH: {len(decoded_token)}")
+    
     # Hash the received token to compare with stored hash
-    token_hash = hash_reset_token(request.token)
+    token_hash = hash_reset_token(decoded_token)
     logger.info(f"Token HASH calculado: {token_hash}")
     
     # Find user with matching token and valid expiration
