@@ -589,6 +589,14 @@ async def forgot_password(request: ForgotPasswordRequest):
     token_hash = hash_reset_token(reset_token)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=RESET_TOKEN_EXPIRATION_HOURS)
     
+    # DEBUG LOGS - Token Generation
+    logger.info(f"=== PASSWORD RESET DEBUG ===")
+    logger.info(f"User email: {request.email}")
+    logger.info(f"Token ORIGINAL gerado: {reset_token}")
+    logger.info(f"Token LENGTH: {len(reset_token)}")
+    logger.info(f"Token HASH a salvar: {token_hash}")
+    logger.info(f"Token HASH LENGTH: {len(token_hash)}")
+    
     # Save token hash and expiration to user document
     await db.users.update_one(
         {"id": user["id"]},
@@ -599,6 +607,11 @@ async def forgot_password(request: ForgotPasswordRequest):
             }
         }
     )
+    
+    # Verify token was saved correctly
+    saved_user = await db.users.find_one({"id": user["id"]}, {"_id": 0, "reset_password_token": 1})
+    logger.info(f"Token HASH salvo no banco: {saved_user.get('reset_password_token')}")
+    logger.info(f"Hashes IGUAIS: {saved_user.get('reset_password_token') == token_hash}")
     
     # Send email with reset link
     email_sent = await send_password_reset_email(
@@ -612,6 +625,8 @@ async def forgot_password(request: ForgotPasswordRequest):
     else:
         logger.warning(f"Failed to send password reset email to {request.email}")
     
+    logger.info(f"=== END PASSWORD RESET DEBUG ===")
+    
     return success_message
 
 @api_router.post("/auth/reset-password")
@@ -620,19 +635,41 @@ async def reset_password(request: ResetPasswordRequest):
     Reset password using the token received via email.
     Token must be valid and not expired.
     """
+    # DEBUG LOGS - Token Verification
+    logger.info(f"=== RESET PASSWORD DEBUG ===")
+    logger.info(f"Token RECEBIDO: {request.token}")
+    logger.info(f"Token RECEBIDO LENGTH: {len(request.token)}")
+    
     # Hash the received token to compare with stored hash
     token_hash = hash_reset_token(request.token)
+    logger.info(f"Token HASH calculado: {token_hash}")
     
     # Find user with matching token and valid expiration
     user = await db.users.find_one({
         "reset_password_token": token_hash
     }, {"_id": 0})
     
+    # Debug: list all users with tokens
+    all_users_with_tokens = await db.users.find(
+        {"reset_password_token": {"$exists": True, "$ne": None}},
+        {"_id": 0, "email": 1, "reset_password_token": 1}
+    ).to_list(10)
+    
+    logger.info(f"Usuários com tokens no banco: {len(all_users_with_tokens)}")
+    for u in all_users_with_tokens:
+        stored_hash = u.get('reset_password_token', '')
+        logger.info(f"  - {u.get('email')}: hash={stored_hash[:20]}...")
+        logger.info(f"    MATCH: {stored_hash == token_hash}")
+    
     if not user:
+        logger.warning(f"Token NÃO encontrado no banco!")
+        logger.info(f"=== END RESET PASSWORD DEBUG ===")
         raise HTTPException(
             status_code=400, 
             detail="Token inválido ou expirado. Por favor, solicite um novo link de redefinição."
         )
+    
+    logger.info(f"Token encontrado para: {user.get('email')}")
     
     # Check if token has expired
     expires_at = user.get("reset_password_expires")
@@ -644,6 +681,8 @@ async def reset_password(request: ResetPasswordRequest):
                 {"id": user["id"]},
                 {"$unset": {"reset_password_token": "", "reset_password_expires": ""}}
             )
+            logger.warning(f"Token EXPIRADO!")
+            logger.info(f"=== END RESET PASSWORD DEBUG ===")
             raise HTTPException(
                 status_code=400, 
                 detail="Token expirado. Por favor, solicite um novo link de redefinição."
@@ -667,6 +706,7 @@ async def reset_password(request: ResetPasswordRequest):
     )
     
     logger.info(f"Password successfully reset for user {user['email']}")
+    logger.info(f"=== END RESET PASSWORD DEBUG ===")
     
     return {
         "message": "Palavra-passe redefinida com sucesso. Pode agora fazer login com a nova palavra-passe."
@@ -677,22 +717,47 @@ async def verify_reset_token(token: str):
     """
     Verify if a password reset token is valid (for frontend validation before showing form).
     """
+    # DEBUG LOGS
+    logger.info(f"=== VERIFY TOKEN DEBUG ===")
+    logger.info(f"Token RECEBIDO: {token}")
+    logger.info(f"Token RECEBIDO LENGTH: {len(token)}")
+    
     token_hash = hash_reset_token(token)
+    logger.info(f"Token HASH calculado: {token_hash}")
     
     user = await db.users.find_one({
         "reset_password_token": token_hash
     }, {"_id": 0})
     
+    # Debug: list all users with tokens
+    all_users_with_tokens = await db.users.find(
+        {"reset_password_token": {"$exists": True, "$ne": None}},
+        {"_id": 0, "email": 1, "reset_password_token": 1}
+    ).to_list(10)
+    
+    logger.info(f"Usuários com tokens no banco: {len(all_users_with_tokens)}")
+    for u in all_users_with_tokens:
+        stored_hash = u.get('reset_password_token', '')
+        logger.info(f"  - {u.get('email')}: hash={stored_hash[:20]}...")
+        logger.info(f"    MATCH: {stored_hash == token_hash}")
+    
     if not user:
+        logger.warning(f"Token NÃO encontrado!")
+        logger.info(f"=== END VERIFY TOKEN DEBUG ===")
         raise HTTPException(status_code=400, detail="Token inválido")
+    
+    logger.info(f"Token VÁLIDO para: {user.get('email')}")
     
     # Check expiration
     expires_at = user.get("reset_password_expires")
     if expires_at:
         expires_datetime = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
         if datetime.now(timezone.utc) > expires_datetime:
+            logger.warning(f"Token EXPIRADO!")
+            logger.info(f"=== END VERIFY TOKEN DEBUG ===")
             raise HTTPException(status_code=400, detail="Token expirado")
     
+    logger.info(f"=== END VERIFY TOKEN DEBUG ===")
     return {"valid": True, "email": user["email"]}
 
 # ==================== ADMIN/MANAGER CREATION ====================
