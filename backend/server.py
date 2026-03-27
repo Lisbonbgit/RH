@@ -730,10 +730,15 @@ async def verify_reset_token(token: str):
     """
     # DEBUG LOGS
     logger.info(f"=== VERIFY TOKEN DEBUG ===")
-    logger.info(f"Token RECEBIDO: {token}")
+    logger.info(f"Token RECEBIDO (raw): {token}")
     logger.info(f"Token RECEBIDO LENGTH: {len(token)}")
     
-    token_hash = hash_reset_token(token)
+    # Decode URL-encoded token
+    decoded_token = unquote(token)
+    logger.info(f"Token DECODED: {decoded_token}")
+    logger.info(f"Token DECODED LENGTH: {len(decoded_token)}")
+    
+    token_hash = hash_reset_token(decoded_token)
     logger.info(f"Token HASH calculado: {token_hash}")
     
     user = await db.users.find_one({
