@@ -18,6 +18,7 @@ import re
 import secrets
 import hashlib
 import asyncio
+from urllib.parse import quote, unquote
 
 # Resend for email
 try:
