@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import uuid
 
 class HRSystemTester:
-    def __init__(self, base_url="https://github-rh-deploy.preview.emergentagent.com"):
+    def __init__(self, base_url="https://rh-lisbonb-auth.preview.emergentagent.com"):
         self.base_url = base_url
         self.admin_token = None
         self.employee_token = None

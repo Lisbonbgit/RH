@@ -50,7 +50,7 @@ RESET_TOKEN_EXPIRATION_HOURS = 1
 # Resend Email Configuration
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY')
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
-FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://github-rh-deploy.preview.emergentagent.com')
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://rh-lisbonb-auth.preview.emergentagent.com')
 
 # Initialize Resend
 if RESEND_AVAILABLE and RESEND_API_KEY:
