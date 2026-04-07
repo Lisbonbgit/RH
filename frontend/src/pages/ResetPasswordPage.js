@@ -305,7 +305,8 @@ export default function ResetPasswordPage() {
                   <Button
                     type="submit"
                     className="w-full"
-                    disabled={verifyingCode}
+                    disabled={verifyingCode || !email.trim() || code.trim().length !== 6}
+                    aria-busy={verifyingCode}
                     data-testid="reset-verify-code-btn"
                   >
                     {verifyingCode ? (
