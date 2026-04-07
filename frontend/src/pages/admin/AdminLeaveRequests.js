@@ -31,7 +31,8 @@ const leaveTypeLabels = {
   ferias: 'Férias',
   falta: 'Falta',
   doenca: 'Doença',
-  folga: 'Folga'
+  folga: 'Folga',
+  ausencia: 'Ausência'
 };
 
 const statusLabels = {
@@ -111,6 +112,8 @@ export default function AdminLeaveRequests() {
     const days = differenceInDays(parseISO(end), parseISO(start)) + 1;
     return `${days} dia${days > 1 ? 's' : ''}`;
   };
+
+  const isManagerCreated = (request) => request?.created_by && request.created_by !== 'colaborador';
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="admin-leave-requests-page">
@@ -205,9 +208,16 @@ export default function AdminLeaveRequests() {
                     <TableRow key={request.id} data-testid={`request-row-${request.id}`}>
                       <TableCell className="font-medium">{request.employee_name}</TableCell>
                       <TableCell>
-                        <Badge variant="outline">
-                          {leaveTypeLabels[request.leave_type]}
-                        </Badge>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant="outline" data-testid={`leave-type-${request.id}`}>
+                            {leaveTypeLabels[request.leave_type]}
+                          </Badge>
+                          {isManagerCreated(request) && (
+                            <Badge variant="secondary" data-testid={`leave-created-by-${request.id}`}>
+                              Criado pelo gestor
+                            </Badge>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell className="hidden sm:table-cell">
                         {format(parseISO(request.start_date), 'dd/MM/yyyy')} - {format(parseISO(request.end_date), 'dd/MM/yyyy')}
@@ -353,10 +363,26 @@ export default function AdminLeaveRequests() {
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Estado</p>
-                  <Badge className={`badge-${selectedRequest.status}`}>
+                  <Badge className={`badge-${selectedRequest.status}`} data-testid="view-request-status">
                     {statusLabels[selectedRequest.status]}
                   </Badge>
                 </div>
+                {isManagerCreated(selectedRequest) && (
+                  <div>
+                    <p className="text-sm text-muted-foreground">Origem</p>
+                    <Badge variant="secondary" data-testid="view-request-created-by">
+                      Criado pelo gestor
+                    </Badge>
+                  </div>
+                )}
+                {selectedRequest?.is_paid !== undefined && (
+                  <div>
+                    <p className="text-sm text-muted-foreground">Remunerado</p>
+                    <p className="font-medium" data-testid="view-request-is-paid">
+                      {selectedRequest.is_paid ? 'Sim' : 'Não'}
+                    </p>
+                  </div>
+                )}
               </div>
               {selectedRequest.observation && (
                 <div>

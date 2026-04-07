@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { getEmployees, createEmployee, updateEmployee, deleteEmployee, getCompanies, getLocations } from '../../lib/api';
+import { getEmployees, createEmployee, updateEmployee, deleteEmployee, getCompanies, getLocations, createAdminLeave } from '../../lib/api';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Textarea } from '../../components/ui/textarea';
+import { Checkbox } from '../../components/ui/checkbox';
 import { Card, CardContent } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
 import {
@@ -33,7 +34,7 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
-import { Users, Plus, Pencil, Trash2, Eye, Search } from 'lucide-react';
+import { Users, Plus, Pencil, Trash2, Eye, Search, Calendar } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, parseISO } from 'date-fns';
 
@@ -67,6 +68,15 @@ export default function AdminEmployees() {
     start_date: '',
     vacation_days: 22,
     observations: ''
+  });
+  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+  const [leaveSaving, setLeaveSaving] = useState(false);
+  const [leaveFormData, setLeaveFormData] = useState({
+    type: 'ferias',
+    startDate: '',
+    endDate: '',
+    reason: '',
+    isPaid: true
   });
   const [saving, setSaving] = useState(false);
 
@@ -142,6 +152,19 @@ export default function AdminEmployees() {
     setDialogOpen(true);
   };
 
+  const handleOpenLeaveDialog = (employee) => {
+    setSelectedEmployee(employee);
+    setLeaveFormData({
+      type: 'ferias',
+      startDate: '',
+      endDate: '',
+      reason: '',
+      isPaid: true
+    });
+    setViewDialogOpen(false);
+    setLeaveDialogOpen(true);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!formData.company_id || !formData.location_id) {
@@ -171,6 +194,47 @@ export default function AdminEmployees() {
       toast.error(error.response?.data?.detail || 'Erro ao guardar colaborador');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSubmitLeave = async (e) => {
+    e.preventDefault();
+    if (!leaveFormData.startDate || !leaveFormData.endDate) {
+      toast.error('Preencha as datas de início e fim');
+      return;
+    }
+    if (leaveFormData.startDate > leaveFormData.endDate) {
+      toast.error('Data de início não pode ser posterior à data de fim');
+      return;
+    }
+    if (!selectedEmployee?.id) {
+      toast.error('Colaborador não encontrado');
+      return;
+    }
+
+    setLeaveSaving(true);
+    try {
+      await createAdminLeave({
+        userId: selectedEmployee.id,
+        type: leaveFormData.type,
+        startDate: leaveFormData.startDate,
+        endDate: leaveFormData.endDate,
+        reason: leaveFormData.reason,
+        isPaid: leaveFormData.isPaid
+      });
+      toast.success('Férias/Ausência criada com sucesso');
+      setLeaveDialogOpen(false);
+      setLeaveFormData({
+        type: 'ferias',
+        startDate: '',
+        endDate: '',
+        reason: '',
+        isPaid: true
+      });
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Erro ao criar férias/ausência');
+    } finally {
+      setLeaveSaving(false);
     }
   };
 
@@ -522,8 +586,101 @@ export default function AdminEmployees() {
                   <p className="font-medium">{selectedEmployee.observations}</p>
                 </div>
               )}
+              <div className="pt-2">
+                <Button
+                  type="button"
+                  onClick={() => handleOpenLeaveDialog(selectedEmployee)}
+                  data-testid="add-admin-leave-btn"
+                >
+                  <Calendar className="h-4 w-4 mr-2" />
+                  Adicionar Férias / Ausência
+                </Button>
+              </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Admin Leave Dialog */}
+      <Dialog open={leaveDialogOpen} onOpenChange={setLeaveDialogOpen}>
+        <DialogContent className="max-w-lg" data-testid="admin-leave-dialog">
+          <DialogHeader>
+            <DialogTitle>Adicionar Férias / Ausência</DialogTitle>
+            <DialogDescription>
+              {selectedEmployee ? `Registar férias ou ausência para ${selectedEmployee.name}` : 'Registar férias ou ausência'}
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleSubmitLeave}>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label data-testid="admin-leave-type-label">Tipo</Label>
+                <Select
+                  value={leaveFormData.type}
+                  onValueChange={(value) => setLeaveFormData({ ...leaveFormData, type: value })}
+                >
+                  <SelectTrigger data-testid="admin-leave-type-select">
+                    <SelectValue placeholder="Selecionar tipo" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ferias">Férias</SelectItem>
+                    <SelectItem value="ausencia">Ausência</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="leave-start" data-testid="admin-leave-start-label">Data Início</Label>
+                  <Input
+                    id="leave-start"
+                    type="date"
+                    value={leaveFormData.startDate}
+                    onChange={(e) => setLeaveFormData({ ...leaveFormData, startDate: e.target.value })}
+                    required
+                    data-testid="admin-leave-start-input"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="leave-end" data-testid="admin-leave-end-label">Data Fim</Label>
+                  <Input
+                    id="leave-end"
+                    type="date"
+                    value={leaveFormData.endDate}
+                    onChange={(e) => setLeaveFormData({ ...leaveFormData, endDate: e.target.value })}
+                    required
+                    data-testid="admin-leave-end-input"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="leave-reason" data-testid="admin-leave-reason-label">Motivo (opcional)</Label>
+                <Textarea
+                  id="leave-reason"
+                  value={leaveFormData.reason}
+                  onChange={(e) => setLeaveFormData({ ...leaveFormData, reason: e.target.value })}
+                  placeholder="Motivo da ausência ou férias"
+                  rows={3}
+                  data-testid="admin-leave-reason-input"
+                />
+              </div>
+              <div className="flex items-center gap-2" data-testid="admin-leave-paid-field">
+                <Checkbox
+                  id="leave-paid"
+                  checked={leaveFormData.isPaid}
+                  onCheckedChange={(checked) => setLeaveFormData({ ...leaveFormData, isPaid: checked === true })}
+                  data-testid="admin-leave-paid-checkbox"
+                />
+                <Label htmlFor="leave-paid" className="cursor-pointer" data-testid="admin-leave-paid-label">Remunerado</Label>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setLeaveDialogOpen(false)} data-testid="admin-leave-cancel-btn">
+                Cancelar
+              </Button>
+              <Button type="submit" disabled={leaveSaving} data-testid="admin-leave-save-btn">
+                {leaveSaving ? 'A guardar...' : 'Guardar'}
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 

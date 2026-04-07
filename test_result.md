@@ -201,6 +201,18 @@ backend:
         agent: "testing"
         comment: "✅ PASSED - GET /api/auth/me correctly returns user information without password field. Security requirement met - passwords are never exposed in API responses."
 
+  - task: "Admin create vacation/absence endpoint"
+    implemented: true
+    working: true
+    file: "server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - POST /api/admin/leave endpoint works correctly. Admin/manager can create vacation/absence directly for employees with fields: userId, type (ferias/ausencia), startDate, endDate, reason, isPaid. Request is created with status 'aprovado' and created_by field set to 'admin' or 'gestor'. Validates employee exists, dates are valid, and checks for overlapping requests. Integration with frontend confirmed working."
+
   - task: "Forgot Password Page (/esqueci-senha)"
     implemented: true
     working: true
@@ -261,10 +273,47 @@ backend:
         agent: "main"
         comment: "Updated LoginPage, AdminLayout, EmployeeLayout with new name"
 
+frontend:
+  - task: "Admin create vacation/absence for employee - Modal UI"
+    implemented: true
+    working: true
+    file: "pages/admin/AdminEmployees.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - Admin vacation/absence creation modal works correctly. Button 'Adicionar Férias / Ausência' opens modal with all required fields: Tipo (select with Férias/Ausência), Data Início, Data Fim, Motivo (optional textarea), and Remunerado (checkbox, checked by default). All fields have proper data-testids. Form submission creates the leave request successfully and modal closes. Tested on /admin/colaboradores page."
+
+  - task: "Admin create vacation/absence - Display in list with badge"
+    implemented: true
+    working: true
+    file: "pages/admin/AdminLeaveRequests.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - Leave requests created by admin/manager display correctly in /admin/ausencias with 'Criado pelo gestor' badge. Badge appears in both list view (data-testid='leave-created-by-{id}') and details view (data-testid='view-request-created-by'). The badge correctly identifies manager-created requests."
+
+  - task: "Admin create vacation/absence - Details view with Origem and Remunerado"
+    implemented: true
+    working: true
+    file: "pages/admin/AdminLeaveRequests.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - Leave request details dialog shows 'Origem' field with 'Criado pelo gestor' badge (data-testid='view-request-created-by') and 'Remunerado' field with 'Sim'/'Não' value (data-testid='view-request-is-paid'). All fields display correctly when viewing manager-created leave requests."
+
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 3
+  test_sequence: 4
   run_ui: false
 
 test_plan:
@@ -280,3 +329,5 @@ agent_communication:
     message: "✅ SECURITY TESTING COMPLETE - All authentication security improvements are working correctly. Tested: Master admin login with bcrypt verification, password change endpoint, password validation (min 8 chars), employee creation with must_change_password=true, admin reset password functionality, and verified no passwords in API responses. Fixed admin password hash issue in database. All 26 backend tests passed (100% success rate). Backend security implementation is fully functional."
   - agent: "testing"
     message: "✅ FORGOT PASSWORD & RESET PASSWORD FLOW TESTING COMPLETE - Tested complete flow: 1) /esqueci-senha page loads correctly with email input and submit button, 2) Form submission shows success state with 'Já tenho o código' button, 3) Button navigates to /redefinir-senha with email prefilled in URL, 4) Reset page has email and 6-digit code inputs with proper validation, 5) Invalid code (000000) shows error toast 'Código inválido', 6) All critical elements have data-testids. All requirements from review request are working correctly. Minor observation: verify button shows loading state but doesn't disable during submission (acceptable)."
+  - agent: "testing"
+    message: "✅ ADMIN VACATION/ABSENCE CREATION FEATURE TESTING COMPLETE - Tested complete flow: 1) Login as admin successful, 2) Navigate to /admin/colaboradores and open employee details, 3) Click 'Adicionar Férias / Ausência' button opens modal with all required fields (Tipo, Data Início, Data Fim, Motivo, Remunerado), 4) Form submission successful with success message and modal closes, 5) Navigate to /admin/ausencias shows new record with 'Criado pelo gestor' badge, 6) Open request details shows 'Origem' field with 'Criado pelo gestor' badge and 'Remunerado' field with 'Sim' value. All data-testids verified and working correctly. Feature is fully functional."

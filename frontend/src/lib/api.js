@@ -32,6 +32,7 @@ export const getLeaveRequests = (params) => axios.get(`${API_URL}/leave-requests
 export const createLeaveRequest = (data) => axios.post(`${API_URL}/leave-requests`, data);
 export const respondLeaveRequest = (id, status, response) => 
   axios.put(`${API_URL}/leave-requests/${id}/respond`, { status, response });
+export const createAdminLeave = (data) => axios.post(`${API_URL}/admin/leave`, data);
 
 // Folders
 export const getFolders = (employeeId) => axios.get(`${API_URL}/folders`, { params: { employee_id: employeeId } });

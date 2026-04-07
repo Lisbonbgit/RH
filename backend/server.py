@@ -360,6 +360,23 @@ class TimeRecordResponse(BaseModel):
     corrected: bool = False
     correction_history: List[dict] = []
 
+class AdminLeaveCreate(BaseModel):
+    user_id: str = Field(alias="userId")
+    leave_type: str = Field(alias="type")
+    start_date: str = Field(alias="startDate")
+    end_date: str = Field(alias="endDate")
+    reason: Optional[str] = None
+    is_paid: bool = Field(alias="isPaid")
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator('leave_type')
+    @classmethod
+    def validate_leave_type(cls, v):
+        if v not in ["ferias", "ausencia"]:
+            raise ValueError("Tipo inválido. Use 'ferias' ou 'ausencia'")
+        return v
+
 class LeaveRequestCreate(BaseModel):
     leave_type: str  # ferias, falta, doenca, folga
     start_date: str
@@ -377,6 +394,8 @@ class LeaveRequestResponse(BaseModel):
     observation: Optional[str] = None
     document_id: Optional[str] = None
     admin_response: Optional[str] = None
+    created_by: Optional[str] = None
+    is_paid: Optional[bool] = None
     created_at: str
 
 class FolderCreate(BaseModel):
@@ -472,6 +491,12 @@ async def admin_required(current_user: dict = Depends(get_current_user)):
     """Require admin role"""
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Acesso negado. Apenas administradores.")
+    return current_user
+
+async def admin_manager_required(current_user: dict = Depends(get_current_user)):
+    """Require admin or manager role"""
+    if current_user.get("role") not in ["admin", "gerente"]:
+        raise HTTPException(status_code=403, detail="Acesso negado. Apenas administradores ou gestores.")
     return current_user
 
 async def ensure_master_admin_exists():
@@ -1331,6 +1356,62 @@ async def correct_time_record(record_id: str, correction: TimeRecordCorrection, 
     return TimeRecordResponse(**updated)
 
 # ==================== LEAVE REQUEST ROUTES ====================
+
+@api_router.post("/admin/leave", response_model=LeaveRequestResponse)
+async def create_admin_leave(request: AdminLeaveCreate, current_user: dict = Depends(admin_manager_required)):
+    """
+    Create leave directly by admin/manager without approval flow.
+    """
+    employee = await db.employees.find_one({"id": request.user_id}, {"_id": 0})
+    if not employee:
+        employee = await db.employees.find_one({"user_id": request.user_id}, {"_id": 0})
+
+    if not employee:
+        raise HTTPException(status_code=404, detail="Colaborador não encontrado")
+
+    try:
+        start_dt = datetime.fromisoformat(request.start_date)
+        end_dt = datetime.fromisoformat(request.end_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Datas inválidas. Use o formato AAAA-MM-DD")
+
+    if start_dt > end_dt:
+        raise HTTPException(status_code=400, detail="Data de início não pode ser posterior à data de fim")
+
+    overlapping = await db.leave_requests.find_one(
+        {
+            "employee_id": employee["id"],
+            "status": {"$ne": "recusado"},
+            "start_date": {"$lte": request.end_date},
+            "end_date": {"$gte": request.start_date}
+        },
+        {"_id": 0}
+    )
+
+    if overlapping:
+        raise HTTPException(status_code=400, detail="Já existe um registo de férias/ausência nesse período")
+
+    created_by_role = "gestor" if current_user.get("role") == "gerente" else "admin"
+
+    request_id = str(uuid.uuid4())
+    request_doc = {
+        "id": request_id,
+        "employee_id": employee["id"],
+        "leave_type": request.leave_type,
+        "start_date": request.start_date,
+        "end_date": request.end_date,
+        "status": "aprovado",
+        "observation": request.reason,
+        "document_id": None,
+        "admin_response": None,
+        "created_by": created_by_role,
+        "is_paid": request.is_paid,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+
+    await db.leave_requests.insert_one(request_doc)
+
+    return LeaveRequestResponse(**request_doc, employee_name=employee["name"])
 
 @api_router.post("/leave-requests", response_model=LeaveRequestResponse)
 async def create_leave_request(request: LeaveRequestCreate, current_user: dict = Depends(get_current_user)):

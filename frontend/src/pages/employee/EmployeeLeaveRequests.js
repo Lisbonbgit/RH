@@ -37,7 +37,8 @@ const leaveTypeLabels = {
   ferias: 'Férias',
   falta: 'Falta',
   doenca: 'Doença',
-  folga: 'Folga'
+  folga: 'Folga',
+  ausencia: 'Ausência'
 };
 
 const statusLabels = {
@@ -103,15 +104,26 @@ export default function EmployeeLeaveRequests() {
     return `${days} dia${days > 1 ? 's' : ''}`;
   };
 
+  const isManagerCreated = (request) => request?.created_by && request.created_by !== 'colaborador';
+
   const pendingRequests = requests.filter(r => r.status === 'pendente');
   const approvedRequests = requests.filter(r => r.status === 'aprovado');
   const rejectedRequests = requests.filter(r => r.status === 'recusado');
 
   const RequestCard = ({ request }) => (
     <div className="p-4 bg-muted rounded-lg space-y-2" data-testid={`request-${request.id}`}>
-      <div className="flex items-center justify-between">
-        <Badge variant="outline">{leaveTypeLabels[request.leave_type]}</Badge>
-        <Badge className={`badge-${request.status}`}>{statusLabels[request.status]}</Badge>
+      	<div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center gap-2" data-testid={`request-badges-${request.id}`}>
+          <Badge variant="outline" data-testid={`request-type-${request.id}`}>{leaveTypeLabels[request.leave_type]}</Badge>
+          {isManagerCreated(request) && (
+            <Badge variant="secondary" data-testid={`request-created-by-${request.id}`}>
+              Criado pelo gestor
+            </Badge>
+          )}
+        </div>
+        <Badge className={`badge-${request.status}`} data-testid={`request-status-${request.id}`}>
+          {statusLabels[request.status]}
+        </Badge>
       </div>
       <div className="flex items-center gap-2 text-sm">
         <Calendar className="h-4 w-4 text-muted-foreground" />
