@@ -72,6 +72,17 @@ MongoDB (Motor async driver)
 - [x] Fluxo de “Esqueci a Palavra-passe” com envio de código de 6 dígitos via email (Resend)
 - [x] Verificação do código no site antes de permitir redefinição
 - [x] UI atualizada para inserir código e nova palavra-passe
+- [x] Novo endpoint /api/admin/leave para criar férias/ausências aprovadas pelo gestor
+- [x] Modal no perfil do colaborador para registar férias/ausência com motivo e remuneração
+- [x] Badge visual “Criado pelo gestor” nos pedidos criados manualmente
+
+## Backlog Prioritário
+- P0: Validação funcional do fluxo de férias/ausências criadas pelo gestor em produção
+- P1: Ajustar regras de sobreposição caso existam políticas diferentes por tipo de ausência
+- P2: Relatórios/auditoria de alterações manuais de férias/ausências
+
+## Próximas Tarefas
+- Validar com a equipa o novo fluxo e confirmar regras de negócio para sobreposição
 
 ## Fase Concluída
 O sistema está estável e pronto para validação com a equipa.
