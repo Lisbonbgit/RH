@@ -201,7 +201,30 @@ backend:
         agent: "testing"
         comment: "✅ PASSED - GET /api/auth/me correctly returns user information without password field. Security requirement met - passwords are never exposed in API responses."
 
-frontend:
+  - task: "Forgot Password Page (/esqueci-senha)"
+    implemented: true
+    working: true
+    file: "pages/ForgotPasswordPage.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - Forgot password page works correctly. Email submission shows success state with proper message. 'Já tenho o código' button navigates to reset page with email prefilled in URL. All data-testids present (forgot-email-input, forgot-submit-btn, forgot-go-to-reset-button, etc.). UI is clean and functional."
+
+  - task: "Reset Password Page (/redefinir-senha)"
+    implemented: true
+    working: true
+    file: "pages/ResetPasswordPage.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - Reset password page works correctly. Email is prefilled from URL query parameter. Code input accepts 6 digits with maxLength validation. Invalid code (000000) shows error toast 'Código inválido'. All data-testids present (reset-email-input, reset-code-input, reset-verify-code-btn, etc.). Minor: Button shows loading state but doesn't disable during submission (acceptable as loading state is visible)."
+
   - task: "Change Password Page"
     implemented: true
     working: "NA"
@@ -241,7 +264,7 @@ frontend:
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 2
+  test_sequence: 3
   run_ui: false
 
 test_plan:
@@ -255,3 +278,5 @@ agent_communication:
     message: "Implemented security improvements for authentication. Please test: 1) Login endpoint with admin credentials (geral@olacai.com / Admin@123), 2) Change password endpoint, 3) Password validation (min 8 chars), 4) Creating employee sets must_change_password=true"
   - agent: "testing"
     message: "✅ SECURITY TESTING COMPLETE - All authentication security improvements are working correctly. Tested: Master admin login with bcrypt verification, password change endpoint, password validation (min 8 chars), employee creation with must_change_password=true, admin reset password functionality, and verified no passwords in API responses. Fixed admin password hash issue in database. All 26 backend tests passed (100% success rate). Backend security implementation is fully functional."
+  - agent: "testing"
+    message: "✅ FORGOT PASSWORD & RESET PASSWORD FLOW TESTING COMPLETE - Tested complete flow: 1) /esqueci-senha page loads correctly with email input and submit button, 2) Form submission shows success state with 'Já tenho o código' button, 3) Button navigates to /redefinir-senha with email prefilled in URL, 4) Reset page has email and 6-digit code inputs with proper validation, 5) Invalid code (000000) shows error toast 'Código inválido', 6) All critical elements have data-testids. All requirements from review request are working correctly. Minor observation: verify button shows loading state but doesn't disable during submission (acceptable)."

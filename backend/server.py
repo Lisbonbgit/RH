@@ -18,7 +18,6 @@ import re
 import secrets
 import hashlib
 import asyncio
-from urllib.parse import quote, unquote
 
 # Resend for email
 try:
@@ -109,73 +108,61 @@ def create_token(user_id: str, email: str, role: str, employee_id: str = None, m
 
 # ==================== PASSWORD RESET UTILITIES ====================
 
-def generate_reset_token() -> str:
-    """Generate a secure random token for password reset"""
-    return secrets.token_urlsafe(32)
+def generate_reset_code() -> str:
+    """Generate a secure 6-digit code for password reset"""
+    return f"{secrets.randbelow(1000000):06d}"
 
 def hash_reset_token(token: str) -> str:
     """Hash the reset token using SHA256 for storage"""
     return hashlib.sha256(token.encode('utf-8')).hexdigest()
 
-def get_password_reset_email_html(user_name: str, reset_link: str) -> str:
-    """Generate HTML email template for password reset"""
+def get_password_reset_email_html(user_name: str, reset_code: str) -> str:
+    """Generate HTML email template for password reset code"""
     return f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta charset=\"utf-8\">
+        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
     </head>
-    <body style="margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; background-color: #f4f4f4;">
-        <table role="presentation" style="width: 100%; border-collapse: collapse;">
+    <body style=\"margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; background-color: #f4f4f4;\">
+        <table role=\"presentation\" style=\"width: 100%; border-collapse: collapse;\">
             <tr>
-                <td style="padding: 40px 0;">
-                    <table role="presentation" style="width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
-                        <!-- Header -->
+                <td style=\"padding: 40px 0;\">
+                    <table role=\"presentation\" style=\"width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\">
                         <tr>
-                            <td style="background-color: #1a365d; padding: 30px; text-align: center;">
-                                <h1 style="color: #ffffff; margin: 0; font-size: 24px;">RH grupo Lisbonb</h1>
+                            <td style=\"background-color: #1a365d; padding: 30px; text-align: center;\">
+                                <h1 style=\"color: #ffffff; margin: 0; font-size: 24px;\">RH grupo Lisbonb</h1>
                             </td>
                         </tr>
-                        <!-- Content -->
                         <tr>
-                            <td style="padding: 40px 30px;">
-                                <h2 style="color: #1a365d; margin: 0 0 20px 0; font-size: 20px;">Redefinição de Palavra-passe</h2>
-                                <p style="color: #4a5568; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                            <td style=\"padding: 40px 30px;\">
+                                <h2 style=\"color: #1a365d; margin: 0 0 20px 0; font-size: 20px;\">Código de Redefinição</h2>
+                                <p style=\"color: #4a5568; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;\">
                                     Olá <strong>{user_name}</strong>,
                                 </p>
-                                <p style="color: #4a5568; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                                    Recebemos um pedido para redefinir a palavra-passe da sua conta. 
-                                    Clique no botão abaixo para criar uma nova palavra-passe:
+                                <p style=\"color: #4a5568; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;\">
+                                    Recebemos um pedido para redefinir a palavra-passe da sua conta. Utilize o código de 6 dígitos abaixo para continuar no site:
                                 </p>
-                                <table role="presentation" style="margin: 30px auto;">
-                                    <tr>
-                                        <td style="background-color: #1a365d; border-radius: 6px;">
-                                            <a href="{reset_link}" style="display: inline-block; padding: 14px 30px; color: #ffffff; text-decoration: none; font-weight: bold; font-size: 16px;">
-                                                Redefinir Palavra-passe
-                                            </a>
-                                        </td>
-                                    </tr>
-                                </table>
-                                <p style="color: #718096; font-size: 14px; line-height: 1.6; margin: 20px 0 0 0;">
-                                    Este link é válido por <strong>1 hora</strong>. Se não solicitou esta alteração, 
-                                    pode ignorar este email em segurança.
+                                <div style=\"text-align: center; margin: 30px 0;\">
+                                    <div style=\"display: inline-block; padding: 16px 24px; border: 1px solid #e2e8f0; border-radius: 8px; background-color: #f8fafc;\">
+                                        <span style=\"font-size: 32px; letter-spacing: 6px; color: #1a365d; font-weight: bold;\">{reset_code}</span>
+                                    </div>
+                                </div>
+                                <p style=\"color: #718096; font-size: 14px; line-height: 1.6; margin: 20px 0 0 0;\">
+                                    Este código é válido por <strong>1 hora</strong>. Se não solicitou esta alteração, pode ignorar este email em segurança.
                                 </p>
-                                <p style="color: #718096; font-size: 14px; line-height: 1.6; margin: 20px 0 0 0;">
-                                    Se o botão não funcionar, copie e cole o link abaixo no seu navegador:
-                                </p>
-                                <p style="color: #4299e1; font-size: 12px; word-break: break-all; margin: 10px 0 0 0;">
-                                    {reset_link}
+                                <p style=\"color: #718096; font-size: 14px; line-height: 1.6; margin: 10px 0 0 0;\">
+                                    Por segurança, não partilhe este código com ninguém.
                                 </p>
                             </td>
                         </tr>
-                        <!-- Footer -->
                         <tr>
-                            <td style="background-color: #f7fafc; padding: 20px 30px; text-align: center; border-top: 1px solid #e2e8f0;">
-                                <p style="color: #a0aec0; font-size: 12px; margin: 0;">
+                            <td style=\"background-color: #f7fafc; padding: 20px 30px; text-align: center; border-top: 1px solid #e2e8f0;\">
+                                <p style=\"color: #a0aec0; font-size: 12px; margin: 0;\">
                                     © 2024 RH grupo Lisbonb. Todos os direitos reservados.
                                 </p>
-                                <p style="color: #a0aec0; font-size: 12px; margin: 10px 0 0 0;">
+                                <p style=\"color: #a0aec0; font-size: 12px; margin: 10px 0 0 0;\">
                                     Este é um email automático, por favor não responda.
                                 </p>
                             </td>
@@ -188,36 +175,24 @@ def get_password_reset_email_html(user_name: str, reset_link: str) -> str:
     </html>
     """
 
-async def send_password_reset_email(email: str, user_name: str, reset_token: str) -> bool:
-    """Send password reset email using Resend"""
+async def send_password_reset_email(email: str, user_name: str, reset_code: str) -> bool:
+    """Send password reset code email using Resend"""
     if not RESEND_AVAILABLE or not RESEND_API_KEY:
         logger.warning("Resend not configured. Password reset email not sent.")
         return False
-    
-    # URL encode the token to handle special characters
-    encoded_token = quote(reset_token, safe='')
-    reset_link = f"{FRONTEND_URL}/redefinir-senha?token={encoded_token}"
-    
-    # DEBUG LOG - Link being sent
-    logger.info(f"=== EMAIL LINK DEBUG ===")
-    logger.info(f"Token ORIGINAL: {reset_token}")
-    logger.info(f"Token ENCODED: {encoded_token}")
-    logger.info(f"Link COMPLETO: {reset_link}")
-    logger.info(f"=== END EMAIL LINK DEBUG ===")
-    
-    html_content = get_password_reset_email_html(user_name, reset_link)
-    
+
+    html_content = get_password_reset_email_html(user_name, reset_code)
+
     params = {
         "from": SENDER_EMAIL,
         "to": [email],
-        "subject": "Redefinição de Palavra-passe - RH grupo Lisbonb",
+        "subject": "Código de Redefinição - RH grupo Lisbonb",
         "html": html_content
     }
-    
+
     try:
-        # Run sync SDK in thread to keep FastAPI non-blocking
         email_response = await asyncio.to_thread(resend.Emails.send, params)
-        logger.info(f"Password reset email sent to {email}, ID: {email_response.get('id')}")
+        logger.info(f"Password reset code email sent to {email}, ID: {email_response.get('id')}")
         return True
     except Exception as e:
         logger.error(f"Failed to send password reset email: {str(e)}")
@@ -266,9 +241,18 @@ class ChangePasswordRequest(BaseModel):
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
-class ResetPasswordRequest(BaseModel):
-    token: str
+class ResetPasswordCodeRequest(BaseModel):
+    email: EmailStr
+    code: str
     new_password: str
+
+    @field_validator('code')
+    @classmethod
+    def validate_code(cls, v):
+        code = v.strip()
+        if not re.fullmatch(r"\d{6}", code):
+            raise ValueError("O código deve ter 6 dígitos")
+        return code
 
     @field_validator('new_password')
     @classmethod
@@ -277,6 +261,18 @@ class ResetPasswordRequest(BaseModel):
         if not is_valid:
             raise ValueError(message)
         return v
+
+class VerifyResetCodeRequest(BaseModel):
+    email: EmailStr
+    code: str
+
+    @field_validator('code')
+    @classmethod
+    def validate_code(cls, v):
+        code = v.strip()
+        if not re.fullmatch(r"\d{6}", code):
+            raise ValueError("O código deve ter 6 dígitos")
+        return code
 
 class CompanyCreate(BaseModel):
     name: str
@@ -579,159 +575,132 @@ async def change_password(request: ChangePasswordRequest, current_user: dict = D
 @api_router.post("/auth/forgot-password")
 async def forgot_password(request: ForgotPasswordRequest):
     """
-    Request password reset. Sends email with reset link if user exists.
+    Request password reset. Sends email with 6-digit code if user exists.
     Always returns success to prevent email enumeration attacks.
     """
-    # Always return the same message to prevent email enumeration
     success_message = {
-        "message": "Se o email existir no sistema, receberá um link para redefinir a palavra-passe."
+        "message": "Se o email existir no sistema, receberá um código de 6 dígitos para redefinir a palavra-passe."
     }
-    
-    # Normalize email (lowercase and trim)
+
     normalized_email = request.email.lower().strip()
-    
-    # DEBUG LOGS - Search
-    logger.info(f"=== FORGOT PASSWORD DEBUG ===")
+
+    logger.info("=== FORGOT PASSWORD DEBUG ===")
     logger.info(f"Email RECEBIDO (raw): '{request.email}'")
     logger.info(f"Email NORMALIZADO: '{normalized_email}'")
-    
-    # Find user by email (case-insensitive search)
+
     user = await db.users.find_one(
-        {"email": {"$regex": f"^{re.escape(normalized_email)}$", "$options": "i"}}, 
+        {"email": {"$regex": f"^{re.escape(normalized_email)}$", "$options": "i"}},
         {"_id": 0}
     )
-    
-    # Also try exact match
+
     if not user:
         user = await db.users.find_one({"email": normalized_email}, {"_id": 0})
-    
-    # Log all users for debugging
+
     all_users = await db.users.find({}, {"_id": 0, "email": 1, "id": 1}).to_list(100)
     logger.info(f"Total de usuários no banco: {len(all_users)}")
     for u in all_users:
         match = u.get('email', '').lower().strip() == normalized_email
         logger.info(f"  - '{u.get('email')}' | ID: {u.get('id')[:8]}... | MATCH: {match}")
-    
+
     if not user:
-        # Return success even if user doesn't exist (security)
         logger.warning(f"Usuário NÃO ENCONTRADO para email: '{normalized_email}'")
-        logger.info(f"=== END FORGOT PASSWORD DEBUG ===")
+        logger.info("=== END FORGOT PASSWORD DEBUG ===")
         return success_message
-    
+
     logger.info(f"Usuário ENCONTRADO: {user.get('email')} | ID: {user.get('id')}")
     logger.info(f"Nome: {user.get('name')}")
-    
-    # Generate secure reset token
-    reset_token = generate_reset_token()
-    token_hash = hash_reset_token(reset_token)
+
+    reset_code = generate_reset_code()
+    code_hash = hash_reset_token(reset_code)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=RESET_TOKEN_EXPIRATION_HOURS)
-    
-    logger.info(f"Token ORIGINAL gerado: {reset_token}")
-    logger.info(f"Token HASH a salvar: {token_hash}")
-    
-    # Save token hash and expiration to user document
+
+    logger.info("Código de redefinição gerado e preparado para envio.")
+
     update_result = await db.users.update_one(
         {"id": user["id"]},
         {
             "$set": {
-                "reset_password_token": token_hash,
+                "reset_password_token": code_hash,
                 "reset_password_expires": expires_at.isoformat()
             }
         }
     )
-    
+
     logger.info(f"Update result: matched={update_result.matched_count}, modified={update_result.modified_count}")
-    
-    # Verify token was saved correctly
+
     saved_user = await db.users.find_one({"id": user["id"]}, {"_id": 0, "email": 1, "reset_password_token": 1})
-    logger.info(f"Verificação após salvar:")
+    logger.info("Verificação após salvar:")
     logger.info(f"  Email do usuário salvo: {saved_user.get('email')}")
     logger.info(f"  Token HASH no banco: {saved_user.get('reset_password_token')}")
-    logger.info(f"  Hashes IGUAIS: {saved_user.get('reset_password_token') == token_hash}")
-    
-    # Send email with reset link
+    logger.info(f"  Hashes IGUAIS: {saved_user.get('reset_password_token') == code_hash}")
+
     email_sent = await send_password_reset_email(
         email=user["email"],
         user_name=user["name"],
-        reset_token=reset_token  # Send original token, not hash
+        reset_code=reset_code
     )
-    
+
     if email_sent:
         logger.info(f"Email ENVIADO com sucesso para: {user['email']}")
     else:
         logger.warning(f"FALHA ao enviar email para: {user['email']}")
-    
-    logger.info(f"=== END FORGOT PASSWORD DEBUG ===")
-    
+
+    logger.info("=== END FORGOT PASSWORD DEBUG ===")
+
     return success_message
 
 @api_router.post("/auth/reset-password")
-async def reset_password(request: ResetPasswordRequest):
+async def reset_password(request: ResetPasswordCodeRequest):
     """
-    Reset password using the token received via email.
-    Token must be valid and not expired.
+    Reset password using the code received via email.
+    Code must be valid and not expired.
     """
-    # DEBUG LOGS - Token Verification
-    logger.info(f"=== RESET PASSWORD DEBUG ===")
-    logger.info(f"Token RECEBIDO (raw): {request.token}")
-    logger.info(f"Token RECEBIDO LENGTH: {len(request.token)}")
-    
-    # Decode URL-encoded token
-    decoded_token = unquote(request.token)
-    logger.info(f"Token DECODED: {decoded_token}")
-    logger.info(f"Token DECODED LENGTH: {len(decoded_token)}")
-    
-    # Hash the received token to compare with stored hash
-    token_hash = hash_reset_token(decoded_token)
-    logger.info(f"Token HASH calculado: {token_hash}")
-    
-    # Find user with matching token and valid expiration
-    user = await db.users.find_one({
-        "reset_password_token": token_hash
-    }, {"_id": 0})
-    
-    # Debug: list all users with tokens
-    all_users_with_tokens = await db.users.find(
-        {"reset_password_token": {"$exists": True, "$ne": None}},
-        {"_id": 0, "email": 1, "reset_password_token": 1}
-    ).to_list(10)
-    
-    logger.info(f"Usuários com tokens no banco: {len(all_users_with_tokens)}")
-    for u in all_users_with_tokens:
-        stored_hash = u.get('reset_password_token', '')
-        logger.info(f"  - {u.get('email')}: hash={stored_hash[:20]}...")
-        logger.info(f"    MATCH: {stored_hash == token_hash}")
-    
+    logger.info("=== RESET PASSWORD DEBUG ===")
+
+    normalized_email = request.email.lower().strip()
+    code = request.code.strip()
+
+    logger.info(f"Email NORMALIZADO: '{normalized_email}'")
+    logger.info(f"Código RECEBIDO LENGTH: {len(code)}")
+
+    code_hash = hash_reset_token(code)
+
+    user = await db.users.find_one(
+        {"email": {"$regex": f"^{re.escape(normalized_email)}$", "$options": "i"}, "reset_password_token": code_hash},
+        {"_id": 0}
+    )
+
     if not user:
-        logger.warning(f"Token NÃO encontrado no banco!")
-        logger.info(f"=== END RESET PASSWORD DEBUG ===")
-        raise HTTPException(
-            status_code=400, 
-            detail="Token inválido ou expirado. Por favor, solicite um novo link de redefinição."
+        user = await db.users.find_one(
+            {"email": normalized_email, "reset_password_token": code_hash},
+            {"_id": 0}
         )
-    
-    logger.info(f"Token encontrado para: {user.get('email')}")
-    
-    # Check if token has expired
+
+    if not user:
+        logger.warning("Código NÃO encontrado para o email informado!")
+        logger.info("=== END RESET PASSWORD DEBUG ===")
+        raise HTTPException(
+            status_code=400,
+            detail="Código inválido ou expirado. Por favor, solicite um novo código."
+        )
+
     expires_at = user.get("reset_password_expires")
     if expires_at:
         expires_datetime = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
         if datetime.now(timezone.utc) > expires_datetime:
-            # Clear expired token
             await db.users.update_one(
                 {"id": user["id"]},
                 {"$unset": {"reset_password_token": "", "reset_password_expires": ""}}
             )
-            logger.warning(f"Token EXPIRADO!")
-            logger.info(f"=== END RESET PASSWORD DEBUG ===")
+            logger.warning("Código EXPIRADO!")
+            logger.info("=== END RESET PASSWORD DEBUG ===")
             raise HTTPException(
-                status_code=400, 
-                detail="Token expirado. Por favor, solicite um novo link de redefinição."
+                status_code=400,
+                detail="Código expirado. Por favor, solicite um novo código."
             )
-    
-    # Hash new password and update user
+
     new_password_hash = hash_password(request.new_password)
-    
+
     await db.users.update_one(
         {"id": user["id"]},
         {
@@ -745,65 +714,58 @@ async def reset_password(request: ResetPasswordRequest):
             }
         }
     )
-    
+
     logger.info(f"Password successfully reset for user {user['email']}")
-    logger.info(f"=== END RESET PASSWORD DEBUG ===")
-    
+    logger.info("=== END RESET PASSWORD DEBUG ===")
+
     return {
         "message": "Palavra-passe redefinida com sucesso. Pode agora fazer login com a nova palavra-passe."
     }
 
-@api_router.get("/auth/verify-reset-token")
-async def verify_reset_token(token: str):
+@api_router.post("/auth/verify-reset-code")
+async def verify_reset_code(request: VerifyResetCodeRequest):
     """
-    Verify if a password reset token is valid (for frontend validation before showing form).
+    Verify if a password reset code is valid (for frontend validation before showing form).
     """
-    # DEBUG LOGS
-    logger.info(f"=== VERIFY TOKEN DEBUG ===")
-    logger.info(f"Token RECEBIDO (raw): {token}")
-    logger.info(f"Token RECEBIDO LENGTH: {len(token)}")
-    
-    # Decode URL-encoded token
-    decoded_token = unquote(token)
-    logger.info(f"Token DECODED: {decoded_token}")
-    logger.info(f"Token DECODED LENGTH: {len(decoded_token)}")
-    
-    token_hash = hash_reset_token(decoded_token)
-    logger.info(f"Token HASH calculado: {token_hash}")
-    
-    user = await db.users.find_one({
-        "reset_password_token": token_hash
-    }, {"_id": 0})
-    
-    # Debug: list all users with tokens
-    all_users_with_tokens = await db.users.find(
-        {"reset_password_token": {"$exists": True, "$ne": None}},
-        {"_id": 0, "email": 1, "reset_password_token": 1}
-    ).to_list(10)
-    
-    logger.info(f"Usuários com tokens no banco: {len(all_users_with_tokens)}")
-    for u in all_users_with_tokens:
-        stored_hash = u.get('reset_password_token', '')
-        logger.info(f"  - {u.get('email')}: hash={stored_hash[:20]}...")
-        logger.info(f"    MATCH: {stored_hash == token_hash}")
-    
+    logger.info("=== VERIFY CODE DEBUG ===")
+
+    normalized_email = request.email.lower().strip()
+    code = request.code.strip()
+
+    logger.info(f"Email NORMALIZADO: '{normalized_email}'")
+    logger.info(f"Código RECEBIDO LENGTH: {len(code)}")
+
+    code_hash = hash_reset_token(code)
+
+    user = await db.users.find_one(
+        {"email": {"$regex": f"^{re.escape(normalized_email)}$", "$options": "i"}, "reset_password_token": code_hash},
+        {"_id": 0}
+    )
+
     if not user:
-        logger.warning(f"Token NÃO encontrado!")
-        logger.info(f"=== END VERIFY TOKEN DEBUG ===")
-        raise HTTPException(status_code=400, detail="Token inválido")
-    
-    logger.info(f"Token VÁLIDO para: {user.get('email')}")
-    
-    # Check expiration
+        user = await db.users.find_one(
+            {"email": normalized_email, "reset_password_token": code_hash},
+            {"_id": 0}
+        )
+
+    if not user:
+        logger.warning("Código NÃO encontrado para o email informado!")
+        logger.info("=== END VERIFY CODE DEBUG ===")
+        raise HTTPException(status_code=400, detail="Código inválido")
+
     expires_at = user.get("reset_password_expires")
     if expires_at:
         expires_datetime = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
         if datetime.now(timezone.utc) > expires_datetime:
-            logger.warning(f"Token EXPIRADO!")
-            logger.info(f"=== END VERIFY TOKEN DEBUG ===")
-            raise HTTPException(status_code=400, detail="Token expirado")
-    
-    logger.info(f"=== END VERIFY TOKEN DEBUG ===")
+            await db.users.update_one(
+                {"id": user["id"]},
+                {"$unset": {"reset_password_token": "", "reset_password_expires": ""}}
+            )
+            logger.warning("Código EXPIRADO!")
+            logger.info("=== END VERIFY CODE DEBUG ===")
+            raise HTTPException(status_code=400, detail="Código expirado")
+
+    logger.info("=== END VERIFY CODE DEBUG ===")
     return {"valid": True, "email": user["email"]}
 
 # ==================== ADMIN/MANAGER CREATION ====================
@@ -989,7 +951,7 @@ async def get_locations(company_id: Optional[str] = None, current_user: dict = D
         company = await db.companies.find_one({"id": loc["company_id"]}, {"_id": 0})
         loc["company_name"] = company["name"] if company else None
     
-    return [LocationResponse(**l) for l in locations]
+    return [LocationResponse(**loc) for loc in locations]
 
 @api_router.put("/locations/{location_id}", response_model=LocationResponse)
 async def update_location(location_id: str, location: LocationCreate, current_user: dict = Depends(admin_required)):
@@ -1223,7 +1185,7 @@ async def delete_employee(employee_id: str, current_user: dict = Depends(admin_r
 
 # ==================== RESET PASSWORD (Admin function) ====================
 
-class ResetPasswordRequest(BaseModel):
+class AdminResetPasswordRequest(BaseModel):
     new_password: str
 
     @field_validator('new_password')
@@ -1235,7 +1197,7 @@ class ResetPasswordRequest(BaseModel):
         return v
 
 @api_router.post("/employees/{employee_id}/reset-password")
-async def reset_employee_password(employee_id: str, request: ResetPasswordRequest, current_user: dict = Depends(admin_required)):
+async def reset_employee_password(employee_id: str, request: AdminResetPasswordRequest, current_user: dict = Depends(admin_required)):
     """Admin can reset employee password (sets must_change_password = True)"""
     employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
     if not employee:

@@ -68,5 +68,10 @@ Backend (FastAPI + JWT Auth)
 MongoDB (Motor async driver)
 ```
 
+## Atualizações Recentes (07/04/2026)
+- [x] Fluxo de “Esqueci a Palavra-passe” com envio de código de 6 dígitos via email (Resend)
+- [x] Verificação do código no site antes de permitir redefinição
+- [x] UI atualizada para inserir código e nova palavra-passe
+
 ## Fase Concluída
 O sistema está estável e pronto para validação com a equipa.
