@@ -10,7 +10,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr, field_validator
 from typing import List, Optional
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 import jwt
 import bcrypt
 import shutil
@@ -377,6 +377,59 @@ class AdminLeaveCreate(BaseModel):
             raise ValueError("Tipo inválido. Use 'ferias' ou 'ausencia'")
         return v
 
+class WorkScheduleTemplateCreate(BaseModel):
+    name: str
+    work_days: List[int] = Field(alias="workDays")
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator('work_days')
+    @classmethod
+    def validate_work_days(cls, v):
+        if not v:
+            raise ValueError("Selecione pelo menos um dia de trabalho")
+        if any(day not in range(0, 7) for day in v):
+            raise ValueError("Dias de trabalho inválidos")
+        if len(set(v)) != len(v):
+            raise ValueError("Dias de trabalho duplicados")
+        return v
+
+class WorkScheduleTemplateResponse(BaseModel):
+    id: str
+    name: str
+    work_days: List[int]
+    created_at: str
+
+class WorkScheduleAssignmentCreate(BaseModel):
+    employee_id: str = Field(alias="employeeId")
+    template_id: str = Field(alias="templateId")
+    start_date: str = Field(alias="startDate")
+    end_date: Optional[str] = Field(default=None, alias="endDate")
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator('start_date', 'end_date')
+    @classmethod
+    def validate_dates(cls, v):
+        if v is None:
+            return v
+        try:
+            datetime.fromisoformat(v)
+        except ValueError:
+            raise ValueError("Datas inválidas. Use o formato AAAA-MM-DD")
+        return v
+
+class WorkScheduleAssignmentResponse(BaseModel):
+    id: str
+    employee_id: str
+    employee_name: Optional[str] = None
+    template_id: str
+    template_name: Optional[str] = None
+    work_days: List[int] = []
+    start_date: str
+    end_date: Optional[str] = None
+    created_at: str
+
 class LeaveRequestCreate(BaseModel):
     leave_type: str  # ferias, falta, doenca, folga
     start_date: str
@@ -396,6 +449,7 @@ class LeaveRequestResponse(BaseModel):
     admin_response: Optional[str] = None
     created_by: Optional[str] = None
     is_paid: Optional[bool] = None
+    counted_days: Optional[int] = None
     created_at: str
 
 class FolderCreate(BaseModel):
@@ -439,12 +493,57 @@ class DashboardStats(BaseModel):
 
 # ==================== VACATION CALCULATION ====================
 
+def find_schedule_assignment(assignments: list[dict], target_date: date):
+    for assignment in assignments:
+        start_dt = datetime.fromisoformat(assignment["start_date"]).date()
+        end_raw = assignment.get("end_date")
+        end_dt = datetime.fromisoformat(end_raw).date() if end_raw else None
+        if target_date >= start_dt and (end_dt is None or target_date <= end_dt):
+            return assignment
+    return None
+
+async def calculate_leave_counted_days(employee_id: str, start_date: str, end_date: str) -> int:
+    """Count leave days based on work schedule."""
+    start_dt = datetime.fromisoformat(start_date).date()
+    end_dt = datetime.fromisoformat(end_date).date()
+
+    if start_dt > end_dt:
+        return 0
+
+    assignments = await db.work_schedule_assignments.find(
+        {"employee_id": employee_id},
+        {"_id": 0}
+    ).sort("start_date", 1).to_list(200)
+
+    for assignment in assignments:
+        if not assignment.get("work_days"):
+            template = await db.work_schedule_templates.find_one(
+                {"id": assignment.get("template_id")},
+                {"_id": 0, "work_days": 1}
+            )
+            if template:
+                assignment["work_days"] = template.get("work_days", [])
+
+    total_days = 0
+    current_date = start_dt
+    while current_date <= end_dt:
+        assignment = find_schedule_assignment(assignments, current_date)
+        if assignment:
+            work_days = assignment.get("work_days", [])
+            if current_date.weekday() in work_days:
+                total_days += 1
+        else:
+            total_days += 1
+        current_date += timedelta(days=1)
+
+    return total_days
+
 async def calculate_vacation_days_used(employee_id: str) -> int:
     """Calculate the number of vacation days used by an employee in the current year"""
     current_year = datetime.now(timezone.utc).year
     year_start = f"{current_year}-01-01"
     year_end = f"{current_year}-12-31"
-    
+
     # Find all approved vacation requests for the current year
     vacation_requests = await db.leave_requests.find({
         "employee_id": employee_id,
@@ -456,23 +555,27 @@ async def calculate_vacation_days_used(employee_id: str) -> int:
             {"$and": [{"start_date": {"$lte": year_start}}, {"end_date": {"$gte": year_end}}]}
         ]
     }, {"_id": 0}).to_list(1000)
-    
+
     total_days = 0
     for request in vacation_requests:
         start = datetime.fromisoformat(request["start_date"])
         end = datetime.fromisoformat(request["end_date"])
-        
+
         # Adjust dates to current year boundaries
         year_start_date = datetime(current_year, 1, 1)
         year_end_date = datetime(current_year, 12, 31)
-        
+
         effective_start = max(start, year_start_date)
         effective_end = min(end, year_end_date)
-        
+
         if effective_start <= effective_end:
-            days = (effective_end - effective_start).days + 1
-            total_days += days
-    
+            counted = await calculate_leave_counted_days(
+                employee_id,
+                effective_start.date().isoformat(),
+                effective_end.date().isoformat()
+            )
+            total_days += counted
+
     return total_days
 
 # ==================== AUTH UTILITIES ====================
@@ -1355,6 +1458,105 @@ async def correct_time_record(record_id: str, correction: TimeRecordCorrection, 
     updated["employee_name"] = employee["name"] if employee else None
     return TimeRecordResponse(**updated)
 
+# ==================== WORK SCHEDULE ROUTES ====================
+
+@api_router.post("/schedules", response_model=WorkScheduleTemplateResponse)
+async def create_schedule_template(template: WorkScheduleTemplateCreate, current_user: dict = Depends(admin_manager_required)):
+    template_id = str(uuid.uuid4())
+    template_doc = {
+        "id": template_id,
+        "name": template.name,
+        "work_days": template.work_days,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.work_schedule_templates.insert_one(template_doc)
+    return WorkScheduleTemplateResponse(**template_doc)
+
+@api_router.get("/schedules", response_model=List[WorkScheduleTemplateResponse])
+async def get_schedule_templates(current_user: dict = Depends(admin_manager_required)):
+    templates = await db.work_schedule_templates.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return [WorkScheduleTemplateResponse(**t) for t in templates]
+
+@api_router.post("/schedules/assign", response_model=WorkScheduleAssignmentResponse)
+async def assign_schedule(assignment: WorkScheduleAssignmentCreate, current_user: dict = Depends(admin_manager_required)):
+    employee = await db.employees.find_one({"id": assignment.employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Colaborador não encontrado")
+
+    template = await db.work_schedule_templates.find_one({"id": assignment.template_id}, {"_id": 0})
+    if not template:
+        raise HTTPException(status_code=404, detail="Escala não encontrada")
+
+    try:
+        start_dt = datetime.fromisoformat(assignment.start_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Data de início inválida")
+
+    end_dt = None
+    if assignment.end_date:
+        try:
+            end_dt = datetime.fromisoformat(assignment.end_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Data de fim inválida")
+
+    if end_dt and start_dt > end_dt:
+        raise HTTPException(status_code=400, detail="Data de início não pode ser posterior à data de fim")
+
+    existing_assignments = await db.work_schedule_assignments.find(
+        {"employee_id": employee["id"]},
+        {"_id": 0}
+    ).to_list(200)
+
+    new_start = start_dt.date()
+    new_end = end_dt.date() if end_dt else None
+
+    for existing in existing_assignments:
+        existing_start = datetime.fromisoformat(existing["start_date"]).date()
+        existing_end_raw = existing.get("end_date")
+        existing_end = datetime.fromisoformat(existing_end_raw).date() if existing_end_raw else None
+        existing_end_cmp = existing_end or date.max
+        new_end_cmp = new_end or date.max
+
+        if new_start <= existing_end_cmp and new_end_cmp >= existing_start:
+            raise HTTPException(status_code=400, detail="Já existe uma escala ativa nesse período")
+
+    assignment_id = str(uuid.uuid4())
+    assignment_doc = {
+        "id": assignment_id,
+        "employee_id": employee["id"],
+        "template_id": template["id"],
+        "work_days": template.get("work_days", []),
+        "start_date": assignment.start_date,
+        "end_date": assignment.end_date,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+
+    await db.work_schedule_assignments.insert_one(assignment_doc)
+
+    return WorkScheduleAssignmentResponse(
+        **assignment_doc,
+        employee_name=employee["name"],
+        template_name=template["name"]
+    )
+
+@api_router.get("/schedules/assignments", response_model=List[WorkScheduleAssignmentResponse])
+async def get_schedule_assignments(employee_id: Optional[str] = None, current_user: dict = Depends(admin_manager_required)):
+    query = {}
+    if employee_id:
+        query["employee_id"] = employee_id
+
+    assignments = await db.work_schedule_assignments.find(query, {"_id": 0}).sort("start_date", -1).to_list(200)
+
+    for assignment in assignments:
+        employee = await db.employees.find_one({"id": assignment["employee_id"]}, {"_id": 0})
+        template = await db.work_schedule_templates.find_one({"id": assignment["template_id"]}, {"_id": 0})
+        assignment["employee_name"] = employee["name"] if employee else None
+        assignment["template_name"] = template["name"] if template else None
+        if not assignment.get("work_days") and template:
+            assignment["work_days"] = template.get("work_days", [])
+
+    return [WorkScheduleAssignmentResponse(**a) for a in assignments]
+
 # ==================== LEAVE REQUEST ROUTES ====================
 
 @api_router.post("/admin/leave", response_model=LeaveRequestResponse)
@@ -1394,6 +1596,7 @@ async def create_admin_leave(request: AdminLeaveCreate, current_user: dict = Dep
     created_by_role = "gestor" if current_user.get("role") == "gerente" else "admin"
 
     request_id = str(uuid.uuid4())
+    counted_days = await calculate_leave_counted_days(employee["id"], request.start_date, request.end_date)
     request_doc = {
         "id": request_id,
         "employee_id": employee["id"],
@@ -1406,6 +1609,7 @@ async def create_admin_leave(request: AdminLeaveCreate, current_user: dict = Dep
         "admin_response": None,
         "created_by": created_by_role,
         "is_paid": request.is_paid,
+        "counted_days": counted_days,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -1428,6 +1632,7 @@ async def create_leave_request(request: LeaveRequestCreate, current_user: dict =
         raise HTTPException(status_code=400, detail=f"Tipo inválido. Use: {', '.join(valid_types)}")
     
     request_id = str(uuid.uuid4())
+    counted_days = await calculate_leave_counted_days(employee_id, request.start_date, request.end_date)
     request_doc = {
         "id": request_id,
         "employee_id": employee_id,
@@ -1438,6 +1643,9 @@ async def create_leave_request(request: LeaveRequestCreate, current_user: dict =
         "observation": request.observation,
         "document_id": None,
         "admin_response": None,
+        "created_by": "colaborador",
+        "is_paid": None,
+        "counted_days": counted_days,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.leave_requests.insert_one(request_doc)
@@ -1486,12 +1694,17 @@ async def get_leave_requests(
         query["status"] = status
     
     requests = await db.leave_requests.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
-    
+
     # Get employee names
     for req in requests:
         employee = await db.employees.find_one({"id": req["employee_id"]}, {"_id": 0})
         req["employee_name"] = employee["name"] if employee else None
-    
+        req["counted_days"] = await calculate_leave_counted_days(
+            req["employee_id"],
+            req["start_date"],
+            req["end_date"]
+        )
+
     return [LeaveRequestResponse(**r) for r in requests]
 
 class LeaveRequestResponseModel(BaseModel):
@@ -1833,6 +2046,13 @@ async def get_employee_dashboard(current_user: dict = Depends(get_current_user))
         {"employee_id": employee_id, "status": "pendente"},
         {"_id": 0}
     ).to_list(10)
+
+    for request in pending_requests:
+        request["counted_days"] = await calculate_leave_counted_days(
+            employee_id,
+            request["start_date"],
+            request["end_date"]
+        )
     
     # Unread notifications count
     unread_count = await db.notifications.count_documents(
@@ -1878,12 +2098,17 @@ async def get_calendar_leaves(
         ]
     
     leaves = await db.leave_requests.find(query, {"_id": 0}).to_list(1000)
-    
+
     # Get employee names
     for leave in leaves:
         employee = await db.employees.find_one({"id": leave["employee_id"]}, {"_id": 0})
         leave["employee_name"] = employee["name"] if employee else None
-    
+        leave["counted_days"] = await calculate_leave_counted_days(
+            leave["employee_id"],
+            leave["start_date"],
+            leave["end_date"]
+        )
+
     return leaves
 
 # ==================== HEALTH CHECK ====================

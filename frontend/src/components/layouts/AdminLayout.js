@@ -46,6 +46,7 @@ const navItems = [
   { path: '/admin/colaboradores', label: 'Colaboradores', icon: Users },
   { path: '/admin/ponto', label: 'Controlo de Ponto', icon: Clock },
   { path: '/admin/ausencias', label: 'Férias e Ausências', icon: Calendar },
+  { path: '/admin/escalas', label: 'Escalas', icon: Calendar },
   { path: '/admin/documentos', label: 'Documentos', icon: FileText },
   { path: '/admin/gestores', label: 'Gestores', icon: UserPlus, masterOnly: true },
 ];

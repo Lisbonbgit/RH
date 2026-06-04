@@ -273,6 +273,21 @@ backend:
         agent: "main"
         comment: "Updated LoginPage, AdminLayout, EmployeeLayout with new name"
 
+  - task: "Schedule Assignment - Backend API bug fix"
+    implemented: true
+    working: true
+    file: "server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: "CRITICAL BUG FOUND: POST /api/schedules/assign was returning 500 Internal Server Error due to duplicate 'work_days' parameter in WorkScheduleAssignmentResponse. The assignment_doc already contained work_days, and it was being passed again as a separate keyword argument, causing TypeError."
+      - working: true
+        agent: "testing"
+        comment: "✅ BUG FIXED: Removed duplicate work_days parameter from WorkScheduleAssignmentResponse return statement (line 1540). Backend now properly returns 400 with validation error message 'Já existe uma escala ativa nesse período' when there are overlapping assignments, instead of 500 error. Assignment creation works correctly when there are no overlaps."
+
 frontend:
   - task: "Admin create vacation/absence for employee - Modal UI"
     implemented: true
@@ -310,10 +325,46 @@ frontend:
         agent: "testing"
         comment: "✅ PASSED - Leave request details dialog shows 'Origem' field with 'Criado pelo gestor' badge (data-testid='view-request-created-by') and 'Remunerado' field with 'Sim'/'Não' value (data-testid='view-request-is-paid'). All fields display correctly when viewing manager-created leave requests."
 
+  - task: "Admin Schedules Page - Schedule Creation"
+    implemented: true
+    working: true
+    file: "pages/admin/AdminSchedules.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - Schedule creation form works correctly. All required elements present: schedule-name-input, schedule-day-checkbox-0 through schedule-day-checkbox-6 (7 day checkboxes for Mon-Sun), schedule-create-btn. Successfully created test schedule 'Escala 5x2 Teste' with Mon-Fri selected. Schedule appears in 'Escalas Criadas' list with proper data-testid format: schedule-row-{id}. Schedule displays name and work days correctly."
+
+  - task: "Admin Schedules Page - Schedule Assignment"
+    implemented: true
+    working: true
+    file: "pages/admin/AdminSchedules.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - Schedule assignment form works correctly after bug fix. All required elements present: schedule-assign-employee-select, schedule-assign-template-select, schedule-assign-start-input, schedule-assign-end-input, schedule-assign-btn. Form properly validates and prevents overlapping assignments with error message 'Já existe uma escala ativa nesse período'. Successfully created assignment for João Silva Teste which appears in 'Histórico de Atribuições' with proper data-testid format: assignment-row-{id}. Assignment displays employee name, template name, period, and work days correctly."
+
+  - task: "Admin Schedules Page - Sidebar Menu"
+    implemented: true
+    working: true
+    file: "components/layouts/AdminLayout.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - Sidebar menu shows 'Escalas' menu item with data-testid='nav-escalas'. Menu item is clickable and navigates to /admin/escalas correctly. Menu item is properly highlighted when active."
+
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 4
+  test_sequence: 5
   run_ui: false
 
 test_plan:
@@ -331,3 +382,5 @@ agent_communication:
     message: "✅ FORGOT PASSWORD & RESET PASSWORD FLOW TESTING COMPLETE - Tested complete flow: 1) /esqueci-senha page loads correctly with email input and submit button, 2) Form submission shows success state with 'Já tenho o código' button, 3) Button navigates to /redefinir-senha with email prefilled in URL, 4) Reset page has email and 6-digit code inputs with proper validation, 5) Invalid code (000000) shows error toast 'Código inválido', 6) All critical elements have data-testids. All requirements from review request are working correctly. Minor observation: verify button shows loading state but doesn't disable during submission (acceptable)."
   - agent: "testing"
     message: "✅ ADMIN VACATION/ABSENCE CREATION FEATURE TESTING COMPLETE - Tested complete flow: 1) Login as admin successful, 2) Navigate to /admin/colaboradores and open employee details, 3) Click 'Adicionar Férias / Ausência' button opens modal with all required fields (Tipo, Data Início, Data Fim, Motivo, Remunerado), 4) Form submission successful with success message and modal closes, 5) Navigate to /admin/ausencias shows new record with 'Criado pelo gestor' badge, 6) Open request details shows 'Origem' field with 'Criado pelo gestor' badge and 'Remunerado' field with 'Sim' value. All data-testids verified and working correctly. Feature is fully functional."
+  - agent: "testing"
+    message: "✅ ADMIN SCHEDULES (ESCALAS) PAGE TESTING COMPLETE - Tested complete flow: 1) Login as admin successful, 2) Sidebar menu shows 'Escalas' with data-testid='nav-escalas' and navigates correctly to /admin/escalas, 3) Schedule creation form has all required elements (schedule-name-input, schedule-day-checkbox-0 through 6, schedule-create-btn), 4) Successfully created schedule 'Escala 5x2 Teste' which appears in 'Escalas Criadas' list with data-testid='schedule-row-{id}', 5) Schedule assignment form has all required elements (schedule-assign-employee-select, schedule-assign-template-select, schedule-assign-start-input, schedule-assign-end-input, schedule-assign-btn), 6) Successfully created assignment for João Silva Teste which appears in 'Histórico de Atribuições' with data-testid='assignment-row-{id}'. CRITICAL BUG FOUND AND FIXED: Backend was returning 500 error due to duplicate 'work_days' parameter in WorkScheduleAssignmentResponse. Fixed by removing duplicate parameter. Backend now properly validates overlapping assignments and returns 400 with error message 'Já existe uma escala ativa nesse período'. All data-testids verified and working correctly. Feature is fully functional."

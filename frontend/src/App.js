@@ -16,6 +16,7 @@ import AdminTimeRecords from './pages/admin/AdminTimeRecords';
 import AdminLeaveRequests from './pages/admin/AdminLeaveRequests';
 import AdminDocuments from './pages/admin/AdminDocuments';
 import AdminManagers from './pages/admin/AdminManagers';
+import AdminSchedules from './pages/admin/AdminSchedules';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeTimeRecord from './pages/employee/EmployeeTimeRecord';
 import EmployeeLeaveRequests from './pages/employee/EmployeeLeaveRequests';
@@ -128,6 +129,7 @@ function AppRoutes() {
         <Route path="ausencias" element={<AdminLeaveRequests />} />
         <Route path="documentos" element={<AdminDocuments />} />
         <Route path="gestores" element={<AdminManagers />} />
+        <Route path="escalas" element={<AdminSchedules />} />
       </Route>
       
       {/* Employee Routes */}
