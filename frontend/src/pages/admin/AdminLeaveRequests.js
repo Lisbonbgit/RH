@@ -6,6 +6,7 @@ import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Textarea } from '../../components/ui/textarea';
 import { Card, CardContent } from '../../components/ui/card';
+import { ScrollArea } from '../../components/ui/scroll-area';
 import { Badge } from '../../components/ui/badge';
 import {
   Dialog,
@@ -39,6 +40,20 @@ const statusLabels = {
   pendente: 'Pendente',
   aprovado: 'Aprovado',
   recusado: 'Recusado'
+};
+
+const auditActionLabels = {
+  criado: 'Pedido criado',
+  criado_manual: 'Criado manualmente',
+  editado: 'Editado',
+  aprovado: 'Aprovado',
+  recusado: 'Recusado'
+};
+
+const roleLabels = {
+  admin: 'Admin',
+  gerente: 'Gestor',
+  colaborador: 'Colaborador'
 };
 
 export default function AdminLeaveRequests() {
@@ -476,6 +491,25 @@ export default function AdminLeaveRequests() {
                     <p className="font-medium" data-testid="view-request-counted-days">
                       {selectedRequest.counted_days} dia{selectedRequest.counted_days > 1 ? 's' : ''}
                     </p>
+                  </div>
+                )}
+                {selectedRequest?.audit_log?.length > 0 && (
+                  <div className="col-span-2">
+                    <p className="text-sm text-muted-foreground">Histórico de Alterações</p>
+                    <ScrollArea className="max-h-40 mt-2 border rounded-md" data-testid="view-request-audit-log">
+                      <div className="space-y-2 p-3">
+                        {selectedRequest.audit_log.map((entry, index) => (
+                          <div key={`${entry.timestamp}-${index}`} className="text-sm" data-testid={`audit-log-item-${index}`}>
+                            <p className="font-medium">
+                              {(auditActionLabels[entry.action] || entry.action)} • {entry.actor_name} ({roleLabels[entry.actor_role] || entry.actor_role})
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {format(parseISO(entry.timestamp), 'dd/MM/yyyy HH:mm')}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
                   </div>
                 )}
                 <div>

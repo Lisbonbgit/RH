@@ -450,6 +450,7 @@ class LeaveRequestResponse(BaseModel):
     created_by: Optional[str] = None
     is_paid: Optional[bool] = None
     counted_days: Optional[int] = None
+    audit_log: Optional[List[dict]] = None
     created_at: str
 
 class FolderCreate(BaseModel):
@@ -490,6 +491,15 @@ class DashboardStats(BaseModel):
     today_records: int
     employees_by_company: List[dict]
     recent_requests: List[dict]
+
+def build_audit_entry(action: str, actor: dict) -> dict:
+    return {
+        "action": action,
+        "actor_id": actor.get("user_id"),
+        "actor_name": actor.get("name"),
+        "actor_role": actor.get("role"),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
 
 # ==================== VACATION CALCULATION ====================
 
@@ -594,12 +604,16 @@ async def admin_required(current_user: dict = Depends(get_current_user)):
     """Require admin role"""
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Acesso negado. Apenas administradores.")
+    user_doc = await db.users.find_one({"id": current_user.get("user_id")}, {"_id": 0, "name": 1, "role": 1})
+    current_user["name"] = user_doc.get("name") if user_doc else current_user.get("email")
     return current_user
 
 async def admin_manager_required(current_user: dict = Depends(get_current_user)):
     """Require admin or manager role"""
     if current_user.get("role") not in ["admin", "gerente"]:
         raise HTTPException(status_code=403, detail="Acesso negado. Apenas administradores ou gestores.")
+    user_doc = await db.users.find_one({"id": current_user.get("user_id")}, {"_id": 0, "name": 1, "role": 1})
+    current_user["name"] = user_doc.get("name") if user_doc else current_user.get("email")
     return current_user
 
 async def ensure_master_admin_exists():
@@ -1597,6 +1611,7 @@ async def create_admin_leave(request: AdminLeaveCreate, current_user: dict = Dep
 
     request_id = str(uuid.uuid4())
     counted_days = await calculate_leave_counted_days(employee["id"], request.start_date, request.end_date)
+    audit_log = [build_audit_entry("criado_manual", current_user)]
     request_doc = {
         "id": request_id,
         "employee_id": employee["id"],
@@ -1610,6 +1625,7 @@ async def create_admin_leave(request: AdminLeaveCreate, current_user: dict = Dep
         "created_by": created_by_role,
         "is_paid": request.is_paid,
         "counted_days": counted_days,
+        "audit_log": audit_log,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -1626,13 +1642,18 @@ async def create_leave_request(request: LeaveRequestCreate, current_user: dict =
     if not employee_id:
         raise HTTPException(status_code=400, detail="Utilizador não associado a colaborador")
 
-    # Validate leave type
+    if not current_user.get("name"):
+        user_doc = await db.users.find_one({"id": current_user.get("user_id")}, {"_id": 0, "name": 1, "role": 1})
+        if user_doc:
+            current_user["name"] = user_doc.get("name")
+            current_user["role"] = user_doc.get("role", current_user.get("role"))
     valid_types = ["ferias", "falta", "doenca", "folga"]
     if request.leave_type not in valid_types:
         raise HTTPException(status_code=400, detail=f"Tipo inválido. Use: {', '.join(valid_types)}")
 
     request_id = str(uuid.uuid4())
     counted_days = await calculate_leave_counted_days(employee_id, request.start_date, request.end_date)
+    audit_log = [build_audit_entry("criado", current_user)]
     request_doc = {
         "id": request_id,
         "employee_id": employee_id,
@@ -1646,6 +1667,7 @@ async def create_leave_request(request: LeaveRequestCreate, current_user: dict =
         "created_by": "gestor" if current_user.get("role") == "gerente" else "colaborador",
         "is_paid": None,
         "counted_days": counted_days,
+        "audit_log": audit_log,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.leave_requests.insert_one(request_doc)
@@ -1757,6 +1779,8 @@ async def update_leave_request(
         data.end_date
     )
 
+    audit_entry = build_audit_entry("editado", current_user)
+
     await db.leave_requests.update_one(
         {"id": request_id},
         {
@@ -1765,7 +1789,8 @@ async def update_leave_request(
                 "end_date": data.end_date,
                 "observation": data.observation,
                 "counted_days": counted_days
-            }
+            },
+            "$push": {"audit_log": audit_entry}
         }
     )
 
@@ -1792,10 +1817,18 @@ async def respond_leave_request(
     leave_request = await db.leave_requests.find_one({"id": request_id}, {"_id": 0})
     if not leave_request:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
-    
+
+    audit_entry = build_audit_entry(
+        "aprovado" if data.status == "aprovado" else "recusado",
+        current_user
+    )
+
     await db.leave_requests.update_one(
         {"id": request_id},
-        {"$set": {"status": data.status, "admin_response": data.response}}
+        {
+            "$set": {"status": data.status, "admin_response": data.response},
+            "$push": {"audit_log": audit_entry}
+        }
     )
     
     # Notify employee
@@ -1814,6 +1847,12 @@ async def respond_leave_request(
     
     updated = await db.leave_requests.find_one({"id": request_id}, {"_id": 0})
     updated["employee_name"] = employee["name"] if employee else None
+    updated["counted_days"] = await calculate_leave_counted_days(
+        updated["employee_id"],
+        updated["start_date"],
+        updated["end_date"]
+    )
+
     return LeaveRequestResponse(**updated)
 
 # ==================== FOLDER ROUTES ====================

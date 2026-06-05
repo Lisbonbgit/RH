@@ -421,6 +421,18 @@ frontend:
         agent: "testing"
         comment: "✅ PASSED - Edit button (data-testid='edit-employee-{id}') and Delete button (data-testid='delete-employee-{id}') are visible and functional for admin users. Both buttons are correctly hidden for manager users (lines 350-372: {!isManager && ...}). Buttons appear in the actions column for each employee row."
 
+  - task: "Admin Leave Management - Audit trail (Histórico de Alterações)"
+    implemented: true
+    working: true
+    file: "pages/admin/AdminLeaveRequests.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - Audit trail feature fully functional. Tested complete flow: 1) Login as admin (geral@olacai.com), 2) Navigate to /admin/ausencias and open leave request details, 3) 'Histórico de Alterações' section displays correctly with data-testid='view-request-audit-log', 4) Audit entries have correct data-testids (audit-log-item-0, audit-log-item-1, etc.), 5) Labels appear in Portuguese (Criado manualmente, Editado, Aprovado), 6) Role labels display correctly (Admin, Gestor, Colaborador), 7) Date/time format is correct (dd/MM/yyyy HH:mm). Verified 3 audit entries in test request showing creation, edit, and approval actions with proper actor information and timestamps. All requirements from review request met."
+
 metadata:
   created_by: "main_agent"
   version: "1.0"
@@ -446,3 +458,5 @@ agent_communication:
     message: "✅ ADMIN SCHEDULES (ESCALAS) PAGE TESTING COMPLETE - Tested complete flow: 1) Login as admin successful, 2) Sidebar menu shows 'Escalas' with data-testid='nav-escalas' and navigates correctly to /admin/escalas, 3) Schedule creation form has all required elements (schedule-name-input, schedule-day-checkbox-0 through 6, schedule-create-btn), 4) Successfully created schedule 'Escala 5x2 Teste' which appears in 'Escalas Criadas' list with data-testid='schedule-row-{id}', 5) Schedule assignment form has all required elements (schedule-assign-employee-select, schedule-assign-template-select, schedule-assign-start-input, schedule-assign-end-input, schedule-assign-btn), 6) Successfully created assignment for João Silva Teste which appears in 'Histórico de Atribuições' with data-testid='assignment-row-{id}'. CRITICAL BUG FOUND AND FIXED: Backend was returning 500 error due to duplicate 'work_days' parameter in WorkScheduleAssignmentResponse. Fixed by removing duplicate parameter. Backend now properly validates overlapping assignments and returns 400 with error message 'Já existe uma escala ativa nesse período'. All data-testids verified and working correctly. Feature is fully functional."
   - agent: "testing"
     message: "✅ ADMIN LEAVE MANAGEMENT ADJUSTMENTS TESTING COMPLETE - Tested all review request requirements: 1) Login as admin successful (geral@olacai.com), 2) Navigate to /admin/ausencias - found 4 leave requests with edit buttons visible, 3) Edit button (pencil icon, data-testid='edit-request-{id}') opens modal successfully, changed observation/reason and saved with success toast 'Pedido atualizado com sucesso', 4) Approve/Reject buttons (data-testid='approve-request-{id}' and 'reject-request-{id}') exist in code and correctly display only for pending requests (admin-created requests are auto-approved per backend design), 5) Details modal shows 'Dias contabilizados' field (data-testid='view-request-counted-days') when available (displayed '6 dias' in test), 6) Navigate to /admin/colaboradores - 'Novo Colaborador' button (data-testid='add-employee-btn') visible for admin, Edit (data-testid='edit-employee-{id}') and Delete (data-testid='delete-employee-{id}') buttons visible for admin and correctly hidden for managers. All features working correctly with proper role-based access control."
+  - agent: "testing"
+    message: "✅ AUDIT TRAIL (HISTÓRICO DE ALTERAÇÕES) TESTING COMPLETE - Tested complete audit trail functionality: 1) Login as admin successful (geral@olacai.com/Admin@123), 2) Navigate to /admin/ausencias and open leave request details, 3) 'Histórico de Alterações' section displays correctly with data-testid='view-request-audit-log', 4) Verified data-testid='audit-log-item-0' and subsequent entries (found 3 entries in test), 5) All labels appear in Portuguese (Criado manualmente, Editado, Aprovado), 6) Role labels display correctly (Admin, Gestor, Colaborador), 7) Date/time format is correct (dd/MM/yyyy HH:mm). Example entry: 'Criado manualmente • Administrador Principal (Admin) 05/06/2026 17:47'. All requirements from review request met. Feature is fully functional."
