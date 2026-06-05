@@ -99,8 +99,8 @@ export default function EmployeeLeaveRequests() {
     }
   };
 
-  const getDuration = (start, end) => {
-    const days = differenceInDays(parseISO(end), parseISO(start)) + 1;
+  const getDuration = (request) => {
+    const days = request?.counted_days ?? (differenceInDays(parseISO(request.end_date), parseISO(request.start_date)) + 1);
     return `${days} dia${days > 1 ? 's' : ''}`;
   };
 
@@ -131,9 +131,16 @@ export default function EmployeeLeaveRequests() {
           {format(parseISO(request.start_date), 'dd/MM/yyyy')} - {format(parseISO(request.end_date), 'dd/MM/yyyy')}
         </span>
       </div>
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Clock className="h-4 w-4" />
-        <span>{getDuration(request.start_date, request.end_date)}</span>
+      <div className="flex flex-col gap-1 text-sm text-muted-foreground">
+        <div className="flex items-center gap-2">
+          <Clock className="h-4 w-4" />
+          <span>{getDuration(request)}</span>
+        </div>
+        {request?.counted_days !== undefined && (
+          <span data-testid={`request-counted-days-${request.id}`}>
+            Dias contabilizados: {request.counted_days}
+          </span>
+        )}
       </div>
       {request.observation && (
         <p className="text-sm text-muted-foreground border-t pt-2 mt-2">

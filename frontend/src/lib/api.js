@@ -32,6 +32,7 @@ export const getLeaveRequests = (params) => axios.get(`${API_URL}/leave-requests
 export const createLeaveRequest = (data) => axios.post(`${API_URL}/leave-requests`, data);
 export const respondLeaveRequest = (id, status, response) => 
   axios.put(`${API_URL}/leave-requests/${id}/respond`, { status, response });
+export const updateLeaveRequest = (id, data) => axios.put(`${API_URL}/leave-requests/${id}`, data);
 export const createAdminLeave = (data) => axios.post(`${API_URL}/admin/leave`, data);
 
 // Work Schedules

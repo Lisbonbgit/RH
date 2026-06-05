@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { getLeaveRequests, respondLeaveRequest, getEmployees } from '../../lib/api';
+import { getLeaveRequests, respondLeaveRequest, getEmployees, updateLeaveRequest } from '../../lib/api';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -23,7 +23,7 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
-import { Calendar, Check, X, Filter, Eye } from 'lucide-react';
+import { Calendar, Check, X, Filter, Eye, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, parseISO, differenceInDays } from 'date-fns';
 
@@ -48,14 +48,21 @@ export default function AdminLeaveRequests() {
   const [loading, setLoading] = useState(true);
   const [responseDialogOpen, setResponseDialogOpen] = useState(false);
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState(null);
   const [responseAction, setResponseAction] = useState('');
   const [responseText, setResponseText] = useState('');
+  const [editFormData, setEditFormData] = useState({
+    startDate: '',
+    endDate: '',
+    observation: ''
+  });
   const [filters, setFilters] = useState({
     employee_id: '',
     status: ''
   });
   const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -90,6 +97,43 @@ export default function AdminLeaveRequests() {
     setResponseDialogOpen(true);
   };
 
+  const handleOpenEdit = (request) => {
+    setSelectedRequest(request);
+    setEditFormData({
+      startDate: request.start_date,
+      endDate: request.end_date,
+      observation: request.observation || ''
+    });
+    setEditDialogOpen(true);
+  };
+
+  const handleSubmitEdit = async () => {
+    if (!editFormData.startDate || !editFormData.endDate) {
+      toast.error('Preencha as datas de início e fim');
+      return;
+    }
+    if (editFormData.startDate > editFormData.endDate) {
+      toast.error('Data de início não pode ser posterior à data de fim');
+      return;
+    }
+
+    setEditing(true);
+    try {
+      await updateLeaveRequest(selectedRequest.id, {
+        startDate: editFormData.startDate,
+        endDate: editFormData.endDate,
+        observation: editFormData.observation
+      });
+      toast.success('Pedido atualizado com sucesso');
+      setEditDialogOpen(false);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Erro ao atualizar pedido');
+    } finally {
+      setEditing(false);
+    }
+  };
+
   const handleSubmitResponse = async () => {
     setSaving(true);
     try {
@@ -108,8 +152,8 @@ export default function AdminLeaveRequests() {
     setFilters({ employee_id: '', status: '' });
   };
 
-  const getDuration = (start, end) => {
-    const days = differenceInDays(parseISO(end), parseISO(start)) + 1;
+  const getDuration = (request) => {
+    const days = request?.counted_days ?? (differenceInDays(parseISO(request.end_date), parseISO(request.start_date)) + 1);
     return `${days} dia${days > 1 ? 's' : ''}`;
   };
 
@@ -223,7 +267,7 @@ export default function AdminLeaveRequests() {
                         {format(parseISO(request.start_date), 'dd/MM/yyyy')} - {format(parseISO(request.end_date), 'dd/MM/yyyy')}
                       </TableCell>
                       <TableCell className="hidden md:table-cell">
-                        {getDuration(request.start_date, request.end_date)}
+                        {getDuration(request)}
                       </TableCell>
                       <TableCell>
                         <Badge className={`badge-${request.status}`}>
@@ -242,6 +286,14 @@ export default function AdminLeaveRequests() {
                             data-testid={`view-request-${request.id}`}
                           >
                             <Eye className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleOpenEdit(request)}
+                            data-testid={`edit-request-${request.id}`}
+                          >
+                            <Pencil className="h-4 w-4" />
                           </Button>
                           {request.status === 'pendente' && (
                             <>
@@ -301,7 +353,7 @@ export default function AdminLeaveRequests() {
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">Duração:</span>
-                <span>{selectedRequest && getDuration(selectedRequest.start_date, selectedRequest.end_date)}</span>
+                <span>{selectedRequest && getDuration(selectedRequest)}</span>
               </div>
             </div>
             <div className="space-y-2">
@@ -327,6 +379,63 @@ export default function AdminLeaveRequests() {
               data-testid="submit-response-btn"
             >
               {saving ? 'A processar...' : (responseAction === 'aprovado' ? 'Aprovar' : 'Recusar')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Dialog */}
+      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+        <DialogContent data-testid="edit-request-dialog">
+          <DialogHeader>
+            <DialogTitle>Editar Pedido</DialogTitle>
+            <DialogDescription>
+              Ajuste datas ou motivo do pedido selecionado.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="edit-start" data-testid="edit-start-label">Data Início</Label>
+                <Input
+                  id="edit-start"
+                  type="date"
+                  value={editFormData.startDate}
+                  onChange={(e) => setEditFormData({ ...editFormData, startDate: e.target.value })}
+                  data-testid="edit-start-input"
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-end" data-testid="edit-end-label">Data Fim</Label>
+                <Input
+                  id="edit-end"
+                  type="date"
+                  value={editFormData.endDate}
+                  onChange={(e) => setEditFormData({ ...editFormData, endDate: e.target.value })}
+                  data-testid="edit-end-input"
+                  required
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-observation" data-testid="edit-observation-label">Motivo/Observação</Label>
+              <Textarea
+                id="edit-observation"
+                value={editFormData.observation}
+                onChange={(e) => setEditFormData({ ...editFormData, observation: e.target.value })}
+                placeholder="Atualize o motivo ou observação"
+                rows={3}
+                data-testid="edit-observation-input"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setEditDialogOpen(false)} data-testid="edit-cancel-btn">
+              Cancelar
+            </Button>
+            <Button onClick={handleSubmitEdit} disabled={editing} data-testid="edit-save-btn">
+              {editing ? 'A guardar...' : 'Guardar Alterações'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -359,8 +468,16 @@ export default function AdminLeaveRequests() {
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Duração</p>
-                  <p className="font-medium">{getDuration(selectedRequest.start_date, selectedRequest.end_date)}</p>
+                  <p className="font-medium">{getDuration(selectedRequest)}</p>
                 </div>
+                {selectedRequest?.counted_days !== undefined && (
+                  <div>
+                    <p className="text-sm text-muted-foreground">Dias contabilizados</p>
+                    <p className="font-medium" data-testid="view-request-counted-days">
+                      {selectedRequest.counted_days} dia{selectedRequest.counted_days > 1 ? 's' : ''}
+                    </p>
+                  </div>
+                )}
                 <div>
                   <p className="text-sm text-muted-foreground">Estado</p>
                   <Badge className={`badge-${selectedRequest.status}`} data-testid="view-request-status">

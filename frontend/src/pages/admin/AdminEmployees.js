@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useOutletContext } from 'react-router-dom';
+import { useAuth } from '../../contexts/AuthContext';
 import { getEmployees, createEmployee, updateEmployee, deleteEmployee, getCompanies, getLocations, createAdminLeave } from '../../lib/api';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -48,6 +49,8 @@ const contractTypes = [
 
 export default function AdminEmployees() {
   const { selectedCompany } = useOutletContext();
+  const { user } = useAuth();
+  const isManager = user?.role === 'gerente';
   const [employees, setEmployees] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [locations, setLocations] = useState([]);
@@ -265,10 +268,12 @@ export default function AdminEmployees() {
             {selectedCompany ? `Colaboradores de ${selectedCompany.name}` : 'Gerir colaboradores'}
           </p>
         </div>
-        <Button onClick={() => handleOpenDialog()} data-testid="add-employee-btn">
-          <Plus className="h-4 w-4 mr-2" />
-          Novo Colaborador
-        </Button>
+        {!isManager && (
+          <Button onClick={() => handleOpenDialog()} data-testid="add-employee-btn">
+            <Plus className="h-4 w-4 mr-2" />
+            Novo Colaborador
+          </Button>
+        )}
       </div>
 
       {/* Search */}
@@ -342,25 +347,29 @@ export default function AdminEmployees() {
                           >
                             <Eye className="h-4 w-4" />
                           </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => handleOpenDialog(employee)}
-                            data-testid={`edit-employee-${employee.id}`}
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => {
-                              setSelectedEmployee(employee);
-                              setDeleteDialogOpen(true);
-                            }}
-                            data-testid={`delete-employee-${employee.id}`}
-                          >
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
+                          {!isManager && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleOpenDialog(employee)}
+                              data-testid={`edit-employee-${employee.id}`}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                          )}
+                          {!isManager && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => {
+                                setSelectedEmployee(employee);
+                                setDeleteDialogOpen(true);
+                              }}
+                              data-testid={`delete-employee-${employee.id}`}
+                            >
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>

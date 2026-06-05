@@ -1395,8 +1395,8 @@ async def get_time_records(
     elif employee_id:
         query["employee_id"] = employee_id
     
-    # Filter by company (admin only)
-    if company_id and current_user.get("role") == "admin":
+    # Filter by company (admin ou gestor)
+    if company_id and current_user.get("role") in ["admin", "gerente"]:
         employees = await db.employees.find({"company_id": company_id}, {"_id": 0, "id": 1}).to_list(1000)
         emp_ids = [e["id"] for e in employees]
         query["employee_id"] = {"$in": emp_ids}
@@ -1619,18 +1619,18 @@ async def create_admin_leave(request: AdminLeaveCreate, current_user: dict = Dep
 
 @api_router.post("/leave-requests", response_model=LeaveRequestResponse)
 async def create_leave_request(request: LeaveRequestCreate, current_user: dict = Depends(get_current_user)):
-    if current_user.get("role") != "colaborador":
-        raise HTTPException(status_code=403, detail="Apenas colaboradores podem criar pedidos")
-    
+    if current_user.get("role") not in ["colaborador", "gerente"]:
+        raise HTTPException(status_code=403, detail="Apenas colaboradores ou gestores podem criar pedidos")
+
     employee_id = current_user.get("employee_id")
     if not employee_id:
         raise HTTPException(status_code=400, detail="Utilizador não associado a colaborador")
-    
+
     # Validate leave type
     valid_types = ["ferias", "falta", "doenca", "folga"]
     if request.leave_type not in valid_types:
         raise HTTPException(status_code=400, detail=f"Tipo inválido. Use: {', '.join(valid_types)}")
-    
+
     request_id = str(uuid.uuid4())
     counted_days = await calculate_leave_counted_days(employee_id, request.start_date, request.end_date)
     request_doc = {
@@ -1643,19 +1643,19 @@ async def create_leave_request(request: LeaveRequestCreate, current_user: dict =
         "observation": request.observation,
         "document_id": None,
         "admin_response": None,
-        "created_by": "colaborador",
+        "created_by": "gestor" if current_user.get("role") == "gerente" else "colaborador",
         "is_paid": None,
         "counted_days": counted_days,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.leave_requests.insert_one(request_doc)
-    
+
     # Notify admins
     employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
     admins = await db.users.find({"role": "admin"}, {"_id": 0}).to_list(100)
-    
+
     leave_type_labels = {"ferias": "Férias", "falta": "Falta", "doenca": "Doença", "folga": "Folga"}
-    
+
     for admin in admins:
         notification_doc = {
             "id": str(uuid.uuid4()),
@@ -1666,7 +1666,7 @@ async def create_leave_request(request: LeaveRequestCreate, current_user: dict =
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         await db.notifications.insert_one(notification_doc)
-    
+
     return LeaveRequestResponse(**request_doc, employee_name=employee["name"] if employee else None)
 
 @api_router.get("/leave-requests", response_model=List[LeaveRequestResponse])
@@ -1684,8 +1684,8 @@ async def get_leave_requests(
     elif employee_id:
         query["employee_id"] = employee_id
     
-    # Filter by company (admin only)
-    if company_id and current_user.get("role") == "admin":
+    # Filter by company (admin ou gestor)
+    if company_id and current_user.get("role") in ["admin", "gerente"]:
         employees = await db.employees.find({"company_id": company_id}, {"_id": 0, "id": 1}).to_list(1000)
         emp_ids = [e["id"] for e in employees]
         query["employee_id"] = {"$in": emp_ids}
@@ -1711,11 +1711,80 @@ class LeaveRequestResponseModel(BaseModel):
     status: str
     response: Optional[str] = None
 
+class LeaveRequestUpdate(BaseModel):
+    start_date: str = Field(alias="startDate")
+    end_date: str = Field(alias="endDate")
+    observation: Optional[str] = None
+
+    model_config = {"populate_by_name": True}
+
+@api_router.put("/leave-requests/{request_id}", response_model=LeaveRequestResponse)
+async def update_leave_request(
+    request_id: str,
+    data: LeaveRequestUpdate,
+    current_user: dict = Depends(admin_manager_required)
+):
+    leave_request = await db.leave_requests.find_one({"id": request_id}, {"_id": 0})
+    if not leave_request:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+
+    try:
+        start_dt = datetime.fromisoformat(data.start_date)
+        end_dt = datetime.fromisoformat(data.end_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Datas inválidas. Use o formato AAAA-MM-DD")
+
+    if start_dt > end_dt:
+        raise HTTPException(status_code=400, detail="Data de início não pode ser posterior à data de fim")
+
+    overlapping = await db.leave_requests.find_one(
+        {
+            "employee_id": leave_request["employee_id"],
+            "id": {"$ne": request_id},
+            "status": {"$ne": "recusado"},
+            "start_date": {"$lte": data.end_date},
+            "end_date": {"$gte": data.start_date}
+        },
+        {"_id": 0}
+    )
+
+    if overlapping:
+        raise HTTPException(status_code=400, detail="Já existe um registo de férias/ausência nesse período")
+
+    counted_days = await calculate_leave_counted_days(
+        leave_request["employee_id"],
+        data.start_date,
+        data.end_date
+    )
+
+    await db.leave_requests.update_one(
+        {"id": request_id},
+        {
+            "$set": {
+                "start_date": data.start_date,
+                "end_date": data.end_date,
+                "observation": data.observation,
+                "counted_days": counted_days
+            }
+        }
+    )
+
+    updated = await db.leave_requests.find_one({"id": request_id}, {"_id": 0})
+    employee = await db.employees.find_one({"id": updated["employee_id"]}, {"_id": 0})
+    updated["employee_name"] = employee["name"] if employee else None
+    updated["counted_days"] = await calculate_leave_counted_days(
+        updated["employee_id"],
+        updated["start_date"],
+        updated["end_date"]
+    )
+
+    return LeaveRequestResponse(**updated)
+
 @api_router.put("/leave-requests/{request_id}/respond")
 async def respond_leave_request(
     request_id: str,
     data: LeaveRequestResponseModel,
-    current_user: dict = Depends(admin_required)
+    current_user: dict = Depends(admin_manager_required)
 ):
     if data.status not in ["aprovado", "recusado"]:
         raise HTTPException(status_code=400, detail="Status inválido. Use 'aprovado' ou 'recusado'")
@@ -1961,7 +2030,7 @@ async def mark_all_notifications_read(current_user: dict = Depends(get_current_u
 # ==================== DASHBOARD ROUTES ====================
 
 @api_router.get("/dashboard/admin")
-async def get_admin_dashboard(company_id: Optional[str] = None, current_user: dict = Depends(admin_required)):
+async def get_admin_dashboard(company_id: Optional[str] = None, current_user: dict = Depends(admin_manager_required)):
     query = {}
     if company_id:
         query["company_id"] = company_id

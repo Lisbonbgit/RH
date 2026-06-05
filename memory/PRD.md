@@ -75,14 +75,16 @@ MongoDB (Motor async driver)
 - [x] Novo endpoint /api/admin/leave para criar férias/ausências aprovadas pelo gestor
 - [x] Modal no perfil do colaborador para registar férias/ausência com motivo e remuneração
 - [x] Badge visual “Criado pelo gestor” nos pedidos criados manualmente
+- [x] Nova página “Escalas” para criar escalas semanais e atribuir por colaborador
+- [x] Histórico de atribuições por período e cálculo de férias baseado em dias trabalhados
 
 ## Backlog Prioritário
-- P0: Validação funcional do fluxo de férias/ausências criadas pelo gestor em produção
-- P1: Ajustar regras de sobreposição caso existam políticas diferentes por tipo de ausência
-- P2: Relatórios/auditoria de alterações manuais de férias/ausências
+- P0: Validar o cálculo de férias em produção com escalas reais
+- P1: Ajustar regras de sobreposição conforme política interna
+- P2: Relatórios/auditoria de alterações manuais de escalas
 
 ## Próximas Tarefas
-- Validar com a equipa o novo fluxo e confirmar regras de negócio para sobreposição
+- Confirmar se o modelo semanal atende ou se precisamos de escalas rotativas
 
 ## Fase Concluída
 O sistema está estável e pronto para validação com a equipa.

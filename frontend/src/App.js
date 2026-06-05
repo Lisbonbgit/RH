@@ -48,7 +48,7 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
   }
   
   if (allowedRoles && !allowedRoles.includes(user.role)) {
-    return <Navigate to={user.role === 'admin' ? '/admin' : '/colaborador'} replace />;
+    return <Navigate to={user.role === 'admin' || user.role === 'gerente' ? '/admin' : '/colaborador'} replace />;
   }
   
   return children;
@@ -72,7 +72,7 @@ const ChangePasswordRoute = ({ children }) => {
   
   // If user doesn't need to change password, redirect to appropriate dashboard
   if (!mustChangePassword) {
-    return <Navigate to={user.role === 'admin' ? '/admin' : '/colaborador'} replace />;
+    return <Navigate to={user.role === 'admin' || user.role === 'gerente' ? '/admin' : '/colaborador'} replace />;
   }
   
   return children;
@@ -99,7 +99,7 @@ const RoleRedirect = () => {
     return <Navigate to="/alterar-senha" replace />;
   }
   
-  return <Navigate to={user.role === 'admin' ? '/admin' : '/colaborador'} replace />;
+  return <Navigate to={user.role === 'admin' || user.role === 'gerente' ? '/admin' : '/colaborador'} replace />;
 };
 
 function AppRoutes() {
@@ -117,7 +117,7 @@ function AppRoutes() {
       
       {/* Admin Routes */}
       <Route path="/admin" element={
-        <ProtectedRoute allowedRoles={['admin']}>
+        <ProtectedRoute allowedRoles={['admin', 'gerente']}>
           <AdminLayout />
         </ProtectedRoute>
       }>
@@ -128,7 +128,11 @@ function AppRoutes() {
         <Route path="ponto" element={<AdminTimeRecords />} />
         <Route path="ausencias" element={<AdminLeaveRequests />} />
         <Route path="documentos" element={<AdminDocuments />} />
-        <Route path="gestores" element={<AdminManagers />} />
+        <Route path="gestores" element={
+          <ProtectedRoute allowedRoles={['admin']}>
+            <AdminManagers />
+          </ProtectedRoute>
+        } />
         <Route path="escalas" element={<AdminSchedules />} />
       </Route>
       
