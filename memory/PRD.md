@@ -77,6 +77,8 @@ MongoDB (Motor async driver)
 - [x] Badge visual “Criado pelo gestor” nos pedidos criados manualmente
 - [x] Nova página “Escalas” para criar escalas semanais e atribuir por colaborador
 - [x] Histórico de atribuições por período e cálculo de férias baseado em dias trabalhados
+- [x] Gestores podem aprovar/recusar e editar pedidos (endpoint /api/leave-requests/{id})
+- [x] Modal de edição de pedidos e exibição de dias contabilizados
 
 ## Backlog Prioritário
 - P0: Validar o cálculo de férias em produção com escalas reais
