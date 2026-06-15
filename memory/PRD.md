@@ -79,6 +79,7 @@ MongoDB (Motor async driver)
 - [x] Histórico de atribuições por período e cálculo de férias baseado em dias trabalhados
 - [x] Gestores podem aprovar/recusar e editar pedidos (endpoint /api/leave-requests/{id})
 - [x] Modal de edição de pedidos e exibição de dias contabilizados
+- [x] Log de alterações nos pedidos com quem/quando (visível no detalhe)
 
 ## Backlog Prioritário
 - P0: Validar o cálculo de férias em produção com escalas reais
