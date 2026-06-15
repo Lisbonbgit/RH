@@ -26,6 +26,7 @@ import {
   MapPin,
   Clock,
   Calendar,
+  CalendarRange,
   FileText,
   Bell,
   LogOut,
@@ -37,8 +38,6 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 
-const MASTER_ADMIN_EMAIL = 'geral@olacai.com';
-
 const navItems = [
   { path: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true },
   { path: '/admin/empresas', label: 'Empresas', icon: Building2 },
@@ -46,6 +45,7 @@ const navItems = [
   { path: '/admin/colaboradores', label: 'Colaboradores', icon: Users },
   { path: '/admin/ponto', label: 'Controlo de Ponto', icon: Clock },
   { path: '/admin/ausencias', label: 'Férias e Ausências', icon: Calendar },
+  { path: '/admin/mapa-ferias', label: 'Mapa de Férias', icon: CalendarRange },
   { path: '/admin/escalas', label: 'Escalas', icon: Calendar },
   { path: '/admin/documentos', label: 'Documentos', icon: FileText },
   { path: '/admin/gestores', label: 'Gestores', icon: UserPlus, masterOnly: true },
@@ -59,7 +59,7 @@ export default function AdminLayout() {
   const [selectedCompany, setSelectedCompany] = useState(null);
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  const isMasterAdmin = user?.email === MASTER_ADMIN_EMAIL;
+  const isMasterAdmin = user?.is_master_admin === true;
 
   useEffect(() => {
     fetchNotifications();

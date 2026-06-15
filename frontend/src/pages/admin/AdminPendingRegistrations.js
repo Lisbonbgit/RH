@@ -19,8 +19,6 @@ import { UserPlus, Check, X, ShieldAlert } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, parseISO } from 'date-fns';
 
-const MASTER_ADMIN_EMAIL = 'geral@olacai.com';
-
 export default function AdminPendingRegistrations() {
   const { user } = useAuth();
   const [registrations, setRegistrations] = useState([]);
@@ -28,7 +26,7 @@ export default function AdminPendingRegistrations() {
   const [selectedReg, setSelectedReg] = useState(null);
   const [confirmAction, setConfirmAction] = useState(null); // 'approve' or 'reject'
 
-  const isMasterAdmin = user?.email === MASTER_ADMIN_EMAIL;
+  const isMasterAdmin = user?.is_master_admin === true;
 
   useEffect(() => {
     if (isMasterAdmin) {

@@ -23,10 +23,11 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
-import { Clock, Pencil, Filter, History } from 'lucide-react';
+import { Clock, Pencil, Filter, History, MapPin, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, parseISO } from 'date-fns';
 import { pt } from 'date-fns/locale';
+import { downloadCSV } from '../../lib/export';
 
 export default function AdminTimeRecords() {
   const { selectedCompany } = useOutletContext();
@@ -108,13 +109,39 @@ export default function AdminTimeRecords() {
     setFilters({ employee_id: '', start_date: '', end_date: '' });
   };
 
+  const handleExport = () => {
+    if (records.length === 0) {
+      toast.error('Sem registos para exportar');
+      return;
+    }
+    const headers = ['Colaborador', 'Tipo', 'Data', 'Hora', 'Estado', 'Latitude', 'Longitude'];
+    const rows = records.map((r) => [
+      r.employee_name,
+      r.record_type === 'entrada' ? 'Entrada' : 'Saída',
+      format(parseISO(r.time), 'dd/MM/yyyy'),
+      format(parseISO(r.time), 'HH:mm'),
+      r.corrected ? 'Corrigido' : 'Original',
+      r.latitude ?? '',
+      r.longitude ?? '',
+    ]);
+    const suffix = selectedCompany?.name ? `-${selectedCompany.name}` : '';
+    downloadCSV(`ponto${suffix}.csv`, headers, rows);
+    toast.success('Registos exportados');
+  };
+
   return (
     <div className="space-y-6 animate-fade-in" data-testid="admin-time-records-page">
-      <div>
-        <h1 className="text-2xl md:text-3xl font-heading font-bold">Controlo de Ponto</h1>
-        <p className="text-muted-foreground mt-1">
-          {selectedCompany ? `Registos de ${selectedCompany.name}` : 'Visualizar e corrigir registos de ponto'}
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-heading font-bold">Controlo de Ponto</h1>
+          <p className="text-muted-foreground mt-1">
+            {selectedCompany ? `Registos de ${selectedCompany.name}` : 'Visualizar e corrigir registos de ponto'}
+          </p>
+        </div>
+        <Button variant="outline" onClick={handleExport} data-testid="export-records-btn">
+          <Download className="h-4 w-4 mr-2" />
+          Exportar CSV
+        </Button>
       </div>
 
       {/* Filters */}
@@ -192,6 +219,7 @@ export default function AdminTimeRecords() {
                     <TableHead>Colaborador</TableHead>
                     <TableHead>Tipo</TableHead>
                     <TableHead>Data/Hora</TableHead>
+                    <TableHead className="hidden md:table-cell">Local</TableHead>
                     <TableHead className="hidden sm:table-cell">Estado</TableHead>
                     <TableHead className="text-right">Ações</TableHead>
                   </TableRow>
@@ -207,6 +235,21 @@ export default function AdminTimeRecords() {
                       </TableCell>
                       <TableCell>
                         {format(parseISO(record.time), "dd/MM/yyyy 'às' HH:mm", { locale: pt })}
+                      </TableCell>
+                      <TableCell className="hidden md:table-cell">
+                        {record.latitude != null && record.longitude != null ? (
+                          <a
+                            href={`https://www.google.com/maps?q=${record.latitude},${record.longitude}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                            title={`Precisão ~${Math.round(record.accuracy || 0)}m`}
+                          >
+                            <MapPin className="h-3 w-3" /> Ver mapa
+                          </a>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
                       </TableCell>
                       <TableCell className="hidden sm:table-cell">
                         {record.corrected ? (

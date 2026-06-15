@@ -227,6 +227,7 @@ class UserResponse(BaseModel):
     role: str
     employee_id: Optional[str] = None
     must_change_password: bool = False
+    is_master_admin: bool = False
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
@@ -348,6 +349,10 @@ class EmployeeResponse(BaseModel):
 
 class TimeRecordCreate(BaseModel):
     record_type: str  # entrada or saida
+    # Geolocalização (opcional - o browser pode negar)
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    accuracy: Optional[float] = None  # precisão em metros
 
 class TimeRecordCorrection(BaseModel):
     time: str
@@ -361,6 +366,9 @@ class TimeRecordResponse(BaseModel):
     time: str
     corrected: bool = False
     correction_history: List[dict] = []
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    accuracy: Optional[float] = None
 
 class AdminLeaveCreate(BaseModel):
     user_id: str = Field(alias="userId")
@@ -666,7 +674,8 @@ async def login(credentials: UserLogin):
             "name": user["name"],
             "role": user["role"],
             "employee_id": user.get("employee_id"),
-            "must_change_password": must_change_password
+            "must_change_password": must_change_password,
+            "is_master_admin": user["email"] == MASTER_ADMIN_EMAIL
         }
     }
 
@@ -676,6 +685,7 @@ async def get_me(current_user: dict = Depends(get_current_user)):
     user = await db.users.find_one({"id": current_user["user_id"]}, {"_id": 0, "password": 0})
     if not user:
         raise HTTPException(status_code=404, detail="Utilizador não encontrado")
+    user["is_master_admin"] = user.get("email") == MASTER_ADMIN_EMAIL
     return UserResponse(**user)
 
 @api_router.post("/auth/change-password")
@@ -1389,10 +1399,13 @@ async def create_time_record(record: TimeRecordCreate, current_user: dict = Depe
         "record_type": record.record_type,
         "time": datetime.now(timezone.utc).isoformat(),
         "corrected": False,
-        "correction_history": []
+        "correction_history": [],
+        "latitude": record.latitude,
+        "longitude": record.longitude,
+        "accuracy": record.accuracy
     }
     await db.time_records.insert_one(record_doc)
-    
+
     return TimeRecordResponse(**record_doc)
 
 @api_router.get("/time-records", response_model=List[TimeRecordResponse])

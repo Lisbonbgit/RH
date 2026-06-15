@@ -24,9 +24,10 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
-import { Calendar, Check, X, Filter, Eye, Pencil } from 'lucide-react';
+import { Calendar, Check, X, Filter, Eye, Pencil, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, parseISO, differenceInDays } from 'date-fns';
+import { downloadCSV } from '../../lib/export';
 
 const leaveTypeLabels = {
   ferias: 'Férias',
@@ -167,6 +168,26 @@ export default function AdminLeaveRequests() {
     setFilters({ employee_id: '', status: '' });
   };
 
+  const handleExport = () => {
+    if (requests.length === 0) {
+      toast.error('Sem pedidos para exportar');
+      return;
+    }
+    const headers = ['Colaborador', 'Tipo', 'Início', 'Fim', 'Dias', 'Estado', 'Observação'];
+    const rows = requests.map((r) => [
+      r.employee_name,
+      leaveTypeLabels[r.leave_type] || r.leave_type,
+      format(parseISO(r.start_date), 'dd/MM/yyyy'),
+      format(parseISO(r.end_date), 'dd/MM/yyyy'),
+      r.counted_days ?? (differenceInDays(parseISO(r.end_date), parseISO(r.start_date)) + 1),
+      statusLabels[r.status] || r.status,
+      r.observation || '',
+    ]);
+    const suffix = selectedCompany?.name ? `-${selectedCompany.name}` : '';
+    downloadCSV(`ferias${suffix}.csv`, headers, rows);
+    toast.success('Pedidos exportados');
+  };
+
   const getDuration = (request) => {
     const days = request?.counted_days ?? (differenceInDays(parseISO(request.end_date), parseISO(request.start_date)) + 1);
     return `${days} dia${days > 1 ? 's' : ''}`;
@@ -176,11 +197,17 @@ export default function AdminLeaveRequests() {
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="admin-leave-requests-page">
-      <div>
-        <h1 className="text-2xl md:text-3xl font-heading font-bold">Férias e Ausências</h1>
-        <p className="text-muted-foreground mt-1">
-          {selectedCompany ? `Pedidos de ${selectedCompany.name}` : 'Gerir pedidos de férias e ausências'}
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-heading font-bold">Férias e Ausências</h1>
+          <p className="text-muted-foreground mt-1">
+            {selectedCompany ? `Pedidos de ${selectedCompany.name}` : 'Gerir pedidos de férias e ausências'}
+          </p>
+        </div>
+        <Button variant="outline" onClick={handleExport} data-testid="export-leaves-btn">
+          <Download className="h-4 w-4 mr-2" />
+          Exportar CSV
+        </Button>
       </div>
 
       {/* Filters */}
