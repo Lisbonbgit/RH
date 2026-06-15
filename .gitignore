@@ -88,3 +88,13 @@ frontend/node_modules/.cache/default-development/0.pack
 credentials.json
 *.key
 .credentials
+
+# ...mas MANTER os ficheiros de exemplo no repositório
+!.env.example
+!*.env.example
+!backend/.env.example
+!frontend/.env.example
+
+# Ficheiros enviados pelos utilizadores (documentos) - não vão para o git
+backend/uploads/*
+!backend/uploads/.gitkeep

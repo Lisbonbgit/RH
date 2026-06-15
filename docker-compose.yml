@@ -1,0 +1,36 @@
+# ===== RH grupo Lisbonb - Orquestração (VPS) =====
+# Arrancar tudo:   docker compose up -d --build
+# Ver logs:        docker compose logs -f
+# Parar:           docker compose down
+#
+# A base de dados é o MongoDB Atlas (na nuvem) - não corre aqui.
+
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    volumes:
+      # Documentos enviados ficam persistentes mesmo que o contentor reinicie
+      - uploads_data:/app/uploads
+    expose:
+      - "8000"
+    # Não expõe a porta diretamente para fora; só o nginx do frontend lhe acede.
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Vazio = mesmo domínio. Os pedidos /api são encaminhados pelo nginx.
+        REACT_APP_BACKEND_URL: ""
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      # Porta 80 do VPS -> nginx do frontend.
+      # (Quando configurar HTTPS, o Certbot/nginx do host trata do 443.)
+      - "80:80"
+
+volumes:
+  uploads_data:

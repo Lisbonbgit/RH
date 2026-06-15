@@ -49,7 +49,9 @@ RESET_TOKEN_EXPIRATION_HOURS = 1
 # Resend Email Configuration
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY')
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
-FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://rh-lisbonb-auth.preview.emergentagent.com')
+# URL do frontend usado nos links de recuperação de palavra-passe.
+# Em produção definir FRONTEND_URL no .env (ex.: https://rh.suaempresa.pt)
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
 
 # Initialize Resend
 if RESEND_AVAILABLE and RESEND_API_KEY:
@@ -2228,10 +2230,15 @@ async def health_check():
 # Include the router in the main app
 app.include_router(api_router)
 
+# CORS: em produção definir CORS_ORIGINS com o(s) domínio(s) do frontend,
+# separados por vírgula (ex.: https://rh.suaempresa.pt). Em dev fica '*'.
+# Nota: com origens '*' não é permitido allow_credentials=True (o browser rejeita).
+# Como a autenticação usa Bearer token no header (não cookies), isto é seguro.
+cors_origins = [o.strip() for o in os.environ.get('CORS_ORIGINS', '*').split(',') if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_credentials='*' not in cors_origins,
+    allow_origins=cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -2244,3 +2251,12 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+
+
+if __name__ == "__main__":
+    # Arranque direto para desenvolvimento: `python server.py`
+    # Em produção (VPS) usar antes:
+    #   uvicorn server:app --host 0.0.0.0 --port 8000 --workers 2
+    import uvicorn
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)
