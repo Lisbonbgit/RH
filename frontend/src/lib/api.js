@@ -26,6 +26,7 @@ export const deleteEmployee = (id) => axios.delete(`${API_URL}/employees/${id}`)
 export const getTimeRecords = (params) => axios.get(`${API_URL}/time-records`, { params });
 export const createTimeRecord = (data) => axios.post(`${API_URL}/time-records`, data);
 export const correctTimeRecord = (id, data) => axios.put(`${API_URL}/time-records/${id}/correct`, data);
+export const getWorkedHoursReport = (params) => axios.get(`${API_URL}/reports/worked-hours`, { params });
 
 // Leave Requests
 export const getLeaveRequests = (params) => axios.get(`${API_URL}/leave-requests`, { params });

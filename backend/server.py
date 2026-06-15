@@ -1487,6 +1487,81 @@ async def correct_time_record(record_id: str, correction: TimeRecordCorrection, 
     updated["employee_name"] = employee["name"] if employee else None
     return TimeRecordResponse(**updated)
 
+@api_router.get("/reports/worked-hours")
+async def worked_hours_report(
+    company_id: Optional[str] = None,
+    employee_id: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: dict = Depends(admin_manager_required)
+):
+    """Relatório de horas trabalhadas por colaborador (pares entrada->saída)."""
+
+    def parse_dt(s: str) -> datetime:
+        # Aceita tanto '...Z' como '...+00:00'
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+    # Conjunto de colaboradores a considerar
+    emp_query = {}
+    if company_id:
+        emp_query["company_id"] = company_id
+    if employee_id:
+        emp_query["id"] = employee_id
+    employees = await db.employees.find(emp_query, {"_id": 0}).to_list(1000)
+    emp_map = {e["id"]: e for e in employees}
+    if not emp_map:
+        return []
+
+    # Registos de ponto no período
+    rec_query = {"employee_id": {"$in": list(emp_map.keys())}}
+    if start_date or end_date:
+        rec_query["time"] = {}
+        if start_date:
+            rec_query["time"]["$gte"] = start_date
+        if end_date:
+            rec_query["time"]["$lte"] = end_date
+    records = await db.time_records.find(rec_query, {"_id": 0}).sort("time", 1).to_list(100000)
+
+    by_emp = {}
+    for r in records:
+        by_emp.setdefault(r["employee_id"], []).append(r)
+
+    results = []
+    for emp_id, emp in emp_map.items():
+        recs = by_emp.get(emp_id, [])
+        total_seconds = 0.0
+        days = set()
+        pending_in = None
+        incomplete = False
+        for r in recs:
+            t = parse_dt(r["time"])
+            days.add(t.date().isoformat())
+            if r["record_type"] == "entrada":
+                if pending_in is not None:
+                    incomplete = True  # duas entradas seguidas sem saída
+                pending_in = t
+            elif r["record_type"] == "saida":
+                if pending_in is not None:
+                    delta = (t - pending_in).total_seconds()
+                    if delta > 0:
+                        total_seconds += delta
+                    pending_in = None
+                else:
+                    incomplete = True  # saída sem entrada
+        if pending_in is not None:
+            incomplete = True  # entrada sem saída no fim do período
+
+        results.append({
+            "employee_id": emp_id,
+            "employee_name": emp.get("name"),
+            "total_hours": round(total_seconds / 3600, 2),
+            "days_worked": len(days),
+            "incomplete": incomplete,
+        })
+
+    results.sort(key=lambda x: (x["employee_name"] or "").lower())
+    return results
+
 # ==================== WORK SCHEDULE ROUTES ====================
 
 @api_router.post("/schedules", response_model=WorkScheduleTemplateResponse)
