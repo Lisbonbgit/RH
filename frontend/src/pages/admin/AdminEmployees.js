@@ -70,7 +70,8 @@ export default function AdminEmployees() {
     contract_type: '',
     start_date: '',
     vacation_days: 22,
-    observations: ''
+    observations: '',
+    geofence_exempt: false
   });
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
   const [leaveSaving, setLeaveSaving] = useState(false);
@@ -131,7 +132,8 @@ export default function AdminEmployees() {
         contract_type: employee.contract_type,
         start_date: employee.start_date,
         vacation_days: employee.vacation_days,
-        observations: employee.observations || ''
+        observations: employee.observations || '',
+        geofence_exempt: employee.geofence_exempt === true
       });
       fetchLocations(employee.company_id);
     } else {
@@ -146,7 +148,8 @@ export default function AdminEmployees() {
         contract_type: '',
         start_date: '',
         vacation_days: 22,
-        observations: ''
+        observations: '',
+        geofence_exempt: false
       });
       if (selectedCompany?.id) {
         fetchLocations(selectedCompany.id);
@@ -531,6 +534,24 @@ export default function AdminEmployees() {
                   rows={3}
                   data-testid="employee-observations-input"
                 />
+              </div>
+              <div className="md:col-span-2 rounded-lg border p-3 bg-muted/30">
+                <label className="flex items-start gap-2 text-sm cursor-pointer">
+                  <Checkbox
+                    checked={formData.geofence_exempt === true}
+                    onCheckedChange={(checked) => setFormData({ ...formData, geofence_exempt: checked === true })}
+                    data-testid="employee-geofence-exempt-checkbox"
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="font-medium">Trabalha em vários locais (isento de cerca geográfica)</span>
+                    <br />
+                    <span className="text-xs text-muted-foreground">
+                      Se ativado, este colaborador pode registar ponto de qualquer lugar — a cerca
+                      geográfica do local não é aplicada (a localização continua a ser registada).
+                    </span>
+                  </span>
+                </label>
               </div>
             </div>
             <DialogFooter>

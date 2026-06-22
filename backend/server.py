@@ -319,6 +319,9 @@ class EmployeeCreate(BaseModel):
     start_date: str
     vacation_days: int = 22
     observations: Optional[str] = None
+    # Isento de cerca geográfica (ex.: trabalha em vários locais).
+    # Se True, pode bater ponto de qualquer lugar (a localização é só registada).
+    geofence_exempt: bool = False
 
     @field_validator('password')
     @classmethod
@@ -337,6 +340,7 @@ class EmployeeUpdate(BaseModel):
     start_date: Optional[str] = None
     vacation_days: Optional[int] = None
     observations: Optional[str] = None
+    geofence_exempt: Optional[bool] = None
 
 class EmployeeResponse(BaseModel):
     id: str
@@ -354,6 +358,7 @@ class EmployeeResponse(BaseModel):
     vacation_days_used: int = 0
     vacation_days_available: int = 0
     observations: Optional[str] = None
+    geofence_exempt: bool = False
     created_at: str
 
 class TimeRecordCreate(BaseModel):
@@ -1215,6 +1220,7 @@ async def create_employee(employee: EmployeeCreate, current_user: dict = Depends
         "start_date": employee.start_date,
         "vacation_days": employee.vacation_days,
         "observations": employee.observations,
+        "geofence_exempt": employee.geofence_exempt,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.employees.insert_one(employee_doc)
@@ -1439,8 +1445,9 @@ async def create_time_record(record: TimeRecordCreate, current_user: dict = Depe
 
     # Cerca geográfica: se o local do colaborador tiver posição e raio definidos,
     # o ponto só é aceite se ele estiver dentro do raio.
+    # Colaboradores isentos (ex.: que rodam por várias lojas) não são validados.
     employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
-    if employee and employee.get("location_id"):
+    if employee and employee.get("location_id") and not employee.get("geofence_exempt"):
         location = await db.locations.find_one({"id": employee["location_id"]}, {"_id": 0})
         if location and location.get("latitude") is not None and location.get("longitude") is not None and location.get("geofence_radius"):
             radius = location["geofence_radius"]
