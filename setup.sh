@@ -50,25 +50,15 @@ echo "A gerar segredos de segurança..."
 # Chave JWT aleatória
 JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')
 
-# Hash bcrypt da password do admin (gerado num contentor Python)
-echo "A processar a password do administrador (pode demorar uns segundos)..."
-ADMIN_HASH=$(docker run --rm -e PW="$ADMIN_PW" python:3.11-slim sh -c \
-  "pip install -q bcrypt >/dev/null 2>&1 && python -c 'import bcrypt,os; print(bcrypt.hashpw(os.environ[\"PW\"].encode(), bcrypt.gensalt()).decode())'")
-
-if [ -z "$ADMIN_HASH" ]; then
-  echo "Falha ao gerar o hash da password. Verifique se o Docker está a funcionar."
-  exit 1
-fi
-
-# Escrever o .env SEM aspas: o docker-compose env_file inclui as aspas como
-# parte do valor (não as remove), o que partia o MONGO_URL. env_file também
-# não faz interpolação, por isso o '$' do hash bcrypt fica seguro sem aspas.
+# Escrever o .env SEM aspas (o docker-compose env_file inclui as aspas como
+# parte do valor). A password do admin vai em texto simples (ADMIN_PASSWORD);
+# é o backend que a encripta no arranque, evitando o problema do '$' do hash.
 {
   printf "MONGO_URL=%s\n" "$MONGO_URL"
   printf "DB_NAME=%s\n" "$DB_NAME"
   printf "JWT_SECRET=%s\n" "$JWT_SECRET"
   printf "ADMIN_EMAIL=%s\n" "$ADMIN_EMAIL"
-  printf "ADMIN_PASSWORD_HASH=%s\n" "$ADMIN_HASH"
+  printf "ADMIN_PASSWORD=%s\n" "$ADMIN_PW"
   printf "CORS_ORIGINS=%s\n" "*"
   printf "FRONTEND_URL=%s\n" "$FRONTEND_URL"
   printf "RESEND_API_KEY=%s\n" "$RESEND_API_KEY"

@@ -627,17 +627,27 @@ async def admin_manager_required(current_user: dict = Depends(get_current_user))
     return current_user
 
 async def ensure_master_admin_exists():
-    """Ensure master admin exists in database using environment variables"""
-    if not MASTER_ADMIN_PASSWORD_HASH:
-        logger.warning("ADMIN_PASSWORD_HASH not configured. Master admin will not be auto-created.")
+    """Garante que o admin master existe.
+
+    Password vem de ADMIN_PASSWORD (texto simples, encriptada aqui) ou, em
+    alternativa, de ADMIN_PASSWORD_HASH (hash já pronto). Usar ADMIN_PASSWORD
+    evita problemas com o '$' do hash em ficheiros .env / docker-compose.
+    Se o admin já existir e ADMIN_PASSWORD estiver definido, a password é
+    atualizada (o .env é a fonte de verdade para o admin master).
+    """
+    admin_password = os.environ.get('ADMIN_PASSWORD')
+    password_hash = hash_password(admin_password) if admin_password else MASTER_ADMIN_PASSWORD_HASH
+
+    if not password_hash:
+        logger.warning("Nem ADMIN_PASSWORD nem ADMIN_PASSWORD_HASH configurados. Admin master não criado.")
         return
-    
+
     existing = await db.users.find_one({"email": MASTER_ADMIN_EMAIL})
     if not existing:
         admin_doc = {
             "id": str(uuid.uuid4()),
             "email": MASTER_ADMIN_EMAIL,
-            "password": MASTER_ADMIN_PASSWORD_HASH,
+            "password": password_hash,
             "name": "Administrador Principal",
             "role": "admin",
             "employee_id": None,
@@ -646,6 +656,13 @@ async def ensure_master_admin_exists():
         }
         await db.users.insert_one(admin_doc)
         logger.info(f"Master admin created: {MASTER_ADMIN_EMAIL}")
+    elif admin_password:
+        # Repara/atualiza a password do admin master a partir do .env
+        await db.users.update_one(
+            {"email": MASTER_ADMIN_EMAIL},
+            {"$set": {"password": password_hash, "must_change_password": False}}
+        )
+        logger.info(f"Master admin password atualizada: {MASTER_ADMIN_EMAIL}")
 
 # ==================== AUTH ROUTES ====================
 
