@@ -1,0 +1,11 @@
+# ===== RH grupo Lisbonb - Caddy (HTTPS automático) =====
+# O Caddy obtém e renova sozinho o certificado Let's Encrypt para o domínio,
+# e encaminha o tráfego para o frontend (que por sua vez serve o site e o /api).
+#
+# Requisitos: o domínio tem de apontar para o IP do VPS (registo A) e as
+# portas 80 e 443 têm de estar abertas.
+
+rh.lisbonb.com {
+    encode gzip
+    reverse_proxy frontend:80
+}

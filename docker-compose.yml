@@ -27,10 +27,24 @@ services:
     restart: unless-stopped
     depends_on:
       - backend
+    expose:
+      - "80"
+    # O Caddy é que recebe o tráfego de fora e encaminha para aqui.
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - frontend
     ports:
-      # Porta 80 do VPS -> nginx do frontend.
-      # (Quando configurar HTTPS, o Certbot/nginx do host trata do 443.)
       - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
 
 volumes:
   uploads_data:
+  caddy_data:
+  caddy_config:
