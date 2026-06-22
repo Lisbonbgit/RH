@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { getLeaveRequests, respondLeaveRequest, getEmployees, updateLeaveRequest } from '../../lib/api';
+import { getLeaveRequests, respondLeaveRequest, getEmployees, updateLeaveRequest, createAdminLeave, deleteLeaveRequest } from '../../lib/api';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -24,7 +24,8 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
-import { Calendar, Check, X, Filter, Eye, Pencil, Download } from 'lucide-react';
+import { Checkbox } from '../../components/ui/checkbox';
+import { Calendar, Check, X, Filter, Eye, Pencil, Download, Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, parseISO, differenceInDays } from 'date-fns';
 import { downloadCSV } from '../../lib/export';
@@ -79,10 +80,69 @@ export default function AdminLeaveRequests() {
   });
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [createForm, setCreateForm] = useState({
+    userId: '',
+    type: 'ferias',
+    startDate: '',
+    endDate: '',
+    reason: '',
+    isPaid: true,
+  });
 
   useEffect(() => {
     fetchData();
   }, [selectedCompany, filters]);
+
+  const handleOpenCreate = () => {
+    setCreateForm({ userId: '', type: 'ferias', startDate: '', endDate: '', reason: '', isPaid: true });
+    setCreateDialogOpen(true);
+  };
+
+  const handleCreateLeave = async () => {
+    if (!createForm.userId) {
+      toast.error('Selecione um colaborador');
+      return;
+    }
+    if (!createForm.startDate || !createForm.endDate) {
+      toast.error('Preencha as datas de início e fim');
+      return;
+    }
+    if (createForm.startDate > createForm.endDate) {
+      toast.error('Data de início não pode ser posterior à data de fim');
+      return;
+    }
+    setCreating(true);
+    try {
+      await createAdminLeave({
+        userId: createForm.userId,
+        type: createForm.type,
+        startDate: createForm.startDate,
+        endDate: createForm.endDate,
+        reason: createForm.reason || null,
+        isPaid: createForm.isPaid,
+      });
+      toast.success('Férias/ausência atribuída com sucesso');
+      setCreateDialogOpen(false);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Erro ao atribuir');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleDeleteRequest = async (request) => {
+    if (!window.confirm(`Eliminar este pedido de ${request.employee_name || 'colaborador'}? Esta ação não pode ser revertida.`)) return;
+    try {
+      await deleteLeaveRequest(request.id);
+      toast.success('Pedido eliminado');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Erro ao eliminar pedido');
+    }
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -204,10 +264,16 @@ export default function AdminLeaveRequests() {
             {selectedCompany ? `Pedidos de ${selectedCompany.name}` : 'Gerir pedidos de férias e ausências'}
           </p>
         </div>
-        <Button variant="outline" onClick={handleExport} data-testid="export-leaves-btn">
-          <Download className="h-4 w-4 mr-2" />
-          Exportar CSV
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button onClick={handleOpenCreate} data-testid="create-leave-btn">
+            <Plus className="h-4 w-4 mr-2" />
+            Atribuir Férias
+          </Button>
+          <Button variant="outline" onClick={handleExport} data-testid="export-leaves-btn">
+            <Download className="h-4 w-4 mr-2" />
+            Exportar CSV
+          </Button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -357,6 +423,15 @@ export default function AdminLeaveRequests() {
                               </Button>
                             </>
                           )}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleDeleteRequest(request)}
+                            data-testid={`delete-request-${request.id}`}
+                            title="Eliminar pedido"
+                          >
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
                         </div>
                       </TableCell>
                     </TableRow>
@@ -580,6 +655,101 @@ export default function AdminLeaveRequests() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Create (admin assign) Dialog */}
+      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+        <DialogContent data-testid="create-leave-dialog">
+          <DialogHeader>
+            <DialogTitle>Atribuir Férias / Ausência</DialogTitle>
+            <DialogDescription>
+              Lançar férias ou ausência diretamente para um colaborador (sem precisar de aprovação).
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Colaborador *</Label>
+              <Select
+                value={createForm.userId || '__empty__'}
+                onValueChange={(value) => setCreateForm({ ...createForm, userId: value === '__empty__' ? '' : value })}
+              >
+                <SelectTrigger data-testid="create-leave-employee-select">
+                  <SelectValue placeholder="Selecionar colaborador" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__empty__">Selecionar colaborador</SelectItem>
+                  {employees.map((emp) => (
+                    <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Tipo *</Label>
+              <Select
+                value={createForm.type}
+                onValueChange={(value) => setCreateForm({ ...createForm, type: value })}
+              >
+                <SelectTrigger data-testid="create-leave-type-select">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ferias">Férias</SelectItem>
+                  <SelectItem value="ausencia">Ausência</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="create-start">Data Início *</Label>
+                <Input
+                  id="create-start"
+                  type="date"
+                  value={createForm.startDate}
+                  onChange={(e) => setCreateForm({ ...createForm, startDate: e.target.value })}
+                  data-testid="create-leave-start-input"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="create-end">Data Fim *</Label>
+                <Input
+                  id="create-end"
+                  type="date"
+                  value={createForm.endDate}
+                  onChange={(e) => setCreateForm({ ...createForm, endDate: e.target.value })}
+                  data-testid="create-leave-end-input"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="create-reason">Motivo / Observação</Label>
+              <Textarea
+                id="create-reason"
+                value={createForm.reason}
+                onChange={(e) => setCreateForm({ ...createForm, reason: e.target.value })}
+                placeholder="Opcional"
+                rows={2}
+                data-testid="create-leave-reason-input"
+              />
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={createForm.isPaid}
+                onCheckedChange={(checked) => setCreateForm({ ...createForm, isPaid: checked === true })}
+                data-testid="create-leave-paid-checkbox"
+              />
+              Remunerado
+            </label>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setCreateDialogOpen(false)}>
+              Cancelar
+            </Button>
+            <Button onClick={handleCreateLeave} disabled={creating} data-testid="submit-create-leave-btn">
+              {creating ? 'A guardar...' : 'Atribuir'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

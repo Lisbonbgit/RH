@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { getEmployees, getSchedules, createSchedule, getScheduleAssignments, assignSchedule } from '../../lib/api';
+import { getEmployees, getSchedules, createSchedule, updateSchedule, deleteSchedule, getScheduleAssignments, assignSchedule, deleteScheduleAssignment } from '../../lib/api';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
-import { CalendarDays, Plus } from 'lucide-react';
+import { CalendarDays, Plus, Pencil, Trash2, X } from 'lucide-react';
 import { toast } from 'sonner';
 
 const weekDays = [
@@ -48,6 +48,7 @@ export default function AdminSchedules() {
     name: '',
     workDays: [0, 1, 2, 3, 4]
   });
+  const [editingTemplate, setEditingTemplate] = useState(null);
 
   const [assignmentForm, setAssignmentForm] = useState({
     employeeId: '',
@@ -88,7 +89,17 @@ export default function AdminSchedules() {
     });
   };
 
-  const handleCreateTemplate = async (e) => {
+  const handleEditTemplate = (template) => {
+    setEditingTemplate(template);
+    setTemplateForm({ name: template.name, workDays: [...(template.work_days || [])] });
+  };
+
+  const handleCancelEdit = () => {
+    setEditingTemplate(null);
+    setTemplateForm({ name: '', workDays: [0, 1, 2, 3, 4] });
+  };
+
+  const handleSubmitTemplate = async (e) => {
     e.preventDefault();
     if (!templateForm.name.trim()) {
       toast.error('Informe o nome da escala');
@@ -100,17 +111,50 @@ export default function AdminSchedules() {
     }
     setSavingTemplate(true);
     try {
-      const response = await createSchedule({
-        name: templateForm.name,
-        workDays: templateForm.workDays
-      });
-      toast.success('Escala criada com sucesso');
-      setTemplates((prev) => [response.data, ...prev]);
-      setTemplateForm({ name: '', workDays: templateForm.workDays });
+      if (editingTemplate) {
+        await updateSchedule(editingTemplate.id, {
+          name: templateForm.name,
+          workDays: templateForm.workDays
+        });
+        toast.success('Escala atualizada com sucesso');
+        handleCancelEdit();
+      } else {
+        const response = await createSchedule({
+          name: templateForm.name,
+          workDays: templateForm.workDays
+        });
+        toast.success('Escala criada com sucesso');
+        setTemplates((prev) => [response.data, ...prev]);
+        setTemplateForm({ name: '', workDays: templateForm.workDays });
+      }
+      fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Erro ao criar escala');
+      toast.error(error.response?.data?.detail || 'Erro ao guardar escala');
     } finally {
       setSavingTemplate(false);
+    }
+  };
+
+  const handleDeleteTemplate = async (template) => {
+    if (!window.confirm(`Eliminar a escala "${template.name}"? As atribuições desta escala também serão removidas.`)) return;
+    try {
+      await deleteSchedule(template.id);
+      toast.success('Escala eliminada');
+      if (editingTemplate?.id === template.id) handleCancelEdit();
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Erro ao eliminar escala');
+    }
+  };
+
+  const handleDeleteAssignment = async (assignment) => {
+    if (!window.confirm(`Remover a escala de ${assignment.employee_name || 'colaborador'}?`)) return;
+    try {
+      await deleteScheduleAssignment(assignment.id);
+      toast.success('Atribuição removida');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Erro ao remover atribuição');
     }
   };
 
@@ -172,12 +216,12 @@ export default function AdminSchedules() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <CalendarDays className="h-5 w-5" />
-              Criar Escala
+              {editingTemplate ? 'Editar Escala' : 'Criar Escala'}
             </CardTitle>
             <CardDescription>Defina os dias trabalhados no ciclo semanal.</CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleCreateTemplate} className="space-y-4" data-testid="schedule-create-form">
+            <form onSubmit={handleSubmitTemplate} className="space-y-4" data-testid="schedule-create-form">
               <div className="space-y-2">
                 <Label htmlFor="schedule-name" data-testid="schedule-name-label">Nome da escala</Label>
                 <Input
@@ -204,9 +248,16 @@ export default function AdminSchedules() {
                   ))}
                 </div>
               </div>
-              <Button type="submit" disabled={savingTemplate} data-testid="schedule-create-btn">
-                {savingTemplate ? 'A guardar...' : 'Guardar Escala'}
-              </Button>
+              <div className="flex gap-2">
+                <Button type="submit" disabled={savingTemplate} data-testid="schedule-create-btn">
+                  {savingTemplate ? 'A guardar...' : (editingTemplate ? 'Atualizar Escala' : 'Guardar Escala')}
+                </Button>
+                {editingTemplate && (
+                  <Button type="button" variant="outline" onClick={handleCancelEdit} data-testid="schedule-cancel-edit-btn">
+                    <X className="h-4 w-4 mr-1" /> Cancelar
+                  </Button>
+                )}
+              </div>
             </form>
           </CardContent>
         </Card>
@@ -311,6 +362,7 @@ export default function AdminSchedules() {
                   <TableRow>
                     <TableHead>Escala</TableHead>
                     <TableHead>Dias Trabalhados</TableHead>
+                    <TableHead className="text-right">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -318,6 +370,16 @@ export default function AdminSchedules() {
                     <TableRow key={template.id} data-testid={`schedule-row-${template.id}`}>
                       <TableCell className="font-medium">{template.name}</TableCell>
                       <TableCell data-testid={`schedule-days-${template.id}`}>{formatWorkDays(template.work_days)}</TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <Button variant="ghost" size="icon" onClick={() => handleEditTemplate(template)} data-testid={`edit-schedule-${template.id}`}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={() => handleDeleteTemplate(template)} data-testid={`delete-schedule-${template.id}`}>
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </div>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -350,6 +412,7 @@ export default function AdminSchedules() {
                     <TableHead>Escala</TableHead>
                     <TableHead>Período</TableHead>
                     <TableHead>Dias Trabalhados</TableHead>
+                    <TableHead className="text-right">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -358,10 +421,15 @@ export default function AdminSchedules() {
                       <TableCell className="font-medium">{assignment.employee_name || '-'}</TableCell>
                       <TableCell>{assignment.template_name || '-'}</TableCell>
                       <TableCell data-testid={`assignment-period-${assignment.id}`}>
-                        {assignment.start_date} 
+                        {assignment.start_date}
                         {assignment.end_date ? `até ${assignment.end_date}` : 'até Atual'}
                       </TableCell>
                       <TableCell data-testid={`assignment-days-${assignment.id}`}>{formatWorkDays(assignment.work_days)}</TableCell>
+                      <TableCell className="text-right">
+                        <Button variant="ghost" size="icon" onClick={() => handleDeleteAssignment(assignment)} data-testid={`delete-assignment-${assignment.id}`}>
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

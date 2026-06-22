@@ -1725,6 +1725,38 @@ async def get_schedule_assignments(employee_id: Optional[str] = None, current_us
 
     return [WorkScheduleAssignmentResponse(**a) for a in assignments]
 
+@api_router.put("/schedules/{template_id}", response_model=WorkScheduleTemplateResponse)
+async def update_schedule_template(template_id: str, template: WorkScheduleTemplateCreate, current_user: dict = Depends(admin_manager_required)):
+    result = await db.work_schedule_templates.update_one(
+        {"id": template_id},
+        {"$set": {"name": template.name, "work_days": template.work_days}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Escala não encontrada")
+    # Manter os dias coerentes nas atribuições que usam esta escala
+    await db.work_schedule_assignments.update_many(
+        {"template_id": template_id},
+        {"$set": {"work_days": template.work_days}}
+    )
+    updated = await db.work_schedule_templates.find_one({"id": template_id}, {"_id": 0})
+    return WorkScheduleTemplateResponse(**updated)
+
+@api_router.delete("/schedules/assignments/{assignment_id}")
+async def delete_schedule_assignment(assignment_id: str, current_user: dict = Depends(admin_manager_required)):
+    result = await db.work_schedule_assignments.delete_one({"id": assignment_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Atribuição não encontrada")
+    return {"message": "Atribuição removida com sucesso"}
+
+@api_router.delete("/schedules/{template_id}")
+async def delete_schedule_template(template_id: str, current_user: dict = Depends(admin_manager_required)):
+    result = await db.work_schedule_templates.delete_one({"id": template_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Escala não encontrada")
+    # Remove também as atribuições desta escala
+    await db.work_schedule_assignments.delete_many({"template_id": template_id})
+    return {"message": "Escala eliminada com sucesso"}
+
 # ==================== LEAVE REQUEST ROUTES ====================
 
 @api_router.post("/admin/leave", response_model=LeaveRequestResponse)
@@ -2008,6 +2040,19 @@ async def respond_leave_request(
     )
 
     return LeaveRequestResponse(**updated)
+
+@api_router.delete("/leave-requests/{request_id}")
+async def delete_leave_request(request_id: str, current_user: dict = Depends(admin_manager_required)):
+    """Eliminar um pedido de férias/ausência (ex.: limpar os recusados).
+
+    Os dias de férias usados são recalculados automaticamente a partir dos
+    pedidos aprovados, por isso não é preciso ajustar nada manualmente.
+    """
+    leave_request = await db.leave_requests.find_one({"id": request_id}, {"_id": 0})
+    if not leave_request:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    await db.leave_requests.delete_one({"id": request_id})
+    return {"message": "Pedido eliminado com sucesso"}
 
 # ==================== FOLDER ROUTES ====================
 

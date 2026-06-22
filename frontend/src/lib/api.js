@@ -34,13 +34,17 @@ export const createLeaveRequest = (data) => axios.post(`${API_URL}/leave-request
 export const respondLeaveRequest = (id, status, response) => 
   axios.put(`${API_URL}/leave-requests/${id}/respond`, { status, response });
 export const updateLeaveRequest = (id, data) => axios.put(`${API_URL}/leave-requests/${id}`, data);
+export const deleteLeaveRequest = (id) => axios.delete(`${API_URL}/leave-requests/${id}`);
 export const createAdminLeave = (data) => axios.post(`${API_URL}/admin/leave`, data);
 
 // Work Schedules
 export const getSchedules = () => axios.get(`${API_URL}/schedules`);
 export const createSchedule = (data) => axios.post(`${API_URL}/schedules`, data);
+export const updateSchedule = (id, data) => axios.put(`${API_URL}/schedules/${id}`, data);
+export const deleteSchedule = (id) => axios.delete(`${API_URL}/schedules/${id}`);
 export const getScheduleAssignments = (params) => axios.get(`${API_URL}/schedules/assignments`, { params });
 export const assignSchedule = (data) => axios.post(`${API_URL}/schedules/assign`, data);
+export const deleteScheduleAssignment = (id) => axios.delete(`${API_URL}/schedules/assignments/${id}`);
 
 // Folders
 export const getFolders = (employeeId) => axios.get(`${API_URL}/folders`, { params: { employee_id: employeeId } });
