@@ -201,6 +201,60 @@ async def send_password_reset_email(email: str, user_name: str, reset_code: str)
         logger.error(f"Failed to send password reset email: {str(e)}")
         return False
 
+def get_leave_request_email_html(employee_name: str, type_label: str, start_date: str, end_date: str, reason: str) -> str:
+    """Template HTML do email de novo pedido de férias/ausência."""
+    reason_html = f'<p style="margin:8px 0 0;"><strong>Motivo:</strong> {reason}</p>' if reason else ""
+    return f"""
+    <div style="font-family: Arial, Helvetica, sans-serif; max-width: 560px; margin: 0 auto; color: #1f2937;">
+      <div style="background:#4f46e5; color:#fff; padding:20px; border-radius:8px 8px 0 0;">
+        <h2 style="margin:0; font-size:18px;">Novo pedido de {type_label}</h2>
+      </div>
+      <div style="border:1px solid #e5e7eb; border-top:none; padding:20px; border-radius:0 0 8px 8px;">
+        <p style="margin:0 0 12px;">O colaborador <strong>{employee_name}</strong> submeteu um pedido de {type_label}.</p>
+        <p style="margin:4px 0;"><strong>Início:</strong> {start_date}</p>
+        <p style="margin:4px 0;"><strong>Fim:</strong> {end_date}</p>
+        {reason_html}
+        <p style="margin:16px 0 0; font-size:13px; color:#6b7280;">
+          Aceda ao RH grupo Lisbonb para aprovar ou recusar o pedido.
+        </p>
+      </div>
+    </div>
+    """
+
+async def send_leave_request_email(to_emails: list, employee_name: str, type_label: str, start_date: str, end_date: str, reason: str = None) -> bool:
+    """Avisar admins/gestores por email de um novo pedido de férias/ausência."""
+    if not RESEND_AVAILABLE or not RESEND_API_KEY or not to_emails:
+        return False
+
+    params = {
+        "from": SENDER_EMAIL,
+        "to": to_emails,
+        "subject": f"Novo pedido de {type_label} - {employee_name}",
+        "html": get_leave_request_email_html(employee_name, type_label, start_date, end_date, reason or ""),
+    }
+    try:
+        await asyncio.to_thread(resend.Emails.send, params)
+        logger.info(f"Leave request email sent to {to_emails}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send leave request email: {str(e)}")
+        return False
+
+async def notify_managers_of_leave_request(employee_name: str, leave_type: str, start_date: str, end_date: str, reason: str = None):
+    """Envia o email a todos os admins/gestores. Falha em silêncio (não bloqueia o pedido)."""
+    try:
+        managers = await db.users.find(
+            {"role": {"$in": ["admin", "gerente"]}},
+            {"_id": 0, "email": 1}
+        ).to_list(100)
+        emails = [m["email"] for m in managers if m.get("email")]
+        if not emails:
+            return
+        type_label = "férias" if leave_type == "ferias" else "ausência"
+        await send_leave_request_email(emails, employee_name, type_label, start_date, end_date, reason)
+    except Exception as e:
+        logger.error(f"Erro ao notificar gestores do pedido de ausência: {str(e)}")
+
 # ==================== MODELS ====================
 
 class UserCreate(BaseModel):
@@ -527,6 +581,49 @@ def build_audit_entry(action: str, actor: dict) -> dict:
 
 # ==================== VACATION CALCULATION ====================
 
+def _easter_sunday(year: int) -> date:
+    """Domingo de Páscoa (algoritmo anónimo gregoriano)."""
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+_pt_holiday_cache: dict = {}
+
+def get_pt_holidays(year: int) -> set:
+    """Feriados nacionais obrigatórios de Portugal para o ano indicado."""
+    if year in _pt_holiday_cache:
+        return _pt_holiday_cache[year]
+    easter = _easter_sunday(year)
+    holidays = {
+        date(year, 1, 1),    # Ano Novo
+        date(year, 4, 25),   # Dia da Liberdade
+        date(year, 5, 1),    # Dia do Trabalhador
+        date(year, 6, 10),   # Dia de Portugal
+        date(year, 8, 15),   # Assunção de Nossa Senhora
+        date(year, 10, 5),   # Implantação da República
+        date(year, 11, 1),   # Todos os Santos
+        date(year, 12, 1),   # Restauração da Independência
+        date(year, 12, 8),   # Imaculada Conceição
+        date(year, 12, 25),  # Natal
+        easter - timedelta(days=2),   # Sexta-feira Santa
+        easter,                       # Páscoa
+        easter + timedelta(days=60),  # Corpo de Deus
+    }
+    _pt_holiday_cache[year] = holidays
+    return holidays
+
 def find_schedule_assignment(assignments: list[dict], target_date: date):
     for assignment in assignments:
         start_dt = datetime.fromisoformat(assignment["start_date"]).date()
@@ -561,13 +658,21 @@ async def calculate_leave_counted_days(employee_id: str, start_date: str, end_da
     total_days = 0
     current_date = start_dt
     while current_date <= end_dt:
+        # Feriados nunca contam
+        if current_date in get_pt_holidays(current_date.year):
+            current_date += timedelta(days=1)
+            continue
+
         assignment = find_schedule_assignment(assignments, current_date)
         if assignment:
+            # Com escala: só contam os dias de trabalho (folgas não contam)
             work_days = assignment.get("work_days", [])
             if current_date.weekday() in work_days:
                 total_days += 1
         else:
-            total_days += 1
+            # Sem escala: por defeito, só dias úteis (Seg-Sex); fim de semana não conta
+            if current_date.weekday() < 5:
+                total_days += 1
         current_date += timedelta(days=1)
 
     return total_days
@@ -1881,6 +1986,15 @@ async def create_leave_request(request: LeaveRequestCreate, current_user: dict =
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         await db.notifications.insert_one(notification_doc)
+
+    # Aviso por email aos admins/gestores (não bloqueia se o email falhar)
+    await notify_managers_of_leave_request(
+        employee["name"] if employee else "Colaborador",
+        request.leave_type,
+        request.start_date,
+        request.end_date,
+        request.observation
+    )
 
     return LeaveRequestResponse(**request_doc, employee_name=employee["name"] if employee else None)
 
