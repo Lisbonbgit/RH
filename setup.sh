@@ -16,8 +16,16 @@ echo "Responda às perguntas. O que estiver entre [ ] é o valor por defeito"
 echo "(carregue Enter para aceitar)."
 echo ""
 
-read -rp "1) Cole o MONGO_URL completo do Atlas (com a password): " MONGO_URL
-if [ -z "$MONGO_URL" ]; then echo "MONGO_URL é obrigatório."; exit 1; fi
+echo "--- Base de dados (MongoDB Atlas) ---"
+read -rp "1a) Utilizador da base [rh_app]: " DB_USER
+DB_USER=${DB_USER:-rh_app}
+read -rp "1b) Endereço do cluster [cluster0.oaq4mdt.mongodb.net]: " DB_HOST
+DB_HOST=${DB_HOST:-cluster0.oaq4mdt.mongodb.net}
+read -rsp "1c) Password da base de dados (não aparece ao escrever): " DB_PASS
+echo ""
+if [ -z "$DB_PASS" ]; then echo "A password da base é obrigatória."; exit 1; fi
+# Monta o endereço automaticamente (à prova de erro)
+MONGO_URL="mongodb+srv://${DB_USER}:${DB_PASS}@${DB_HOST}/?retryWrites=true&w=majority"
 
 read -rp "2) Nome da base de dados [rh_lisbonb]: " DB_NAME
 DB_NAME=${DB_NAME:-rh_lisbonb}
