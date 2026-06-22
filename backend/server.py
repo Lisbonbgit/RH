@@ -18,6 +18,7 @@ import re
 import secrets
 import hashlib
 import asyncio
+import math
 
 # Resend for email
 try:
@@ -291,6 +292,11 @@ class LocationCreate(BaseModel):
     name: str
     company_id: str
     address: Optional[str] = None
+    # Cerca geográfica (opcional): posição do local e raio em metros.
+    # Se geofence_radius estiver definido (>0), o ponto só é aceite dentro do raio.
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    geofence_radius: Optional[int] = None
 
 class LocationResponse(BaseModel):
     id: str
@@ -298,6 +304,9 @@ class LocationResponse(BaseModel):
     company_id: str
     company_name: Optional[str] = None
     address: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    geofence_radius: Optional[int] = None
 
 class EmployeeCreate(BaseModel):
     name: str
@@ -1104,6 +1113,9 @@ async def create_location(location: LocationCreate, current_user: dict = Depends
         "name": location.name,
         "company_id": location.company_id,
         "address": location.address,
+        "latitude": location.latitude,
+        "longitude": location.longitude,
+        "geofence_radius": location.geofence_radius,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.locations.insert_one(location_doc)
@@ -1128,7 +1140,14 @@ async def get_locations(company_id: Optional[str] = None, current_user: dict = D
 async def update_location(location_id: str, location: LocationCreate, current_user: dict = Depends(admin_required)):
     result = await db.locations.update_one(
         {"id": location_id},
-        {"$set": {"name": location.name, "company_id": location.company_id, "address": location.address}}
+        {"$set": {
+            "name": location.name,
+            "company_id": location.company_id,
+            "address": location.address,
+            "latitude": location.latitude,
+            "longitude": location.longitude,
+            "geofence_radius": location.geofence_radius,
+        }}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Local não encontrado")
@@ -1396,19 +1415,47 @@ async def reset_employee_password(employee_id: str, request: AdminResetPasswordR
 
 # ==================== TIME RECORD ROUTES ====================
 
+def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distância em metros entre dois pontos GPS (fórmula de Haversine)."""
+    R = 6371000.0  # raio da Terra em metros
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
 @api_router.post("/time-records", response_model=TimeRecordResponse)
 async def create_time_record(record: TimeRecordCreate, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") != "colaborador":
         raise HTTPException(status_code=403, detail="Apenas colaboradores podem registar ponto")
-    
+
     employee_id = current_user.get("employee_id")
     if not employee_id:
         raise HTTPException(status_code=400, detail="Utilizador não associado a colaborador")
-    
+
     # Validate record type
     if record.record_type not in ["entrada", "saida"]:
         raise HTTPException(status_code=400, detail="Tipo de registo inválido. Use 'entrada' ou 'saida'")
-    
+
+    # Cerca geográfica: se o local do colaborador tiver posição e raio definidos,
+    # o ponto só é aceite se ele estiver dentro do raio.
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if employee and employee.get("location_id"):
+        location = await db.locations.find_one({"id": employee["location_id"]}, {"_id": 0})
+        if location and location.get("latitude") is not None and location.get("longitude") is not None and location.get("geofence_radius"):
+            radius = location["geofence_radius"]
+            if record.latitude is None or record.longitude is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Ative a localização no telemóvel para poder registar o ponto neste local."
+                )
+            distance = haversine_meters(record.latitude, record.longitude, location["latitude"], location["longitude"])
+            if distance > radius:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Está a {int(distance)} m do local de trabalho (limite {radius} m). Aproxime-se para registar o ponto."
+                )
+
     record_id = str(uuid.uuid4())
     record_doc = {
         "id": record_id,
