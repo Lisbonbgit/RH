@@ -11,14 +11,13 @@ ENV REACT_APP_BACKEND_URL=$REACT_APP_BACKEND_URL
 # Evita que avisos do ESLint façam o build falhar
 ENV CI=false
 
-COPY package.json yarn.lock* package-lock.json* ./
-# --legacy-peer-deps: o projeto usa date-fns 4 com react-day-picker 8,
-# que pede uma versão mais antiga de date-fns (conflito de peer dependency).
-RUN if [ -f yarn.lock ]; then yarn install --frozen-lockfile; \
-    else npm install --legacy-peer-deps; fi
+COPY package.json yarn.lock* ./
+# Usa yarn (como no Emergent): resolve as dependências antigas (ajv, date-fns)
+# sem os conflitos que o npm moderno provoca.
+RUN yarn install --network-timeout 600000
 
 COPY . .
-RUN if [ -f yarn.lock ]; then yarn build; else npm run build; fi
+RUN yarn build
 
 # Etapa 2: servir com nginx
 FROM nginx:1.27-alpine
