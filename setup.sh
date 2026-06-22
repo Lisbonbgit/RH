@@ -52,18 +52,20 @@ if [ -z "$ADMIN_HASH" ]; then
   exit 1
 fi
 
-# Escrever o .env com aspas simples (evita problemas com caracteres especiais como \$)
+# Escrever o .env SEM aspas: o docker-compose env_file inclui as aspas como
+# parte do valor (não as remove), o que partia o MONGO_URL. env_file também
+# não faz interpolação, por isso o '$' do hash bcrypt fica seguro sem aspas.
 {
-  printf "MONGO_URL='%s'\n" "$MONGO_URL"
-  printf "DB_NAME='%s'\n" "$DB_NAME"
-  printf "JWT_SECRET='%s'\n" "$JWT_SECRET"
-  printf "ADMIN_EMAIL='%s'\n" "$ADMIN_EMAIL"
-  printf "ADMIN_PASSWORD_HASH='%s'\n" "$ADMIN_HASH"
-  printf "CORS_ORIGINS='*'\n"
-  printf "FRONTEND_URL='%s'\n" "$FRONTEND_URL"
-  printf "RESEND_API_KEY='%s'\n" "$RESEND_API_KEY"
-  printf "SENDER_EMAIL='%s'\n" "$SENDER_EMAIL"
-  printf "PORT='8000'\n"
+  printf "MONGO_URL=%s\n" "$MONGO_URL"
+  printf "DB_NAME=%s\n" "$DB_NAME"
+  printf "JWT_SECRET=%s\n" "$JWT_SECRET"
+  printf "ADMIN_EMAIL=%s\n" "$ADMIN_EMAIL"
+  printf "ADMIN_PASSWORD_HASH=%s\n" "$ADMIN_HASH"
+  printf "CORS_ORIGINS=%s\n" "*"
+  printf "FRONTEND_URL=%s\n" "$FRONTEND_URL"
+  printf "RESEND_API_KEY=%s\n" "$RESEND_API_KEY"
+  printf "SENDER_EMAIL=%s\n" "$SENDER_EMAIL"
+  printf "PORT=%s\n" "8000"
 } > backend/.env
 
 echo ""
