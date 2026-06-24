@@ -367,7 +367,7 @@ class EmployeeCreate(BaseModel):
     email: EmailStr
     password: str
     company_id: str
-    location_id: str
+    location_id: Optional[str] = None  # opcional: colaboradores sem local físico
     position: str
     contract_type: str
     start_date: str
@@ -403,7 +403,7 @@ class EmployeeResponse(BaseModel):
     email: str
     company_id: str
     company_name: Optional[str] = None
-    location_id: str
+    location_id: Optional[str] = None
     location_name: Optional[str] = None
     position: str
     contract_type: str
@@ -1292,10 +1292,11 @@ async def create_employee(employee: EmployeeCreate, current_user: dict = Depends
     if not company:
         raise HTTPException(status_code=404, detail="Empresa não encontrada")
     
-    location = await db.locations.find_one({"id": employee.location_id}, {"_id": 0})
-    if not location:
-        raise HTTPException(status_code=404, detail="Local não encontrado")
-    
+    if employee.location_id:
+        location = await db.locations.find_one({"id": employee.location_id}, {"_id": 0})
+        if not location:
+            raise HTTPException(status_code=404, detail="Local não encontrado")
+
     # Create user account with must_change_password = True (temporary password)
     user_id = str(uuid.uuid4())
     employee_id = str(uuid.uuid4())

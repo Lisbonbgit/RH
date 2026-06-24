@@ -173,8 +173,8 @@ export default function AdminEmployees() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!formData.company_id || !formData.location_id) {
-      toast.error('Selecione empresa e local');
+    if (!formData.company_id) {
+      toast.error('Selecione a empresa');
       return;
     }
     setSaving(true);
@@ -455,16 +455,17 @@ export default function AdminEmployees() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="location">Local *</Label>
+                <Label htmlFor="location">Local (opcional)</Label>
                 <Select
-                  value={formData.location_id}
-                  onValueChange={(value) => setFormData({ ...formData, location_id: value })}
+                  value={formData.location_id || '__none__'}
+                  onValueChange={(value) => setFormData({ ...formData, location_id: value === '__none__' ? '' : value })}
                   disabled={!formData.company_id}
                 >
                   <SelectTrigger data-testid="employee-location-select">
                     <SelectValue placeholder="Selecionar local" />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="__none__">Sem local (trabalha em vários / remoto)</SelectItem>
                     {locations.map((location) => (
                       <SelectItem key={location.id} value={location.id}>
                         {location.name}
