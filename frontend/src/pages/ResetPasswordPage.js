@@ -6,7 +6,7 @@ import { Label } from '../components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { toast } from 'sonner';
-import { Building2, Lock, ArrowLeft, CheckCircle2, Loader2, Mail } from 'lucide-react';
+import { Lock, ArrowLeft, CheckCircle2, Loader2, Mail } from 'lucide-react';
 import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL + '/api';
@@ -117,13 +117,13 @@ export default function ResetPasswordPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4" data-testid="reset-page">
+    <div className="min-h-screen flex items-center justify-center bg-app-grid p-4" data-testid="reset-page">
       <div className="w-full max-w-md animate-fade-in" data-testid="reset-page-container">
         <div className="flex items-center gap-3 mb-8 justify-center" data-testid="reset-brand-header">
-          <div className="p-3 bg-primary rounded-xl" data-testid="reset-brand-icon">
-            <Building2 className="h-6 w-6 text-primary-foreground" />
+          <div className="h-11 w-11 rounded-xl brand-gradient flex items-center justify-center font-heading font-bold text-white text-xl shadow-lg shadow-primary/30" data-testid="reset-brand-icon">
+            L
           </div>
-          <span className="text-xl font-heading font-bold" data-testid="reset-brand-title">RH grupo Lisbonb</span>
+          <span className="text-xl font-heading font-bold" data-testid="reset-brand-title">RH grupo <span className="text-brand-gradient">Lisbonb</span></span>
         </div>
 
         <Card className="border-0 shadow-lg" data-testid="reset-card">

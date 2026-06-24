@@ -6,7 +6,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { toast } from 'sonner';
-import { Building2, Lock, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { Lock, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { Alert, AlertDescription } from '../components/ui/alert';
 
 export default function ChangePasswordPage() {
@@ -76,13 +76,13 @@ export default function ChangePasswordPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+    <div className="min-h-screen flex items-center justify-center bg-app-grid p-4">
       <div className="w-full max-w-md animate-fade-in">
         <div className="flex items-center gap-3 mb-8 justify-center">
-          <div className="p-3 bg-primary rounded-xl">
-            <Building2 className="h-6 w-6 text-primary-foreground" />
+          <div className="h-11 w-11 rounded-xl brand-gradient flex items-center justify-center font-heading font-bold text-white text-xl shadow-lg shadow-primary/30">
+            L
           </div>
-          <span className="text-xl font-heading font-bold">RH grupo Lisbonb</span>
+          <span className="text-xl font-heading font-bold">RH grupo <span className="text-brand-gradient">Lisbonb</span></span>
         </div>
 
         <Card className="border-0 shadow-lg">

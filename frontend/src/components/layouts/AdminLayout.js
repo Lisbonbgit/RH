@@ -108,12 +108,12 @@ export default function AdminLayout() {
     <div className="flex flex-col h-full">
       <div className="p-6">
         <div className="flex items-center gap-3">
-          <div className="p-2 bg-primary rounded-lg">
-            <Building2 className="h-5 w-5 text-primary-foreground" />
+          <div className="h-10 w-10 rounded-xl brand-gradient flex items-center justify-center font-heading font-bold text-white text-xl shadow-lg shadow-primary/30">
+            L
           </div>
-          <div>
-            <h1 className="font-heading font-bold text-lg">RH grupo Lisbonb</h1>
-            <p className="text-xs text-muted-foreground">Administração</p>
+          <div className="leading-tight">
+            <h1 className="font-heading font-bold text-lg">Lisbonb</h1>
+            <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground font-semibold">Gestão de RH</p>
           </div>
         </div>
       </div>
@@ -214,8 +214,10 @@ export default function AdminLayout() {
         </Sheet>
 
         <div className="flex items-center gap-2">
-          <Building2 className="h-5 w-5 text-primary" />
-          <span className="font-heading font-bold">RH grupo Lisbonb</span>
+          <div className="h-8 w-8 rounded-lg brand-gradient flex items-center justify-center font-heading font-bold text-white text-base">
+            L
+          </div>
+          <span className="font-heading font-bold">Lisbonb</span>
         </div>
 
         <div className="ml-auto flex items-center gap-2">

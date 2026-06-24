@@ -14,7 +14,6 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import {
-  Building2,
   LayoutDashboard,
   Clock,
   Calendar,
@@ -74,10 +73,10 @@ export default function EmployeeLayout() {
       {/* Header */}
       <header className="sticky top-0 z-40 flex h-16 items-center justify-between border-b bg-card px-4">
         <div className="flex items-center gap-2">
-          <div className="p-2 bg-primary rounded-lg">
-            <Building2 className="h-4 w-4 text-primary-foreground" />
+          <div className="h-8 w-8 rounded-lg brand-gradient flex items-center justify-center font-heading font-bold text-white text-base">
+            L
           </div>
-          <span className="font-heading font-bold">RH grupo Lisbonb</span>
+          <span className="font-heading font-bold">Lisbonb</span>
         </div>
 
         <div className="flex items-center gap-2">
