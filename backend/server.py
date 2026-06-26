@@ -414,6 +414,12 @@ class EmployeeCreate(BaseModel):
     # Isento de cerca geográfica (ex.: trabalha em vários locais).
     # Se True, pode bater ponto de qualquer lugar (a localização é só registada).
     geofence_exempt: bool = False
+    # Dados pessoais (o admin pode preencher; o colaborador também os edita)
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    birth_date: Optional[str] = None
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_phone: Optional[str] = None
 
     @field_validator('password')
     @classmethod
@@ -433,6 +439,11 @@ class EmployeeUpdate(BaseModel):
     vacation_days: Optional[int] = None
     observations: Optional[str] = None
     geofence_exempt: Optional[bool] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    birth_date: Optional[str] = None
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_phone: Optional[str] = None
 
 class EmployeeResponse(BaseModel):
     id: str
@@ -1385,6 +1396,11 @@ async def create_employee(employee: EmployeeCreate, current_user: dict = Depends
         "vacation_days": employee.vacation_days,
         "observations": employee.observations,
         "geofence_exempt": employee.geofence_exempt,
+        "phone": employee.phone,
+        "address": employee.address,
+        "birth_date": employee.birth_date,
+        "emergency_contact_name": employee.emergency_contact_name,
+        "emergency_contact_phone": employee.emergency_contact_phone,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.employees.insert_one(employee_doc)

@@ -71,7 +71,12 @@ export default function AdminEmployees() {
     start_date: '',
     vacation_days: 22,
     observations: '',
-    geofence_exempt: false
+    geofence_exempt: false,
+    birth_date: '',
+    phone: '',
+    address: '',
+    emergency_contact_name: '',
+    emergency_contact_phone: ''
   });
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
   const [leaveSaving, setLeaveSaving] = useState(false);
@@ -133,7 +138,12 @@ export default function AdminEmployees() {
         start_date: employee.start_date,
         vacation_days: employee.vacation_days,
         observations: employee.observations || '',
-        geofence_exempt: employee.geofence_exempt === true
+        geofence_exempt: employee.geofence_exempt === true,
+        birth_date: employee.birth_date || '',
+        phone: employee.phone || '',
+        address: employee.address || '',
+        emergency_contact_name: employee.emergency_contact_name || '',
+        emergency_contact_phone: employee.emergency_contact_phone || ''
       });
       fetchLocations(employee.company_id);
     } else {
@@ -149,7 +159,12 @@ export default function AdminEmployees() {
         start_date: '',
         vacation_days: 22,
         observations: '',
-        geofence_exempt: false
+        geofence_exempt: false,
+        birth_date: '',
+        phone: '',
+        address: '',
+        emergency_contact_name: '',
+        emergency_contact_phone: ''
       });
       if (selectedCompany?.id) {
         fetchLocations(selectedCompany.id);
@@ -536,6 +551,61 @@ export default function AdminEmployees() {
                   data-testid="employee-observations-input"
                 />
               </div>
+
+              <div className="md:col-span-2 pt-2 border-t">
+                <p className="text-sm font-medium text-muted-foreground">Dados pessoais</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="emp-birthdate">Data de nascimento</Label>
+                <Input
+                  id="emp-birthdate"
+                  type="date"
+                  value={formData.birth_date}
+                  onChange={(e) => setFormData({ ...formData, birth_date: e.target.value })}
+                  data-testid="employee-birthdate-input"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="emp-phone">Telemóvel</Label>
+                <Input
+                  id="emp-phone"
+                  value={formData.phone}
+                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                  placeholder="9XX XXX XXX"
+                  data-testid="employee-phone-input"
+                />
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <Label htmlFor="emp-address">Morada</Label>
+                <Input
+                  id="emp-address"
+                  value={formData.address}
+                  onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+                  placeholder="Morada"
+                  data-testid="employee-address-input"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="emp-ec-name">Contacto de emergência</Label>
+                <Input
+                  id="emp-ec-name"
+                  value={formData.emergency_contact_name}
+                  onChange={(e) => setFormData({ ...formData, emergency_contact_name: e.target.value })}
+                  placeholder="Nome"
+                  data-testid="employee-ec-name-input"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="emp-ec-phone">Telefone de emergência</Label>
+                <Input
+                  id="emp-ec-phone"
+                  value={formData.emergency_contact_phone}
+                  onChange={(e) => setFormData({ ...formData, emergency_contact_phone: e.target.value })}
+                  placeholder="Telefone"
+                  data-testid="employee-ec-phone-input"
+                />
+              </div>
+
               <div className="md:col-span-2 rounded-lg border p-3 bg-muted/30">
                 <label className="flex items-start gap-2 text-sm cursor-pointer">
                   <Checkbox
