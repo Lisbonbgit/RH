@@ -86,6 +86,14 @@ def validate_password_strength(password: str) -> tuple[bool, str]:
         return False, f"A palavra-passe deve ter pelo menos {MIN_PASSWORD_LENGTH} caracteres"
     return True, ""
 
+def validate_photo_data_url(photo):
+    """Valida uma foto em data URL (base64). Levanta HTTP 400 se inválida."""
+    if photo:
+        if not isinstance(photo, str) or not photo.startswith("data:image/"):
+            raise HTTPException(status_code=400, detail="Formato de imagem inválido")
+        if len(photo) > 4_000_000:  # ~3MB
+            raise HTTPException(status_code=400, detail="Imagem demasiado grande (máx. ~3MB)")
+
 def hash_password(password: str) -> str:
     """Hash password using bcrypt"""
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
@@ -420,6 +428,7 @@ class EmployeeCreate(BaseModel):
     birth_date: Optional[str] = None
     emergency_contact_name: Optional[str] = None
     emergency_contact_phone: Optional[str] = None
+    photo: Optional[str] = None
 
     @field_validator('password')
     @classmethod
@@ -444,6 +453,7 @@ class EmployeeUpdate(BaseModel):
     birth_date: Optional[str] = None
     emergency_contact_name: Optional[str] = None
     emergency_contact_phone: Optional[str] = None
+    photo: Optional[str] = None
 
 class EmployeeResponse(BaseModel):
     id: str
@@ -1366,6 +1376,8 @@ async def create_employee(employee: EmployeeCreate, current_user: dict = Depends
         if not location:
             raise HTTPException(status_code=404, detail="Local não encontrado")
 
+    validate_photo_data_url(employee.photo)
+
     # Create user account with must_change_password = True (temporary password)
     user_id = str(uuid.uuid4())
     employee_id = str(uuid.uuid4())
@@ -1401,6 +1413,7 @@ async def create_employee(employee: EmployeeCreate, current_user: dict = Depends
         "birth_date": employee.birth_date,
         "emergency_contact_name": employee.emergency_contact_name,
         "emergency_contact_phone": employee.emergency_contact_phone,
+        "photo": employee.photo,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.employees.insert_one(employee_doc)
@@ -1457,8 +1470,7 @@ async def get_employees(
     if current_user.get("role") == "colaborador":
         query["id"] = current_user.get("employee_id")
     
-    # Exclui a foto (base64) na lista para a manter leve
-    employees = await db.employees.find(query, {"_id": 0, "photo": 0}).to_list(1000)
+    employees = await db.employees.find(query, {"_id": 0}).to_list(1000)
 
     # Get company and location names and calculate vacation days
     for emp in employees:
@@ -1548,10 +1560,12 @@ async def update_my_profile(profile: SelfProfileUpdate, current_user: dict = Dep
 @api_router.put("/employees/{employee_id}", response_model=EmployeeResponse)
 async def update_employee(employee_id: str, employee: EmployeeUpdate, current_user: dict = Depends(admin_required)):
     update_data = {k: v for k, v in employee.model_dump().items() if v is not None}
-    
+
     if not update_data:
         raise HTTPException(status_code=400, detail="Nenhum dado para atualizar")
-    
+
+    validate_photo_data_url(update_data.get("photo"))
+
     # Also update name in users collection if provided
     if "name" in update_data:
         emp = await db.employees.find_one({"id": employee_id}, {"_id": 0})

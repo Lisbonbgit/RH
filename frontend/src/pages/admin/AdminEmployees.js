@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { getEmployees, createEmployee, updateEmployee, deleteEmployee, getCompanies, getLocations, createAdminLeave } from '../../lib/api';
@@ -35,9 +35,50 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
-import { Users, Plus, Pencil, Trash2, Eye, Search, Calendar } from 'lucide-react';
+import { Users, Plus, Pencil, Trash2, Eye, Search, Calendar, Camera, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, parseISO } from 'date-fns';
+
+// Lê uma imagem, redimensiona (máx 320px) e devolve um data URL (base64) JPEG
+const resizeImageToDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        const max = 320;
+        let { width, height } = img;
+        if (width > height && width > max) {
+          height = (height * max) / width;
+          width = max;
+        } else if (height > max) {
+          width = (width * max) / height;
+          height = max;
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+
+const empInitials = (name) =>
+  (name || '?').split(' ').filter(Boolean).slice(0, 2).map((p) => p[0]).join('').toUpperCase();
+
+const EmpAvatar = ({ name, photo, size = 'h-9 w-9' }) =>
+  photo ? (
+    <img src={photo} alt={name} className={`${size} rounded-full object-cover shrink-0`} />
+  ) : (
+    <div className={`${size} rounded-full bg-muted text-muted-foreground flex items-center justify-center text-xs font-semibold shrink-0`}>
+      {empInitials(name)}
+    </div>
+  );
 
 const contractTypes = [
   { value: 'efetivo', label: 'Efetivo' },
@@ -76,7 +117,8 @@ export default function AdminEmployees() {
     phone: '',
     address: '',
     emergency_contact_name: '',
-    emergency_contact_phone: ''
+    emergency_contact_phone: '',
+    photo: ''
   });
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
   const [leaveSaving, setLeaveSaving] = useState(false);
@@ -88,6 +130,26 @@ export default function AdminEmployees() {
     isPaid: true
   });
   const [saving, setSaving] = useState(false);
+  const photoInputRef = useRef(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+
+  const handlePhotoSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.error('Selecione um ficheiro de imagem');
+      return;
+    }
+    setPhotoBusy(true);
+    try {
+      const dataUrl = await resizeImageToDataUrl(file);
+      setFormData((f) => ({ ...f, photo: dataUrl }));
+    } catch {
+      toast.error('Erro ao processar a imagem');
+    } finally {
+      setPhotoBusy(false);
+    }
+  };
 
   useEffect(() => {
     fetchData();
@@ -143,7 +205,8 @@ export default function AdminEmployees() {
         phone: employee.phone || '',
         address: employee.address || '',
         emergency_contact_name: employee.emergency_contact_name || '',
-        emergency_contact_phone: employee.emergency_contact_phone || ''
+        emergency_contact_phone: employee.emergency_contact_phone || '',
+        photo: employee.photo || ''
       });
       fetchLocations(employee.company_id);
     } else {
@@ -164,7 +227,8 @@ export default function AdminEmployees() {
         phone: '',
         address: '',
         emergency_contact_name: '',
-        emergency_contact_phone: ''
+        emergency_contact_phone: '',
+        photo: ''
       });
       if (selectedCompany?.id) {
         fetchLocations(selectedCompany.id);
@@ -198,6 +262,8 @@ export default function AdminEmployees() {
         const updateData = { ...formData };
         delete updateData.password;
         delete updateData.email;
+        // Não reenviar a foto (base64) se não foi alterada
+        if (updateData.photo === (selectedEmployee.photo || '')) delete updateData.photo;
         await updateEmployee(selectedEmployee.id, updateData);
         toast.success('Colaborador atualizado com sucesso');
       } else {
@@ -339,9 +405,12 @@ export default function AdminEmployees() {
                   {filteredEmployees.map((employee) => (
                     <TableRow key={employee.id} data-testid={`employee-row-${employee.id}`}>
                       <TableCell>
-                        <div>
-                          <p className="font-medium">{employee.name}</p>
-                          <p className="text-xs text-muted-foreground">{employee.email}</p>
+                        <div className="flex items-center gap-3">
+                          <EmpAvatar name={employee.name} photo={employee.photo} />
+                          <div>
+                            <p className="font-medium">{employee.name}</p>
+                            <p className="text-xs text-muted-foreground">{employee.email}</p>
+                          </div>
                         </div>
                       </TableCell>
                       <TableCell className="hidden sm:table-cell">{employee.position}</TableCell>
@@ -555,6 +624,21 @@ export default function AdminEmployees() {
               <div className="md:col-span-2 pt-2 border-t">
                 <p className="text-sm font-medium text-muted-foreground">Dados pessoais</p>
               </div>
+              <div className="md:col-span-2 flex items-center gap-4">
+                <EmpAvatar name={formData.name} photo={formData.photo} size="h-16 w-16" />
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Button type="button" variant="outline" size="sm" onClick={() => photoInputRef.current?.click()} disabled={photoBusy} data-testid="employee-photo-btn">
+                    {photoBusy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Camera className="h-4 w-4 mr-2" />}
+                    {formData.photo ? 'Mudar foto' : 'Carregar foto'}
+                  </Button>
+                  {formData.photo && (
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setFormData({ ...formData, photo: '' })} data-testid="employee-photo-remove">
+                      Remover
+                    </Button>
+                  )}
+                  <input ref={photoInputRef} type="file" accept="image/*" className="hidden" onChange={handlePhotoSelect} />
+                </div>
+              </div>
               <div className="space-y-2">
                 <Label htmlFor="emp-birthdate">Data de nascimento</Label>
                 <Input
@@ -645,6 +729,13 @@ export default function AdminEmployees() {
           </DialogHeader>
           {selectedEmployee && (
             <div className="space-y-4 py-4">
+              <div className="flex items-center gap-4 pb-2">
+                <EmpAvatar name={selectedEmployee.name} photo={selectedEmployee.photo} size="h-16 w-16" />
+                <div>
+                  <p className="text-lg font-heading font-bold">{selectedEmployee.name}</p>
+                  <p className="text-sm text-muted-foreground">{selectedEmployee.position}</p>
+                </div>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-sm text-muted-foreground">Nome</p>
