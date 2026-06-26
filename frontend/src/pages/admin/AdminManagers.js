@@ -47,7 +47,7 @@ import {
 } from '../../components/ui/alert-dialog';
 import { Badge } from '../../components/ui/badge';
 import { toast } from 'sonner';
-import { Plus, Trash2, UserCog, Shield, Mail, Lock, User } from 'lucide-react';
+import { Plus, Trash2, UserCog, Shield, Mail, Lock, User, Calculator } from 'lucide-react';
 import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL + '/api';
@@ -119,7 +119,7 @@ export default function AdminManagers() {
     setFormLoading(true);
     try {
       await axios.post(`${API_URL}/admins`, formData);
-      toast.success(`${formData.role === 'admin' ? 'Administrador' : 'Gestor'} criado com sucesso!`);
+      toast.success(`${formData.role === 'admin' ? 'Administrador' : formData.role === 'contabilista' ? 'Contabilista' : 'Gestor'} criado com sucesso!`);
       setDialogOpen(false);
       setFormData({ name: '', email: '', password: '', role: 'gerente' });
       fetchAdmins();
@@ -146,6 +146,8 @@ export default function AdminManagers() {
         return <Badge className="bg-blue-500">Administrador</Badge>;
       case 'gerente':
         return <Badge className="bg-green-500">Gestor</Badge>;
+      case 'contabilista':
+        return <Badge className="bg-teal-500">Contabilista</Badge>;
       default:
         return <Badge variant="outline">{role}</Badge>;
     }
@@ -261,6 +263,12 @@ export default function AdminManagers() {
                         <span>Gestor</span>
                       </div>
                     </SelectItem>
+                    <SelectItem value="contabilista">
+                      <div className="flex items-center gap-2">
+                        <Calculator className="h-4 w-4" />
+                        <span>Contabilista</span>
+                      </div>
+                    </SelectItem>
                     <SelectItem value="admin">
                       <div className="flex items-center gap-2">
                         <Shield className="h-4 w-4" />
@@ -270,8 +278,9 @@ export default function AdminManagers() {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Gestores e Administradores têm acesso completo (ex.: contabilista). Apenas
-                  a conta principal pode criar/gerir gestores — eles próprios não o conseguem.
+                  Gestor, Contabilista e Administrador têm <strong>acesso completo</strong> ao sistema.
+                  A única coisa que não podem fazer é criar/gerir estes perfis — isso é exclusivo
+                  da conta principal (a sua).
                 </p>
               </div>
 

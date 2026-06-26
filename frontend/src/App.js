@@ -51,7 +51,7 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
   }
   
   if (allowedRoles && !allowedRoles.includes(user.role)) {
-    return <Navigate to={user.role === 'admin' || user.role === 'gerente' ? '/admin' : '/colaborador'} replace />;
+    return <Navigate to={['admin', 'gerente', 'contabilista'].includes(user.role) ? '/admin' : '/colaborador'} replace />;
   }
   
   return children;
@@ -75,7 +75,7 @@ const ChangePasswordRoute = ({ children }) => {
   
   // If user doesn't need to change password, redirect to appropriate dashboard
   if (!mustChangePassword) {
-    return <Navigate to={user.role === 'admin' || user.role === 'gerente' ? '/admin' : '/colaborador'} replace />;
+    return <Navigate to={['admin', 'gerente', 'contabilista'].includes(user.role) ? '/admin' : '/colaborador'} replace />;
   }
   
   return children;
@@ -102,7 +102,7 @@ const RoleRedirect = () => {
     return <Navigate to="/alterar-senha" replace />;
   }
   
-  return <Navigate to={user.role === 'admin' || user.role === 'gerente' ? '/admin' : '/colaborador'} replace />;
+  return <Navigate to={['admin', 'gerente', 'contabilista'].includes(user.role) ? '/admin' : '/colaborador'} replace />;
 };
 
 function AppRoutes() {
@@ -120,7 +120,7 @@ function AppRoutes() {
       
       {/* Admin Routes */}
       <Route path="/admin" element={
-        <ProtectedRoute allowedRoles={['admin', 'gerente']}>
+        <ProtectedRoute allowedRoles={['admin', 'gerente', 'contabilista']}>
           <AdminLayout />
         </ProtectedRoute>
       }>

@@ -44,6 +44,10 @@ JWT_EXPIRATION_HOURS = 24
 MASTER_ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'geral@olacai.com')
 MASTER_ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD_HASH')
 
+# Perfis com acesso de gestão (acesso operacional completo). Todos podem fazer
+# tudo; apenas o admin master (por email) cria/gere outros gestores.
+MANAGER_ROLES = ["admin", "gerente", "contabilista"]
+
 # Password Reset Configuration
 RESET_TOKEN_EXPIRATION_HOURS = 1
 
@@ -252,7 +256,7 @@ async def notify_managers_of_leave_request(employee_name: str, leave_type: str, 
     """Envia o email a todos os admins/gestores. Falha em silêncio (não bloqueia o pedido)."""
     try:
         managers = await db.users.find(
-            {"role": {"$in": ["admin", "gerente"]}},
+            {"role": {"$in": MANAGER_ROLES}},
             {"_id": 0, "email": 1}
         ).to_list(100)
         emails = [m["email"] for m in managers if m.get("email")]
@@ -810,7 +814,7 @@ async def admin_required(current_user: dict = Depends(get_current_user)):
     O gestor/contabilista pode fazer tudo. A gestão de outros gestores/admins
     continua exclusiva do admin master (verificação por email nos /admins).
     """
-    if current_user.get("role") not in ["admin", "gerente"]:
+    if current_user.get("role") not in MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Acesso negado. Apenas administradores ou gestores.")
     user_doc = await db.users.find_one({"id": current_user.get("user_id")}, {"_id": 0, "name": 1, "role": 1})
     current_user["name"] = user_doc.get("name") if user_doc else current_user.get("email")
@@ -818,7 +822,7 @@ async def admin_required(current_user: dict = Depends(get_current_user)):
 
 async def admin_manager_required(current_user: dict = Depends(get_current_user)):
     """Require admin or manager role"""
-    if current_user.get("role") not in ["admin", "gerente"]:
+    if current_user.get("role") not in MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Acesso negado. Apenas administradores ou gestores.")
     user_doc = await db.users.find_one({"id": current_user.get("user_id")}, {"_id": 0, "name": 1, "role": 1})
     current_user["name"] = user_doc.get("name") if user_doc else current_user.get("email")
@@ -1156,8 +1160,8 @@ class AdminCreate(BaseModel):
     @field_validator('role')
     @classmethod
     def validate_role(cls, v):
-        if v not in ['admin', 'gerente']:
-            raise ValueError("Role deve ser 'admin' ou 'gerente'")
+        if v not in MANAGER_ROLES:
+            raise ValueError("Função inválida")
         return v
 
 class AdminResponse(BaseModel):
@@ -1212,7 +1216,7 @@ async def get_admins(current_user: dict = Depends(admin_required)):
         raise HTTPException(status_code=403, detail="Apenas o administrador master pode ver administradores")
     
     admins = await db.users.find(
-        {"role": {"$in": ["admin", "gerente"]}, "email": {"$ne": MASTER_ADMIN_EMAIL}},
+        {"role": {"$in": MANAGER_ROLES}, "email": {"$ne": MASTER_ADMIN_EMAIL}},
         {"_id": 0, "password": 0}
     ).to_list(100)
     
@@ -1738,7 +1742,7 @@ async def get_time_records(
         query["employee_id"] = employee_id
     
     # Filter by company (admin ou gestor)
-    if company_id and current_user.get("role") in ["admin", "gerente"]:
+    if company_id and current_user.get("role") in MANAGER_ROLES:
         employees = await db.employees.find({"company_id": company_id}, {"_id": 0, "id": 1}).to_list(1000)
         emp_ids = [e["id"] for e in employees]
         query["employee_id"] = {"$in": emp_ids}
@@ -2151,7 +2155,7 @@ async def get_leave_requests(
         query["employee_id"] = employee_id
     
     # Filter by company (admin ou gestor)
-    if company_id and current_user.get("role") in ["admin", "gerente"]:
+    if company_id and current_user.get("role") in MANAGER_ROLES:
         employees = await db.employees.find({"company_id": company_id}, {"_id": 0, "id": 1}).to_list(1000)
         emp_ids = [e["id"] for e in employees]
         query["employee_id"] = {"$in": emp_ids}
@@ -2426,8 +2430,8 @@ async def upload_document(
     }
     await db.documents.insert_one(doc_record)
     
-    # Notify if admin uploaded for employee
-    if current_user.get("role") == "admin":
+    # Notify if a manager uploaded for the employee
+    if current_user.get("role") in MANAGER_ROLES:
         employee = await db.employees.find_one({"id": folder["employee_id"]}, {"_id": 0})
         if employee:
             notification_doc = {
@@ -2724,8 +2728,8 @@ async def get_calendar_leaves(
 ):
     query = {"status": "aprovado"}
     
-    # Filter by company for admin
-    if company_id and current_user.get("role") == "admin":
+    # Filter by company for managers
+    if company_id and current_user.get("role") in MANAGER_ROLES:
         employees = await db.employees.find({"company_id": company_id}, {"_id": 0, "id": 1}).to_list(1000)
         emp_ids = [e["id"] for e in employees]
         query["employee_id"] = {"$in": emp_ids}
