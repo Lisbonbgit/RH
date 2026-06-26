@@ -22,6 +22,10 @@ export const createEmployee = (data) => axios.post(`${API_URL}/employees`, data)
 export const updateEmployee = (id, data) => axios.put(`${API_URL}/employees/${id}`, data);
 export const deleteEmployee = (id) => axios.delete(`${API_URL}/employees/${id}`);
 
+// Perfil do próprio colaborador
+export const getMyProfile = () => axios.get(`${API_URL}/me/profile`);
+export const updateMyProfile = (data) => axios.put(`${API_URL}/me/profile`, data);
+
 // Time Records
 export const getTimeRecords = (params) => axios.get(`${API_URL}/time-records`, { params });
 export const createTimeRecord = (data) => axios.post(`${API_URL}/time-records`, data);

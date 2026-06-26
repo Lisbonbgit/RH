@@ -20,6 +20,7 @@ import AdminDocuments from './pages/admin/AdminDocuments';
 import AdminManagers from './pages/admin/AdminManagers';
 import AdminSchedules from './pages/admin/AdminSchedules';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
+import EmployeeProfile from './pages/employee/EmployeeProfile';
 import EmployeeTimeRecord from './pages/employee/EmployeeTimeRecord';
 import EmployeeLeaveRequests from './pages/employee/EmployeeLeaveRequests';
 import EmployeeDocuments from './pages/employee/EmployeeDocuments';
@@ -147,6 +148,7 @@ function AppRoutes() {
         </ProtectedRoute>
       }>
         <Route index element={<EmployeeDashboard />} />
+        <Route path="perfil" element={<EmployeeProfile />} />
         <Route path="ponto" element={<EmployeeTimeRecord />} />
         <Route path="ausencias" element={<EmployeeLeaveRequests />} />
         <Route path="documentos" element={<EmployeeDocuments />} />

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { getNotifications, markAllNotificationsRead } from '../../lib/api';
+import { getNotifications, markAllNotificationsRead, getMyProfile } from '../../lib/api';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { ScrollArea } from '../ui/scroll-area';
@@ -36,9 +36,11 @@ export default function EmployeeLayout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [notifications, setNotifications] = useState([]);
+  const [photo, setPhoto] = useState(null);
 
   useEffect(() => {
     fetchNotifications();
+    getMyProfile().then((res) => setPhoto(res.data?.photo || null)).catch(() => {});
   }, []);
 
   const fetchNotifications = async () => {
@@ -124,8 +126,12 @@ export default function EmployeeLayout() {
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" data-testid="user-menu">
-                <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center">
-                  <User className="h-4 w-4" />
+                <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center overflow-hidden ring-2 ring-primary/15">
+                  {photo ? (
+                    <img src={photo} alt="Foto" className="h-full w-full object-cover" />
+                  ) : (
+                    <User className="h-4 w-4" />
+                  )}
                 </div>
               </Button>
             </DropdownMenuTrigger>
@@ -137,6 +143,10 @@ export default function EmployeeLayout() {
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => navigate('/colaborador/perfil')} data-testid="profile-menu-item">
+                <User className="h-4 w-4 mr-2" />
+                O meu perfil
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={handleLogout} data-testid="logout-menu-item">
                 <LogOut className="h-4 w-4 mr-2" />
                 Terminar Sessão

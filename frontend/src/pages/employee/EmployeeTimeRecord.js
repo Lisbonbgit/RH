@@ -3,6 +3,16 @@ import { getTimeRecords, createTimeRecord } from '../../lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '../../components/ui/alert-dialog';
 import { Clock, LogIn, LogOut, History, MapPin, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, parseISO, isToday } from 'date-fns';
@@ -32,6 +42,7 @@ export default function EmployeeTimeRecord() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [locating, setLocating] = useState(false);
+  const [confirmType, setConfirmType] = useState(null);
   const [currentTime, setCurrentTime] = useState(new Date());
 
   useEffect(() => {
@@ -112,7 +123,7 @@ export default function EmployeeTimeRecord() {
         <Button
           size="lg"
           className="h-24 flex-col gap-2 bg-green-600 hover:bg-green-700"
-          onClick={() => handleRecord('entrada')}
+          onClick={() => setConfirmType('entrada')}
           disabled={submitting}
           data-testid="entrada-btn"
         >
@@ -122,7 +133,7 @@ export default function EmployeeTimeRecord() {
         <Button
           size="lg"
           className="h-24 flex-col gap-2 bg-red-600 hover:bg-red-700"
-          onClick={() => handleRecord('saida')}
+          onClick={() => setConfirmType('saida')}
           disabled={submitting}
           data-testid="saida-btn"
         >
@@ -217,6 +228,34 @@ export default function EmployeeTimeRecord() {
           )}
         </CardContent>
       </Card>
+
+      <AlertDialog open={confirmType !== null} onOpenChange={(open) => !open && setConfirmType(null)}>
+        <AlertDialogContent data-testid="confirm-record-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Confirmar {confirmType === 'entrada' ? 'entrada' : 'saída'}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Vai registar a sua <strong>{confirmType === 'entrada' ? 'entrada' : 'saída'}</strong> às{' '}
+              {format(currentTime, 'HH:mm')}. Confirma?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="confirm-record-cancel">Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className={confirmType === 'entrada' ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'}
+              onClick={() => {
+                const t = confirmType;
+                setConfirmType(null);
+                handleRecord(t);
+              }}
+              data-testid="confirm-record-action"
+            >
+              Sim, registar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -255,6 +255,44 @@ async def notify_managers_of_leave_request(employee_name: str, leave_type: str, 
     except Exception as e:
         logger.error(f"Erro ao notificar gestores do pedido de ausência: {str(e)}")
 
+def get_leave_decision_email_html(employee_name: str, status: str, type_label: str, start_date: str, end_date: str, admin_response: str) -> str:
+    """Template do email de decisão (aprovado/recusado) para o colaborador."""
+    approved = status == "aprovado"
+    color = "#0F9D70" if approved else "#D64545"
+    chip = "Aprovado" if approved else "Recusado"
+    note_html = f'<p style="margin:14px 0 0;"><strong>Resposta da administração:</strong> {admin_response}</p>' if admin_response else ""
+    return f"""
+    <div style="font-family: Arial, Helvetica, sans-serif; max-width: 560px; margin: 0 auto; color: #1f2937;">
+      <div style="background:#1366F0; color:#fff; padding:20px; border-radius:8px 8px 0 0;">
+        <h2 style="margin:0; font-size:18px;">RH grupo Lisbonb</h2>
+      </div>
+      <div style="border:1px solid #e5e7eb; border-top:none; padding:22px; border-radius:0 0 8px 8px;">
+        <p style="margin:0 0 14px;">Olá {employee_name},</p>
+        <p style="margin:0 0 14px;">O seu pedido de <strong>{type_label}</strong> foi:</p>
+        <div style="display:inline-block; background:{color}; color:#fff; font-weight:bold; padding:8px 18px; border-radius:20px;">{chip}</div>
+        <p style="margin:18px 0 4px;"><strong>Período:</strong> {start_date} a {end_date}</p>
+        {note_html}
+        <p style="margin:18px 0 0; font-size:13px; color:#6b7280;">Pode consultar os detalhes no sistema RH grupo Lisbonb.</p>
+      </div>
+    </div>
+    """
+
+async def notify_employee_of_leave_decision(employee_email: str, employee_name: str, status: str, type_label: str, start_date: str, end_date: str, admin_response: str = None):
+    """Avisa o colaborador por email da decisão do seu pedido. Falha em silêncio."""
+    if not RESEND_AVAILABLE or not RESEND_API_KEY or not employee_email:
+        return
+    try:
+        params = {
+            "from": SENDER_EMAIL,
+            "to": [employee_email],
+            "subject": f"O seu pedido de {type_label} foi {status}",
+            "html": get_leave_decision_email_html(employee_name, status, type_label, start_date, end_date, admin_response or ""),
+        }
+        await asyncio.to_thread(resend.Emails.send, params)
+        logger.info(f"Leave decision email sent to {employee_email}")
+    except Exception as e:
+        logger.error(f"Failed to send leave decision email: {str(e)}")
+
 # ==================== MODELS ====================
 
 class UserCreate(BaseModel):
@@ -413,7 +451,23 @@ class EmployeeResponse(BaseModel):
     vacation_days_available: int = 0
     observations: Optional[str] = None
     geofence_exempt: bool = False
+    # Dados de perfil (editáveis pelo próprio colaborador)
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    birth_date: Optional[str] = None
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_phone: Optional[str] = None
+    photo: Optional[str] = None  # imagem em data URL (base64)
     created_at: str
+
+class SelfProfileUpdate(BaseModel):
+    """Campos que o próprio colaborador pode editar no seu perfil."""
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    birth_date: Optional[str] = None
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_phone: Optional[str] = None
+    photo: Optional[str] = None
 
 class TimeRecordCreate(BaseModel):
     record_type: str  # entrada or saida
@@ -1383,8 +1437,9 @@ async def get_employees(
     if current_user.get("role") == "colaborador":
         query["id"] = current_user.get("employee_id")
     
-    employees = await db.employees.find(query, {"_id": 0}).to_list(1000)
-    
+    # Exclui a foto (base64) na lista para a manter leve
+    employees = await db.employees.find(query, {"_id": 0, "photo": 0}).to_list(1000)
+
     # Get company and location names and calculate vacation days
     for emp in employees:
         company = await db.companies.find_one({"id": emp["company_id"]}, {"_id": 0})
@@ -1422,6 +1477,53 @@ async def get_employee(employee_id: str, current_user: dict = Depends(get_curren
         vacation_days_used=vacation_used,
         vacation_days_available=employee["vacation_days"] - vacation_used
     )
+
+async def _build_employee_response(employee: dict) -> EmployeeResponse:
+    company = await db.companies.find_one({"id": employee["company_id"]}, {"_id": 0})
+    location = None
+    if employee.get("location_id"):
+        location = await db.locations.find_one({"id": employee["location_id"]}, {"_id": 0})
+    vacation_used = await calculate_vacation_days_used(employee["id"])
+    return EmployeeResponse(
+        **employee,
+        company_name=company["name"] if company else None,
+        location_name=location["name"] if location else None,
+        vacation_days_used=vacation_used,
+        vacation_days_available=employee["vacation_days"] - vacation_used
+    )
+
+@api_router.get("/me/profile", response_model=EmployeeResponse)
+async def get_my_profile(current_user: dict = Depends(get_current_user)):
+    """Perfil do próprio colaborador (com foto e dados pessoais)."""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="Utilizador não associado a colaborador")
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Perfil não encontrado")
+    return await _build_employee_response(employee)
+
+@api_router.put("/me/profile", response_model=EmployeeResponse)
+async def update_my_profile(profile: SelfProfileUpdate, current_user: dict = Depends(get_current_user)):
+    """O colaborador atualiza os seus próprios dados (foto, contactos, etc.)."""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="Utilizador não associado a colaborador")
+
+    update_data = {k: v for k, v in profile.model_dump().items() if v is not None}
+
+    photo = update_data.get("photo")
+    if photo:
+        if not photo.startswith("data:image/"):
+            raise HTTPException(status_code=400, detail="Formato de imagem inválido")
+        if len(photo) > 4_000_000:  # ~3MB
+            raise HTTPException(status_code=400, detail="Imagem demasiado grande (máx. ~3MB)")
+
+    if update_data:
+        await db.employees.update_one({"id": employee_id}, {"$set": update_data})
+
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    return await _build_employee_response(employee)
 
 @api_router.put("/employees/{employee_id}", response_model=EmployeeResponse)
 async def update_employee(employee_id: str, employee: EmployeeUpdate, current_user: dict = Depends(admin_required)):
@@ -2152,7 +2254,19 @@ async def respond_leave_request(
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         await db.notifications.insert_one(notification_doc)
-    
+
+        # Email ao colaborador com a decisão (não bloqueia se o email falhar)
+        type_label = "férias" if leave_request.get("leave_type") == "ferias" else "ausência"
+        await notify_employee_of_leave_decision(
+            employee.get("email"),
+            employee.get("name"),
+            status_label,
+            type_label,
+            leave_request.get("start_date"),
+            leave_request.get("end_date"),
+            data.response,
+        )
+
     updated = await db.leave_requests.find_one({"id": request_id}, {"_id": 0})
     updated["employee_name"] = employee["name"] if employee else None
     updated["counted_days"] = await calculate_leave_counted_days(
