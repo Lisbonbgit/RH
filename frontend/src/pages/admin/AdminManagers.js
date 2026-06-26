@@ -270,7 +270,8 @@ export default function AdminManagers() {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Gestores podem gerir lojas específicas. Administradores têm acesso completo.
+                  Gestores e Administradores têm acesso completo (ex.: contabilista). Apenas
+                  a conta principal pode criar/gerir gestores — eles próprios não o conseguem.
                 </p>
               </div>
 

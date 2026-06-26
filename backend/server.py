@@ -784,9 +784,13 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         raise HTTPException(status_code=401, detail="Token inválido")
 
 async def admin_required(current_user: dict = Depends(get_current_user)):
-    """Require admin role"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Acesso negado. Apenas administradores.")
+    """Acesso operacional completo: admin OU gestor (gerente).
+
+    O gestor/contabilista pode fazer tudo. A gestão de outros gestores/admins
+    continua exclusiva do admin master (verificação por email nos /admins).
+    """
+    if current_user.get("role") not in ["admin", "gerente"]:
+        raise HTTPException(status_code=403, detail="Acesso negado. Apenas administradores ou gestores.")
     user_doc = await db.users.find_one({"id": current_user.get("user_id")}, {"_id": 0, "name": 1, "role": 1})
     current_user["name"] = user_doc.get("name") if user_doc else current_user.get("email")
     return current_user
@@ -2546,13 +2550,84 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
         employee = await db.employees.find_one({"id": req["employee_id"]}, {"_id": 0})
         req["employee_name"] = employee["name"] if employee else None
     
+    # ===== Enriquecimento: quem está hoje + aniversários =====
+    emp_filter = {"company_id": company_id} if company_id else {}
+    all_emps = await db.employees.find(
+        emp_filter, {"_id": 0, "id": 1, "name": 1, "photo": 1, "birth_date": 1}
+    ).to_list(2000)
+    emp_id_set = {e["id"] for e in all_emps}
+    emp_by_id = {e["id"]: e for e in all_emps}
+
+    today_date = datetime.now(timezone.utc).date()
+    today_str = today_date.isoformat()
+
+    # De férias/ausência hoje (aprovado e cobre hoje)
+    on_leave_ids = set()
+    leaves_today = await db.leave_requests.find(
+        {"status": "aprovado", "start_date": {"$lte": today_str}, "end_date": {"$gte": today_str}},
+        {"_id": 0, "employee_id": 1}
+    ).to_list(2000)
+    for lv in leaves_today:
+        if lv["employee_id"] in emp_id_set:
+            on_leave_ids.add(lv["employee_id"])
+
+    # A trabalhar agora (último registo de hoje = entrada)
+    rec_q = {"time": {"$gte": today_str}}
+    if company_id:
+        rec_q["employee_id"] = {"$in": list(emp_id_set)}
+    records_today = await db.time_records.find(
+        rec_q, {"_id": 0, "employee_id": 1, "record_type": 1}
+    ).sort("time", 1).to_list(5000)
+    last_type = {}
+    for r in records_today:
+        last_type[r["employee_id"]] = r["record_type"]
+    working_ids = [eid for eid, t in last_type.items() if t == "entrada" and eid not in on_leave_ids and eid in emp_id_set]
+
+    def _mini(eid):
+        e = emp_by_id.get(eid, {})
+        return {"id": eid, "name": e.get("name"), "photo": e.get("photo")}
+
+    whos_in = {
+        "working": [_mini(eid) for eid in working_ids[:18]],
+        "on_leave": [_mini(eid) for eid in list(on_leave_ids)[:18]],
+    }
+
+    # Aniversários nos próximos 30 dias
+    birthdays = []
+    for e in all_emps:
+        bd = e.get("birth_date")
+        if not bd:
+            continue
+        try:
+            d = datetime.fromisoformat(bd).date()
+            try:
+                nb = d.replace(year=today_date.year)
+            except ValueError:
+                nb = d.replace(year=today_date.year, day=28)  # 29 fev
+            if nb < today_date:
+                try:
+                    nb = d.replace(year=today_date.year + 1)
+                except ValueError:
+                    nb = d.replace(year=today_date.year + 1, day=28)
+            days = (nb - today_date).days
+            if days <= 30:
+                birthdays.append({"name": e.get("name"), "photo": e.get("photo"), "date": nb.isoformat(), "days_until": days})
+        except ValueError:
+            continue
+    birthdays.sort(key=lambda x: x["days_until"])
+    birthdays = birthdays[:6]
+
     return {
         "total_employees": total_employees,
         "total_companies": total_companies,
         "pending_requests": pending_requests,
         "today_records": today_records,
+        "on_leave_today": len(on_leave_ids),
+        "working_now": len(working_ids),
         "employees_by_company": employees_by_company,
-        "recent_requests": recent_requests
+        "recent_requests": recent_requests,
+        "whos_in": whos_in,
+        "upcoming_birthdays": birthdays,
     }
 
 @api_router.get("/dashboard/employee")
