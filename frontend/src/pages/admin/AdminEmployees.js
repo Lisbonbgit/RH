@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { useAuth } from '../../contexts/AuthContext';
 import { getEmployees, createEmployee, updateEmployee, deleteEmployee, getCompanies, getLocations, createAdminLeave } from '../../lib/api';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -90,8 +89,6 @@ const contractTypes = [
 
 export default function AdminEmployees() {
   const { selectedCompany } = useOutletContext();
-  const { user } = useAuth();
-  const isManager = user?.role === 'gerente';
   const [employees, setEmployees] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [locations, setLocations] = useState([]);
@@ -352,12 +349,10 @@ export default function AdminEmployees() {
             {selectedCompany ? `Colaboradores de ${selectedCompany.name}` : 'Gerir colaboradores'}
           </p>
         </div>
-        {!isManager && (
-          <Button onClick={() => handleOpenDialog()} data-testid="add-employee-btn">
-            <Plus className="h-4 w-4 mr-2" />
-            Novo Colaborador
-          </Button>
-        )}
+        <Button onClick={() => handleOpenDialog()} data-testid="add-employee-btn">
+          <Plus className="h-4 w-4 mr-2" />
+          Novo Colaborador
+        </Button>
       </div>
 
       {/* Search */}
@@ -422,42 +417,18 @@ export default function AdminEmployees() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => {
-                              setSelectedEmployee(employee);
-                              setViewDialogOpen(true);
-                            }}
-                            data-testid={`view-employee-${employee.id}`}
-                          >
-                            <Eye className="h-4 w-4" />
-                          </Button>
-                          {!isManager && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => handleOpenDialog(employee)}
-                              data-testid={`edit-employee-${employee.id}`}
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </Button>
-                          )}
-                          {!isManager && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => {
-                                setSelectedEmployee(employee);
-                                setDeleteDialogOpen(true);
-                              }}
-                              data-testid={`delete-employee-${employee.id}`}
-                            >
-                              <Trash2 className="h-4 w-4 text-destructive" />
-                            </Button>
-                          )}
-                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setSelectedEmployee(employee);
+                            setViewDialogOpen(true);
+                          }}
+                          data-testid={`view-employee-${employee.id}`}
+                        >
+                          <Eye className="h-4 w-4 mr-2" />
+                          Ver perfil
+                        </Button>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -778,14 +749,34 @@ export default function AdminEmployees() {
                   <p className="font-medium">{selectedEmployee.observations}</p>
                 </div>
               )}
-              <div className="pt-2">
+              <div className="flex flex-wrap gap-2 pt-3 border-t">
                 <Button
                   type="button"
+                  variant="outline"
+                  onClick={() => { setViewDialogOpen(false); handleOpenDialog(selectedEmployee); }}
+                  data-testid="profile-edit-btn"
+                >
+                  <Pencil className="h-4 w-4 mr-2" />
+                  Editar
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
                   onClick={() => handleOpenLeaveDialog(selectedEmployee)}
                   data-testid="add-admin-leave-btn"
                 >
                   <Calendar className="h-4 w-4 mr-2" />
-                  Adicionar Férias / Ausência
+                  Férias / Ausência
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="text-destructive hover:text-destructive ml-auto"
+                  onClick={() => { setViewDialogOpen(false); setDeleteDialogOpen(true); }}
+                  data-testid="profile-delete-btn"
+                >
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Eliminar
                 </Button>
               </div>
             </div>
