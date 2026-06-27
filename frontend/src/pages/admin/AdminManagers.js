@@ -47,11 +47,45 @@ import {
 } from '../../components/ui/alert-dialog';
 import { Badge } from '../../components/ui/badge';
 import { toast } from 'sonner';
-import { Plus, Trash2, UserCog, Shield, ShieldCheck, Mail, Lock, User, Calculator } from 'lucide-react';
+import { Plus, Trash2, UserCog, Shield, ShieldCheck, Mail, Lock, User, Calculator, Crown } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL + '/api';
+
+// Resumo das regras de acesso de cada perfil (para se ter noção)
+const ROLE_RULES = [
+  {
+    name: 'Administrador Principal',
+    icon: Crown,
+    chip: 'bg-blue-600',
+    desc: 'A conta principal do grupo (a sua). Acesso total a tudo e a ÚNICA que pode criar/gerir gestores, contabilistas e administradores (esta página).',
+  },
+  {
+    name: 'Administrador',
+    icon: Shield,
+    chip: 'bg-blue-500',
+    desc: 'Acesso total ao sistema (RH e, no futuro, Financeiro). Não pode gerir gestores nem entrar na Administração do grupo.',
+  },
+  {
+    name: 'Gestor',
+    icon: UserCog,
+    chip: 'bg-green-500',
+    desc: 'Acesso total ao sistema. Não pode gerir gestores. Indicado para responsáveis que precisam de fazer tudo no dia a dia.',
+  },
+  {
+    name: 'Contabilista',
+    icon: Calculator,
+    chip: 'bg-teal-500',
+    desc: 'Acesso total ao sistema (ex.: o contabilista do grupo). Não pode gerir gestores.',
+  },
+  {
+    name: 'Colaborador',
+    icon: User,
+    chip: 'bg-slate-500',
+    desc: 'Apenas a sua área: registar ponto (com localização), pedir férias/ausências, ver documentos e editar o seu perfil (foto e dados pessoais). Sem acesso à gestão.',
+  },
+];
 
 export default function AdminManagers() {
   const { user } = useAuth();
@@ -299,6 +333,36 @@ export default function AdminManagers() {
           </DialogContent>
         </Dialog>
       </PageHeader>
+
+      {/* Regras de acesso por perfil */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ShieldCheck className="h-5 w-5 text-primary" />
+            Regras de acesso por perfil
+          </CardTitle>
+          <CardDescription>
+            O que cada tipo de utilizador pode fazer no sistema.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {ROLE_RULES.map((r) => (
+            <div key={r.name} className="flex items-start gap-3 p-3 rounded-xl border bg-muted/30">
+              <div className={`h-9 w-9 rounded-lg ${r.chip} text-white flex items-center justify-center shrink-0`}>
+                <r.icon className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="font-medium text-sm">{r.name}</p>
+                <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{r.desc}</p>
+              </div>
+            </div>
+          ))}
+          <p className="text-xs text-muted-foreground pt-1">
+            💡 Hoje, <strong>Gestor</strong>, <strong>Contabilista</strong> e <strong>Administrador</strong> têm
+            o mesmo nível de acesso (tudo, exceto gerir gestores) — a diferença é o título/função.
+          </p>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
