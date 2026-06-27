@@ -33,6 +33,7 @@ import {
 } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
 import { MapPin, Plus, Pencil, Trash2, LocateFixed, Loader2 } from 'lucide-react';
+import PageHeader from '../../components/PageHeader';
 import { toast } from 'sonner';
 
 const emptyForm = { name: '', company_id: '', address: '', latitude: '', longitude: '', geofence_radius: '' };
@@ -158,18 +159,16 @@ export default function AdminLocations() {
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="admin-locations-page">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-heading font-bold">Locais</h1>
-          <p className="text-muted-foreground mt-1">
-            {selectedCompany ? `Locais de ${selectedCompany.name}` : 'Gerir locais/sedes das empresas'}
-          </p>
-        </div>
+      <PageHeader
+        icon={MapPin}
+        title="Locais"
+        subtitle={selectedCompany ? `Locais de ${selectedCompany.name}` : 'Gerir locais/sedes das empresas'}
+      >
         <Button onClick={() => handleOpenDialog()} data-testid="add-location-btn">
           <Plus className="h-4 w-4 mr-2" />
           Novo Local
         </Button>
-      </div>
+      </PageHeader>
 
       <Card>
         <CardContent className="p-0">

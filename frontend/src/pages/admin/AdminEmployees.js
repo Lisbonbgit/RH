@@ -35,6 +35,7 @@ import {
 } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
 import { Users, Plus, Pencil, Trash2, Eye, Search, Calendar, Camera, Loader2 } from 'lucide-react';
+import PageHeader from '../../components/PageHeader';
 import { toast } from 'sonner';
 import { format, parseISO } from 'date-fns';
 
@@ -342,18 +343,16 @@ export default function AdminEmployees() {
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="admin-employees-page">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-heading font-bold">Colaboradores</h1>
-          <p className="text-muted-foreground mt-1">
-            {selectedCompany ? `Colaboradores de ${selectedCompany.name}` : 'Gerir colaboradores'}
-          </p>
-        </div>
+      <PageHeader
+        icon={Users}
+        title="Colaboradores"
+        subtitle={selectedCompany ? `Colaboradores de ${selectedCompany.name}` : 'Gerir colaboradores'}
+      >
         <Button onClick={() => handleOpenDialog()} data-testid="add-employee-btn">
           <Plus className="h-4 w-4 mr-2" />
           Novo Colaborador
         </Button>
-      </div>
+      </PageHeader>
 
       {/* Search */}
       <div className="relative max-w-sm">

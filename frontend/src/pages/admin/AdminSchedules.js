@@ -15,6 +15,7 @@ import {
 } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
 import { CalendarDays, Plus, Pencil, Trash2, X } from 'lucide-react';
+import PageHeader from '../../components/PageHeader';
 import { toast } from 'sonner';
 
 const weekDays = [
@@ -204,12 +205,11 @@ export default function AdminSchedules() {
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="admin-schedules-page">
-      <div>
-        <h1 className="text-2xl md:text-3xl font-heading font-bold">Escalas</h1>
-        <p className="text-muted-foreground mt-1">
-          {selectedCompany ? `Escalas de ${selectedCompany.name}` : 'Definir escalas e atribuições por colaborador'}
-        </p>
-      </div>
+      <PageHeader
+        icon={CalendarDays}
+        title="Escalas"
+        subtitle={selectedCompany ? `Escalas de ${selectedCompany.name}` : 'Definir escalas e atribuições por colaborador'}
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card data-testid="schedule-create-card">

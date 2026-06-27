@@ -5,6 +5,7 @@ import { Card, CardContent } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
 import { CalendarRange, ChevronLeft, ChevronRight } from 'lucide-react';
+import PageHeader from '../../components/PageHeader';
 import { toast } from 'sonner';
 import {
   format,
@@ -89,25 +90,21 @@ export default function AdminVacationMap() {
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="admin-vacation-map-page">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-heading font-bold">Mapa de Férias</h1>
-          <p className="text-muted-foreground mt-1">
-            {selectedCompany ? `Equipa de ${selectedCompany.name}` : 'Visão geral da equipa'}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="icon" onClick={() => setRefDate(subMonths(refDate, 1))} data-testid="prev-month-btn">
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <span className="min-w-[140px] text-center font-medium capitalize">
-            {format(refDate, "MMMM 'de' yyyy", { locale: pt })}
-          </span>
-          <Button variant="outline" size="icon" onClick={() => setRefDate(addMonths(refDate, 1))} data-testid="next-month-btn">
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        icon={CalendarRange}
+        title="Mapa de Férias"
+        subtitle={selectedCompany ? `Equipa de ${selectedCompany.name}` : 'Visão geral da equipa'}
+      >
+        <Button variant="outline" size="icon" onClick={() => setRefDate(subMonths(refDate, 1))} data-testid="prev-month-btn">
+          <ChevronLeft className="h-4 w-4" />
+        </Button>
+        <span className="min-w-[140px] text-center font-medium capitalize">
+          {format(refDate, "MMMM 'de' yyyy", { locale: pt })}
+        </span>
+        <Button variant="outline" size="icon" onClick={() => setRefDate(addMonths(refDate, 1))} data-testid="next-month-btn">
+          <ChevronRight className="h-4 w-4" />
+        </Button>
+      </PageHeader>
 
       {/* Legenda */}
       <div className="flex flex-wrap gap-2">

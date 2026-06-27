@@ -24,10 +24,14 @@ import {
 } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
 import { Clock, Pencil, Filter, History, MapPin, Download } from 'lucide-react';
+import PageHeader from '../../components/PageHeader';
 import { toast } from 'sonner';
 import { format, parseISO } from 'date-fns';
 import { pt } from 'date-fns/locale';
 import { downloadCSV } from '../../lib/export';
+
+const initials = (name) =>
+  (name || '?').split(' ').filter(Boolean).slice(0, 2).map((p) => p[0]).join('').toUpperCase();
 
 export default function AdminTimeRecords() {
   const { selectedCompany } = useOutletContext();
@@ -131,18 +135,16 @@ export default function AdminTimeRecords() {
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="admin-time-records-page">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-heading font-bold">Controlo de Ponto</h1>
-          <p className="text-muted-foreground mt-1">
-            {selectedCompany ? `Registos de ${selectedCompany.name}` : 'Visualizar e corrigir registos de ponto'}
-          </p>
-        </div>
+      <PageHeader
+        icon={Clock}
+        title="Controlo de Ponto"
+        subtitle={selectedCompany ? `Registos de ${selectedCompany.name}` : 'Visualizar e corrigir registos de ponto'}
+      >
         <Button variant="outline" onClick={handleExport} data-testid="export-records-btn">
           <Download className="h-4 w-4 mr-2" />
           Exportar CSV
         </Button>
-      </div>
+      </PageHeader>
 
       {/* Filters */}
       <Card>
@@ -227,7 +229,14 @@ export default function AdminTimeRecords() {
                 <TableBody>
                   {records.map((record) => (
                     <TableRow key={record.id} data-testid={`record-row-${record.id}`}>
-                      <TableCell className="font-medium">{record.employee_name}</TableCell>
+                      <TableCell className="font-medium">
+                        <div className="flex items-center gap-3">
+                          <div className="h-8 w-8 rounded-full bg-muted text-muted-foreground flex items-center justify-center text-xs font-semibold shrink-0">
+                            {initials(record.employee_name)}
+                          </div>
+                          <span>{record.employee_name}</span>
+                        </div>
+                      </TableCell>
                       <TableCell>
                         <Badge variant={record.record_type === 'entrada' ? 'default' : 'secondary'}>
                           {record.record_type === 'entrada' ? 'Entrada' : 'Saída'}

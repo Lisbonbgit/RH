@@ -34,6 +34,7 @@ import {
 } from '../../components/ui/select';
 import { ScrollArea } from '../../components/ui/scroll-area';
 import { FileText, Folder, Plus, Upload, Download, Trash2, User, FolderPlus } from 'lucide-react';
+import PageHeader from '../../components/PageHeader';
 import { toast } from 'sonner';
 import { format, parseISO } from 'date-fns';
 
@@ -195,12 +196,11 @@ export default function AdminDocuments() {
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="admin-documents-page">
-      <div>
-        <h1 className="text-2xl md:text-3xl font-heading font-bold">Documentos</h1>
-        <p className="text-muted-foreground mt-1">
-          {selectedCompany ? `Documentos de ${selectedCompany.name}` : 'Gerir documentos dos colaboradores'}
-        </p>
-      </div>
+      <PageHeader
+        icon={FileText}
+        title="Documentos"
+        subtitle={selectedCompany ? `Documentos de ${selectedCompany.name}` : 'Gerir documentos dos colaboradores'}
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Employee List */}

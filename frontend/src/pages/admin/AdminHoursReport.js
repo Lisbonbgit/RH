@@ -15,6 +15,7 @@ import {
 } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
 import { Clock4, Filter, Download, AlertTriangle } from 'lucide-react';
+import PageHeader from '../../components/PageHeader';
 import { toast } from 'sonner';
 import { format, startOfMonth } from 'date-fns';
 import { downloadCSV } from '../../lib/export';
@@ -86,18 +87,16 @@ export default function AdminHoursReport() {
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="admin-hours-report-page">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-heading font-bold">Relatório de Horas</h1>
-          <p className="text-muted-foreground mt-1">
-            {selectedCompany ? `Horas trabalhadas em ${selectedCompany.name}` : 'Horas trabalhadas por colaborador'}
-          </p>
-        </div>
+      <PageHeader
+        icon={Clock4}
+        title="Relatório de Horas"
+        subtitle={selectedCompany ? `Horas trabalhadas em ${selectedCompany.name}` : 'Horas trabalhadas por colaborador'}
+      >
         <Button variant="outline" onClick={handleExport} data-testid="export-hours-btn">
           <Download className="h-4 w-4 mr-2" />
           Exportar CSV
         </Button>
-      </div>
+      </PageHeader>
 
       {/* Filtros */}
       <Card>

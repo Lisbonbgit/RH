@@ -28,6 +28,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { Building2, Plus, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, parseISO } from 'date-fns';
+import PageHeader from '../../components/PageHeader';
 
 export default function AdminCompanies() {
   const { refreshCompanies } = useOutletContext();
@@ -102,16 +103,12 @@ export default function AdminCompanies() {
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="admin-companies-page">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-heading font-bold">Empresas</h1>
-          <p className="text-muted-foreground mt-1">Gerir empresas do grupo</p>
-        </div>
+      <PageHeader icon={Building2} title="Empresas" subtitle="Gerir empresas do grupo">
         <Button onClick={() => handleOpenDialog()} data-testid="add-company-btn">
           <Plus className="h-4 w-4 mr-2" />
           Nova Empresa
         </Button>
-      </div>
+      </PageHeader>
 
       <Card>
         <CardContent className="p-0">

@@ -48,6 +48,7 @@ import {
 import { Badge } from '../../components/ui/badge';
 import { toast } from 'sonner';
 import { Plus, Trash2, UserCog, Shield, Mail, Lock, User, Calculator } from 'lucide-react';
+import PageHeader from '../../components/PageHeader';
 import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL + '/api';
@@ -163,13 +164,11 @@ export default function AdminManagers() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-heading font-bold">Gestores e Administradores</h1>
-          <p className="text-muted-foreground">
-            Gerir utilizadores com permissões administrativas
-          </p>
-        </div>
+      <PageHeader
+        icon={UserCog}
+        title="Gestores e Administradores"
+        subtitle="Gerir utilizadores com permissões administrativas"
+      >
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
             <Button data-testid="add-manager-btn">
@@ -299,7 +298,7 @@ export default function AdminManagers() {
             </form>
           </DialogContent>
         </Dialog>
-      </div>
+      </PageHeader>
 
       <Card>
         <CardHeader>

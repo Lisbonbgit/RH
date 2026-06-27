@@ -26,6 +26,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
 import { Checkbox } from '../../components/ui/checkbox';
 import { Calendar, Check, X, Filter, Eye, Pencil, Download, Plus, Trash2 } from 'lucide-react';
+import PageHeader from '../../components/PageHeader';
 import { toast } from 'sonner';
 import { format, parseISO, differenceInDays } from 'date-fns';
 import { downloadCSV } from '../../lib/export';
@@ -57,6 +58,9 @@ const roleLabels = {
   gerente: 'Gestor',
   colaborador: 'Colaborador'
 };
+
+const initials = (name) =>
+  (name || '?').split(' ').filter(Boolean).slice(0, 2).map((p) => p[0]).join('').toUpperCase();
 
 export default function AdminLeaveRequests() {
   const { selectedCompany } = useOutletContext();
@@ -257,24 +261,20 @@ export default function AdminLeaveRequests() {
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="admin-leave-requests-page">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-heading font-bold">Férias e Ausências</h1>
-          <p className="text-muted-foreground mt-1">
-            {selectedCompany ? `Pedidos de ${selectedCompany.name}` : 'Gerir pedidos de férias e ausências'}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button onClick={handleOpenCreate} data-testid="create-leave-btn">
-            <Plus className="h-4 w-4 mr-2" />
-            Atribuir Férias
-          </Button>
-          <Button variant="outline" onClick={handleExport} data-testid="export-leaves-btn">
-            <Download className="h-4 w-4 mr-2" />
-            Exportar CSV
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        icon={Calendar}
+        title="Férias e Ausências"
+        subtitle={selectedCompany ? `Pedidos de ${selectedCompany.name}` : 'Gerir pedidos de férias e ausências'}
+      >
+        <Button onClick={handleOpenCreate} data-testid="create-leave-btn">
+          <Plus className="h-4 w-4 mr-2" />
+          Atribuir Férias
+        </Button>
+        <Button variant="outline" onClick={handleExport} data-testid="export-leaves-btn">
+          <Download className="h-4 w-4 mr-2" />
+          Exportar CSV
+        </Button>
+      </PageHeader>
 
       {/* Filters */}
       <Card>
@@ -358,7 +358,14 @@ export default function AdminLeaveRequests() {
                 <TableBody>
                   {requests.map((request) => (
                     <TableRow key={request.id} data-testid={`request-row-${request.id}`}>
-                      <TableCell className="font-medium">{request.employee_name}</TableCell>
+                      <TableCell className="font-medium">
+                        <div className="flex items-center gap-3">
+                          <div className="h-8 w-8 rounded-full bg-muted text-muted-foreground flex items-center justify-center text-xs font-semibold shrink-0">
+                            {initials(request.employee_name)}
+                          </div>
+                          <span>{request.employee_name}</span>
+                        </div>
+                      </TableCell>
                       <TableCell>
                         <div className="flex flex-wrap items-center gap-2">
                           <Badge variant="outline" data-testid={`leave-type-${request.id}`}>
