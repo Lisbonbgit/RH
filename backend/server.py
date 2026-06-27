@@ -2969,6 +2969,79 @@ async def delete_campaign(campaign_id: str, current_user: dict = Depends(admin_r
         raise HTTPException(status_code=404, detail="Campanha não encontrada")
     return {"message": "Campanha eliminada com sucesso"}
 
+# ==================== MARKETING — CALENDÁRIO DE CONTEÚDOS ====================
+
+class PostCreate(BaseModel):
+    title: str
+    channel: str = "instagram"      # instagram | facebook | tiktok | google | website | outro
+    company_id: Optional[str] = None
+    scheduled_date: Optional[str] = None  # AAAA-MM-DD (None = ideia sem data)
+    scheduled_time: Optional[str] = None  # HH:MM
+    status: str = "ideia"           # ideia | agendado | publicado
+    content: Optional[str] = None
+
+class PostResponse(BaseModel):
+    id: str
+    title: str
+    channel: str
+    company_id: Optional[str] = None
+    company_name: Optional[str] = None
+    scheduled_date: Optional[str] = None
+    scheduled_time: Optional[str] = None
+    status: str
+    content: Optional[str] = None
+    created_at: str
+
+async def _post_response(doc: dict) -> PostResponse:
+    company_name = None
+    if doc.get("company_id"):
+        company = await db.companies.find_one({"id": doc["company_id"]}, {"_id": 0, "name": 1})
+        company_name = company["name"] if company else None
+    return PostResponse(**doc, company_name=company_name)
+
+@api_router.get("/marketing/posts", response_model=List[PostResponse])
+async def list_posts(status: Optional[str] = None, channel: Optional[str] = None,
+                     company_id: Optional[str] = None, current_user: dict = Depends(admin_required)):
+    query = {}
+    if status:
+        query["status"] = status
+    if channel:
+        query["channel"] = channel
+    if company_id:
+        query["company_id"] = company_id
+    docs = await db.mkt_posts.find(query, {"_id": 0}).sort("scheduled_date", 1).to_list(2000)
+    return [await _post_response(d) for d in docs]
+
+@api_router.post("/marketing/posts", response_model=PostResponse)
+async def create_post(post: PostCreate, current_user: dict = Depends(admin_required)):
+    if post.company_id:
+        company = await db.companies.find_one({"id": post.company_id}, {"_id": 0})
+        if not company:
+            raise HTTPException(status_code=404, detail="Empresa não encontrada")
+    doc = {
+        "id": str(uuid.uuid4()),
+        **post.model_dump(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": current_user.get("user_id"),
+    }
+    await db.mkt_posts.insert_one(doc)
+    return await _post_response(doc)
+
+@api_router.put("/marketing/posts/{post_id}", response_model=PostResponse)
+async def update_post(post_id: str, post: PostCreate, current_user: dict = Depends(admin_required)):
+    result = await db.mkt_posts.update_one({"id": post_id}, {"$set": post.model_dump()})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Publicação não encontrada")
+    doc = await db.mkt_posts.find_one({"id": post_id}, {"_id": 0})
+    return await _post_response(doc)
+
+@api_router.delete("/marketing/posts/{post_id}")
+async def delete_post(post_id: str, current_user: dict = Depends(admin_required)):
+    result = await db.mkt_posts.delete_one({"id": post_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Publicação não encontrada")
+    return {"message": "Publicação eliminada com sucesso"}
+
 # ==================== HEALTH CHECK ====================
 
 @api_router.get("/health")

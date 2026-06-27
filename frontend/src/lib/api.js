@@ -106,3 +106,9 @@ export const getCampaigns = (params) => axios.get(`${API_URL}/marketing/campaign
 export const createCampaign = (data) => axios.post(`${API_URL}/marketing/campaigns`, data);
 export const updateCampaign = (id, data) => axios.put(`${API_URL}/marketing/campaigns/${id}`, data);
 export const deleteCampaign = (id) => axios.delete(`${API_URL}/marketing/campaigns/${id}`);
+
+// Marketing — Calendário de conteúdos (publicações)
+export const getPosts = (params) => axios.get(`${API_URL}/marketing/posts`, { params });
+export const createPost = (data) => axios.post(`${API_URL}/marketing/posts`, data);
+export const updatePost = (id, data) => axios.put(`${API_URL}/marketing/posts/${id}`, data);
+export const deletePost = (id) => axios.delete(`${API_URL}/marketing/posts/${id}`);
