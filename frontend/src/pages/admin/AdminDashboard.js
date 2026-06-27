@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/ca
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { Calendar } from '../../components/ui/calendar';
-import { Users, Clock, CalendarDays, Palmtree, Cake, Check, X, PartyPopper, Briefcase } from 'lucide-react';
+import { Users, Clock, CalendarDays, Palmtree, Cake, Check, X, PartyPopper, Briefcase, Coffee, UserMinus } from 'lucide-react';
 import { format, parseISO, isSameDay, isWithinInterval } from 'date-fns';
 import { pt } from 'date-fns/locale';
 import { toast } from 'sonner';
@@ -165,9 +165,11 @@ export default function AdminDashboard() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base"><Briefcase className="h-4 w-4" /> Quem está hoje</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-5">
+            <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-5">
               <AvatarGroup people={stats?.whos_in?.working || []} icon={Clock} label="A trabalhar" accent="text-teal-600" />
-              <AvatarGroup people={stats?.whos_in?.on_leave || []} icon={Palmtree} label="De férias / ausentes" accent="text-amber-600" />
+              <AvatarGroup people={stats?.whos_in?.vacation || []} icon={Palmtree} label="Férias" accent="text-amber-600" />
+              <AvatarGroup people={stats?.whos_in?.dayoff || []} icon={Coffee} label="Folga" accent="text-violet-600" />
+              <AvatarGroup people={stats?.whos_in?.absent || []} icon={UserMinus} label="Ausentes" accent="text-rose-600" />
             </CardContent>
           </Card>
 

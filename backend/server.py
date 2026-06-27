@@ -2597,13 +2597,18 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
 
     # De férias/ausência hoje (aprovado e cobre hoje)
     on_leave_ids = set()
+    leave_type_by_emp = {}
     leaves_today = await db.leave_requests.find(
         {"status": "aprovado", "start_date": {"$lte": today_str}, "end_date": {"$gte": today_str}},
-        {"_id": 0, "employee_id": 1}
+        {"_id": 0, "employee_id": 1, "leave_type": 1}
     ).to_list(2000)
     for lv in leaves_today:
         if lv["employee_id"] in emp_id_set:
             on_leave_ids.add(lv["employee_id"])
+            # férias > folga > ausência (prioridade se houver mais do que um)
+            existing = leave_type_by_emp.get(lv["employee_id"])
+            if existing != "ferias":
+                leave_type_by_emp[lv["employee_id"]] = lv.get("leave_type")
 
     # A trabalhar agora (último registo de hoje = entrada)
     rec_q = {"time": {"$gte": today_str}}
@@ -2621,8 +2626,15 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
         e = emp_by_id.get(eid, {})
         return {"id": eid, "name": e.get("name"), "photo": e.get("photo")}
 
+    vacation_ids = [eid for eid in on_leave_ids if leave_type_by_emp.get(eid) == "ferias"]
+    dayoff_ids = [eid for eid in on_leave_ids if leave_type_by_emp.get(eid) == "folga"]
+    absent_ids = [eid for eid in on_leave_ids if leave_type_by_emp.get(eid) not in ("ferias", "folga")]
+
     whos_in = {
         "working": [_mini(eid) for eid in working_ids[:18]],
+        "vacation": [_mini(eid) for eid in vacation_ids[:18]],
+        "dayoff": [_mini(eid) for eid in dayoff_ids[:18]],
+        "absent": [_mini(eid) for eid in absent_ids[:18]],
         "on_leave": [_mini(eid) for eid in list(on_leave_ids)[:18]],
     }
 
