@@ -2587,10 +2587,18 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
     # ===== Enriquecimento: quem está hoje + aniversários =====
     emp_filter = {"company_id": company_id} if company_id else {}
     all_emps = await db.employees.find(
-        emp_filter, {"_id": 0, "id": 1, "name": 1, "photo": 1, "birth_date": 1}
+        emp_filter,
+        {"_id": 0, "id": 1, "name": 1, "photo": 1, "birth_date": 1,
+         "position": 1, "location_id": 1, "company_id": 1},
     ).to_list(2000)
     emp_id_set = {e["id"] for e in all_emps}
     emp_by_id = {e["id"]: e for e in all_emps}
+
+    # Mapas de apoio para enriquecer os cartões (poucos queries, sem loops)
+    locations_all = await db.locations.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(500)
+    location_name_by_id = {loc["id"]: loc.get("name") for loc in locations_all}
+    companies_all = await db.companies.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(200)
+    company_name_by_id = {c["id"]: c.get("name") for c in companies_all}
 
     today_date = datetime.now(timezone.utc).date()
     today_str = today_date.isoformat()
@@ -2598,9 +2606,10 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
     # De férias/ausência hoje (aprovado e cobre hoje)
     on_leave_ids = set()
     leave_type_by_emp = {}
+    leave_end_by_emp = {}
     leaves_today = await db.leave_requests.find(
         {"status": "aprovado", "start_date": {"$lte": today_str}, "end_date": {"$gte": today_str}},
-        {"_id": 0, "employee_id": 1, "leave_type": 1}
+        {"_id": 0, "employee_id": 1, "leave_type": 1, "end_date": 1}
     ).to_list(2000)
     for lv in leaves_today:
         if lv["employee_id"] in emp_id_set:
@@ -2609,28 +2618,30 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
             existing = leave_type_by_emp.get(lv["employee_id"])
             if existing != "ferias":
                 leave_type_by_emp[lv["employee_id"]] = lv.get("leave_type")
+                leave_end_by_emp[lv["employee_id"]] = lv.get("end_date")
 
     # A trabalhar agora (último registo de hoje = entrada)
     rec_q = {"time": {"$gte": today_str}}
     if company_id:
         rec_q["employee_id"] = {"$in": list(emp_id_set)}
     records_today = await db.time_records.find(
-        rec_q, {"_id": 0, "employee_id": 1, "record_type": 1}
+        rec_q, {"_id": 0, "employee_id": 1, "record_type": 1, "time": 1}
     ).sort("time", 1).to_list(5000)
     last_type = {}
+    first_entry_by_emp = {}  # hora "HH:MM" da PRIMEIRA entrada de hoje
     for r in records_today:
-        last_type[r["employee_id"]] = r["record_type"]
+        eid = r["employee_id"]
+        last_type[eid] = r["record_type"]
+        if r["record_type"] == "entrada" and eid not in first_entry_by_emp:
+            t = r.get("time")
+            if t:
+                try:
+                    first_entry_by_emp[eid] = datetime.fromisoformat(t).strftime("%H:%M")
+                except (ValueError, TypeError):
+                    first_entry_by_emp[eid] = None
     working_ids = [eid for eid, t in last_type.items() if t == "entrada" and eid not in on_leave_ids and eid in emp_id_set]
 
-    def _mini(eid):
-        e = emp_by_id.get(eid, {})
-        return {"id": eid, "name": e.get("name"), "photo": e.get("photo")}
-
-    vacation_ids = [eid for eid in on_leave_ids if leave_type_by_emp.get(eid) == "ferias"]
-    dayoff_ids = [eid for eid in on_leave_ids if leave_type_by_emp.get(eid) == "folga"]
-    absent_ids = [eid for eid in on_leave_ids if leave_type_by_emp.get(eid) not in ("ferias", "folga")]
-
-    # Folga pela escala: tem escala ativa hoje mas hoje não é dia de trabalho
+    # Atribuições de escala por colaborador (pré-carregadas, sem query por pessoa)
     assignments_all = await db.work_schedule_assignments.find(
         {"employee_id": {"$in": list(emp_id_set)}}, {"_id": 0}
     ).to_list(5000)
@@ -2639,24 +2650,61 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
     for a in assignments_all:
         assignments_by_emp.setdefault(a["employee_id"], []).append(a)
 
+    # Mapa de templates (work_days + nome), para resolver a escala ativa hoje
+    template_ids = {a.get("template_id") for a in assignments_all if a.get("template_id")}
+    templates_by_id = {}
+    if template_ids:
+        templates = await db.work_schedule_templates.find(
+            {"id": {"$in": list(template_ids)}}, {"_id": 0, "id": 1, "name": 1, "work_days": 1}
+        ).to_list(500)
+        templates_by_id = {t["id"]: t for t in templates}
+
+    def _schedule_today(eid):
+        """Escala ativa hoje. Devolve (work_days, name) com a atribuição ativa,
+        ou (None, None) se não houver atribuição a cobrir hoje. work_days pode ser
+        lista vazia se a atribuição não definir dias."""
+        assignment = find_schedule_assignment(assignments_by_emp.get(eid, []), today_date)
+        if not assignment:
+            return None, None
+        tpl = templates_by_id.get(assignment.get("template_id"), {})
+        work_days = assignment.get("work_days") or tpl.get("work_days") or []
+        return list(work_days), tpl.get("name")
+
+    def _mini(eid):
+        e = emp_by_id.get(eid, {})
+        sched_days, sched_name = _schedule_today(eid)
+        item = {
+            "id": eid,
+            "name": e.get("name"),
+            "photo": e.get("photo"),
+            "position": e.get("position"),
+            "location_name": location_name_by_id.get(e.get("location_id")),
+            "company_name": company_name_by_id.get(e.get("company_id")),
+            # Para o frontend: só consideramos "tem escala" se houver dias definidos
+            "schedule_days": sched_days if sched_days else None,
+            "schedule_name": sched_name if sched_days else None,
+        }
+        if eid in working_ids:
+            item["since"] = first_entry_by_emp.get(eid)
+        if eid in on_leave_ids:
+            item["until"] = leave_end_by_emp.get(eid)
+        return item
+
+    vacation_ids = [eid for eid in on_leave_ids if leave_type_by_emp.get(eid) == "ferias"]
+    dayoff_ids = [eid for eid in on_leave_ids if leave_type_by_emp.get(eid) == "folga"]
+    absent_ids = [eid for eid in on_leave_ids if leave_type_by_emp.get(eid) not in ("ferias", "folga")]
+
+    # Folga pela escala: tem escala ativa hoje mas hoje não é dia de trabalho
     today_weekday = today_date.weekday()  # 0=Seg ... 5=Sáb, 6=Dom
     schedule_dayoff_ids = []
     for eid in emp_id_set:
         # Ausência aprovada e "a trabalhar" têm prioridade
         if eid in on_leave_ids or eid in working_ids:
             continue
-        assignment = find_schedule_assignment(assignments_by_emp.get(eid, []), today_date)
-        if not assignment:
+        sched_days, _ = _schedule_today(eid)
+        if sched_days is None:
             continue
-        work_days = assignment.get("work_days")
-        # Se a atribuição não tem work_days, herda do template
-        if not work_days and assignment.get("template_id"):
-            tpl = await db.work_schedule_templates.find_one(
-                {"id": assignment["template_id"]}, {"_id": 0, "work_days": 1}
-            )
-            work_days = (tpl or {}).get("work_days") or []
-        work_days = work_days or []
-        if today_weekday not in work_days:
+        if today_weekday not in sched_days:
             schedule_dayoff_ids.append(eid)
 
     # Juntar folga por pedido + folga por escala, sem duplicar
@@ -2692,7 +2740,15 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
                     nb = d.replace(year=today_date.year + 1, day=28)
             days = (nb - today_date).days
             if days <= 30:
-                birthdays.append({"name": e.get("name"), "photo": e.get("photo"), "date": nb.isoformat(), "days_until": days})
+                birthdays.append({
+                    "name": e.get("name"),
+                    "photo": e.get("photo"),
+                    "position": e.get("position"),
+                    "company_name": company_name_by_id.get(e.get("company_id")),
+                    "location_name": location_name_by_id.get(e.get("location_id")),
+                    "date": nb.isoformat(),
+                    "days_until": days,
+                })
         except ValueError:
             continue
     birthdays.sort(key=lambda x: x["days_until"])
@@ -2713,6 +2769,9 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
         upcoming_leaves.append({
             "employee_name": emp.get("name"),
             "photo": emp.get("photo"),
+            "position": emp.get("position"),
+            "company_name": company_name_by_id.get(emp.get("company_id")),
+            "location_name": location_name_by_id.get(emp.get("location_id")),
             "leave_type": lv.get("leave_type"),
             "start_date": lv["start_date"],
             "end_date": lv["end_date"],

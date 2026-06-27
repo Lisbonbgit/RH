@@ -6,7 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/ca
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { Calendar } from '../../components/ui/calendar';
-import { Users, Clock, CalendarDays, Palmtree, Cake, Check, X, PartyPopper, Briefcase, Coffee, UserMinus, Plane } from 'lucide-react';
+import { HoverCard, HoverCardTrigger, HoverCardContent } from '../../components/ui/hover-card';
+import { Users, Clock, CalendarDays, Palmtree, Cake, Check, X, PartyPopper, Briefcase, Coffee, UserMinus, Plane, MapPin, CalendarClock } from 'lucide-react';
 import { format, parseISO, isSameDay, isWithinInterval } from 'date-fns';
 import { pt } from 'date-fns/locale';
 import { toast } from 'sonner';
@@ -32,7 +33,83 @@ const Avatar = ({ person, size = 'h-10 w-10' }) =>
     </div>
   );
 
-const AvatarGroup = ({ people = [], icon: Icon, label, accent }) => (
+const weekdayLabels = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
+const formatScheduleDays = (days) =>
+  (days || [])
+    .filter((d) => d >= 0 && d <= 6)
+    .sort((a, b) => a - b)
+    .map((d) => weekdayLabels[d])
+    .join(', ');
+
+// Estado de hoje (cor + texto) consoante o grupo do "Quem está hoje"
+const statusFor = (person, status) => {
+  switch (status) {
+    case 'working':
+      return { className: 'text-teal-600', text: person?.since ? `A trabalhar desde ${person.since}` : 'A trabalhar' };
+    case 'vacation': {
+      let suffix = '';
+      try {
+        if (person?.until) suffix = ` até ${format(parseISO(person.until), 'dd/MM')}`;
+      } catch { /* ignora datas inválidas */ }
+      return { className: 'text-amber-600', text: `Férias${suffix}` };
+    }
+    case 'dayoff':
+      return { className: 'text-violet-600', text: 'Folga' };
+    case 'absent': {
+      let suffix = '';
+      try {
+        if (person?.until) suffix = ` até ${format(parseISO(person.until), 'dd/MM')}`;
+      } catch { /* ignora datas inválidas */ }
+      return { className: 'text-rose-600', text: `Ausente${suffix}` };
+    }
+    default:
+      return null;
+  }
+};
+
+// Cartão (hover) com info do colaborador. `status` é opcional (só no "Quem está hoje").
+const PersonHoverCard = ({ person, status, children }) => {
+  if (!person) return children;
+  const place = [person.company_name, person.location_name].filter(Boolean).join(' · ');
+  const state = status ? statusFor(person, status) : null;
+  const scheduleDays = formatScheduleDays(person.schedule_days);
+  return (
+    <HoverCard openDelay={120} closeDelay={60}>
+      <HoverCardTrigger asChild>
+        <span className="inline-flex cursor-default">{children}</span>
+      </HoverCardTrigger>
+      <HoverCardContent align="start" className="w-72">
+        <div className="flex items-start gap-3">
+          <Avatar person={person} size="h-12 w-12" />
+          <div className="min-w-0">
+            <p className="font-heading font-semibold text-sm leading-tight truncate">{person.name}</p>
+            {person.position && <p className="text-xs text-muted-foreground truncate">{person.position}</p>}
+          </div>
+        </div>
+        {place && (
+          <p className="mt-3 text-xs text-muted-foreground flex items-center gap-1.5">
+            <MapPin className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{place}</span>
+          </p>
+        )}
+        {state && (
+          <p className={`mt-2 text-xs font-medium ${state.className}`}>{state.text}</p>
+        )}
+        {person.schedule_name || scheduleDays ? (
+          <div className="mt-3 pt-3 border-t">
+            <p className="text-xs font-medium flex items-center gap-1.5">
+              <CalendarClock className="h-3.5 w-3.5 shrink-0 text-primary" />
+              <span className="truncate">Escala{person.schedule_name ? `: ${person.schedule_name}` : ''}</span>
+            </p>
+            {scheduleDays && <p className="mt-1 text-xs text-muted-foreground pl-5">{scheduleDays}</p>}
+          </div>
+        ) : null}
+      </HoverCardContent>
+    </HoverCard>
+  );
+};
+
+const AvatarGroup = ({ people = [], icon: Icon, label, accent, status }) => (
   <div>
     <div className="flex items-center gap-2 mb-2">
       <Icon className={`h-4 w-4 ${accent}`} />
@@ -44,7 +121,9 @@ const AvatarGroup = ({ people = [], icon: Icon, label, accent }) => (
     ) : (
       <div className="flex flex-wrap items-center gap-1 pl-6">
         {people.slice(0, 12).map((p) => (
-          <Avatar key={p.id} person={p} size="h-9 w-9" />
+          <PersonHoverCard key={p.id} person={p} status={status}>
+            <Avatar person={p} size="h-9 w-9" />
+          </PersonHoverCard>
         ))}
         {people.length > 12 && (
           <div className="h-9 w-9 rounded-full bg-muted text-muted-foreground flex items-center justify-center text-xs font-semibold">
@@ -166,10 +245,10 @@ export default function AdminDashboard() {
               <CardTitle className="flex items-center gap-2 text-base"><Briefcase className="h-4 w-4" /> Quem está hoje</CardTitle>
             </CardHeader>
             <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-              <AvatarGroup people={stats?.whos_in?.working || []} icon={Clock} label="A trabalhar" accent="text-teal-600" />
-              <AvatarGroup people={stats?.whos_in?.vacation || []} icon={Palmtree} label="Férias" accent="text-amber-600" />
-              <AvatarGroup people={stats?.whos_in?.dayoff || []} icon={Coffee} label="Folga" accent="text-violet-600" />
-              <AvatarGroup people={stats?.whos_in?.absent || []} icon={UserMinus} label="Ausentes" accent="text-rose-600" />
+              <AvatarGroup people={stats?.whos_in?.working || []} icon={Clock} label="A trabalhar" accent="text-teal-600" status="working" />
+              <AvatarGroup people={stats?.whos_in?.vacation || []} icon={Palmtree} label="Férias" accent="text-amber-600" status="vacation" />
+              <AvatarGroup people={stats?.whos_in?.dayoff || []} icon={Coffee} label="Folga" accent="text-violet-600" status="dayoff" />
+              <AvatarGroup people={stats?.whos_in?.absent || []} icon={UserMinus} label="Ausentes" accent="text-rose-600" status="absent" />
             </CardContent>
           </Card>
 
@@ -259,7 +338,9 @@ export default function AdminDashboard() {
                 <div className="space-y-3">
                   {stats.upcoming_birthdays.map((b, i) => (
                     <div key={i} className="flex items-center gap-3">
-                      <Avatar person={b} size="h-9 w-9" />
+                      <PersonHoverCard person={b}>
+                        <Avatar person={b} size="h-9 w-9" />
+                      </PersonHoverCard>
                       <div className="flex-1 min-w-0">
                         <p className="font-medium text-sm truncate">{b.name}</p>
                         <p className="text-xs text-muted-foreground flex items-center gap-1">
@@ -288,7 +369,9 @@ export default function AdminDashboard() {
                 <div className="space-y-3">
                   {stats.upcoming_leaves.map((lv, i) => (
                     <div key={`${lv.employee_name}-${lv.start_date}`} className="flex items-center gap-3">
-                      <Avatar person={{ name: lv.employee_name, photo: lv.photo }} size="h-9 w-9" />
+                      <PersonHoverCard person={{ name: lv.employee_name, photo: lv.photo, position: lv.position, company_name: lv.company_name, location_name: lv.location_name }}>
+                        <Avatar person={{ name: lv.employee_name, photo: lv.photo }} size="h-9 w-9" />
+                      </PersonHoverCard>
                       <div className="flex-1 min-w-0">
                         <p className="font-medium text-sm truncate">{lv.employee_name}</p>
                         <p className="text-xs text-muted-foreground flex items-center gap-1">
