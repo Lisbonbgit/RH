@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/ca
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { Calendar } from '../../components/ui/calendar';
-import { Users, Clock, CalendarDays, Palmtree, Cake, Check, X, PartyPopper, Briefcase, Coffee, UserMinus } from 'lucide-react';
+import { Users, Clock, CalendarDays, Palmtree, Cake, Check, X, PartyPopper, Briefcase, Coffee, UserMinus, Plane } from 'lucide-react';
 import { format, parseISO, isSameDay, isWithinInterval } from 'date-fns';
 import { pt } from 'date-fns/locale';
 import { toast } from 'sonner';
@@ -268,6 +268,35 @@ export default function AdminDashboard() {
                       </div>
                       <Badge variant="outline" className="text-xs">
                         {b.days_until === 0 ? 'Hoje! 🎉' : b.days_until === 1 ? 'Amanhã' : `${b.days_until} dias`}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Próximas férias */}
+          <Card data-testid="upcoming-leaves-card">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base"><Plane className="h-4 w-4" /> Próximas férias</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {(stats?.upcoming_leaves || []).length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">Sem férias agendadas</p>
+              ) : (
+                <div className="space-y-3">
+                  {stats.upcoming_leaves.map((lv, i) => (
+                    <div key={`${lv.employee_name}-${lv.start_date}`} className="flex items-center gap-3">
+                      <Avatar person={{ name: lv.employee_name, photo: lv.photo }} size="h-9 w-9" />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-sm truncate">{lv.employee_name}</p>
+                        <p className="text-xs text-muted-foreground flex items-center gap-1">
+                          <Palmtree className="h-3 w-3" /> {format(parseISO(lv.start_date), 'd MMM', { locale: pt })} - {format(parseISO(lv.end_date), 'd MMM', { locale: pt })}
+                        </p>
+                      </div>
+                      <Badge variant="outline" className="text-xs shrink-0">
+                        {lv.days_until === 0 ? 'Hoje' : lv.days_until === 1 ? 'Amanhã' : `daqui a ${lv.days_until} dias`}
                       </Badge>
                     </div>
                   ))}

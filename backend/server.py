@@ -2698,6 +2698,28 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
     birthdays.sort(key=lambda x: x["days_until"])
     birthdays = birthdays[:6]
 
+    # Próximas férias: pedidos aprovados que começam depois de hoje
+    upcoming_leaves = []
+    q = {"status": "aprovado", "leave_type": "ferias", "start_date": {"$gt": today_str}}
+    if company_id:
+        q["employee_id"] = {"$in": list(emp_id_set)}
+    rows = await db.leave_requests.find(q, {"_id": 0}).sort("start_date", 1).to_list(30)
+    for lv in rows:
+        emp = emp_by_id.get(lv["employee_id"])
+        if not emp:  # fora do scope da empresa
+            continue
+        start = datetime.fromisoformat(lv["start_date"]).date()
+        days_until = (start - today_date).days
+        upcoming_leaves.append({
+            "employee_name": emp.get("name"),
+            "photo": emp.get("photo"),
+            "leave_type": lv.get("leave_type"),
+            "start_date": lv["start_date"],
+            "end_date": lv["end_date"],
+            "days_until": days_until,
+        })
+    upcoming_leaves = upcoming_leaves[:6]
+
     return {
         "total_employees": total_employees,
         "total_companies": total_companies,
@@ -2709,6 +2731,7 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
         "recent_requests": recent_requests,
         "whos_in": whos_in,
         "upcoming_birthdays": birthdays,
+        "upcoming_leaves": upcoming_leaves,
     }
 
 @api_router.get("/dashboard/employee")
