@@ -2630,10 +2630,45 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
     dayoff_ids = [eid for eid in on_leave_ids if leave_type_by_emp.get(eid) == "folga"]
     absent_ids = [eid for eid in on_leave_ids if leave_type_by_emp.get(eid) not in ("ferias", "folga")]
 
+    # Folga pela escala: tem escala ativa hoje mas hoje não é dia de trabalho
+    assignments_all = await db.work_schedule_assignments.find(
+        {"employee_id": {"$in": list(emp_id_set)}}, {"_id": 0}
+    ).to_list(5000)
+    # Agrupar atribuições por colaborador (dict simples, sem defaultdict)
+    assignments_by_emp = {}
+    for a in assignments_all:
+        assignments_by_emp.setdefault(a["employee_id"], []).append(a)
+
+    today_weekday = today_date.weekday()  # 0=Seg ... 5=Sáb, 6=Dom
+    schedule_dayoff_ids = []
+    for eid in emp_id_set:
+        # Ausência aprovada e "a trabalhar" têm prioridade
+        if eid in on_leave_ids or eid in working_ids:
+            continue
+        assignment = find_schedule_assignment(assignments_by_emp.get(eid, []), today_date)
+        if not assignment:
+            continue
+        work_days = assignment.get("work_days")
+        # Se a atribuição não tem work_days, herda do template
+        if not work_days and assignment.get("template_id"):
+            tpl = await db.work_schedule_templates.find_one(
+                {"id": assignment["template_id"]}, {"_id": 0, "work_days": 1}
+            )
+            work_days = (tpl or {}).get("work_days") or []
+        work_days = work_days or []
+        if today_weekday not in work_days:
+            schedule_dayoff_ids.append(eid)
+
+    # Juntar folga por pedido + folga por escala, sem duplicar
+    dayoff_all = list(dayoff_ids)
+    for eid in schedule_dayoff_ids:
+        if eid not in dayoff_all:
+            dayoff_all.append(eid)
+
     whos_in = {
         "working": [_mini(eid) for eid in working_ids[:18]],
         "vacation": [_mini(eid) for eid in vacation_ids[:18]],
-        "dayoff": [_mini(eid) for eid in dayoff_ids[:18]],
+        "dayoff": [_mini(eid) for eid in dayoff_all[:18]],
         "absent": [_mini(eid) for eid in absent_ids[:18]],
         "on_leave": [_mini(eid) for eid in list(on_leave_ids)[:18]],
     }
