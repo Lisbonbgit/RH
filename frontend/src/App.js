@@ -28,6 +28,8 @@ import EmployeeDocuments from './pages/employee/EmployeeDocuments';
 // Layout
 import AdminLayout from './components/layouts/AdminLayout';
 import EmployeeLayout from './components/layouts/EmployeeLayout';
+import ComingSoon from './components/ComingSoon';
+import { Wallet, Receipt, TrendingUp, BarChart3, Truck, Landmark, Users as UsersIcon, Megaphone } from 'lucide-react';
 
 // Protected Route Component - checks for authentication and must_change_password
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -139,6 +141,18 @@ function AppRoutes() {
           </ProtectedRoute>
         } />
         <Route path="escalas" element={<AdminSchedules />} />
+
+        {/* ===== Financeiro (em construção) ===== */}
+        <Route path="financeiro" element={<ComingSoon icon={Wallet} title="Financeiro" subtitle="Cockpit financeiro · KPIs consolidados" />} />
+        <Route path="financeiro/pagamentos" element={<ComingSoon icon={Receipt} title="Pagamentos" subtitle="Faturas de fornecedor, agenda e conta corrente" />} />
+        <Route path="financeiro/vendas" element={<ComingSoon icon={TrendingUp} title="Vendas" subtitle="Receita por loja · integração Vendus" />} />
+        <Route path="financeiro/relatorios" element={<ComingSoon icon={BarChart3} title="Relatórios" subtitle="DRE e custos fixos" />} />
+        <Route path="financeiro/fornecedores" element={<ComingSoon icon={Truck} title="Fornecedores" subtitle="Fichas e regras por fornecedor" />} />
+        <Route path="financeiro/extrato" element={<ComingSoon icon={Landmark} title="Extrato / Tesouraria" subtitle="Importar extrato do banco e conciliar" />} />
+        <Route path="financeiro/equipa" element={<ComingSoon icon={UsersIcon} title="Equipa" subtitle="Acessos e papéis no Financeiro" />} />
+
+        {/* ===== Marketing (em construção) ===== */}
+        <Route path="marketing" element={<ComingSoon icon={Megaphone} title="Marketing" subtitle="Módulo de marketing do grupo Lisbonb" />} />
       </Route>
       
       {/* Employee Routes */}

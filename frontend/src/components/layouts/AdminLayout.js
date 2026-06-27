@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { getNotifications, markAllNotificationsRead, getCompanies } from '../../lib/api';
 import { Button } from '../ui/button';
@@ -35,27 +35,69 @@ import {
   ChevronDown,
   User,
   Check,
-  UserPlus
+  UserPlus,
+  Wallet,
+  Receipt,
+  TrendingUp,
+  BarChart3,
+  Truck,
+  Landmark,
+  Megaphone
 } from 'lucide-react';
 import { toast } from 'sonner';
 
-const navItems = [
-  { path: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true },
-  { path: '/admin/empresas', label: 'Empresas', icon: Building2 },
-  { path: '/admin/locais', label: 'Locais', icon: MapPin },
-  { path: '/admin/colaboradores', label: 'Colaboradores', icon: Users },
-  { path: '/admin/ponto', label: 'Controlo de Ponto', icon: Clock },
-  { path: '/admin/relatorio-horas', label: 'Relatório de Horas', icon: Clock4 },
-  { path: '/admin/ausencias', label: 'Férias e Ausências', icon: Calendar },
-  { path: '/admin/mapa-ferias', label: 'Mapa de Férias', icon: CalendarRange },
-  { path: '/admin/escalas', label: 'Escalas', icon: Calendar },
-  { path: '/admin/documentos', label: 'Documentos', icon: FileText },
-  { path: '/admin/gestores', label: 'Gestores', icon: UserPlus, masterOnly: true },
+// Universo "Gestão Lisbonb": secções de topo, cada uma com os seus módulos.
+const sections = [
+  {
+    key: 'rh',
+    label: 'RH',
+    home: '/admin',
+    match: (p) => !p.startsWith('/admin/financeiro') && !p.startsWith('/admin/marketing'),
+    items: [
+      { path: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true },
+      { path: '/admin/empresas', label: 'Empresas', icon: Building2 },
+      { path: '/admin/locais', label: 'Locais', icon: MapPin },
+      { path: '/admin/colaboradores', label: 'Colaboradores', icon: Users },
+      { path: '/admin/ponto', label: 'Controlo de Ponto', icon: Clock },
+      { path: '/admin/relatorio-horas', label: 'Relatório de Horas', icon: Clock4 },
+      { path: '/admin/ausencias', label: 'Férias e Ausências', icon: Calendar },
+      { path: '/admin/mapa-ferias', label: 'Mapa de Férias', icon: CalendarRange },
+      { path: '/admin/escalas', label: 'Escalas', icon: Calendar },
+      { path: '/admin/documentos', label: 'Documentos', icon: FileText },
+      { path: '/admin/gestores', label: 'Gestores', icon: UserPlus, masterOnly: true },
+    ],
+  },
+  {
+    key: 'financeiro',
+    label: 'Financeiro',
+    home: '/admin/financeiro',
+    match: (p) => p.startsWith('/admin/financeiro'),
+    items: [
+      { path: '/admin/financeiro', label: 'Início', icon: Wallet, exact: true },
+      { path: '/admin/financeiro/pagamentos', label: 'Pagamentos', icon: Receipt },
+      { path: '/admin/financeiro/vendas', label: 'Vendas', icon: TrendingUp },
+      { path: '/admin/financeiro/relatorios', label: 'Relatórios', icon: BarChart3 },
+      { path: '/admin/financeiro/fornecedores', label: 'Fornecedores', icon: Truck },
+      { path: '/admin/financeiro/extrato', label: 'Extrato', icon: Landmark },
+      { path: '/admin/financeiro/equipa', label: 'Equipa', icon: Users },
+    ],
+  },
+  {
+    key: 'marketing',
+    label: 'Marketing',
+    home: '/admin/marketing',
+    match: (p) => p.startsWith('/admin/marketing'),
+    items: [
+      { path: '/admin/marketing', label: 'Marketing', icon: Megaphone, exact: true },
+    ],
+  },
 ];
 
 export default function AdminLayout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const activeSection = sections.find((s) => s.match(location.pathname)) || sections[0];
   const [notifications, setNotifications] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [selectedCompany, setSelectedCompany] = useState(null);
@@ -113,14 +155,36 @@ export default function AdminLayout() {
           </div>
           <div className="leading-tight">
             <h1 className="font-heading font-bold text-lg">Lisbonb</h1>
-            <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground font-semibold">Gestão de RH</p>
+            <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground font-semibold">Gestão Lisbonb</p>
           </div>
         </div>
       </div>
 
       <Separator />
 
-      {/* Company Selector */}
+      {/* Seletor de secções (RH / Financeiro / Marketing) */}
+      <div className="px-4 pt-4">
+        <div className="grid grid-cols-3 gap-1 p-1 bg-muted rounded-xl">
+          {sections.map((s) => (
+            <button
+              key={s.key}
+              type="button"
+              onClick={() => { navigate(s.home); setMobileOpen(false); }}
+              className={`text-xs font-semibold py-1.5 rounded-lg transition-colors ${
+                activeSection.key === s.key
+                  ? 'bg-card text-primary shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+              data-testid={`section-${s.key}`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Company Selector (só na secção RH) */}
+      {activeSection.key === 'rh' && (
       <div className="p-4">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -154,10 +218,11 @@ export default function AdminLayout() {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      )}
 
-      <ScrollArea className="flex-1 px-3">
+      <ScrollArea className="flex-1 px-3 pt-2">
         <nav className="space-y-1">
-          {navItems.filter(item => !item.masterOnly || isMasterAdmin).map((item) => (
+          {activeSection.items.filter(item => !item.masterOnly || isMasterAdmin).map((item) => (
             <NavLink
               key={item.path}
               to={item.path}
