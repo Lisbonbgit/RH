@@ -187,8 +187,7 @@ export default function AdminLayout() {
         </div>
       </div>
 
-      {/* Company Selector (só na secção RH) */}
-      {activeSection.key === 'rh' && (
+      {/* Company Selector (todas as secções) */}
       <div className="p-4">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -222,7 +221,6 @@ export default function AdminLayout() {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      )}
 
       <ScrollArea className="flex-1 px-3 pt-2">
         <nav className="space-y-1">

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useOutletContext } from 'react-router-dom';
 import { getPosts, createPost, updatePost, deletePost, getCompanies } from '../../../lib/api';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
@@ -44,6 +45,7 @@ const statusInfo = {
 const emptyForm = { title: '', channel: 'instagram', company_id: '', scheduled_date: '', scheduled_time: '', status: 'ideia', content: '' };
 
 export default function MarketingCalendar() {
+  const { selectedCompany } = useOutletContext();
   const [posts, setPosts] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -61,13 +63,14 @@ export default function MarketingCalendar() {
   useEffect(() => {
     fetchPosts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channelFilter]);
+  }, [channelFilter, selectedCompany]);
 
   const fetchPosts = async () => {
     setLoading(true);
     try {
       const params = {};
       if (channelFilter) params.channel = channelFilter;
+      if (selectedCompany?.id) params.company_id = selectedCompany.id;
       const res = await getPosts(params);
       setPosts(res.data || []);
     } catch (error) {

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useOutletContext } from 'react-router-dom';
 import { getCampaigns, createCampaign, updateCampaign, deleteCampaign, getCompanies } from '../../../lib/api';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
@@ -45,6 +46,7 @@ const fmtDate = (d) => {
 };
 
 export default function MarketingCampaigns() {
+  const { selectedCompany } = useOutletContext();
   const [campaigns, setCampaigns] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -61,13 +63,14 @@ export default function MarketingCampaigns() {
   useEffect(() => {
     fetchCampaigns();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusFilter]);
+  }, [statusFilter, selectedCompany]);
 
   const fetchCampaigns = async () => {
     setLoading(true);
     try {
       const params = {};
       if (statusFilter) params.status = statusFilter;
+      if (selectedCompany?.id) params.company_id = selectedCompany.id;
       const res = await getCampaigns(params);
       setCampaigns(res.data || []);
     } catch (error) {
