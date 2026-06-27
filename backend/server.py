@@ -2892,6 +2892,83 @@ async def get_calendar_leaves(
 
     return leaves
 
+# ==================== MARKETING — CAMPANHAS ====================
+
+class CampaignCreate(BaseModel):
+    name: str
+    type: str = "campanha"          # campanha | promocao | evento | cupao
+    company_id: Optional[str] = None  # None = todo o grupo
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    status: str = "planeada"        # planeada | ativa | terminada
+    channel: Optional[str] = None   # ex.: Instagram, Facebook, Loja...
+    budget: Optional[float] = None
+    description: Optional[str] = None
+    result: Optional[str] = None
+
+class CampaignResponse(BaseModel):
+    id: str
+    name: str
+    type: str
+    company_id: Optional[str] = None
+    company_name: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    status: str
+    channel: Optional[str] = None
+    budget: Optional[float] = None
+    description: Optional[str] = None
+    result: Optional[str] = None
+    created_at: str
+
+async def _campaign_response(doc: dict) -> CampaignResponse:
+    company_name = None
+    if doc.get("company_id"):
+        company = await db.companies.find_one({"id": doc["company_id"]}, {"_id": 0, "name": 1})
+        company_name = company["name"] if company else None
+    return CampaignResponse(**doc, company_name=company_name)
+
+@api_router.get("/marketing/campaigns", response_model=List[CampaignResponse])
+async def list_campaigns(company_id: Optional[str] = None, status: Optional[str] = None,
+                         current_user: dict = Depends(admin_required)):
+    query = {}
+    if company_id:
+        query["company_id"] = company_id
+    if status:
+        query["status"] = status
+    docs = await db.mkt_campaigns.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return [await _campaign_response(d) for d in docs]
+
+@api_router.post("/marketing/campaigns", response_model=CampaignResponse)
+async def create_campaign(campaign: CampaignCreate, current_user: dict = Depends(admin_required)):
+    if campaign.company_id:
+        company = await db.companies.find_one({"id": campaign.company_id}, {"_id": 0})
+        if not company:
+            raise HTTPException(status_code=404, detail="Empresa não encontrada")
+    doc = {
+        "id": str(uuid.uuid4()),
+        **campaign.model_dump(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": current_user.get("user_id"),
+    }
+    await db.mkt_campaigns.insert_one(doc)
+    return await _campaign_response(doc)
+
+@api_router.put("/marketing/campaigns/{campaign_id}", response_model=CampaignResponse)
+async def update_campaign(campaign_id: str, campaign: CampaignCreate, current_user: dict = Depends(admin_required)):
+    result = await db.mkt_campaigns.update_one({"id": campaign_id}, {"$set": campaign.model_dump()})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+    doc = await db.mkt_campaigns.find_one({"id": campaign_id}, {"_id": 0})
+    return await _campaign_response(doc)
+
+@api_router.delete("/marketing/campaigns/{campaign_id}")
+async def delete_campaign(campaign_id: str, current_user: dict = Depends(admin_required)):
+    result = await db.mkt_campaigns.delete_one({"id": campaign_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+    return {"message": "Campanha eliminada com sucesso"}
+
 # ==================== HEALTH CHECK ====================
 
 @api_router.get("/health")

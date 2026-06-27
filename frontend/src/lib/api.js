@@ -100,3 +100,9 @@ export const resetEmployeePassword = (employeeId, newPassword) =>
 export const getAdmins = () => axios.get(`${API_URL}/admins`);
 export const createAdmin = (data) => axios.post(`${API_URL}/admins`, data);
 export const deleteAdmin = (id) => axios.delete(`${API_URL}/admins/${id}`);
+
+// Marketing — Campanhas
+export const getCampaigns = (params) => axios.get(`${API_URL}/marketing/campaigns`, { params });
+export const createCampaign = (data) => axios.post(`${API_URL}/marketing/campaigns`, data);
+export const updateCampaign = (id, data) => axios.put(`${API_URL}/marketing/campaigns/${id}`, data);
+export const deleteCampaign = (id) => axios.delete(`${API_URL}/marketing/campaigns/${id}`);

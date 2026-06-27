@@ -29,7 +29,8 @@ import EmployeeDocuments from './pages/employee/EmployeeDocuments';
 import AdminLayout from './components/layouts/AdminLayout';
 import EmployeeLayout from './components/layouts/EmployeeLayout';
 import ComingSoon from './components/ComingSoon';
-import { Wallet, Receipt, TrendingUp, BarChart3, Truck, Landmark, Users as UsersIcon, Megaphone } from 'lucide-react';
+import MarketingCampaigns from './pages/admin/marketing/MarketingCampaigns';
+import { Wallet, Receipt, TrendingUp, BarChart3, Truck, Landmark, Users as UsersIcon, Megaphone, CalendarDays, Star } from 'lucide-react';
 
 // Protected Route Component - checks for authentication and must_change_password
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -151,8 +152,11 @@ function AppRoutes() {
         <Route path="financeiro/extrato" element={<ComingSoon icon={Landmark} title="Extrato / Tesouraria" subtitle="Importar extrato do banco e conciliar" />} />
         <Route path="financeiro/equipa" element={<ComingSoon icon={UsersIcon} title="Equipa" subtitle="Acessos e papéis no Financeiro" />} />
 
-        {/* ===== Marketing (em construção) ===== */}
-        <Route path="marketing" element={<ComingSoon icon={Megaphone} title="Marketing" subtitle="Módulo de marketing do grupo Lisbonb" />} />
+        {/* ===== Marketing ===== */}
+        <Route path="marketing" element={<MarketingCampaigns />} />
+        <Route path="marketing/calendario" element={<ComingSoon icon={CalendarDays} title="Calendário de conteúdos" subtitle="Planear e agendar publicações nas redes sociais" />} />
+        <Route path="marketing/avaliacoes" element={<ComingSoon icon={Star} title="Avaliações / reputação" subtitle="Acompanhar avaliações por loja e responder" />} />
+        <Route path="marketing/relatorios" element={<ComingSoon icon={BarChart3} title="Relatórios de marketing" subtitle="Métricas, alcance e retorno por campanha" />} />
       </Route>
       
       {/* Employee Routes */}

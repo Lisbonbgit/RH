@@ -42,7 +42,9 @@ import {
   BarChart3,
   Truck,
   Landmark,
-  Megaphone
+  Megaphone,
+  CalendarDays,
+  Star
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -87,7 +89,10 @@ const sections = [
     home: '/admin/marketing',
     match: (p) => p.startsWith('/admin/marketing'),
     items: [
-      { path: '/admin/marketing', label: 'Marketing', icon: Megaphone, exact: true },
+      { path: '/admin/marketing', label: 'Campanhas', icon: Megaphone, exact: true },
+      { path: '/admin/marketing/calendario', label: 'Calendário', icon: CalendarDays },
+      { path: '/admin/marketing/avaliacoes', label: 'Avaliações', icon: Star },
+      { path: '/admin/marketing/relatorios', label: 'Relatórios', icon: BarChart3 },
     ],
   },
 ];
