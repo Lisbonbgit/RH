@@ -47,7 +47,7 @@ import {
 } from '../../components/ui/alert-dialog';
 import { Badge } from '../../components/ui/badge';
 import { toast } from 'sonner';
-import { Plus, Trash2, UserCog, Shield, Mail, Lock, User, Calculator } from 'lucide-react';
+import { Plus, Trash2, UserCog, Shield, ShieldCheck, Mail, Lock, User, Calculator } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import axios from 'axios';
 
@@ -165,9 +165,9 @@ export default function AdminManagers() {
   return (
     <div className="space-y-6">
       <PageHeader
-        icon={UserCog}
-        title="Gestores e Administradores"
-        subtitle="Gerir utilizadores com permissões administrativas"
+        icon={ShieldCheck}
+        title="Administração do grupo"
+        subtitle="Definições que valem para todo o grupo Lisbonb · gerir gestores e acessos"
       >
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>

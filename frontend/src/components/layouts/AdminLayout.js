@@ -35,7 +35,7 @@ import {
   ChevronDown,
   User,
   Check,
-  UserPlus,
+  ShieldCheck,
   Wallet,
   Receipt,
   TrendingUp,
@@ -64,7 +64,6 @@ const sections = [
       { path: '/admin/mapa-ferias', label: 'Mapa de Férias', icon: CalendarRange },
       { path: '/admin/escalas', label: 'Escalas', icon: Calendar },
       { path: '/admin/documentos', label: 'Documentos', icon: FileText },
-      { path: '/admin/gestores', label: 'Gestores', icon: UserPlus, masterOnly: true },
     ],
   },
   {
@@ -244,7 +243,18 @@ export default function AdminLayout() {
         </nav>
       </ScrollArea>
 
-      <div className="p-4 border-t">
+      <div className="p-4 border-t space-y-1">
+        {isMasterAdmin && (
+          <button
+            type="button"
+            onClick={() => { navigate('/admin/gestores'); setMobileOpen(false); }}
+            className="lg:hidden w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            data-testid="group-admin-sidebar"
+          >
+            <ShieldCheck className="h-4 w-4 text-primary" />
+            Administração do grupo
+          </button>
+        )}
         <div className="flex items-center gap-3 px-3 py-2">
           <div className="h-9 w-9 rounded-full bg-muted flex items-center justify-center">
             <User className="h-4 w-4" />
@@ -390,9 +400,18 @@ export default function AdminLayout() {
                 <ChevronDown className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
+            <DropdownMenuContent align="end" className="w-56">
               <DropdownMenuLabel>{user?.email}</DropdownMenuLabel>
               <DropdownMenuSeparator />
+              {isMasterAdmin && (
+                <>
+                  <DropdownMenuItem onClick={() => navigate('/admin/gestores')} data-testid="group-admin-menu-item">
+                    <ShieldCheck className="h-4 w-4 mr-2 text-primary" />
+                    Administração do grupo
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                </>
+              )}
               <DropdownMenuItem onClick={handleLogout} data-testid="logout-menu-item">
                 <LogOut className="h-4 w-4 mr-2" />
                 Terminar Sessão
