@@ -32,6 +32,7 @@ import ComingSoon from './components/ComingSoon';
 import MarketingCampaigns from './pages/admin/marketing/MarketingCampaigns';
 import MarketingCalendar from './pages/admin/marketing/MarketingCalendar';
 import MarketingReviews from './pages/admin/marketing/MarketingReviews';
+import MarketingReports from './pages/admin/marketing/MarketingReports';
 import { Wallet, Receipt, TrendingUp, BarChart3, Truck, Landmark, Users as UsersIcon } from 'lucide-react';
 
 // Protected Route Component - checks for authentication and must_change_password
@@ -158,7 +159,7 @@ function AppRoutes() {
         <Route path="marketing" element={<MarketingCampaigns />} />
         <Route path="marketing/calendario" element={<MarketingCalendar />} />
         <Route path="marketing/avaliacoes" element={<MarketingReviews />} />
-        <Route path="marketing/relatorios" element={<ComingSoon icon={BarChart3} title="Relatórios de marketing" subtitle="Métricas, alcance e retorno por campanha" />} />
+        <Route path="marketing/relatorios" element={<MarketingReports />} />
       </Route>
       
       {/* Employee Routes */}

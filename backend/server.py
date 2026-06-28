@@ -3237,6 +3237,99 @@ async def find_place(query: str, current_user: dict = Depends(admin_required)):
     return {"candidates": candidates}
 
 
+# ==================== MARKETING — RELATÓRIOS / MÉTRICAS ====================
+# Agrega o que já existe no sistema (campanhas + calendário de conteúdos),
+# por empresa e por período. Sem dependências externas.
+
+@api_router.get("/marketing/reports")
+async def marketing_reports(company_id: Optional[str] = None,
+                            start_date: Optional[str] = None,
+                            end_date: Optional[str] = None,
+                            current_user: dict = Depends(admin_required)):
+    base = {}
+    if company_id:
+        base["company_id"] = company_id
+
+    def in_range(d: Optional[str]) -> bool:
+        # Datas em AAAA-MM-DD ordenam por string. Sem período => conta tudo.
+        if not (start_date or end_date):
+            return True
+        if not d:
+            return False
+        if start_date and d < start_date:
+            return False
+        if end_date and d > end_date:
+            return False
+        return True
+
+    today = date.today().isoformat()
+
+    # --- Campanhas ---
+    campaigns = await db.mkt_campaigns.find(dict(base), {"_id": 0}).to_list(5000)
+    campaigns_f = [c for c in campaigns if in_range(c.get("start_date"))]
+    camp_by_status, camp_by_type, camp_by_channel, budget_by_channel = {}, {}, {}, {}
+    total_budget = 0.0
+    active_now = 0
+    for c in campaigns_f:
+        st = c.get("status") or "—"
+        camp_by_status[st] = camp_by_status.get(st, 0) + 1
+        tp = c.get("type") or "—"
+        camp_by_type[tp] = camp_by_type.get(tp, 0) + 1
+        ch = (c.get("channel") or "").strip() or "Sem canal"
+        camp_by_channel[ch] = camp_by_channel.get(ch, 0) + 1
+        try:
+            b = float(c.get("budget")) if c.get("budget") not in (None, "") else 0.0
+        except (TypeError, ValueError):
+            b = 0.0
+        total_budget += b
+        budget_by_channel[ch] = round(budget_by_channel.get(ch, 0.0) + b, 2)
+        if st == "ativa":
+            active_now += 1
+
+    # --- Publicações (calendário) ---
+    posts = await db.mkt_posts.find(dict(base), {"_id": 0}).to_list(10000)
+    posts_f = [p for p in posts if in_range(p.get("scheduled_date"))]
+    post_by_status, post_by_channel = {}, {}
+    for p in posts_f:
+        st = p.get("status") or "—"
+        post_by_status[st] = post_by_status.get(st, 0) + 1
+        ch = p.get("channel") or "outro"
+        post_by_channel[ch] = post_by_channel.get(ch, 0) + 1
+
+    upcoming = sorted(
+        [p for p in posts if p.get("status") == "agendado" and (p.get("scheduled_date") or "") >= today],
+        key=lambda p: (p.get("scheduled_date") or "", p.get("scheduled_time") or "")
+    )[:6]
+    upcoming_slim = [{
+        "id": p.get("id"),
+        "title": p.get("title"),
+        "channel": p.get("channel"),
+        "scheduled_date": p.get("scheduled_date"),
+        "scheduled_time": p.get("scheduled_time"),
+    } for p in upcoming]
+
+    return {
+        "campaigns": {
+            "total": len(campaigns_f),
+            "active_now": active_now,
+            "total_budget": round(total_budget, 2),
+            "by_status": camp_by_status,
+            "by_type": camp_by_type,
+            "by_channel": camp_by_channel,
+            "budget_by_channel": budget_by_channel,
+        },
+        "posts": {
+            "total": len(posts_f),
+            "published": post_by_status.get("publicado", 0),
+            "scheduled": post_by_status.get("agendado", 0),
+            "ideas": post_by_status.get("ideia", 0),
+            "by_status": post_by_status,
+            "by_channel": post_by_channel,
+            "upcoming": upcoming_slim,
+        },
+    }
+
+
 # ==================== HEALTH CHECK ====================
 
 @api_router.get("/health")
