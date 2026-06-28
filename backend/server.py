@@ -19,6 +19,11 @@ import secrets
 import hashlib
 import asyncio
 import math
+from zoneinfo import ZoneInfo
+
+# Fuso horário de Portugal continental (trata automaticamente verão/inverno).
+# Os registos são guardados em UTC; converte-se para Lisboa só ao apresentar.
+LISBON_TZ = ZoneInfo("Europe/Lisbon")
 
 # Resend for email
 try:
@@ -2656,9 +2661,14 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
         pending_query["employee_id"] = {"$in": emp_ids}
     pending_requests = await db.leave_requests.count_documents(pending_query)
     
-    # Today's records
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    today_query = {"time": {"$gte": today}}
+    # "Hoje" no fuso de Portugal (não em UTC), senão a hora/o dia ficam errados.
+    now_lis = datetime.now(LISBON_TZ)
+    today_date = now_lis.date()
+    today_str = today_date.isoformat()
+    # Instante UTC da meia-noite de hoje em Lisboa: limite inferior para
+    # selecionar os registos de ponto (guardados em UTC).
+    day_start_utc = now_lis.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
+    today_query = {"time": {"$gte": day_start_utc}}
     if company_id:
         today_query["employee_id"] = {"$in": emp_ids}
     today_records = await db.time_records.count_documents(today_query)
@@ -2695,8 +2705,7 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
     companies_all = await db.companies.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(200)
     company_name_by_id = {c["id"]: c.get("name") for c in companies_all}
 
-    today_date = datetime.now(timezone.utc).date()
-    today_str = today_date.isoformat()
+    # (today_date / today_str já calculados acima, no fuso de Lisboa)
 
     # De férias/ausência hoje (aprovado e cobre hoje)
     on_leave_ids = set()
@@ -2716,7 +2725,7 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
                 leave_end_by_emp[lv["employee_id"]] = lv.get("end_date")
 
     # A trabalhar agora (último registo de hoje = entrada)
-    rec_q = {"time": {"$gte": today_str}}
+    rec_q = {"time": {"$gte": day_start_utc}}
     if company_id:
         rec_q["employee_id"] = {"$in": list(emp_id_set)}
     records_today = await db.time_records.find(
@@ -2731,7 +2740,10 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
             t = r.get("time")
             if t:
                 try:
-                    first_entry_by_emp[eid] = datetime.fromisoformat(t).strftime("%H:%M")
+                    _dt = datetime.fromisoformat(t)
+                    if _dt.tzinfo is None:
+                        _dt = _dt.replace(tzinfo=timezone.utc)
+                    first_entry_by_emp[eid] = _dt.astimezone(LISBON_TZ).strftime("%H:%M")
                 except (ValueError, TypeError):
                     first_entry_by_emp[eid] = None
     working_ids = [eid for eid, t in last_type.items() if t == "entrada" and eid not in on_leave_ids and eid in emp_id_set]
@@ -2904,8 +2916,8 @@ async def get_employee_dashboard(current_user: dict = Depends(get_current_user))
         employee["vacation_days_used"] = vacation_used
         employee["vacation_days_available"] = employee["vacation_days"] - vacation_used
     
-    # Upcoming leave
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Upcoming leave ("hoje" no fuso de Lisboa)
+    today = datetime.now(LISBON_TZ).strftime("%Y-%m-%d")
     upcoming_leave = await db.leave_requests.find(
         {"employee_id": employee_id, "status": "aprovado", "start_date": {"$gte": today}},
         {"_id": 0}
