@@ -122,3 +122,26 @@ export const addFinTeamMember = (data) => axios.post(`${API_URL}/fin/team`, data
 export const updateFinTeamMember = (memberId, role) =>
   axios.put(`${API_URL}/fin/team/${memberId}`, { role });
 export const removeFinTeamMember = (memberId) => axios.delete(`${API_URL}/fin/team/${memberId}`);
+
+// Faturas / Pagamentos (financeiro)
+export const getFinInvoices = (companyId) =>
+  axios.get(`${API_URL}/fin/invoices`, { params: { company_id: companyId } });
+export const createFinInvoice = (data) => axios.post(`${API_URL}/fin/invoices`, data);
+export const updateFinInvoice = (id, data) => axios.put(`${API_URL}/fin/invoices/${id}`, data);
+export const approveFinInvoice = (id, note) => axios.put(`${API_URL}/fin/invoices/${id}/approve`, { note });
+export const rejectFinInvoice = (id, note) => axios.put(`${API_URL}/fin/invoices/${id}/reject`, { note });
+export const toggleFinInvoicePaid = (id, paid, paidDate) =>
+  axios.put(`${API_URL}/fin/invoices/${id}/toggle-paid`, { paid, paid_date: paidDate || null });
+export const reclassifyFinInvoice = (id, companyId) =>
+  axios.put(`${API_URL}/fin/invoices/${id}/reclassify`, { company_id: companyId });
+export const setFinInvoiceUnit = (id, unitId) =>
+  axios.put(`${API_URL}/fin/invoices/${id}/set-unit`, { unit_id: unitId || null });
+export const deleteFinInvoice = (id) => axios.delete(`${API_URL}/fin/invoices/${id}`);
+export const cancelFinInvoiceSeries = (id) =>
+  axios.delete(`${API_URL}/fin/invoices/${id}`, { params: { series: 'future' } });
+
+// Regras de fornecedor (financeiro)
+export const getFinSupplierRules = () => axios.get(`${API_URL}/fin/supplier-rules`);
+export const upsertFinSupplierRule = (data) => axios.post(`${API_URL}/fin/supplier-rules`, data);
+export const deleteFinSupplierRule = (key) =>
+  axios.delete(`${API_URL}/fin/supplier-rules`, { params: { key } });

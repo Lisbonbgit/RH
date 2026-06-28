@@ -3212,6 +3212,346 @@ async def fin_remove_team_member(member_id: str, current_user: dict = Depends(ge
     return {"message": "Membro removido da equipa."}
 
 
+# ====================================================================
+# ============ FINANCEIRO · FASE 3 — PAGAMENTOS (faturas) ============
+# ====================================================================
+# Faturas de fornecedor (coleção fin_invoices) + regras por fornecedor
+# (fin_supplier_rules, partilhadas pela equipa). Reimplementação fiel das
+# regras do PHP (invoices.php / supplier_rules.php). Ref.: PORTING_GUIDE §5.1, §5.2.
+
+import calendar as _calendar
+
+
+def _fin_clean_date(v):
+    """Devolve a data (string) ou None se vazia."""
+    s = str(v).strip() if v is not None else ""
+    return s or None
+
+def _fin_clean_num(v):
+    """Número (float) ou None."""
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+def _fin_norm_sup(s):
+    """Normaliza nome de fornecedor (igual ao supKey do frontend PHP)."""
+    s = (s or "").lower()
+    trans = str.maketrans(
+        "áàâãäéèêëíìîïóòôõöúùûüçñ", "aaaaaeeeeiiiiooooouuuucn"
+    )
+    s = s.translate(trans)
+    s = re.sub(r"\b(lda|ld|limitada|unipessoal|s\.?a|sa|sociedade)\b", " ", s)
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def fin_supplier_key_of(nif, supplier):
+    """Chave do fornecedor: 'n:'+NIF se houver NIF, senão 't:'+nome normalizado."""
+    d = re.sub(r"\D+", "", str(nif or ""))
+    return ("n:" + d) if d else ("t:" + _fin_norm_sup(supplier))
+
+async def fin_supplier_rule(nif, supplier):
+    """Regra do fornecedor (ou None)."""
+    return await db.fin_supplier_rules.find_one(
+        {"supplier_key": fin_supplier_key_of(nif, supplier)}, {"_id": 0}
+    )
+
+async def fin_single_unit_id(company_id):
+    """Se a empresa tiver exatamente 1 unidade, devolve-a (auto-atribuição)."""
+    units = await db.fin_units.find({"company_id": company_id}, {"_id": 0, "id": 1}).to_list(2)
+    return units[0]["id"] if len(units) == 1 else None
+
+async def fin_resolve_unit(company_id, given_unit_id):
+    """Usa a unidade indicada (se pertencer à empresa), senão auto-atribui."""
+    given = (given_unit_id or "").strip()
+    if given:
+        u = await db.fin_units.find_one(
+            {"id": given, "company_id": company_id}, {"_id": 0, "id": 1}
+        )
+        if u:
+            return given
+    return await fin_single_unit_id(company_id)
+
+def _fin_occurrence_date(anchor, freq, k):
+    """k-ésima ocorrência a partir da âncora. Mensal/trim./anual mantém o dia
+    com clamp ao último dia do mês (31 -> 28/30)."""
+    d = date.fromisoformat(anchor)
+    if freq == "weekly":
+        return (d + timedelta(days=7 * k)).isoformat()
+    step = {"monthly": 1, "quarterly": 3, "yearly": 12}.get(freq, 1) * k
+    total = (d.year * 12 + (d.month - 1)) + step
+    y, m = total // 12, total % 12 + 1
+    dim = _calendar.monthrange(y, m)[1]
+    return date(y, m, min(d.day, dim)).isoformat()
+
+
+# ---------- Modelos ----------
+
+class FinInvoiceCreate(BaseModel):
+    company_id: str
+    unit_id: Optional[str] = None
+    kind: Optional[str] = "invoice"
+    supplier: Optional[str] = None
+    nif: Optional[str] = None
+    customer_nif: Optional[str] = None
+    invoice_number: Optional[str] = None
+    issue_date: Optional[str] = None
+    due_date: Optional[str] = None
+    amount: Optional[float] = None
+    amount_net: Optional[float] = None
+    vat_amount: Optional[float] = None
+    vat_rate: Optional[float] = None
+    description: Optional[str] = None
+    paid: Optional[bool] = False
+    paid_date: Optional[str] = None
+    source: Optional[str] = "manual"
+    recurrence: Optional[str] = "none"
+    file_name: Optional[str] = None
+
+class FinApprovalAction(BaseModel):
+    note: Optional[str] = None
+
+class FinTogglePaid(BaseModel):
+    paid: bool = False
+    paid_date: Optional[str] = None
+
+class FinReclassify(BaseModel):
+    company_id: str
+
+class FinSetUnit(BaseModel):
+    unit_id: Optional[str] = None
+
+class FinSupplierRuleUpsert(BaseModel):
+    supplier_key: str
+    supplier_name: Optional[str] = None
+    pay_term_days: Optional[int] = None
+    direct_debit: Optional[bool] = False
+    auto_paid: Optional[bool] = False
+    recurring: Optional[bool] = False
+
+
+# ---------- Insert de fatura (aplica regra auto_paid) ----------
+
+async def _fin_insert_invoice(company_id, kind, approval, data: dict, freq, group, user_id):
+    inv_id = str(uuid.uuid4())
+    unit = await fin_resolve_unit(company_id, data.get("unit_id"))
+    rule = await fin_supplier_rule(data.get("nif"), data.get("supplier"))
+    auto_paid = bool(rule and rule.get("auto_paid"))
+    paid = bool(data.get("paid") or auto_paid)
+    paid_date = _fin_clean_date(data.get("paid_date"))
+    if paid and not paid_date:
+        paid_date = _fin_clean_date(data.get("issue_date")) or datetime.now(timezone.utc).date().isoformat()
+    doc = {
+        "id": inv_id,
+        "company_id": company_id,
+        "unit_id": unit,
+        "kind": kind,
+        "supplier": data.get("supplier"),
+        "nif": data.get("nif"),
+        "customer_nif": data.get("customer_nif"),
+        "invoice_number": data.get("invoice_number"),
+        "issue_date": _fin_clean_date(data.get("issue_date")),
+        "due_date": _fin_clean_date(data.get("due_date")),
+        "amount": _fin_clean_num(data.get("amount")),
+        "amount_net": _fin_clean_num(data.get("amount_net")),
+        "vat_amount": _fin_clean_num(data.get("vat_amount")),
+        "vat_rate": _fin_clean_num(data.get("vat_rate")),
+        "description": data.get("description"),
+        "paid": paid,
+        "paid_date": paid_date,
+        "approval_status": approval,
+        "approval_note": None,
+        "approval_by": None,
+        "approval_at": None,
+        "source": data.get("source") or "manual",
+        "recurrence": freq,
+        "recur_group": group,
+        "file_name": data.get("file_name"),
+        "pdf_path": None,
+        "created_by": user_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.fin_invoices.insert_one(doc)
+    return inv_id
+
+
+# ---------- Faturas ----------
+
+@api_router.get("/fin/invoices")
+async def fin_get_invoices(company_id: str, current_user: dict = Depends(get_current_user)):
+    await fin_require_member(company_id, current_user)
+    invoices = await db.fin_invoices.find({"company_id": company_id}, {"_id": 0}).to_list(5000)
+    invoices.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    return invoices
+
+@api_router.post("/fin/invoices")
+async def fin_create_invoice(payload: FinInvoiceCreate, current_user: dict = Depends(get_current_user)):
+    await fin_require_editor(payload.company_id, current_user)
+    uid = current_user["user_id"]
+    data = payload.model_dump()
+    kind = "payment" if data.get("kind") == "payment" else "invoice"
+    # Um "outro pagamento" à mão não passa por aprovação (entra aprovado).
+    approval = "approved" if kind == "payment" else "pending"
+    freq = data.get("recurrence") if data.get("recurrence") in ("weekly", "monthly", "quarterly", "yearly") else "none"
+    group = str(uuid.uuid4()) if freq != "none" else None
+    inv_id = await _fin_insert_invoice(payload.company_id, kind, approval, data, freq, group, uid)
+    # Recorrência: gerar as próximas ocorrências (por pagar) da série.
+    if freq != "none":
+        anchor = _fin_clean_date(data.get("due_date")) or _fin_clean_date(data.get("issue_date"))
+        if anchor:
+            counts = {"weekly": 12, "monthly": 12, "quarterly": 4, "yearly": 3}
+            for k in range(1, counts[freq]):
+                d = _fin_occurrence_date(anchor, freq, k)
+                occ = dict(data)
+                occ.update({"issue_date": d, "due_date": d, "paid": False, "paid_date": ""})
+                await _fin_insert_invoice(payload.company_id, kind, approval, occ, freq, group, uid)
+    return await db.fin_invoices.find_one({"id": inv_id}, {"_id": 0})
+
+@api_router.put("/fin/invoices/{invoice_id}")
+async def fin_update_invoice(invoice_id: str, payload: FinInvoiceCreate, current_user: dict = Depends(get_current_user)):
+    inv = await db.fin_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+    await fin_require_editor(inv["company_id"], current_user)
+    data = payload.model_dump()
+    unit = await fin_resolve_unit(inv["company_id"], data.get("unit_id"))
+    await db.fin_invoices.update_one(
+        {"id": invoice_id},
+        {"$set": {
+            "unit_id": unit,
+            "supplier": data.get("supplier"),
+            "nif": data.get("nif"),
+            "customer_nif": data.get("customer_nif"),
+            "invoice_number": data.get("invoice_number"),
+            "issue_date": _fin_clean_date(data.get("issue_date")),
+            "due_date": _fin_clean_date(data.get("due_date")),
+            "amount": _fin_clean_num(data.get("amount")),
+            "amount_net": _fin_clean_num(data.get("amount_net")),
+            "vat_amount": _fin_clean_num(data.get("vat_amount")),
+            "vat_rate": _fin_clean_num(data.get("vat_rate")),
+            "description": data.get("description"),
+            "paid": bool(data.get("paid")),
+            "paid_date": _fin_clean_date(data.get("paid_date")),
+        }},
+    )
+    return await db.fin_invoices.find_one({"id": invoice_id}, {"_id": 0})
+
+async def _fin_set_approval(invoice_id, status, note, current_user):
+    inv = await db.fin_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+    await fin_require_editor(inv["company_id"], current_user)
+    await db.fin_invoices.update_one(
+        {"id": invoice_id},
+        {"$set": {
+            "approval_status": status,
+            "approval_note": note,
+            "approval_by": current_user["user_id"],
+            "approval_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    return await db.fin_invoices.find_one({"id": invoice_id}, {"_id": 0})
+
+@api_router.put("/fin/invoices/{invoice_id}/approve")
+async def fin_approve_invoice(invoice_id: str, payload: FinApprovalAction, current_user: dict = Depends(get_current_user)):
+    return await _fin_set_approval(invoice_id, "approved", payload.note, current_user)
+
+@api_router.put("/fin/invoices/{invoice_id}/reject")
+async def fin_reject_invoice(invoice_id: str, payload: FinApprovalAction, current_user: dict = Depends(get_current_user)):
+    return await _fin_set_approval(invoice_id, "rejected", payload.note, current_user)
+
+@api_router.put("/fin/invoices/{invoice_id}/toggle-paid")
+async def fin_toggle_paid(invoice_id: str, payload: FinTogglePaid, current_user: dict = Depends(get_current_user)):
+    inv = await db.fin_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+    await fin_require_editor(inv["company_id"], current_user)
+    await db.fin_invoices.update_one(
+        {"id": invoice_id},
+        {"$set": {"paid": bool(payload.paid), "paid_date": _fin_clean_date(payload.paid_date)}},
+    )
+    return await db.fin_invoices.find_one({"id": invoice_id}, {"_id": 0})
+
+@api_router.put("/fin/invoices/{invoice_id}/reclassify")
+async def fin_reclassify_invoice(invoice_id: str, payload: FinReclassify, current_user: dict = Depends(get_current_user)):
+    inv = await db.fin_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+    await fin_require_editor(inv["company_id"], current_user)
+    await fin_require_editor(payload.company_id, current_user)
+    await db.fin_invoices.update_one({"id": invoice_id}, {"$set": {"company_id": payload.company_id}})
+    return await db.fin_invoices.find_one({"id": invoice_id}, {"_id": 0})
+
+@api_router.put("/fin/invoices/{invoice_id}/set-unit")
+async def fin_set_invoice_unit(invoice_id: str, payload: FinSetUnit, current_user: dict = Depends(get_current_user)):
+    inv = await db.fin_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+    await fin_require_editor(inv["company_id"], current_user)
+    u = (payload.unit_id or "").strip()
+    unit = None
+    if u:
+        chk = await db.fin_units.find_one({"id": u, "company_id": inv["company_id"]}, {"_id": 0, "id": 1})
+        if not chk:
+            raise HTTPException(status_code=400, detail="Unidade inválida para esta empresa.")
+        unit = u
+    await db.fin_invoices.update_one({"id": invoice_id}, {"$set": {"unit_id": unit}})
+    return await db.fin_invoices.find_one({"id": invoice_id}, {"_id": 0})
+
+@api_router.delete("/fin/invoices/{invoice_id}")
+async def fin_delete_invoice(invoice_id: str, series: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    inv = await db.fin_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+    await fin_require_editor(inv["company_id"], current_user)
+    # Cancelar série recorrente: apaga as ocorrências FUTURAS por pagar do mesmo grupo.
+    if series == "future" and inv.get("recur_group"):
+        today = datetime.now(timezone.utc).date().isoformat()
+        res = await db.fin_invoices.delete_many({
+            "recur_group": inv["recur_group"],
+            "paid": {"$ne": True},
+            "$or": [{"due_date": None}, {"due_date": {"$gte": today}}],
+        })
+        return {"ok": True, "cancelled": res.deleted_count}
+    await db.fin_invoices.delete_one({"id": invoice_id})
+    return {"ok": True}
+
+
+# ---------- Regras por fornecedor (partilhadas) ----------
+
+@api_router.get("/fin/supplier-rules")
+async def fin_get_supplier_rules(current_user: dict = Depends(get_current_user)):
+    return await db.fin_supplier_rules.find({}, {"_id": 0}).to_list(5000)
+
+@api_router.post("/fin/supplier-rules")
+async def fin_upsert_supplier_rule(payload: FinSupplierRuleUpsert, current_user: dict = Depends(get_current_user)):
+    key = (payload.supplier_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Falta o fornecedor.")
+    term = payload.pay_term_days
+    if term is not None:
+        term = max(0, int(term))
+    doc = {
+        "supplier_key": key,
+        "supplier_name": (payload.supplier_name or "").strip(),
+        "pay_term_days": term,
+        "direct_debit": bool(payload.direct_debit),
+        "auto_paid": bool(payload.auto_paid),
+        "recurring": bool(payload.recurring),
+        "updated_by": current_user["user_id"],
+    }
+    await db.fin_supplier_rules.update_one({"supplier_key": key}, {"$set": doc}, upsert=True)
+    return doc
+
+@api_router.delete("/fin/supplier-rules")
+async def fin_delete_supplier_rule(key: str, current_user: dict = Depends(get_current_user)):
+    await db.fin_supplier_rules.delete_one({"supplier_key": key})
+    return {"ok": True}
+
+
 # ==================== HEALTH CHECK ====================
 
 @api_router.get("/health")
