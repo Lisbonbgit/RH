@@ -14,11 +14,12 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
-import { Clock4, Filter, Download, AlertTriangle } from 'lucide-react';
+import { Clock4, Filter, Download, FileText, AlertTriangle } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import { toast } from 'sonner';
 import { format, startOfMonth } from 'date-fns';
 import { downloadCSV } from '../../lib/export';
+import { downloadTablePDF } from '../../lib/pdf';
 
 // Converte horas decimais (ex.: 7.5) em "7h30"
 function formatHours(h) {
@@ -85,6 +86,35 @@ export default function AdminHoursReport() {
     toast.success('Relatório exportado');
   };
 
+  const handleExportPDF = () => {
+    if (report.length === 0) {
+      toast.error('Sem dados para exportar');
+      return;
+    }
+    const headers = ['Colaborador', 'Dias', 'Total de horas', 'Estado'];
+    const rows = report.map((r) => [
+      r.employee_name,
+      r.days_worked,
+      formatHours(r.total_hours),
+      r.incomplete ? 'Registos incompletos' : 'Completo',
+    ]);
+    const meta = [
+      `Empresa: ${selectedCompany?.name || 'Todas as empresas'}`,
+      `Período: ${format(new Date(filters.start_date), 'dd/MM/yyyy')} a ${format(new Date(filters.end_date), 'dd/MM/yyyy')}`,
+    ];
+    const suffix = selectedCompany?.name ? `-${selectedCompany.name}` : '';
+    downloadTablePDF({
+      filename: `horas-${filters.start_date}-a-${filters.end_date}${suffix}.pdf`,
+      title: 'Relatório de Horas',
+      meta,
+      headers,
+      rows,
+      foot: ['Total', '', formatHours(totalHours), ''],
+      footerNote: 'RH grupo Lisbonb',
+    });
+    toast.success('PDF gerado');
+  };
+
   return (
     <div className="space-y-6 animate-fade-in" data-testid="admin-hours-report-page">
       <PageHeader
@@ -95,6 +125,10 @@ export default function AdminHoursReport() {
         <Button variant="outline" onClick={handleExport} data-testid="export-hours-btn">
           <Download className="h-4 w-4 mr-2" />
           Exportar CSV
+        </Button>
+        <Button onClick={handleExportPDF} data-testid="export-hours-pdf-btn">
+          <FileText className="h-4 w-4 mr-2" />
+          Exportar PDF
         </Button>
       </PageHeader>
 
