@@ -119,3 +119,9 @@ export const findPlace = (query) => axios.get(`${API_URL}/marketing/reviews/find
 
 // Marketing — Relatórios / métricas
 export const getMarketingReports = (params) => axios.get(`${API_URL}/marketing/reports`, { params });
+
+// RH — Feriados personalizados (municipais)
+export const getHolidays = () => axios.get(`${API_URL}/holidays`);
+export const createHoliday = (data) => axios.post(`${API_URL}/holidays`, data);
+export const updateHoliday = (id, data) => axios.put(`${API_URL}/holidays/${id}`, data);
+export const deleteHoliday = (id) => axios.delete(`${API_URL}/holidays/${id}`);

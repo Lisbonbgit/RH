@@ -768,6 +768,21 @@ def get_pt_holidays(year: int) -> set:
     _pt_holiday_cache[year] = holidays
     return holidays
 
+async def get_custom_holiday_monthdays(company_id: Optional[str], location_id: Optional[str]) -> set:
+    """Feriados personalizados (ex.: municipais) aplicáveis, como pares (mês, dia).
+    Âmbito: grupo (sem empresa/loja), por empresa, ou por loja. Recorrem todos os anos."""
+    docs = await db.holidays.find({}, {"_id": 0}).to_list(500)
+    applies = set()
+    for h in docs:
+        hc = h.get("company_id")
+        hl = h.get("location_id")
+        if (not hc and not hl) or (hc and hc == company_id) or (hl and hl == location_id):
+            try:
+                applies.add((int(h["month"]), int(h["day"])))
+            except (KeyError, ValueError, TypeError):
+                continue
+    return applies
+
 def find_schedule_assignment(assignments: list[dict], target_date: date):
     for assignment in assignments:
         start_dt = datetime.fromisoformat(assignment["start_date"]).date()
@@ -799,11 +814,21 @@ async def calculate_leave_counted_days(employee_id: str, start_date: str, end_da
             if template:
                 assignment["work_days"] = template.get("work_days", [])
 
+    # Feriados personalizados (municipais) aplicáveis a este colaborador
+    emp = await db.employees.find_one(
+        {"id": employee_id}, {"_id": 0, "company_id": 1, "location_id": 1}
+    )
+    custom_holidays = await get_custom_holiday_monthdays(
+        emp.get("company_id") if emp else None,
+        emp.get("location_id") if emp else None,
+    )
+
     total_days = 0
     current_date = start_dt
     while current_date <= end_dt:
-        # Feriados nunca contam
-        if current_date in get_pt_holidays(current_date.year):
+        # Feriados (nacionais ou municipais) nunca contam
+        if (current_date in get_pt_holidays(current_date.year)
+                or (current_date.month, current_date.day) in custom_holidays):
             current_date += timedelta(days=1)
             continue
 
@@ -3380,6 +3405,82 @@ async def marketing_reports(company_id: Optional[str] = None,
         },
     }
 
+
+# ==================== FERIADOS PERSONALIZADOS (MUNICIPAIS) ====================
+# Feriados que recorrem todos os anos numa data fixa (mês/dia), além dos
+# nacionais. Âmbito: todo o grupo, uma empresa, ou uma loja específica.
+
+class HolidayCreate(BaseModel):
+    name: str
+    month: int
+    day: int
+    company_id: Optional[str] = None
+    location_id: Optional[str] = None
+
+    @field_validator("month")
+    @classmethod
+    def _month_ok(cls, v):
+        if not 1 <= v <= 12:
+            raise ValueError("Mês inválido (1-12)")
+        return v
+
+    @field_validator("day")
+    @classmethod
+    def _day_ok(cls, v):
+        if not 1 <= v <= 31:
+            raise ValueError("Dia inválido (1-31)")
+        return v
+
+class HolidayResponse(BaseModel):
+    id: str
+    name: str
+    month: int
+    day: int
+    company_id: Optional[str] = None
+    company_name: Optional[str] = None
+    location_id: Optional[str] = None
+    location_name: Optional[str] = None
+
+async def _holiday_response(doc: dict) -> HolidayResponse:
+    company_name = None
+    location_name = None
+    if doc.get("company_id"):
+        c = await db.companies.find_one({"id": doc["company_id"]}, {"_id": 0, "name": 1})
+        company_name = c["name"] if c else None
+    if doc.get("location_id"):
+        l = await db.locations.find_one({"id": doc["location_id"]}, {"_id": 0, "name": 1})
+        location_name = l["name"] if l else None
+    return HolidayResponse(**doc, company_name=company_name, location_name=location_name)
+
+@api_router.get("/holidays", response_model=List[HolidayResponse])
+async def list_holidays(current_user: dict = Depends(admin_required)):
+    docs = await db.holidays.find({}, {"_id": 0}).sort([("month", 1), ("day", 1)]).to_list(500)
+    return [await _holiday_response(d) for d in docs]
+
+@api_router.post("/holidays", response_model=HolidayResponse)
+async def create_holiday(holiday: HolidayCreate, current_user: dict = Depends(admin_required)):
+    doc = {
+        "id": str(uuid.uuid4()),
+        **holiday.model_dump(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.holidays.insert_one(doc)
+    return await _holiday_response(doc)
+
+@api_router.put("/holidays/{holiday_id}", response_model=HolidayResponse)
+async def update_holiday(holiday_id: str, holiday: HolidayCreate, current_user: dict = Depends(admin_required)):
+    result = await db.holidays.update_one({"id": holiday_id}, {"$set": holiday.model_dump()})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Feriado não encontrado")
+    doc = await db.holidays.find_one({"id": holiday_id}, {"_id": 0})
+    return await _holiday_response(doc)
+
+@api_router.delete("/holidays/{holiday_id}")
+async def delete_holiday(holiday_id: str, current_user: dict = Depends(admin_required)):
+    result = await db.holidays.delete_one({"id": holiday_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Feriado não encontrado")
+    return {"message": "Feriado eliminado com sucesso"}
 
 # ==================== HEALTH CHECK ====================
 

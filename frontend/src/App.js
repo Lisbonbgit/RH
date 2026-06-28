@@ -19,6 +19,7 @@ import AdminHoursReport from './pages/admin/AdminHoursReport';
 import AdminDocuments from './pages/admin/AdminDocuments';
 import AdminManagers from './pages/admin/AdminManagers';
 import AdminSchedules from './pages/admin/AdminSchedules';
+import AdminHolidays from './pages/admin/AdminHolidays';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeProfile from './pages/employee/EmployeeProfile';
 import EmployeeTimeRecord from './pages/employee/EmployeeTimeRecord';
@@ -138,6 +139,7 @@ function AppRoutes() {
         <Route path="relatorio-horas" element={<AdminHoursReport />} />
         <Route path="ausencias" element={<AdminLeaveRequests />} />
         <Route path="mapa-ferias" element={<AdminVacationMap />} />
+        <Route path="feriados" element={<AdminHolidays />} />
         <Route path="documentos" element={<AdminDocuments />} />
         <Route path="gestores" element={
           <ProtectedRoute allowedRoles={['admin']}>
