@@ -1803,7 +1803,11 @@ async def create_time_record(record: TimeRecordCreate, current_user: dict = Depe
                     detail="Ative a localização no telemóvel para poder registar o ponto neste local."
                 )
             distance = haversine_meters(record.latitude, record.longitude, location["latitude"], location["longitude"])
-            if distance > radius:
+            # Margem para a imprecisão do GPS (sobretudo Safari/iOS em precisão
+            # normal, que pode reportar centenas de metros de erro). Aceita-se se,
+            # descontando a precisão reportada (com limite), ainda estiver no raio.
+            accuracy_slack = min(record.accuracy or 0, max(radius, 150))
+            if distance - accuracy_slack > radius:
                 raise HTTPException(
                     status_code=403,
                     detail=f"Está a {int(distance)} m do local de trabalho (limite {radius} m). Aproxime-se para registar o ponto."
