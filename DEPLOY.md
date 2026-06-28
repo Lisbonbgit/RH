@@ -5,6 +5,31 @@ Este guia leva-o do zero até ter o sistema a correr no seu próprio servidor.
 
 ---
 
+## ⭐ REGRA DE OURO (trabalho em equipa — ler primeiro)
+
+> **A produção corre SEMPRE o `main`. Nunca se faz deploy/`checkout` de um branch de
+> funcionalidade no servidor. Antes de juntar ao `main`, traz o `main` para o teu branch,
+> resolve conflitos, faz merge — e só depois se faz deploy, sempre do `main`.**
+
+Porquê: o servidor mostra o branch que estiver em *checkout*. Fazer `git checkout <branch>`
+de um branch antigo no servidor faz a produção **recuar** e "apagar" do site o trabalho que
+já estava no `main` (mesmo estando a salvo no GitHub).
+
+**As 6 práticas:**
+1. O servidor vive no `main`. Deploy **só** com `./deploy.sh` (recusa qualquer coisa que não seja o `main`).
+2. Começa sempre do `main` atualizado: `git checkout main && git pull` **antes** de `git checkout -b o-meu-branch`.
+3. Antes de fechar a tua fase: no teu branch, `git fetch && git merge origin/main` e resolve conflitos.
+4. Junta ao `main` por Pull Request, **um de cada vez**, avisando o outro.
+5. **Nunca** `git push --force` no `main`; **nunca** editar ficheiros diretamente no servidor.
+6. Deploy só **depois** do merge, e sempre do `main`.
+
+Deploy correto (no servidor):
+```bash
+cd ~/RH && ./deploy.sh
+```
+
+---
+
 ## 0. O que vai precisar
 
 | Item | Onde | Custo |
