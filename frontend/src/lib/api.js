@@ -112,3 +112,7 @@ export const getPosts = (params) => axios.get(`${API_URL}/marketing/posts`, { pa
 export const createPost = (data) => axios.post(`${API_URL}/marketing/posts`, data);
 export const updatePost = (id, data) => axios.put(`${API_URL}/marketing/posts/${id}`, data);
 export const deletePost = (id) => axios.delete(`${API_URL}/marketing/posts/${id}`);
+
+// Marketing — Avaliações (Google)
+export const getReviews = (params) => axios.get(`${API_URL}/marketing/reviews`, { params });
+export const findPlace = (query) => axios.get(`${API_URL}/marketing/reviews/find-place`, { params: { query } });

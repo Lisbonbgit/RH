@@ -27,6 +27,13 @@ try:
 except ImportError:
     RESEND_AVAILABLE = False
 
+# httpx para chamadas a APIs externas (ex.: Google Places — avaliações)
+try:
+    import httpx
+    HTTPX_AVAILABLE = True
+except ImportError:
+    HTTPX_AVAILABLE = False
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -57,6 +64,13 @@ SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
 # URL do frontend usado nos links de recuperação de palavra-passe.
 # Em produção definir FRONTEND_URL no .env (ex.: https://rh.suaempresa.pt)
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+
+# Google Places API (avaliações por loja). A chave fica SÓ no servidor (.env),
+# nunca no frontend nem no git. Ativar "Places API" na Google Cloud e criar a chave.
+GOOGLE_PLACES_API_KEY = os.environ.get('GOOGLE_PLACES_API_KEY')
+# Quanto tempo guardar em cache as avaliações de cada loja (em minutos).
+# Evita gastar quota/€ da Google a cada abertura da página.
+GOOGLE_REVIEWS_CACHE_MINUTES = int(os.environ.get('GOOGLE_REVIEWS_CACHE_MINUTES', '360'))
 
 # Initialize Resend
 if RESEND_AVAILABLE and RESEND_API_KEY:
@@ -401,6 +415,8 @@ class LocationCreate(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     geofence_radius: Optional[int] = None
+    # ID do local no Google (Place ID) — usado para puxar avaliações no Marketing.
+    google_place_id: Optional[str] = None
 
 class LocationResponse(BaseModel):
     id: str
@@ -411,6 +427,7 @@ class LocationResponse(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     geofence_radius: Optional[int] = None
+    google_place_id: Optional[str] = None
 
 class EmployeeCreate(BaseModel):
     name: str
@@ -1309,6 +1326,7 @@ async def create_location(location: LocationCreate, current_user: dict = Depends
         "latitude": location.latitude,
         "longitude": location.longitude,
         "geofence_radius": location.geofence_radius,
+        "google_place_id": location.google_place_id,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.locations.insert_one(location_doc)
@@ -1340,6 +1358,7 @@ async def update_location(location_id: str, location: LocationCreate, current_us
             "latitude": location.latitude,
             "longitude": location.longitude,
             "geofence_radius": location.geofence_radius,
+            "google_place_id": location.google_place_id,
         }}
     )
     if result.matched_count == 0:
@@ -3041,6 +3060,182 @@ async def delete_post(post_id: str, current_user: dict = Depends(admin_required)
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Publicação não encontrada")
     return {"message": "Publicação eliminada com sucesso"}
+
+# ==================== MARKETING — AVALIAÇÕES (GOOGLE) ====================
+# Liga-se à Google Places API para mostrar a reputação de cada loja:
+# classificação (estrelas), total de avaliações e as avaliações mais recentes.
+# A chave (GOOGLE_PLACES_API_KEY) vive só no servidor. Para evitar gastar
+# quota a cada abertura, guardamos um snapshot em cache (mkt_reviews_cache).
+
+GOOGLE_PLACES_BASE = "https://maps.googleapis.com/maps/api/place"
+
+
+async def _google_places_get(path: str, params: dict) -> dict:
+    """Chamada GET à Google Places API. Devolve o JSON ou {'error': ...}."""
+    if not GOOGLE_PLACES_API_KEY:
+        return {"error": "Chave da API Google não configurada no servidor."}
+    if not HTTPX_AVAILABLE:
+        return {"error": "Biblioteca httpx indisponível no servidor."}
+    params = {**params, "key": GOOGLE_PLACES_API_KEY}
+    try:
+        async with httpx.AsyncClient(timeout=12) as http_client:
+            resp = await http_client.get(f"{GOOGLE_PLACES_BASE}/{path}", params=params)
+        data = resp.json()
+    except Exception as exc:  # rede/timeout/JSON inválido
+        logging.warning(f"Google Places erro de rede: {exc}")
+        return {"error": "Não foi possível contactar a Google."}
+    status = data.get("status")
+    if status not in ("OK", "ZERO_RESULTS"):
+        # Mensagens amigáveis para os erros mais comuns da Google.
+        friendly = {
+            "REQUEST_DENIED": "Pedido recusado pela Google (verifique a chave / Places API ativada).",
+            "OVER_QUERY_LIMIT": "Limite de pedidos da Google atingido. Tente mais tarde.",
+            "INVALID_REQUEST": "Pedido inválido (Place ID em falta ou incorreto).",
+            "NOT_FOUND": "Local não encontrado na Google.",
+        }
+        msg = friendly.get(status, data.get("error_message") or f"Erro Google: {status}")
+        return {"error": msg}
+    return data
+
+
+def _normalize_reviews(result: dict) -> list:
+    """Extrai e normaliza as avaliações do resultado da Google."""
+    out = []
+    for r in (result.get("reviews") or []):
+        out.append({
+            "author": r.get("author_name"),
+            "author_photo": r.get("profile_photo_url"),
+            "author_url": r.get("author_url"),
+            "rating": r.get("rating"),
+            "text": r.get("text") or "",
+            "relative_time": r.get("relative_time_description"),
+            "time": r.get("time"),  # epoch (segundos)
+        })
+    return out
+
+
+async def _fetch_place_reviews(place_id: str, force: bool = False) -> dict:
+    """Devolve a reputação de um Place ID, usando cache quando possível."""
+    now = datetime.now(timezone.utc)
+    cached = await db.mkt_reviews_cache.find_one({"place_id": place_id}, {"_id": 0})
+    if cached and not force:
+        try:
+            fetched_at = datetime.fromisoformat(cached["fetched_at"])
+            age_min = (now - fetched_at).total_seconds() / 60
+            if age_min < GOOGLE_REVIEWS_CACHE_MINUTES:
+                return {**cached["data"], "fetched_at": cached["fetched_at"], "cached": True}
+        except Exception:
+            pass
+
+    data = await _google_places_get("details/json", {
+        "place_id": place_id,
+        "language": "pt-PT",
+        "reviews_sort": "newest",
+        "fields": "name,rating,user_ratings_total,url,reviews",
+    })
+    if "error" in data:
+        # Em erro, devolve a última cache disponível (se houver) com o aviso.
+        if cached:
+            return {**cached["data"], "fetched_at": cached["fetched_at"],
+                    "cached": True, "error": data["error"]}
+        return {"rating": None, "total": 0, "reviews": [], "google_url": None,
+                "name": None, "error": data["error"], "fetched_at": None, "cached": False}
+
+    result = data.get("result", {})
+    payload = {
+        "name": result.get("name"),
+        "rating": result.get("rating"),
+        "total": result.get("user_ratings_total", 0),
+        "google_url": result.get("url"),
+        "reviews": _normalize_reviews(result),
+        "error": None,
+    }
+    await db.mkt_reviews_cache.update_one(
+        {"place_id": place_id},
+        {"$set": {"place_id": place_id, "data": payload, "fetched_at": now.isoformat()}},
+        upsert=True,
+    )
+    return {**payload, "fetched_at": now.isoformat(), "cached": False}
+
+
+@api_router.get("/marketing/reviews")
+async def list_reviews(company_id: Optional[str] = None, refresh: bool = False,
+                       current_user: dict = Depends(admin_required)):
+    """Reputação por loja (e agregada). Cada loja precisa de google_place_id."""
+    query = {}
+    if company_id:
+        query["company_id"] = company_id
+    locations = await db.locations.find(query, {"_id": 0}).to_list(200)
+
+    # nomes das empresas (cache local simples)
+    company_names = {}
+    items = []
+    for loc in locations:
+        cid = loc.get("company_id")
+        if cid not in company_names:
+            comp = await db.companies.find_one({"id": cid}, {"_id": 0})
+            company_names[cid] = comp["name"] if comp else None
+        place_id = loc.get("google_place_id")
+        entry = {
+            "location_id": loc["id"],
+            "location_name": loc["name"],
+            "company_id": cid,
+            "company_name": company_names[cid],
+            "google_place_id": place_id,
+            "configured": bool(place_id),
+            "rating": None,
+            "total": 0,
+            "reviews": [],
+            "google_url": None,
+            "fetched_at": None,
+            "cached": False,
+            "error": None,
+        }
+        if place_id:
+            entry.update(await _fetch_place_reviews(place_id, force=refresh))
+        items.append(entry)
+
+    # resumo agregado (média ponderada pelo nº de avaliações)
+    rated = [i for i in items if i.get("rating") and i.get("total")]
+    total_reviews = sum(i["total"] for i in items if i.get("total"))
+    avg_rating = None
+    if rated:
+        avg_rating = round(sum(i["rating"] * i["total"] for i in rated) / sum(i["total"] for i in rated), 2)
+
+    return {
+        "api_configured": bool(GOOGLE_PLACES_API_KEY),
+        "summary": {
+            "total_locations": len(items),
+            "configured_locations": sum(1 for i in items if i["configured"]),
+            "total_reviews": total_reviews,
+            "avg_rating": avg_rating,
+        },
+        "locations": items,
+    }
+
+
+@api_router.get("/marketing/reviews/find-place")
+async def find_place(query: str, current_user: dict = Depends(admin_required)):
+    """Procura o Place ID de uma loja a partir do nome/morada (para configurar)."""
+    if not GOOGLE_PLACES_API_KEY:
+        raise HTTPException(status_code=400, detail="Chave da API Google não configurada no servidor.")
+    data = await _google_places_get("findplacefromtext/json", {
+        "input": query,
+        "inputtype": "textquery",
+        "language": "pt-PT",
+        "fields": "place_id,name,formatted_address,rating,user_ratings_total",
+    })
+    if "error" in data:
+        raise HTTPException(status_code=502, detail=data["error"])
+    candidates = [{
+        "place_id": c.get("place_id"),
+        "name": c.get("name"),
+        "address": c.get("formatted_address"),
+        "rating": c.get("rating"),
+        "total": c.get("user_ratings_total", 0),
+    } for c in (data.get("candidates") or [])]
+    return {"candidates": candidates}
+
 
 # ==================== HEALTH CHECK ====================
 

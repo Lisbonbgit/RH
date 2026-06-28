@@ -26,3 +26,6 @@ python-dotenv==1.2.1
 
 # --- Emails (recuperação de palavra-passe) ---
 resend>=2.0.0
+
+# --- Integrações externas (ex.: Google Places para avaliações) ---
+httpx==0.28.1

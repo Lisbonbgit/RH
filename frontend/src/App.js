@@ -31,7 +31,8 @@ import EmployeeLayout from './components/layouts/EmployeeLayout';
 import ComingSoon from './components/ComingSoon';
 import MarketingCampaigns from './pages/admin/marketing/MarketingCampaigns';
 import MarketingCalendar from './pages/admin/marketing/MarketingCalendar';
-import { Wallet, Receipt, TrendingUp, BarChart3, Truck, Landmark, Users as UsersIcon, Megaphone, Star } from 'lucide-react';
+import MarketingReviews from './pages/admin/marketing/MarketingReviews';
+import { Wallet, Receipt, TrendingUp, BarChart3, Truck, Landmark, Users as UsersIcon } from 'lucide-react';
 
 // Protected Route Component - checks for authentication and must_change_password
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -156,7 +157,7 @@ function AppRoutes() {
         {/* ===== Marketing ===== */}
         <Route path="marketing" element={<MarketingCampaigns />} />
         <Route path="marketing/calendario" element={<MarketingCalendar />} />
-        <Route path="marketing/avaliacoes" element={<ComingSoon icon={Star} title="Avaliações / reputação" subtitle="Acompanhar avaliações por loja e responder" />} />
+        <Route path="marketing/avaliacoes" element={<MarketingReviews />} />
         <Route path="marketing/relatorios" element={<ComingSoon icon={BarChart3} title="Relatórios de marketing" subtitle="Métricas, alcance e retorno por campanha" />} />
       </Route>
       
