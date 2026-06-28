@@ -319,6 +319,54 @@ async def notify_employee_of_leave_decision(employee_email: str, employee_name: 
     except Exception as e:
         logger.error(f"Failed to send leave decision email: {str(e)}")
 
+def get_welcome_email_html(employee_name: str, company_name: str, login_email: str, temp_password: str, login_url: str) -> str:
+    """Template do email de boas-vindas a um novo colaborador (com acessos)."""
+    return f"""
+    <div style="font-family: Arial, Helvetica, sans-serif; max-width: 560px; margin: 0 auto; color: #1f2937;">
+      <div style="background:linear-gradient(135deg,#1366F0,#16B8A6); color:#fff; padding:26px 22px; border-radius:8px 8px 0 0;">
+        <h2 style="margin:0; font-size:20px;">Bem-vindo ao grupo Lisbonb 👋</h2>
+        <p style="margin:6px 0 0; font-size:14px; opacity:0.9;">A sua conta de colaborador já está ativa.</p>
+      </div>
+      <div style="border:1px solid #e5e7eb; border-top:none; padding:22px; border-radius:0 0 8px 8px;">
+        <p style="margin:0 0 14px;">Olá <strong>{employee_name}</strong>,</p>
+        <p style="margin:0 0 16px;">Foi criado o seu acesso ao sistema de RH da <strong>{company_name}</strong>.
+        Use os dados abaixo para entrar:</p>
+        <div style="background:#f8fafc; border:1px solid #e5e7eb; border-radius:8px; padding:16px; margin:0 0 18px;">
+          <p style="margin:0 0 8px; font-size:14px;"><strong>Email:</strong> {login_email}</p>
+          <p style="margin:0; font-size:14px;"><strong>Palavra-passe temporária:</strong>
+            <span style="font-family:monospace; background:#eef2ff; color:#1366F0; padding:2px 8px; border-radius:5px;">{temp_password}</span>
+          </p>
+        </div>
+        <div style="text-align:center; margin:0 0 18px;">
+          <a href="{login_url}" style="display:inline-block; background:#1366F0; color:#fff; text-decoration:none; font-weight:bold; padding:12px 26px; border-radius:8px;">Aceder ao RH</a>
+        </div>
+        <p style="margin:0; font-size:13px; color:#6b7280;">
+          Por segurança, será pedido para <strong>alterar a palavra-passe</strong> no primeiro acesso.
+          Se não reconhece este email, ignore-o.
+        </p>
+      </div>
+    </div>
+    """
+
+async def send_welcome_email(email: str, employee_name: str, company_name: str, temp_password: str) -> bool:
+    """Envia o email de boas-vindas com os acessos. Falha em silêncio (não bloqueia a criação)."""
+    if not RESEND_AVAILABLE or not RESEND_API_KEY or not email:
+        logger.warning("Resend não configurado — email de boas-vindas não enviado.")
+        return False
+    try:
+        params = {
+            "from": SENDER_EMAIL,
+            "to": [email],
+            "subject": "Bem-vindo ao grupo Lisbonb — os seus acessos",
+            "html": get_welcome_email_html(employee_name, company_name, email, temp_password, FRONTEND_URL),
+        }
+        await asyncio.to_thread(resend.Emails.send, params)
+        logger.info(f"Welcome email sent to {email}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send welcome email: {str(e)}")
+        return False
+
 # ==================== MODELS ====================
 
 class UserCreate(BaseModel):
@@ -1470,11 +1518,14 @@ async def create_employee(employee: EmployeeCreate, current_user: dict = Depends
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.notifications.insert_one(notification_doc)
-    
+
+    # Email de boas-vindas com os acessos (não bloqueia a criação se falhar)
+    await send_welcome_email(employee.email, employee.name, company["name"], employee.password)
+
     return EmployeeResponse(
         **employee_doc,
         company_name=company["name"],
-        location_name=location["name"]
+        location_name=location["name"] if employee.location_id and location else None
     )
 
 @api_router.get("/employees", response_model=List[EmployeeResponse])
