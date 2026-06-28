@@ -2892,6 +2892,326 @@ async def get_calendar_leaves(
 
     return leaves
 
+# ====================================================================
+# ==================== FINANCEIRO (módulo Lisbonb) ===================
+# ====================================================================
+# Port do app financeiro (PHP) para o stack do RH. Coleções novas com
+# prefixo `fin_` (aditivas, não afetam o RH). Multi-empresa POR PERTENÇA:
+# cada utilizador vê apenas as empresas onde é membro (fin_company_members).
+# Reutiliza o JWT do RH (get_current_user) e a coleção `users` para a equipa.
+# Fase 2: empresas, unidades/lojas e equipa global. (Ref.: PORTING_GUIDE §3, §4, §10.1)
+
+FIN_ROLES = ["owner", "partner", "accountant"]
+
+
+def _fin_norm_nif(v):
+    """NIF normalizado: apenas dígitos (ou None se vazio)."""
+    if v is None:
+        return None
+    digits = re.sub(r"\D+", "", str(v))
+    return digits or None
+
+
+# ---------- Modelos Pydantic ----------
+
+class FinCompanyCreate(BaseModel):
+    name: str
+    nif: Optional[str] = None
+
+class FinCompanyResponse(BaseModel):
+    id: str
+    name: str
+    nif: Optional[str] = None
+    role: Optional[str] = None
+    created_at: Optional[str] = None
+
+class FinUnitCreate(BaseModel):
+    company_id: str
+    name: str
+    type: Optional[str] = None
+    sort: Optional[int] = 0
+
+class FinUnitResponse(BaseModel):
+    id: str
+    company_id: str
+    name: str
+    type: Optional[str] = None
+    sort: int = 0
+
+class FinTeamAdd(BaseModel):
+    email: str
+    role: str = "partner"
+
+class FinRoleUpdate(BaseModel):
+    role: str
+
+class FinTeamMemberResponse(BaseModel):
+    member_id: str
+    email: Optional[str] = None
+    name: Optional[str] = None
+    role: str
+
+
+# ---------- Helpers de pertença (equivalentes a _bootstrap.php) ----------
+
+async def fin_role_of(company_id: str, user_id: str):
+    """Papel do utilizador nessa empresa (ou None)."""
+    m = await db.fin_company_members.find_one(
+        {"company_id": company_id, "user_id": user_id}, {"_id": 0, "role": 1}
+    )
+    return m["role"] if m else None
+
+async def fin_require_member(company_id: str, current_user: dict):
+    """Qualquer papel. Bloqueia acesso a empresas onde não é membro (anti-IDOR)."""
+    role = await fin_role_of(company_id, current_user["user_id"])
+    if not role:
+        raise HTTPException(status_code=403, detail="Sem acesso a esta empresa.")
+    return role
+
+async def fin_require_editor(company_id: str, current_user: dict):
+    """owner ou partner (contabilista = só leitura)."""
+    role = await fin_require_member(company_id, current_user)
+    if role not in ("owner", "partner"):
+        raise HTTPException(status_code=403, detail="Sem permissão (acesso de leitura).")
+    return role
+
+async def fin_require_owner(company_id: str, current_user: dict):
+    """Apenas o dono (ex.: gerir empresa/equipa)."""
+    role = await fin_require_member(company_id, current_user)
+    if role != "owner":
+        raise HTTPException(status_code=403, detail="Apenas o dono pode fazer isto.")
+    return role
+
+async def fin_owned_company_ids(user_id: str):
+    """Ids das empresas de que ESTE utilizador é dono."""
+    members = await db.fin_company_members.find(
+        {"user_id": user_id, "role": "owner"}, {"_id": 0, "company_id": 1}
+    ).to_list(500)
+    return [m["company_id"] for m in members]
+
+
+# ---------- Empresas ----------
+
+@api_router.get("/fin/companies", response_model=List[FinCompanyResponse])
+async def fin_get_companies(current_user: dict = Depends(get_current_user)):
+    """Empresas a que o utilizador tem acesso (com o seu papel)."""
+    uid = current_user["user_id"]
+    members = await db.fin_company_members.find(
+        {"user_id": uid}, {"_id": 0, "company_id": 1, "role": 1}
+    ).to_list(500)
+    roles = {m["company_id"]: m["role"] for m in members}
+    if not roles:
+        return []
+    companies = await db.fin_companies.find(
+        {"id": {"$in": list(roles.keys())}}, {"_id": 0}
+    ).to_list(500)
+    companies.sort(key=lambda c: (c.get("name") or "").lower())
+    return [FinCompanyResponse(**c, role=roles.get(c["id"])) for c in companies]
+
+@api_router.post("/fin/companies", response_model=FinCompanyResponse)
+async def fin_create_company(payload: FinCompanyCreate, current_user: dict = Depends(get_current_user)):
+    """Cria empresa, torna o criador 'owner' e herda a equipa global do dono."""
+    uid = current_user["user_id"]
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Indica o nome da empresa.")
+    company_id = str(uuid.uuid4())
+    doc = {
+        "id": company_id,
+        "name": name,
+        "nif": _fin_norm_nif(payload.nif),
+        "created_by": uid,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.fin_companies.insert_one(doc)
+    await db.fin_company_members.insert_one(
+        {"company_id": company_id, "user_id": uid, "role": "owner"}
+    )
+    # Herdar a equipa global do dono (acesso a todas as empresas dele)
+    team = await db.fin_team_members.find(
+        {"owner_id": uid}, {"_id": 0, "member_id": 1, "role": 1}
+    ).to_list(500)
+    for t in team:
+        if t["member_id"] == uid:
+            continue
+        await db.fin_company_members.update_one(
+            {"company_id": company_id, "user_id": t["member_id"]},
+            {"$set": {"company_id": company_id, "user_id": t["member_id"], "role": t["role"]}},
+            upsert=True,
+        )
+    return FinCompanyResponse(**doc, role="owner")
+
+@api_router.put("/fin/companies/{company_id}", response_model=FinCompanyResponse)
+async def fin_update_company(company_id: str, payload: FinCompanyCreate, current_user: dict = Depends(get_current_user)):
+    await fin_require_owner(company_id, current_user)
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Indica o nome da empresa.")
+    await db.fin_companies.update_one(
+        {"id": company_id}, {"$set": {"name": name, "nif": _fin_norm_nif(payload.nif)}}
+    )
+    updated = await db.fin_companies.find_one({"id": company_id}, {"_id": 0})
+    return FinCompanyResponse(**updated, role="owner")
+
+@api_router.delete("/fin/companies/{company_id}")
+async def fin_delete_company(company_id: str, current_user: dict = Depends(get_current_user)):
+    await fin_require_owner(company_id, current_user)
+    await db.fin_units.delete_many({"company_id": company_id})
+    await db.fin_company_members.delete_many({"company_id": company_id})
+    await db.fin_companies.delete_one({"id": company_id})
+    return {"message": "Empresa eliminada com sucesso"}
+
+
+# ---------- Unidades / Lojas ----------
+
+@api_router.get("/fin/units", response_model=List[FinUnitResponse])
+async def fin_get_units(company_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    """Unidades das empresas do utilizador (filtro opcional por empresa)."""
+    uid = current_user["user_id"]
+    members = await db.fin_company_members.find(
+        {"user_id": uid}, {"_id": 0, "company_id": 1}
+    ).to_list(500)
+    allowed = {m["company_id"] for m in members}
+    if company_id:
+        if company_id not in allowed:
+            raise HTTPException(status_code=403, detail="Sem acesso a esta empresa.")
+        allowed = {company_id}
+    if not allowed:
+        return []
+    units = await db.fin_units.find(
+        {"company_id": {"$in": list(allowed)}}, {"_id": 0}
+    ).to_list(1000)
+    units.sort(key=lambda u: (u.get("company_id") or "", u.get("sort", 0), (u.get("name") or "").lower()))
+    return [FinUnitResponse(**u) for u in units]
+
+@api_router.post("/fin/units", response_model=FinUnitResponse)
+async def fin_create_unit(payload: FinUnitCreate, current_user: dict = Depends(get_current_user)):
+    await fin_require_editor(payload.company_id, current_user)
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Indica o nome da unidade.")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "company_id": payload.company_id,
+        "name": name,
+        "type": (payload.type or "").strip() or None,
+        "sort": payload.sort or 0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.fin_units.insert_one(doc)
+    return FinUnitResponse(**doc)
+
+@api_router.put("/fin/units/{unit_id}", response_model=FinUnitResponse)
+async def fin_update_unit(unit_id: str, payload: FinUnitCreate, current_user: dict = Depends(get_current_user)):
+    unit = await db.fin_units.find_one({"id": unit_id}, {"_id": 0})
+    if not unit:
+        raise HTTPException(status_code=404, detail="Unidade não encontrada.")
+    await fin_require_editor(unit["company_id"], current_user)
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Indica o nome da unidade.")
+    await db.fin_units.update_one(
+        {"id": unit_id},
+        {"$set": {"name": name, "type": (payload.type or "").strip() or None, "sort": payload.sort or 0}},
+    )
+    updated = await db.fin_units.find_one({"id": unit_id}, {"_id": 0})
+    return FinUnitResponse(**updated)
+
+@api_router.delete("/fin/units/{unit_id}")
+async def fin_delete_unit(unit_id: str, current_user: dict = Depends(get_current_user)):
+    unit = await db.fin_units.find_one({"id": unit_id}, {"_id": 0})
+    if not unit:
+        raise HTTPException(status_code=404, detail="Unidade não encontrada.")
+    await fin_require_owner(unit["company_id"], current_user)
+    await db.fin_units.delete_one({"id": unit_id})
+    return {"message": "Unidade eliminada com sucesso"}
+
+
+# ---------- Equipa global ----------
+# Quem é adicionado fica com acesso a TODAS as empresas do dono (atuais e futuras).
+
+@api_router.get("/fin/team", response_model=List[FinTeamMemberResponse])
+async def fin_get_team(current_user: dict = Depends(get_current_user)):
+    uid = current_user["user_id"]
+    team = await db.fin_team_members.find({"owner_id": uid}, {"_id": 0}).to_list(500)
+    result = []
+    for t in team:
+        u = await db.users.find_one({"id": t["member_id"]}, {"_id": 0, "email": 1, "name": 1})
+        if not u:
+            continue
+        result.append(FinTeamMemberResponse(
+            member_id=t["member_id"], email=u.get("email"), name=u.get("name"), role=t["role"]
+        ))
+    result.sort(key=lambda m: (m.email or "").lower())
+    return result
+
+@api_router.post("/fin/team", response_model=FinTeamMemberResponse)
+async def fin_add_team_member(payload: FinTeamAdd, current_user: dict = Depends(get_current_user)):
+    """Adiciona por email (a pessoa tem de já ter conta) e propaga às empresas do dono."""
+    uid = current_user["user_id"]
+    email = (payload.email or "").strip().lower()
+    role = payload.role if payload.role in FIN_ROLES else "partner"
+    if "@" not in email or "." not in email.split("@")[-1]:
+        raise HTTPException(status_code=400, detail="Email inválido.")
+    u = await db.users.find_one({"email": email}, {"_id": 0, "id": 1, "email": 1, "name": 1})
+    if not u:
+        raise HTTPException(
+            status_code=404,
+            detail="Essa pessoa ainda não tem conta. Pede-lhe para criar conta no sistema (com este email) e depois adiciona-a.",
+        )
+    if u["id"] == uid:
+        raise HTTPException(status_code=409, detail="És tu — já tens acesso a tudo.")
+    await db.fin_team_members.update_one(
+        {"owner_id": uid, "member_id": u["id"]},
+        {"$set": {"owner_id": uid, "member_id": u["id"], "role": role}},
+        upsert=True,
+    )
+    for cid in await fin_owned_company_ids(uid):
+        existing = await db.fin_company_members.find_one(
+            {"company_id": cid, "user_id": u["id"]}, {"_id": 0, "role": 1}
+        )
+        if existing and existing.get("role") == "owner":
+            continue  # nunca rebaixar um dono
+        await db.fin_company_members.update_one(
+            {"company_id": cid, "user_id": u["id"]},
+            {"$set": {"company_id": cid, "user_id": u["id"], "role": role}},
+            upsert=True,
+        )
+    return FinTeamMemberResponse(member_id=u["id"], email=u["email"], name=u.get("name"), role=role)
+
+@api_router.put("/fin/team/{member_id}", response_model=FinTeamMemberResponse)
+async def fin_update_team_member(member_id: str, payload: FinRoleUpdate, current_user: dict = Depends(get_current_user)):
+    uid = current_user["user_id"]
+    role = payload.role
+    if role not in FIN_ROLES:
+        raise HTTPException(status_code=400, detail="Papel inválido.")
+    existing = await db.fin_team_members.find_one(
+        {"owner_id": uid, "member_id": member_id}, {"_id": 0}
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Membro não encontrado na equipa.")
+    await db.fin_team_members.update_one(
+        {"owner_id": uid, "member_id": member_id}, {"$set": {"role": role}}
+    )
+    for cid in await fin_owned_company_ids(uid):
+        await db.fin_company_members.update_one(
+            {"company_id": cid, "user_id": member_id, "role": {"$ne": "owner"}},
+            {"$set": {"role": role}},
+        )
+    u = await db.users.find_one({"id": member_id}, {"_id": 0, "email": 1, "name": 1}) or {}
+    return FinTeamMemberResponse(member_id=member_id, email=u.get("email"), name=u.get("name"), role=role)
+
+@api_router.delete("/fin/team/{member_id}")
+async def fin_remove_team_member(member_id: str, current_user: dict = Depends(get_current_user)):
+    uid = current_user["user_id"]
+    await db.fin_team_members.delete_one({"owner_id": uid, "member_id": member_id})
+    for cid in await fin_owned_company_ids(uid):
+        await db.fin_company_members.delete_one(
+            {"company_id": cid, "user_id": member_id, "role": {"$ne": "owner"}}
+        )
+    return {"message": "Membro removido da equipa."}
+
+
 # ==================== HEALTH CHECK ====================
 
 @api_router.get("/health")

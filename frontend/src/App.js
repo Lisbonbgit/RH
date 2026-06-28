@@ -19,6 +19,8 @@ import AdminHoursReport from './pages/admin/AdminHoursReport';
 import AdminDocuments from './pages/admin/AdminDocuments';
 import AdminManagers from './pages/admin/AdminManagers';
 import AdminSchedules from './pages/admin/AdminSchedules';
+import FinInicio from './pages/admin/financeiro/FinInicio';
+import FinEquipa from './pages/admin/financeiro/FinEquipa';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeProfile from './pages/employee/EmployeeProfile';
 import EmployeeTimeRecord from './pages/employee/EmployeeTimeRecord';
@@ -29,7 +31,7 @@ import EmployeeDocuments from './pages/employee/EmployeeDocuments';
 import AdminLayout from './components/layouts/AdminLayout';
 import EmployeeLayout from './components/layouts/EmployeeLayout';
 import ComingSoon from './components/ComingSoon';
-import { Wallet, Receipt, TrendingUp, BarChart3, Truck, Landmark, Users as UsersIcon, Megaphone } from 'lucide-react';
+import { Receipt, TrendingUp, BarChart3, Truck, Landmark, Megaphone } from 'lucide-react';
 
 // Protected Route Component - checks for authentication and must_change_password
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -142,14 +144,15 @@ function AppRoutes() {
         } />
         <Route path="escalas" element={<AdminSchedules />} />
 
-        {/* ===== Financeiro (em construção) ===== */}
-        <Route path="financeiro" element={<ComingSoon icon={Wallet} title="Financeiro" subtitle="Cockpit financeiro · KPIs consolidados" />} />
+        {/* ===== Financeiro ===== */}
+        {/* Fase 2: Início (empresas+unidades) e Equipa já implementados. */}
+        <Route path="financeiro" element={<FinInicio />} />
         <Route path="financeiro/pagamentos" element={<ComingSoon icon={Receipt} title="Pagamentos" subtitle="Faturas de fornecedor, agenda e conta corrente" />} />
         <Route path="financeiro/vendas" element={<ComingSoon icon={TrendingUp} title="Vendas" subtitle="Receita por loja · integração Vendus" />} />
         <Route path="financeiro/relatorios" element={<ComingSoon icon={BarChart3} title="Relatórios" subtitle="DRE e custos fixos" />} />
         <Route path="financeiro/fornecedores" element={<ComingSoon icon={Truck} title="Fornecedores" subtitle="Fichas e regras por fornecedor" />} />
         <Route path="financeiro/extrato" element={<ComingSoon icon={Landmark} title="Extrato / Tesouraria" subtitle="Importar extrato do banco e conciliar" />} />
-        <Route path="financeiro/equipa" element={<ComingSoon icon={UsersIcon} title="Equipa" subtitle="Acessos e papéis no Financeiro" />} />
+        <Route path="financeiro/equipa" element={<FinEquipa />} />
 
         {/* ===== Marketing (em construção) ===== */}
         <Route path="marketing" element={<ComingSoon icon={Megaphone} title="Marketing" subtitle="Módulo de marketing do grupo Lisbonb" />} />

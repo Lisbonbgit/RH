@@ -100,3 +100,25 @@ export const resetEmployeePassword = (employeeId, newPassword) =>
 export const getAdmins = () => axios.get(`${API_URL}/admins`);
 export const createAdmin = (data) => axios.post(`${API_URL}/admins`, data);
 export const deleteAdmin = (id) => axios.delete(`${API_URL}/admins/${id}`);
+
+// ==================== FINANCEIRO ====================
+
+// Empresas (financeiro)
+export const getFinCompanies = () => axios.get(`${API_URL}/fin/companies`);
+export const createFinCompany = (data) => axios.post(`${API_URL}/fin/companies`, data);
+export const updateFinCompany = (id, data) => axios.put(`${API_URL}/fin/companies/${id}`, data);
+export const deleteFinCompany = (id) => axios.delete(`${API_URL}/fin/companies/${id}`);
+
+// Unidades / Lojas (financeiro)
+export const getFinUnits = (companyId) =>
+  axios.get(`${API_URL}/fin/units`, { params: companyId ? { company_id: companyId } : {} });
+export const createFinUnit = (data) => axios.post(`${API_URL}/fin/units`, data);
+export const updateFinUnit = (id, data) => axios.put(`${API_URL}/fin/units/${id}`, data);
+export const deleteFinUnit = (id) => axios.delete(`${API_URL}/fin/units/${id}`);
+
+// Equipa global (financeiro)
+export const getFinTeam = () => axios.get(`${API_URL}/fin/team`);
+export const addFinTeamMember = (data) => axios.post(`${API_URL}/fin/team`, data);
+export const updateFinTeamMember = (memberId, role) =>
+  axios.put(`${API_URL}/fin/team/${memberId}`, { role });
+export const removeFinTeamMember = (memberId) => axios.delete(`${API_URL}/fin/team/${memberId}`);
