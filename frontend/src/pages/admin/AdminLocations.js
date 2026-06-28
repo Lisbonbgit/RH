@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { getLocations, createLocation, updateLocation, deleteLocation, getCompanies } from '../../lib/api';
+import { getLocations, createLocation, updateLocation, deleteLocation, getCompanies, findPlace } from '../../lib/api';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -32,11 +32,11 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
-import { MapPin, Plus, Pencil, Trash2, LocateFixed, Loader2 } from 'lucide-react';
+import { MapPin, Plus, Pencil, Trash2, LocateFixed, Loader2, Star, Search } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import { toast } from 'sonner';
 
-const emptyForm = { name: '', company_id: '', address: '', latitude: '', longitude: '', geofence_radius: '' };
+const emptyForm = { name: '', company_id: '', address: '', latitude: '', longitude: '', geofence_radius: '', google_place_id: '' };
 
 export default function AdminLocations() {
   const { selectedCompany } = useOutletContext();
@@ -49,6 +49,9 @@ export default function AdminLocations() {
   const [formData, setFormData] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [locating, setLocating] = useState(false);
+  const [placeQuery, setPlaceQuery] = useState('');
+  const [placeResults, setPlaceResults] = useState(null);
+  const [searchingPlace, setSearchingPlace] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -81,12 +84,34 @@ export default function AdminLocations() {
         latitude: location.latitude ?? '',
         longitude: location.longitude ?? '',
         geofence_radius: location.geofence_radius ?? '',
+        google_place_id: location.google_place_id || '',
       });
     } else {
       setSelectedLocation(null);
       setFormData({ ...emptyForm, company_id: selectedCompany?.id || '' });
     }
+    setPlaceQuery('');
+    setPlaceResults(null);
     setDialogOpen(true);
+  };
+
+  const handleSearchPlace = async () => {
+    const q = placeQuery.trim() || formData.name + ' ' + (formData.address || '');
+    if (!q.trim()) {
+      toast.error('Escreva o nome/morada da loja para procurar');
+      return;
+    }
+    setSearchingPlace(true);
+    setPlaceResults(null);
+    try {
+      const res = await findPlace(q.trim());
+      setPlaceResults(res.data.candidates || []);
+      if (!res.data.candidates?.length) toast.info('Nenhum local encontrado na Google');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Erro ao procurar na Google');
+    } finally {
+      setSearchingPlace(false);
+    }
   };
 
   const handleGetCurrentLocation = () => {
@@ -126,6 +151,7 @@ export default function AdminLocations() {
       latitude: formData.latitude === '' ? null : parseFloat(formData.latitude),
       longitude: formData.longitude === '' ? null : parseFloat(formData.longitude),
       geofence_radius: formData.geofence_radius === '' ? null : parseInt(formData.geofence_radius, 10),
+      google_place_id: formData.google_place_id.trim() || null,
     };
     setSaving(true);
     try {
@@ -201,7 +227,14 @@ export default function AdminLocations() {
                 <TableBody>
                   {locations.map((location) => (
                     <TableRow key={location.id} data-testid={`location-row-${location.id}`}>
-                      <TableCell className="font-medium">{location.name}</TableCell>
+                      <TableCell className="font-medium">
+                        <span className="inline-flex items-center gap-1.5">
+                          {location.name}
+                          {location.google_place_id && (
+                            <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" title="Ligada ao Google (avaliações)" />
+                          )}
+                        </span>
+                      </TableCell>
                       <TableCell>{location.company_name}</TableCell>
                       <TableCell className="hidden md:table-cell text-muted-foreground">
                         {location.address || '-'}
@@ -369,6 +402,69 @@ export default function AdminLocations() {
                     <MapPin className="h-3 w-3" /> Ver esta posição no mapa
                   </a>
                 )}
+              </div>
+
+              {/* Avaliações Google */}
+              <div className="rounded-lg border p-3 space-y-3 bg-muted/30">
+                <div className="flex items-center gap-2">
+                  <Star className="h-4 w-4 text-amber-500" />
+                  <span className="font-medium text-sm">Avaliações Google (opcional)</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Associe esta loja ao seu local no Google para mostrar as avaliações
+                  em <strong>Marketing → Avaliações</strong>. Procure pelo nome e clique em "Usar".
+                </p>
+                <div className="flex gap-2">
+                  <Input
+                    value={placeQuery}
+                    onChange={(e) => setPlaceQuery(e.target.value)}
+                    placeholder={`Procurar na Google (ex: ${formData.name || 'nome da loja'})`}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleSearchPlace(); } }}
+                    data-testid="place-search-input"
+                  />
+                  <Button type="button" variant="outline" size="sm" onClick={handleSearchPlace} disabled={searchingPlace}>
+                    {searchingPlace ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                  </Button>
+                </div>
+                {placeResults && placeResults.length > 0 && (
+                  <div className="space-y-2">
+                    {placeResults.map((c) => (
+                      <div key={c.place_id} className="flex items-center justify-between gap-2 rounded-md border bg-card p-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium truncate">{c.name}</p>
+                          <p className="text-xs text-muted-foreground truncate">{c.address}</p>
+                          {c.rating != null && (
+                            <span className="inline-flex items-center gap-1 text-xs text-amber-600">
+                              <Star className="h-3 w-3 fill-amber-500 text-amber-500" /> {c.rating} ({c.total})
+                            </span>
+                          )}
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={formData.google_place_id === c.place_id ? 'default' : 'outline'}
+                          onClick={() => {
+                            setFormData({ ...formData, google_place_id: c.place_id });
+                            setPlaceResults(null);
+                            toast.success('Loja associada à Google');
+                          }}
+                        >
+                          {formData.google_place_id === c.place_id ? 'Selecionada' : 'Usar'}
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="space-y-1">
+                  <Label htmlFor="place_id" className="text-xs">Google Place ID</Label>
+                  <Input
+                    id="place_id"
+                    value={formData.google_place_id}
+                    onChange={(e) => setFormData({ ...formData, google_place_id: e.target.value })}
+                    placeholder="Ex: ChIJ... (preenchido pela procura ou colado à mão)"
+                    data-testid="location-placeid-input"
+                  />
+                </div>
               </div>
             </div>
             <DialogFooter>

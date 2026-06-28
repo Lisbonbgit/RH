@@ -4,7 +4,7 @@ import { getCalendarLeaves, getEmployees } from '../../lib/api';
 import { Card, CardContent } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
-import { CalendarRange, ChevronLeft, ChevronRight } from 'lucide-react';
+import { CalendarRange, ChevronLeft, ChevronRight, FileText } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import { toast } from 'sonner';
 import {
@@ -16,8 +16,10 @@ import {
   isWeekend,
   addMonths,
   subMonths,
+  differenceInCalendarDays,
 } from 'date-fns';
 import { pt } from 'date-fns/locale';
+import { downloadTablePDF } from '../../lib/pdf';
 
 // Tipos de ausência e respetivas cores
 const leaveTypes = {
@@ -88,6 +90,38 @@ export default function AdminVacationMap() {
     return days.filter((d) => byDay[toKey(d)]).length;
   };
 
+  const handleExportPDF = () => {
+    if (leaves.length === 0) {
+      toast.error('Sem ausências para exportar neste mês');
+      return;
+    }
+    const empName = (id) => employees.find((e) => e.id === id)?.name || '—';
+    const rows = [...leaves]
+      .sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''))
+      .map((lv) => {
+        const dias = lv.counted_days ?? (differenceInCalendarDays(parseISO(lv.end_date), parseISO(lv.start_date)) + 1);
+        return [
+          lv.employee_name || empName(lv.employee_id),
+          (leaveTypes[lv.leave_type] || {}).label || lv.leave_type,
+          format(parseISO(lv.start_date), 'dd/MM/yyyy'),
+          format(parseISO(lv.end_date), 'dd/MM/yyyy'),
+          dias,
+        ];
+      });
+    downloadTablePDF({
+      filename: `mapa-ferias-${year}-${String(month).padStart(2, '0')}${selectedCompany?.name ? '-' + selectedCompany.name : ''}.pdf`,
+      title: 'Mapa de Férias',
+      meta: [
+        `Empresa: ${selectedCompany?.name || 'Todas as empresas'}`,
+        `Mês: ${format(refDate, "MMMM 'de' yyyy", { locale: pt })}`,
+      ],
+      headers: ['Colaborador', 'Tipo', 'Início', 'Fim', 'Dias úteis'],
+      rows,
+      footerNote: 'RH grupo Lisbonb',
+    });
+    toast.success('PDF gerado');
+  };
+
   return (
     <div className="space-y-6 animate-fade-in" data-testid="admin-vacation-map-page">
       <PageHeader
@@ -103,6 +137,10 @@ export default function AdminVacationMap() {
         </span>
         <Button variant="outline" size="icon" onClick={() => setRefDate(addMonths(refDate, 1))} data-testid="next-month-btn">
           <ChevronRight className="h-4 w-4" />
+        </Button>
+        <Button onClick={handleExportPDF} data-testid="export-vacation-pdf-btn">
+          <FileText className="h-4 w-4 mr-2" />
+          Exportar PDF
         </Button>
       </PageHeader>
 

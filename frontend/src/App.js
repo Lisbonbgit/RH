@@ -19,6 +19,7 @@ import AdminHoursReport from './pages/admin/AdminHoursReport';
 import AdminDocuments from './pages/admin/AdminDocuments';
 import AdminManagers from './pages/admin/AdminManagers';
 import AdminSchedules from './pages/admin/AdminSchedules';
+import AdminHolidays from './pages/admin/AdminHolidays';
 import FinInicio from './pages/admin/financeiro/FinInicio';
 import FinEquipa from './pages/admin/financeiro/FinEquipa';
 import FinPagamentos from './pages/admin/financeiro/FinPagamentos';
@@ -33,7 +34,11 @@ import EmployeeDocuments from './pages/employee/EmployeeDocuments';
 import AdminLayout from './components/layouts/AdminLayout';
 import EmployeeLayout from './components/layouts/EmployeeLayout';
 import ComingSoon from './components/ComingSoon';
-import { TrendingUp, BarChart3, Landmark, Megaphone } from 'lucide-react';
+import MarketingCampaigns from './pages/admin/marketing/MarketingCampaigns';
+import MarketingCalendar from './pages/admin/marketing/MarketingCalendar';
+import MarketingReviews from './pages/admin/marketing/MarketingReviews';
+import MarketingReports from './pages/admin/marketing/MarketingReports';
+import { TrendingUp, BarChart3, Landmark } from 'lucide-react';
 
 // Protected Route Component - checks for authentication and must_change_password
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -138,6 +143,7 @@ function AppRoutes() {
         <Route path="relatorio-horas" element={<AdminHoursReport />} />
         <Route path="ausencias" element={<AdminLeaveRequests />} />
         <Route path="mapa-ferias" element={<AdminVacationMap />} />
+        <Route path="feriados" element={<AdminHolidays />} />
         <Route path="documentos" element={<AdminDocuments />} />
         <Route path="gestores" element={
           <ProtectedRoute allowedRoles={['admin']}>
@@ -156,8 +162,11 @@ function AppRoutes() {
         <Route path="financeiro/extrato" element={<ComingSoon icon={Landmark} title="Extrato / Tesouraria" subtitle="Importar extrato do banco e conciliar" />} />
         <Route path="financeiro/equipa" element={<FinEquipa />} />
 
-        {/* ===== Marketing (em construção) ===== */}
-        <Route path="marketing" element={<ComingSoon icon={Megaphone} title="Marketing" subtitle="Módulo de marketing do grupo Lisbonb" />} />
+        {/* ===== Marketing ===== */}
+        <Route path="marketing" element={<MarketingCampaigns />} />
+        <Route path="marketing/calendario" element={<MarketingCalendar />} />
+        <Route path="marketing/avaliacoes" element={<MarketingReviews />} />
+        <Route path="marketing/relatorios" element={<MarketingReports />} />
       </Route>
       
       {/* Employee Routes */}

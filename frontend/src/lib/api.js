@@ -145,3 +145,28 @@ export const getFinSupplierRules = () => axios.get(`${API_URL}/fin/supplier-rule
 export const upsertFinSupplierRule = (data) => axios.post(`${API_URL}/fin/supplier-rules`, data);
 export const deleteFinSupplierRule = (key) =>
   axios.delete(`${API_URL}/fin/supplier-rules`, { params: { key } });
+
+// Marketing — Campanhas
+export const getCampaigns = (params) => axios.get(`${API_URL}/marketing/campaigns`, { params });
+export const createCampaign = (data) => axios.post(`${API_URL}/marketing/campaigns`, data);
+export const updateCampaign = (id, data) => axios.put(`${API_URL}/marketing/campaigns/${id}`, data);
+export const deleteCampaign = (id) => axios.delete(`${API_URL}/marketing/campaigns/${id}`);
+
+// Marketing — Calendário de conteúdos (publicações)
+export const getPosts = (params) => axios.get(`${API_URL}/marketing/posts`, { params });
+export const createPost = (data) => axios.post(`${API_URL}/marketing/posts`, data);
+export const updatePost = (id, data) => axios.put(`${API_URL}/marketing/posts/${id}`, data);
+export const deletePost = (id) => axios.delete(`${API_URL}/marketing/posts/${id}`);
+
+// Marketing — Avaliações (Google)
+export const getReviews = (params) => axios.get(`${API_URL}/marketing/reviews`, { params });
+export const findPlace = (query) => axios.get(`${API_URL}/marketing/reviews/find-place`, { params: { query } });
+
+// Marketing — Relatórios / métricas
+export const getMarketingReports = (params) => axios.get(`${API_URL}/marketing/reports`, { params });
+
+// RH — Feriados personalizados (municipais)
+export const getHolidays = () => axios.get(`${API_URL}/holidays`);
+export const createHoliday = (data) => axios.post(`${API_URL}/holidays`, data);
+export const updateHoliday = (id, data) => axios.put(`${API_URL}/holidays/${id}`, data);
+export const deleteHoliday = (id) => axios.delete(`${API_URL}/holidays/${id}`);

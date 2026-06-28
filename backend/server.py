@@ -19,6 +19,11 @@ import secrets
 import hashlib
 import asyncio
 import math
+from zoneinfo import ZoneInfo
+
+# Fuso horário de Portugal continental (trata automaticamente verão/inverno).
+# Os registos são guardados em UTC; converte-se para Lisboa só ao apresentar.
+LISBON_TZ = ZoneInfo("Europe/Lisbon")
 
 # Resend for email
 try:
@@ -26,6 +31,13 @@ try:
     RESEND_AVAILABLE = True
 except ImportError:
     RESEND_AVAILABLE = False
+
+# httpx para chamadas a APIs externas (ex.: Google Places — avaliações)
+try:
+    import httpx
+    HTTPX_AVAILABLE = True
+except ImportError:
+    HTTPX_AVAILABLE = False
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -57,6 +69,13 @@ SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
 # URL do frontend usado nos links de recuperação de palavra-passe.
 # Em produção definir FRONTEND_URL no .env (ex.: https://rh.suaempresa.pt)
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+
+# Google Places API (avaliações por loja). A chave fica SÓ no servidor (.env),
+# nunca no frontend nem no git. Ativar "Places API" na Google Cloud e criar a chave.
+GOOGLE_PLACES_API_KEY = os.environ.get('GOOGLE_PLACES_API_KEY')
+# Quanto tempo guardar em cache as avaliações de cada loja (em minutos).
+# Evita gastar quota/€ da Google a cada abertura da página.
+GOOGLE_REVIEWS_CACHE_MINUTES = int(os.environ.get('GOOGLE_REVIEWS_CACHE_MINUTES', '360'))
 
 # Initialize Resend
 if RESEND_AVAILABLE and RESEND_API_KEY:
@@ -305,6 +324,54 @@ async def notify_employee_of_leave_decision(employee_email: str, employee_name: 
     except Exception as e:
         logger.error(f"Failed to send leave decision email: {str(e)}")
 
+def get_welcome_email_html(employee_name: str, company_name: str, login_email: str, temp_password: str, login_url: str) -> str:
+    """Template do email de boas-vindas a um novo colaborador (com acessos)."""
+    return f"""
+    <div style="font-family: Arial, Helvetica, sans-serif; max-width: 560px; margin: 0 auto; color: #1f2937;">
+      <div style="background:linear-gradient(135deg,#1366F0,#16B8A6); color:#fff; padding:26px 22px; border-radius:8px 8px 0 0;">
+        <h2 style="margin:0; font-size:20px;">Bem-vindo ao grupo Lisbonb 👋</h2>
+        <p style="margin:6px 0 0; font-size:14px; opacity:0.9;">A sua conta de colaborador já está ativa.</p>
+      </div>
+      <div style="border:1px solid #e5e7eb; border-top:none; padding:22px; border-radius:0 0 8px 8px;">
+        <p style="margin:0 0 14px;">Olá <strong>{employee_name}</strong>,</p>
+        <p style="margin:0 0 16px;">Foi criado o seu acesso ao sistema de RH da <strong>{company_name}</strong>.
+        Use os dados abaixo para entrar:</p>
+        <div style="background:#f8fafc; border:1px solid #e5e7eb; border-radius:8px; padding:16px; margin:0 0 18px;">
+          <p style="margin:0 0 8px; font-size:14px;"><strong>Email:</strong> {login_email}</p>
+          <p style="margin:0; font-size:14px;"><strong>Palavra-passe temporária:</strong>
+            <span style="font-family:monospace; background:#eef2ff; color:#1366F0; padding:2px 8px; border-radius:5px;">{temp_password}</span>
+          </p>
+        </div>
+        <div style="text-align:center; margin:0 0 18px;">
+          <a href="{login_url}" style="display:inline-block; background:#1366F0; color:#fff; text-decoration:none; font-weight:bold; padding:12px 26px; border-radius:8px;">Aceder ao RH</a>
+        </div>
+        <p style="margin:0; font-size:13px; color:#6b7280;">
+          Por segurança, será pedido para <strong>alterar a palavra-passe</strong> no primeiro acesso.
+          Se não reconhece este email, ignore-o.
+        </p>
+      </div>
+    </div>
+    """
+
+async def send_welcome_email(email: str, employee_name: str, company_name: str, temp_password: str) -> bool:
+    """Envia o email de boas-vindas com os acessos. Falha em silêncio (não bloqueia a criação)."""
+    if not RESEND_AVAILABLE or not RESEND_API_KEY or not email:
+        logger.warning("Resend não configurado — email de boas-vindas não enviado.")
+        return False
+    try:
+        params = {
+            "from": SENDER_EMAIL,
+            "to": [email],
+            "subject": "Bem-vindo ao grupo Lisbonb — os seus acessos",
+            "html": get_welcome_email_html(employee_name, company_name, email, temp_password, FRONTEND_URL),
+        }
+        await asyncio.to_thread(resend.Emails.send, params)
+        logger.info(f"Welcome email sent to {email}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send welcome email: {str(e)}")
+        return False
+
 # ==================== MODELS ====================
 
 class UserCreate(BaseModel):
@@ -401,6 +468,8 @@ class LocationCreate(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     geofence_radius: Optional[int] = None
+    # ID do local no Google (Place ID) — usado para puxar avaliações no Marketing.
+    google_place_id: Optional[str] = None
 
 class LocationResponse(BaseModel):
     id: str
@@ -411,6 +480,7 @@ class LocationResponse(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     geofence_radius: Optional[int] = None
+    google_place_id: Optional[str] = None
 
 class EmployeeCreate(BaseModel):
     name: str
@@ -703,6 +773,21 @@ def get_pt_holidays(year: int) -> set:
     _pt_holiday_cache[year] = holidays
     return holidays
 
+async def get_custom_holiday_monthdays(company_id: Optional[str], location_id: Optional[str]) -> set:
+    """Feriados personalizados (ex.: municipais) aplicáveis, como pares (mês, dia).
+    Âmbito: grupo (sem empresa/loja), por empresa, ou por loja. Recorrem todos os anos."""
+    docs = await db.holidays.find({}, {"_id": 0}).to_list(500)
+    applies = set()
+    for h in docs:
+        hc = h.get("company_id")
+        hl = h.get("location_id")
+        if (not hc and not hl) or (hc and hc == company_id) or (hl and hl == location_id):
+            try:
+                applies.add((int(h["month"]), int(h["day"])))
+            except (KeyError, ValueError, TypeError):
+                continue
+    return applies
+
 def find_schedule_assignment(assignments: list[dict], target_date: date):
     for assignment in assignments:
         start_dt = datetime.fromisoformat(assignment["start_date"]).date()
@@ -734,11 +819,21 @@ async def calculate_leave_counted_days(employee_id: str, start_date: str, end_da
             if template:
                 assignment["work_days"] = template.get("work_days", [])
 
+    # Feriados personalizados (municipais) aplicáveis a este colaborador
+    emp = await db.employees.find_one(
+        {"id": employee_id}, {"_id": 0, "company_id": 1, "location_id": 1}
+    )
+    custom_holidays = await get_custom_holiday_monthdays(
+        emp.get("company_id") if emp else None,
+        emp.get("location_id") if emp else None,
+    )
+
     total_days = 0
     current_date = start_dt
     while current_date <= end_dt:
-        # Feriados nunca contam
-        if current_date in get_pt_holidays(current_date.year):
+        # Feriados (nacionais ou municipais) nunca contam
+        if (current_date in get_pt_holidays(current_date.year)
+                or (current_date.month, current_date.day) in custom_holidays):
             current_date += timedelta(days=1)
             continue
 
@@ -1309,6 +1404,7 @@ async def create_location(location: LocationCreate, current_user: dict = Depends
         "latitude": location.latitude,
         "longitude": location.longitude,
         "geofence_radius": location.geofence_radius,
+        "google_place_id": location.google_place_id,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.locations.insert_one(location_doc)
@@ -1340,6 +1436,7 @@ async def update_location(location_id: str, location: LocationCreate, current_us
             "latitude": location.latitude,
             "longitude": location.longitude,
             "geofence_radius": location.geofence_radius,
+            "google_place_id": location.google_place_id,
         }}
     )
     if result.matched_count == 0:
@@ -1451,11 +1548,14 @@ async def create_employee(employee: EmployeeCreate, current_user: dict = Depends
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.notifications.insert_one(notification_doc)
-    
+
+    # Email de boas-vindas com os acessos (não bloqueia a criação se falhar)
+    await send_welcome_email(employee.email, employee.name, company["name"], employee.password)
+
     return EmployeeResponse(
         **employee_doc,
         company_name=company["name"],
-        location_name=location["name"]
+        location_name=location["name"] if employee.location_id and location else None
     )
 
 @api_router.get("/employees", response_model=List[EmployeeResponse])
@@ -1703,7 +1803,11 @@ async def create_time_record(record: TimeRecordCreate, current_user: dict = Depe
                     detail="Ative a localização no telemóvel para poder registar o ponto neste local."
                 )
             distance = haversine_meters(record.latitude, record.longitude, location["latitude"], location["longitude"])
-            if distance > radius:
+            # Margem para a imprecisão do GPS (sobretudo Safari/iOS em precisão
+            # normal, que pode reportar centenas de metros de erro). Aceita-se se,
+            # descontando a precisão reportada (com limite), ainda estiver no raio.
+            accuracy_slack = min(record.accuracy or 0, max(radius, 150))
+            if distance - accuracy_slack > radius:
                 raise HTTPException(
                     status_code=403,
                     detail=f"Está a {int(distance)} m do local de trabalho (limite {radius} m). Aproxime-se para registar o ponto."
@@ -2561,9 +2665,14 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
         pending_query["employee_id"] = {"$in": emp_ids}
     pending_requests = await db.leave_requests.count_documents(pending_query)
     
-    # Today's records
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    today_query = {"time": {"$gte": today}}
+    # "Hoje" no fuso de Portugal (não em UTC), senão a hora/o dia ficam errados.
+    now_lis = datetime.now(LISBON_TZ)
+    today_date = now_lis.date()
+    today_str = today_date.isoformat()
+    # Instante UTC da meia-noite de hoje em Lisboa: limite inferior para
+    # selecionar os registos de ponto (guardados em UTC).
+    day_start_utc = now_lis.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
+    today_query = {"time": {"$gte": day_start_utc}}
     if company_id:
         today_query["employee_id"] = {"$in": emp_ids}
     today_records = await db.time_records.count_documents(today_query)
@@ -2600,8 +2709,7 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
     companies_all = await db.companies.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(200)
     company_name_by_id = {c["id"]: c.get("name") for c in companies_all}
 
-    today_date = datetime.now(timezone.utc).date()
-    today_str = today_date.isoformat()
+    # (today_date / today_str já calculados acima, no fuso de Lisboa)
 
     # De férias/ausência hoje (aprovado e cobre hoje)
     on_leave_ids = set()
@@ -2621,7 +2729,7 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
                 leave_end_by_emp[lv["employee_id"]] = lv.get("end_date")
 
     # A trabalhar agora (último registo de hoje = entrada)
-    rec_q = {"time": {"$gte": today_str}}
+    rec_q = {"time": {"$gte": day_start_utc}}
     if company_id:
         rec_q["employee_id"] = {"$in": list(emp_id_set)}
     records_today = await db.time_records.find(
@@ -2636,7 +2744,10 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
             t = r.get("time")
             if t:
                 try:
-                    first_entry_by_emp[eid] = datetime.fromisoformat(t).strftime("%H:%M")
+                    _dt = datetime.fromisoformat(t)
+                    if _dt.tzinfo is None:
+                        _dt = _dt.replace(tzinfo=timezone.utc)
+                    first_entry_by_emp[eid] = _dt.astimezone(LISBON_TZ).strftime("%H:%M")
                 except (ValueError, TypeError):
                     first_entry_by_emp[eid] = None
     working_ids = [eid for eid, t in last_type.items() if t == "entrada" and eid not in on_leave_ids and eid in emp_id_set]
@@ -2809,8 +2920,8 @@ async def get_employee_dashboard(current_user: dict = Depends(get_current_user))
         employee["vacation_days_used"] = vacation_used
         employee["vacation_days_available"] = employee["vacation_days"] - vacation_used
     
-    # Upcoming leave
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Upcoming leave ("hoje" no fuso de Lisboa)
+    today = datetime.now(LISBON_TZ).strftime("%Y-%m-%d")
     upcoming_leave = await db.leave_requests.find(
         {"employee_id": employee_id, "status": "aprovado", "start_date": {"$gte": today}},
         {"_id": 0}
@@ -3551,6 +3662,500 @@ async def fin_delete_supplier_rule(key: str, current_user: dict = Depends(get_cu
     await db.fin_supplier_rules.delete_one({"supplier_key": key})
     return {"ok": True}
 
+# ==================== MARKETING — CAMPANHAS ====================
+
+class CampaignCreate(BaseModel):
+    name: str
+    type: str = "campanha"          # campanha | promocao | evento | cupao
+    company_id: Optional[str] = None  # None = todo o grupo
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    status: str = "planeada"        # planeada | ativa | terminada
+    channel: Optional[str] = None   # ex.: Instagram, Facebook, Loja...
+    budget: Optional[float] = None
+    description: Optional[str] = None
+    result: Optional[str] = None
+
+class CampaignResponse(BaseModel):
+    id: str
+    name: str
+    type: str
+    company_id: Optional[str] = None
+    company_name: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    status: str
+    channel: Optional[str] = None
+    budget: Optional[float] = None
+    description: Optional[str] = None
+    result: Optional[str] = None
+    created_at: str
+
+async def _campaign_response(doc: dict) -> CampaignResponse:
+    company_name = None
+    if doc.get("company_id"):
+        company = await db.companies.find_one({"id": doc["company_id"]}, {"_id": 0, "name": 1})
+        company_name = company["name"] if company else None
+    return CampaignResponse(**doc, company_name=company_name)
+
+@api_router.get("/marketing/campaigns", response_model=List[CampaignResponse])
+async def list_campaigns(company_id: Optional[str] = None, status: Optional[str] = None,
+                         current_user: dict = Depends(admin_required)):
+    query = {}
+    if company_id:
+        query["company_id"] = company_id
+    if status:
+        query["status"] = status
+    docs = await db.mkt_campaigns.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return [await _campaign_response(d) for d in docs]
+
+@api_router.post("/marketing/campaigns", response_model=CampaignResponse)
+async def create_campaign(campaign: CampaignCreate, current_user: dict = Depends(admin_required)):
+    if campaign.company_id:
+        company = await db.companies.find_one({"id": campaign.company_id}, {"_id": 0})
+        if not company:
+            raise HTTPException(status_code=404, detail="Empresa não encontrada")
+    doc = {
+        "id": str(uuid.uuid4()),
+        **campaign.model_dump(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": current_user.get("user_id"),
+    }
+    await db.mkt_campaigns.insert_one(doc)
+    return await _campaign_response(doc)
+
+@api_router.put("/marketing/campaigns/{campaign_id}", response_model=CampaignResponse)
+async def update_campaign(campaign_id: str, campaign: CampaignCreate, current_user: dict = Depends(admin_required)):
+    result = await db.mkt_campaigns.update_one({"id": campaign_id}, {"$set": campaign.model_dump()})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+    doc = await db.mkt_campaigns.find_one({"id": campaign_id}, {"_id": 0})
+    return await _campaign_response(doc)
+
+@api_router.delete("/marketing/campaigns/{campaign_id}")
+async def delete_campaign(campaign_id: str, current_user: dict = Depends(admin_required)):
+    result = await db.mkt_campaigns.delete_one({"id": campaign_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+    return {"message": "Campanha eliminada com sucesso"}
+
+# ==================== MARKETING — CALENDÁRIO DE CONTEÚDOS ====================
+
+class PostCreate(BaseModel):
+    title: str
+    channel: str = "instagram"      # instagram | facebook | tiktok | google | website | outro
+    company_id: Optional[str] = None
+    scheduled_date: Optional[str] = None  # AAAA-MM-DD (None = ideia sem data)
+    scheduled_time: Optional[str] = None  # HH:MM
+    status: str = "ideia"           # ideia | agendado | publicado
+    content: Optional[str] = None
+
+class PostResponse(BaseModel):
+    id: str
+    title: str
+    channel: str
+    company_id: Optional[str] = None
+    company_name: Optional[str] = None
+    scheduled_date: Optional[str] = None
+    scheduled_time: Optional[str] = None
+    status: str
+    content: Optional[str] = None
+    created_at: str
+
+async def _post_response(doc: dict) -> PostResponse:
+    company_name = None
+    if doc.get("company_id"):
+        company = await db.companies.find_one({"id": doc["company_id"]}, {"_id": 0, "name": 1})
+        company_name = company["name"] if company else None
+    return PostResponse(**doc, company_name=company_name)
+
+@api_router.get("/marketing/posts", response_model=List[PostResponse])
+async def list_posts(status: Optional[str] = None, channel: Optional[str] = None,
+                     company_id: Optional[str] = None, current_user: dict = Depends(admin_required)):
+    query = {}
+    if status:
+        query["status"] = status
+    if channel:
+        query["channel"] = channel
+    if company_id:
+        query["company_id"] = company_id
+    docs = await db.mkt_posts.find(query, {"_id": 0}).sort("scheduled_date", 1).to_list(2000)
+    return [await _post_response(d) for d in docs]
+
+@api_router.post("/marketing/posts", response_model=PostResponse)
+async def create_post(post: PostCreate, current_user: dict = Depends(admin_required)):
+    if post.company_id:
+        company = await db.companies.find_one({"id": post.company_id}, {"_id": 0})
+        if not company:
+            raise HTTPException(status_code=404, detail="Empresa não encontrada")
+    doc = {
+        "id": str(uuid.uuid4()),
+        **post.model_dump(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": current_user.get("user_id"),
+    }
+    await db.mkt_posts.insert_one(doc)
+    return await _post_response(doc)
+
+@api_router.put("/marketing/posts/{post_id}", response_model=PostResponse)
+async def update_post(post_id: str, post: PostCreate, current_user: dict = Depends(admin_required)):
+    result = await db.mkt_posts.update_one({"id": post_id}, {"$set": post.model_dump()})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Publicação não encontrada")
+    doc = await db.mkt_posts.find_one({"id": post_id}, {"_id": 0})
+    return await _post_response(doc)
+
+@api_router.delete("/marketing/posts/{post_id}")
+async def delete_post(post_id: str, current_user: dict = Depends(admin_required)):
+    result = await db.mkt_posts.delete_one({"id": post_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Publicação não encontrada")
+    return {"message": "Publicação eliminada com sucesso"}
+
+# ==================== MARKETING — AVALIAÇÕES (GOOGLE) ====================
+# Liga-se à Google Places API para mostrar a reputação de cada loja:
+# classificação (estrelas), total de avaliações e as avaliações mais recentes.
+# A chave (GOOGLE_PLACES_API_KEY) vive só no servidor. Para evitar gastar
+# quota a cada abertura, guardamos um snapshot em cache (mkt_reviews_cache).
+
+GOOGLE_PLACES_BASE = "https://maps.googleapis.com/maps/api/place"
+
+
+async def _google_places_get(path: str, params: dict) -> dict:
+    """Chamada GET à Google Places API. Devolve o JSON ou {'error': ...}."""
+    if not GOOGLE_PLACES_API_KEY:
+        return {"error": "Chave da API Google não configurada no servidor."}
+    if not HTTPX_AVAILABLE:
+        return {"error": "Biblioteca httpx indisponível no servidor."}
+    params = {**params, "key": GOOGLE_PLACES_API_KEY}
+    try:
+        async with httpx.AsyncClient(timeout=12) as http_client:
+            resp = await http_client.get(f"{GOOGLE_PLACES_BASE}/{path}", params=params)
+        data = resp.json()
+    except Exception as exc:  # rede/timeout/JSON inválido
+        logging.warning(f"Google Places erro de rede: {exc}")
+        return {"error": "Não foi possível contactar a Google."}
+    status = data.get("status")
+    if status not in ("OK", "ZERO_RESULTS"):
+        # Mensagens amigáveis para os erros mais comuns da Google.
+        friendly = {
+            "REQUEST_DENIED": "Pedido recusado pela Google (verifique a chave / Places API ativada).",
+            "OVER_QUERY_LIMIT": "Limite de pedidos da Google atingido. Tente mais tarde.",
+            "INVALID_REQUEST": "Pedido inválido (Place ID em falta ou incorreto).",
+            "NOT_FOUND": "Local não encontrado na Google.",
+        }
+        msg = friendly.get(status, data.get("error_message") or f"Erro Google: {status}")
+        return {"error": msg}
+    return data
+
+
+def _normalize_reviews(result: dict) -> list:
+    """Extrai e normaliza as avaliações do resultado da Google."""
+    out = []
+    for r in (result.get("reviews") or []):
+        out.append({
+            "author": r.get("author_name"),
+            "author_photo": r.get("profile_photo_url"),
+            "author_url": r.get("author_url"),
+            "rating": r.get("rating"),
+            "text": r.get("text") or "",
+            "relative_time": r.get("relative_time_description"),
+            "time": r.get("time"),  # epoch (segundos)
+        })
+    return out
+
+
+async def _fetch_place_reviews(place_id: str, force: bool = False) -> dict:
+    """Devolve a reputação de um Place ID, usando cache quando possível."""
+    now = datetime.now(timezone.utc)
+    cached = await db.mkt_reviews_cache.find_one({"place_id": place_id}, {"_id": 0})
+    if cached and not force:
+        try:
+            fetched_at = datetime.fromisoformat(cached["fetched_at"])
+            age_min = (now - fetched_at).total_seconds() / 60
+            if age_min < GOOGLE_REVIEWS_CACHE_MINUTES:
+                return {**cached["data"], "fetched_at": cached["fetched_at"], "cached": True}
+        except Exception:
+            pass
+
+    data = await _google_places_get("details/json", {
+        "place_id": place_id,
+        "language": "pt-PT",
+        "reviews_sort": "newest",
+        "fields": "name,rating,user_ratings_total,url,reviews",
+    })
+    if "error" in data:
+        # Em erro, devolve a última cache disponível (se houver) com o aviso.
+        if cached:
+            return {**cached["data"], "fetched_at": cached["fetched_at"],
+                    "cached": True, "error": data["error"]}
+        return {"rating": None, "total": 0, "reviews": [], "google_url": None,
+                "name": None, "error": data["error"], "fetched_at": None, "cached": False}
+
+    result = data.get("result", {})
+    payload = {
+        "name": result.get("name"),
+        "rating": result.get("rating"),
+        "total": result.get("user_ratings_total", 0),
+        "google_url": result.get("url"),
+        "reviews": _normalize_reviews(result),
+        "error": None,
+    }
+    await db.mkt_reviews_cache.update_one(
+        {"place_id": place_id},
+        {"$set": {"place_id": place_id, "data": payload, "fetched_at": now.isoformat()}},
+        upsert=True,
+    )
+    return {**payload, "fetched_at": now.isoformat(), "cached": False}
+
+
+@api_router.get("/marketing/reviews")
+async def list_reviews(company_id: Optional[str] = None, refresh: bool = False,
+                       current_user: dict = Depends(admin_required)):
+    """Reputação por loja (e agregada). Cada loja precisa de google_place_id."""
+    query = {}
+    if company_id:
+        query["company_id"] = company_id
+    locations = await db.locations.find(query, {"_id": 0}).to_list(200)
+
+    # nomes das empresas (cache local simples)
+    company_names = {}
+    items = []
+    for loc in locations:
+        cid = loc.get("company_id")
+        if cid not in company_names:
+            comp = await db.companies.find_one({"id": cid}, {"_id": 0})
+            company_names[cid] = comp["name"] if comp else None
+        place_id = loc.get("google_place_id")
+        entry = {
+            "location_id": loc["id"],
+            "location_name": loc["name"],
+            "company_id": cid,
+            "company_name": company_names[cid],
+            "google_place_id": place_id,
+            "configured": bool(place_id),
+            "rating": None,
+            "total": 0,
+            "reviews": [],
+            "google_url": None,
+            "fetched_at": None,
+            "cached": False,
+            "error": None,
+        }
+        if place_id:
+            entry.update(await _fetch_place_reviews(place_id, force=refresh))
+        items.append(entry)
+
+    # resumo agregado (média ponderada pelo nº de avaliações)
+    rated = [i for i in items if i.get("rating") and i.get("total")]
+    total_reviews = sum(i["total"] for i in items if i.get("total"))
+    avg_rating = None
+    if rated:
+        avg_rating = round(sum(i["rating"] * i["total"] for i in rated) / sum(i["total"] for i in rated), 2)
+
+    return {
+        "api_configured": bool(GOOGLE_PLACES_API_KEY),
+        "summary": {
+            "total_locations": len(items),
+            "configured_locations": sum(1 for i in items if i["configured"]),
+            "total_reviews": total_reviews,
+            "avg_rating": avg_rating,
+        },
+        "locations": items,
+    }
+
+
+@api_router.get("/marketing/reviews/find-place")
+async def find_place(query: str, current_user: dict = Depends(admin_required)):
+    """Procura o Place ID de uma loja a partir do nome/morada (para configurar)."""
+    if not GOOGLE_PLACES_API_KEY:
+        raise HTTPException(status_code=400, detail="Chave da API Google não configurada no servidor.")
+    data = await _google_places_get("findplacefromtext/json", {
+        "input": query,
+        "inputtype": "textquery",
+        "language": "pt-PT",
+        "fields": "place_id,name,formatted_address,rating,user_ratings_total",
+    })
+    if "error" in data:
+        raise HTTPException(status_code=502, detail=data["error"])
+    candidates = [{
+        "place_id": c.get("place_id"),
+        "name": c.get("name"),
+        "address": c.get("formatted_address"),
+        "rating": c.get("rating"),
+        "total": c.get("user_ratings_total", 0),
+    } for c in (data.get("candidates") or [])]
+    return {"candidates": candidates}
+
+
+# ==================== MARKETING — RELATÓRIOS / MÉTRICAS ====================
+# Agrega o que já existe no sistema (campanhas + calendário de conteúdos),
+# por empresa e por período. Sem dependências externas.
+
+@api_router.get("/marketing/reports")
+async def marketing_reports(company_id: Optional[str] = None,
+                            start_date: Optional[str] = None,
+                            end_date: Optional[str] = None,
+                            current_user: dict = Depends(admin_required)):
+    base = {}
+    if company_id:
+        base["company_id"] = company_id
+
+    def in_range(d: Optional[str]) -> bool:
+        # Datas em AAAA-MM-DD ordenam por string. Sem período => conta tudo.
+        if not (start_date or end_date):
+            return True
+        if not d:
+            return False
+        if start_date and d < start_date:
+            return False
+        if end_date and d > end_date:
+            return False
+        return True
+
+    today = date.today().isoformat()
+
+    # --- Campanhas ---
+    campaigns = await db.mkt_campaigns.find(dict(base), {"_id": 0}).to_list(5000)
+    campaigns_f = [c for c in campaigns if in_range(c.get("start_date"))]
+    camp_by_status, camp_by_type, camp_by_channel, budget_by_channel = {}, {}, {}, {}
+    total_budget = 0.0
+    active_now = 0
+    for c in campaigns_f:
+        st = c.get("status") or "—"
+        camp_by_status[st] = camp_by_status.get(st, 0) + 1
+        tp = c.get("type") or "—"
+        camp_by_type[tp] = camp_by_type.get(tp, 0) + 1
+        ch = (c.get("channel") or "").strip() or "Sem canal"
+        camp_by_channel[ch] = camp_by_channel.get(ch, 0) + 1
+        try:
+            b = float(c.get("budget")) if c.get("budget") not in (None, "") else 0.0
+        except (TypeError, ValueError):
+            b = 0.0
+        total_budget += b
+        budget_by_channel[ch] = round(budget_by_channel.get(ch, 0.0) + b, 2)
+        if st == "ativa":
+            active_now += 1
+
+    # --- Publicações (calendário) ---
+    posts = await db.mkt_posts.find(dict(base), {"_id": 0}).to_list(10000)
+    posts_f = [p for p in posts if in_range(p.get("scheduled_date"))]
+    post_by_status, post_by_channel = {}, {}
+    for p in posts_f:
+        st = p.get("status") or "—"
+        post_by_status[st] = post_by_status.get(st, 0) + 1
+        ch = p.get("channel") or "outro"
+        post_by_channel[ch] = post_by_channel.get(ch, 0) + 1
+
+    upcoming = sorted(
+        [p for p in posts if p.get("status") == "agendado" and (p.get("scheduled_date") or "") >= today],
+        key=lambda p: (p.get("scheduled_date") or "", p.get("scheduled_time") or "")
+    )[:6]
+    upcoming_slim = [{
+        "id": p.get("id"),
+        "title": p.get("title"),
+        "channel": p.get("channel"),
+        "scheduled_date": p.get("scheduled_date"),
+        "scheduled_time": p.get("scheduled_time"),
+    } for p in upcoming]
+
+    return {
+        "campaigns": {
+            "total": len(campaigns_f),
+            "active_now": active_now,
+            "total_budget": round(total_budget, 2),
+            "by_status": camp_by_status,
+            "by_type": camp_by_type,
+            "by_channel": camp_by_channel,
+            "budget_by_channel": budget_by_channel,
+        },
+        "posts": {
+            "total": len(posts_f),
+            "published": post_by_status.get("publicado", 0),
+            "scheduled": post_by_status.get("agendado", 0),
+            "ideas": post_by_status.get("ideia", 0),
+            "by_status": post_by_status,
+            "by_channel": post_by_channel,
+            "upcoming": upcoming_slim,
+        },
+    }
+
+
+# ==================== FERIADOS PERSONALIZADOS (MUNICIPAIS) ====================
+# Feriados que recorrem todos os anos numa data fixa (mês/dia), além dos
+# nacionais. Âmbito: todo o grupo, uma empresa, ou uma loja específica.
+
+class HolidayCreate(BaseModel):
+    name: str
+    month: int
+    day: int
+    company_id: Optional[str] = None
+    location_id: Optional[str] = None
+
+    @field_validator("month")
+    @classmethod
+    def _month_ok(cls, v):
+        if not 1 <= v <= 12:
+            raise ValueError("Mês inválido (1-12)")
+        return v
+
+    @field_validator("day")
+    @classmethod
+    def _day_ok(cls, v):
+        if not 1 <= v <= 31:
+            raise ValueError("Dia inválido (1-31)")
+        return v
+
+class HolidayResponse(BaseModel):
+    id: str
+    name: str
+    month: int
+    day: int
+    company_id: Optional[str] = None
+    company_name: Optional[str] = None
+    location_id: Optional[str] = None
+    location_name: Optional[str] = None
+
+async def _holiday_response(doc: dict) -> HolidayResponse:
+    company_name = None
+    location_name = None
+    if doc.get("company_id"):
+        c = await db.companies.find_one({"id": doc["company_id"]}, {"_id": 0, "name": 1})
+        company_name = c["name"] if c else None
+    if doc.get("location_id"):
+        l = await db.locations.find_one({"id": doc["location_id"]}, {"_id": 0, "name": 1})
+        location_name = l["name"] if l else None
+    return HolidayResponse(**doc, company_name=company_name, location_name=location_name)
+
+@api_router.get("/holidays", response_model=List[HolidayResponse])
+async def list_holidays(current_user: dict = Depends(admin_required)):
+    docs = await db.holidays.find({}, {"_id": 0}).sort([("month", 1), ("day", 1)]).to_list(500)
+    return [await _holiday_response(d) for d in docs]
+
+@api_router.post("/holidays", response_model=HolidayResponse)
+async def create_holiday(holiday: HolidayCreate, current_user: dict = Depends(admin_required)):
+    doc = {
+        "id": str(uuid.uuid4()),
+        **holiday.model_dump(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.holidays.insert_one(doc)
+    return await _holiday_response(doc)
+
+@api_router.put("/holidays/{holiday_id}", response_model=HolidayResponse)
+async def update_holiday(holiday_id: str, holiday: HolidayCreate, current_user: dict = Depends(admin_required)):
+    result = await db.holidays.update_one({"id": holiday_id}, {"$set": holiday.model_dump()})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Feriado não encontrado")
+    doc = await db.holidays.find_one({"id": holiday_id}, {"_id": 0})
+    return await _holiday_response(doc)
+
+@api_router.delete("/holidays/{holiday_id}")
+async def delete_holiday(holiday_id: str, current_user: dict = Depends(admin_required)):
+    result = await db.holidays.delete_one({"id": holiday_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Feriado não encontrado")
+    return {"message": "Feriado eliminado com sucesso"}
 
 # ==================== HEALTH CHECK ====================
 
