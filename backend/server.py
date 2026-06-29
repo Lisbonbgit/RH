@@ -4473,6 +4473,334 @@ async def fin_automatch_movements(payload: FinCompanyIdBody, current_user: dict 
     return {"linked": linked}
 
 
+# ===== FINANCEIRO · FASE 4B — INGESTÃO IMAP + IA (#1) =====
+# ==========================================================
+# Endpoint de cron (protegido por CRON_KEY, sem JWT) que lê N caixas IMAP,
+# manda cada PDF anexo à Claude (Haiku) para extrair os dados da fatura,
+# descarta não-faturas e duplicados, associa à empresa pelo NIF do ADQUIRENTE,
+# aplica as regras do fornecedor, guarda o PDF e cria a fatura.
+# Reimplementação do PHP cron_ingest.php (ref.: PORTING_GUIDE §5.3).
+#
+# IMAP/HTTP são síncronos (stdlib imaplib + httpx.Client): essa parte corre em
+# threads via asyncio.to_thread, enquanto as operações de BD (motor) ficam no
+# event loop. Cada caixa/mensagem/anexo está envolvido em try/except para que
+# uma falha não aborte a execução inteira.
+
+import imaplib
+import email as _email
+import base64
+
+# Janela de pesquisa: mensagens recebidas nos últimos 7 dias.
+_FIN_INGEST_DAYS = 7
+# Limite defensivo de anexos processados por execução (evita timeouts).
+_FIN_INGEST_LIMIT = 120
+
+_FIN_INGEST_PROMPT = (
+    "Esta é uma fatura de fornecedor (Portugal). Devolve APENAS um JSON válido com: "
+    '{"supplier":"nome do fornecedor/emitente",'
+    '"nif":"NIF do FORNECEDOR (9 dígitos) ou null",'
+    '"customerNif":"NIF do ADQUIRENTE/cliente (9 dígitos) ou null",'
+    '"customerName":"nome do adquirente ou null",'
+    '"invoiceNumber":"número da fatura",'
+    '"issueDate":"YYYY-MM-DD ou null",'
+    '"dueDate":"YYYY-MM-DD ou null",'
+    '"amount":valor TOTAL com IVA (número) ou null,'
+    '"amountNet":valor sem IVA (número) ou null,'
+    '"vatAmount":valor do IVA (número) ou null,'
+    '"vatRate":taxa de IVA principal em % (número) ou null,'
+    '"description":"breve descrição",'
+    '"isInvoice":true se for mesmo uma fatura/recibo de compra, false caso contrário}'
+)
+
+
+def _fin_only_digits(s):
+    """Só os dígitos de uma string (ex.: NIF)."""
+    return re.sub(r"\D+", "", str(s or ""))
+
+
+def _fin_extract_pdf_sync(pdf_bytes):
+    """Chama a API da Claude (síncrono) com o PDF em base64 e devolve o dict
+    extraído, ou {'error': '...'} em caso de falha. Corre em thread."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return {"error": "sem ANTHROPIC_API_KEY"}
+    model = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+    body = {
+        "model": model,
+        "max_tokens": 800,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "document", "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": base64.b64encode(pdf_bytes).decode(),
+                }},
+                {"type": "text", "text": _FIN_INGEST_PROMPT},
+            ],
+        }],
+    }
+    try:
+        with httpx.Client(timeout=120) as http_client:
+            resp = http_client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json=body,
+            )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"rede IA: {exc}"}
+    if resp.status_code >= 400:
+        try:
+            err = resp.json().get("error", {}).get("message")
+        except Exception:  # noqa: BLE001
+            err = None
+        return {"error": err or f"HTTP {resp.status_code}"}
+    try:
+        data = resp.json()
+        raw = (data.get("content") or [{}])[0].get("text", "")
+    except Exception:  # noqa: BLE001
+        return {"error": "resposta IA inválida"}
+    m = re.search(r"\{[\s\S]*\}", raw or "")
+    if not m:
+        return {"error": "resposta IA inválida"}
+    try:
+        parsed = json.loads(m.group(0))
+    except Exception:  # noqa: BLE001
+        return {"error": "json IA inválido"}
+    return parsed if isinstance(parsed, dict) else {"error": "json IA inválido"}
+
+
+def _fin_fetch_pdf_attachments_sync(mb):
+    """Liga a uma caixa IMAP, lê as mensagens da janela e devolve uma lista de
+    {'file_name': str, 'bytes': bytes}. Síncrono — corre em thread."""
+    host = mb.get("host")
+    port = int(mb.get("port") or 993)
+    imap = imaplib.IMAP4_SSL(host, port)
+    try:
+        imap.login(mb.get("user"), mb.get("pass"))
+        imap.select("INBOX")
+        since = (datetime.now(timezone.utc) - timedelta(days=_FIN_INGEST_DAYS)).strftime("%d-%b-%Y")
+        typ, msgnums = imap.search(None, "SINCE", since)
+        ids = msgnums[0].split() if (typ == "OK" and msgnums and msgnums[0]) else []
+        ids = list(reversed(ids))  # mais recentes primeiro
+        out = []
+        for num in ids:
+            try:
+                typ, msgdata = imap.fetch(num, "(RFC822)")
+                if typ != "OK" or not msgdata or not msgdata[0]:
+                    continue
+                raw = msgdata[0][1]
+                msg = _email.message_from_bytes(raw)
+                for part in msg.walk():
+                    if part.get_content_maintype() == "multipart":
+                        continue
+                    ctype = (part.get_content_type() or "").lower()
+                    fn = part.get_filename() or ""
+                    is_pdf = ctype == "application/pdf" or fn.lower().endswith(".pdf")
+                    if not is_pdf:
+                        continue
+                    payload = part.get_payload(decode=True)
+                    if not payload or len(payload) < 200:
+                        continue
+                    out.append({"file_name": fn or "fatura.pdf", "bytes": payload})
+            except Exception:  # noqa: BLE001
+                continue
+        return out
+    finally:
+        try:
+            imap.logout()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _fin_looks_like_invoice(ex):
+    """Heurística: é fatura, tem número e tem total."""
+    is_inv = ex.get("isInvoice")
+    is_inv = True if is_inv is None else bool(is_inv)
+    has_num = bool(str(ex.get("invoiceNumber") or "").strip())
+    has_amount = _fin_clean_num(ex.get("amount")) is not None
+    return is_inv and has_num and has_amount
+
+
+async def _fin_is_duplicate(invoice_number, supplier_nif, supplier):
+    """Duplicado se já existir fatura com o mesmo invoice_number normalizado
+    (minúsculas, sem espaços) E (mesmo NIF de fornecedor OU mesmo nome
+    normalizado)."""
+    num = re.sub(r"\s+", "", str(invoice_number or "").lower())
+    if not num:
+        return False
+    nif = _fin_only_digits(supplier_nif)
+    sup = _fin_norm_sup(supplier)
+    cands = await db.fin_invoices.find(
+        {}, {"_id": 0, "invoice_number": 1, "nif": 1, "supplier": 1}
+    ).to_list(20000)
+    for r in cands:
+        rnum = re.sub(r"\s+", "", str(r.get("invoice_number") or "").lower())
+        if rnum != num:
+            continue
+        if nif and _fin_only_digits(r.get("nif")) == nif:
+            return True
+        if sup and _fin_norm_sup(r.get("supplier")) == sup:
+            return True
+    return False
+
+
+async def _fin_match_company(companies, customer_nif, customer_name, fallback_nif):
+    """Associa à empresa pelo NIF do adquirente, com os fallbacks do PHP:
+    1) NIF do adquirente == company.nif
+    2) nome do adquirente normalizado contido/igual ao da empresa
+    3) empresa do company_nif da caixa (fallback)
+    4) empresa cujo nome normalizado seja 'por classificar'
+    senão None."""
+    n = _fin_only_digits(customer_nif)
+    if n:
+        for c in companies:
+            if _fin_only_digits(c.get("nif")) == n:
+                return c
+    nn = _fin_norm_sup(customer_name)
+    if nn:
+        for c in companies:
+            cn = _fin_norm_sup(c.get("name"))
+            if cn and (cn == nn or nn in cn or cn in nn):
+                return c
+    fb = _fin_only_digits(fallback_nif)
+    if fb:
+        for c in companies:
+            if _fin_only_digits(c.get("nif")) == fb:
+                return c
+    for c in companies:
+        if _fin_norm_sup(c.get("name")) == "por classificar":
+            return c
+    return None
+
+
+@api_router.post("/fin/cron/ingest")
+async def fin_cron_ingest(key: str = Query(...)):
+    """Ingestão automática de faturas por email (IMAP + IA). Protegido por
+    CRON_KEY. Não usa JWT."""
+    cron_key = os.environ.get("CRON_KEY")
+    if not cron_key or not secrets.compare_digest(str(key), str(cron_key)):
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+
+    try:
+        mailboxes = json.loads(os.environ.get("IMAP_MAILBOXES") or "[]")
+        if not isinstance(mailboxes, list):
+            mailboxes = []
+    except Exception:  # noqa: BLE001
+        mailboxes = []
+
+    summary = {
+        "mailboxes": len(mailboxes),
+        "attachments_seen": 0,
+        "invoices_created": 0,
+        "skipped_not_invoice": 0,
+        "skipped_duplicate": 0,
+        "errors": [],
+    }
+    if not mailboxes:
+        return summary
+
+    companies = await db.fin_companies.find({}, {"_id": 0}).to_list(5000)
+    processed = 0
+
+    for bi, mb in enumerate(mailboxes):
+        try:
+            attachments = await asyncio.to_thread(_fin_fetch_pdf_attachments_sync, mb)
+        except Exception as exc:  # noqa: BLE001
+            summary["errors"].append(f"caixa #{bi} ({mb.get('user')}): {exc}")
+            continue
+
+        for att in attachments:
+            if processed >= _FIN_INGEST_LIMIT:
+                break
+            fn = att.get("file_name") or "fatura.pdf"
+            pdf_bytes = att.get("bytes") or b""
+            try:
+                k = hashlib.sha1(pdf_bytes).hexdigest()
+                if await db.fin_ingest_log.find_one({"k": k}):
+                    continue  # já visto
+                summary["attachments_seen"] += 1
+                processed += 1
+
+                ex = await asyncio.to_thread(_fin_extract_pdf_sync, pdf_bytes)
+                # Marca SEMPRE como visto depois de processar (mesmo se descartado).
+                await db.fin_ingest_log.update_one(
+                    {"k": k},
+                    {"$setOnInsert": {"k": k, "at": datetime.now(timezone.utc).isoformat()}},
+                    upsert=True,
+                )
+
+                if not isinstance(ex, dict) or ex.get("error"):
+                    summary["errors"].append(f"{fn}: {ex.get('error') if isinstance(ex, dict) else 'IA inválida'}")
+                    continue
+
+                if not _fin_looks_like_invoice(ex):
+                    summary["skipped_not_invoice"] += 1
+                    continue
+
+                if await _fin_is_duplicate(ex.get("invoiceNumber"), ex.get("nif"), ex.get("supplier")):
+                    summary["skipped_duplicate"] += 1
+                    continue
+
+                comp = await _fin_match_company(
+                    companies, ex.get("customerNif"), ex.get("customerName"), mb.get("company_nif")
+                )
+                company_id = comp.get("id") if comp else None
+                if not company_id:
+                    summary["errors"].append(f"{fn}: sem empresa correspondente — ignorada")
+                    continue
+
+                nifd = _fin_only_digits(ex.get("nif")) or None
+                supplier = ex.get("supplier")
+                rule = await fin_supplier_rule(nifd, supplier)
+                is_recurring = bool(rule and rule.get("recurring"))
+                approval = "approved" if is_recurring else "pending"
+
+                data = {
+                    "supplier": supplier,
+                    "nif": nifd,
+                    "customer_nif": _fin_only_digits(ex.get("customerNif")) or None,
+                    "invoice_number": ex.get("invoiceNumber"),
+                    "issue_date": ex.get("issueDate"),
+                    "due_date": ex.get("dueDate"),
+                    "amount": ex.get("amount"),
+                    "amount_net": ex.get("amountNet"),
+                    "vat_amount": ex.get("vatAmount"),
+                    "vat_rate": ex.get("vatRate"),
+                    "description": ex.get("description"),
+                    "source": "email",
+                    "file_name": fn,
+                }
+                invoice_id = await _fin_insert_invoice(
+                    company_id, "invoice", approval, data, "none", None, "cron"
+                )
+
+                # Guarda o PDF em UPLOAD_DIR/fin_invoices/<company_id>/<invoice_id>.pdf
+                try:
+                    dest_dir = UPLOAD_DIR / "fin_invoices" / company_id
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    pdf_path = dest_dir / f"{invoice_id}.pdf"
+                    pdf_path.write_bytes(pdf_bytes)
+                    update = {"pdf_path": str(pdf_path)}
+                    if is_recurring:
+                        update["approval_note"] = "Aprovada automaticamente (fornecedor recorrente)"
+                        update["approval_at"] = datetime.now(timezone.utc).isoformat()
+                    await db.fin_invoices.update_one({"id": invoice_id}, {"$set": update})
+                except Exception as exc:  # noqa: BLE001
+                    summary["errors"].append(f"{fn}: PDF não guardado: {exc}")
+
+                summary["invoices_created"] += 1
+            except Exception as exc:  # noqa: BLE001
+                summary["errors"].append(f"{fn}: {exc}")
+                continue
+
+    return summary
+
+
 # ==================== HEALTH CHECK ====================
 
 @api_router.get("/health")
