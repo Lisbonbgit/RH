@@ -4157,6 +4157,322 @@ async def delete_holiday(holiday_id: str, current_user: dict = Depends(admin_req
         raise HTTPException(status_code=404, detail="Feriado não encontrado")
     return {"message": "Feriado eliminado com sucesso"}
 
+# ===== FINANCEIRO · FASE 4 — EXTRATO/TESOURARIA =====
+# ====================================================================
+# Extrato bancário (contas + movimentos do .xlsx do banco) e conciliação
+# automática fatura↔movimento. Reimplementação fiel do PHP (movements.php).
+# Ref.: PORTING_GUIDE §5.6. Coleções: fin_bank_accounts, fin_movements.
+
+# ---------- Modelos ----------
+
+class FinBankAccountUpsert(BaseModel):
+    company_id: str
+    account_number: str
+    bank: Optional[str] = None
+    name: Optional[str] = None
+    currency: Optional[str] = "EUR"
+
+class FinMovementRow(BaseModel):
+    date_lancamento: Optional[str] = None
+    date_valor: Optional[str] = None
+    description: Optional[str] = None
+    amount: Optional[str] = None      # STRING crua do ficheiro (ex.: "-994.34")
+    balance: Optional[str] = None     # STRING crua do ficheiro
+    currency: Optional[str] = None
+
+class FinMovementImport(BaseModel):
+    company_id: str
+    account_number: str
+    bank: Optional[str] = None
+    account_name: Optional[str] = None
+    rows: List[FinMovementRow] = []
+
+class FinMovementTitle(BaseModel):
+    title: Optional[str] = None
+
+class FinMovementLink(BaseModel):
+    invoice_id: str
+
+class FinCompanyIdBody(BaseModel):
+    company_id: str
+
+
+# ---------- Contas bancárias ----------
+
+@api_router.get("/fin/bank-accounts")
+async def fin_get_bank_accounts(company_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    """Contas de uma empresa (ou de TODAS as empresas do utilizador se vazio)."""
+    cid = (company_id or "").strip()
+    if cid:
+        await fin_require_member(cid, current_user)
+        company_ids = [cid]
+    else:
+        members = await db.fin_company_members.find(
+            {"user_id": current_user["user_id"]}, {"_id": 0, "company_id": 1}
+        ).to_list(500)
+        company_ids = [m["company_id"] for m in members]
+        if not company_ids:
+            return []
+    accounts = await db.fin_bank_accounts.find(
+        {"company_id": {"$in": company_ids}}, {"_id": 0}
+    ).to_list(2000)
+    accounts.sort(key=lambda a: (a.get("name") or "").lower())
+    return accounts
+
+@api_router.post("/fin/bank-accounts")
+async def fin_upsert_bank_account(payload: FinBankAccountUpsert, current_user: dict = Depends(get_current_user)):
+    """Upsert por account_number (nº de conta único, auto-rota o import)."""
+    await fin_require_editor(payload.company_id, current_user)
+    acc_num = (payload.account_number or "").strip()
+    if not acc_num:
+        raise HTTPException(status_code=400, detail="Falta o nº de conta.")
+    existing = await db.fin_bank_accounts.find_one({"account_number": acc_num}, {"_id": 0})
+    doc = {
+        "company_id": payload.company_id,
+        "bank": (payload.bank or "").strip() or None,
+        "account_number": acc_num,
+        "name": (payload.name or "").strip() or None,
+        "currency": (payload.currency or "EUR").strip() or "EUR",
+    }
+    if existing:
+        await db.fin_bank_accounts.update_one({"account_number": acc_num}, {"$set": doc})
+        return await db.fin_bank_accounts.find_one({"account_number": acc_num}, {"_id": 0})
+    doc["id"] = str(uuid.uuid4())
+    doc["created_at"] = datetime.now(timezone.utc).isoformat()
+    await db.fin_bank_accounts.insert_one(doc)
+    return await db.fin_bank_accounts.find_one({"account_number": acc_num}, {"_id": 0})
+
+
+# ---------- Helper: obtém/cria conta por nº ----------
+
+async def _fin_get_or_create_account(company_id, account_number, bank, name):
+    """Encontra a conta por nº nessa empresa; cria-a se não existir."""
+    acc_num = (account_number or "").strip()
+    acc = await db.fin_bank_accounts.find_one({"account_number": acc_num}, {"_id": 0})
+    if acc:
+        return acc
+    acc = {
+        "id": str(uuid.uuid4()),
+        "company_id": company_id,
+        "bank": (bank or "").strip() or None,
+        "account_number": acc_num,
+        "name": (name or "").strip() or None,
+        "currency": "EUR",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.fin_bank_accounts.insert_one(acc)
+    acc.pop("_id", None)
+    return acc
+
+
+# ---------- Movimentos ----------
+
+@api_router.get("/fin/movements")
+async def fin_get_movements(
+    company_id: str,
+    account_id: Optional[str] = None,
+    month: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Movimentos de uma empresa, filtráveis por conta e mês (YYYY-MM)."""
+    await fin_require_member(company_id, current_user)
+    q = {"company_id": company_id}
+    acc = (account_id or "").strip()
+    if acc:
+        q["account_id"] = acc
+    mon = (month or "").strip()
+    if mon:
+        q["date_lancamento"] = {"$regex": "^" + re.escape(mon)}
+    movements = await db.fin_movements.find(q, {"_id": 0}).to_list(20000)
+    movements.sort(key=lambda m: m.get("date_lancamento") or "", reverse=True)
+    return movements
+
+@api_router.post("/fin/movements/import")
+async def fin_import_movements(payload: FinMovementImport, current_user: dict = Depends(get_current_user)):
+    """Importa movimentos do .xlsx (já parseados pelo frontend). Dedup seguro:
+    reimportar não duplica. `amount`/`balance` chegam como STRING crua e são
+    usadas TAL E QUAL no dedup_key; gravadas como float (com sinal)."""
+    await fin_require_editor(payload.company_id, current_user)
+    acc = await _fin_get_or_create_account(
+        payload.company_id, payload.account_number, payload.bank, payload.account_name
+    )
+    account_number = (payload.account_number or "").strip()
+    inserted = 0
+    skipped = 0
+    now = datetime.now(timezone.utc).isoformat()
+    for row in payload.rows:
+        date_lancamento = (row.date_lancamento or "").strip() or None
+        amount_raw = "" if row.amount is None else str(row.amount)
+        balance_raw = "" if row.balance is None else str(row.balance)
+        description = row.description or ""
+        dedup_key = hashlib.sha1(
+            f"{account_number}|{date_lancamento}|{amount_raw}|{balance_raw}|{description}".encode()
+        ).hexdigest()
+        exists = await db.fin_movements.find_one({"dedup_key": dedup_key}, {"_id": 0, "id": 1})
+        if exists:
+            skipped += 1
+            continue
+        doc = {
+            "id": str(uuid.uuid4()),
+            "account_id": acc["id"],
+            "company_id": payload.company_id,
+            "date_lancamento": date_lancamento,
+            "date_valor": (row.date_valor or "").strip() or None,
+            "description": description or None,
+            "amount": _fin_clean_num(amount_raw),
+            "balance": _fin_clean_num(balance_raw),
+            "currency": (row.currency or "").strip() or acc.get("currency") or "EUR",
+            "title": None,
+            "invoice_id": None,
+            "link_auto": False,
+            "attachment_path": None,
+            "dedup_key": dedup_key,
+            "source": "bank_import",
+            "created_by": current_user["user_id"],
+            "created_at": now,
+        }
+        await db.fin_movements.insert_one(doc)
+        inserted += 1
+    return {"inserted": inserted, "skipped": skipped, "account_id": acc["id"]}
+
+@api_router.put("/fin/movements/{movement_id}/set-title")
+async def fin_set_movement_title(movement_id: str, payload: FinMovementTitle, current_user: dict = Depends(get_current_user)):
+    """Justificação/título editável do movimento."""
+    mv = await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+    if not mv:
+        raise HTTPException(status_code=404, detail="Movimento não encontrado.")
+    await fin_require_editor(mv["company_id"], current_user)
+    title = (payload.title or "").strip() or None
+    await db.fin_movements.update_one({"id": movement_id}, {"$set": {"title": title}})
+    return await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+
+@api_router.put("/fin/movements/{movement_id}/link")
+async def fin_link_movement(movement_id: str, payload: FinMovementLink, current_user: dict = Depends(get_current_user)):
+    """Liga (manualmente) uma fatura ao movimento e marca-a paga."""
+    mv = await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+    if not mv:
+        raise HTTPException(status_code=404, detail="Movimento não encontrado.")
+    await fin_require_editor(mv["company_id"], current_user)
+    inv = await db.fin_invoices.find_one({"id": payload.invoice_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+    if inv["company_id"] != mv["company_id"]:
+        raise HTTPException(status_code=400, detail="A fatura é de outra empresa.")
+    await db.fin_movements.update_one(
+        {"id": movement_id}, {"$set": {"invoice_id": inv["id"], "link_auto": False}}
+    )
+    await db.fin_invoices.update_one(
+        {"id": inv["id"]}, {"$set": {"paid": True, "paid_date": mv.get("date_lancamento")}}
+    )
+    return await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+
+@api_router.put("/fin/movements/{movement_id}/unlink")
+async def fin_unlink_movement(movement_id: str, current_user: dict = Depends(get_current_user)):
+    """Desliga a fatura do movimento e reverte-a a 'por pagar'."""
+    mv = await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+    if not mv:
+        raise HTTPException(status_code=404, detail="Movimento não encontrado.")
+    await fin_require_editor(mv["company_id"], current_user)
+    inv_id = mv.get("invoice_id")
+    await db.fin_movements.update_one(
+        {"id": movement_id}, {"$set": {"invoice_id": None, "link_auto": False}}
+    )
+    if inv_id:
+        await db.fin_invoices.update_one(
+            {"id": inv_id}, {"$set": {"paid": False, "paid_date": None}}
+        )
+    return await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+
+@api_router.post("/fin/movements/{movement_id}/attach")
+async def fin_attach_movement(
+    movement_id: str,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Anexa um PDF (justificativo) a um movimento (saída sem fatura)."""
+    mv = await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+    if not mv:
+        raise HTTPException(status_code=404, detail="Movimento não encontrado.")
+    await fin_require_editor(mv["company_id"], current_user)
+    dest_dir = UPLOAD_DIR / "fin_movements"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / f"{movement_id}.pdf"
+    with open(dest_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    await db.fin_movements.update_one(
+        {"id": movement_id}, {"$set": {"attachment_path": str(dest_path)}}
+    )
+    return await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+
+@api_router.get("/fin/movements/{movement_id}/attachment")
+async def fin_get_movement_attachment(movement_id: str, current_user: dict = Depends(get_current_user)):
+    """Serve o PDF anexado ao movimento (valida pertença)."""
+    mv = await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+    if not mv:
+        raise HTTPException(status_code=404, detail="Movimento não encontrado.")
+    await fin_require_member(mv["company_id"], current_user)
+    path = mv.get("attachment_path")
+    if not path or not Path(path).exists():
+        raise HTTPException(status_code=404, detail="Sem anexo.")
+    return FileResponse(path, filename=f"movimento-{movement_id}.pdf")
+
+
+# ---------- Conciliação automática (#4) ----------
+
+@api_router.post("/fin/movements/automatch")
+async def fin_automatch_movements(payload: FinCompanyIdBody, current_user: dict = Depends(get_current_user)):
+    """Concilia automaticamente saídas (amount < 0) sem fatura ligada.
+    Candidato = fatura da MESMA empresa com |montante| == amount (2 casas) E
+    nome do fornecedor (normalizado, não-vazio) contido na descrição
+    (normalizada). Preferir por pagar; só liga se houver EXATAMENTE 1."""
+    await fin_require_editor(payload.company_id, current_user)
+    invoices = await db.fin_invoices.find(
+        {"company_id": payload.company_id}, {"_id": 0, "id": 1, "supplier": 1, "amount": 1, "paid": 1}
+    ).to_list(20000)
+    movements = await db.fin_movements.find(
+        {"company_id": payload.company_id, "invoice_id": None},
+        {"_id": 0, "id": 1, "amount": 1, "description": 1, "date_lancamento": 1},
+    ).to_list(20000)
+    linked = 0
+    used = set()  # faturas já ligadas nesta corrida — nunca reutilizar
+    for mv in movements:
+        amount = mv.get("amount")
+        if amount is None or amount >= 0:
+            continue
+        target = round(abs(amount), 2)
+        desc_n = _fin_norm_sup(mv.get("description"))
+        cands = []
+        for inv in invoices:
+            if inv["id"] in used:
+                continue
+            inv_amount = inv.get("amount")
+            if inv_amount is None:
+                continue
+            if round(float(inv_amount), 2) != target:
+                continue
+            sup_n = _fin_norm_sup(inv.get("supplier"))
+            if not sup_n or sup_n not in desc_n:
+                continue
+            cands.append(inv)
+        if not cands:
+            continue
+        unpaid = [i for i in cands if not i.get("paid")]
+        pick = unpaid if unpaid else cands
+        if len(pick) != 1:
+            continue  # conservador: 0 ou >1 → não liga
+        inv = pick[0]
+        await db.fin_movements.update_one(
+            {"id": mv["id"]}, {"$set": {"invoice_id": inv["id"], "link_auto": True}}
+        )
+        await db.fin_invoices.update_one(
+            {"id": inv["id"]}, {"$set": {"paid": True, "paid_date": mv.get("date_lancamento")}}
+        )
+        inv["paid"] = True  # evita re-uso da mesma fatura noutro movimento
+        used.add(inv["id"])
+        linked += 1
+    return {"linked": linked}
+
+
 # ==================== HEALTH CHECK ====================
 
 @api_router.get("/health")

@@ -24,6 +24,7 @@ import FinInicio from './pages/admin/financeiro/FinInicio';
 import FinEquipa from './pages/admin/financeiro/FinEquipa';
 import FinPagamentos from './pages/admin/financeiro/FinPagamentos';
 import FinFornecedores from './pages/admin/financeiro/FinFornecedores';
+import FinExtrato from './pages/admin/financeiro/FinExtrato';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeProfile from './pages/employee/EmployeeProfile';
 import EmployeeTimeRecord from './pages/employee/EmployeeTimeRecord';
@@ -38,7 +39,7 @@ import MarketingCampaigns from './pages/admin/marketing/MarketingCampaigns';
 import MarketingCalendar from './pages/admin/marketing/MarketingCalendar';
 import MarketingReviews from './pages/admin/marketing/MarketingReviews';
 import MarketingReports from './pages/admin/marketing/MarketingReports';
-import { TrendingUp, BarChart3, Landmark } from 'lucide-react';
+import { TrendingUp, BarChart3 } from 'lucide-react';
 
 // Protected Route Component - checks for authentication and must_change_password
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -159,7 +160,7 @@ function AppRoutes() {
         <Route path="financeiro/vendas" element={<ComingSoon icon={TrendingUp} title="Vendas" subtitle="Receita por loja · integração Vendus" />} />
         <Route path="financeiro/relatorios" element={<ComingSoon icon={BarChart3} title="Relatórios" subtitle="DRE e custos fixos" />} />
         <Route path="financeiro/fornecedores" element={<FinFornecedores />} />
-        <Route path="financeiro/extrato" element={<ComingSoon icon={Landmark} title="Extrato / Tesouraria" subtitle="Importar extrato do banco e conciliar" />} />
+        <Route path="financeiro/extrato" element={<FinExtrato />} />
         <Route path="financeiro/equipa" element={<FinEquipa />} />
 
         {/* ===== Marketing ===== */}

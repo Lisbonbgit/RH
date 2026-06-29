@@ -146,6 +146,27 @@ export const upsertFinSupplierRule = (data) => axios.post(`${API_URL}/fin/suppli
 export const deleteFinSupplierRule = (key) =>
   axios.delete(`${API_URL}/fin/supplier-rules`, { params: { key } });
 
+// Extrato / Tesouraria — contas bancárias e movimentos (financeiro)
+export const getFinBankAccounts = (companyId) =>
+  axios.get(`${API_URL}/fin/bank-accounts`, { params: { company_id: companyId } });
+export const createFinBankAccount = (data) => axios.post(`${API_URL}/fin/bank-accounts`, data);
+export const getFinMovements = (params) => axios.get(`${API_URL}/fin/movements`, { params });
+export const importFinMovements = (data) => axios.post(`${API_URL}/fin/movements/import`, data);
+export const setFinMovementTitle = (id, title) =>
+  axios.put(`${API_URL}/fin/movements/${id}/set-title`, { title });
+export const linkFinMovement = (id, invoiceId) =>
+  axios.put(`${API_URL}/fin/movements/${id}/link`, { invoice_id: invoiceId });
+export const unlinkFinMovement = (id) => axios.put(`${API_URL}/fin/movements/${id}/unlink`);
+export const attachFinMovement = (id, file) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return axios.post(`${API_URL}/fin/movements/${id}/attach`, fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+};
+export const automatchFinMovements = (companyId) =>
+  axios.post(`${API_URL}/fin/movements/automatch`, { company_id: companyId });
+
 // Marketing — Campanhas
 export const getCampaigns = (params) => axios.get(`${API_URL}/marketing/campaigns`, { params });
 export const createCampaign = (data) => axios.post(`${API_URL}/marketing/campaigns`, data);
