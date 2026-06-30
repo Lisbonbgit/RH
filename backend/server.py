@@ -4742,16 +4742,18 @@ async def fin_cron_ingest(key: str = Query(...)):
                 processed += 1
 
                 ex = await asyncio.to_thread(_fin_extract_pdf_sync, pdf_bytes)
-                # Marca SEMPRE como visto depois de processar (mesmo se descartado).
+
+                if not isinstance(ex, dict) or ex.get("error"):
+                    # Erro transitório (chave/rede/502): NÃO marcar como visto -> repete na próxima.
+                    summary["errors"].append(f"{fn}: {ex.get('error') if isinstance(ex, dict) else 'IA inválida'}")
+                    continue
+
+                # Resultado definitivo (fatura / não-fatura / duplicado): marcar como visto.
                 await db.fin_ingest_log.update_one(
                     {"k": k},
                     {"$setOnInsert": {"k": k, "at": datetime.now(timezone.utc).isoformat()}},
                     upsert=True,
                 )
-
-                if not isinstance(ex, dict) or ex.get("error"):
-                    summary["errors"].append(f"{fn}: {ex.get('error') if isinstance(ex, dict) else 'IA inválida'}")
-                    continue
 
                 if not _fin_looks_like_invoice(ex):
                     summary["skipped_not_invoice"] += 1
