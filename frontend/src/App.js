@@ -23,6 +23,7 @@ import AdminHolidays from './pages/admin/AdminHolidays';
 import FinInicio from './pages/admin/financeiro/FinInicio';
 import FinEquipa from './pages/admin/financeiro/FinEquipa';
 import FinPagamentos from './pages/admin/financeiro/FinPagamentos';
+import FinVendas from './pages/admin/financeiro/FinVendas';
 import FinFornecedores from './pages/admin/financeiro/FinFornecedores';
 import FinExtrato from './pages/admin/financeiro/FinExtrato';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
@@ -39,7 +40,7 @@ import MarketingCampaigns from './pages/admin/marketing/MarketingCampaigns';
 import MarketingCalendar from './pages/admin/marketing/MarketingCalendar';
 import MarketingReviews from './pages/admin/marketing/MarketingReviews';
 import MarketingReports from './pages/admin/marketing/MarketingReports';
-import { TrendingUp, BarChart3 } from 'lucide-react';
+import { BarChart3 } from 'lucide-react';
 
 // Protected Route Component - checks for authentication and must_change_password
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -157,7 +158,7 @@ function AppRoutes() {
         {/* Fase 2: Início (empresas+unidades) e Equipa já implementados. */}
         <Route path="financeiro" element={<FinInicio />} />
         <Route path="financeiro/pagamentos" element={<FinPagamentos />} />
-        <Route path="financeiro/vendas" element={<ComingSoon icon={TrendingUp} title="Vendas" subtitle="Receita por loja · integração Vendus" />} />
+        <Route path="financeiro/vendas" element={<FinVendas />} />
         <Route path="financeiro/relatorios" element={<ComingSoon icon={BarChart3} title="Relatórios" subtitle="DRE e custos fixos" />} />
         <Route path="financeiro/fornecedores" element={<FinFornecedores />} />
         <Route path="financeiro/extrato" element={<FinExtrato />} />

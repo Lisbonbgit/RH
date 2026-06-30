@@ -4818,6 +4818,112 @@ async def fin_cron_ingest(key: str = Query(...)):
     return summary
 
 
+# ===== FINANCEIRO · FASE 5 — VENDAS =====
+# Vendas (coleção fin_sales). Base do módulo Vendas: lançamento manual e CRUD.
+# A sincronização Vendus/Moloni é OUTRA fase. Aqui só CRUD manual.
+# Campos: id, company_id, unit_id, date ("YYYY-MM-DD"), amount (bruto c/IVA),
+# amount_net (líquido), amount_cost (CMV), net_nocost (líquido sem custo conhecido),
+# vat_rate, note, source ("manual"|"vendus"|"moloni"), created_by, created_at.
+
+# ---------- Modelo ----------
+
+class FinSaleCreate(BaseModel):
+    company_id: str
+    unit_id: Optional[str] = None
+    date: Optional[str] = None
+    amount: Optional[float] = None
+    amount_net: Optional[float] = None
+    amount_cost: Optional[float] = None
+    vat_rate: Optional[float] = None
+    note: Optional[str] = None
+
+
+# ---------- Helper: documento de venda a partir do payload ----------
+
+def _fin_sale_doc_from_payload(data: dict) -> dict:
+    """Calcula os campos derivados de uma venda manual a partir do body."""
+    amount = _fin_clean_num(data.get("amount"))
+    amount_net = _fin_clean_num(data.get("amount_net"))
+    amount_cost = _fin_clean_num(data.get("amount_cost"))
+    vat_rate = _fin_clean_num(data.get("vat_rate"))
+    # Se não vier o líquido mas houver taxa de IVA, calcula a partir do bruto.
+    if amount_net is None and amount is not None and vat_rate:
+        amount_net = round(amount / (1 + vat_rate / 100), 2)
+    return {
+        "company_id": data["company_id"],
+        "unit_id": data.get("unit_id"),
+        "date": _fin_clean_date(data.get("date")),
+        "amount": amount,
+        "amount_net": amount_net,
+        "amount_cost": amount_cost,
+        "net_nocost": 0.0,
+        "vat_rate": vat_rate,
+        "note": data.get("note"),
+    }
+
+
+# ---------- Vendas ----------
+
+@api_router.get("/fin/sales")
+async def fin_get_sales(
+    company_id: str,
+    month: Optional[str] = None,
+    unit_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Vendas de uma empresa, filtráveis por mês (YYYY-MM) e unidade."""
+    await fin_require_member(company_id, current_user)
+    q = {"company_id": company_id}
+    mon = (month or "").strip()
+    if mon:
+        q["date"] = {"$regex": "^" + re.escape(mon)}
+    uni = (unit_id or "").strip()
+    if uni:
+        q["unit_id"] = uni
+    sales = await db.fin_sales.find(q, {"_id": 0}).to_list(20000)
+    sales.sort(key=lambda s: s.get("date") or "", reverse=True)
+    return sales
+
+@api_router.post("/fin/sales")
+async def fin_create_sale(payload: FinSaleCreate, current_user: dict = Depends(get_current_user)):
+    """Lançamento MANUAL de venda."""
+    await fin_require_editor(payload.company_id, current_user)
+    data = payload.model_dump()
+    doc = _fin_sale_doc_from_payload(data)
+    doc.update({
+        "id": str(uuid.uuid4()),
+        "source": "manual",
+        "created_by": current_user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await db.fin_sales.insert_one(doc)
+    return await db.fin_sales.find_one({"id": doc["id"]}, {"_id": 0})
+
+@api_router.put("/fin/sales/{sale_id}")
+async def fin_update_sale(sale_id: str, payload: FinSaleCreate, current_user: dict = Depends(get_current_user)):
+    """Editar uma venda (validação de pertença pela empresa da venda)."""
+    sale = await db.fin_sales.find_one({"id": sale_id}, {"_id": 0})
+    if not sale:
+        raise HTTPException(status_code=404, detail="Venda não encontrada.")
+    await fin_require_editor(sale["company_id"], current_user)
+    data = payload.model_dump()
+    doc = _fin_sale_doc_from_payload(data)
+    # Não deixar trocar a venda para outra empresa.
+    doc.pop("company_id", None)
+    await db.fin_sales.update_one({"id": sale_id}, {"$set": doc})
+    return await db.fin_sales.find_one({"id": sale_id}, {"_id": 0})
+
+@api_router.delete("/fin/sales/{sale_id}")
+async def fin_delete_sale(sale_id: str, current_user: dict = Depends(get_current_user)):
+    """Apagar uma venda (validação de pertença pela empresa da venda)."""
+    sale = await db.fin_sales.find_one({"id": sale_id}, {"_id": 0})
+    if not sale:
+        raise HTTPException(status_code=404, detail="Venda não encontrada.")
+    await fin_require_editor(sale["company_id"], current_user)
+    await db.fin_sales.delete_one({"id": sale_id})
+    return {"ok": True}
+
+
 # ==================== HEALTH CHECK ====================
 
 @api_router.get("/health")

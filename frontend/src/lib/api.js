@@ -167,6 +167,12 @@ export const attachFinMovement = (id, file) => {
 export const automatchFinMovements = (companyId) =>
   axios.post(`${API_URL}/fin/movements/automatch`, { company_id: companyId });
 
+// Vendas (financeiro) — params: { company_id, month?, unit_id? }
+export const getFinSales = (params) => axios.get(`${API_URL}/fin/sales`, { params });
+export const createFinSale = (data) => axios.post(`${API_URL}/fin/sales`, data);
+export const updateFinSale = (id, data) => axios.put(`${API_URL}/fin/sales/${id}`, data);
+export const deleteFinSale = (id) => axios.delete(`${API_URL}/fin/sales/${id}`);
+
 // Marketing — Campanhas
 export const getCampaigns = (params) => axios.get(`${API_URL}/marketing/campaigns`, { params });
 export const createCampaign = (data) => axios.post(`${API_URL}/marketing/campaigns`, data);
