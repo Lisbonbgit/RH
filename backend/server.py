@@ -4495,6 +4495,17 @@ _FIN_INGEST_DAYS = 7
 # Limite defensivo de anexos processados por execução (evita timeouts).
 _FIN_INGEST_LIMIT = 120
 
+# Capturado no IMPORT (defensivo: usado como fallback se o os.environ vier vazio
+# em runtime) e registado no log para diagnóstico do que a app realmente recebe.
+_FIN_IMAP_RAW = os.environ.get("IMAP_MAILBOXES", "")
+try:
+    logger.info(
+        "[fin-ingest] import: IMAP_MAILBOXES len=%d | CRON_KEY set=%s | ANTHROPIC_API_KEY len=%d",
+        len(_FIN_IMAP_RAW), bool(os.environ.get("CRON_KEY")), len(os.environ.get("ANTHROPIC_API_KEY", "")),
+    )
+except Exception:  # noqa: BLE001
+    pass
+
 _FIN_INGEST_PROMPT = (
     "Esta é uma fatura de fornecedor (Portugal). Devolve APENAS um JSON válido com: "
     '{"supplier":"nome do fornecedor/emitente",'
@@ -4686,12 +4697,15 @@ async def fin_cron_ingest(key: str = Query(...)):
     if not cron_key or not secrets.compare_digest(str(key), str(cron_key)):
         raise HTTPException(status_code=403, detail="Acesso negado.")
 
+    raw = os.environ.get("IMAP_MAILBOXES") or _FIN_IMAP_RAW or "[]"
     try:
-        mailboxes = json.loads(os.environ.get("IMAP_MAILBOXES") or "[]")
+        mailboxes = json.loads(raw)
         if not isinstance(mailboxes, list):
             mailboxes = []
-    except Exception:  # noqa: BLE001
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("[fin-ingest] IMAP_MAILBOXES invalido (len=%d): %s", len(raw), _e)
         mailboxes = []
+    logger.info("[fin-ingest] pedido: raw_len=%d mailboxes=%d", len(raw), len(mailboxes))
 
     summary = {
         "mailboxes": len(mailboxes),
