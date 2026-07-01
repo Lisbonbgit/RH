@@ -94,6 +94,10 @@ export default function EmployeeTimeRecord() {
 
   const todayRecords = records.filter((r) => isToday(parseISO(r.time)));
 
+  // Alternância entrada/saída: o próximo registo permitido depende do último.
+  const lastRecord = records.length ? records.reduce((a, b) => (a.time > b.time ? a : b)) : null;
+  const nextType = (!lastRecord || lastRecord.record_type === 'saida') ? 'entrada' : 'saida';
+
   const LocationLink = ({ record }) =>
     record.latitude != null && record.longitude != null ? (
       <a
@@ -127,7 +131,7 @@ export default function EmployeeTimeRecord() {
           size="lg"
           className="h-24 flex-col gap-2 bg-green-600 hover:bg-green-700"
           onClick={() => setConfirmType('entrada')}
-          disabled={submitting}
+          disabled={submitting || nextType !== 'entrada'}
           data-testid="entrada-btn"
         >
           <LogIn className="h-8 w-8" />
@@ -137,13 +141,19 @@ export default function EmployeeTimeRecord() {
           size="lg"
           className="h-24 flex-col gap-2 bg-red-600 hover:bg-red-700"
           onClick={() => setConfirmType('saida')}
-          disabled={submitting}
+          disabled={submitting || nextType !== 'saida'}
           data-testid="saida-btn"
         >
           <LogOut className="h-8 w-8" />
           <span className="text-lg font-medium">Saída</span>
         </Button>
       </div>
+
+      <p className="text-center text-sm text-muted-foreground">
+        {nextType === 'entrada'
+          ? 'Toque em Entrada para iniciar o turno.'
+          : 'Tem uma entrada em aberto — registe a Saída.'}
+      </p>
 
       {locating && (
         <p className="flex items-center justify-center gap-2 text-sm text-muted-foreground">

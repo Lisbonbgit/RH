@@ -1789,6 +1789,17 @@ async def create_time_record(record: TimeRecordCreate, current_user: dict = Depe
     if record.record_type not in ["entrada", "saida"]:
         raise HTTPException(status_code=400, detail="Tipo de registo inválido. Use 'entrada' ou 'saida'")
 
+    # Regra: alternar entrada/saída — não pode repetir o mesmo tipo seguido.
+    # (Se deu entrada, o próximo tem de ser saída, e vice-versa.)
+    last_record = await db.time_records.find_one(
+        {"employee_id": employee_id}, {"_id": 0, "record_type": 1}, sort=[("time", -1)]
+    )
+    last_type = last_record["record_type"] if last_record else None
+    if record.record_type == "entrada" and last_type == "entrada":
+        raise HTTPException(status_code=400, detail="Já registou a entrada. A seguir só pode registar a saída.")
+    if record.record_type == "saida" and last_type != "entrada":
+        raise HTTPException(status_code=400, detail="Ainda não tem uma entrada em aberto. Registe primeiro a entrada.")
+
     # Cerca geográfica: se o local do colaborador tiver posição e raio definidos,
     # o ponto só é aceite se ele estiver dentro do raio.
     # Colaboradores isentos (ex.: que rodam por várias lojas) não são validados.
