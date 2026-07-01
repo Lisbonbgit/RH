@@ -10,6 +10,18 @@ const toLnWeekday = (d) => (d === 6 ? 1 : d + 2); // Dom(6)->1, Seg(0)->2, ... S
 // Um id fixo por dia da semana (para poder atualizar/cancelar sem duplicar).
 const REMINDER_IDS = [1000, 1001, 1002, 1003, 1004, 1005, 1006];
 
+// Pede a permissão de notificações (usado no onboarding, à entrada da app).
+// Só na app nativa; falha em silêncio.
+export async function requestNotificationPermission() {
+  if (!Capacitor.isNativePlatform()) return;
+  try {
+    const perm = await LocalNotifications.checkPermissions();
+    if (perm.display !== 'granted') {
+      await LocalNotifications.requestPermissions();
+    }
+  } catch { /* ignora */ }
+}
+
 /**
  * Agenda (ou limpa) o lembrete de ponto, 5 min antes do início do turno,
  * nos dias de trabalho da escala. Repete todas as semanas.

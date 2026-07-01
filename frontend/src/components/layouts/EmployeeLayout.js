@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { getNotifications, markAllNotificationsRead, getMyProfile, getMySchedule } from '../../lib/api';
-import { syncShiftReminders } from '../../lib/notifications';
+import { syncShiftReminders, requestNotificationPermission } from '../../lib/notifications';
+import { requestLocationPermission } from '../../lib/geo';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { ScrollArea } from '../ui/scroll-area';
@@ -42,10 +43,15 @@ export default function EmployeeLayout() {
   useEffect(() => {
     fetchNotifications();
     getMyProfile().then((res) => setPhoto(res.data?.photo || null)).catch(() => {});
-    // Agenda o lembrete de ponto 5 min antes do turno (só na app nativa)
-    getMySchedule()
-      .then((res) => syncShiftReminders(res.data?.work_days, res.data?.start_time))
-      .catch(() => {});
+    // Onboarding (app nativa): pedir permissões à entrada e agendar o lembrete
+    (async () => {
+      await requestLocationPermission();
+      await requestNotificationPermission();
+      try {
+        const res = await getMySchedule();
+        await syncShiftReminders(res.data?.work_days, res.data?.start_time);
+      } catch { /* sem escala, tudo bem */ }
+    })();
   }, []);
 
   const fetchNotifications = async () => {

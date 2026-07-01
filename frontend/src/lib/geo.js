@@ -73,6 +73,18 @@ export async function getCurrentPositionSmart() {
   return Capacitor.isNativePlatform() ? getNativePosition() : getWebPosition();
 }
 
+// Pede a permissão de localização (usado no onboarding, à entrada da app).
+// Só na app nativa; falha em silêncio.
+export async function requestLocationPermission() {
+  if (!Capacitor.isNativePlatform()) return;
+  try {
+    const perm = await Geolocation.checkPermissions();
+    if (perm.location !== 'granted') {
+      await Geolocation.requestPermissions();
+    }
+  } catch { /* ignora */ }
+}
+
 // Mensagem de ajuda consoante o motivo da falha (adapta-se a app/web).
 export function geoHelpMessage(code) {
   const isApp = Capacitor.isNativePlatform();
