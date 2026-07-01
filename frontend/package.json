@@ -8,6 +8,7 @@
     "@capacitor/core": "^6.0.0",
     "@capacitor/geolocation": "^6.0.0",
     "@capacitor/ios": "^6.0.0",
+    "@capacitor/local-notifications": "^6.0.0",
     "@capacitor/splash-screen": "^6.0.0",
     "@capacitor/status-bar": "^6.0.0",
     "@hookform/resolvers": "^5.0.1",

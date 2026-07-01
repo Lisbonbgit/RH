@@ -607,6 +607,8 @@ class AdminLeaveCreate(BaseModel):
 class WorkScheduleTemplateCreate(BaseModel):
     name: str
     work_days: List[int] = Field(alias="workDays")
+    # Hora de início do turno (HH:MM). Usada para lembrar o colaborador no app.
+    start_time: Optional[str] = Field(default=None, alias="startTime")
 
     model_config = {"populate_by_name": True}
 
@@ -621,10 +623,20 @@ class WorkScheduleTemplateCreate(BaseModel):
             raise ValueError("Dias de trabalho duplicados")
         return v
 
+    @field_validator('start_time')
+    @classmethod
+    def validate_start_time(cls, v):
+        if v in (None, ""):
+            return None
+        if not re.match(r'^([01]\d|2[0-3]):[0-5]\d$', v):
+            raise ValueError("Hora inválida. Use o formato HH:MM")
+        return v
+
 class WorkScheduleTemplateResponse(BaseModel):
     id: str
     name: str
     work_days: List[int]
+    start_time: Optional[str] = None
     created_at: str
 
 class WorkScheduleAssignmentCreate(BaseModel):
@@ -2003,6 +2015,7 @@ async def create_schedule_template(template: WorkScheduleTemplateCreate, current
         "id": template_id,
         "name": template.name,
         "work_days": template.work_days,
+        "start_time": template.start_time,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.work_schedule_templates.insert_one(template_doc)
@@ -2012,6 +2025,31 @@ async def create_schedule_template(template: WorkScheduleTemplateCreate, current
 async def get_schedule_templates(current_user: dict = Depends(admin_manager_required)):
     templates = await db.work_schedule_templates.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return [WorkScheduleTemplateResponse(**t) for t in templates]
+
+@api_router.get("/me/schedule")
+async def get_my_schedule(current_user: dict = Depends(get_current_user)):
+    """Escala ativa do próprio colaborador (dias de trabalho + hora de início),
+    para o lembrete de ponto no app. Devolve vazio se não tiver escala."""
+    empty = {"work_days": [], "start_time": None, "template_name": None}
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        return empty
+    assignments = await db.work_schedule_assignments.find(
+        {"employee_id": employee_id}, {"_id": 0}
+    ).sort("start_date", 1).to_list(200)
+    if not assignments:
+        return empty
+    today = datetime.now(LISBON_TZ).date()
+    assignment = find_schedule_assignment(assignments, today) or assignments[-1]
+    tpl = await db.work_schedule_templates.find_one(
+        {"id": assignment.get("template_id")}, {"_id": 0}
+    )
+    work_days = assignment.get("work_days") or (tpl.get("work_days", []) if tpl else [])
+    return {
+        "work_days": work_days or [],
+        "start_time": tpl.get("start_time") if tpl else None,
+        "template_name": tpl.get("name") if tpl else None,
+    }
 
 @api_router.post("/schedules/assign", response_model=WorkScheduleAssignmentResponse)
 async def assign_schedule(assignment: WorkScheduleAssignmentCreate, current_user: dict = Depends(admin_manager_required)):
@@ -2097,7 +2135,7 @@ async def get_schedule_assignments(employee_id: Optional[str] = None, current_us
 async def update_schedule_template(template_id: str, template: WorkScheduleTemplateCreate, current_user: dict = Depends(admin_manager_required)):
     result = await db.work_schedule_templates.update_one(
         {"id": template_id},
-        {"$set": {"name": template.name, "work_days": template.work_days}}
+        {"$set": {"name": template.name, "work_days": template.work_days, "start_time": template.start_time}}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Escala não encontrada")

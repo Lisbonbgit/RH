@@ -47,7 +47,8 @@ export default function AdminSchedules() {
 
   const [templateForm, setTemplateForm] = useState({
     name: '',
-    workDays: [0, 1, 2, 3, 4]
+    workDays: [0, 1, 2, 3, 4],
+    startTime: ''
   });
   const [editingTemplate, setEditingTemplate] = useState(null);
 
@@ -92,12 +93,12 @@ export default function AdminSchedules() {
 
   const handleEditTemplate = (template) => {
     setEditingTemplate(template);
-    setTemplateForm({ name: template.name, workDays: [...(template.work_days || [])] });
+    setTemplateForm({ name: template.name, workDays: [...(template.work_days || [])], startTime: template.start_time || '' });
   };
 
   const handleCancelEdit = () => {
     setEditingTemplate(null);
-    setTemplateForm({ name: '', workDays: [0, 1, 2, 3, 4] });
+    setTemplateForm({ name: '', workDays: [0, 1, 2, 3, 4], startTime: '' });
   };
 
   const handleSubmitTemplate = async (e) => {
@@ -115,18 +116,20 @@ export default function AdminSchedules() {
       if (editingTemplate) {
         await updateSchedule(editingTemplate.id, {
           name: templateForm.name,
-          workDays: templateForm.workDays
+          workDays: templateForm.workDays,
+          startTime: templateForm.startTime || null
         });
         toast.success('Escala atualizada com sucesso');
         handleCancelEdit();
       } else {
         const response = await createSchedule({
           name: templateForm.name,
-          workDays: templateForm.workDays
+          workDays: templateForm.workDays,
+          startTime: templateForm.startTime || null
         });
         toast.success('Escala criada com sucesso');
         setTemplates((prev) => [response.data, ...prev]);
-        setTemplateForm({ name: '', workDays: templateForm.workDays });
+        setTemplateForm({ name: '', workDays: templateForm.workDays, startTime: templateForm.startTime });
       }
       fetchData();
     } catch (error) {
@@ -247,6 +250,20 @@ export default function AdminSchedules() {
                     </label>
                   ))}
                 </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="schedule-start-time">Hora de início (opcional)</Label>
+                <Input
+                  id="schedule-start-time"
+                  type="time"
+                  value={templateForm.startTime}
+                  onChange={(e) => setTemplateForm({ ...templateForm, startTime: e.target.value })}
+                  className="w-40"
+                  data-testid="schedule-start-time-input"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Usada para lembrar o colaborador no app 5 minutos antes do turno.
+                </p>
               </div>
               <div className="flex gap-2">
                 <Button type="submit" disabled={savingTemplate} data-testid="schedule-create-btn">
@@ -369,7 +386,10 @@ export default function AdminSchedules() {
                   {templates.map((template) => (
                     <TableRow key={template.id} data-testid={`schedule-row-${template.id}`}>
                       <TableCell className="font-medium">{template.name}</TableCell>
-                      <TableCell data-testid={`schedule-days-${template.id}`}>{formatWorkDays(template.work_days)}</TableCell>
+                      <TableCell data-testid={`schedule-days-${template.id}`}>
+                        {formatWorkDays(template.work_days)}
+                        {template.start_time ? ` · início ${template.start_time}` : ''}
+                      </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
                           <Button variant="ghost" size="icon" onClick={() => handleEditTemplate(template)} data-testid={`edit-schedule-${template.id}`}>

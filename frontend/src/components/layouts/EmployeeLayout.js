@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { getNotifications, markAllNotificationsRead, getMyProfile } from '../../lib/api';
+import { getNotifications, markAllNotificationsRead, getMyProfile, getMySchedule } from '../../lib/api';
+import { syncShiftReminders } from '../../lib/notifications';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { ScrollArea } from '../ui/scroll-area';
@@ -41,6 +42,10 @@ export default function EmployeeLayout() {
   useEffect(() => {
     fetchNotifications();
     getMyProfile().then((res) => setPhoto(res.data?.photo || null)).catch(() => {});
+    // Agenda o lembrete de ponto 5 min antes do turno (só na app nativa)
+    getMySchedule()
+      .then((res) => syncShiftReminders(res.data?.work_days, res.data?.start_time))
+      .catch(() => {});
   }, []);
 
   const fetchNotifications = async () => {
