@@ -19,6 +19,7 @@ import { format, parseISO, isToday } from 'date-fns';
 import { pt } from 'date-fns/locale';
 // Localização web + nativa (app Capacitor) num só sítio.
 import { getCurrentPositionSmart, geoHelpMessage } from '../../lib/geo';
+import { APP_VERSION } from '../../version';
 
 export default function EmployeeTimeRecord() {
   const [records, setRecords] = useState([]);
@@ -283,6 +284,8 @@ export default function EmployeeTimeRecord() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <p className="text-center text-xs text-muted-foreground pt-2">Lisbonb RH · v{APP_VERSION}</p>
     </div>
   );
 }
