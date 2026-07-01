@@ -18,6 +18,7 @@ import re
 import secrets
 import hashlib
 import asyncio
+import json
 import math
 from zoneinfo import ZoneInfo
 
@@ -4205,6 +4206,772 @@ async def delete_holiday(holiday_id: str, current_user: dict = Depends(admin_req
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Feriado não encontrado")
     return {"message": "Feriado eliminado com sucesso"}
+
+# ===== FINANCEIRO · FASE 4 — EXTRATO/TESOURARIA =====
+# ====================================================================
+# Extrato bancário (contas + movimentos do .xlsx do banco) e conciliação
+# automática fatura↔movimento. Reimplementação fiel do PHP (movements.php).
+# Ref.: PORTING_GUIDE §5.6. Coleções: fin_bank_accounts, fin_movements.
+
+# ---------- Modelos ----------
+
+class FinBankAccountUpsert(BaseModel):
+    company_id: str
+    account_number: str
+    bank: Optional[str] = None
+    name: Optional[str] = None
+    currency: Optional[str] = "EUR"
+
+class FinMovementRow(BaseModel):
+    date_lancamento: Optional[str] = None
+    date_valor: Optional[str] = None
+    description: Optional[str] = None
+    amount: Optional[str] = None      # STRING crua do ficheiro (ex.: "-994.34")
+    balance: Optional[str] = None     # STRING crua do ficheiro
+    currency: Optional[str] = None
+
+class FinMovementImport(BaseModel):
+    company_id: str
+    account_number: str
+    bank: Optional[str] = None
+    account_name: Optional[str] = None
+    rows: List[FinMovementRow] = []
+
+class FinMovementTitle(BaseModel):
+    title: Optional[str] = None
+
+class FinMovementLink(BaseModel):
+    invoice_id: str
+
+class FinCompanyIdBody(BaseModel):
+    company_id: str
+
+
+# ---------- Contas bancárias ----------
+
+@api_router.get("/fin/bank-accounts")
+async def fin_get_bank_accounts(company_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    """Contas de uma empresa (ou de TODAS as empresas do utilizador se vazio)."""
+    cid = (company_id or "").strip()
+    if cid:
+        await fin_require_member(cid, current_user)
+        company_ids = [cid]
+    else:
+        members = await db.fin_company_members.find(
+            {"user_id": current_user["user_id"]}, {"_id": 0, "company_id": 1}
+        ).to_list(500)
+        company_ids = [m["company_id"] for m in members]
+        if not company_ids:
+            return []
+    accounts = await db.fin_bank_accounts.find(
+        {"company_id": {"$in": company_ids}}, {"_id": 0}
+    ).to_list(2000)
+    accounts.sort(key=lambda a: (a.get("name") or "").lower())
+    return accounts
+
+@api_router.post("/fin/bank-accounts")
+async def fin_upsert_bank_account(payload: FinBankAccountUpsert, current_user: dict = Depends(get_current_user)):
+    """Upsert por account_number (nº de conta único, auto-rota o import)."""
+    await fin_require_editor(payload.company_id, current_user)
+    acc_num = (payload.account_number or "").strip()
+    if not acc_num:
+        raise HTTPException(status_code=400, detail="Falta o nº de conta.")
+    existing = await db.fin_bank_accounts.find_one({"account_number": acc_num}, {"_id": 0})
+    doc = {
+        "company_id": payload.company_id,
+        "bank": (payload.bank or "").strip() or None,
+        "account_number": acc_num,
+        "name": (payload.name or "").strip() or None,
+        "currency": (payload.currency or "EUR").strip() or "EUR",
+    }
+    if existing:
+        await db.fin_bank_accounts.update_one({"account_number": acc_num}, {"$set": doc})
+        return await db.fin_bank_accounts.find_one({"account_number": acc_num}, {"_id": 0})
+    doc["id"] = str(uuid.uuid4())
+    doc["created_at"] = datetime.now(timezone.utc).isoformat()
+    await db.fin_bank_accounts.insert_one(doc)
+    return await db.fin_bank_accounts.find_one({"account_number": acc_num}, {"_id": 0})
+
+
+# ---------- Helper: obtém/cria conta por nº ----------
+
+async def _fin_get_or_create_account(company_id, account_number, bank, name):
+    """Encontra a conta por nº nessa empresa; cria-a se não existir."""
+    acc_num = (account_number or "").strip()
+    acc = await db.fin_bank_accounts.find_one({"account_number": acc_num}, {"_id": 0})
+    if acc:
+        return acc
+    acc = {
+        "id": str(uuid.uuid4()),
+        "company_id": company_id,
+        "bank": (bank or "").strip() or None,
+        "account_number": acc_num,
+        "name": (name or "").strip() or None,
+        "currency": "EUR",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.fin_bank_accounts.insert_one(acc)
+    acc.pop("_id", None)
+    return acc
+
+
+# ---------- Movimentos ----------
+
+@api_router.get("/fin/movements")
+async def fin_get_movements(
+    company_id: str,
+    account_id: Optional[str] = None,
+    month: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Movimentos de uma empresa, filtráveis por conta e mês (YYYY-MM)."""
+    await fin_require_member(company_id, current_user)
+    q = {"company_id": company_id}
+    acc = (account_id or "").strip()
+    if acc:
+        q["account_id"] = acc
+    mon = (month or "").strip()
+    if mon:
+        q["date_lancamento"] = {"$regex": "^" + re.escape(mon)}
+    movements = await db.fin_movements.find(q, {"_id": 0}).to_list(20000)
+    movements.sort(key=lambda m: m.get("date_lancamento") or "", reverse=True)
+    return movements
+
+@api_router.post("/fin/movements/import")
+async def fin_import_movements(payload: FinMovementImport, current_user: dict = Depends(get_current_user)):
+    """Importa movimentos do .xlsx (já parseados pelo frontend). Dedup seguro:
+    reimportar não duplica. `amount`/`balance` chegam como STRING crua e são
+    usadas TAL E QUAL no dedup_key; gravadas como float (com sinal)."""
+    await fin_require_editor(payload.company_id, current_user)
+    acc = await _fin_get_or_create_account(
+        payload.company_id, payload.account_number, payload.bank, payload.account_name
+    )
+    account_number = (payload.account_number or "").strip()
+    inserted = 0
+    skipped = 0
+    now = datetime.now(timezone.utc).isoformat()
+    for row in payload.rows:
+        date_lancamento = (row.date_lancamento or "").strip() or None
+        amount_raw = "" if row.amount is None else str(row.amount)
+        balance_raw = "" if row.balance is None else str(row.balance)
+        description = row.description or ""
+        dedup_key = hashlib.sha1(
+            f"{account_number}|{date_lancamento}|{amount_raw}|{balance_raw}|{description}".encode()
+        ).hexdigest()
+        exists = await db.fin_movements.find_one({"dedup_key": dedup_key}, {"_id": 0, "id": 1})
+        if exists:
+            skipped += 1
+            continue
+        doc = {
+            "id": str(uuid.uuid4()),
+            "account_id": acc["id"],
+            "company_id": payload.company_id,
+            "date_lancamento": date_lancamento,
+            "date_valor": (row.date_valor or "").strip() or None,
+            "description": description or None,
+            "amount": _fin_clean_num(amount_raw),
+            "balance": _fin_clean_num(balance_raw),
+            "currency": (row.currency or "").strip() or acc.get("currency") or "EUR",
+            "title": None,
+            "invoice_id": None,
+            "link_auto": False,
+            "attachment_path": None,
+            "dedup_key": dedup_key,
+            "source": "bank_import",
+            "created_by": current_user["user_id"],
+            "created_at": now,
+        }
+        await db.fin_movements.insert_one(doc)
+        inserted += 1
+    return {"inserted": inserted, "skipped": skipped, "account_id": acc["id"]}
+
+@api_router.put("/fin/movements/{movement_id}/set-title")
+async def fin_set_movement_title(movement_id: str, payload: FinMovementTitle, current_user: dict = Depends(get_current_user)):
+    """Justificação/título editável do movimento."""
+    mv = await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+    if not mv:
+        raise HTTPException(status_code=404, detail="Movimento não encontrado.")
+    await fin_require_editor(mv["company_id"], current_user)
+    title = (payload.title or "").strip() or None
+    await db.fin_movements.update_one({"id": movement_id}, {"$set": {"title": title}})
+    return await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+
+@api_router.put("/fin/movements/{movement_id}/link")
+async def fin_link_movement(movement_id: str, payload: FinMovementLink, current_user: dict = Depends(get_current_user)):
+    """Liga (manualmente) uma fatura ao movimento e marca-a paga."""
+    mv = await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+    if not mv:
+        raise HTTPException(status_code=404, detail="Movimento não encontrado.")
+    await fin_require_editor(mv["company_id"], current_user)
+    inv = await db.fin_invoices.find_one({"id": payload.invoice_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+    if inv["company_id"] != mv["company_id"]:
+        raise HTTPException(status_code=400, detail="A fatura é de outra empresa.")
+    await db.fin_movements.update_one(
+        {"id": movement_id}, {"$set": {"invoice_id": inv["id"], "link_auto": False}}
+    )
+    await db.fin_invoices.update_one(
+        {"id": inv["id"]}, {"$set": {"paid": True, "paid_date": mv.get("date_lancamento")}}
+    )
+    return await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+
+@api_router.put("/fin/movements/{movement_id}/unlink")
+async def fin_unlink_movement(movement_id: str, current_user: dict = Depends(get_current_user)):
+    """Desliga a fatura do movimento e reverte-a a 'por pagar'."""
+    mv = await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+    if not mv:
+        raise HTTPException(status_code=404, detail="Movimento não encontrado.")
+    await fin_require_editor(mv["company_id"], current_user)
+    inv_id = mv.get("invoice_id")
+    await db.fin_movements.update_one(
+        {"id": movement_id}, {"$set": {"invoice_id": None, "link_auto": False}}
+    )
+    if inv_id:
+        await db.fin_invoices.update_one(
+            {"id": inv_id}, {"$set": {"paid": False, "paid_date": None}}
+        )
+    return await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+
+@api_router.post("/fin/movements/{movement_id}/attach")
+async def fin_attach_movement(
+    movement_id: str,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Anexa um PDF (justificativo) a um movimento (saída sem fatura)."""
+    mv = await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+    if not mv:
+        raise HTTPException(status_code=404, detail="Movimento não encontrado.")
+    await fin_require_editor(mv["company_id"], current_user)
+    dest_dir = UPLOAD_DIR / "fin_movements"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / f"{movement_id}.pdf"
+    with open(dest_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    await db.fin_movements.update_one(
+        {"id": movement_id}, {"$set": {"attachment_path": str(dest_path)}}
+    )
+    return await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+
+@api_router.get("/fin/movements/{movement_id}/attachment")
+async def fin_get_movement_attachment(movement_id: str, current_user: dict = Depends(get_current_user)):
+    """Serve o PDF anexado ao movimento (valida pertença)."""
+    mv = await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+    if not mv:
+        raise HTTPException(status_code=404, detail="Movimento não encontrado.")
+    await fin_require_member(mv["company_id"], current_user)
+    path = mv.get("attachment_path")
+    if not path or not Path(path).exists():
+        raise HTTPException(status_code=404, detail="Sem anexo.")
+    return FileResponse(path, filename=f"movimento-{movement_id}.pdf")
+
+
+# ---------- Conciliação automática (#4) ----------
+
+@api_router.post("/fin/movements/automatch")
+async def fin_automatch_movements(payload: FinCompanyIdBody, current_user: dict = Depends(get_current_user)):
+    """Concilia automaticamente saídas (amount < 0) sem fatura ligada.
+    Candidato = fatura da MESMA empresa com |montante| == amount (2 casas) E
+    nome do fornecedor (normalizado, não-vazio) contido na descrição
+    (normalizada). Preferir por pagar; só liga se houver EXATAMENTE 1."""
+    await fin_require_editor(payload.company_id, current_user)
+    invoices = await db.fin_invoices.find(
+        {"company_id": payload.company_id}, {"_id": 0, "id": 1, "supplier": 1, "amount": 1, "paid": 1}
+    ).to_list(20000)
+    movements = await db.fin_movements.find(
+        {"company_id": payload.company_id, "invoice_id": None},
+        {"_id": 0, "id": 1, "amount": 1, "description": 1, "date_lancamento": 1},
+    ).to_list(20000)
+    linked = 0
+    used = set()  # faturas já ligadas nesta corrida — nunca reutilizar
+    for mv in movements:
+        amount = mv.get("amount")
+        if amount is None or amount >= 0:
+            continue
+        target = round(abs(amount), 2)
+        desc_n = _fin_norm_sup(mv.get("description"))
+        cands = []
+        for inv in invoices:
+            if inv["id"] in used:
+                continue
+            inv_amount = inv.get("amount")
+            if inv_amount is None:
+                continue
+            if round(float(inv_amount), 2) != target:
+                continue
+            sup_n = _fin_norm_sup(inv.get("supplier"))
+            if not sup_n or sup_n not in desc_n:
+                continue
+            cands.append(inv)
+        if not cands:
+            continue
+        unpaid = [i for i in cands if not i.get("paid")]
+        pick = unpaid if unpaid else cands
+        if len(pick) != 1:
+            continue  # conservador: 0 ou >1 → não liga
+        inv = pick[0]
+        await db.fin_movements.update_one(
+            {"id": mv["id"]}, {"$set": {"invoice_id": inv["id"], "link_auto": True}}
+        )
+        await db.fin_invoices.update_one(
+            {"id": inv["id"]}, {"$set": {"paid": True, "paid_date": mv.get("date_lancamento")}}
+        )
+        inv["paid"] = True  # evita re-uso da mesma fatura noutro movimento
+        used.add(inv["id"])
+        linked += 1
+    return {"linked": linked}
+
+
+# ===== FINANCEIRO · FASE 4B — INGESTÃO IMAP + IA (#1) =====
+# ==========================================================
+# Endpoint de cron (protegido por CRON_KEY, sem JWT) que lê N caixas IMAP,
+# manda cada PDF anexo à Claude (Haiku) para extrair os dados da fatura,
+# descarta não-faturas e duplicados, associa à empresa pelo NIF do ADQUIRENTE,
+# aplica as regras do fornecedor, guarda o PDF e cria a fatura.
+# Reimplementação do PHP cron_ingest.php (ref.: PORTING_GUIDE §5.3).
+#
+# IMAP/HTTP são síncronos (stdlib imaplib + httpx.Client): essa parte corre em
+# threads via asyncio.to_thread, enquanto as operações de BD (motor) ficam no
+# event loop. Cada caixa/mensagem/anexo está envolvido em try/except para que
+# uma falha não aborte a execução inteira.
+
+import imaplib
+import email as _email
+import base64
+
+# Janela de pesquisa: mensagens recebidas nos últimos 7 dias.
+_FIN_INGEST_DAYS = 7
+# Limite defensivo de anexos processados por execução (evita timeouts).
+_FIN_INGEST_LIMIT = 120
+
+# Capturado no IMPORT (defensivo: usado como fallback se o os.environ vier vazio
+# em runtime) e registado no log para diagnóstico do que a app realmente recebe.
+_FIN_IMAP_RAW = os.environ.get("IMAP_MAILBOXES", "")
+try:
+    logger.info(
+        "[fin-ingest] import: IMAP_MAILBOXES len=%d | CRON_KEY set=%s | ANTHROPIC_API_KEY len=%d",
+        len(_FIN_IMAP_RAW), bool(os.environ.get("CRON_KEY")), len(os.environ.get("ANTHROPIC_API_KEY", "")),
+    )
+except Exception:  # noqa: BLE001
+    pass
+
+_FIN_INGEST_PROMPT = (
+    "Esta é uma fatura de fornecedor (Portugal). Devolve APENAS um JSON válido com: "
+    '{"supplier":"nome do fornecedor/emitente",'
+    '"nif":"NIF do FORNECEDOR (9 dígitos) ou null",'
+    '"customerNif":"NIF do ADQUIRENTE/cliente (9 dígitos) ou null",'
+    '"customerName":"nome do adquirente ou null",'
+    '"invoiceNumber":"número da fatura",'
+    '"issueDate":"YYYY-MM-DD ou null",'
+    '"dueDate":"YYYY-MM-DD ou null",'
+    '"amount":valor TOTAL com IVA (número) ou null,'
+    '"amountNet":valor sem IVA (número) ou null,'
+    '"vatAmount":valor do IVA (número) ou null,'
+    '"vatRate":taxa de IVA principal em % (número) ou null,'
+    '"description":"breve descrição",'
+    '"isInvoice":true se for mesmo uma fatura/recibo de compra, false caso contrário}'
+)
+
+
+def _fin_only_digits(s):
+    """Só os dígitos de uma string (ex.: NIF)."""
+    return re.sub(r"\D+", "", str(s or ""))
+
+
+def _fin_extract_pdf_sync(pdf_bytes):
+    """Chama a API da Claude (síncrono) com o PDF em base64 e devolve o dict
+    extraído, ou {'error': '...'} em caso de falha. Corre em thread."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return {"error": "sem ANTHROPIC_API_KEY"}
+    model = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+    body = {
+        "model": model,
+        "max_tokens": 800,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "document", "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": base64.b64encode(pdf_bytes).decode(),
+                }},
+                {"type": "text", "text": _FIN_INGEST_PROMPT},
+            ],
+        }],
+    }
+    try:
+        with httpx.Client(timeout=120) as http_client:
+            resp = http_client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json=body,
+            )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"rede IA: {exc}"}
+    if resp.status_code >= 400:
+        try:
+            err = resp.json().get("error", {}).get("message")
+        except Exception:  # noqa: BLE001
+            err = None
+        return {"error": err or f"HTTP {resp.status_code}"}
+    try:
+        data = resp.json()
+        raw = (data.get("content") or [{}])[0].get("text", "")
+    except Exception:  # noqa: BLE001
+        return {"error": "resposta IA inválida"}
+    m = re.search(r"\{[\s\S]*\}", raw or "")
+    if not m:
+        return {"error": "resposta IA inválida"}
+    try:
+        parsed = json.loads(m.group(0))
+    except Exception:  # noqa: BLE001
+        return {"error": "json IA inválido"}
+    return parsed if isinstance(parsed, dict) else {"error": "json IA inválido"}
+
+
+def _fin_fetch_pdf_attachments_sync(mb):
+    """Liga a uma caixa IMAP, lê as mensagens da janela e devolve uma lista de
+    {'file_name': str, 'bytes': bytes}. Síncrono — corre em thread."""
+    host = mb.get("host")
+    port = int(mb.get("port") or 993)
+    imap = imaplib.IMAP4_SSL(host, port)
+    try:
+        imap.login(mb.get("user"), mb.get("pass"))
+        imap.select("INBOX")
+        since = (datetime.now(timezone.utc) - timedelta(days=_FIN_INGEST_DAYS)).strftime("%d-%b-%Y")
+        typ, msgnums = imap.search(None, "SINCE", since)
+        ids = msgnums[0].split() if (typ == "OK" and msgnums and msgnums[0]) else []
+        ids = list(reversed(ids))  # mais recentes primeiro
+        out = []
+        for num in ids:
+            try:
+                typ, msgdata = imap.fetch(num, "(RFC822)")
+                if typ != "OK" or not msgdata or not msgdata[0]:
+                    continue
+                raw = msgdata[0][1]
+                msg = _email.message_from_bytes(raw)
+                for part in msg.walk():
+                    if part.get_content_maintype() == "multipart":
+                        continue
+                    ctype = (part.get_content_type() or "").lower()
+                    fn = part.get_filename() or ""
+                    is_pdf = ctype == "application/pdf" or fn.lower().endswith(".pdf")
+                    if not is_pdf:
+                        continue
+                    payload = part.get_payload(decode=True)
+                    if not payload or len(payload) < 200:
+                        continue
+                    out.append({"file_name": fn or "fatura.pdf", "bytes": payload})
+            except Exception:  # noqa: BLE001
+                continue
+        return out
+    finally:
+        try:
+            imap.logout()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _fin_looks_like_invoice(ex):
+    """Heurística: é fatura, tem número e tem total."""
+    is_inv = ex.get("isInvoice")
+    is_inv = True if is_inv is None else bool(is_inv)
+    has_num = bool(str(ex.get("invoiceNumber") or "").strip())
+    has_amount = _fin_clean_num(ex.get("amount")) is not None
+    return is_inv and has_num and has_amount
+
+
+async def _fin_is_duplicate(invoice_number, supplier_nif, supplier):
+    """Duplicado se já existir fatura com o mesmo invoice_number normalizado
+    (minúsculas, sem espaços) E (mesmo NIF de fornecedor OU mesmo nome
+    normalizado)."""
+    num = re.sub(r"\s+", "", str(invoice_number or "").lower())
+    if not num:
+        return False
+    nif = _fin_only_digits(supplier_nif)
+    sup = _fin_norm_sup(supplier)
+    cands = await db.fin_invoices.find(
+        {}, {"_id": 0, "invoice_number": 1, "nif": 1, "supplier": 1}
+    ).to_list(20000)
+    for r in cands:
+        rnum = re.sub(r"\s+", "", str(r.get("invoice_number") or "").lower())
+        if rnum != num:
+            continue
+        if nif and _fin_only_digits(r.get("nif")) == nif:
+            return True
+        if sup and _fin_norm_sup(r.get("supplier")) == sup:
+            return True
+    return False
+
+
+async def _fin_match_company(companies, customer_nif, customer_name, fallback_nif):
+    """Associa à empresa pelo NIF do adquirente, com os fallbacks do PHP:
+    1) NIF do adquirente == company.nif
+    2) nome do adquirente normalizado contido/igual ao da empresa
+    3) empresa do company_nif da caixa (fallback)
+    4) empresa cujo nome normalizado seja 'por classificar'
+    senão None."""
+    n = _fin_only_digits(customer_nif)
+    if n:
+        for c in companies:
+            if _fin_only_digits(c.get("nif")) == n:
+                return c
+    nn = _fin_norm_sup(customer_name)
+    if nn:
+        for c in companies:
+            cn = _fin_norm_sup(c.get("name"))
+            if cn and (cn == nn or nn in cn or cn in nn):
+                return c
+    fb = _fin_only_digits(fallback_nif)
+    if fb:
+        for c in companies:
+            if _fin_only_digits(c.get("nif")) == fb:
+                return c
+    for c in companies:
+        if _fin_norm_sup(c.get("name")) == "por classificar":
+            return c
+    return None
+
+
+@api_router.post("/fin/cron/ingest")
+async def fin_cron_ingest(key: str = Query(...)):
+    """Ingestão automática de faturas por email (IMAP + IA). Protegido por
+    CRON_KEY. Não usa JWT."""
+    cron_key = os.environ.get("CRON_KEY")
+    if not cron_key or not secrets.compare_digest(str(key), str(cron_key)):
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+
+    raw = os.environ.get("IMAP_MAILBOXES") or _FIN_IMAP_RAW or "[]"
+    try:
+        mailboxes = json.loads(raw)
+        if not isinstance(mailboxes, list):
+            mailboxes = []
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("[fin-ingest] IMAP_MAILBOXES invalido (len=%d): %s", len(raw), _e)
+        mailboxes = []
+    logger.info("[fin-ingest] pedido: raw_len=%d mailboxes=%d", len(raw), len(mailboxes))
+
+    summary = {
+        "mailboxes": len(mailboxes),
+        "attachments_seen": 0,
+        "invoices_created": 0,
+        "skipped_not_invoice": 0,
+        "skipped_duplicate": 0,
+        "errors": [],
+    }
+    if not mailboxes:
+        return summary
+
+    companies = await db.fin_companies.find({}, {"_id": 0}).to_list(5000)
+    processed = 0
+
+    for bi, mb in enumerate(mailboxes):
+        try:
+            attachments = await asyncio.to_thread(_fin_fetch_pdf_attachments_sync, mb)
+        except Exception as exc:  # noqa: BLE001
+            summary["errors"].append(f"caixa #{bi} ({mb.get('user')}): {exc}")
+            continue
+
+        for att in attachments:
+            if processed >= _FIN_INGEST_LIMIT:
+                break
+            fn = att.get("file_name") or "fatura.pdf"
+            pdf_bytes = att.get("bytes") or b""
+            try:
+                k = hashlib.sha1(pdf_bytes).hexdigest()
+                if await db.fin_ingest_log.find_one({"k": k}):
+                    continue  # já visto
+                summary["attachments_seen"] += 1
+                processed += 1
+
+                ex = await asyncio.to_thread(_fin_extract_pdf_sync, pdf_bytes)
+
+                if not isinstance(ex, dict) or ex.get("error"):
+                    # Erro transitório (chave/rede/502): NÃO marcar como visto -> repete na próxima.
+                    summary["errors"].append(f"{fn}: {ex.get('error') if isinstance(ex, dict) else 'IA inválida'}")
+                    continue
+
+                # Resultado definitivo (fatura / não-fatura / duplicado): marcar como visto.
+                await db.fin_ingest_log.update_one(
+                    {"k": k},
+                    {"$setOnInsert": {"k": k, "at": datetime.now(timezone.utc).isoformat()}},
+                    upsert=True,
+                )
+
+                if not _fin_looks_like_invoice(ex):
+                    summary["skipped_not_invoice"] += 1
+                    continue
+
+                if await _fin_is_duplicate(ex.get("invoiceNumber"), ex.get("nif"), ex.get("supplier")):
+                    summary["skipped_duplicate"] += 1
+                    continue
+
+                comp = await _fin_match_company(
+                    companies, ex.get("customerNif"), ex.get("customerName"), mb.get("company_nif")
+                )
+                company_id = comp.get("id") if comp else None
+                if not company_id:
+                    summary["errors"].append(f"{fn}: sem empresa correspondente — ignorada")
+                    continue
+
+                nifd = _fin_only_digits(ex.get("nif")) or None
+                supplier = ex.get("supplier")
+                rule = await fin_supplier_rule(nifd, supplier)
+                is_recurring = bool(rule and rule.get("recurring"))
+                approval = "approved" if is_recurring else "pending"
+
+                data = {
+                    "supplier": supplier,
+                    "nif": nifd,
+                    "customer_nif": _fin_only_digits(ex.get("customerNif")) or None,
+                    "invoice_number": ex.get("invoiceNumber"),
+                    "issue_date": ex.get("issueDate"),
+                    "due_date": ex.get("dueDate"),
+                    "amount": ex.get("amount"),
+                    "amount_net": ex.get("amountNet"),
+                    "vat_amount": ex.get("vatAmount"),
+                    "vat_rate": ex.get("vatRate"),
+                    "description": ex.get("description"),
+                    "source": "email",
+                    "file_name": fn,
+                }
+                invoice_id = await _fin_insert_invoice(
+                    company_id, "invoice", approval, data, "none", None, "cron"
+                )
+
+                # Guarda o PDF em UPLOAD_DIR/fin_invoices/<company_id>/<invoice_id>.pdf
+                try:
+                    dest_dir = UPLOAD_DIR / "fin_invoices" / company_id
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    pdf_path = dest_dir / f"{invoice_id}.pdf"
+                    pdf_path.write_bytes(pdf_bytes)
+                    update = {"pdf_path": str(pdf_path)}
+                    if is_recurring:
+                        update["approval_note"] = "Aprovada automaticamente (fornecedor recorrente)"
+                        update["approval_at"] = datetime.now(timezone.utc).isoformat()
+                    await db.fin_invoices.update_one({"id": invoice_id}, {"$set": update})
+                except Exception as exc:  # noqa: BLE001
+                    summary["errors"].append(f"{fn}: PDF não guardado: {exc}")
+
+                summary["invoices_created"] += 1
+            except Exception as exc:  # noqa: BLE001
+                summary["errors"].append(f"{fn}: {exc}")
+                continue
+
+    return summary
+
+
+# ===== FINANCEIRO · FASE 5 — VENDAS =====
+# Vendas (coleção fin_sales). Base do módulo Vendas: lançamento manual e CRUD.
+# A sincronização Vendus/Moloni é OUTRA fase. Aqui só CRUD manual.
+# Campos: id, company_id, unit_id, date ("YYYY-MM-DD"), amount (bruto c/IVA),
+# amount_net (líquido), amount_cost (CMV), net_nocost (líquido sem custo conhecido),
+# vat_rate, note, source ("manual"|"vendus"|"moloni"), created_by, created_at.
+
+# ---------- Modelo ----------
+
+class FinSaleCreate(BaseModel):
+    company_id: str
+    unit_id: Optional[str] = None
+    date: Optional[str] = None
+    amount: Optional[float] = None
+    amount_net: Optional[float] = None
+    amount_cost: Optional[float] = None
+    vat_rate: Optional[float] = None
+    note: Optional[str] = None
+
+
+# ---------- Helper: documento de venda a partir do payload ----------
+
+def _fin_sale_doc_from_payload(data: dict) -> dict:
+    """Calcula os campos derivados de uma venda manual a partir do body."""
+    amount = _fin_clean_num(data.get("amount"))
+    amount_net = _fin_clean_num(data.get("amount_net"))
+    amount_cost = _fin_clean_num(data.get("amount_cost"))
+    vat_rate = _fin_clean_num(data.get("vat_rate"))
+    # Se não vier o líquido mas houver taxa de IVA, calcula a partir do bruto.
+    if amount_net is None and amount is not None and vat_rate:
+        amount_net = round(amount / (1 + vat_rate / 100), 2)
+    return {
+        "company_id": data["company_id"],
+        "unit_id": data.get("unit_id"),
+        "date": _fin_clean_date(data.get("date")),
+        "amount": amount,
+        "amount_net": amount_net,
+        "amount_cost": amount_cost,
+        "net_nocost": 0.0,
+        "vat_rate": vat_rate,
+        "note": data.get("note"),
+    }
+
+
+# ---------- Vendas ----------
+
+@api_router.get("/fin/sales")
+async def fin_get_sales(
+    company_id: str,
+    month: Optional[str] = None,
+    unit_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Vendas de uma empresa, filtráveis por mês (YYYY-MM) e unidade."""
+    await fin_require_member(company_id, current_user)
+    q = {"company_id": company_id}
+    mon = (month or "").strip()
+    if mon:
+        q["date"] = {"$regex": "^" + re.escape(mon)}
+    uni = (unit_id or "").strip()
+    if uni:
+        q["unit_id"] = uni
+    sales = await db.fin_sales.find(q, {"_id": 0}).to_list(20000)
+    sales.sort(key=lambda s: s.get("date") or "", reverse=True)
+    return sales
+
+@api_router.post("/fin/sales")
+async def fin_create_sale(payload: FinSaleCreate, current_user: dict = Depends(get_current_user)):
+    """Lançamento MANUAL de venda."""
+    await fin_require_editor(payload.company_id, current_user)
+    data = payload.model_dump()
+    doc = _fin_sale_doc_from_payload(data)
+    doc.update({
+        "id": str(uuid.uuid4()),
+        "source": "manual",
+        "created_by": current_user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await db.fin_sales.insert_one(doc)
+    return await db.fin_sales.find_one({"id": doc["id"]}, {"_id": 0})
+
+@api_router.put("/fin/sales/{sale_id}")
+async def fin_update_sale(sale_id: str, payload: FinSaleCreate, current_user: dict = Depends(get_current_user)):
+    """Editar uma venda (validação de pertença pela empresa da venda)."""
+    sale = await db.fin_sales.find_one({"id": sale_id}, {"_id": 0})
+    if not sale:
+        raise HTTPException(status_code=404, detail="Venda não encontrada.")
+    await fin_require_editor(sale["company_id"], current_user)
+    data = payload.model_dump()
+    doc = _fin_sale_doc_from_payload(data)
+    # Não deixar trocar a venda para outra empresa.
+    doc.pop("company_id", None)
+    await db.fin_sales.update_one({"id": sale_id}, {"$set": doc})
+    return await db.fin_sales.find_one({"id": sale_id}, {"_id": 0})
+
+@api_router.delete("/fin/sales/{sale_id}")
+async def fin_delete_sale(sale_id: str, current_user: dict = Depends(get_current_user)):
+    """Apagar uma venda (validação de pertença pela empresa da venda)."""
+    sale = await db.fin_sales.find_one({"id": sale_id}, {"_id": 0})
+    if not sale:
+        raise HTTPException(status_code=404, detail="Venda não encontrada.")
+    await fin_require_editor(sale["company_id"], current_user)
+    await db.fin_sales.delete_one({"id": sale_id})
+    return {"ok": True}
+
 
 # ==================== HEALTH CHECK ====================
 
