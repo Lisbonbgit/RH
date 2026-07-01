@@ -17,56 +17,8 @@ import { Clock, LogIn, LogOut, History, MapPin, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, parseISO, isToday } from 'date-fns';
 import { pt } from 'date-fns/locale';
-
-// Uma tentativa de obter a posição (resolve sempre, com ok/código de erro).
-function getPositionOnce(options) {
-  return new Promise((resolve) => {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({
-        ok: true,
-        position: {
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-        },
-      }),
-      (err) => resolve({ ok: false, code: err.code }),
-      options
-    );
-  });
-}
-
-// Obtém a posição de forma robusta (sobretudo no Safari/iOS):
-// 1) tenta alta precisão; 2) se falhar, tenta precisão normal (mais fiável)
-// e aceita um fix recente. Devolve { position, errorCode }.
-async function getCurrentPosition() {
-  if (!('geolocation' in navigator)) return { position: null, errorCode: null };
-  let r = await getPositionOnce({ enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
-  if (!r.ok) {
-    r = await getPositionOnce({ enableHighAccuracy: false, timeout: 12000, maximumAge: 300000 });
-  }
-  return r.ok ? { position: r.position, errorCode: null } : { position: null, errorCode: r.code };
-}
-
-// Mensagem de ajuda consoante o motivo da falha de localização.
-function geoHelpMessage(code) {
-  if (code === 1) {
-    return {
-      title: 'Localização bloqueada para o Safari',
-      description: 'No iPhone: Definições › Privacidade e Segurança › Serviços de Localização (ligado) e, em Safari, escolha "Ao usar a app". Depois, na barra do Safari toque em "AA" › Definições do Website › Localização › Permitir, e registe novamente.',
-    };
-  }
-  if (code === 3) {
-    return {
-      title: 'A localização demorou demasiado',
-      description: 'Sinal fraco. Confirme que a localização está ligada e tente outra vez, de preferência junto a uma janela ou no exterior.',
-    };
-  }
-  return {
-    title: 'Não foi possível obter a localização',
-    description: 'Este local exige localização para registar o ponto. Ative os Serviços de Localização e permita o acesso ao Safari.',
-  };
-}
+// Localização web + nativa (app Capacitor) num só sítio.
+import { getCurrentPositionSmart, geoHelpMessage } from '../../lib/geo';
 
 export default function EmployeeTimeRecord() {
   const [records, setRecords] = useState([]);
@@ -101,7 +53,7 @@ export default function EmployeeTimeRecord() {
     try {
       // Tenta obter a localização (não bloqueia o registo se for negada)
       setLocating(true);
-      const { position, errorCode } = await getCurrentPosition();
+      const { position, errorCode } = await getCurrentPositionSmart();
       setLocating(false);
 
       await createTimeRecord({ record_type: type, ...(position || {}) });

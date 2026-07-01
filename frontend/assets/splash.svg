@@ -1,0 +1,11 @@
+<svg width="2732" height="2732" viewBox="0 0 2732 2732" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="2732" y2="2732" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1366F0"/>
+      <stop offset="1" stop-color="#16B8A6"/>
+    </linearGradient>
+  </defs>
+  <rect width="2732" height="2732" fill="url(#g)"/>
+  <!-- Marca "L" centrada -->
+  <path d="M1246 1216 h130 v280 h158 v138 h-288 z" fill="#FFFFFF"/>
+</svg>

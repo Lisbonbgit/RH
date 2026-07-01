@@ -4171,6 +4171,13 @@ app.include_router(api_router)
 # Nota: com origens '*' não é permitido allow_credentials=True (o browser rejeita).
 # Como a autenticação usa Bearer token no header (não cookies), isto é seguro.
 cors_origins = [o.strip() for o in os.environ.get('CORS_ORIGINS', '*').split(',') if o.strip()]
+# Origens da app nativa (Capacitor, iOS/Android) — para a app poder chamar a API
+# mesmo que um dia se restrinja o CORS a domínios específicos. Não afeta o '*'.
+APP_NATIVE_ORIGINS = ["capacitor://localhost", "ionic://localhost", "http://localhost", "https://localhost"]
+if '*' not in cors_origins:
+    for _o in APP_NATIVE_ORIGINS:
+        if _o not in cors_origins:
+            cors_origins.append(_o)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials='*' not in cors_origins,
