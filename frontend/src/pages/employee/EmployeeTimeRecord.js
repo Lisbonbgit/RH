@@ -13,7 +13,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '../../components/ui/alert-dialog';
-import { Clock, LogIn, LogOut, History, MapPin, Loader2 } from 'lucide-react';
+import { Clock, LogIn, LogOut, History, MapPin, Loader2, CheckCircle2, AlertTriangle, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, parseISO, isToday } from 'date-fns';
 import { pt } from 'date-fns/locale';
@@ -27,6 +27,7 @@ export default function EmployeeTimeRecord() {
   const [locating, setLocating] = useState(false);
   const [confirmType, setConfirmType] = useState(null);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [feedback, setFeedback] = useState(null); // aviso visível no ecrã
 
   useEffect(() => {
     fetchRecords();
@@ -50,8 +51,10 @@ export default function EmployeeTimeRecord() {
 
   const handleRecord = async (type) => {
     setSubmitting(true);
+    setFeedback(null);
+    const label = type === 'entrada' ? 'Entrada' : 'Saída';
     try {
-      // Tenta obter a localização (não bloqueia o registo se for negada)
+      // Tenta obter a localização (não bloqueia o registo se o local não exigir)
       setLocating(true);
       const { position, errorCode } = await getCurrentPositionSmart();
       setLocating(false);
@@ -59,19 +62,28 @@ export default function EmployeeTimeRecord() {
       await createTimeRecord({ record_type: type, ...(position || {}) });
 
       if (position) {
-        toast.success(`${type === 'entrada' ? 'Entrada' : 'Saída'} registada com localização!`);
+        toast.success(`${label} registada com localização!`);
+        setFeedback({ kind: 'success', title: `${label} registada`, description: 'Com a sua localização. ✅' });
       } else {
-        toast.success(`${type === 'entrada' ? 'Entrada' : 'Saída'} registada (sem localização)`);
+        toast.success(`${label} registada (sem localização)`);
+        setFeedback({ kind: 'success', title: `${label} registada`, description: 'Este local não exige localização.' });
       }
       fetchRecords();
     } catch (error) {
+      const status = error.response?.status;
       const detail = error.response?.data?.detail;
-      // Loja com cerca e sem localização: dar instruções claras (em especial no Safari)
-      if (error.response?.status === 400 && /localiza/i.test(detail || '')) {
+      if (status === 400 && /localiza/i.test(detail || '')) {
+        // Loja com cerca e sem localização obtida (permissão/GPS)
         const m = geoHelpMessage(errorCode);
         toast.error(m.title, { description: m.description, duration: 11000 });
+        setFeedback({ kind: 'error', title: m.title, description: m.description });
+      } else if (status === 403) {
+        // Está fora do raio permitido do local
+        toast.error(detail || 'Está fora do local de trabalho');
+        setFeedback({ kind: 'error', title: 'Fora do local de trabalho', description: detail || 'Aproxime-se do local para registar o ponto.' });
       } else {
         toast.error(detail || 'Erro ao registar ponto');
+        setFeedback({ kind: 'error', title: 'Não foi possível registar', description: detail || 'Tente novamente dentro de momentos.' });
       }
     } finally {
       setSubmitting(false);
@@ -136,6 +148,31 @@ export default function EmployeeTimeRecord() {
         <p className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" /> A obter a sua localização…
         </p>
+      )}
+
+      {/* Aviso visível do resultado do registo (bem visível no telemóvel) */}
+      {feedback && (
+        <div
+          className={`rounded-xl border p-4 flex items-start gap-3 ${
+            feedback.kind === 'success'
+              ? 'bg-green-50 border-green-200 text-green-800'
+              : 'bg-red-50 border-red-200 text-red-800'
+          }`}
+          data-testid="record-feedback"
+        >
+          {feedback.kind === 'success' ? (
+            <CheckCircle2 className="h-5 w-5 shrink-0 mt-0.5" />
+          ) : (
+            <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5" />
+          )}
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold">{feedback.title}</p>
+            {feedback.description && <p className="text-sm mt-0.5">{feedback.description}</p>}
+          </div>
+          <button onClick={() => setFeedback(null)} className="shrink-0 opacity-60 hover:opacity-100" aria-label="Fechar">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
       )}
 
       {/* Today's Records */}
