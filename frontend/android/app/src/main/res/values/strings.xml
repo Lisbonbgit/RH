@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Lisbonb RH</string>
+    <string name="title_activity_main">Lisbonb RH</string>
+    <string name="package_name">com.lisbonb.rh</string>
+    <string name="custom_url_scheme">com.lisbonb.rh</string>
+</resources>
