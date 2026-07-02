@@ -45,5 +45,7 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>A Lisbonb RH usa a sua localização apenas para validar o registo de ponto junto ao local de trabalho.</string>
 </dict>
 </plist>
