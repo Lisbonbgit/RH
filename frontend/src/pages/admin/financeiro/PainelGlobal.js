@@ -128,7 +128,7 @@ export default function PainelGlobal() {
   return (
     <div className="space-y-6 animate-fade-in" data-testid="painel-global-page">
       <PageHeader icon={LayoutDashboard} title="Painel Global" subtitle="Visão cruzada dos setores">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {companies.length > 0 && (
             <Select value={companyId} onValueChange={setCompanyId}>
               <SelectTrigger className="w-48" data-testid="painel-company-picker">

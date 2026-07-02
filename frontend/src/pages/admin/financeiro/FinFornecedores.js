@@ -145,7 +145,7 @@ export default function FinFornecedores() {
   return (
     <div className="space-y-6 animate-fade-in" data-testid="fin-fornecedores-page">
       <PageHeader icon={Truck} title="Fornecedores" subtitle="Fichas e regras por fornecedor (partilhadas pela equipa)">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {companies.length > 0 && (
             <Select value={companyId} onValueChange={setCompanyId}>
               <SelectTrigger className="w-48"><SelectValue placeholder="Empresa" /></SelectTrigger>
