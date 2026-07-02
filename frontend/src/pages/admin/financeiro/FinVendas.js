@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   getFinCompanies, getFinUnits, getFinSales,
-  createFinSale, updateFinSale, deleteFinSale,
+  createFinSale, updateFinSale, deleteFinSale, syncFinVendus,
 } from '../../../lib/api';
 import { eur, fmtDate, todayISO } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
@@ -54,6 +54,7 @@ export default function FinVendas() {
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
   const [toDelete, setToDelete] = useState(null);
+  const [syncing, setSyncing] = useState(false);
 
   const company = companies.find((c) => c.id === companyId) || null;
   const canEdit = company && (company.role === 'owner' || company.role === 'partner');
@@ -233,6 +234,28 @@ export default function FinVendas() {
     }
   };
 
+  // Sync rápido Vendus (sem CMV — o custo é preenchido pelo cron noturno).
+  const doSync = async () => {
+    setSyncing(true);
+    try {
+      const res = await syncFinVendus(companyId);
+      const written = res.data?.written ?? 0;
+      const errors = res.data?.errors || [];
+      if (errors.length) {
+        toast.warning(`${written} dias sincronizados · ${errors.length} avisos`, {
+          description: errors[0],
+        });
+      } else {
+        toast.success(`Vendus sincronizado: ${written} dias de vendas`);
+      }
+      loadSales();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Erro ao sincronizar com o Vendus');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in" data-testid="fin-vendas-page">
       <PageHeader icon={TrendingUp} title="Vendas" subtitle="Receita por loja, food cost e margem">
@@ -258,9 +281,13 @@ export default function FinVendas() {
           </Select>
           <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
             className="w-36" data-testid="fin-month-picker" />
-          <Button variant="outline" disabled title="Integração Vendus — em breve" data-testid="fin-sync-btn">
-            <RefreshCw className="h-4 w-4 mr-2" />Sincronizar
-          </Button>
+          {canEdit && (
+            <Button variant="outline" onClick={doSync} disabled={syncing}
+              title="Sincronizar vendas do Vendus (últimos 3 dias)" data-testid="fin-sync-btn">
+              <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? 'animate-spin' : ''}`} />
+              {syncing ? 'A sincronizar...' : 'Sincronizar'}
+            </Button>
+          )}
           {canEdit && (
             <Button onClick={openNew} data-testid="fin-new-sale-btn">
               <Plus className="h-4 w-4 mr-2" />Nova venda

@@ -27,6 +27,7 @@ import FinPagamentos from './pages/admin/financeiro/FinPagamentos';
 import FinVendas from './pages/admin/financeiro/FinVendas';
 import FinFornecedores from './pages/admin/financeiro/FinFornecedores';
 import FinExtrato from './pages/admin/financeiro/FinExtrato';
+import PainelGlobal from './pages/admin/financeiro/PainelGlobal';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeProfile from './pages/employee/EmployeeProfile';
 import EmployeeTimeRecord from './pages/employee/EmployeeTimeRecord';
@@ -140,6 +141,7 @@ function AppRoutes() {
         </ProtectedRoute>
       }>
         <Route index element={<AdminDashboard />} />
+        <Route path="painel" element={<PainelGlobal />} />
         <Route path="empresas" element={<AdminCompanies />} />
         <Route path="locais" element={<AdminLocations />} />
         <Route path="colaboradores" element={<AdminEmployees />} />

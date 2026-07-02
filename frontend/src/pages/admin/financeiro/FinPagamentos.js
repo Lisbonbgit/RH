@@ -272,7 +272,7 @@ export default function FinPagamentos() {
   return (
     <div className="space-y-6 animate-fade-in" data-testid="fin-pagamentos-page">
       <PageHeader icon={Receipt} title="Pagamentos" subtitle="Faturas de fornecedor, agenda e conta corrente">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {companies.length > 0 && (
             <Select value={companyId} onValueChange={setCompanyId}>
               <SelectTrigger className="w-48" data-testid="fin-company-picker">

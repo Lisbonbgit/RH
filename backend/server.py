@@ -3099,6 +3099,13 @@ class FinUnitResponse(BaseModel):
     type: Optional[str] = None
     sort: int = 0
 
+# Fase 6 — corpo dos endpoints de ligação RH<->Financeiro
+class FinLinkRhCompany(BaseModel):
+    rh_company_id: Optional[str] = None
+
+class FinLinkRhUnit(BaseModel):
+    rh_location_id: Optional[str] = None
+
 class FinTeamAdd(BaseModel):
     email: str
     role: str = "partner"
@@ -4971,6 +4978,657 @@ async def fin_delete_sale(sale_id: str, current_user: dict = Depends(get_current
     await fin_require_editor(sale["company_id"], current_user)
     await db.fin_sales.delete_one({"id": sale_id})
     return {"ok": True}
+
+
+# ====================================================================
+# ===== FINANCEIRO · FASE 6 — INTEGRAÇÃO GLOBAL =====
+# ====================================================================
+# Fundação para cruzar setores: liga a empresa/loja do Financeiro à do RH
+# e expõe um Painel Global que junta KPIs de Financeiro + RH + Marketing.
+# Reutiliza os helpers de pertença (fin_require_*) e o estilo dos /fin/*.
+
+
+# ---------- Ligação RH <-> Financeiro ----------
+
+@api_router.put("/fin/companies/{company_id}/link-rh")
+async def fin_link_company_rh(
+    company_id: str,
+    payload: FinLinkRhCompany,
+    current_user: dict = Depends(get_current_user),
+):
+    """Liga (ou desliga, com null) a empresa do Financeiro a uma empresa do RH.
+    Só o dono. Se o id do RH vier preenchido, tem de existir em db.companies."""
+    await fin_require_owner(company_id, current_user)
+    fin_company = await db.fin_companies.find_one({"id": company_id}, {"_id": 0})
+    if not fin_company:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+    rh_company_id = (payload.rh_company_id or "").strip() or None
+    if rh_company_id:
+        rh = await db.companies.find_one({"id": rh_company_id}, {"_id": 0, "id": 1})
+        if not rh:
+            raise HTTPException(status_code=400, detail="Empresa de RH inexistente.")
+    await db.fin_companies.update_one(
+        {"id": company_id}, {"$set": {"rh_company_id": rh_company_id}}
+    )
+    return await db.fin_companies.find_one({"id": company_id}, {"_id": 0})
+
+
+@api_router.put("/fin/units/{unit_id}/link-rh")
+async def fin_link_unit_rh(
+    unit_id: str,
+    payload: FinLinkRhUnit,
+    current_user: dict = Depends(get_current_user),
+):
+    """Liga (ou desliga, com null) a unidade do Financeiro a um local do RH.
+    Editor da empresa dona da unidade. Se preenchido, valida em db.locations."""
+    unit = await db.fin_units.find_one({"id": unit_id}, {"_id": 0})
+    if not unit:
+        raise HTTPException(status_code=404, detail="Unidade não encontrada.")
+    await fin_require_editor(unit["company_id"], current_user)
+    rh_location_id = (payload.rh_location_id or "").strip() or None
+    if rh_location_id:
+        loc = await db.locations.find_one({"id": rh_location_id}, {"_id": 0, "id": 1})
+        if not loc:
+            raise HTTPException(status_code=400, detail="Local de RH inexistente.")
+    await db.fin_units.update_one(
+        {"id": unit_id}, {"$set": {"rh_location_id": rh_location_id}}
+    )
+    return await db.fin_units.find_one({"id": unit_id}, {"_id": 0})
+
+
+# ---------- Painel Global (KPIs cruzados) ----------
+
+@api_router.get("/fin/global/dashboard")
+async def fin_global_dashboard(
+    company_id: str,
+    month: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Cruza KPIs de Financeiro + RH + Marketing para uma empresa e mês.
+    `month` no formato AAAA-MM (por omissão, o mês atual). Cada setor é lido
+    de forma defensiva: se um estiver em falta não derruba o painel todo."""
+    await fin_require_member(company_id, current_user)
+
+    fin_company = await db.fin_companies.find_one({"id": company_id}, {"_id": 0})
+    if not fin_company:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+
+    mon = (month or "").strip()
+    if not mon:
+        mon = datetime.now(timezone.utc).strftime("%Y-%m")
+
+    rh_company_id = fin_company.get("rh_company_id")
+
+    company_out = {
+        "id": fin_company.get("id"),
+        "name": fin_company.get("name"),
+        "nif": fin_company.get("nif"),
+        "rh_company_id": rh_company_id,
+    }
+
+    # ----- Financeiro -----
+    financeiro = {
+        "vendas_mes": 0.0,
+        "a_pagar": 0.0,
+        "pago": 0.0,
+        "pendentes": 0,
+        "saldo_banco": 0.0,
+    }
+    try:
+        # Vendas do mês (soma de fin_sales.amount cuja date começa por AAAA-MM)
+        sales = await db.fin_sales.find(
+            {"company_id": company_id, "date": {"$regex": "^" + re.escape(mon)}},
+            {"_id": 0, "amount": 1},
+        ).to_list(100000)
+        financeiro["vendas_mes"] = round(
+            sum(float(s.get("amount") or 0) for s in sales), 2
+        )
+
+        # Faturas: a pagar (por pagar e não rejeitadas) e já pago
+        invoices = await db.fin_invoices.find(
+            {"company_id": company_id},
+            {"_id": 0, "amount": 1, "paid": 1, "approval_status": 1},
+        ).to_list(100000)
+        a_pagar = 0.0
+        pago = 0.0
+        pendentes = 0
+        for inv in invoices:
+            amt = float(inv.get("amount") or 0)
+            is_paid = inv.get("paid") is True
+            appr = inv.get("approval_status")
+            if is_paid:
+                pago += amt
+            elif appr != "rejected":
+                a_pagar += amt
+            if appr == "pending":
+                pendentes += 1
+        financeiro["a_pagar"] = round(a_pagar, 2)
+        financeiro["pago"] = round(pago, 2)
+        financeiro["pendentes"] = pendentes
+
+        # Saldo em banco: para cada conta da empresa, o saldo (balance) do
+        # movimento mais recente (maior date_lancamento). Soma de todas as contas.
+        accounts = await db.fin_bank_accounts.find(
+            {"company_id": company_id}, {"_id": 0, "id": 1}
+        ).to_list(2000)
+        saldo_banco = 0.0
+        for acc in accounts:
+            last = await db.fin_movements.find_one(
+                {"company_id": company_id, "account_id": acc.get("id")},
+                {"_id": 0, "balance": 1, "date_lancamento": 1},
+                sort=[("date_lancamento", -1)],
+            )
+            if last and last.get("balance") is not None:
+                saldo_banco += float(last.get("balance") or 0)
+        financeiro["saldo_banco"] = round(saldo_banco, 2)
+    except Exception:
+        # Falha defensiva: mantém os valores por omissão sem derrubar o painel.
+        pass
+
+    # ----- RH -----
+    rh = {"linked": False}
+    colaboradores = 0
+    try:
+        if rh_company_id:
+            rh_company = await db.companies.find_one(
+                {"id": rh_company_id}, {"_id": 0, "id": 1}
+            )
+            if rh_company:
+                rh["linked"] = True
+                colaboradores = await db.employees.count_documents(
+                    {"company_id": rh_company_id}
+                )
+                rh["colaboradores"] = colaboradores
+                # Ausências pendentes: primeiro os employees dessa empresa RH,
+                # depois conta os leave_requests pendentes desses colaboradores.
+                emp_docs = await db.employees.find(
+                    {"company_id": rh_company_id}, {"_id": 0, "id": 1}
+                ).to_list(100000)
+                emp_ids = [e["id"] for e in emp_docs if e.get("id")]
+                if emp_ids:
+                    rh["ausencias_pendentes"] = await db.leave_requests.count_documents(
+                        {"employee_id": {"$in": emp_ids}, "status": "pendente"}
+                    )
+                else:
+                    rh["ausencias_pendentes"] = 0
+    except Exception:
+        rh = {"linked": bool(rh_company_id)}
+        colaboradores = 0
+
+    # ----- Marketing -----
+    marketing = {"campanhas_ativas": 0}
+    try:
+        marketing["campanhas_ativas"] = await db.mkt_campaigns.count_documents(
+            {
+                "status": "ativa",
+                "$or": [
+                    {"company_id": company_id},
+                    {"company_id": None},
+                    {"company_id": {"$exists": False}},
+                ],
+            }
+        )
+    except Exception:
+        pass
+
+    # ----- Cruzados -----
+    receita_por_colaborador = None
+    if colaboradores and colaboradores > 0:
+        receita_por_colaborador = round(
+            financeiro["vendas_mes"] / colaboradores, 2
+        )
+    cruzados = {"receita_por_colaborador": receita_por_colaborador}
+
+    return {
+        "company": company_out,
+        "month": mon,
+        "financeiro": financeiro,
+        "rh": rh,
+        "marketing": marketing,
+        "cruzados": cruzados,
+    }
+
+
+# ====================================================================
+# ===== FINANCEIRO · FASE 5B — INTEGRAÇÃO VENDUS =====
+# ====================================================================
+# Sincronização de vendas do POS Vendus -> coleção fin_sales.
+# Reimplementação fiel do PHP vendus_engine.php / vendus_sync.php.
+#
+# Regra de VENDAS: soma de faturas (FT/FS/FR/VD) menos notas de crédito (NC).
+# Exclui recibos (RG), documentos de conferência (DC) e tudo o resto.
+# Agrega por loja e por dia; grava idempotente (delete+insert) por loja,
+# e SÓ se a loja foi lida por completo no intervalo.
+#
+# Como na ingestão IMAP (Fase 4B): o HTTP à API Vendus é síncrono (httpx.Client)
+# e corre em threads via asyncio.to_thread; as escritas Mongo (motor) ficam no
+# event loop. Tudo defensivo — uma conta/loja com falha não aborta as restantes.
+#
+# Config: VENDUS_ACCOUNTS no .env (JSON array numa linha), uma entrada por
+# conta Vendus: [{"key":"CHAVE_API","company_nif":"NIF"}]. A empresa é
+# encontrada em fin_companies pelo NIF.
+
+import time as _time
+import random as _random
+
+_FIN_VENDUS_BASE = "https://www.vendus.pt/ws/v1.1/"
+_FIN_VENDUS_SALES = ("FT", "FS", "FR", "VD")   # sinal +
+_FIN_VENDUS_CREDIT = ("NC",)                    # sinal −
+_FIN_VENDUS_COST_TTL = 6 * 3600                 # cache do mapa de custos: 6h
+_FIN_VENDUS_MAX_DOC_PAGES = 60                  # >6000 docs/loja -> reduz o período
+_FIN_VENDUS_MAX_PROD_PAGES = 100
+
+
+def _fin_vendus_accounts():
+    """Lê VENDUS_ACCOUNTS do ambiente (JSON array). Lista vazia se ausente/inválido."""
+    raw = os.environ.get("VENDUS_ACCOUNTS") or "[]"
+    try:
+        accounts = json.loads(raw)
+        return accounts if isinstance(accounts, list) else []
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("[fin-vendus] VENDUS_ACCOUNTS inválido: %s", _e)
+        return []
+
+
+def _fin_vendus_http(key, path, tries=3):
+    """GET à API Vendus com HTTP Basic (chave, ''). Devolve o JSON (list/dict)
+    ou None. Erro de rede/timeout/429/>=500 -> repete com backoff exponencial
+    (0.3s*2^n + jitter) até `tries`; 4xx (exceto 429) -> desiste e devolve None.
+    Síncrono — corre em thread via asyncio.to_thread."""
+    attempt = 0
+    while True:
+        attempt += 1
+        resp = None
+        retriable = False
+        try:
+            with httpx.Client(
+                timeout=httpx.Timeout(18.0, connect=6.0), auth=(key, "")
+            ) as http_client:
+                resp = http_client.get(
+                    _FIN_VENDUS_BASE + path, headers={"Accept": "application/json"}
+                )
+            retriable = resp.status_code == 429 or resp.status_code >= 500
+        except Exception:  # noqa: BLE001 — rede/timeout
+            retriable = True
+        if retriable and attempt < tries:
+            _time.sleep(0.3 * (2 ** (attempt - 1)) + _random.uniform(0, 0.2))
+            continue
+        if resp is None or resp.status_code < 200 or resp.status_code >= 300:
+            return None
+        try:
+            data = resp.json()
+        except Exception:  # noqa: BLE001
+            return None
+        return data if isinstance(data, (list, dict)) else None
+
+
+def _fin_vendus_norm(s):
+    """Nome normalizado p/ mapear loja Vendus -> unidade: minúsculas, sem
+    acentos, só [a-z0-9 ], espaços colapsados (equivalente ao vendus_norm PHP)."""
+    s = str(s or "").strip().lower()
+    s = s.translate(str.maketrans("áàâãäéèêëíìîïóòôõöúùûüçñ", "aaaaaeeeeiiiiooooouuuucn"))
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _fin_vendus_match_unit(units, store_title):
+    """Mapeia uma loja Vendus para uma unidade da empresa: 1 unidade = direta;
+    senão por nome normalizado (igualdade, depois 'contém' em qualquer direção).
+    Devolve o unit_id ou None."""
+    if len(units) == 1:
+        return units[0]["id"]
+    nt = _fin_vendus_norm(store_title)
+    for u in units:
+        if _fin_vendus_norm(u.get("name")) == nt:
+            return u["id"]
+    if nt:
+        for u in units:
+            un = _fin_vendus_norm(u.get("name"))
+            if un and (un in nt or nt in un):
+                return u["id"]
+    return None
+
+
+def _fin_vendus_cost_map(key, ttl=_FIN_VENDUS_COST_TTL):
+    """Mapa preço-de-custo por referência de produto (supply_price), p/ calcular
+    o CMV. Cacheado em UPLOAD_DIR/vendus (TTL 6h) para não repetir o fetch de
+    produtos a cada sync. Síncrono — corre em thread."""
+    cache_dir = UPLOAD_DIR / "vendus"
+    cache_f = cache_dir / ("costmap_" + hashlib.sha1(str(key).encode()).hexdigest() + ".json")
+    try:
+        if cache_f.is_file() and (_time.time() - cache_f.stat().st_mtime) < ttl:
+            cached = json.loads(cache_f.read_text())
+            if isinstance(cached, dict) and cached:
+                return cached
+    except Exception:  # noqa: BLE001 — cache corrompida: refaz
+        pass
+    cmap = {}
+    page = 1
+    while True:
+        ps = _fin_vendus_http(key, f"products/?per_page=100&page={page}")
+        if not isinstance(ps, list) or not ps:
+            break
+        for p in ps:
+            if not isinstance(p, dict):
+                continue
+            ref = p.get("reference")
+            ref = str(ref) if ref not in (None, "") else str(p.get("title") or "")
+            if ref:
+                cmap[ref] = _fin_clean_num(p.get("supply_price")) or 0.0
+        if len(ps) < 100:
+            break
+        page += 1
+        if page > _FIN_VENDUS_MAX_PROD_PAGES:
+            break
+    if cmap:
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_f.write_text(json.dumps(cmap))
+        except Exception:  # noqa: BLE001 — sem cache não é fatal
+            pass
+    return cmap
+
+
+def _fin_vendus_fetch_store_days(key, store_id, since, until, with_cost, cost_map):
+    """Lê os documentos paginados de UMA loja no intervalo e agrega por dia.
+    Devolve (by_day, complete, error): by_day = {dia: [gross, net, cmv,
+    net_sem_custo]}. Só HTTP e agregação (sem BD) — corre em thread.
+
+    CMV: lê as linhas de cada fatura (qty × custo do produto). É pesado
+    (1 chamada por documento) -> só no cron (with_cost=True). O botão web
+    sincroniza as vendas depressa (sem CMV) e o custo é preenchido pelo cron."""
+    by_day = {}
+    page = 1
+    while True:
+        docs = _fin_vendus_http(
+            key,
+            f"documents/?since={since}&until={until}&store_id={store_id}&per_page=100&page={page}",
+        )
+        if not isinstance(docs, list) or not docs:
+            break
+        for x in docs:
+            if not isinstance(x, dict):
+                continue
+            t = x.get("type") or ""
+            if t in _FIN_VENDUS_SALES:
+                sign = 1
+            elif t in _FIN_VENDUS_CREDIT:
+                sign = -1
+            else:
+                continue  # RG, DC, etc. — ignorados
+            g = _fin_clean_num(x.get("amount_gross")) or 0.0
+            n = _fin_clean_num(x.get("amount_net")) or 0.0
+            day = str(x.get("date") or "")[:10]
+            if not day:
+                continue
+            acc = by_day.setdefault(day, [0.0, 0.0, 0.0, 0.0])
+            acc[0] += sign * g
+            acc[1] += sign * n
+            if with_cost:
+                det = _fin_vendus_http(key, f"documents/{x.get('id')}/")
+                if isinstance(det, list):  # a resposta pode vir como lista
+                    det = det[0] if det else None
+                items = det.get("items") if isinstance(det, dict) else None
+                if not isinstance(items, list):
+                    items = []
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    qty = _fin_clean_num(it.get("qty")) or 0.0
+                    ref = it.get("reference")
+                    ref = str(ref) if ref not in (None, "") else str(it.get("title") or "")
+                    amounts = it.get("amounts") if isinstance(it.get("amounts"), dict) else {}
+                    itnet = _fin_clean_num(amounts.get("net_total")) or 0.0
+                    cost = _fin_clean_num(cost_map.get(ref)) if ref else None
+                    if cost and cost > 0:
+                        acc[2] += sign * qty * cost
+                    else:
+                        acc[3] += sign * itnet
+        if len(docs) < 100:
+            break
+        page += 1
+        if page > _FIN_VENDUS_MAX_DOC_PAGES:
+            # Leitura incompleta: NÃO gravar (o PHP gravava mesmo assim; aqui
+            # é tratado como incompleto para nunca subcontar vendas).
+            return by_day, False, "demasiados documentos (>6000) no intervalo — reduz o período"
+    return by_day, True, None
+
+
+async def _fin_vendus_write_store(company_id, unit_id, since, until, by_day, with_cost, store_title):
+    """Grava os dias agregados de uma loja em fin_sales de forma idempotente:
+    delete_many do intervalo (source vendus, mesma empresa/loja) + insert dos
+    dias com valores. Sync rápido (with_cost=False): preserva amount_cost/
+    net_nocost já calculados pelo cron, para não os apagar até à próxima
+    passagem noturna. Devolve o número de linhas escritas."""
+    flt = {
+        "source": "vendus",
+        "company_id": company_id,
+        "unit_id": unit_id,
+        "date": {"$gte": since, "$lte": until},
+    }
+    prev = {}
+    if not with_cost:
+        old = await db.fin_sales.find(
+            flt, {"_id": 0, "date": 1, "amount_cost": 1, "net_nocost": 1}
+        ).to_list(20000)
+        for r in old:
+            d = str(r.get("date") or "")[:10]
+            prev[d] = (
+                _fin_clean_num(r.get("amount_cost")) or 0.0,
+                _fin_clean_num(r.get("net_nocost")) or 0.0,
+            )
+    now = datetime.now(timezone.utc).isoformat()
+    docs = []
+    for day in sorted(by_day):
+        gross, net, cmv, nocost = by_day[day]
+        g = round(gross, 2)
+        n = round(net, 2)
+        if g == 0 and n == 0:
+            continue  # dias sem vendas não geram linha
+        if with_cost:
+            cost, nc = round(cmv, 2), round(nocost, 2)
+        else:
+            pc = prev.get(day, (0.0, 0.0))
+            cost, nc = round(pc[0], 2), round(pc[1], 2)
+        rate = round((g / n - 1) * 100, 2) if n > 0 else None
+        docs.append({
+            "id": str(uuid.uuid4()),
+            "company_id": company_id,
+            "unit_id": unit_id,
+            "date": day,
+            "amount": g,
+            "amount_net": n,
+            "amount_cost": cost,
+            "net_nocost": nc,
+            "vat_rate": rate,
+            "note": store_title,
+            "source": "vendus",
+            "created_by": None,
+            "created_at": now,
+        })
+    await db.fin_sales.delete_many(flt)
+    if docs:
+        await db.fin_sales.insert_many(docs)
+    return len(docs)
+
+
+async def _fin_vendus_run_account(acc, since, until, with_cost):
+    """Sincroniza UMA conta Vendus (todas as lojas dela). Devolve
+    {'written': n, 'stores': [{'store','nif','days','net','cmv','complete'}],
+    'errors': [...]}. Defensivo: uma loja com falha não aborta as restantes."""
+    out = {"written": 0, "stores": [], "errors": []}
+    key = str(acc.get("key") or "")
+    nif = _fin_only_digits(acc.get("company_nif"))
+    if not key or not nif:
+        out["errors"].append("conta Vendus mal configurada (key/company_nif em falta)")
+        return out
+
+    # Empresa pelo NIF (comparação só por dígitos, como no PHP).
+    company = None
+    companies = await db.fin_companies.find({}, {"_id": 0, "id": 1, "nif": 1}).to_list(5000)
+    for c in companies:
+        if _fin_only_digits(c.get("nif")) == nif:
+            company = c
+            break
+    if not company:
+        out["errors"].append(f"empresa NIF {nif} não encontrada")
+        return out
+    company_id = company["id"]
+    units = await db.fin_units.find(
+        {"company_id": company_id}, {"_id": 0, "id": 1, "name": 1}
+    ).to_list(1000)
+
+    stores = await asyncio.to_thread(_fin_vendus_http, key, "stores/")
+    if not isinstance(stores, list):
+        out["errors"].append(f"falha a obter lojas (NIF {nif}) — chave inválida?")
+        return out
+    cost_map = (await asyncio.to_thread(_fin_vendus_cost_map, key)) if with_cost else {}
+
+    for store in stores:
+        if not isinstance(store, dict):
+            continue
+        sid = store.get("id")
+        title = str(store.get("title") or "")
+        unit_id = _fin_vendus_match_unit(units, title)
+        if not unit_id:
+            out["errors"].append(
+                f"loja Vendus '{title}' (store_id={sid}) sem unidade correspondente (NIF {nif})"
+            )
+            continue
+        try:
+            by_day, complete, err = await asyncio.to_thread(
+                _fin_vendus_fetch_store_days, key, sid, since, until, with_cost, cost_map
+            )
+        except Exception as exc:  # noqa: BLE001
+            out["errors"].append(f"loja '{title}' (NIF {nif}): falha a ler — {exc}")
+            continue
+        if err:
+            out["errors"].append(f"loja '{title}': {err}")
+
+        # Só gravamos se a loja foi lida por COMPLETO no intervalo: assim o
+        # delete+insert nunca deixa dias apagados sem voltarem a ser inseridos.
+        if complete:
+            try:
+                out["written"] += await _fin_vendus_write_store(
+                    company_id, unit_id, since, until, by_day, with_cost, title
+                )
+            except Exception:  # noqa: BLE001
+                out["errors"].append(f"loja '{title}' (NIF {nif}): falha a gravar")
+
+        sn = round(sum(v[1] for v in by_day.values()), 2)
+        sc = round(sum(v[2] for v in by_day.values()), 2)
+        out["stores"].append({
+            "store": title,
+            "nif": nif,
+            "days": len(by_day),
+            "net": sn,
+            "cmv": sc,
+            "complete": complete,
+        })
+    return out
+
+
+def _fin_vendus_default_range(since, until):
+    """Aplica as omissões do PHP: until=hoje, since=há 3 dias (UTC)."""
+    today = datetime.now(timezone.utc)
+    u = (until or "").strip() or today.strftime("%Y-%m-%d")
+    s = (since or "").strip() or (today - timedelta(days=3)).strftime("%Y-%m-%d")
+    return s, u
+
+
+# ---------- Modelo ----------
+
+class FinVendusSyncRequest(BaseModel):
+    company_id: str
+    since: Optional[str] = None
+    until: Optional[str] = None
+    with_cost: Optional[bool] = False
+
+
+# ---------- Endpoints ----------
+
+@api_router.post("/fin/vendus/sync")
+async def fin_vendus_sync(payload: FinVendusSyncRequest, current_user: dict = Depends(get_current_user)):
+    """Sincronização manual (botão 'Sincronizar' no frontend). Corre o motor
+    SÓ para a conta Vendus da empresa indicada. Por omissão sem CMV
+    (with_cost=False): rápido; o custo é preenchido pelo cron noturno."""
+    await fin_require_editor(payload.company_id, current_user)
+
+    accounts = _fin_vendus_accounts()
+    if not accounts:
+        raise HTTPException(
+            status_code=400, detail="Integração Vendus não configurada (VENDUS_ACCOUNTS)."
+        )
+    company = await db.fin_companies.find_one({"id": payload.company_id}, {"_id": 0, "nif": 1})
+    if not company:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+    nif = _fin_only_digits(company.get("nif"))
+    acc = None
+    if nif:
+        for a in accounts:
+            if isinstance(a, dict) and _fin_only_digits(a.get("company_nif")) == nif:
+                acc = a
+                break
+    if not acc:
+        raise HTTPException(status_code=400, detail="Empresa sem conta Vendus configurada.")
+
+    since, until = _fin_vendus_default_range(payload.since, payload.until)
+    logger.info(
+        "[fin-vendus] sync manual: empresa=%s %s..%s with_cost=%s",
+        payload.company_id, since, until, bool(payload.with_cost),
+    )
+    result = await _fin_vendus_run_account(acc, since, until, bool(payload.with_cost))
+    logger.info(
+        "[fin-vendus] sync manual fim: written=%d lojas=%d erros=%d",
+        result["written"], len(result["stores"]), len(result["errors"]),
+    )
+    return {"since": since, "until": until, **result}
+
+
+@api_router.post("/fin/cron/vendus")
+async def fin_cron_vendus(
+    key: str = Query(...),
+    since: Optional[str] = Query(None),
+    until: Optional[str] = Query(None),
+):
+    """Sincronização automática (cron). Protegido por CRON_KEY, sem JWT.
+    Corre TODAS as contas de VENDUS_ACCOUNTS com CMV (with_cost=True)."""
+    cron_key = os.environ.get("CRON_KEY")
+    if not cron_key or not secrets.compare_digest(str(key), str(cron_key)):
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+
+    since_s, until_s = _fin_vendus_default_range(since, until)
+    accounts = _fin_vendus_accounts()
+    logger.info("[fin-vendus] cron: %s..%s contas=%d", since_s, until_s, len(accounts))
+
+    out = {
+        "since": since_s,
+        "until": until_s,
+        "accounts": len(accounts),
+        "written": 0,
+        "stores": [],
+        "errors": [],
+    }
+    for ai, acc in enumerate(accounts):
+        if not isinstance(acc, dict):
+            out["errors"].append(f"entrada #{ai} inválida em VENDUS_ACCOUNTS")
+            continue
+        try:
+            r = await _fin_vendus_run_account(acc, since_s, until_s, True)
+        except Exception as exc:  # noqa: BLE001
+            out["errors"].append(
+                f"conta NIF {_fin_only_digits(acc.get('company_nif'))}: {exc}"
+            )
+            continue
+        out["written"] += r["written"]
+        out["stores"].extend(r["stores"])
+        out["errors"].extend(r["errors"])
+
+    logger.info(
+        "[fin-vendus] cron fim: written=%d lojas=%d erros=%d",
+        out["written"], len(out["stores"]), len(out["errors"]),
+    )
+    return out
 
 
 # ==================== HEALTH CHECK ====================

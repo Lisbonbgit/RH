@@ -9,3 +9,15 @@ rh.lisbonb.com {
     encode gzip
     reverse_proxy frontend:80
 }
+
+# ===== L'Açaí — API (app iOS/Android) =====
+api.olacai.com {
+    encode gzip
+    reverse_proxy olacai-api:8001
+}
+
+# ===== L'Açaí — Painel web (admin/gestão) =====
+admin.olacai.com {
+    encode gzip
+    reverse_proxy olacai-web:80
+}

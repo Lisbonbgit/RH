@@ -172,6 +172,18 @@ export const getFinSales = (params) => axios.get(`${API_URL}/fin/sales`, { param
 export const createFinSale = (data) => axios.post(`${API_URL}/fin/sales`, data);
 export const updateFinSale = (id, data) => axios.put(`${API_URL}/fin/sales/${id}`, data);
 export const deleteFinSale = (id) => axios.delete(`${API_URL}/fin/sales/${id}`);
+export const syncFinVendus = (companyId, withCost = false) =>
+  axios.post(`${API_URL}/fin/vendus/sync`, { company_id: companyId, with_cost: withCost });
+
+// Painel Global (financeiro) — cruza KPIs Financeiro + RH + Marketing por empresa
+// params: { company_id, month? }
+export const getFinGlobalDashboard = (params) =>
+  axios.get(`${API_URL}/fin/global/dashboard`, { params });
+// Ligação empresa/unidade do Financeiro ao RH
+export const linkFinCompanyRh = (id, rhCompanyId) =>
+  axios.put(`${API_URL}/fin/companies/${id}/link-rh`, { rh_company_id: rhCompanyId });
+export const linkFinUnitRh = (id, rhLocationId) =>
+  axios.put(`${API_URL}/fin/units/${id}/link-rh`, { rh_location_id: rhLocationId });
 
 // Marketing — Campanhas
 export const getCampaigns = (params) => axios.get(`${API_URL}/marketing/campaigns`, { params });
