@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { getFolders, getDocuments, uploadDocument } from '../../lib/api';
+import { downloadOrOpenFile } from '../../lib/files';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -65,16 +66,7 @@ export default function EmployeeDocuments() {
     try {
       const API_URL = process.env.REACT_APP_BACKEND_URL + '/api';
       const token = localStorage.getItem('token');
-      const response = await fetch(`${API_URL}/documents/${doc.id}/download`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = doc.name;
-      a.click();
-      window.URL.revokeObjectURL(url);
+      await downloadOrOpenFile(`${API_URL}/documents/${doc.id}/download`, doc.name, token);
     } catch (error) {
       toast.error('Erro ao descarregar documento');
     }
