@@ -52,10 +52,19 @@ import { toast } from 'sonner';
 // Universo "Gestão Lisbonb": secções de topo, cada uma com os seus módulos.
 const sections = [
   {
+    key: 'painel',
+    label: 'Painel',
+    home: '/admin/painel',
+    match: (p) => p.startsWith('/admin/painel'),
+    items: [
+      { path: '/admin/painel', label: 'Global', icon: LayoutDashboard, exact: true },
+    ],
+  },
+  {
     key: 'rh',
     label: 'RH',
     home: '/admin',
-    match: (p) => !p.startsWith('/admin/financeiro') && !p.startsWith('/admin/marketing'),
+    match: (p) => !p.startsWith('/admin/painel') && !p.startsWith('/admin/financeiro') && !p.startsWith('/admin/marketing'),
     items: [
       { path: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true },
       { path: '/admin/empresas', label: 'Empresas', icon: Building2 },
@@ -168,9 +177,9 @@ export default function AdminLayout() {
 
       <Separator />
 
-      {/* Seletor de secções (RH / Financeiro / Marketing) */}
+      {/* Seletor de secções (Painel / RH / Financeiro / Marketing) */}
       <div className="px-4 pt-4">
-        <div className="grid grid-cols-3 gap-1 p-1 bg-muted rounded-xl">
+        <div className="grid grid-cols-4 gap-1 p-1 bg-muted rounded-xl">
           {sections.map((s) => (
             <button
               key={s.key}

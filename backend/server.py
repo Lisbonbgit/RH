@@ -3099,6 +3099,13 @@ class FinUnitResponse(BaseModel):
     type: Optional[str] = None
     sort: int = 0
 
+# Fase 6 — corpo dos endpoints de ligação RH<->Financeiro
+class FinLinkRhCompany(BaseModel):
+    rh_company_id: Optional[str] = None
+
+class FinLinkRhUnit(BaseModel):
+    rh_location_id: Optional[str] = None
+
 class FinTeamAdd(BaseModel):
     email: str
     role: str = "partner"
@@ -4971,6 +4978,215 @@ async def fin_delete_sale(sale_id: str, current_user: dict = Depends(get_current
     await fin_require_editor(sale["company_id"], current_user)
     await db.fin_sales.delete_one({"id": sale_id})
     return {"ok": True}
+
+
+# ====================================================================
+# ===== FINANCEIRO · FASE 6 — INTEGRAÇÃO GLOBAL =====
+# ====================================================================
+# Fundação para cruzar setores: liga a empresa/loja do Financeiro à do RH
+# e expõe um Painel Global que junta KPIs de Financeiro + RH + Marketing.
+# Reutiliza os helpers de pertença (fin_require_*) e o estilo dos /fin/*.
+
+
+# ---------- Ligação RH <-> Financeiro ----------
+
+@api_router.put("/fin/companies/{company_id}/link-rh")
+async def fin_link_company_rh(
+    company_id: str,
+    payload: FinLinkRhCompany,
+    current_user: dict = Depends(get_current_user),
+):
+    """Liga (ou desliga, com null) a empresa do Financeiro a uma empresa do RH.
+    Só o dono. Se o id do RH vier preenchido, tem de existir em db.companies."""
+    await fin_require_owner(company_id, current_user)
+    fin_company = await db.fin_companies.find_one({"id": company_id}, {"_id": 0})
+    if not fin_company:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+    rh_company_id = (payload.rh_company_id or "").strip() or None
+    if rh_company_id:
+        rh = await db.companies.find_one({"id": rh_company_id}, {"_id": 0, "id": 1})
+        if not rh:
+            raise HTTPException(status_code=400, detail="Empresa de RH inexistente.")
+    await db.fin_companies.update_one(
+        {"id": company_id}, {"$set": {"rh_company_id": rh_company_id}}
+    )
+    return await db.fin_companies.find_one({"id": company_id}, {"_id": 0})
+
+
+@api_router.put("/fin/units/{unit_id}/link-rh")
+async def fin_link_unit_rh(
+    unit_id: str,
+    payload: FinLinkRhUnit,
+    current_user: dict = Depends(get_current_user),
+):
+    """Liga (ou desliga, com null) a unidade do Financeiro a um local do RH.
+    Editor da empresa dona da unidade. Se preenchido, valida em db.locations."""
+    unit = await db.fin_units.find_one({"id": unit_id}, {"_id": 0})
+    if not unit:
+        raise HTTPException(status_code=404, detail="Unidade não encontrada.")
+    await fin_require_editor(unit["company_id"], current_user)
+    rh_location_id = (payload.rh_location_id or "").strip() or None
+    if rh_location_id:
+        loc = await db.locations.find_one({"id": rh_location_id}, {"_id": 0, "id": 1})
+        if not loc:
+            raise HTTPException(status_code=400, detail="Local de RH inexistente.")
+    await db.fin_units.update_one(
+        {"id": unit_id}, {"$set": {"rh_location_id": rh_location_id}}
+    )
+    return await db.fin_units.find_one({"id": unit_id}, {"_id": 0})
+
+
+# ---------- Painel Global (KPIs cruzados) ----------
+
+@api_router.get("/fin/global/dashboard")
+async def fin_global_dashboard(
+    company_id: str,
+    month: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Cruza KPIs de Financeiro + RH + Marketing para uma empresa e mês.
+    `month` no formato AAAA-MM (por omissão, o mês atual). Cada setor é lido
+    de forma defensiva: se um estiver em falta não derruba o painel todo."""
+    await fin_require_member(company_id, current_user)
+
+    fin_company = await db.fin_companies.find_one({"id": company_id}, {"_id": 0})
+    if not fin_company:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+
+    mon = (month or "").strip()
+    if not mon:
+        mon = datetime.now(timezone.utc).strftime("%Y-%m")
+
+    rh_company_id = fin_company.get("rh_company_id")
+
+    company_out = {
+        "id": fin_company.get("id"),
+        "name": fin_company.get("name"),
+        "nif": fin_company.get("nif"),
+        "rh_company_id": rh_company_id,
+    }
+
+    # ----- Financeiro -----
+    financeiro = {
+        "vendas_mes": 0.0,
+        "a_pagar": 0.0,
+        "pago": 0.0,
+        "pendentes": 0,
+        "saldo_banco": 0.0,
+    }
+    try:
+        # Vendas do mês (soma de fin_sales.amount cuja date começa por AAAA-MM)
+        sales = await db.fin_sales.find(
+            {"company_id": company_id, "date": {"$regex": "^" + re.escape(mon)}},
+            {"_id": 0, "amount": 1},
+        ).to_list(100000)
+        financeiro["vendas_mes"] = round(
+            sum(float(s.get("amount") or 0) for s in sales), 2
+        )
+
+        # Faturas: a pagar (por pagar e não rejeitadas) e já pago
+        invoices = await db.fin_invoices.find(
+            {"company_id": company_id},
+            {"_id": 0, "amount": 1, "paid": 1, "approval_status": 1},
+        ).to_list(100000)
+        a_pagar = 0.0
+        pago = 0.0
+        pendentes = 0
+        for inv in invoices:
+            amt = float(inv.get("amount") or 0)
+            is_paid = inv.get("paid") is True
+            appr = inv.get("approval_status")
+            if is_paid:
+                pago += amt
+            elif appr != "rejected":
+                a_pagar += amt
+            if appr == "pending":
+                pendentes += 1
+        financeiro["a_pagar"] = round(a_pagar, 2)
+        financeiro["pago"] = round(pago, 2)
+        financeiro["pendentes"] = pendentes
+
+        # Saldo em banco: para cada conta da empresa, o saldo (balance) do
+        # movimento mais recente (maior date_lancamento). Soma de todas as contas.
+        accounts = await db.fin_bank_accounts.find(
+            {"company_id": company_id}, {"_id": 0, "id": 1}
+        ).to_list(2000)
+        saldo_banco = 0.0
+        for acc in accounts:
+            last = await db.fin_movements.find_one(
+                {"company_id": company_id, "account_id": acc.get("id")},
+                {"_id": 0, "balance": 1, "date_lancamento": 1},
+                sort=[("date_lancamento", -1)],
+            )
+            if last and last.get("balance") is not None:
+                saldo_banco += float(last.get("balance") or 0)
+        financeiro["saldo_banco"] = round(saldo_banco, 2)
+    except Exception:
+        # Falha defensiva: mantém os valores por omissão sem derrubar o painel.
+        pass
+
+    # ----- RH -----
+    rh = {"linked": False}
+    colaboradores = 0
+    try:
+        if rh_company_id:
+            rh_company = await db.companies.find_one(
+                {"id": rh_company_id}, {"_id": 0, "id": 1}
+            )
+            if rh_company:
+                rh["linked"] = True
+                colaboradores = await db.employees.count_documents(
+                    {"company_id": rh_company_id}
+                )
+                rh["colaboradores"] = colaboradores
+                # Ausências pendentes: primeiro os employees dessa empresa RH,
+                # depois conta os leave_requests pendentes desses colaboradores.
+                emp_docs = await db.employees.find(
+                    {"company_id": rh_company_id}, {"_id": 0, "id": 1}
+                ).to_list(100000)
+                emp_ids = [e["id"] for e in emp_docs if e.get("id")]
+                if emp_ids:
+                    rh["ausencias_pendentes"] = await db.leave_requests.count_documents(
+                        {"employee_id": {"$in": emp_ids}, "status": "pendente"}
+                    )
+                else:
+                    rh["ausencias_pendentes"] = 0
+    except Exception:
+        rh = {"linked": bool(rh_company_id)}
+        colaboradores = 0
+
+    # ----- Marketing -----
+    marketing = {"campanhas_ativas": 0}
+    try:
+        marketing["campanhas_ativas"] = await db.mkt_campaigns.count_documents(
+            {
+                "status": "ativa",
+                "$or": [
+                    {"company_id": company_id},
+                    {"company_id": None},
+                    {"company_id": {"$exists": False}},
+                ],
+            }
+        )
+    except Exception:
+        pass
+
+    # ----- Cruzados -----
+    receita_por_colaborador = None
+    if colaboradores and colaboradores > 0:
+        receita_por_colaborador = round(
+            financeiro["vendas_mes"] / colaboradores, 2
+        )
+    cruzados = {"receita_por_colaborador": receita_por_colaborador}
+
+    return {
+        "company": company_out,
+        "month": mon,
+        "financeiro": financeiro,
+        "rh": rh,
+        "marketing": marketing,
+        "cruzados": cruzados,
+    }
 
 
 # ==================== HEALTH CHECK ====================
