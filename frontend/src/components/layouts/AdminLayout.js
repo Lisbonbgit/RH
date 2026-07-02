@@ -177,15 +177,17 @@ export default function AdminLayout() {
 
       <Separator />
 
-      {/* Seletor de secções (Painel / RH / Financeiro / Marketing) */}
+      {/* Seletor de secções (Painel / RH / Financeiro / Marketing).
+          Grelha 2x2: com 4 secções, 4 colunas ficam estreitas demais na
+          sidebar e os nomes ("Financeiro", "Marketing") sobrepõem-se. */}
       <div className="px-4 pt-4">
-        <div className="grid grid-cols-4 gap-1 p-1 bg-muted rounded-xl">
+        <div className="grid grid-cols-2 gap-1 p-1 bg-muted rounded-xl">
           {sections.map((s) => (
             <button
               key={s.key}
               type="button"
               onClick={() => { navigate(s.home); setMobileOpen(false); }}
-              className={`text-xs font-semibold py-1.5 rounded-lg transition-colors ${
+              className={`text-xs font-semibold py-1.5 px-2 rounded-lg truncate transition-colors ${
                 activeSection.key === s.key
                   ? 'bg-card text-primary shadow-sm'
                   : 'text-muted-foreground hover:text-foreground'
