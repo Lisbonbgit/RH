@@ -192,6 +192,9 @@ export const findPlace = (query) => axios.get(`${API_URL}/marketing/reviews/find
 // Marketing — Relatórios / métricas
 export const getMarketingReports = (params) => axios.get(`${API_URL}/marketing/reports`, { params });
 
+// Escala do próprio colaborador (para o lembrete de ponto no app)
+export const getMySchedule = () => axios.get(`${API_URL}/me/schedule`);
+
 // RH — Feriados personalizados (municipais)
 export const getHolidays = () => axios.get(`${API_URL}/holidays`);
 export const createHoliday = (data) => axios.post(`${API_URL}/holidays`, data);

@@ -13,60 +13,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '../../components/ui/alert-dialog';
-import { Clock, LogIn, LogOut, History, MapPin, Loader2 } from 'lucide-react';
+import { Clock, LogIn, LogOut, History, MapPin, Loader2, CheckCircle2, AlertTriangle, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, parseISO, isToday } from 'date-fns';
 import { pt } from 'date-fns/locale';
-
-// Uma tentativa de obter a posição (resolve sempre, com ok/código de erro).
-function getPositionOnce(options) {
-  return new Promise((resolve) => {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({
-        ok: true,
-        position: {
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-        },
-      }),
-      (err) => resolve({ ok: false, code: err.code }),
-      options
-    );
-  });
-}
-
-// Obtém a posição de forma robusta (sobretudo no Safari/iOS):
-// 1) tenta alta precisão; 2) se falhar, tenta precisão normal (mais fiável)
-// e aceita um fix recente. Devolve { position, errorCode }.
-async function getCurrentPosition() {
-  if (!('geolocation' in navigator)) return { position: null, errorCode: null };
-  let r = await getPositionOnce({ enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
-  if (!r.ok) {
-    r = await getPositionOnce({ enableHighAccuracy: false, timeout: 12000, maximumAge: 300000 });
-  }
-  return r.ok ? { position: r.position, errorCode: null } : { position: null, errorCode: r.code };
-}
-
-// Mensagem de ajuda consoante o motivo da falha de localização.
-function geoHelpMessage(code) {
-  if (code === 1) {
-    return {
-      title: 'Localização bloqueada para o Safari',
-      description: 'No iPhone: Definições › Privacidade e Segurança › Serviços de Localização (ligado) e, em Safari, escolha "Ao usar a app". Depois, na barra do Safari toque em "AA" › Definições do Website › Localização › Permitir, e registe novamente.',
-    };
-  }
-  if (code === 3) {
-    return {
-      title: 'A localização demorou demasiado',
-      description: 'Sinal fraco. Confirme que a localização está ligada e tente outra vez, de preferência junto a uma janela ou no exterior.',
-    };
-  }
-  return {
-    title: 'Não foi possível obter a localização',
-    description: 'Este local exige localização para registar o ponto. Ative os Serviços de Localização e permita o acesso ao Safari.',
-  };
-}
+// Localização web + nativa (app Capacitor) num só sítio.
+import { getCurrentPositionSmart, geoHelpMessage } from '../../lib/geo';
+import { APP_VERSION } from '../../version';
 
 export default function EmployeeTimeRecord() {
   const [records, setRecords] = useState([]);
@@ -75,6 +28,7 @@ export default function EmployeeTimeRecord() {
   const [locating, setLocating] = useState(false);
   const [confirmType, setConfirmType] = useState(null);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [feedback, setFeedback] = useState(null); // aviso visível no ecrã
 
   useEffect(() => {
     fetchRecords();
@@ -98,28 +52,39 @@ export default function EmployeeTimeRecord() {
 
   const handleRecord = async (type) => {
     setSubmitting(true);
+    setFeedback(null);
+    const label = type === 'entrada' ? 'Entrada' : 'Saída';
     try {
-      // Tenta obter a localização (não bloqueia o registo se for negada)
+      // Tenta obter a localização (não bloqueia o registo se o local não exigir)
       setLocating(true);
-      const { position, errorCode } = await getCurrentPosition();
+      const { position, errorCode } = await getCurrentPositionSmart();
       setLocating(false);
 
       await createTimeRecord({ record_type: type, ...(position || {}) });
 
       if (position) {
-        toast.success(`${type === 'entrada' ? 'Entrada' : 'Saída'} registada com localização!`);
+        toast.success(`${label} registada com localização!`);
+        setFeedback({ kind: 'success', title: `${label} registada`, description: 'Com a sua localização. ✅' });
       } else {
-        toast.success(`${type === 'entrada' ? 'Entrada' : 'Saída'} registada (sem localização)`);
+        toast.success(`${label} registada (sem localização)`);
+        setFeedback({ kind: 'success', title: `${label} registada`, description: 'Este local não exige localização.' });
       }
       fetchRecords();
     } catch (error) {
+      const status = error.response?.status;
       const detail = error.response?.data?.detail;
-      // Loja com cerca e sem localização: dar instruções claras (em especial no Safari)
-      if (error.response?.status === 400 && /localiza/i.test(detail || '')) {
+      if (status === 400 && /localiza/i.test(detail || '')) {
+        // Loja com cerca e sem localização obtida (permissão/GPS)
         const m = geoHelpMessage(errorCode);
         toast.error(m.title, { description: m.description, duration: 11000 });
+        setFeedback({ kind: 'error', title: m.title, description: m.description });
+      } else if (status === 403) {
+        // Está fora do raio permitido do local
+        toast.error(detail || 'Está fora do local de trabalho');
+        setFeedback({ kind: 'error', title: 'Fora do local de trabalho', description: detail || 'Aproxime-se do local para registar o ponto.' });
       } else {
         toast.error(detail || 'Erro ao registar ponto');
+        setFeedback({ kind: 'error', title: 'Não foi possível registar', description: detail || 'Tente novamente dentro de momentos.' });
       }
     } finally {
       setSubmitting(false);
@@ -128,6 +93,10 @@ export default function EmployeeTimeRecord() {
   };
 
   const todayRecords = records.filter((r) => isToday(parseISO(r.time)));
+
+  // Alternância entrada/saída: o próximo registo permitido depende do último.
+  const lastRecord = records.length ? records.reduce((a, b) => (a.time > b.time ? a : b)) : null;
+  const nextType = (!lastRecord || lastRecord.record_type === 'saida') ? 'entrada' : 'saida';
 
   const LocationLink = ({ record }) =>
     record.latitude != null && record.longitude != null ? (
@@ -162,7 +131,7 @@ export default function EmployeeTimeRecord() {
           size="lg"
           className="h-24 flex-col gap-2 bg-green-600 hover:bg-green-700"
           onClick={() => setConfirmType('entrada')}
-          disabled={submitting}
+          disabled={submitting || nextType !== 'entrada'}
           data-testid="entrada-btn"
         >
           <LogIn className="h-8 w-8" />
@@ -172,7 +141,7 @@ export default function EmployeeTimeRecord() {
           size="lg"
           className="h-24 flex-col gap-2 bg-red-600 hover:bg-red-700"
           onClick={() => setConfirmType('saida')}
-          disabled={submitting}
+          disabled={submitting || nextType !== 'saida'}
           data-testid="saida-btn"
         >
           <LogOut className="h-8 w-8" />
@@ -180,10 +149,41 @@ export default function EmployeeTimeRecord() {
         </Button>
       </div>
 
+      <p className="text-center text-sm text-muted-foreground">
+        {nextType === 'entrada'
+          ? 'Toque em Entrada para iniciar o turno.'
+          : 'Tem uma entrada em aberto — registe a Saída.'}
+      </p>
+
       {locating && (
         <p className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" /> A obter a sua localização…
         </p>
+      )}
+
+      {/* Aviso visível do resultado do registo (bem visível no telemóvel) */}
+      {feedback && (
+        <div
+          className={`rounded-xl border p-4 flex items-start gap-3 ${
+            feedback.kind === 'success'
+              ? 'bg-green-50 border-green-200 text-green-800'
+              : 'bg-red-50 border-red-200 text-red-800'
+          }`}
+          data-testid="record-feedback"
+        >
+          {feedback.kind === 'success' ? (
+            <CheckCircle2 className="h-5 w-5 shrink-0 mt-0.5" />
+          ) : (
+            <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5" />
+          )}
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold">{feedback.title}</p>
+            {feedback.description && <p className="text-sm mt-0.5">{feedback.description}</p>}
+          </div>
+          <button onClick={() => setFeedback(null)} className="shrink-0 opacity-60 hover:opacity-100" aria-label="Fechar">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
       )}
 
       {/* Today's Records */}
@@ -294,6 +294,8 @@ export default function EmployeeTimeRecord() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <p className="text-center text-xs text-muted-foreground pt-2">Lisbonb RH · v{APP_VERSION}</p>
     </div>
   );
 }

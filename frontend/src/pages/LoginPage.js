@@ -7,6 +7,7 @@ import { Label } from '../components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { toast } from 'sonner';
 import { Lock, Mail, MapPin, CalendarCheck, FileText, Clock } from 'lucide-react';
+import { APP_VERSION } from '../version';
 
 const BrandMark = ({ size = 'md', glass = false }) => {
   const dims = size === 'lg' ? 'h-12 w-12 text-2xl rounded-2xl' : 'h-10 w-10 text-xl rounded-xl';
@@ -184,6 +185,7 @@ export default function LoginPage() {
           <p className="text-center text-sm text-muted-foreground mt-6">
             © {new Date().getFullYear()} Grupo Lisbonb · Sistema interno de RH
           </p>
+          <p className="text-center text-xs text-muted-foreground/70 mt-1">v{APP_VERSION}</p>
         </div>
       </div>
     </div>

@@ -1,0 +1,15 @@
+{
+  "appId": "com.lisbonb.rh",
+  "appName": "Lisbonb RH",
+  "webDir": "build",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1200,
+      "backgroundColor": "#1366F0",
+      "showSpinner": false
+    }
+  }
+}
