@@ -5695,9 +5695,12 @@ def _fin_moloni_config():
 
 
 def _fin_moloni_http(path, params, tries=3):
-    """GET à API Moloni. Devolve o JSON (list/dict) ou None. Retries iguais ao
-    Vendus: rede/timeout/429/>=500 -> repete com backoff exponencial até
-    `tries`; 4xx (exceto 429) -> desiste. Síncrono — corre em thread.
+    """Chamada à API Moloni. O `grant/` vai por GET (params na query); os
+    restantes endpoints exigem POST form-encoded com o access_token na query
+    (confirmado contra a API real: getAll por GET falha). Devolve o JSON
+    (list/dict) ou None. Retries iguais ao Vendus: rede/timeout/429/>=500 ->
+    repete com backoff exponencial até `tries`; 4xx (exceto 429) -> desiste.
+    Síncrono — corre em thread.
     NUNCA logar o URL/params (levam credenciais e o access_token)."""
     attempt = 0
     while True:
@@ -5706,11 +5709,21 @@ def _fin_moloni_http(path, params, tries=3):
         retriable = False
         try:
             with httpx.Client(timeout=httpx.Timeout(18.0, connect=6.0)) as http_client:
-                resp = http_client.get(
-                    _FIN_MOLONI_BASE + path,
-                    params=params,
-                    headers={"Accept": "application/json"},
-                )
+                if path.startswith("grant/"):
+                    resp = http_client.get(
+                        _FIN_MOLONI_BASE + path,
+                        params=params,
+                        headers={"Accept": "application/json"},
+                    )
+                else:
+                    form = dict(params)
+                    query = {"access_token": form.pop("access_token", "")}
+                    resp = http_client.post(
+                        _FIN_MOLONI_BASE + path,
+                        params=query,
+                        data=form,
+                        headers={"Accept": "application/json"},
+                    )
             retriable = resp.status_code == 429 or resp.status_code >= 500
         except Exception:  # noqa: BLE001 — rede/timeout
             retriable = True
