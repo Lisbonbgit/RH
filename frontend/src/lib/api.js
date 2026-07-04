@@ -178,6 +178,11 @@ export const syncFinVendus = (companyId, withCost = false) =>
 export const syncFinSales = (companyId, withCost = false) =>
   axios.post(`${API_URL}/fin/sales/sync`, { company_id: companyId, with_cost: withCost });
 
+// Botões de atualização instantânea (Painel Global) — um por sistema.
+export const syncNowVendus = () => axios.post(`${API_URL}/fin/sync/vendus`);
+export const syncNowMoloni = () => axios.post(`${API_URL}/fin/sync/moloni`);
+export const syncNowIngest = () => axios.post(`${API_URL}/fin/sync/ingest`);
+
 // Painel Global (financeiro) — cruza KPIs Financeiro + RH + Marketing por empresa
 // params: { company_id, month? }
 export const getFinGlobalDashboard = (params) =>

@@ -5590,16 +5590,18 @@ async def fin_cron_vendus(
     key: str = Query(...),
     since: Optional[str] = Query(None),
     until: Optional[str] = Query(None),
+    with_cost: bool = Query(True),
 ):
     """Sincronização automática (cron). Protegido por CRON_KEY, sem JWT.
-    Corre TODAS as contas de VENDUS_ACCOUNTS com CMV (with_cost=True)."""
+    Corre TODAS as contas de VENDUS_ACCOUNTS. `with_cost=false` = sync rápido
+    horário (sem CMV, preserva o custo já calculado pelo noturno)."""
     cron_key = os.environ.get("CRON_KEY")
     if not cron_key or not secrets.compare_digest(str(key), str(cron_key)):
         raise HTTPException(status_code=403, detail="Acesso negado.")
 
     since_s, until_s = _fin_vendus_default_range(since, until)
     accounts = _fin_vendus_accounts()
-    logger.info("[fin-vendus] cron: %s..%s contas=%d", since_s, until_s, len(accounts))
+    logger.info("[fin-vendus] cron: %s..%s contas=%d cmv=%s", since_s, until_s, len(accounts), with_cost)
 
     out = {
         "since": since_s,
@@ -5614,7 +5616,7 @@ async def fin_cron_vendus(
             out["errors"].append(f"entrada #{ai} inválida em VENDUS_ACCOUNTS")
             continue
         try:
-            r = await _fin_vendus_run_account(acc, since_s, until_s, True)
+            r = await _fin_vendus_run_account(acc, since_s, until_s, with_cost)
         except Exception as exc:  # noqa: BLE001
             out["errors"].append(
                 f"conta NIF {_fin_only_digits(acc.get('company_nif'))}: {exc}"
@@ -6077,6 +6079,81 @@ async def fin_sales_sync(payload: FinSalesSyncRequest, current_user: dict = Depe
     raise HTTPException(
         status_code=400, detail="Empresa sem integração de faturação configurada."
     )
+
+
+# ===== FINANCEIRO · FASE 8 — SYNC MANUAL (botões do Painel Global) =====
+# Um botão por sistema: Vendus (todas as contas, rápido), Moloni (fábrica)
+# e ingestão de faturas por email. Todos com JWT; a permissão é verificada
+# por empresa (só sincroniza o que o utilizador pode editar).
+
+async def _fin_user_is_editor_somewhere(current_user: dict) -> bool:
+    """True se o utilizador é owner/partner de pelo menos uma empresa fin."""
+    m = await db.fin_company_members.find_one(
+        {"user_id": current_user["user_id"], "role": {"$in": ["owner", "partner"]}},
+        {"_id": 0, "company_id": 1},
+    )
+    return bool(m)
+
+@api_router.post("/fin/sync/vendus")
+async def fin_manual_sync_vendus(current_user: dict = Depends(get_current_user)):
+    """Botão 'Atualizar Vendus': todas as contas, sync rápido (sem CMV),
+    últimos 3 dias. Salta contas de empresas onde o utilizador não é editor."""
+    accounts = _fin_vendus_accounts()
+    if not accounts:
+        raise HTTPException(status_code=400, detail="Integração Vendus não configurada (VENDUS_ACCOUNTS).")
+    since_s, until_s = _fin_vendus_default_range(None, None)
+    out = {"engine": "vendus", "since": since_s, "until": until_s,
+           "written": 0, "stores": [], "errors": []}
+    ran = 0
+    for acc in accounts:
+        if not isinstance(acc, dict):
+            continue
+        nif = _fin_only_digits(acc.get("company_nif"))
+        comp = await db.fin_companies.find_one({"nif": nif}, {"_id": 0, "id": 1, "name": 1})
+        if not comp:
+            out["errors"].append(f"empresa NIF {nif} não encontrada")
+            continue
+        role = await fin_role_of(comp["id"], current_user["user_id"])
+        if role not in ("owner", "partner"):
+            out["errors"].append(f"{comp['name']}: sem permissão de edição — saltada")
+            continue
+        try:
+            r = await _fin_vendus_run_account(acc, since_s, until_s, False)
+            out["written"] += r["written"]
+            out["stores"].extend(r["stores"])
+            out["errors"].extend(r["errors"])
+            ran += 1
+        except Exception as exc:  # noqa: BLE001
+            out["errors"].append(f"{comp['name']}: {exc}")
+    if ran == 0 and out["errors"]:
+        raise HTTPException(status_code=403, detail="Sem permissão para sincronizar nenhuma conta Vendus.")
+    return out
+
+@api_router.post("/fin/sync/moloni")
+async def fin_manual_sync_moloni(current_user: dict = Depends(get_current_user)):
+    """Botão 'Atualizar Moloni': a conta configurada (Purple House), últimos 3 dias."""
+    cfg = _fin_moloni_config()
+    if not all([cfg["client_id"], cfg["client_secret"], cfg["username"], cfg["password"], cfg["company_nif"]]):
+        raise HTTPException(status_code=400, detail="Integração Moloni não configurada.")
+    comp = await db.fin_companies.find_one({"nif": cfg["company_nif"]}, {"_id": 0, "id": 1})
+    if not comp:
+        raise HTTPException(status_code=404, detail="Empresa do Moloni não encontrada no Financeiro.")
+    await fin_require_editor(comp["id"], current_user)
+    since_s, until_s = _fin_vendus_default_range(None, None)
+    result = await _fin_moloni_run(cfg, since_s, until_s)
+    return {"engine": "moloni", "since": since_s, "until": until_s, **result}
+
+@api_router.post("/fin/sync/ingest")
+async def fin_manual_sync_ingest(current_user: dict = Depends(get_current_user)):
+    """Botão 'Ler faturas do email agora': dispara a ingestão IMAP+IA.
+    Incremental (anexos já vistos são saltados), por isso é rápido no dia-a-dia."""
+    if not await _fin_user_is_editor_somewhere(current_user):
+        raise HTTPException(status_code=403, detail="Sem permissão de edição no Financeiro.")
+    cron_key = os.environ.get("CRON_KEY") or ""
+    if not cron_key:
+        raise HTTPException(status_code=400, detail="Ingestão não configurada (CRON_KEY).")
+    # Reutiliza a lógica (testada) do endpoint de cron, passando a chave real.
+    return await fin_cron_ingest(key=cron_key)
 
 
 # ==================== HEALTH CHECK ====================

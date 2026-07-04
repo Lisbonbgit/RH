@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { getFinCompanies, getFinGlobalDashboard, getCompanies, linkFinCompanyRh } from '../../../lib/api';
+import {
+  getFinCompanies, getFinGlobalDashboard, getCompanies, linkFinCompanyRh,
+  syncNowVendus, syncNowMoloni, syncNowIngest,
+} from '../../../lib/api';
 import { eur, normSup } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
@@ -11,7 +14,7 @@ import {
 } from '../../../components/ui/dialog';
 import {
   LayoutDashboard, TrendingUp, CircleDollarSign, Check, Clock, Landmark,
-  Users, CalendarOff, Megaphone, Link2, Gauge,
+  Users, CalendarOff, Megaphone, Link2, Gauge, RefreshCw, Store, Factory, Mail,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
@@ -51,6 +54,9 @@ export default function PainelGlobal() {
   const [rhCompanies, setRhCompanies] = useState([]);
   const [rhChoice, setRhChoice] = useState('');
   const [linking, setLinking] = useState(false);
+
+  // Botões "Atualizar agora" (qual sistema está a sincronizar, ou null)
+  const [syncBusy, setSyncBusy] = useState(null);
 
   useEffect(() => { loadCompanies(); }, []);
   useEffect(() => {
@@ -125,6 +131,47 @@ export default function PainelGlobal() {
 
   const hasReceita = cruzados.receita_por_colaborador != null;
 
+  // ---------- Botões "Atualizar agora" (um por sistema) ----------
+  const SYNCS = {
+    vendus: { fn: syncNowVendus, nome: 'Vendus (lojas)' },
+    moloni: { fn: syncNowMoloni, nome: 'Moloni (fábrica)' },
+    ingest: { fn: syncNowIngest, nome: 'Faturas do email' },
+  };
+  const runSync = async (kind) => {
+    setSyncBusy(kind);
+    try {
+      const res = await SYNCS[kind].fn();
+      const d = res.data || {};
+      let resumo;
+      if (kind === 'ingest') {
+        resumo = `${d.invoices_created ?? 0} faturas novas · ${d.attachments_seen ?? 0} anexos lidos`;
+      } else {
+        resumo = `${d.written ?? 0} dias de vendas atualizados`;
+      }
+      const errors = d.errors || [];
+      if (errors.length) {
+        toast.warning(`${SYNCS[kind].nome}: ${resumo} · ${errors.length} avisos`, { description: String(errors[0]) });
+      } else {
+        toast.success(`${SYNCS[kind].nome}: ${resumo}`);
+      }
+      loadDashboard();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || `Erro ao atualizar ${SYNCS[kind].nome}`);
+    } finally {
+      setSyncBusy(null);
+    }
+  };
+
+  const SyncBtn = ({ kind, icon: Icon, label }) => (
+    <Button variant="outline" size="sm" disabled={syncBusy !== null}
+      onClick={() => runSync(kind)} data-testid={`sync-now-${kind}`}>
+      {syncBusy === kind
+        ? <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+        : <Icon className="h-4 w-4 mr-2" />}
+      {syncBusy === kind ? 'A atualizar...' : label}
+    </Button>
+  );
+
   return (
     <div className="space-y-6 animate-fade-in" data-testid="painel-global-page">
       <PageHeader icon={LayoutDashboard} title="Painel Global" subtitle="Visão cruzada dos setores">
@@ -148,6 +195,23 @@ export default function PainelGlobal() {
           />
         </div>
       </PageHeader>
+
+      {/* Atualização instantânea — um botão por sistema de faturação. */}
+      {companies.length > 0 && (
+        <Card>
+          <CardContent className="p-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mr-1">
+              Atualizar agora
+            </span>
+            <SyncBtn kind="vendus" icon={Store} label="Vendus (lojas)" />
+            <SyncBtn kind="moloni" icon={Factory} label="Moloni (fábrica)" />
+            <SyncBtn kind="ingest" icon={Mail} label="Faturas do email" />
+            <span className="text-[11px] text-muted-foreground ml-auto hidden sm:inline">
+              Automático: vendas a cada hora · faturas às 07:00
+            </span>
+          </CardContent>
+        </Card>
+      )}
 
       {companies.length === 0 ? (
         <Card><CardContent className="py-12 text-center text-muted-foreground">
