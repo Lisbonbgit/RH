@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   getFinCompanies, getFinUnits, getFinSales,
-  createFinSale, updateFinSale, deleteFinSale, syncFinVendus,
+  createFinSale, updateFinSale, deleteFinSale, syncFinSales,
 } from '../../../lib/api';
 import { eur, fmtDate, todayISO } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
@@ -234,23 +234,25 @@ export default function FinVendas() {
     }
   };
 
-  // Sync rápido Vendus (sem CMV — o custo é preenchido pelo cron noturno).
+  // Sync rápido (sem CMV — o custo é preenchido pelo cron noturno). O backend
+  // escolhe o motor pela empresa: Vendus (lojas) ou Moloni (Purple House).
   const doSync = async () => {
     setSyncing(true);
     try {
-      const res = await syncFinVendus(companyId);
+      const res = await syncFinSales(companyId);
+      const engine = res.data?.engine === 'moloni' ? 'Moloni' : 'Vendus';
       const written = res.data?.written ?? 0;
       const errors = res.data?.errors || [];
       if (errors.length) {
-        toast.warning(`${written} dias sincronizados · ${errors.length} avisos`, {
+        toast.warning(`${engine}: ${written} dias sincronizados · ${errors.length} avisos`, {
           description: errors[0],
         });
       } else {
-        toast.success(`Vendus sincronizado: ${written} dias de vendas`);
+        toast.success(`${engine} sincronizado: ${written} dias de vendas`);
       }
       loadSales();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao sincronizar com o Vendus');
+      toast.error(err.response?.data?.detail || 'Erro ao sincronizar');
     } finally {
       setSyncing(false);
     }
@@ -283,7 +285,7 @@ export default function FinVendas() {
             className="w-36" data-testid="fin-month-picker" />
           {canEdit && (
             <Button variant="outline" onClick={doSync} disabled={syncing}
-              title="Sincronizar vendas do Vendus (últimos 3 dias)" data-testid="fin-sync-btn">
+              title="Sincronizar vendas (Vendus/Moloni, últimos 3 dias)" data-testid="fin-sync-btn">
               <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? 'animate-spin' : ''}`} />
               {syncing ? 'A sincronizar...' : 'Sincronizar'}
             </Button>

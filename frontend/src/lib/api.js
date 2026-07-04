@@ -174,6 +174,9 @@ export const updateFinSale = (id, data) => axios.put(`${API_URL}/fin/sales/${id}
 export const deleteFinSale = (id) => axios.delete(`${API_URL}/fin/sales/${id}`);
 export const syncFinVendus = (companyId, withCost = false) =>
   axios.post(`${API_URL}/fin/vendus/sync`, { company_id: companyId, with_cost: withCost });
+// Despachante: escolhe o motor (Vendus/Moloni) consoante a empresa.
+export const syncFinSales = (companyId, withCost = false) =>
+  axios.post(`${API_URL}/fin/sales/sync`, { company_id: companyId, with_cost: withCost });
 
 // Painel Global (financeiro) — cruza KPIs Financeiro + RH + Marketing por empresa
 // params: { company_id, month? }

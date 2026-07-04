@@ -5631,6 +5631,441 @@ async def fin_cron_vendus(
     return out
 
 
+# ====================================================================
+# ===== FINANCEIRO · FASE 7 — INTEGRAÇÃO MOLONI =====
+# ====================================================================
+# Sincronização de vendas do software de faturação Moloni -> fin_sales,
+# com a MESMA arquitetura do motor Vendus (Fase 5B): HTTP síncrono
+# (httpx.Client) em threads via asyncio.to_thread; escritas Mongo (motor)
+# no event loop; gravação idempotente (delete+insert) SÓ com leitura completa.
+#
+# Regra de VENDAS por dia: Σ(faturas + faturas-recibo + faturas simplificadas)
+# − Σ(notas de crédito), no intervalo [since, until]. Só documentos FECHADOS
+# (status=1); rascunhos (0) e anulados (2) são ignorados.
+#
+# API Moloni (confirmado em https://www.moloni.pt/dev/):
+#   - OAuth2:    GET https://api.moloni.pt/v1/grant/  grant_type=password
+#                (client_id, client_secret, username, password) e
+#                grant_type=refresh_token; resposta {access_token,
+#                refresh_token, expires_in (3600), ...}. O access_token vai
+#                como parâmetro GET em todas as chamadas seguintes.
+#   - Empresas:  GET companies/getAll/ -> [{company_id, name, vat, ...}]
+#   - Documentos: GET invoices/getAll/, invoiceReceipts/getAll/,
+#                simplifiedInvoices/getAll/, creditNotes/getAll/
+#                params: company_id (obrig.), qty (máx 50), offset, year, ...
+#                campos: date, gross_value, taxes_value, net_value, status.
+#                NOTA: net_value é o TOTAL do documento c/ impostos (o plugin
+#                oficial Moloni↔WooCommerce compara-o ao total da encomenda);
+#                total s/ IVA = net_value − taxes_value.
+#   O getAll NÃO tem filtro de intervalo de datas (só data exata/ano):
+#   defensivamente pagina-se por `year` e filtra-se o dia do lado do cliente.
+#
+# Config (.env): MOLONI_CLIENT_ID, MOLONI_CLIENT_SECRET, MOLONI_USERNAME,
+# MOLONI_PASSWORD, MOLONI_COMPANY_NIF. A empresa DESTINO é a de fin_companies
+# com esse NIF. Nunca logar tokens/credenciais (vão nos params do URL).
+
+import threading as _threading
+
+_FIN_MOLONI_BASE = "https://api.moloni.pt/v1/"
+_FIN_MOLONI_DOC_TYPES = (
+    ("invoices", 1),            # faturas (FT)             sinal +
+    ("invoiceReceipts", 1),     # faturas-recibo (FR)      sinal +
+    ("simplifiedInvoices", 1),  # faturas simplificadas    sinal +
+    ("creditNotes", -1),        # notas de crédito (NC)    sinal −
+)
+_FIN_MOLONI_QTY = 50            # máximo da API por página
+_FIN_MOLONI_MAX_PAGES = 100     # orçamento de páginas por tipo de documento
+
+# Token OAuth2 em memória (partilhado pelas threads do motor).
+_fin_moloni_token = {"access": None, "refresh": None, "exp": 0.0}
+_fin_moloni_token_lock = _threading.Lock()
+
+
+def _fin_moloni_config():
+    """Lê MOLONI_* do ambiente. Devolve o dict de config (NIF só dígitos) ou
+    None se faltar qualquer variável."""
+    cfg = {
+        "client_id": (os.environ.get("MOLONI_CLIENT_ID") or "").strip(),
+        "client_secret": (os.environ.get("MOLONI_CLIENT_SECRET") or "").strip(),
+        "username": (os.environ.get("MOLONI_USERNAME") or "").strip(),
+        "password": (os.environ.get("MOLONI_PASSWORD") or "").strip(),
+        "company_nif": _fin_only_digits(os.environ.get("MOLONI_COMPANY_NIF")),
+    }
+    return cfg if all(cfg.values()) else None
+
+
+def _fin_moloni_http(path, params, tries=3):
+    """GET à API Moloni. Devolve o JSON (list/dict) ou None. Retries iguais ao
+    Vendus: rede/timeout/429/>=500 -> repete com backoff exponencial até
+    `tries`; 4xx (exceto 429) -> desiste. Síncrono — corre em thread.
+    NUNCA logar o URL/params (levam credenciais e o access_token)."""
+    attempt = 0
+    while True:
+        attempt += 1
+        resp = None
+        retriable = False
+        try:
+            with httpx.Client(timeout=httpx.Timeout(18.0, connect=6.0)) as http_client:
+                resp = http_client.get(
+                    _FIN_MOLONI_BASE + path,
+                    params=params,
+                    headers={"Accept": "application/json"},
+                )
+            retriable = resp.status_code == 429 or resp.status_code >= 500
+        except Exception:  # noqa: BLE001 — rede/timeout
+            retriable = True
+        if retriable and attempt < tries:
+            _time.sleep(0.3 * (2 ** (attempt - 1)) + _random.uniform(0, 0.2))
+            continue
+        if resp is None or resp.status_code < 200 or resp.status_code >= 300:
+            return None
+        try:
+            data = resp.json()
+        except Exception:  # noqa: BLE001
+            return None
+        return data if isinstance(data, (list, dict)) else None
+
+
+def _fin_moloni_grant(cfg):
+    """Garante um access_token válido (cache em memória). Renova quando
+    faltar <60s para expirar: primeiro via refresh_token, com fallback a novo
+    grant password. Devolve o token ou None. Síncrono — corre em thread."""
+    with _fin_moloni_token_lock:
+        now = _time.time()
+        if _fin_moloni_token["access"] and now < _fin_moloni_token["exp"] - 60:
+            return _fin_moloni_token["access"]
+        data = None
+        if _fin_moloni_token["refresh"]:
+            data = _fin_moloni_http("grant/", {
+                "grant_type": "refresh_token",
+                "client_id": cfg["client_id"],
+                "client_secret": cfg["client_secret"],
+                "refresh_token": _fin_moloni_token["refresh"],
+            })
+        if not isinstance(data, dict) or not data.get("access_token"):
+            data = _fin_moloni_http("grant/", {
+                "grant_type": "password",
+                "client_id": cfg["client_id"],
+                "client_secret": cfg["client_secret"],
+                "username": cfg["username"],
+                "password": cfg["password"],
+            })
+        if not isinstance(data, dict) or not data.get("access_token"):
+            _fin_moloni_token.update({"access": None, "refresh": None, "exp": 0.0})
+            return None
+        expires = _fin_clean_num(data.get("expires_in")) or 3600.0
+        _fin_moloni_token["access"] = str(data["access_token"])
+        _fin_moloni_token["refresh"] = str(data.get("refresh_token") or "") or None
+        _fin_moloni_token["exp"] = now + expires
+        return _fin_moloni_token["access"]
+
+
+def _fin_moloni_api(cfg, path, params):
+    """Chamada autenticada à API Moloni: injeta o access_token nos params.
+    Se falhar (ex.: token invalidado a meio), força um grant novo e repete
+    UMA vez. Devolve o JSON ou None. Síncrono — corre em thread."""
+    token = _fin_moloni_grant(cfg)
+    if not token:
+        return None
+    data = _fin_moloni_http(path, {**params, "access_token": token})
+    if data is None:
+        with _fin_moloni_token_lock:
+            _fin_moloni_token["exp"] = 0.0  # invalida a cache
+        token = _fin_moloni_grant(cfg)
+        if not token:
+            return None
+        data = _fin_moloni_http(path, {**params, "access_token": token})
+    return data
+
+
+def _fin_moloni_company_id(cfg):
+    """companies/getAll -> company_id da empresa Moloni cujo NIF (campo `vat`,
+    só dígitos) coincide com MOLONI_COMPANY_NIF. Devolve (company_id, None) ou
+    (None, erro). Síncrono — corre em thread."""
+    companies = _fin_moloni_api(cfg, "companies/getAll/", {})
+    if not isinstance(companies, list):
+        return None, "falha a obter as empresas Moloni — credenciais inválidas?"
+    for c in companies:
+        if isinstance(c, dict) and _fin_only_digits(c.get("vat")) == cfg["company_nif"]:
+            cid = c.get("company_id")
+            if cid:
+                return int(cid), None
+    return None, f"empresa NIF {cfg['company_nif']} não encontrada na conta Moloni"
+
+
+def _fin_moloni_fetch_days(cfg, moloni_company_id, since, until):
+    """Lê os 4 tipos de documentos de venda, paginados (qty=50), e agrega por
+    dia no intervalo [since, until]. Devolve (by_day, complete, error) com
+    by_day = {dia: [total_c_iva, total_s_iva]}.
+
+    Como o getAll não filtra por intervalo de datas, pede-se por `year`
+    (parâmetro documentado) e filtra-se o dia do lado do cliente. Ignora
+    documentos não fechados (status != 1: rascunho/anulado). Se o orçamento de
+    páginas esgotar ou uma leitura falhar -> complete=False e NADA é gravado
+    (nunca subcontar vendas). Só HTTP e agregação (sem BD) — corre em thread."""
+    by_day = {}
+    years = range(int(since[:4]), int(until[:4]) + 1)
+    for path, sign in _FIN_MOLONI_DOC_TYPES:
+        pages_left = _FIN_MOLONI_MAX_PAGES
+        for year in years:
+            offset = 0
+            while True:
+                if pages_left <= 0:
+                    return by_day, False, (
+                        f"{path}: demasiados documentos no intervalo — reduz o período"
+                    )
+                pages_left -= 1
+                docs = _fin_moloni_api(cfg, f"{path}/getAll/", {
+                    "company_id": moloni_company_id,
+                    "year": year,
+                    "qty": _FIN_MOLONI_QTY,
+                    "offset": offset,
+                })
+                if docs is None:
+                    return by_day, False, f"{path}: falha a ler os documentos (ano {year})"
+                if not isinstance(docs, list) or not docs:
+                    break
+                for x in docs:
+                    if not isinstance(x, dict):
+                        continue
+                    st = _fin_clean_num(x.get("status"))
+                    if st is not None and int(st) != 1:
+                        continue  # 0=rascunho, 2=anulado — ignorados
+                    day = str(x.get("date") or "")[:10]
+                    if not day or day < since or day > until:
+                        continue  # filtro de datas do lado do cliente
+                    total = _fin_clean_num(x.get("net_value")) or 0.0    # c/ IVA
+                    taxes = _fin_clean_num(x.get("taxes_value")) or 0.0
+                    acc = by_day.setdefault(day, [0.0, 0.0])
+                    acc[0] += sign * total
+                    acc[1] += sign * (total - taxes)                     # s/ IVA
+                if len(docs) < _FIN_MOLONI_QTY:
+                    break
+                offset += _FIN_MOLONI_QTY
+    return by_day, True, None
+
+
+async def _fin_moloni_write(company_id, unit_id, since, until, by_day):
+    """Grava os dias agregados em fin_sales de forma idempotente: delete_many
+    do intervalo (source moloni, mesma empresa) + insert dos dias com valores.
+    CMV Moloni fica para depois: amount_cost/net_nocost = 0.0.
+    Devolve o número de linhas escritas."""
+    flt = {
+        "source": "moloni",
+        "company_id": company_id,
+        "date": {"$gte": since, "$lte": until},
+    }
+    now = datetime.now(timezone.utc).isoformat()
+    docs = []
+    for day in sorted(by_day):
+        gross, net = by_day[day]
+        g = round(gross, 2)
+        n = round(net, 2)
+        if g == 0 and n == 0:
+            continue  # dias sem vendas não geram linha
+        rate = round((g / n - 1) * 100, 2) if n > 0 else None
+        docs.append({
+            "id": str(uuid.uuid4()),
+            "company_id": company_id,
+            "unit_id": unit_id,
+            "date": day,
+            "amount": g,
+            "amount_net": n,
+            "amount_cost": 0.0,
+            "net_nocost": 0.0,
+            "vat_rate": rate,
+            "note": "Moloni",
+            "source": "moloni",
+            "created_by": None,
+            "created_at": now,
+        })
+    await db.fin_sales.delete_many(flt)
+    if docs:
+        await db.fin_sales.insert_many(docs)
+    return len(docs)
+
+
+async def _fin_moloni_run(cfg, since, until):
+    """Sincroniza a conta Moloni configurada no intervalo. Devolve
+    {'written': n, 'days': n, 'net': x, 'complete': bool, 'errors': [...]}.
+    Defensivo: qualquer falha vai para errors sem levantar exceção."""
+    out = {"written": 0, "days": 0, "net": 0.0, "complete": False, "errors": []}
+
+    # Empresa DESTINO no app: fin_companies com o NIF configurado.
+    company = None
+    companies = await db.fin_companies.find({}, {"_id": 0, "id": 1, "nif": 1}).to_list(5000)
+    for c in companies:
+        if _fin_only_digits(c.get("nif")) == cfg["company_nif"]:
+            company = c
+            break
+    if not company:
+        out["errors"].append(
+            f"empresa NIF {cfg['company_nif']} não encontrada em fin_companies"
+        )
+        return out
+    company_id = company["id"]
+
+    # unit_id: se a empresa tem exatamente 1 unidade, usa-a; senão None.
+    units = await db.fin_units.find(
+        {"company_id": company_id}, {"_id": 0, "id": 1}
+    ).to_list(1000)
+    unit_id = units[0]["id"] if len(units) == 1 else None
+
+    moloni_cid, err = await asyncio.to_thread(_fin_moloni_company_id, cfg)
+    if err:
+        out["errors"].append(err)
+        return out
+
+    try:
+        by_day, complete, err = await asyncio.to_thread(
+            _fin_moloni_fetch_days, cfg, moloni_cid, since, until
+        )
+    except Exception as exc:  # noqa: BLE001
+        out["errors"].append(f"Moloni: falha a ler — {exc}")
+        return out
+    if err:
+        out["errors"].append(err)
+
+    # Só gravamos com leitura COMPLETA: o delete+insert nunca deixa dias
+    # apagados sem voltarem a ser inseridos.
+    if complete:
+        try:
+            out["written"] = await _fin_moloni_write(
+                company_id, unit_id, since, until, by_day
+            )
+        except Exception:  # noqa: BLE001
+            out["errors"].append("Moloni: falha a gravar em fin_sales")
+
+    out["days"] = len(by_day)
+    out["net"] = round(sum(v[1] for v in by_day.values()), 2)
+    out["complete"] = complete
+    return out
+
+
+# ---------- Modelos ----------
+
+class FinMoloniSyncRequest(BaseModel):
+    company_id: str
+    since: Optional[str] = None
+    until: Optional[str] = None
+
+
+class FinSalesSyncRequest(BaseModel):
+    company_id: str
+    since: Optional[str] = None
+    until: Optional[str] = None
+    with_cost: Optional[bool] = False
+
+
+# ---------- Endpoints ----------
+
+@api_router.post("/fin/moloni/sync")
+async def fin_moloni_sync(payload: FinMoloniSyncRequest, current_user: dict = Depends(get_current_user)):
+    """Sincronização manual Moloni (botão no frontend). Por omissão:
+    until=hoje, since=há 3 dias — como no Vendus."""
+    await fin_require_editor(payload.company_id, current_user)
+
+    cfg = _fin_moloni_config()
+    if not cfg:
+        raise HTTPException(status_code=400, detail="Integração Moloni não configurada.")
+    company = await db.fin_companies.find_one({"id": payload.company_id}, {"_id": 0, "nif": 1})
+    if not company:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+    if _fin_only_digits(company.get("nif")) != cfg["company_nif"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Esta empresa não corresponde ao NIF configurado no Moloni.",
+        )
+
+    since, until = _fin_vendus_default_range(payload.since, payload.until)
+    logger.info(
+        "[fin-moloni] sync manual: empresa=%s %s..%s", payload.company_id, since, until
+    )
+    result = await _fin_moloni_run(cfg, since, until)
+    logger.info(
+        "[fin-moloni] sync manual fim: written=%d dias=%d erros=%d",
+        result["written"], result["days"], len(result["errors"]),
+    )
+    return {"since": since, "until": until, **result}
+
+
+@api_router.post("/fin/cron/moloni")
+async def fin_cron_moloni(
+    key: str = Query(...),
+    since: Optional[str] = Query(None),
+    until: Optional[str] = Query(None),
+):
+    """Sincronização automática Moloni (cron). Protegido por CRON_KEY, sem JWT.
+    Corre a conta configurada em MOLONI_*."""
+    cron_key = os.environ.get("CRON_KEY")
+    if not cron_key or not secrets.compare_digest(str(key), str(cron_key)):
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+
+    since_s, until_s = _fin_vendus_default_range(since, until)
+    cfg = _fin_moloni_config()
+    if not cfg:
+        return {
+            "since": since_s,
+            "until": until_s,
+            "written": 0,
+            "errors": ["integração Moloni não configurada (MOLONI_*)"],
+        }
+
+    logger.info("[fin-moloni] cron: %s..%s", since_s, until_s)
+    try:
+        result = await _fin_moloni_run(cfg, since_s, until_s)
+    except Exception as exc:  # noqa: BLE001
+        result = {"written": 0, "errors": [f"Moloni: {exc}"]}
+    logger.info(
+        "[fin-moloni] cron fim: written=%d erros=%d",
+        result.get("written", 0), len(result.get("errors", [])),
+    )
+    return {"since": since_s, "until": until_s, **result}
+
+
+@api_router.post("/fin/sales/sync")
+async def fin_sales_sync(payload: FinSalesSyncRequest, current_user: dict = Depends(get_current_user)):
+    """Despachante de sincronização de vendas: escolhe o motor de faturação
+    pela empresa — Vendus se o NIF está em VENDUS_ACCOUNTS; senão Moloni se
+    configurado com esse NIF. Acrescenta `engine` à resposta."""
+    await fin_require_editor(payload.company_id, current_user)
+
+    company = await db.fin_companies.find_one({"id": payload.company_id}, {"_id": 0, "nif": 1})
+    if not company:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+    nif = _fin_only_digits(company.get("nif"))
+    since, until = _fin_vendus_default_range(payload.since, payload.until)
+
+    # 1) Vendus: a empresa tem conta em VENDUS_ACCOUNTS?
+    acc = None
+    if nif:
+        for a in _fin_vendus_accounts():
+            if isinstance(a, dict) and _fin_only_digits(a.get("company_nif")) == nif:
+                acc = a
+                break
+    if acc:
+        logger.info(
+            "[fin-moloni] despacho -> vendus: empresa=%s %s..%s with_cost=%s",
+            payload.company_id, since, until, bool(payload.with_cost),
+        )
+        result = await _fin_vendus_run_account(acc, since, until, bool(payload.with_cost))
+        return {"engine": "vendus", "since": since, "until": until, **result}
+
+    # 2) Moloni: configurado e com o NIF desta empresa?
+    cfg = _fin_moloni_config()
+    if cfg and nif and nif == cfg["company_nif"]:
+        logger.info(
+            "[fin-moloni] despacho -> moloni: empresa=%s %s..%s",
+            payload.company_id, since, until,
+        )
+        result = await _fin_moloni_run(cfg, since, until)
+        return {"engine": "moloni", "since": since, "until": until, **result}
+
+    raise HTTPException(
+        status_code=400, detail="Empresa sem integração de faturação configurada."
+    )
+
+
 # ==================== HEALTH CHECK ====================
 
 @api_router.get("/health")
