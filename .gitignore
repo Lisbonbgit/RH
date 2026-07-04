@@ -98,3 +98,5 @@ credentials.json
 # Ficheiros enviados pelos utilizadores (documentos) - não vão para o git
 backend/uploads/*
 !backend/uploads/.gitkeep
+Caddyfile.bak*
+*.bak-*

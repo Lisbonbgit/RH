@@ -21,3 +21,24 @@ admin.olacai.com {
     encode gzip
     reverse_proxy olacai-web:80
 }
+
+# ===== Menooo — plataforma de encomendas para restaurantes =====
+menooo.com, www.menooo.com {
+    encode gzip
+    reverse_proxy 187.124.4.163:8080
+}
+
+painel.menooo.com {
+    encode gzip
+    reverse_proxy 187.124.4.163:8081
+}
+
+admin.menooo.com {
+    encode gzip
+    reverse_proxy 187.124.4.163:8082
+}
+
+api.menooo.com {
+    encode gzip
+    reverse_proxy 187.124.4.163:8083
+}
