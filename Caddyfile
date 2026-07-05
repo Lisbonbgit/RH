@@ -42,3 +42,9 @@ api.menooo.com {
     encode gzip
     reverse_proxy 187.124.4.163:8083
 }
+
+# ===== L'açaí Estoque — gestão de stock das lojas =====
+estoque.lisbonb.com {
+    encode gzip
+    reverse_proxy 187.124.4.163:8091
+}
