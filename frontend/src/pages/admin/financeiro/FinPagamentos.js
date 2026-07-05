@@ -23,7 +23,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../../components/ui/table';
 import {
   Receipt, Plus, Search, Check, X, Pencil, Trash2, CircleDollarSign,
-  Clock, AlertTriangle, Wallet,
+  Clock, AlertTriangle, Wallet, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
@@ -231,9 +231,11 @@ export default function FinPagamentos() {
     );
   }, [invoices, search]);
 
-  // ---------- Semana atual (Resumo): limites de pagamento por dia ----------
+  // ---------- Semana (Resumo): limites de pagamento por dia ----------
   // Segunda→domingo, com as faturas POR PAGAR cujo vencimento efetivo (regra
   // do fornecedor incluída; débito direto excluído) cai em cada dia.
+  // weekOffset: 0 = semana atual; -1 anterior; +1 seguinte.
+  const [weekOffset, setWeekOffset] = useState(0);
   const semana = useMemo(() => {
     const localISO = (d) =>
       `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -241,6 +243,7 @@ export default function FinPagamentos() {
     const hojeISO = localISO(hoje);
     const seg = new Date(hoje);
     seg.setDate(hoje.getDate() - ((hoje.getDay() + 6) % 7)); // segunda-feira
+    seg.setDate(seg.getDate() + weekOffset * 7); // navegação entre semanas
     const nomes = ['seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom'];
     const porPagar = active
       .filter((i) => !i.paid && !ruleFor(i)?.direct_debit)
@@ -259,14 +262,22 @@ export default function FinPagamentos() {
         total: doDia.reduce((s, i) => s + (Number(i.amount) || 0), 0),
       });
     }
-    const atrasadas = porPagar.filter((i) => i._due < hojeISO);
+    const atrasadas = porPagar.filter((i) => i._due < hojeISO); // globais, independentes da semana visível
+    const meses = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+    const dom = new Date(seg);
+    dom.setDate(seg.getDate() + 6);
+    const label = weekOffset === 0
+      ? 'Esta semana'
+      : seg.getMonth() === dom.getMonth()
+        ? `${seg.getDate()}–${dom.getDate()} ${meses[dom.getMonth()]}`
+        : `${seg.getDate()} ${meses[seg.getMonth()]}–${dom.getDate()} ${meses[dom.getMonth()]}`;
     return {
-      dias, hojeISO,
+      dias, hojeISO, label,
       atrasadas: atrasadas.length,
       atrasadasTotal: atrasadas.reduce((s, i) => s + (Number(i.amount) || 0), 0),
       totalSemana: dias.reduce((s, d) => s + d.total, 0),
     };
-  }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [active, weekOffset]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const agenda = useMemo(() => {
     const today = todayISO();
@@ -379,11 +390,28 @@ export default function FinPagamentos() {
             <Card>
               <CardContent className="p-4 space-y-3" data-testid="fin-semana-pagamentos">
                 <div className="flex items-center justify-between flex-wrap gap-2">
-                  <p className="text-sm font-semibold">Esta semana · limites de pagamento</p>
-                  <div className="flex items-center gap-3 text-xs">
+                  <div className="flex items-center gap-1.5">
+                    <Button variant="outline" size="icon" className="h-8 w-8" title="Semana anterior"
+                      data-testid="fin-semana-prev" onClick={() => setWeekOffset((o) => o - 1)}>
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
+                    {weekOffset === 0 ? (
+                      <p className="text-lg md:text-xl font-heading font-bold px-1">{semana.label}</p>
+                    ) : (
+                      <button type="button" title="Voltar a esta semana" onClick={() => setWeekOffset(0)}
+                        className="text-lg md:text-xl font-heading font-bold px-1 hover:text-primary transition-colors">
+                        {semana.label}
+                      </button>
+                    )}
+                    <Button variant="outline" size="icon" className="h-8 w-8" title="Semana seguinte"
+                      data-testid="fin-semana-next" onClick={() => setWeekOffset((o) => o + 1)}>
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <div className="flex items-center gap-3 text-sm">
                     {semana.atrasadas > 0 && (
                       <span className="inline-flex items-center gap-1 text-destructive font-medium">
-                        <AlertTriangle className="h-3.5 w-3.5" />
+                        <AlertTriangle className="h-4 w-4" />
                         {semana.atrasadas} em atraso · {eur(semana.atrasadasTotal)}
                       </span>
                     )}
@@ -393,36 +421,42 @@ export default function FinPagamentos() {
                   </div>
                 </div>
                 <div className="overflow-x-auto">
-                  <div className="grid grid-cols-7 gap-1.5 min-w-[640px]">
+                  <div className="grid grid-cols-7 gap-1.5 min-w-[700px]">
                     {semana.dias.map((d) => (
                       <div key={d.iso}
-                        className={`rounded-xl border p-2 flex flex-col gap-1.5 min-h-[108px] ${
+                        className={`rounded-xl border p-2.5 flex flex-col gap-1.5 min-h-[132px] ${
                           d.hoje ? 'border-primary ring-1 ring-primary/40 bg-primary/5'
                           : d.passado ? 'opacity-60' : ''
                         }`}>
-                        <div className="flex items-baseline justify-between">
-                          <span className={`text-[10px] uppercase font-semibold ${d.hoje ? 'text-primary' : 'text-muted-foreground'}`}>
+                        <div className="flex items-center justify-between">
+                          <span className={`text-xs uppercase font-semibold tracking-wide ${d.hoje ? 'text-primary' : 'text-muted-foreground'}`}>
                             {d.nome}
                           </span>
-                          <span className={`text-sm font-heading font-bold ${d.hoje ? 'text-primary' : ''}`}>{d.num}</span>
+                          {d.hoje ? (
+                            <span className="h-9 w-9 rounded-full brand-gradient text-white flex items-center justify-center text-2xl font-heading font-bold">
+                              {d.num}
+                            </span>
+                          ) : (
+                            <span className="text-2xl font-heading font-bold">{d.num}</span>
+                          )}
                         </div>
                         {d.faturas.length === 0 ? (
-                          <span className="text-[11px] text-muted-foreground/60 m-auto">—</span>
+                          <span className="text-sm text-muted-foreground/50 m-auto">—</span>
                         ) : (
                           <>
-                            <span className={`text-[11px] font-semibold ${d.passado ? 'text-destructive' : ''}`}>
+                            <span className={`text-base md:text-lg font-heading font-bold tabular-nums ${d.passado ? 'text-destructive' : ''}`}>
                               {eur(d.total)}
                             </span>
                             <div className="space-y-0.5">
-                              {d.faturas.slice(0, 3).map((f) => (
+                              {d.faturas.slice(0, 2).map((f) => (
                                 <div key={f.id} title={`${f.supplier || ''} · ${eur(f.amount)}`}
-                                  className="truncate rounded bg-muted/60 px-1.5 py-0.5 text-[10px] leading-tight">
+                                  className="truncate rounded bg-muted/60 px-1.5 py-0.5 text-xs leading-tight">
                                   <span className="font-medium">{f.supplier || '(s/ fornecedor)'}</span>
                                   <span className="text-muted-foreground"> {eur(f.amount)}</span>
                                 </div>
                               ))}
-                              {d.faturas.length > 3 && (
-                                <span className="text-[10px] text-muted-foreground">+{d.faturas.length - 3} mais</span>
+                              {d.faturas.length > 2 && (
+                                <span className="text-xs text-muted-foreground">+{d.faturas.length - 2} mais</span>
                               )}
                             </div>
                           </>
@@ -431,7 +465,7 @@ export default function FinPagamentos() {
                     ))}
                   </div>
                 </div>
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-xs text-muted-foreground">
                   Vencimento efetivo (regras de fornecedor aplicadas); débitos diretos não aparecem. Detalhe completo na <b>Agenda</b>.
                 </p>
               </CardContent>
