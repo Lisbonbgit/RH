@@ -92,7 +92,6 @@ const sections = [
       { path: '/admin/financeiro/relatorios', label: 'Relatórios', icon: BarChart3 },
       { path: '/admin/financeiro/fornecedores', label: 'Fornecedores', icon: Truck },
       { path: '/admin/financeiro/extrato', label: 'Extrato', icon: Landmark },
-      { path: '/admin/financeiro/equipa', label: 'Equipa', icon: Users },
     ],
   },
   {
@@ -201,7 +200,9 @@ export default function AdminLayout() {
         </div>
       </div>
 
-      {/* Company Selector (todas as secções) */}
+      {/* Company Selector — RH/Marketing. O Financeiro tem a sua própria
+          seleção de empresa por página (empresas do módulo financeiro). */}
+      {activeSection.key !== 'financeiro' && (
       <div className="p-4">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -235,6 +236,7 @@ export default function AdminLayout() {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      )}
 
       <ScrollArea className="flex-1 px-3 pt-2">
         <nav className="space-y-1">
@@ -260,28 +262,19 @@ export default function AdminLayout() {
         </nav>
       </ScrollArea>
 
-      <div className="p-4 border-t space-y-1">
-        {isMasterAdmin && (
+      {isMasterAdmin && (
+        <div className="lg:hidden p-4 border-t">
           <button
             type="button"
             onClick={() => { navigate('/admin/gestores'); setMobileOpen(false); }}
-            className="lg:hidden w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
             data-testid="group-admin-sidebar"
           >
             <ShieldCheck className="h-4 w-4 text-primary" />
             Administração do grupo
           </button>
-        )}
-        <div className="flex items-center gap-3 px-3 py-2">
-          <div className="h-9 w-9 rounded-full bg-muted flex items-center justify-center">
-            <User className="h-4 w-4" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium truncate">{user?.name}</p>
-            <p className="text-xs text-muted-foreground truncate">{user?.email}</p>
-          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 
