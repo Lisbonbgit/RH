@@ -3,7 +3,7 @@ import {
   getFinCompanies, getFinUnits, getFinSales,
   createFinSale, updateFinSale, deleteFinSale, syncFinSales,
 } from '../../../lib/api';
-import { eur, fmtDate, todayISO } from '../../../lib/finance';
+import { eur, fmtDate, todayISO, normSup } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
@@ -26,6 +26,7 @@ import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
 
 const LS_KEY = 'fin_selected_company';
+const COMPANY_ALL = 'all';
 const UNIT_NONE = '__none__';   // valor para "Comum" no Dialog (sem loja)
 const UNIT_ALL = '__all__';     // valor para "Todas" no filtro
 
@@ -75,9 +76,10 @@ export default function FinVendas() {
     try {
       const c = await getFinCompanies();
       setCompanies(c.data);
-      if (c.data.length && !c.data.find((x) => x.id === companyId)) {
-        setCompanyId(c.data[0].id);
-      }
+      // Válido: "Todas as empresas" ou uma empresa existente que não a "Por classificar".
+      const valid = companyId === COMPANY_ALL ||
+        c.data.some((x) => x.id === companyId && normSup(x.name) !== 'por classificar');
+      if (c.data.length && !valid) setCompanyId(COMPANY_ALL);
     } catch (e) {
       toast.error('Erro ao carregar empresas');
     }
@@ -85,7 +87,7 @@ export default function FinVendas() {
 
   const loadUnits = async () => {
     try {
-      const r = await getFinUnits(companyId);
+      const r = await getFinUnits(companyId === COMPANY_ALL ? undefined : companyId);
       setUnits(r.data || []);
     } catch (e) {
       setUnits([]);
@@ -108,8 +110,9 @@ export default function FinVendas() {
     }
   };
 
-  const companyUnits = units.filter((u) => u.company_id === companyId);
+  const companyUnits = companyId === COMPANY_ALL ? units : units.filter((u) => u.company_id === companyId);
   const unitName = (id) => companyUnits.find((u) => u.id === id)?.name || 'Comum';
+  const companyName = (id) => companies.find((c) => c.id === id)?.name || '';
 
   // ---------- KPIs ----------
   const kpis = useMemo(() => {
@@ -153,7 +156,7 @@ export default function FinVendas() {
       const day = String(s.date || '').slice(0, 10);
       const key = `${day}|${s.unit_id || ''}`;
       const r = map[key] || {
-        key, date: day, unit_id: s.unit_id || null,
+        key, date: day, unit_id: s.unit_id || null, company_id: s.company_id || null,
         amount: 0, net: 0, cost: 0, manualId: null, manualCount: 0, total: 0,
       };
       r.amount += Number(s.amount) || 0;
@@ -268,7 +271,10 @@ export default function FinVendas() {
                 <SelectValue placeholder="Empresa" />
               </SelectTrigger>
               <SelectContent>
-                {companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                <SelectItem value={COMPANY_ALL}>Todas as empresas</SelectItem>
+                {companies
+                  .filter((c) => normSup(c.name) !== 'por classificar')
+                  .map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
               </SelectContent>
             </Select>
           )}
@@ -390,6 +396,9 @@ export default function FinVendas() {
                             <TableCell className="whitespace-nowrap">{fmtDate(r.date)}</TableCell>
                             <TableCell className="font-medium">
                               {unitName(r.unit_id)}
+                              {companyId === COMPANY_ALL && companyName(r.company_id) && (
+                                <span className="ml-2 text-xs text-muted-foreground font-normal">{companyName(r.company_id)}</span>
+                              )}
                               {r.manualCount > 0 && <Badge variant="outline" className="ml-2">manual</Badge>}
                             </TableCell>
                             <TableCell className="text-right whitespace-nowrap">{eur(r.amount)}</TableCell>

@@ -29,6 +29,7 @@ import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
 
 const LS_KEY = 'fin_selected_company';
+const COMPANY_ALL = 'all';
 const RECURRENCE = [
   { value: 'none', label: 'Não recorrente' },
   { value: 'weekly', label: 'Semanal' },
@@ -63,7 +64,8 @@ export default function FinPagamentos() {
 
   const company = companies.find((c) => c.id === companyId) || null;
   const canEdit = company && (company.role === 'owner' || company.role === 'partner');
-  const companyUnits = units.filter((u) => u.company_id === companyId);
+  const companyUnits = companyId === COMPANY_ALL ? units : units.filter((u) => u.company_id === companyId);
+  const companyName = (id) => companies.find((c) => c.id === id)?.name || '';
 
   const rulesByKey = useMemo(() => {
     const m = {};
@@ -82,9 +84,10 @@ export default function FinPagamentos() {
       const [c, r] = await Promise.all([getFinCompanies(), getFinSupplierRules()]);
       setCompanies(c.data);
       setRules(r.data);
-      if (c.data.length && !c.data.find((x) => x.id === companyId)) {
-        setCompanyId(c.data[0].id);
-      }
+      // Válido: "Todas as empresas" ou qualquer empresa existente (incluindo a "Por classificar",
+      // que aqui continua visível para tratar as faturas órfãs do email).
+      const valid = companyId === COMPANY_ALL || c.data.some((x) => x.id === companyId);
+      if (c.data.length && !valid) setCompanyId(COMPANY_ALL);
     } catch (e) {
       toast.error('Erro ao carregar empresas');
     }
@@ -94,7 +97,9 @@ export default function FinPagamentos() {
     setLoading(true);
     try {
       const [inv, u, r] = await Promise.all([
-        getFinInvoices(companyId), getFinUnits(companyId), getFinSupplierRules(),
+        getFinInvoices(companyId),
+        getFinUnits(companyId === COMPANY_ALL ? undefined : companyId),
+        getFinSupplierRules(),
       ]);
       setInvoices(inv.data);
       setUnits(u.data);
@@ -279,6 +284,7 @@ export default function FinPagamentos() {
                 <SelectValue placeholder="Empresa" />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value={COMPANY_ALL}>Todas as empresas</SelectItem>
                 {companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
               </SelectContent>
             </Select>
@@ -370,6 +376,9 @@ export default function FinPagamentos() {
                               {inv.supplier || '-'}
                               {inv.kind === 'payment' && <Badge variant="outline" className="ml-2">Pagamento</Badge>}
                               {inv.recurrence && inv.recurrence !== 'none' && <Badge variant="outline" className="ml-2">Recorrente</Badge>}
+                              {companyId === COMPANY_ALL && companyName(inv.company_id) && (
+                                <p className="text-xs text-muted-foreground font-normal">{companyName(inv.company_id)}</p>
+                              )}
                             </TableCell>
                             <TableCell className="hidden md:table-cell text-muted-foreground">{inv.invoice_number || '-'}</TableCell>
                             <TableCell className="text-right whitespace-nowrap">{eur(inv.amount)}</TableCell>

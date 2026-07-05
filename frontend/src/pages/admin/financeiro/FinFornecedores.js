@@ -3,7 +3,7 @@ import {
   getFinCompanies, getFinInvoices, getFinSupplierRules,
   upsertFinSupplierRule, deleteFinSupplierRule,
 } from '../../../lib/api';
-import { eur, supplierKeyOf } from '../../../lib/finance';
+import { eur, supplierKeyOf, normSup } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
@@ -19,6 +19,7 @@ import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
 
 const LS_KEY = 'fin_selected_company';
+const COMPANY_ALL = 'all';
 
 export default function FinFornecedores() {
   const [companies, setCompanies] = useState([]);
@@ -39,7 +40,10 @@ export default function FinFornecedores() {
     try {
       const c = await getFinCompanies();
       setCompanies(c.data);
-      if (c.data.length && !c.data.find((x) => x.id === companyId)) setCompanyId(c.data[0].id);
+      // Válido: "Todas as empresas" ou uma empresa existente que não a "Por classificar".
+      const valid = companyId === COMPANY_ALL ||
+        c.data.some((x) => x.id === companyId && normSup(x.name) !== 'por classificar');
+      if (c.data.length && !valid) setCompanyId(COMPANY_ALL);
       else if (companyId) loadData();
     } catch (e) { toast.error('Erro ao carregar empresas'); }
   };
@@ -150,7 +154,10 @@ export default function FinFornecedores() {
             <Select value={companyId} onValueChange={setCompanyId}>
               <SelectTrigger className="w-48"><SelectValue placeholder="Empresa" /></SelectTrigger>
               <SelectContent>
-                {companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                <SelectItem value={COMPANY_ALL}>Todas as empresas</SelectItem>
+                {companies
+                  .filter((c) => normSup(c.name) !== 'por classificar')
+                  .map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
               </SelectContent>
             </Select>
           )}

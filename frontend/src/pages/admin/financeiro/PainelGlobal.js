@@ -20,6 +20,7 @@ import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
 
 const LS_KEY = 'fin_selected_company';
+const COMPANY_ALL = 'all';
 const currentMonth = () => new Date().toISOString().slice(0, 7);
 
 // Cartão de KPI (mesmo visual do Resumo em FinPagamentos).
@@ -68,9 +69,10 @@ export default function PainelGlobal() {
     try {
       const c = await getFinCompanies();
       setCompanies(c.data);
-      if (c.data.length && !c.data.find((x) => x.id === companyId)) {
-        setCompanyId(c.data[0].id);
-      }
+      // Válido: "Todas as empresas" ou uma empresa existente que não a "Por classificar".
+      const valid = companyId === COMPANY_ALL ||
+        c.data.some((x) => x.id === companyId && normSup(x.name) !== 'por classificar');
+      if (c.data.length && !valid) setCompanyId(COMPANY_ALL);
     } catch (e) {
       toast.error('Erro ao carregar empresas');
     }
@@ -182,7 +184,10 @@ export default function PainelGlobal() {
                 <SelectValue placeholder="Empresa" />
               </SelectTrigger>
               <SelectContent>
-                {companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                <SelectItem value={COMPANY_ALL}>Todas as empresas</SelectItem>
+                {companies
+                  .filter((c) => normSup(c.name) !== 'por classificar')
+                  .map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
               </SelectContent>
             </Select>
           )}

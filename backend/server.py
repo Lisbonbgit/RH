@@ -3157,6 +3157,14 @@ async def fin_owned_company_ids(user_id: str):
     ).to_list(500)
     return [m["company_id"] for m in members]
 
+async def fin_member_company_ids(user_id: str):
+    """Ids de TODAS as empresas onde o utilizador é membro (qualquer papel).
+    Usado pelo modo 'Todas as empresas' (company_id="all") nas listagens."""
+    members = await db.fin_company_members.find(
+        {"user_id": user_id}, {"_id": 0, "company_id": 1}
+    ).to_list(500)
+    return [m["company_id"] for m in members]
+
 
 # ---------- Empresas ----------
 
@@ -3550,8 +3558,14 @@ async def _fin_insert_invoice(company_id, kind, approval, data: dict, freq, grou
 
 @api_router.get("/fin/invoices")
 async def fin_get_invoices(company_id: str, current_user: dict = Depends(get_current_user)):
-    await fin_require_member(company_id, current_user)
-    invoices = await db.fin_invoices.find({"company_id": company_id}, {"_id": 0}).to_list(5000)
+    # "all" = todas as empresas onde o utilizador é membro (vista agregada).
+    if company_id == "all":
+        ids = await fin_member_company_ids(current_user["user_id"])
+        q = {"company_id": {"$in": ids}}
+    else:
+        await fin_require_member(company_id, current_user)
+        q = {"company_id": company_id}
+    invoices = await db.fin_invoices.find(q, {"_id": 0}).to_list(10000)
     invoices.sort(key=lambda x: x.get("created_at") or "", reverse=True)
     return invoices
 
@@ -4331,9 +4345,14 @@ async def fin_get_movements(
     month: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
 ):
-    """Movimentos de uma empresa, filtráveis por conta e mês (YYYY-MM)."""
-    await fin_require_member(company_id, current_user)
-    q = {"company_id": company_id}
+    """Movimentos de uma empresa, filtráveis por conta e mês (YYYY-MM).
+    company_id="all" = todas as empresas onde o utilizador é membro."""
+    if company_id == "all":
+        ids = await fin_member_company_ids(current_user["user_id"])
+        q = {"company_id": {"$in": ids}}
+    else:
+        await fin_require_member(company_id, current_user)
+        q = {"company_id": company_id}
     acc = (account_id or "").strip()
     if acc:
         q["account_id"] = acc
@@ -4927,9 +4946,14 @@ async def fin_get_sales(
     unit_id: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
 ):
-    """Vendas de uma empresa, filtráveis por mês (YYYY-MM) e unidade."""
-    await fin_require_member(company_id, current_user)
-    q = {"company_id": company_id}
+    """Vendas de uma empresa, filtráveis por mês (YYYY-MM) e unidade.
+    company_id="all" = todas as empresas onde o utilizador é membro."""
+    if company_id == "all":
+        ids = await fin_member_company_ids(current_user["user_id"])
+        q = {"company_id": {"$in": ids}}
+    else:
+        await fin_require_member(company_id, current_user)
+        q = {"company_id": company_id}
     mon = (month or "").strip()
     if mon:
         q["date"] = {"$regex": "^" + re.escape(mon)}
@@ -5046,25 +5070,30 @@ async def fin_global_dashboard(
 ):
     """Cruza KPIs de Financeiro + RH + Marketing para uma empresa e mês.
     `month` no formato AAAA-MM (por omissão, o mês atual). Cada setor é lido
-    de forma defensiva: se um estiver em falta não derruba o painel todo."""
-    await fin_require_member(company_id, current_user)
-
-    fin_company = await db.fin_companies.find_one({"id": company_id}, {"_id": 0})
-    if not fin_company:
-        raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+    de forma defensiva: se um estiver em falta não derruba o painel todo.
+    company_id="all" = vista agregada de todas as empresas do utilizador."""
+    if company_id == "all":
+        member_ids = await fin_member_company_ids(current_user["user_id"])
+        cid_q = {"$in": member_ids}
+        rh_company_id = None
+        company_out = {"id": "all", "name": "Todas as empresas", "nif": None, "rh_company_id": None}
+    else:
+        await fin_require_member(company_id, current_user)
+        fin_company = await db.fin_companies.find_one({"id": company_id}, {"_id": 0})
+        if not fin_company:
+            raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+        cid_q = company_id
+        rh_company_id = fin_company.get("rh_company_id")
+        company_out = {
+            "id": fin_company.get("id"),
+            "name": fin_company.get("name"),
+            "nif": fin_company.get("nif"),
+            "rh_company_id": rh_company_id,
+        }
 
     mon = (month or "").strip()
     if not mon:
         mon = datetime.now(timezone.utc).strftime("%Y-%m")
-
-    rh_company_id = fin_company.get("rh_company_id")
-
-    company_out = {
-        "id": fin_company.get("id"),
-        "name": fin_company.get("name"),
-        "nif": fin_company.get("nif"),
-        "rh_company_id": rh_company_id,
-    }
 
     # ----- Financeiro -----
     financeiro = {
@@ -5077,7 +5106,7 @@ async def fin_global_dashboard(
     try:
         # Vendas do mês (soma de fin_sales.amount cuja date começa por AAAA-MM)
         sales = await db.fin_sales.find(
-            {"company_id": company_id, "date": {"$regex": "^" + re.escape(mon)}},
+            {"company_id": cid_q, "date": {"$regex": "^" + re.escape(mon)}},
             {"_id": 0, "amount": 1},
         ).to_list(100000)
         financeiro["vendas_mes"] = round(
@@ -5086,7 +5115,7 @@ async def fin_global_dashboard(
 
         # Faturas: a pagar (por pagar e não rejeitadas) e já pago
         invoices = await db.fin_invoices.find(
-            {"company_id": company_id},
+            {"company_id": cid_q},
             {"_id": 0, "amount": 1, "paid": 1, "approval_status": 1},
         ).to_list(100000)
         a_pagar = 0.0
@@ -5109,12 +5138,12 @@ async def fin_global_dashboard(
         # Saldo em banco: para cada conta da empresa, o saldo (balance) do
         # movimento mais recente (maior date_lancamento). Soma de todas as contas.
         accounts = await db.fin_bank_accounts.find(
-            {"company_id": company_id}, {"_id": 0, "id": 1}
+            {"company_id": cid_q}, {"_id": 0, "id": 1}
         ).to_list(2000)
         saldo_banco = 0.0
         for acc in accounts:
             last = await db.fin_movements.find_one(
-                {"company_id": company_id, "account_id": acc.get("id")},
+                {"account_id": acc.get("id")},
                 {"_id": 0, "balance": 1, "date_lancamento": 1},
                 sort=[("date_lancamento", -1)],
             )
@@ -5129,7 +5158,15 @@ async def fin_global_dashboard(
     rh = {"linked": False}
     colaboradores = 0
     try:
-        if rh_company_id:
+        if company_id == "all":
+            # Vista agregada: totais do grupo (sem depender de ligações).
+            rh["linked"] = True
+            colaboradores = await db.employees.count_documents({})
+            rh["colaboradores"] = colaboradores
+            rh["ausencias_pendentes"] = await db.leave_requests.count_documents(
+                {"status": "pendente"}
+            )
+        elif rh_company_id:
             rh_company = await db.companies.find_one(
                 {"id": rh_company_id}, {"_id": 0, "id": 1}
             )
@@ -5159,7 +5196,7 @@ async def fin_global_dashboard(
     # entrada; mesma lógica do dashboard do RH). Empresa ligada -> só os dela;
     # sem ligação -> grupo todo (mais útil do que um aviso).
     try:
-        emp_q = {"company_id": rh_company_id} if rh.get("linked") else {}
+        emp_q = {"company_id": rh_company_id} if (rh.get("linked") and rh_company_id) else {}
         emps = await db.employees.find(
             emp_q, {"_id": 0, "id": 1, "name": 1, "location_id": 1}
         ).to_list(100000)
@@ -5210,15 +5247,16 @@ async def fin_global_dashboard(
     # ----- Marketing -----
     marketing = {"campanhas_ativas": 0}
     try:
+        mkt_q = ({"status": "ativa"} if company_id == "all" else {
+            "status": "ativa",
+            "$or": [
+                {"company_id": company_id},
+                {"company_id": None},
+                {"company_id": {"$exists": False}},
+            ],
+        })
         marketing["campanhas_ativas"] = await db.mkt_campaigns.count_documents(
-            {
-                "status": "ativa",
-                "$or": [
-                    {"company_id": company_id},
-                    {"company_id": None},
-                    {"company_id": {"$exists": False}},
-                ],
-            }
+            mkt_q
         )
     except Exception:
         pass

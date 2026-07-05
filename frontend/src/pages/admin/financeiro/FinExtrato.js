@@ -4,7 +4,7 @@ import {
   getFinMovements, importFinMovements, setFinMovementTitle,
   linkFinMovement, unlinkFinMovement, attachFinMovement, automatchFinMovements,
 } from '../../../lib/api';
-import { eur, fmtDate, todayISO } from '../../../lib/finance';
+import { eur, fmtDate, todayISO, normSup } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
@@ -21,6 +21,7 @@ import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
 
 const LS_KEY = 'fin_selected_company';
+const COMPANY_ALL = 'all';
 const ACC_NONE = '__all__';
 
 // Mês atual no formato YYYY-MM
@@ -161,6 +162,7 @@ export default function FinExtrato() {
 
   const company = companies.find((c) => c.id === companyId) || null;
   const canEdit = company && (company.role === 'owner' || company.role === 'partner');
+  const companyName = (id) => companies.find((c) => c.id === id)?.name || '';
 
   useEffect(() => { loadCompanies(); }, []);
   useEffect(() => {
@@ -179,9 +181,10 @@ export default function FinExtrato() {
     try {
       const c = await getFinCompanies();
       setCompanies(c.data);
-      if (c.data.length && !c.data.find((x) => x.id === companyId)) {
-        setCompanyId(c.data[0].id);
-      }
+      // Válido: "Todas as empresas" ou uma empresa existente que não a "Por classificar".
+      const valid = companyId === COMPANY_ALL ||
+        c.data.some((x) => x.id === companyId && normSup(x.name) !== 'por classificar');
+      if (c.data.length && !valid) setCompanyId(COMPANY_ALL);
     } catch (e) {
       toast.error('Erro ao carregar empresas');
     }
@@ -189,7 +192,7 @@ export default function FinExtrato() {
 
   const loadAccounts = async () => {
     try {
-      const r = await getFinBankAccounts(companyId);
+      const r = await getFinBankAccounts(companyId === COMPANY_ALL ? undefined : companyId);
       setAccounts(r.data || []);
     } catch (e) {
       setAccounts([]);
@@ -391,7 +394,7 @@ export default function FinExtrato() {
       const url = URL.createObjectURL(out);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `extrato_${company?.name || 'empresa'}_${month || 'todos'}.zip`;
+      a.download = `extrato_${company?.name || (companyId === COMPANY_ALL ? 'todas-as-empresas' : 'empresa')}_${month || 'todos'}.zip`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -450,7 +453,10 @@ export default function FinExtrato() {
                 <SelectValue placeholder="Empresa" />
               </SelectTrigger>
               <SelectContent>
-                {companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                <SelectItem value={COMPANY_ALL}>Todas as empresas</SelectItem>
+                {companies
+                  .filter((c) => normSup(c.name) !== 'por classificar')
+                  .map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
               </SelectContent>
             </Select>
           )}
@@ -534,6 +540,9 @@ export default function FinExtrato() {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
                               <p className="text-sm font-medium truncate">{mv.description || '(sem descrição)'}</p>
+                              {companyId === COMPANY_ALL && companyName(mv.company_id) && (
+                                <Badge variant="outline" className="text-[10px] shrink-0">{companyName(mv.company_id)}</Badge>
+                              )}
                             </div>
                             {/* Justificação inline */}
                             <div className="mt-1">
