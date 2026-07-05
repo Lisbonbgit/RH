@@ -5155,6 +5155,58 @@ async def fin_global_dashboard(
         rh = {"linked": bool(rh_company_id)}
         colaboradores = 0
 
+    # Quem está a trabalhar AGORA e em que loja (último registo de hoje =
+    # entrada; mesma lógica do dashboard do RH). Empresa ligada -> só os dela;
+    # sem ligação -> grupo todo (mais útil do que um aviso).
+    try:
+        emp_q = {"company_id": rh_company_id} if rh.get("linked") else {}
+        emps = await db.employees.find(
+            emp_q, {"_id": 0, "id": 1, "name": 1, "location_id": 1}
+        ).to_list(100000)
+        emp_by_id = {e["id"]: e for e in emps if e.get("id")}
+        a_trabalhar = []
+        if emp_by_id:
+            now_lis = datetime.now(LISBON_TZ)
+            day_start_utc = now_lis.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ).astimezone(timezone.utc).isoformat()
+            recs = await db.time_records.find(
+                {"time": {"$gte": day_start_utc},
+                 "employee_id": {"$in": list(emp_by_id)}},
+                {"_id": 0, "employee_id": 1, "record_type": 1, "time": 1},
+            ).sort("time", 1).to_list(10000)
+            last_type = {}
+            entry_at = {}
+            for r in recs:
+                eid = r["employee_id"]
+                last_type[eid] = r.get("record_type")
+                if r.get("record_type") == "entrada":
+                    try:
+                        _dt = datetime.fromisoformat(r.get("time"))
+                        if _dt.tzinfo is None:
+                            _dt = _dt.replace(tzinfo=timezone.utc)
+                        entry_at[eid] = _dt.astimezone(LISBON_TZ).strftime("%H:%M")
+                    except (ValueError, TypeError):
+                        entry_at[eid] = None
+            loc_ids = {e.get("location_id") for e in emp_by_id.values() if e.get("location_id")}
+            locs = await db.locations.find(
+                {"id": {"$in": list(loc_ids)}}, {"_id": 0, "id": 1, "name": 1}
+            ).to_list(2000) if loc_ids else []
+            loc_name = {l["id"]: l.get("name") for l in locs}
+            for eid, t in last_type.items():
+                if t != "entrada":
+                    continue
+                e = emp_by_id.get(eid) or {}
+                a_trabalhar.append({
+                    "nome": e.get("name") or "?",
+                    "loja": loc_name.get(e.get("location_id")) or "—",
+                    "desde": entry_at.get(eid),
+                })
+            a_trabalhar.sort(key=lambda x: (x["loja"], x["nome"]))
+        rh["a_trabalhar"] = a_trabalhar[:60]
+    except Exception:
+        rh["a_trabalhar"] = []
+
     # ----- Marketing -----
     marketing = {"campanhas_ativas": 0}
     try:

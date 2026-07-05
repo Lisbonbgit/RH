@@ -258,27 +258,59 @@ export default function PainelGlobal() {
 
           {/* ---------- RH ---------- */}
           <section className="space-y-3">
-            <h2 className="text-sm font-heading font-bold uppercase tracking-wide text-muted-foreground">RH</h2>
-            {rh.linked === false ? (
-              <Card>
-                <CardContent className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-6">
-                  <div>
-                    <p className="font-medium">Empresa não ligada ao RH</p>
-                    <p className="text-sm text-muted-foreground mt-0.5">
-                      Liga esta empresa a uma empresa do RH para ver colaboradores e ausências.
-                    </p>
-                  </div>
-                  <Button onClick={openLink} data-testid="painel-link-rh-btn">
-                    <Link2 className="h-4 w-4 mr-2" />Ligar ao RH
-                  </Button>
-                </CardContent>
-              </Card>
-            ) : (
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-heading font-bold uppercase tracking-wide text-muted-foreground">RH</h2>
+              {rh.linked === false && (
+                <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground"
+                  onClick={openLink} data-testid="painel-link-rh-btn">
+                  <Link2 className="h-3 w-3 mr-1" />Ligar ao RH
+                </Button>
+              )}
+            </div>
+            {rh.linked && (
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <KpiCard label="Colaboradores" value={num(rh.colaboradores)} icon={Users} />
                 <KpiCard label="Ausências pendentes" value={num(rh.ausencias_pendentes)} icon={CalendarOff} />
               </div>
             )}
+            {/* Quem está a trabalhar agora, agrupado por loja */}
+            <Card>
+              <CardContent className="p-5 space-y-3" data-testid="painel-a-trabalhar">
+                <div className="flex items-center gap-2">
+                  <div className="h-8 w-8 rounded-lg brand-gradient text-white flex items-center justify-center shrink-0">
+                    <Users className="h-4 w-4" />
+                  </div>
+                  <p className="font-medium text-sm">
+                    A trabalhar agora
+                    <span className="text-muted-foreground font-normal"> · {(rh.a_trabalhar || []).length} pessoa{(rh.a_trabalhar || []).length === 1 ? '' : 's'}</span>
+                  </p>
+                </div>
+                {(rh.a_trabalhar || []).length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Ninguém com entrada registada neste momento.</p>
+                ) : (
+                  Object.entries(
+                    (rh.a_trabalhar || []).reduce((acc, p) => {
+                      (acc[p.loja] = acc[p.loja] || []).push(p);
+                      return acc;
+                    }, {})
+                  ).map(([loja, pessoas]) => (
+                    <div key={loja} className="space-y-1.5">
+                      <p className="text-xs font-semibold text-muted-foreground">{loja}</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {pessoas.map((p) => (
+                          <span key={p.nome + loja}
+                            className="inline-flex items-center gap-1.5 rounded-full border bg-muted/50 px-2.5 py-1 text-xs">
+                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" />
+                            <span className="font-medium">{p.nome}</span>
+                            {p.desde && <span className="text-muted-foreground">desde {p.desde}</span>}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </CardContent>
+            </Card>
           </section>
 
           {/* ---------- MARKETING ---------- */}
