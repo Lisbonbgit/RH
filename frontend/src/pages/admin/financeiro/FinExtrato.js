@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   getFinCompanies, getFinInvoices, getFinBankAccounts, createFinBankAccount,
-  getFinMovements, importFinMovements, setFinMovementTitle,
+  getFinMovements, importFinMovements, importFinMovementsPdf, setFinMovementTitle,
   linkFinMovement, unlinkFinMovement, attachFinMovement, automatchFinMovements,
 } from '../../../lib/api';
 import { eur, fmtDate, todayISO, normSup } from '../../../lib/finance';
@@ -156,9 +156,12 @@ export default function FinExtrato() {
   const [linkFor, setLinkFor] = useState(null);
   const [linkSearch, setLinkSearch] = useState('');
 
-  // dialog nova conta
+  // dialog nova conta (company_id: destino; preenchido também no fluxo do PDF
+  // quando a conta do extrato ainda não está registada)
   const [accDialog, setAccDialog] = useState(false);
-  const [accForm, setAccForm] = useState({ account_number: '', bank: 'Millennium BCP', account_name: '' });
+  const [accForm, setAccForm] = useState({ account_number: '', bank: 'Millennium BCP', account_name: '', company_id: '' });
+  // PDF à espera de a conta ser registada (re-importa automaticamente depois)
+  const pendingPdfRef = useRef(null);
 
   const company = companies.find((c) => c.id === companyId) || null;
   const canEdit = company && (company.role === 'owner' || company.role === 'partner');
@@ -231,10 +234,59 @@ export default function FinExtrato() {
   }, [invoices]);
 
   // ---------- Importar ----------
+  // PDF do banco: a extração e o roteamento (pelo nº de conta) são no backend.
+  const doImportPdf = async (file) => {
+    setBusy(true);
+    try {
+      const res = await importFinMovementsPdf(file);
+      const d = res.data || {};
+      pendingPdfRef.current = null;
+      toast.success(
+        `${d.company_name || 'Empresa'} · conta ${String(d.account_number || '').slice(-4)}: ` +
+        `${d.inserted ?? 0} novos · ${d.skipped ?? 0} já existiam`,
+        { description: d.periodo ? `Período ${fmtDate(d.periodo.de)} – ${fmtDate(d.periodo.ate)}` : undefined }
+      );
+      // Mostrar o resultado: muda para a empresa do extrato (se não estivermos em "Todas").
+      if (d.company_id && companyId !== COMPANY_ALL && companyId !== d.company_id) {
+        setCompanyId(d.company_id);
+      } else {
+        await Promise.all([loadAccounts(), loadMovements()]);
+      }
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      if (err.response?.status === 404 && detail && detail.code === 'conta_desconhecida') {
+        // Conta nova: guarda o PDF, pré-preenche o registo e pergunta a empresa.
+        pendingPdfRef.current = file;
+        const holderNorm = normSup(detail.holder || '');
+        const reais = companies.filter((c) => normSup(c.name) !== 'por classificar');
+        const sugestao = (holderNorm && reais.find((c) => {
+          const n = normSup(c.name);
+          return n && (holderNorm.includes(n) || n.includes(holderNorm));
+        })) || null;
+        setAccForm({
+          account_number: detail.account_number || '',
+          bank: 'Millennium BCP',
+          account_name: detail.holder || '',
+          company_id: sugestao?.id || '',
+        });
+        setAccDialog(true);
+        toast.info('Conta nova detetada no extrato', {
+          description: 'Confirma a empresa a que pertence para concluir a importação.',
+        });
+      } else {
+        toast.error(typeof detail === 'string' ? detail : (err.message || 'Erro ao importar o PDF'));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onImportFile = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = ''; // permite reimportar o mesmo ficheiro
     if (!file) return;
+    const isPdf = /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
+    if (isPdf) { await doImportPdf(file); return; }
     if (!window.XLSX) { toast.error('Biblioteca de leitura não carregada. Recarrega a página.'); return; }
     setBusy(true);
     try {
@@ -329,17 +381,26 @@ export default function FinExtrato() {
   // ---------- Nova conta ----------
   const submitAccount = async (e) => {
     e.preventDefault();
+    // Empresa destino: a escolhida no dialog (fluxo PDF) ou a do seletor.
+    const destino = accForm.company_id || (companyId !== COMPANY_ALL ? companyId : '');
+    if (!destino) { toast.error('Escolhe a empresa da conta.'); return; }
     try {
       await createFinBankAccount({
-        company_id: companyId,
+        company_id: destino,
         account_number: accForm.account_number || null,
         bank: accForm.bank || null,
         account_name: accForm.account_name || null,
       });
       toast.success('Conta criada');
       setAccDialog(false);
-      setAccForm({ account_number: '', bank: 'Millennium BCP', account_name: '' });
-      loadAccounts();
+      setAccForm({ account_number: '', bank: 'Millennium BCP', account_name: '', company_id: '' });
+      await loadAccounts();
+      // Havia um PDF à espera desta conta? Retoma a importação.
+      if (pendingPdfRef.current) {
+        const f = pendingPdfRef.current;
+        pendingPdfRef.current = null;
+        await doImportPdf(f);
+      }
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Erro ao criar conta');
     }
@@ -490,8 +551,8 @@ export default function FinExtrato() {
               <>
                 <Button asChild variant="outline" disabled={busy} data-testid="fin-import-btn">
                   <label className="cursor-pointer">
-                    <Upload className="h-4 w-4 mr-2" />Importar .xlsx
-                    <input type="file" accept=".xlsx,.xls" className="hidden"
+                    <Upload className="h-4 w-4 mr-2" />Importar extrato (PDF/xlsx)
+                    <input type="file" accept=".pdf,.xlsx,.xls" className="hidden"
                       onChange={onImportFile} disabled={busy} />
                   </label>
                 </Button>
@@ -675,6 +736,18 @@ export default function FinExtrato() {
             <DialogDescription>Regista uma conta para organizar os extratos.</DialogDescription>
           </DialogHeader>
           <form onSubmit={submitAccount} className="space-y-3">
+            <div className="space-y-1">
+              <Label className="text-xs">Empresa *</Label>
+              <Select value={accForm.company_id || (companyId !== COMPANY_ALL ? companyId : '')}
+                onValueChange={(v) => setAccForm({ ...accForm, company_id: v })}>
+                <SelectTrigger data-testid="fin-acc-company"><SelectValue placeholder="Escolhe a empresa" /></SelectTrigger>
+                <SelectContent>
+                  {companies.filter((c) => normSup(c.name) !== 'por classificar').map((c) => (
+                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="space-y-1">
               <Label className="text-xs">Nome da conta</Label>
               <Input value={accForm.account_name}

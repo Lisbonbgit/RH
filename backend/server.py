@@ -4893,6 +4893,319 @@ async def fin_cron_ingest(key: str = Query(...)):
     return summary
 
 
+# ===== FINANCEIRO · FASE 12 — IMPORTAÇÃO DE EXTRATO PDF (Millennium BCP) =====
+# POST /fin/movements/import-pdf: recebe o PDF do extrato do Millennium BCP
+# (extrato mensal oficial OU consulta de movimentos de um período), extrai os
+# movimentos com a IA, valida a cadeia de saldos (defesa contra extrações
+# erradas: só importa se a aritmética bater a 100%), roteia para a empresa
+# certa pelo NÚMERO DE CONTA (ignora a empresa selecionada no UI) e insere
+# sem duplicar (2 níveis de dedup — o nível 2 protege contra os movimentos
+# migrados do .xlsx, que têm dedup_key noutro formato).
+
+# Limite defensivo do ficheiro (extratos maiores → usar .xlsx ou período menor).
+_FIN_STATEMENT_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+
+_FIN_STATEMENT_ERR_TRUNC = (
+    "Não consegui ler o extrato completo (documento demasiado grande?). "
+    "Tenta um período mais curto ou o ficheiro .xlsx."
+)
+
+_FIN_STATEMENT_PROMPT = (
+    "Isto é um extrato bancário do Millennium BCP (Portugal) — extrato mensal "
+    "oficial ou consulta de movimentos de um período. Devolve APENAS um JSON "
+    "válido, sem texto antes nem depois, com exatamente esta forma: "
+    '{"account_number":"número da conta bancária (dígitos, como aparece no '
+    'cabeçalho; pode ser NIB/IBAN)",'
+    '"holder":"nome do titular da conta ou null",'
+    '"movements":[{"date_lancamento":"YYYY-MM-DD",'
+    '"date_valor":"YYYY-MM-DD ou null",'
+    '"description":"descrição do movimento",'
+    '"amount":-994.34,'
+    '"balance":336.24}]} '
+    "Regras: 'amount' é o valor do movimento COM SINAL (negativo = "
+    "débito/saída, positivo = crédito/entrada); 'balance' é o saldo "
+    "contabilístico APÓS o movimento (a coluna de saldo dessa linha); inclui "
+    "TODOS os movimentos do documento, pela ordem em que aparecem; números "
+    "com ponto decimal e sem separador de milhares; NÃO inventes linhas — "
+    "totais, saldos iniciais/finais e cabeçalhos NÃO são movimentos."
+)
+
+
+def _fin_extract_statement_sync(pdf_bytes):
+    """Irmã de _fin_extract_pdf_sync mas para EXTRATOS bancários (prompt
+    próprio e max_tokens 8192 — um extrato tem dezenas/centenas de linhas).
+    Devolve o dict extraído ou {'error': '...'} ('truncado' = JSON cortado
+    ou inválido → o endpoint devolve 422). Síncrono — corre em thread."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return {"error": "sem ANTHROPIC_API_KEY"}
+    if not HTTPX_AVAILABLE:
+        return {"error": "httpx indisponível"}
+    model = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+    body = {
+        "model": model,
+        "max_tokens": 8192,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "document", "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": base64.b64encode(pdf_bytes).decode(),
+                }},
+                {"type": "text", "text": _FIN_STATEMENT_PROMPT},
+            ],
+        }],
+    }
+    try:
+        with httpx.Client(timeout=300) as http_client:
+            resp = http_client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json=body,
+            )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"rede IA: {exc}"}
+    if resp.status_code >= 400:
+        try:
+            err = resp.json().get("error", {}).get("message")
+        except Exception:  # noqa: BLE001
+            err = None
+        return {"error": err or f"HTTP {resp.status_code}"}
+    try:
+        data = resp.json()
+        raw = (data.get("content") or [{}])[0].get("text", "")
+        stop_reason = data.get("stop_reason")
+    except Exception:  # noqa: BLE001
+        return {"error": "truncado"}
+    if stop_reason == "max_tokens":
+        return {"error": "truncado"}  # resposta cortada a meio → não confiar
+    m = re.search(r"\{[\s\S]*\}", raw or "")
+    if not m:
+        return {"error": "truncado"}
+    try:
+        parsed = json.loads(m.group(0))
+    except Exception:  # noqa: BLE001
+        return {"error": "truncado"}  # JSON inválido = provavelmente cortado
+    return parsed if isinstance(parsed, dict) else {"error": "truncado"}
+
+
+def _fin_acct_digits(s):
+    """Normaliza um nº de conta para comparação: só dígitos, sem zeros à
+    esquerda (torna comparáveis NIB/IBAN e nº interno)."""
+    return re.sub(r"\D+", "", str(s or "")).lstrip("0")
+
+
+def _fin_acct_match(a, b):
+    """True se as duas contas (já normalizadas) forem a mesma: iguais, ou o
+    mais curto (mín. 8 dígitos) contido no mais longo. Cobre NIB/IBAN vs nº
+    interno: o NIB PT contém o nº de conta (seguido de 2 dígitos de controlo,
+    por isso 'contido' e não apenas sufixo)."""
+    if not a or not b:
+        return False
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    return len(shorter) >= 8 and shorter in longer
+
+
+def _fin_chain_check(movs):
+    """Valida a cadeia de saldos (lista JÁ em ordem cronológica antigo→recente):
+    balance[i] deve ser balance[i-1] + amount[i] (tolerância 0.01). Devolve o
+    índice do 1.º movimento que falha, ou None se a cadeia for 100% válida.
+    Com 0 ou 1 movimentos a cadeia é trivialmente válida."""
+    for i in range(1, len(movs)):
+        if abs(movs[i]["balance"] - (movs[i - 1]["balance"] + movs[i]["amount"])) > 0.01:
+            return i
+    return None
+
+
+@api_router.post("/fin/movements/import-pdf")
+async def fin_import_movements_pdf(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Importa movimentos a partir do PDF do extrato Millennium BCP.
+    Roteia pela CONTA (não pela empresa do UI); valida a cadeia de saldos
+    antes de importar; nunca duplica (dedup_key + comparação com migrados)."""
+    # ---- 1) Ficheiro ----
+    pdf_bytes = await file.read()
+    if len(pdf_bytes) > _FIN_STATEMENT_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="Ficheiro demasiado grande (máx. 10 MB). Tenta um período mais curto ou o ficheiro .xlsx.",
+        )
+    if not pdf_bytes.startswith(b"%PDF"):
+        raise HTTPException(status_code=422, detail="O ficheiro não parece ser um PDF.")
+
+    # ---- 2) Extração via IA (HTTP síncrono em thread) ----
+    ex = await asyncio.to_thread(_fin_extract_statement_sync, pdf_bytes)
+    if not isinstance(ex, dict):
+        raise HTTPException(status_code=422, detail=_FIN_STATEMENT_ERR_TRUNC)
+    if ex.get("error"):
+        if ex["error"] == "truncado":
+            raise HTTPException(status_code=422, detail=_FIN_STATEMENT_ERR_TRUNC)
+        raise HTTPException(status_code=502, detail=f"Falha na leitura do extrato (IA): {ex['error']}")
+
+    movs_raw = ex.get("movements")
+    if not isinstance(movs_raw, list):
+        raise HTTPException(status_code=422, detail=_FIN_STATEMENT_ERR_TRUNC)
+    total = len(movs_raw)
+    holder = str(ex.get("holder") or "").strip() or None
+
+    # ---- 3) Validação linha a linha (nunca inserir dados corrompidos) ----
+    date_re = re.compile(r"\d{4}-\d{2}-\d{2}$")
+    movs = []
+    for r in movs_raw:
+        if not isinstance(r, dict):
+            raise HTTPException(status_code=422, detail=_FIN_STATEMENT_ERR_TRUNC)
+        d = str(r.get("date_lancamento") or "").strip()
+        amount = _fin_clean_num(r.get("amount"))
+        balance = _fin_clean_num(r.get("balance"))
+        if not date_re.match(d) or amount is None or balance is None:
+            raise HTTPException(
+                status_code=422,
+                detail="O extrato tem um movimento com data ou valores ilegíveis: a extração pode ter falhado. Nada foi importado.",
+            )
+        dv = str(r.get("date_valor") or "").strip()
+        movs.append({
+            "date_lancamento": d,
+            "date_valor": dv if date_re.match(dv) else None,
+            "description": str(r.get("description") or "").strip() or None,
+            "amount": amount,
+            "balance": balance,
+        })
+
+    # ---- 4) Ordenação cronológica (o Millennium lista recente→antigo, mas
+    # não assumimos: detetamos pela primeira vs última data) ----
+    if len(movs) >= 2:
+        first_d, last_d = movs[0]["date_lancamento"], movs[-1]["date_lancamento"]
+        if first_d > last_d:
+            # documento recente→antigo: inverter a lista TODA preserva
+            # corretamente a ordem relativa dos empates (mesmo dia)
+            movs = list(reversed(movs))
+        elif first_d == last_d and _fin_chain_check(movs) is not None:
+            # datas inconclusivas (tudo no mesmo dia): tenta a ordem inversa
+            rev = list(reversed(movs))
+            if _fin_chain_check(rev) is None:
+                movs = rev
+
+    # ---- 5) Validação aritmética da cadeia de saldos (OBRIGATÓRIA) ----
+    bad = _fin_chain_check(movs)
+    if bad is not None:
+        mv = movs[bad]
+        desc = re.sub(r"\s+", " ", mv.get("description") or "").strip()[:60]
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Validação de saldos falhou no movimento de {mv['date_lancamento']} "
+                f"('{desc}'): a extração pode ter falhado. Nada foi importado."
+            ),
+        )
+
+    # ---- 6) Roteamento pela conta (IGNORA a empresa selecionada no UI) ----
+    acct_digits = _fin_acct_digits(ex.get("account_number"))
+    if not acct_digits:
+        raise HTTPException(
+            status_code=422,
+            detail="Não consegui identificar o número de conta no extrato. Nada foi importado.",
+        )
+    accounts = await db.fin_bank_accounts.find({}, {"_id": 0}).to_list(2000)
+    matches = [a for a in accounts if _fin_acct_match(acct_digits, _fin_acct_digits(a.get("account_number")))]
+    exact = [a for a in matches if _fin_acct_digits(a.get("account_number")) == acct_digits]
+    acc = exact[0] if exact else (matches[0] if matches else None)
+    if not acc:
+        # 404 estruturado: o frontend usa isto para oferecer o registo da conta
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "conta_desconhecida", "account_number": acct_digits, "holder": holder or ""},
+        )
+    company_id = acc["company_id"]
+    await fin_require_editor(company_id, current_user)
+
+    # ---- 7) Anti-duplicação (2 níveis) + inserção ----
+    # Nível 1: dedup_key canónico deste importador (nº de conta REGISTADO
+    # normalizado, para que IBAN/NIB/nº interno no cabeçalho dêem a mesma key).
+    # Nível 2: mesma conta + mesma data + amount e balance iguais a 2 casas —
+    # apanha os movimentos migrados do .xlsx (dedup_key noutro formato e
+    # descrições ligeiramente diferentes). Pré-carrega os candidatos do
+    # período numa só query e compara com round(...,2) em Python.
+    canon = _fin_acct_digits(acc.get("account_number")) or acct_digits
+    d_min = movs[0]["date_lancamento"] if movs else None
+    d_max = movs[-1]["date_lancamento"] if movs else None
+    seen_lvl2 = set()
+    if movs:
+        existing = await db.fin_movements.find(
+            {"account_id": acc["id"], "date_lancamento": {"$gte": d_min, "$lte": d_max}},
+            {"_id": 0, "date_lancamento": 1, "amount": 1, "balance": 1},
+        ).to_list(50000)
+        for e in existing:
+            ea = _fin_clean_num(e.get("amount"))
+            eb = _fin_clean_num(e.get("balance"))
+            if ea is None or eb is None:
+                continue
+            seen_lvl2.add((e.get("date_lancamento"), round(ea, 2), round(eb, 2)))
+
+    now = datetime.now(timezone.utc).isoformat()
+    inserted = 0
+    skipped = 0
+    batch_keys = set()  # dedup dentro do próprio ficheiro
+    for mv in movs:
+        desc_norm = re.sub(r"\s+", " ", mv.get("description") or "").strip().upper()
+        dedup_key = hashlib.sha1(
+            f"{canon}|{mv['date_lancamento']}|{mv['amount']:.2f}|{mv['balance']:.2f}|{desc_norm}".encode()
+        ).hexdigest()
+        lvl2 = (mv["date_lancamento"], round(mv["amount"], 2), round(mv["balance"], 2))
+        if dedup_key in batch_keys or lvl2 in seen_lvl2:
+            skipped += 1
+            continue
+        if await db.fin_movements.find_one({"dedup_key": dedup_key}, {"_id": 0, "id": 1}):
+            skipped += 1
+            seen_lvl2.add(lvl2)
+            continue
+        doc = {
+            "id": str(uuid.uuid4()),
+            "account_id": acc["id"],
+            "company_id": company_id,
+            "date_lancamento": mv["date_lancamento"],
+            "date_valor": mv["date_valor"],
+            "description": mv["description"],
+            "amount": float(mv["amount"]),
+            "balance": float(mv["balance"]),
+            "currency": "EUR",
+            "title": None,
+            "invoice_id": None,
+            "link_auto": False,
+            "attachment_path": None,
+            "dedup_key": dedup_key,
+            "source": "bank_pdf",
+            "created_by": current_user["user_id"],
+            "created_at": now,
+        }
+        await db.fin_movements.insert_one(doc)
+        batch_keys.add(dedup_key)
+        seen_lvl2.add(lvl2)
+        inserted += 1
+
+    comp = await db.fin_companies.find_one({"id": company_id}, {"_id": 0, "name": 1})
+    logger.info(
+        "[fin-extrato-pdf] conta=***%s empresa=%s total_no_pdf=%d inseridos=%d ignorados=%d periodo=%s..%s",
+        acct_digits[-4:], company_id, total, inserted, skipped, d_min, d_max,
+    )
+    return {
+        "account_number": acct_digits,
+        "company_id": company_id,
+        "company_name": (comp or {}).get("name"),
+        "inserted": inserted,
+        "skipped": skipped,
+        "total_no_pdf": total,
+        "periodo": {"de": d_min, "ate": d_max},
+        "holder": holder,
+    }
+
+
 # ===== FINANCEIRO · FASE 5 — VENDAS =====
 # Vendas (coleção fin_sales). Base do módulo Vendas: lançamento manual e CRUD.
 # A sincronização Vendus/Moloni é OUTRA fase. Aqui só CRUD manual.

@@ -152,6 +152,13 @@ export const getFinBankAccounts = (companyId) =>
 export const createFinBankAccount = (data) => axios.post(`${API_URL}/fin/bank-accounts`, data);
 export const getFinMovements = (params) => axios.get(`${API_URL}/fin/movements`, { params });
 export const importFinMovements = (data) => axios.post(`${API_URL}/fin/movements/import`, data);
+export const importFinMovementsPdf = (file) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return axios.post(`${API_URL}/fin/movements/import-pdf`, fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+};
 export const setFinMovementTitle = (id, title) =>
   axios.put(`${API_URL}/fin/movements/${id}/set-title`, { title });
 export const linkFinMovement = (id, invoiceId) =>
