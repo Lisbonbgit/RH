@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useOutletContext } from 'react-router-dom';
 import {
   getFinCompanies, getFinInvoices, getFinBankAccounts, createFinBankAccount,
   getFinMovements, importFinMovements, importFinMovementsPdf, setFinMovementTitle,
@@ -138,8 +139,9 @@ const parseBankXlsx = (arrayBuffer) => {
 };
 
 export default function FinExtrato() {
+  const { selectedCompany } = useOutletContext();
   const [companies, setCompanies] = useState([]);
-  const [companyId, setCompanyId] = useState(localStorage.getItem(LS_KEY) || '');
+  const [companyId, setCompanyId] = useState('');
   const [accounts, setAccounts] = useState([]);
   const [accountId, setAccountId] = useState(ACC_NONE);
   const [month, setMonth] = useState(thisMonth());
@@ -179,6 +181,10 @@ export default function FinExtrato() {
   useEffect(() => {
     if (companyId) loadMovements();
   }, [companyId, accountId, month]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Empresa ativa vem do seletor global do topo (secção Financeiro).
+  useEffect(() => {
+    setCompanyId(selectedCompany ? selectedCompany.id : COMPANY_ALL);
+  }, [selectedCompany]);
 
   const loadCompanies = async () => {
     try {
@@ -508,19 +514,6 @@ export default function FinExtrato() {
     <div className="space-y-6 animate-fade-in" data-testid="fin-extrato-page">
       <PageHeader icon={Landmark} title="Extrato / Tesouraria" subtitle="Importar extrato do banco, conciliar e exportar">
         <div className="flex items-center gap-2 flex-wrap">
-          {companies.length > 0 && (
-            <Select value={companyId} onValueChange={setCompanyId}>
-              <SelectTrigger className="w-44" data-testid="fin-company-picker">
-                <SelectValue placeholder="Empresa" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={COMPANY_ALL}>Todas as empresas</SelectItem>
-                {companies
-                  .filter((c) => normSup(c.name) !== 'por classificar')
-                  .map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          )}
           <Select value={accountId} onValueChange={setAccountId}>
             <SelectTrigger className="w-44" data-testid="fin-account-picker">
               <SelectValue placeholder="Conta" />

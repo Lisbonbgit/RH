@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useOutletContext } from 'react-router-dom';
 import {
   getFinCompanies, getFinUnits, getFinInvoices, getFinSupplierRules,
   createFinInvoice, updateFinInvoice, approveFinInvoice, rejectFinInvoice,
@@ -46,8 +47,9 @@ const emptyForm = () => ({
 });
 
 export default function FinPagamentos() {
+  const { selectedCompany } = useOutletContext();
   const [companies, setCompanies] = useState([]);
-  const [companyId, setCompanyId] = useState(localStorage.getItem(LS_KEY) || '');
+  const [companyId, setCompanyId] = useState('');
   const [units, setUnits] = useState([]);
   const [invoices, setInvoices] = useState([]);
   const [rules, setRules] = useState([]);
@@ -76,8 +78,12 @@ export default function FinPagamentos() {
 
   useEffect(() => { loadCompanies(); }, []);
   useEffect(() => {
-    if (companyId) { localStorage.setItem(LS_KEY, companyId); loadData(); }
+    if (companyId) { loadData(); }
   }, [companyId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A empresa ativa vem do seletor global do topo (secção Financeiro).
+  useEffect(() => {
+    setCompanyId(selectedCompany ? selectedCompany.id : COMPANY_ALL);
+  }, [selectedCompany]);
 
   const loadCompanies = async () => {
     try {
@@ -326,17 +332,6 @@ export default function FinPagamentos() {
     <div className="space-y-6 animate-fade-in" data-testid="fin-pagamentos-page">
       <PageHeader icon={Receipt} title="Pagamentos" subtitle="Faturas de fornecedor, agenda e conta corrente">
         <div className="flex flex-wrap items-center gap-2">
-          {companies.length > 0 && (
-            <Select value={companyId} onValueChange={setCompanyId}>
-              <SelectTrigger className="w-48" data-testid="fin-company-picker">
-                <SelectValue placeholder="Empresa" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={COMPANY_ALL}>Todas as empresas</SelectItem>
-                {companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          )}
           {canEdit && (
             <>
               <Button variant="outline" onClick={() => openNew('payment')} data-testid="fin-new-payment-btn">
