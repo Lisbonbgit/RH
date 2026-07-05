@@ -6,6 +6,7 @@ import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { ScrollArea } from '../ui/scroll-area';
 import { Separator } from '../ui/separator';
+import ThemeToggle from '../ThemeToggle';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -312,6 +313,7 @@ export default function AdminLayout() {
         </div>
 
         <div className="ml-auto flex items-center gap-2">
+          <ThemeToggle />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" className="relative" data-testid="notifications-btn">
@@ -363,6 +365,7 @@ export default function AdminLayout() {
       <header className="hidden lg:flex lg:ml-64 h-16 items-center justify-between border-b bg-card px-6">
         <div />
         <div className="flex items-center gap-4">
+          <ThemeToggle />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" className="relative" data-testid="notifications-btn-desktop">

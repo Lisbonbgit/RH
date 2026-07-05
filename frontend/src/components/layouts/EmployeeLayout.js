@@ -7,6 +7,7 @@ import { requestLocationPermission } from '../../lib/geo';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { ScrollArea } from '../ui/scroll-area';
+import ThemeToggle from '../ThemeToggle';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -93,6 +94,7 @@ export default function EmployeeLayout() {
         </div>
 
         <div className="flex items-center gap-2">
+          <ThemeToggle />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" className="relative" data-testid="notifications-btn">

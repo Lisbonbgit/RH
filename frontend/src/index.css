@@ -38,6 +38,39 @@
         --warning: 35 92% 50%;
         --info: 217 88% 51%;
     }
+
+    /* Tema escuro — "midnight" azulado, coerente com a marca (ativado pela
+       classe `dark` no <html>; ver ThemeToggle). */
+    .dark {
+        --background: 216 42% 7%;
+        --foreground: 210 40% 96%;
+        --card: 215 36% 10%;
+        --card-foreground: 210 40% 96%;
+        --popover: 215 36% 10%;
+        --popover-foreground: 210 40% 96%;
+        --primary: 217 92% 62%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 215 30% 15%;
+        --secondary-foreground: 210 40% 92%;
+        --muted: 215 30% 15%;
+        --muted-foreground: 214 16% 64%;
+        --accent: 216 32% 17%;
+        --accent-foreground: 210 85% 80%;
+        --destructive: 0 72% 58%;
+        --destructive-foreground: 0 0% 100%;
+        --border: 215 28% 18%;
+        --input: 215 28% 18%;
+        --ring: 217 92% 62%;
+        --brand-teal: 177 66% 42%;
+        --chart-1: 217 92% 62%;
+        --chart-2: 177 66% 46%;
+        --chart-3: 199 89% 56%;
+        --chart-4: 38 92% 60%;
+        --chart-5: 256 75% 70%;
+        --success: 168 64% 44%;
+        --warning: 35 92% 56%;
+        --info: 217 92% 62%;
+    }
 }
 
 @layer base {
@@ -106,6 +139,16 @@
 }
 .badge-recusado {
     @apply bg-red-50 text-red-700 border-red-200;
+}
+/* Variantes para o tema escuro (as cores fixas acima não têm contraste no dark) */
+.dark .badge-pendente {
+    @apply bg-amber-950/60 text-amber-300 border-amber-800;
+}
+.dark .badge-aprovado {
+    @apply bg-teal-950/60 text-teal-300 border-teal-800;
+}
+.dark .badge-recusado {
+    @apply bg-red-950/60 text-red-300 border-red-800;
 }
 
 /* Card hover effect */
