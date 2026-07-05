@@ -450,9 +450,9 @@ export default function FinPagamentos() {
                             <div className="space-y-0.5">
                               {d.faturas.slice(0, 2).map((f) => (
                                 <div key={f.id} title={`${f.supplier || ''} · ${eur(f.amount)}`}
-                                  className="truncate rounded bg-muted/60 px-1.5 py-0.5 text-xs leading-tight">
-                                  <span className="font-medium">{f.supplier || '(s/ fornecedor)'}</span>
-                                  <span className="text-muted-foreground"> {eur(f.amount)}</span>
+                                  className="truncate rounded-md bg-muted px-2 py-1 text-sm leading-snug">
+                                  <span className="font-bold text-foreground">{f.supplier || '(s/ fornecedor)'}</span>
+                                  <span className="text-muted-foreground font-medium"> {eur(f.amount)}</span>
                                 </div>
                               ))}
                               {d.faturas.length > 2 && (
