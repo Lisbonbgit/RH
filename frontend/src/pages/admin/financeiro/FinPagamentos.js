@@ -231,6 +231,43 @@ export default function FinPagamentos() {
     );
   }, [invoices, search]);
 
+  // ---------- Semana atual (Resumo): limites de pagamento por dia ----------
+  // Segunda→domingo, com as faturas POR PAGAR cujo vencimento efetivo (regra
+  // do fornecedor incluída; débito direto excluído) cai em cada dia.
+  const semana = useMemo(() => {
+    const localISO = (d) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const hoje = new Date();
+    const hojeISO = localISO(hoje);
+    const seg = new Date(hoje);
+    seg.setDate(hoje.getDate() - ((hoje.getDay() + 6) % 7)); // segunda-feira
+    const nomes = ['seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom'];
+    const porPagar = active
+      .filter((i) => !i.paid && !ruleFor(i)?.direct_debit)
+      .map((i) => ({ ...i, _due: effectiveDue(i, ruleFor(i)) }))
+      .filter((i) => i._due);
+    const dias = [];
+    for (let k = 0; k < 7; k++) {
+      const d = new Date(seg);
+      d.setDate(seg.getDate() + k);
+      const iso = localISO(d);
+      const doDia = porPagar.filter((i) => i._due === iso);
+      dias.push({
+        iso, nome: nomes[k], num: d.getDate(),
+        hoje: iso === hojeISO, passado: iso < hojeISO,
+        faturas: doDia,
+        total: doDia.reduce((s, i) => s + (Number(i.amount) || 0), 0),
+      });
+    }
+    const atrasadas = porPagar.filter((i) => i._due < hojeISO);
+    return {
+      dias, hojeISO,
+      atrasadas: atrasadas.length,
+      atrasadasTotal: atrasadas.reduce((s, i) => s + (Number(i.amount) || 0), 0),
+      totalSemana: dias.reduce((s, d) => s + d.total, 0),
+    };
+  }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const agenda = useMemo(() => {
     const today = todayISO();
     const list = active
@@ -316,7 +353,7 @@ export default function FinPagamentos() {
           </TabsList>
 
           {/* ---------- RESUMO ---------- */}
-          <TabsContent value="resumo">
+          <TabsContent value="resumo" className="space-y-4">
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               {[
                 { label: 'A pagar', value: eur(kpis.aPagar), icon: CircleDollarSign },
@@ -337,6 +374,68 @@ export default function FinPagamentos() {
                 </Card>
               ))}
             </div>
+
+            {/* ---------- Esta semana: limites de pagamento por dia ---------- */}
+            <Card>
+              <CardContent className="p-4 space-y-3" data-testid="fin-semana-pagamentos">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <p className="text-sm font-semibold">Esta semana · limites de pagamento</p>
+                  <div className="flex items-center gap-3 text-xs">
+                    {semana.atrasadas > 0 && (
+                      <span className="inline-flex items-center gap-1 text-destructive font-medium">
+                        <AlertTriangle className="h-3.5 w-3.5" />
+                        {semana.atrasadas} em atraso · {eur(semana.atrasadasTotal)}
+                      </span>
+                    )}
+                    <span className="text-muted-foreground">
+                      Semana: <b className="text-foreground">{eur(semana.totalSemana)}</b>
+                    </span>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <div className="grid grid-cols-7 gap-1.5 min-w-[640px]">
+                    {semana.dias.map((d) => (
+                      <div key={d.iso}
+                        className={`rounded-xl border p-2 flex flex-col gap-1.5 min-h-[108px] ${
+                          d.hoje ? 'border-primary ring-1 ring-primary/40 bg-primary/5'
+                          : d.passado ? 'opacity-60' : ''
+                        }`}>
+                        <div className="flex items-baseline justify-between">
+                          <span className={`text-[10px] uppercase font-semibold ${d.hoje ? 'text-primary' : 'text-muted-foreground'}`}>
+                            {d.nome}
+                          </span>
+                          <span className={`text-sm font-heading font-bold ${d.hoje ? 'text-primary' : ''}`}>{d.num}</span>
+                        </div>
+                        {d.faturas.length === 0 ? (
+                          <span className="text-[11px] text-muted-foreground/60 m-auto">—</span>
+                        ) : (
+                          <>
+                            <span className={`text-[11px] font-semibold ${d.passado ? 'text-destructive' : ''}`}>
+                              {eur(d.total)}
+                            </span>
+                            <div className="space-y-0.5">
+                              {d.faturas.slice(0, 3).map((f) => (
+                                <div key={f.id} title={`${f.supplier || ''} · ${eur(f.amount)}`}
+                                  className="truncate rounded bg-muted/60 px-1.5 py-0.5 text-[10px] leading-tight">
+                                  <span className="font-medium">{f.supplier || '(s/ fornecedor)'}</span>
+                                  <span className="text-muted-foreground"> {eur(f.amount)}</span>
+                                </div>
+                              ))}
+                              {d.faturas.length > 3 && (
+                                <span className="text-[10px] text-muted-foreground">+{d.faturas.length - 3} mais</span>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Vencimento efetivo (regras de fornecedor aplicadas); débitos diretos não aparecem. Detalhe completo na <b>Agenda</b>.
+                </p>
+              </CardContent>
+            </Card>
           </TabsContent>
 
           {/* ---------- FATURAS ---------- */}
