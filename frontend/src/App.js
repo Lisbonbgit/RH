@@ -22,7 +22,6 @@ import AdminManagers from './pages/admin/AdminManagers';
 import AdminSchedules from './pages/admin/AdminSchedules';
 import AdminHolidays from './pages/admin/AdminHolidays';
 import FinInicio from './pages/admin/financeiro/FinInicio';
-import FinEquipa from './pages/admin/financeiro/FinEquipa';
 import FinPagamentos from './pages/admin/financeiro/FinPagamentos';
 import FinVendas from './pages/admin/financeiro/FinVendas';
 import FinFornecedores from './pages/admin/financeiro/FinFornecedores';
@@ -166,7 +165,6 @@ function AppRoutes() {
         <Route path="financeiro/relatorios" element={<ComingSoon icon={BarChart3} title="Relatórios" subtitle="DRE e custos fixos" />} />
         <Route path="financeiro/fornecedores" element={<FinFornecedores />} />
         <Route path="financeiro/extrato" element={<FinExtrato />} />
-        <Route path="financeiro/equipa" element={<FinEquipa />} />
 
         {/* ===== Marketing ===== */}
         <Route path="marketing" element={<MarketingCampaigns />} />
