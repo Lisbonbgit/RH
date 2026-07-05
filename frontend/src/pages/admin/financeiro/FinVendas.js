@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useOutletContext } from 'react-router-dom';
 import {
   getFinCompanies, getFinUnits, getFinSales,
   createFinSale, updateFinSale, deleteFinSale, syncFinSales,
@@ -42,8 +43,9 @@ const emptyForm = () => ({
 });
 
 export default function FinVendas() {
+  const { selectedCompany } = useOutletContext();
   const [companies, setCompanies] = useState([]);
-  const [companyId, setCompanyId] = useState(localStorage.getItem(LS_KEY) || '');
+  const [companyId, setCompanyId] = useState('');
   const [units, setUnits] = useState([]);
   const [unitId, setUnitId] = useState(UNIT_ALL);
   const [month, setMonth] = useState(thisMonth());
@@ -71,6 +73,10 @@ export default function FinVendas() {
   useEffect(() => {
     if (companyId) loadSales();
   }, [companyId, unitId, month]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Empresa ativa vem do seletor global do topo (secção Financeiro).
+  useEffect(() => {
+    setCompanyId(selectedCompany ? selectedCompany.id : COMPANY_ALL);
+  }, [selectedCompany]);
 
   const loadCompanies = async () => {
     try {

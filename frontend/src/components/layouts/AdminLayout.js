@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { getNotifications, markAllNotificationsRead, getCompanies } from '../../lib/api';
+import { getNotifications, markAllNotificationsRead, getCompanies, getFinCompanies } from '../../lib/api';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { ScrollArea } from '../ui/scroll-area';
@@ -122,8 +122,16 @@ export default function AdminLayout() {
 
   useEffect(() => {
     fetchNotifications();
-    fetchCompanies();
   }, []);
+
+  // O seletor de empresa carrega a lista certa conforme a secção: RH/Marketing
+  // usam as empresas do RH; o Financeiro tem as suas próprias empresas. Ao mudar
+  // de secção, limpa a seleção (as empresas são universos diferentes).
+  useEffect(() => {
+    setSelectedCompany(null);
+    fetchCompanies();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSection.key]);
 
   const fetchNotifications = async () => {
     try {
@@ -136,8 +144,10 @@ export default function AdminLayout() {
 
   const fetchCompanies = async () => {
     try {
-      const response = await getCompanies();
-      setCompanies(response.data);
+      const response = activeSection.key === 'financeiro'
+        ? await getFinCompanies()
+        : await getCompanies();
+      setCompanies(response.data || []);
     } catch (error) {
       console.error('Error fetching companies:', error);
     }
@@ -200,9 +210,7 @@ export default function AdminLayout() {
         </div>
       </div>
 
-      {/* Company Selector — RH/Marketing. O Financeiro tem a sua própria
-          seleção de empresa por página (empresas do módulo financeiro). */}
-      {activeSection.key !== 'financeiro' && (
+      {/* Company Selector (todas as secções) */}
       <div className="p-4">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -236,7 +244,6 @@ export default function AdminLayout() {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      )}
 
       <ScrollArea className="flex-1 px-3 pt-2">
         <nav className="space-y-1">

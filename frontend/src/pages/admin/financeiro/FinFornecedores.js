@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useOutletContext } from 'react-router-dom';
 import {
   getFinCompanies, getFinInvoices, getFinSupplierRules,
   upsertFinSupplierRule, deleteFinSupplierRule,
@@ -22,8 +23,9 @@ const LS_KEY = 'fin_selected_company';
 const COMPANY_ALL = 'all';
 
 export default function FinFornecedores() {
+  const { selectedCompany } = useOutletContext();
   const [companies, setCompanies] = useState([]);
-  const [companyId, setCompanyId] = useState(localStorage.getItem(LS_KEY) || '');
+  const [companyId, setCompanyId] = useState('');
   const [invoices, setInvoices] = useState([]);
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -35,6 +37,10 @@ export default function FinFornecedores() {
 
   useEffect(() => { loadCompanies(); }, []);
   useEffect(() => { if (companyId) { localStorage.setItem(LS_KEY, companyId); loadData(); } }, [companyId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Empresa ativa vem do seletor global do topo (secção Financeiro).
+  useEffect(() => {
+    setCompanyId(selectedCompany ? selectedCompany.id : COMPANY_ALL);
+  }, [selectedCompany]);
 
   const loadCompanies = async () => {
     try {
@@ -150,17 +156,6 @@ export default function FinFornecedores() {
     <div className="space-y-6 animate-fade-in" data-testid="fin-fornecedores-page">
       <PageHeader icon={Truck} title="Fornecedores" subtitle="Fichas e regras por fornecedor (partilhadas pela equipa)">
         <div className="flex flex-wrap items-center gap-2">
-          {companies.length > 0 && (
-            <Select value={companyId} onValueChange={setCompanyId}>
-              <SelectTrigger className="w-48"><SelectValue placeholder="Empresa" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={COMPANY_ALL}>Todas as empresas</SelectItem>
-                {companies
-                  .filter((c) => normSup(c.name) !== 'por classificar')
-                  .map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          )}
           <Button onClick={openManual} data-testid="fin-new-rule-btn">
             <Plus className="h-4 w-4 mr-2" />Nova regra
           </Button>
