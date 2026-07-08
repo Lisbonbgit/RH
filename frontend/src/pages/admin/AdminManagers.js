@@ -103,6 +103,12 @@ export default function AdminManagers() {
   });
   const [errors, setErrors] = useState({});
 
+  // Edição (clique na linha): nome, email, tipo de acesso e password opcional
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editingAdmin, setEditingAdmin] = useState(null);
+  const [editForm, setEditForm] = useState({ name: '', email: '', role: 'gerente', new_password: '' });
+  const [editLoading, setEditLoading] = useState(false);
+
   useEffect(() => {
     fetchAdmins();
   }, []);
@@ -172,6 +178,38 @@ export default function AdminManagers() {
       fetchAdmins();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Erro ao eliminar');
+    }
+  };
+
+  const openEdit = (admin) => {
+    setEditingAdmin(admin);
+    setEditForm({ name: admin.name || '', email: admin.email || '', role: admin.role || 'gerente', new_password: '' });
+    setEditDialogOpen(true);
+  };
+
+  const handleEditSubmit = async (e) => {
+    e.preventDefault();
+    if (!editForm.name.trim()) { toast.error('O nome é obrigatório'); return; }
+    if (editForm.new_password && editForm.new_password.length < 8) {
+      toast.error('A palavra-passe nova deve ter pelo menos 8 caracteres'); return;
+    }
+    setEditLoading(true);
+    try {
+      const payload = {
+        name: editForm.name.trim(),
+        email: editForm.email.trim(),
+        role: editForm.role,
+      };
+      if (editForm.new_password) payload.new_password = editForm.new_password;
+      await axios.put(`${API_URL}/admins/${editingAdmin.id}`, payload);
+      toast.success(`${payload.name} atualizado com sucesso`);
+      setEditDialogOpen(false);
+      setEditingAdmin(null);
+      fetchAdmins();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Erro ao atualizar utilizador');
+    } finally {
+      setEditLoading(false);
     }
   };
 
@@ -394,14 +432,16 @@ export default function AdminManagers() {
               </TableHeader>
               <TableBody>
                 {admins.map((admin) => (
-                  <TableRow key={admin.id}>
+                  <TableRow key={admin.id} onClick={() => openEdit(admin)}
+                    className="cursor-pointer hover:bg-muted/50"
+                    title="Clique para editar" data-testid={`admin-row-${admin.id}`}>
                     <TableCell className="font-medium">{admin.name}</TableCell>
                     <TableCell>{admin.email}</TableCell>
                     <TableCell>{getRoleBadge(admin.role)}</TableCell>
                     <TableCell>
                       {new Date(admin.created_at).toLocaleDateString('pt-PT')}
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button variant="ghost" size="icon" className="text-destructive">
@@ -434,6 +474,58 @@ export default function AdminManagers() {
           )}
         </CardContent>
       </Card>
+
+      {/* Dialog de edição (clique numa linha da lista) */}
+      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+        <DialogContent data-testid="edit-admin-dialog">
+          <DialogHeader>
+            <DialogTitle>Editar {editingAdmin?.name}</DialogTitle>
+            <DialogDescription>
+              Altere o nome, o email, o tipo de acesso ou defina uma palavra-passe nova.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleEditSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-name">Nome *</Label>
+              <Input id="edit-name" value={editForm.name}
+                onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                required data-testid="edit-admin-name" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-email">Email *</Label>
+              <Input id="edit-email" type="email" value={editForm.email}
+                onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                required data-testid="edit-admin-email" />
+            </div>
+            <div className="space-y-2">
+              <Label>Tipo de acesso</Label>
+              <Select value={editForm.role} onValueChange={(v) => setEditForm({ ...editForm, role: v })}>
+                <SelectTrigger data-testid="edit-admin-role"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="gerente">Gestor</SelectItem>
+                  <SelectItem value="contabilista">Contabilista</SelectItem>
+                  <SelectItem value="admin">Administrador</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-password">Palavra-passe nova (opcional)</Label>
+              <Input id="edit-password" type="password" value={editForm.new_password}
+                onChange={(e) => setEditForm({ ...editForm, new_password: e.target.value })}
+                placeholder="Deixe vazio para manter a atual" data-testid="edit-admin-password" />
+              <p className="text-xs text-muted-foreground">
+                Se definir uma nova, o utilizador terá de a trocar no próximo login.
+              </p>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setEditDialogOpen(false)}>Cancelar</Button>
+              <Button type="submit" disabled={editLoading} data-testid="save-admin-btn">
+                {editLoading ? 'A guardar...' : 'Guardar alterações'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
