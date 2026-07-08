@@ -1330,6 +1330,53 @@ async def get_admins(current_user: dict = Depends(admin_required)):
     
     return [AdminResponse(**a) for a in admins]
 
+class AdminUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    role: Optional[str] = None
+    new_password: Optional[str] = None
+
+@api_router.put("/admins/{admin_id}", response_model=AdminResponse)
+async def update_admin(admin_id: str, payload: AdminUpdate, current_user: dict = Depends(admin_required)):
+    """Editar um gestor/administrador (só o admin master): nome, email,
+    tipo de acesso e, opcionalmente, definir uma password nova (o utilizador
+    terá de a trocar no próximo login, como na criação)."""
+    user = await db.users.find_one({"id": current_user["user_id"]}, {"_id": 0})
+    if user["email"] != MASTER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Apenas o administrador master pode editar administradores")
+
+    admin = await db.users.find_one({"id": admin_id}, {"_id": 0})
+    if not admin:
+        raise HTTPException(status_code=404, detail="Administrador não encontrado")
+    if admin["email"] == MASTER_ADMIN_EMAIL:
+        raise HTTPException(status_code=400, detail="O administrador master edita-se pelo .env do servidor")
+
+    updates = {}
+    if payload.name is not None and payload.name.strip():
+        updates["name"] = payload.name.strip()
+    if payload.role is not None:
+        if payload.role not in MANAGER_ROLES:
+            raise HTTPException(status_code=400, detail="Tipo de acesso inválido")
+        updates["role"] = payload.role
+    if payload.email is not None and payload.email != admin["email"]:
+        existing = await db.users.find_one({"email": payload.email, "id": {"$ne": admin_id}})
+        if existing:
+            raise HTTPException(status_code=400, detail="Email já registado")
+        updates["email"] = payload.email
+    if payload.new_password:
+        is_valid, message = validate_password_strength(payload.new_password)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=message)
+        updates["password"] = hash_password(payload.new_password)
+        updates["must_change_password"] = True  # troca obrigatória no próximo login
+
+    if updates:
+        await db.users.update_one({"id": admin_id}, {"$set": updates})
+        logger.info(f"Admin atualizado por master: {admin_id} campos={list(updates.keys())}")
+
+    updated = await db.users.find_one({"id": admin_id}, {"_id": 0, "password": 0})
+    return AdminResponse(**updated)
+
 @api_router.delete("/admins/{admin_id}")
 async def delete_admin(admin_id: str, current_user: dict = Depends(admin_required)):
     """Delete an admin or manager (master admin only)"""

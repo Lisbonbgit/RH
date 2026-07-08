@@ -100,6 +100,7 @@ export const resetEmployeePassword = (employeeId, newPassword) =>
 export const getAdmins = () => axios.get(`${API_URL}/admins`);
 export const createAdmin = (data) => axios.post(`${API_URL}/admins`, data);
 export const deleteAdmin = (id) => axios.delete(`${API_URL}/admins/${id}`);
+export const updateAdmin = (id, data) => axios.put(`${API_URL}/admins/${id}`, data);
 
 // ==================== FINANCEIRO ====================
 
