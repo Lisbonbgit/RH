@@ -271,19 +271,6 @@ export default function FinVendas() {
     <div className="space-y-6 animate-fade-in" data-testid="fin-vendas-page">
       <PageHeader icon={TrendingUp} title="Vendas" subtitle="Receita por loja, food cost e margem">
         <div className="flex items-center gap-2 flex-wrap">
-          {companies.length > 0 && (
-            <Select value={companyId} onValueChange={setCompanyId}>
-              <SelectTrigger className="w-44" data-testid="fin-company-picker">
-                <SelectValue placeholder="Empresa" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={COMPANY_ALL}>Todas as empresas</SelectItem>
-                {companies
-                  .filter((c) => normSup(c.name) !== 'por classificar')
-                  .map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          )}
           <Select value={unitId} onValueChange={setUnitId}>
             <SelectTrigger className="w-40" data-testid="fin-unit-picker">
               <SelectValue placeholder="Loja" />
