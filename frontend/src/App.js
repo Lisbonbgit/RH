@@ -1,8 +1,7 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Toaster } from './components/ui/sonner';
-import { initNativeStatusBar } from './lib/statusbar';
 
 // Pages
 import LoginPage from './pages/LoginPage';
@@ -194,10 +193,6 @@ function AppRoutes() {
 }
 
 function App() {
-  useEffect(() => {
-    // Barra de estado nativa a acompanhar o tema (app Android/iOS).
-    initNativeStatusBar();
-  }, []);
   return (
     <BrowserRouter>
       <AuthProvider>

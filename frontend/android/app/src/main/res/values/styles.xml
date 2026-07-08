@@ -13,24 +13,10 @@
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
-        <!-- Android 15 (targetSdk 35) força edge-to-edge: sem isto, o conteúdo web
-             fica por baixo da barra de estado. Desativamos a imposição para a barra
-             voltar a ser uma faixa sólida e a WebView ficar dentro da área segura.
-             A cor real da barra é depois sincronizada com o tema (claro/escuro) por
-             JS via @capacitor/status-bar (ver src/lib/statusbar.js). -->
-        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
-        <item name="android:statusBarColor">#FFFFFFFF</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:navigationBarColor">#FFFFFFFF</item>
-        <item name="android:windowLightNavigationBar">true</item>
     </style>
 
 
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
         <item name="android:background">@drawable/splash</item>
-        <!-- Durante o splash (azul), a barra acompanha a cor do splash. -->
-        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
-        <item name="android:statusBarColor">#FF1366F0</item>
-        <item name="android:navigationBarColor">#FF1366F0</item>
     </style>
 </resources>
