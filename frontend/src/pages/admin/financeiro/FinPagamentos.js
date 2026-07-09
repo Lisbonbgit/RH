@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import {
-  getFinCompanies, getFinUnits, getFinInvoices, getFinSupplierRules,
-  createFinInvoice, updateFinInvoice, approveFinInvoice, rejectFinInvoice,
+  getFinCompanies, getFinUnits, getFinInvoices, getFinInvoice, getFinInvoicePdf,
+  getFinSupplierRules, createFinInvoice, updateFinInvoice,
   toggleFinInvoicePaid, setFinInvoiceUnit, deleteFinInvoice, cancelFinInvoiceSeries,
+  getFinMovements, linkFinMovement, unlinkFinMovement,
 } from '../../../lib/api';
 import { eur, fmtDate, todayISO, effectiveDue, supplierKeyOf } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
@@ -23,13 +24,13 @@ import {
 } from '../../../components/ui/alert-dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../../components/ui/table';
 import {
-  Receipt, Plus, Search, Check, X, Pencil, Trash2, CircleDollarSign,
+  Receipt, Plus, Search, Check, Pencil, Trash2, CircleDollarSign,
   Clock, AlertTriangle, Wallet, ChevronLeft, ChevronRight,
+  FileText, Link2, Unlink,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
 
-const LS_KEY = 'fin_selected_company';
 const COMPANY_ALL = 'all';
 const RECURRENCE = [
   { value: 'none', label: 'Não recorrente' },
@@ -45,6 +46,19 @@ const emptyForm = () => ({
   issue_date: todayISO(), due_date: '', amount: '', vat_rate: '',
   description: '', unit_id: UNIT_NONE, recurrence: 'none', paid: false, paid_date: '',
 });
+
+// Origem da fatura em linguagem humana (ficha de detalhe).
+const SOURCE_LABEL = { email: 'Email (automática)', manual: 'Manual', recurrence: 'Recorrente' };
+
+// Campo da grelha de dados na ficha de detalhe.
+function DetailField({ label, value }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="text-sm font-medium break-words">{value || '—'}</p>
+    </div>
+  );
+}
 
 export default function FinPagamentos() {
   const { selectedCompany } = useOutletContext();
@@ -63,6 +77,16 @@ export default function FinPagamentos() {
 
   const [toDelete, setToDelete] = useState(null);
   const [agendaView, setAgendaView] = useState('week');
+
+  // Ficha de detalhe da fatura (abre ao clicar na linha)
+  const [detail, setDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  // Sub-dialog: ligar a movimento do extrato
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkMovs, setLinkMovs] = useState([]);
+  const [linkLoading, setLinkLoading] = useState(false);
+  const [linkSearch, setLinkSearch] = useState('');
 
   const company = companies.find((c) => c.id === companyId) || null;
   const canEdit = company && (company.role === 'owner' || company.role === 'partner');
@@ -182,13 +206,96 @@ export default function FinPagamentos() {
     }
   };
 
-  const doApprove = async (inv) => { try { await approveFinInvoice(inv.id); toast.success('Aprovada'); loadData(); } catch (e) { toast.error('Erro ao aprovar'); } };
-  const doReject = async (inv) => { try { await rejectFinInvoice(inv.id); toast.success('Rejeitada'); loadData(); } catch (e) { toast.error('Erro ao rejeitar'); } };
   const doTogglePaid = async (inv) => {
     try {
       await toggleFinInvoicePaid(inv.id, !inv.paid, !inv.paid ? todayISO() : null);
       loadData();
+      if (detail && detail.id === inv.id) refreshDetail(inv.id); // ficha aberta acompanha
     } catch (e) { toast.error('Erro ao atualizar pagamento'); }
+  };
+
+  // ---------- Ficha de detalhe ----------
+  // Abre já com os dados da linha; em paralelo vai buscar a fatura completa
+  // (traz linked_movement — o movimento do extrato ligado, ou null).
+  const openDetail = (inv) => {
+    setDetail({ ...inv, linked_movement: null });
+    setDetailLoading(true);
+    refreshDetail(inv.id);
+  };
+  const refreshDetail = async (id) => {
+    try {
+      const r = await getFinInvoice(id);
+      setDetail(r.data);
+    } catch (e) {
+      // mantém os dados da linha — a ficha continua utilizável
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+  const closeDetail = () => { setDetail(null); setLinkOpen(false); setLinkSearch(''); };
+
+  const viewPdf = async () => {
+    if (!detail) return;
+    setPdfBusy(true);
+    try {
+      const res = await getFinInvoicePdf(detail.id);
+      const url = URL.createObjectURL(res.data);
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      // responseType blob → o detail do erro vem num Blob; ler como texto
+      let msg = 'Erro ao abrir o PDF';
+      try {
+        const txt = await err.response?.data?.text?.();
+        if (txt) msg = JSON.parse(txt)?.detail || msg;
+      } catch (_) { /* mantém a mensagem genérica */ }
+      toast.error(msg);
+    } finally {
+      setPdfBusy(false);
+    }
+  };
+
+  const doUnlinkMov = async () => {
+    const mov = detail?.linked_movement;
+    if (!mov) return;
+    try {
+      await unlinkFinMovement(mov.id);
+      toast.success('Movimento desligado — a fatura volta a "por pagar"');
+      refreshDetail(detail.id);
+      loadData();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao desligar');
+    }
+  };
+
+  // Sub-dialog: carrega os movimentos da MESMA empresa da fatura ao abrir.
+  const openLinkMov = async () => {
+    if (!detail) return;
+    setLinkSearch('');
+    setLinkOpen(true);
+    setLinkLoading(true);
+    try {
+      const r = await getFinMovements({ company_id: detail.company_id });
+      setLinkMovs(r.data || []);
+    } catch (e) {
+      toast.error('Erro ao carregar movimentos');
+      setLinkMovs([]);
+    } finally {
+      setLinkLoading(false);
+    }
+  };
+  const doLinkMov = async (mov) => {
+    if (!detail) return;
+    try {
+      await linkFinMovement(mov.id, detail.id);
+      toast.success('Fatura ligada e marcada como paga');
+      setLinkOpen(false);
+      setLinkSearch('');
+      refreshDetail(detail.id);
+      loadData();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao ligar movimento');
+    }
   };
   const doSetUnit = async (inv, unitId) => {
     try { await setFinInvoiceUnit(inv.id, unitId === UNIT_NONE ? null : unitId); loadData(); }
@@ -215,18 +322,40 @@ export default function FinPagamentos() {
   const active = invoices.filter((i) => i.approval_status !== 'rejected');
   const kpis = useMemo(() => {
     const today = todayISO();
-    let aPagar = 0, pago = 0, pendentes = 0, vencidas = 0;
+    let aPagar = 0, pago = 0, porPagar = 0, vencidas = 0;
     active.forEach((i) => {
       const val = Number(i.amount) || 0;
-      if (i.paid) pago += val; else aPagar += val;
-      if (i.approval_status === 'pending') pendentes += 1;
-      if (!i.paid) {
+      if (i.paid) pago += val;
+      else {
+        aPagar += val;
+        porPagar += 1;
         const due = effectiveDue(i, ruleFor(i));
         if (due && due < today) vencidas += 1;
       }
     });
-    return { aPagar, pago, pendentes, vencidas };
+    return { aPagar, pago, porPagar, vencidas };
   }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Candidatos do sub-dialog "Ligar a movimento": saídas (amount < 0) sem fatura,
+  // com pesquisa por descrição/valor/data; os de valor igual ao da fatura vêm primeiro.
+  const linkCandidates = useMemo(() => {
+    if (!detail) return [];
+    const alvo = Math.abs(Number(detail.amount) || 0).toFixed(2);
+    const q = linkSearch.trim().toLowerCase();
+    let list = linkMovs.filter((m) => (Number(m.amount) || 0) < 0 && !m.invoice_id);
+    if (q) {
+      list = list.filter((m) =>
+        [m.description, m.amount, m.date_lancamento]
+          .filter(Boolean).some((f) => String(f).toLowerCase().includes(q))
+      );
+    }
+    return list
+      .map((m) => ({ ...m, _match: Math.abs(Number(m.amount) || 0).toFixed(2) === alvo }))
+      .sort((a, b) =>
+        (b._match - a._match) ||
+        String(b.date_lancamento || '').localeCompare(String(a.date_lancamento || '')))
+      .slice(0, 50);
+  }, [detail, linkMovs, linkSearch]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -322,12 +451,6 @@ export default function FinPagamentos() {
       .sort((a, b) => b.saldo - a.saldo);
   }, [active]);
 
-  const approvalBadge = (s) => {
-    if (s === 'approved') return <Badge className="bg-emerald-600 hover:bg-emerald-600">Aprovada</Badge>;
-    if (s === 'rejected') return <Badge variant="destructive">Rejeitada</Badge>;
-    return <Badge className="bg-amber-500 hover:bg-amber-500">Pendente</Badge>;
-  };
-
   return (
     <div className="space-y-6 animate-fade-in" data-testid="fin-pagamentos-page">
       <PageHeader icon={Receipt} title="Pagamentos" subtitle="Faturas de fornecedor, agenda e conta corrente">
@@ -364,7 +487,7 @@ export default function FinPagamentos() {
               {[
                 { label: 'A pagar', value: eur(kpis.aPagar), icon: CircleDollarSign },
                 { label: 'Pago', value: eur(kpis.pago), icon: Check },
-                { label: 'Pendentes', value: kpis.pendentes, icon: Clock },
+                { label: 'Por pagar', value: kpis.porPagar, icon: Clock },
                 { label: 'Vencidas', value: kpis.vencidas, icon: AlertTriangle },
               ].map((k) => (
                 <Card key={k.label}>
@@ -498,7 +621,8 @@ export default function FinPagamentos() {
                       </TableHeader>
                       <TableBody>
                         {filtered.map((inv) => (
-                          <TableRow key={inv.id} data-testid={`fin-invoice-row-${inv.id}`}>
+                          <TableRow key={inv.id} data-testid={`fin-invoice-row-${inv.id}`}
+                            className="cursor-pointer hover:bg-muted/50" onClick={() => openDetail(inv)}>
                             <TableCell className="whitespace-nowrap">{fmtDate(inv.issue_date)}</TableCell>
                             <TableCell className="font-medium">
                               {inv.supplier || '-'}
@@ -510,7 +634,7 @@ export default function FinPagamentos() {
                             </TableCell>
                             <TableCell className="hidden md:table-cell text-muted-foreground">{inv.invoice_number || '-'}</TableCell>
                             <TableCell className="text-right whitespace-nowrap">{eur(inv.amount)}</TableCell>
-                            <TableCell className="hidden lg:table-cell">
+                            <TableCell className="hidden lg:table-cell" onClick={(e) => e.stopPropagation()}>
                               {canEdit ? (
                                 <Select value={inv.unit_id || UNIT_NONE} onValueChange={(v) => doSetUnit(inv, v)}>
                                   <SelectTrigger className="h-8 w-32 text-xs"><SelectValue /></SelectTrigger>
@@ -523,26 +647,16 @@ export default function FinPagamentos() {
                             </TableCell>
                             <TableCell>
                               <div className="flex flex-col gap-1 items-start">
-                                {approvalBadge(inv.approval_status)}
+                                {inv.approval_status === 'rejected' && (
+                                  <Badge variant="destructive">Rejeitada</Badge>
+                                )}
                                 {inv.paid
                                   ? <Badge variant="secondary" className="text-emerald-700">Paga</Badge>
                                   : <Badge variant="outline">Por pagar</Badge>}
                               </div>
                             </TableCell>
-                            <TableCell className="text-right">
+                            <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center justify-end gap-1">
-                                {canEdit && inv.approval_status === 'pending' && (
-                                  <>
-                                    <Button variant="ghost" size="icon" className="h-8 w-8" title="Aprovar"
-                                      onClick={() => doApprove(inv)} data-testid={`fin-approve-${inv.id}`}>
-                                      <Check className="h-4 w-4 text-emerald-600" />
-                                    </Button>
-                                    <Button variant="ghost" size="icon" className="h-8 w-8" title="Rejeitar"
-                                      onClick={() => doReject(inv)} data-testid={`fin-reject-${inv.id}`}>
-                                      <X className="h-4 w-4 text-destructive" />
-                                    </Button>
-                                  </>
-                                )}
                                 {canEdit && (
                                   <Button variant="ghost" size="icon" className="h-8 w-8" title={inv.paid ? 'Marcar por pagar' : 'Marcar paga'}
                                     onClick={() => doTogglePaid(inv)} data-testid={`fin-toggle-paid-${inv.id}`}>
@@ -742,6 +856,186 @@ export default function FinPagamentos() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---------- Ficha de detalhe da fatura ---------- */}
+      <Dialog open={!!detail} onOpenChange={(o) => { if (!o) closeDetail(); }}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto" data-testid="fin-invoice-detail">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 flex-wrap">
+              {detail?.supplier || '(sem fornecedor)'}
+              {detail?.kind === 'payment' && <Badge variant="outline">Pagamento</Badge>}
+              {detail?.recurrence && detail.recurrence !== 'none' && <Badge variant="outline">Recorrente</Badge>}
+              {detail?.approval_status === 'rejected' && <Badge variant="destructive">Rejeitada</Badge>}
+            </DialogTitle>
+            <DialogDescription>
+              {detail?.invoice_number ? `Fatura ${detail.invoice_number}` : 'Detalhe do lançamento'}
+            </DialogDescription>
+          </DialogHeader>
+          {detail && (
+            <div className="space-y-4">
+              {/* Valor + estado em destaque */}
+              <div className="flex items-center justify-between gap-3 rounded-xl border p-4">
+                <div>
+                  <p className="text-2xl font-heading font-bold leading-none">{eur(detail.amount)}</p>
+                  <p className="text-xs text-muted-foreground mt-1">Valor c/ IVA</p>
+                </div>
+                {detail.paid ? (
+                  <Badge className="bg-emerald-600 hover:bg-emerald-600 text-sm px-3 py-1" data-testid="fin-detail-paid-badge">
+                    Paga{detail.paid_date ? ` · ${fmtDate(detail.paid_date)}` : ''}
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="text-sm px-3 py-1" data-testid="fin-detail-paid-badge">Por pagar</Badge>
+                )}
+              </div>
+
+              {/* Grelha de dados */}
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-3">
+                <DetailField label="Fornecedor" value={detail.supplier} />
+                <DetailField label="NIF" value={detail.nif} />
+                <DetailField label="Nº fatura" value={detail.invoice_number} />
+                <DetailField label="Emissão" value={fmtDate(detail.issue_date)} />
+                <DetailField label="Vencimento" value={fmtDate(detail.due_date)} />
+                <DetailField label="Valor c/ IVA" value={eur(detail.amount)} />
+                <DetailField label="Líquido" value={detail.amount_net != null ? eur(detail.amount_net) : null} />
+                <DetailField label="IVA"
+                  value={detail.vat_amount != null
+                    ? `${eur(detail.vat_amount)}${detail.vat_rate != null ? ` (${detail.vat_rate}%)` : ''}`
+                    : null} />
+                <DetailField label="Unidade / Loja" value={unitName(detail.unit_id)} />
+                <DetailField label="Empresa" value={companyName(detail.company_id)} />
+                <DetailField label="Origem" value={SOURCE_LABEL[detail.source] || detail.source} />
+              </div>
+              {detail.description && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Descrição</p>
+                  <p className="text-sm whitespace-pre-wrap break-words">{detail.description}</p>
+                </div>
+              )}
+
+              {/* Movimento do extrato */}
+              <div className="rounded-xl border p-3 space-y-2" data-testid="fin-detail-movement">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  Movimento do extrato
+                </p>
+                {detailLoading ? (
+                  <p className="text-sm text-muted-foreground">A carregar...</p>
+                ) : detail.linked_movement ? (
+                  <>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium truncate">
+                          {detail.linked_movement.description || '(sem descrição)'}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {fmtDate(detail.linked_movement.date_lancamento)} · {eur(detail.linked_movement.amount)}
+                        </p>
+                      </div>
+                      {canEdit && (
+                        <Button variant="ghost" size="sm" className="shrink-0"
+                          onClick={doUnlinkMov} data-testid="fin-detail-unlink">
+                          <Unlink className="h-4 w-4 mr-1" />Desligar
+                        </Button>
+                      )}
+                    </div>
+                    {canEdit && (
+                      <p className="text-[11px] text-muted-foreground">
+                        Desligar volta a marcar a fatura como "por pagar".
+                      </p>
+                    )}
+                  </>
+                ) : canEdit ? (
+                  <Button variant="outline" size="sm" onClick={openLinkMov} data-testid="fin-detail-link">
+                    <Link2 className="h-4 w-4 mr-2" />Ligar a movimento do extrato
+                  </Button>
+                ) : (
+                  <p className="text-sm text-muted-foreground">Sem movimento ligado.</p>
+                )}
+              </div>
+
+              {/* Ações */}
+              <DialogFooter className="flex-col sm:flex-row sm:flex-wrap gap-2 sm:justify-start">
+                {detail.pdf_path && (
+                  <Button variant="outline" size="sm" onClick={viewPdf} disabled={pdfBusy}
+                    data-testid="fin-detail-pdf">
+                    <FileText className="h-4 w-4 mr-2" />{pdfBusy ? 'A abrir...' : 'Ver PDF'}
+                  </Button>
+                )}
+                {canEdit && (
+                  <>
+                    <Button variant="outline" size="sm" onClick={() => doTogglePaid(detail)}
+                      data-testid="fin-detail-toggle-paid">
+                      <CircleDollarSign className={`h-4 w-4 mr-2 ${detail.paid ? 'text-muted-foreground' : 'text-emerald-600'}`} />
+                      {detail.paid ? 'Marcar por pagar' : 'Marcar paga'}
+                    </Button>
+                    <Button variant="outline" size="sm"
+                      onClick={() => { const inv = detail; closeDetail(); openEdit(inv); }}
+                      data-testid="fin-detail-edit">
+                      <Pencil className="h-4 w-4 mr-2" />Editar dados
+                    </Button>
+                    <Button variant="outline" size="sm"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => { const inv = detail; closeDetail(); setToDelete(inv); }}
+                      data-testid="fin-detail-delete">
+                      <Trash2 className="h-4 w-4 mr-2" />Eliminar
+                    </Button>
+                  </>
+                )}
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ---------- Sub-dialog: ligar a movimento do extrato ---------- */}
+      <Dialog open={linkOpen} onOpenChange={(o) => { if (!o) { setLinkOpen(false); setLinkSearch(''); } }}>
+        <DialogContent className="max-w-lg" data-testid="fin-detail-link-dialog">
+          <DialogHeader>
+            <DialogTitle>Ligar a movimento do extrato</DialogTitle>
+            <DialogDescription>
+              Saídas sem fatura{detail ? ` de ${companyName(detail.company_id) || 'todas as empresas'} · fatura de ${eur(detail.amount)}` : ''}.
+              Ligar marca a fatura como paga.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input className="pl-9" placeholder="Pesquisar por descrição, valor, data..."
+              value={linkSearch} onChange={(e) => setLinkSearch(e.target.value)}
+              data-testid="fin-detail-link-search" />
+          </div>
+          <div className="max-h-72 overflow-y-auto space-y-1">
+            {linkLoading ? (
+              <div className="flex justify-center h-20 items-center">
+                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary" />
+              </div>
+            ) : linkCandidates.length === 0 ? (
+              <p className="text-center text-muted-foreground py-6 text-sm">
+                Sem movimentos de saída por ligar nesta empresa.
+              </p>
+            ) : (
+              linkCandidates.map((m) => (
+                <button key={m.id} type="button"
+                  className={`w-full flex items-center justify-between gap-3 rounded-md border p-2 text-left hover:bg-accent ${
+                    m._match ? 'border-emerald-500/60 bg-emerald-500/5' : ''}`}
+                  onClick={() => doLinkMov(m)}
+                  data-testid={`fin-detail-link-option-${m.id}`}>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium truncate">{m.description || '(sem descrição)'}</p>
+                    <p className="text-xs text-muted-foreground">{fmtDate(m.date_lancamento)}</p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {m._match && (
+                      <Badge variant="outline" className="text-[10px] border-emerald-500/60 text-emerald-600">
+                        valor igual
+                      </Badge>
+                    )}
+                    <span className="text-sm font-medium text-destructive">{eur(m.amount)}</span>
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
         </DialogContent>
       </Dialog>
 

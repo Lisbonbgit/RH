@@ -3616,14 +3616,45 @@ async def fin_get_invoices(company_id: str, current_user: dict = Depends(get_cur
     invoices.sort(key=lambda x: x.get("created_at") or "", reverse=True)
     return invoices
 
+@api_router.get("/fin/invoices/{invoice_id}")
+async def fin_get_invoice_detail(invoice_id: str, current_user: dict = Depends(get_current_user)):
+    """Ficha de detalhe da fatura: doc completo + movimento do extrato ligado
+    (fin_movements com invoice_id == esta fatura) ou None."""
+    inv = await db.fin_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+    await fin_require_member(inv["company_id"], current_user)
+    inv["linked_movement"] = await db.fin_movements.find_one(
+        {"invoice_id": invoice_id}, {"_id": 0}
+    )
+    return inv
+
+@api_router.get("/fin/invoices/{invoice_id}/pdf")
+async def fin_get_invoice_pdf(invoice_id: str, current_user: dict = Depends(get_current_user)):
+    """Serve o PDF guardado da fatura (valida pertença). Faturas migradas do
+    sistema antigo podem ter pdf_path de ficheiros não migrados — o exists()
+    devolve 404 nesses casos."""
+    inv = await db.fin_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+    await fin_require_member(inv["company_id"], current_user)
+    pdf_path = inv.get("pdf_path")
+    if not pdf_path or not Path(pdf_path).exists():
+        raise HTTPException(status_code=404, detail="Esta fatura não tem PDF guardado.")
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        filename=f"fatura-{inv.get('invoice_number') or invoice_id}.pdf",
+    )
+
 @api_router.post("/fin/invoices")
 async def fin_create_invoice(payload: FinInvoiceCreate, current_user: dict = Depends(get_current_user)):
     await fin_require_editor(payload.company_id, current_user)
     uid = current_user["user_id"]
     data = payload.model_dump()
     kind = "payment" if data.get("kind") == "payment" else "invoice"
-    # Um "outro pagamento" à mão não passa por aprovação (entra aprovado).
-    approval = "approved" if kind == "payment" else "pending"
+    # Sem fluxo de aprovação: faturas e pagamentos entram sempre válidos.
+    approval = "approved"
     freq = data.get("recurrence") if data.get("recurrence") in ("weekly", "monthly", "quarterly", "yearly") else "none"
     group = str(uuid.uuid4()) if freq != "none" else None
     inv_id = await _fin_insert_invoice(payload.company_id, kind, approval, data, freq, group, uid)
@@ -4897,7 +4928,9 @@ async def fin_cron_ingest(key: str = Query(...)):
                 supplier = ex.get("supplier")
                 rule = await fin_supplier_rule(nifd, supplier)
                 is_recurring = bool(rule and rule.get("recurring"))
-                approval = "approved" if is_recurring else "pending"
+                # Sem fluxo de aprovação: entram sempre válidas. is_recurring
+                # só decide a nota informativa (fornecedor recorrente) abaixo.
+                approval = "approved"
 
                 data = {
                     "supplier": supplier,
@@ -5461,6 +5494,7 @@ async def fin_global_dashboard(
         "a_pagar": 0.0,
         "pago": 0.0,
         "pendentes": 0,
+        "vencidas": 0,
         "saldo_banco": 0.0,
     }
     try:
@@ -5476,11 +5510,14 @@ async def fin_global_dashboard(
         # Faturas: a pagar (por pagar e não rejeitadas) e já pago
         invoices = await db.fin_invoices.find(
             {"company_id": cid_q},
-            {"_id": 0, "amount": 1, "paid": 1, "approval_status": 1},
+            {"_id": 0, "amount": 1, "paid": 1, "approval_status": 1,
+             "due_date": 1, "issue_date": 1},
         ).to_list(100000)
         a_pagar = 0.0
         pago = 0.0
         pendentes = 0
+        vencidas = 0
+        today_iso = datetime.now(timezone.utc).date().isoformat()
         for inv in invoices:
             amt = float(inv.get("amount") or 0)
             is_paid = inv.get("paid") is True
@@ -5491,9 +5528,16 @@ async def fin_global_dashboard(
                 a_pagar += amt
             if appr == "pending":
                 pendentes += 1
+            # Vencidas: por pagar, não rejeitadas, com data-limite (due_date
+            # ou, na falta dela, issue_date) anterior a hoje. Sem nenhuma
+            # das duas datas, não conta.
+            limite = inv.get("due_date") or inv.get("issue_date")
+            if (not is_paid) and appr != "rejected" and limite and str(limite) < today_iso:
+                vencidas += 1
         financeiro["a_pagar"] = round(a_pagar, 2)
         financeiro["pago"] = round(pago, 2)
         financeiro["pendentes"] = pendentes
+        financeiro["vencidas"] = vencidas
 
         # Saldo em banco: para cada conta da empresa, o saldo (balance) do
         # movimento mais recente (maior date_lancamento). Soma de todas as contas.

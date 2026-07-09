@@ -13,7 +13,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../../../components/ui/dialog';
 import {
-  LayoutDashboard, TrendingUp, CircleDollarSign, Check, Clock, Landmark,
+  LayoutDashboard, TrendingUp, CircleDollarSign, Check, AlertTriangle, Landmark,
   Users, CalendarOff, Megaphone, Link2, Gauge, RefreshCw, Store, Factory, Mail,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -256,7 +256,7 @@ export default function PainelGlobal() {
               <KpiCard label="Vendas do mês" value={eur(fin.vendas_mes)} icon={TrendingUp} />
               <KpiCard label="A pagar" value={eur(fin.a_pagar)} icon={CircleDollarSign} />
               <KpiCard label="Pago" value={eur(fin.pago)} icon={Check} />
-              <KpiCard label="Pendentes" value={num(fin.pendentes)} icon={Clock} />
+              <KpiCard label="Vencidas" value={num(fin.vencidas)} icon={AlertTriangle} />
               <KpiCard label="Saldo banco" value={eur(fin.saldo_banco)} icon={Landmark} />
             </div>
           </section>
