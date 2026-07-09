@@ -21,7 +21,7 @@ import {
 } from '../../../components/ui/alert-dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../../components/ui/table';
 import {
-  TrendingUp, Plus, RefreshCw, Pencil, Trash2, Percent, Wallet, PiggyBank, BarChart3,
+  TrendingUp, Plus, RefreshCw, Pencil, Trash2, Percent, Wallet, PiggyBank, BarChart3, AlertTriangle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
@@ -122,17 +122,23 @@ export default function FinVendas() {
 
   // ---------- KPIs ----------
   const kpis = useMemo(() => {
-    let amount = 0, net = 0, cost = 0;
+    let amount = 0, net = 0, cost = 0, netNoCost = 0;
     sales.forEach((s) => {
       amount += Number(s.amount) || 0;
       net += Number(s.amount_net) || 0;
       cost += Number(s.amount_cost) || 0;
+      // Líquido cujo custo (CMV) ainda não é conhecido — ex.: vendas Moloni
+      // (Purple House) que não trazem food-cost. Usa net_nocost quando existe;
+      // senão, considera "sem custo" o líquido das linhas com CMV a zero.
+      netNoCost += Number(s.net_nocost != null ? s.net_nocost : (Number(s.amount_cost) ? 0 : s.amount_net)) || 0;
     });
     const margin = net - cost;
     return {
       amount, net, cost, margin,
       foodCost: pct(cost, net),   // CMV / vendas líquidas
       marginPct: pct(margin, net),
+      // % das vendas líquidas sem custo conhecido (o food-cost real será maior).
+      semCustoPct: pct(netNoCost, net),
     };
   }, [sales]);
 
@@ -326,6 +332,19 @@ export default function FinVendas() {
               </Card>
             ))}
           </div>
+
+          {/* Aviso de cobertura de custo: quando parte das vendas líquidas não
+              tem CMV conhecido (ex.: Moloni/Purple House), o food-cost mostrado
+              está subestimado. */}
+          {kpis.semCustoPct >= 0.5 && (
+            <div className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-800 px-3 py-2 text-sm">
+              <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+              <p className="text-amber-800 dark:text-amber-200">
+                <b>{fmtPct(kpis.semCustoPct)}</b> das vendas líquidas ainda não têm custo (CMV) conhecido —
+                o <b>food cost</b> real é maior do que o indicado.
+              </p>
+            </div>
+          )}
 
           {/* ---------- Gráfico de barras diário ---------- */}
           <Card>

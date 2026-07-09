@@ -194,6 +194,27 @@ export default function FinPagamentos() {
         await updateFinInvoice(editing.id, payload);
         toast.success('Fatura atualizada');
       } else {
+        // Aviso de possível duplicado (não bloqueia): mesma empresa e mesmo
+        // fornecedor, com o mesmo nº de fatura OU o mesmo valor+data de emissão.
+        // Evita pagar a mesma fatura duas vezes por lançamento repetido.
+        const myKey = supplierKeyOf(form.nif, form.supplier);
+        const dup = invoices.find((i) => {
+          if (i.company_id !== companyId || i.approval_status === 'rejected') return false;
+          if (supplierKeyOf(i.nif, i.supplier) !== myKey) return false;
+          const mesmoNum = form.invoice_number && i.invoice_number &&
+            String(i.invoice_number).trim().toLowerCase() === form.invoice_number.trim().toLowerCase();
+          const mesmoValorData = amount != null && Number(i.amount) === amount &&
+            i.issue_date && i.issue_date === form.issue_date;
+          return mesmoNum || mesmoValorData;
+        });
+        if (dup) {
+          const qual = dup.invoice_number ? `nº ${dup.invoice_number}` : `${eur(dup.amount)} de ${fmtDate(dup.issue_date)}`;
+          const avanca = window.confirm(
+            `Já existe uma fatura de "${dup.supplier || 'este fornecedor'}" (${qual}). ` +
+            `Criar mesmo assim?\n\nSe for a mesma fatura, cancela para não pagar duas vezes.`
+          );
+          if (!avanca) { setSaving(false); return; }
+        }
         await createFinInvoice(payload);
         toast.success(form.recurrence !== 'none' ? 'Série recorrente criada' : 'Lançamento criado');
       }

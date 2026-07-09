@@ -3482,6 +3482,18 @@ async def fin_supplier_rule(nif, supplier):
         {"supplier_key": fin_supplier_key_of(nif, supplier)}, {"_id": 0}
     )
 
+def _fin_effective_due(inv, rule):
+    """Vencimento efetivo (espelho de effectiveDue do frontend): se a regra do
+    fornecedor tiver prazo, usa emissão + N dias (ignora o vencimento da fatura);
+    senão, due_date ou, na falta, issue_date."""
+    if rule and rule.get("pay_term_days") is not None and inv.get("issue_date"):
+        try:
+            base = datetime.fromisoformat(str(inv["issue_date"])[:10]).date()
+            return (base + timedelta(days=int(rule["pay_term_days"]))).isoformat()
+        except (ValueError, TypeError):
+            pass
+    return inv.get("due_date") or inv.get("issue_date") or None
+
 async def fin_single_unit_id(company_id):
     """Se a empresa tiver exatamente 1 unidade, devolve-a (auto-atribuição)."""
     units = await db.fin_units.find({"company_id": company_id}, {"_id": 0, "id": 1}).to_list(2)
@@ -5511,8 +5523,14 @@ async def fin_global_dashboard(
         invoices = await db.fin_invoices.find(
             {"company_id": cid_q},
             {"_id": 0, "amount": 1, "paid": 1, "approval_status": 1,
-             "due_date": 1, "issue_date": 1},
+             "due_date": 1, "issue_date": 1, "nif": 1, "supplier": 1},
         ).to_list(100000)
+        # Regras de fornecedor (partilhadas): para o vencimento efetivo e para
+        # excluir os débitos diretos das "vencidas" (esses saem da conta sozinhos).
+        rules_map = {}
+        for r in await db.fin_supplier_rules.find({}, {"_id": 0}).to_list(5000):
+            if r.get("supplier_key"):
+                rules_map[r["supplier_key"]] = r
         a_pagar = 0.0
         pago = 0.0
         pendentes = 0
@@ -5528,12 +5546,15 @@ async def fin_global_dashboard(
                 a_pagar += amt
             if appr == "pending":
                 pendentes += 1
-            # Vencidas: por pagar, não rejeitadas, com data-limite (due_date
-            # ou, na falta dela, issue_date) anterior a hoje. Sem nenhuma
-            # das duas datas, não conta.
-            limite = inv.get("due_date") or inv.get("issue_date")
-            if (not is_paid) and appr != "rejected" and limite and str(limite) < today_iso:
-                vencidas += 1
+            # Vencidas: por pagar, não rejeitadas, com vencimento EFETIVO (regras
+            # de prazo do fornecedor aplicadas) anterior a hoje. Débitos diretos
+            # não contam (saem por débito automático). Coerente com a Agenda.
+            if (not is_paid) and appr != "rejected":
+                rule = rules_map.get(fin_supplier_key_of(inv.get("nif"), inv.get("supplier")))
+                if not (rule and rule.get("direct_debit")):
+                    eff = _fin_effective_due(inv, rule)
+                    if eff and str(eff) < today_iso:
+                        vencidas += 1
         financeiro["a_pagar"] = round(a_pagar, 2)
         financeiro["pago"] = round(pago, 2)
         financeiro["pendentes"] = pendentes
