@@ -4666,8 +4666,8 @@ _FIN_INGEST_LIMIT = 120
 _FIN_IMAP_RAW = os.environ.get("IMAP_MAILBOXES", "")
 try:
     logger.info(
-        "[fin-ingest] import: IMAP_MAILBOXES len=%d | CRON_KEY set=%s | ANTHROPIC_API_KEY len=%d",
-        len(_FIN_IMAP_RAW), bool(os.environ.get("CRON_KEY")), len(os.environ.get("ANTHROPIC_API_KEY", "")),
+        "[fin-ingest] import: IMAP_MAILBOXES len=%d | CRON_KEY set=%s | GEMINI_API_KEY len=%d",
+        len(_FIN_IMAP_RAW), bool(os.environ.get("CRON_KEY")), len(os.environ.get("GEMINI_API_KEY", "")),
     )
 except Exception:  # noqa: BLE001
     pass
@@ -4695,52 +4695,67 @@ def _fin_only_digits(s):
     return re.sub(r"\D+", "", str(s or ""))
 
 
-def _fin_extract_pdf_sync(pdf_bytes):
-    """Chama a API da Claude (síncrono) com o PDF em base64 e devolve o dict
-    extraído, ou {'error': '...'} em caso de falha. Corre em thread."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+def _fin_gemini_call(pdf_bytes, prompt, max_tokens, timeout):
+    """Chama a API do Google Gemini (síncrono) com o PDF em base64 e um prompt.
+    Devolve (raw_text, finish_reason). Em falha de rede/HTTP, finish_reason vem
+    como 'ERROR:<mensagem>' (e raw_text ''). Corre em thread.
+
+    finish_reason típico: 'STOP' (completo), 'MAX_TOKENS' (resposta cortada).
+    generationConfig.responseMimeType=application/json força saída JSON válida."""
+    api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        return {"error": "sem ANTHROPIC_API_KEY"}
-    model = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+        return "", "ERROR:sem GEMINI_API_KEY"
+    model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     body = {
-        "model": model,
-        "max_tokens": 800,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "document", "source": {
-                    "type": "base64",
-                    "media_type": "application/pdf",
+        "contents": [{
+            "parts": [
+                {"inline_data": {
+                    "mime_type": "application/pdf",
                     "data": base64.b64encode(pdf_bytes).decode(),
                 }},
-                {"type": "text", "text": _FIN_INGEST_PROMPT},
+                {"text": prompt},
             ],
         }],
+        "generationConfig": {
+            "temperature": 0,
+            "maxOutputTokens": max_tokens,
+            "responseMimeType": "application/json",
+        },
     }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     try:
-        with httpx.Client(timeout=120) as http_client:
+        with httpx.Client(timeout=timeout) as http_client:
             resp = http_client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
+                url,
+                params={"key": api_key},
+                headers={"content-type": "application/json"},
                 json=body,
             )
     except Exception as exc:  # noqa: BLE001
-        return {"error": f"rede IA: {exc}"}
+        return "", f"ERROR:rede IA: {exc}"
     if resp.status_code >= 400:
         try:
             err = resp.json().get("error", {}).get("message")
         except Exception:  # noqa: BLE001
             err = None
-        return {"error": err or f"HTTP {resp.status_code}"}
+        return "", f"ERROR:{err or f'HTTP {resp.status_code}'}"
     try:
         data = resp.json()
-        raw = (data.get("content") or [{}])[0].get("text", "")
+        cand = (data.get("candidates") or [{}])[0]
+        finish = cand.get("finishReason") or "STOP"
+        parts = (cand.get("content") or {}).get("parts") or [{}]
+        raw = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
     except Exception:  # noqa: BLE001
-        return {"error": "resposta IA inválida"}
+        return "", "ERROR:resposta IA inválida"
+    return raw, finish
+
+
+def _fin_extract_pdf_sync(pdf_bytes):
+    """Lê a fatura em PDF com o Gemini e devolve o dict extraído, ou
+    {'error': '...'} em caso de falha. Corre em thread."""
+    raw, finish = _fin_gemini_call(pdf_bytes, _FIN_INGEST_PROMPT, 800, 120)
+    if finish.startswith("ERROR:"):
+        return {"error": finish[len("ERROR:"):]}
     m = re.search(r"\{[\s\S]*\}", raw or "")
     if not m:
         return {"error": "resposta IA inválida"}
@@ -5026,55 +5041,14 @@ _FIN_STATEMENT_PROMPT = (
 def _fin_extract_statement_sync(pdf_bytes):
     """Irmã de _fin_extract_pdf_sync mas para EXTRATOS bancários (prompt
     próprio e max_tokens 8192 — um extrato tem dezenas/centenas de linhas).
-    Devolve o dict extraído ou {'error': '...'} ('truncado' = JSON cortado
-    ou inválido → o endpoint devolve 422). Síncrono — corre em thread."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return {"error": "sem ANTHROPIC_API_KEY"}
+    Lê com o Gemini. Devolve o dict extraído ou {'error': '...'} ('truncado' =
+    JSON cortado ou inválido → o endpoint devolve 422). Corre em thread."""
     if not HTTPX_AVAILABLE:
         return {"error": "httpx indisponível"}
-    model = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
-    body = {
-        "model": model,
-        "max_tokens": 8192,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "document", "source": {
-                    "type": "base64",
-                    "media_type": "application/pdf",
-                    "data": base64.b64encode(pdf_bytes).decode(),
-                }},
-                {"type": "text", "text": _FIN_STATEMENT_PROMPT},
-            ],
-        }],
-    }
-    try:
-        with httpx.Client(timeout=300) as http_client:
-            resp = http_client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json=body,
-            )
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"rede IA: {exc}"}
-    if resp.status_code >= 400:
-        try:
-            err = resp.json().get("error", {}).get("message")
-        except Exception:  # noqa: BLE001
-            err = None
-        return {"error": err or f"HTTP {resp.status_code}"}
-    try:
-        data = resp.json()
-        raw = (data.get("content") or [{}])[0].get("text", "")
-        stop_reason = data.get("stop_reason")
-    except Exception:  # noqa: BLE001
-        return {"error": "truncado"}
-    if stop_reason == "max_tokens":
+    raw, finish = _fin_gemini_call(pdf_bytes, _FIN_STATEMENT_PROMPT, 8192, 300)
+    if finish.startswith("ERROR:"):
+        return {"error": finish[len("ERROR:"):]}
+    if finish == "MAX_TOKENS":
         return {"error": "truncado"}  # resposta cortada a meio → não confiar
     m = re.search(r"\{[\s\S]*\}", raw or "")
     if not m:
