@@ -592,6 +592,19 @@ export default function FinExtrato() {
             )}
           </div>
 
+          {/* Em "Todas as empresas" o extrato junta as contas todas (sem saldo
+              contínuo). Um extrato bancário é por conta — sugere escolher a empresa. */}
+          {companyId === COMPANY_ALL && (
+            <div className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-800 px-3 py-2 text-sm">
+              <Landmark className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+              <p className="text-amber-800 dark:text-amber-200">
+                Estás a ver <b>todas as contas juntas</b>. Escolhe uma empresa no seletor do topo para
+                o extrato dessa conta em separado (com saldo). Cada movimento é arquivado pela
+                <b> conta bancária</b> a que pertence.
+              </p>
+            </div>
+          )}
+
           {/* Lista de movimentos agrupada por dia */}
           <Card>
             <CardContent className="p-4 space-y-5">
