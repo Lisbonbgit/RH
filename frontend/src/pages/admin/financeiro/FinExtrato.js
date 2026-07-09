@@ -180,6 +180,7 @@ export default function FinExtrato() {
       setAccountId(ACC_NONE);
       loadAccounts();
       loadInvoices();
+      pickLatestMonth();
     }
   }, [companyId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -235,6 +236,22 @@ export default function FinExtrato() {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Ao entrar (ou trocar de empresa), salta para o mês mais recente COM
+  // movimentos — senão a página abre no mês atual, que pode não ter nada
+  // (ex.: importaste junho e estamos em julho) e parece que "não há dados".
+  const pickLatestMonth = async () => {
+    try {
+      const r = await getFinMovements({ company_id: companyId });
+      const all = r.data || [];
+      if (!all.length) return; // sem dados nenhuns: fica no mês atual
+      const latest = all.reduce((mx, m) => {
+        const d = String(m.date_lancamento || '').slice(0, 7);
+        return d > mx ? d : mx;
+      }, '');
+      if (latest && latest !== month) setMonth(latest);
+    } catch (_) { /* fica no mês atual */ }
   };
 
   const invoiceById = useMemo(() => {
@@ -563,7 +580,9 @@ export default function FinExtrato() {
                 <RefreshCw className="h-4 w-4 mr-2" />Conciliar
               </Button>
             )}
-            <Button variant="outline" onClick={exportZip} disabled={busy} data-testid="fin-export-btn">
+            <Button variant="outline" onClick={exportZip} disabled={busy || !movements.length}
+              title={!movements.length ? 'Sem movimentos neste mês para exportar' : undefined}
+              data-testid="fin-export-btn">
               <Download className="h-4 w-4 mr-2" />Exportar ZIP
             </Button>
             {canImport && (
@@ -582,7 +601,7 @@ export default function FinExtrato() {
                 </div>
               ) : groups.length === 0 ? (
                 <p className="text-center text-muted-foreground py-10">
-                  Sem movimentos neste período. Importa o extrato do banco.
+                  Sem movimentos em <b>{month || 'todos os meses'}</b>. Muda o mês no topo ou importa o extrato do banco.
                 </p>
               ) : (
                 groups.map(({ day, items, subtotal }) => (
