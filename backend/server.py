@@ -4720,15 +4720,18 @@ def _fin_gemini_call(pdf_bytes, prompt, max_tokens, timeout):
             "temperature": 0,
             "maxOutputTokens": max_tokens,
             "responseMimeType": "application/json",
+            # Extração pura: desliga o "pensamento" do Gemini 2.5 (senão consome
+            # o orçamento de tokens a pensar e devolve conteúdo vazio).
+            "thinkingConfig": {"thinkingBudget": 0},
         },
     }
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     try:
         with httpx.Client(timeout=timeout) as http_client:
+            # Chave no HEADER (não no URL): evita que apareça nos logs do httpx.
             resp = http_client.post(
                 url,
-                params={"key": api_key},
-                headers={"content-type": "application/json"},
+                headers={"content-type": "application/json", "x-goog-api-key": api_key},
                 json=body,
             )
     except Exception as exc:  # noqa: BLE001
@@ -4753,7 +4756,7 @@ def _fin_gemini_call(pdf_bytes, prompt, max_tokens, timeout):
 def _fin_extract_pdf_sync(pdf_bytes):
     """Lê a fatura em PDF com o Gemini e devolve o dict extraído, ou
     {'error': '...'} em caso de falha. Corre em thread."""
-    raw, finish = _fin_gemini_call(pdf_bytes, _FIN_INGEST_PROMPT, 800, 120)
+    raw, finish = _fin_gemini_call(pdf_bytes, _FIN_INGEST_PROMPT, 2048, 120)
     if finish.startswith("ERROR:"):
         return {"error": finish[len("ERROR:"):]}
     m = re.search(r"\{[\s\S]*\}", raw or "")
