@@ -167,6 +167,10 @@ export default function FinExtrato() {
 
   const company = companies.find((c) => c.id === companyId) || null;
   const canEdit = company && (company.role === 'owner' || company.role === 'partner');
+  // Importar/registar conta não exige uma empresa selecionada: o PDF deteta a
+  // empresa pela conta e o dialog de conta tem o seu próprio seletor. Basta o
+  // utilizador poder editar ALGUMA empresa (inclui o modo "Todas as empresas").
+  const canImport = canEdit || companies.some((c) => c.role === 'owner' || c.role === 'partner');
   const companyName = (id) => companies.find((c) => c.id === id)?.name || '';
 
   useEffect(() => { loadCompanies(); }, []);
@@ -293,6 +297,11 @@ export default function FinExtrato() {
     if (!file) return;
     const isPdf = /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
     if (isPdf) { await doImportPdf(file); return; }
+    // O .xlsx não deteta a empresa sozinho — precisa de uma escolhida no topo.
+    if (companyId === COMPANY_ALL) {
+      toast.info('Para importar .xlsx, escolhe primeiro a empresa no topo — ou usa o PDF, que deteta a empresa sozinho.');
+      return;
+    }
     if (!window.XLSX) { toast.error('Biblioteca de leitura não carregada. Recarrega a página.'); return; }
     setBusy(true);
     try {
@@ -540,24 +549,24 @@ export default function FinExtrato() {
         <>
           {/* Barra de ações */}
           <div className="flex items-center gap-2 flex-wrap">
+            {canImport && (
+              <Button asChild variant="outline" disabled={busy} data-testid="fin-import-btn">
+                <label className="cursor-pointer">
+                  <Upload className="h-4 w-4 mr-2" />Importar extrato (PDF/xlsx)
+                  <input type="file" accept=".pdf,.xlsx,.xls" className="hidden"
+                    onChange={onImportFile} disabled={busy} />
+                </label>
+              </Button>
+            )}
             {canEdit && (
-              <>
-                <Button asChild variant="outline" disabled={busy} data-testid="fin-import-btn">
-                  <label className="cursor-pointer">
-                    <Upload className="h-4 w-4 mr-2" />Importar extrato (PDF/xlsx)
-                    <input type="file" accept=".pdf,.xlsx,.xls" className="hidden"
-                      onChange={onImportFile} disabled={busy} />
-                  </label>
-                </Button>
-                <Button variant="outline" onClick={doAutomatch} disabled={busy} data-testid="fin-automatch-btn">
-                  <RefreshCw className="h-4 w-4 mr-2" />Conciliar
-                </Button>
-              </>
+              <Button variant="outline" onClick={doAutomatch} disabled={busy} data-testid="fin-automatch-btn">
+                <RefreshCw className="h-4 w-4 mr-2" />Conciliar
+              </Button>
             )}
             <Button variant="outline" onClick={exportZip} disabled={busy} data-testid="fin-export-btn">
               <Download className="h-4 w-4 mr-2" />Exportar ZIP
             </Button>
-            {canEdit && (
+            {canImport && (
               <Button variant="ghost" onClick={() => setAccDialog(true)} data-testid="fin-new-account-btn">
                 <Plus className="h-4 w-4 mr-2" />Nova conta
               </Button>
