@@ -3571,11 +3571,14 @@ class FinSupplierRuleUpsert(BaseModel):
 
 # ---------- Insert de fatura (aplica regra auto_paid) ----------
 
-async def _fin_insert_invoice(company_id, kind, approval, data: dict, freq, group, user_id):
+async def _fin_insert_invoice(company_id, kind, approval, data: dict, freq, group, user_id, apply_auto_paid=True):
     inv_id = str(uuid.uuid4())
     unit = await fin_resolve_unit(company_id, data.get("unit_id"))
     rule = await fin_supplier_rule(data.get("nif"), data.get("supplier"))
-    auto_paid = bool(rule and rule.get("auto_paid"))
+    # "Pago no ato" (auto_paid) só se aplica a uma fatura avulsa entrada à mão.
+    # NUNCA a ocorrências futuras de recorrência (não se paga o mês que vem) nem
+    # a faturas ingeridas por email (não há pagamento/movimento associado).
+    auto_paid = bool(rule and rule.get("auto_paid")) if apply_auto_paid else False
     paid = bool(data.get("paid") or auto_paid)
     paid_date = _fin_clean_date(data.get("paid_date"))
     if paid and not paid_date:
@@ -3671,7 +3674,9 @@ async def fin_create_invoice(payload: FinInvoiceCreate, current_user: dict = Dep
     approval = "approved"
     freq = data.get("recurrence") if data.get("recurrence") in ("weekly", "monthly", "quarterly", "yearly") else "none"
     group = str(uuid.uuid4()) if freq != "none" else None
-    inv_id = await _fin_insert_invoice(payload.company_id, kind, approval, data, freq, group, uid)
+    # auto_paid só na fatura avulsa (freq="none"); numa série nem a âncora é paga.
+    inv_id = await _fin_insert_invoice(payload.company_id, kind, approval, data, freq, group, uid,
+                                       apply_auto_paid=(freq == "none"))
     # Recorrência: gerar as próximas ocorrências (por pagar) da série.
     if freq != "none":
         anchor = _fin_clean_date(data.get("due_date")) or _fin_clean_date(data.get("issue_date"))
@@ -3681,7 +3686,8 @@ async def fin_create_invoice(payload: FinInvoiceCreate, current_user: dict = Dep
                 d = _fin_occurrence_date(anchor, freq, k)
                 occ = dict(data)
                 occ.update({"issue_date": d, "due_date": d, "paid": False, "paid_date": ""})
-                await _fin_insert_invoice(payload.company_id, kind, approval, occ, freq, group, uid)
+                await _fin_insert_invoice(payload.company_id, kind, approval, occ, freq, group, uid,
+                                          apply_auto_paid=False)
     return await db.fin_invoices.find_one({"id": inv_id}, {"_id": 0})
 
 @api_router.put("/fin/invoices/{invoice_id}")
@@ -3799,10 +3805,17 @@ async def fin_delete_invoice(invoice_id: str, series: Optional[str] = None, curr
 
 @api_router.get("/fin/supplier-rules")
 async def fin_get_supplier_rules(current_user: dict = Depends(get_current_user)):
+    # Regras globais: só quem trabalha no Financeiro (membro de alguma empresa)
+    # as pode ler — evita fuga de fornecedores/NIF a logins sem pertença.
+    if not await _fin_user_is_member_somewhere(current_user):
+        raise HTTPException(status_code=403, detail="Sem acesso ao Financeiro.")
     return await db.fin_supplier_rules.find({}, {"_id": 0}).to_list(5000)
 
 @api_router.post("/fin/supplier-rules")
 async def fin_upsert_supplier_rule(payload: FinSupplierRuleUpsert, current_user: dict = Depends(get_current_user)):
+    # Escrita (auto_paid/direct_debit/prazos mexem em dinheiro): só editor/owner.
+    if not await _fin_user_is_editor_somewhere(current_user):
+        raise HTTPException(status_code=403, detail="Sem permissão para gerir regras de fornecedor.")
     key = (payload.supplier_key or "").strip()
     if not key:
         raise HTTPException(status_code=400, detail="Falta o fornecedor.")
@@ -3823,6 +3836,8 @@ async def fin_upsert_supplier_rule(payload: FinSupplierRuleUpsert, current_user:
 
 @api_router.delete("/fin/supplier-rules")
 async def fin_delete_supplier_rule(key: str, current_user: dict = Depends(get_current_user)):
+    if not await _fin_user_is_editor_somewhere(current_user):
+        raise HTTPException(status_code=403, detail="Sem permissão para gerir regras de fornecedor.")
     await db.fin_supplier_rules.delete_one({"supplier_key": key})
     return {"ok": True}
 
@@ -4391,6 +4406,13 @@ async def fin_upsert_bank_account(payload: FinBankAccountUpsert, current_user: d
     if not acc_num:
         raise HTTPException(status_code=400, detail="Falta o nº de conta.")
     existing = await db.fin_bank_accounts.find_one({"account_number": acc_num}, {"_id": 0})
+    # Anti-IDOR cross-empresa: o nº de conta é único e identifica a empresa dona.
+    # Se já pertence a OUTRA empresa, não reatribuir (senão roubava-se a conta).
+    if existing and existing.get("company_id") != payload.company_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Este nº de conta já está registado noutra empresa. Não é possível reatribuí-lo.",
+        )
     doc = {
         "company_id": payload.company_id,
         "bank": (payload.bank or "").strip() or None,
@@ -4980,8 +5002,12 @@ async def fin_cron_ingest(key: str = Query(...)):
                     "source": "email",
                     "file_name": fn,
                 }
+                # Ingestão por email: NÃO aplicar auto_paid — uma fatura recebida
+                # não está paga só porque o fornecedor é "pago no ato" (sem
+                # pagamento/movimento real). Entra por pagar e trata-se na Agenda.
                 invoice_id = await _fin_insert_invoice(
-                    company_id, "invoice", approval, data, "none", None, "cron"
+                    company_id, "invoice", approval, data, "none", None, "cron",
+                    apply_auto_paid=False,
                 )
 
                 # Guarda o PDF em UPLOAD_DIR/fin_invoices/<company_id>/<invoice_id>.pdf
@@ -6586,6 +6612,15 @@ async def _fin_user_is_editor_somewhere(current_user: dict) -> bool:
     m = await db.fin_company_members.find_one(
         {"user_id": current_user["user_id"], "role": {"$in": ["owner", "partner"]}},
         {"_id": 0, "company_id": 1},
+    )
+    return bool(m)
+
+async def _fin_user_is_member_somewhere(current_user: dict) -> bool:
+    """True se o utilizador é membro (qualquer papel) de pelo menos uma empresa fin.
+    Usado para restringir recursos GLOBAIS (ex.: regras de fornecedor) a quem
+    trabalha no Financeiro, bloqueando logins sem qualquer pertença."""
+    m = await db.fin_company_members.find_one(
+        {"user_id": current_user["user_id"]}, {"_id": 0, "company_id": 1},
     )
     return bool(m)
 
