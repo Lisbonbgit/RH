@@ -3545,6 +3545,7 @@ class FinInvoiceCreate(BaseModel):
     source: Optional[str] = "manual"
     recurrence: Optional[str] = "none"
     file_name: Optional[str] = None
+    category: Optional[str] = None  # FASE 17: categoria de despesa (livre; opções no frontend)
 
 class FinApprovalAction(BaseModel):
     note: Optional[str] = None
@@ -3595,6 +3596,7 @@ async def _fin_insert_invoice(company_id, kind, approval, data: dict, freq, grou
         "vat_amount": _fin_clean_num(data.get("vat_amount")),
         "vat_rate": _fin_clean_num(data.get("vat_rate")),
         "description": data.get("description"),
+        "category": data.get("category"),  # FASE 17: propaga-se às ocorrências (occ = dict(data))
         "paid": paid,
         "paid_date": paid_date,
         "approval_status": approval,
@@ -3705,6 +3707,7 @@ async def fin_update_invoice(invoice_id: str, payload: FinInvoiceCreate, current
             "vat_amount": _fin_clean_num(data.get("vat_amount")),
             "vat_rate": _fin_clean_num(data.get("vat_rate")),
             "description": data.get("description"),
+            "category": data.get("category"),  # FASE 17
             "paid": bool(data.get("paid")),
             "paid_date": _fin_clean_date(data.get("paid_date")),
         }},
@@ -6646,6 +6649,366 @@ async def fin_manual_sync_ingest(current_user: dict = Depends(get_current_user))
         raise HTTPException(status_code=400, detail="Ingestão não configurada (CRON_KEY).")
     # Reutiliza a lógica (testada) do endpoint de cron, passando a chave real.
     return await fin_cron_ingest(key=cron_key)
+
+
+# ====================================================================
+# FASE 17 — RELATÓRIOS
+# Relatórios financeiros ADITIVOS (só leitura): Apuramento de IVA, DRE,
+# Exportação para contabilista (CSV) e Mapa de tesouraria previsional.
+# Nada altera a lógica existente. Autorização e âmbito idênticos ao
+# resto de /fin/* (fin_require_member / fin_member_company_ids para "all").
+# ====================================================================
+
+def _fin_report_period(start: Optional[str], end: Optional[str]):
+    """Período (start, end) inclusivo em ISO 'YYYY-MM-DD'. Por omissão, o mês
+    corrente em hora de Lisboa (1º dia..último dia)."""
+    s = (start or "").strip()
+    e = (end or "").strip()
+    if not s or not e:
+        today = datetime.now(LISBON_TZ).date()
+        first = today.replace(day=1)
+        last = date(today.year, today.month, _calendar.monthrange(today.year, today.month)[1])
+        if not s:
+            s = first.isoformat()
+        if not e:
+            e = last.isoformat()
+    return s, e
+
+
+async def _fin_report_scope(company_id: str, current_user: dict):
+    """Filtro de âmbito para os relatórios. company_id='all' -> {'$in': ids}
+    (todas as empresas onde é membro); senão valida a pertença e devolve o id.
+    O valor devolvido usa-se diretamente como {'company_id': <isto>} e também
+    como {'id': <isto>} em fin_companies (o Mongo aceita string ou {'$in'})."""
+    if company_id == "all":
+        ids = await fin_member_company_ids(current_user["user_id"])
+        return {"$in": ids}
+    await fin_require_member(company_id, current_user)
+    return company_id
+
+
+def _fin_rate_key(rate):
+    """Chave de taxa de IVA como string: 23.0 -> '23'; None -> 'sem_taxa'."""
+    if rate is None:
+        return "sem_taxa"
+    try:
+        f = float(rate)
+    except (TypeError, ValueError):
+        return "sem_taxa"
+    return str(int(f)) if f == int(f) else str(f)
+
+
+_FIN_MESES_PT = ["jan", "fev", "mar", "abr", "mai", "jun",
+                 "jul", "ago", "set", "out", "nov", "dez"]
+
+
+@api_router.get("/fin/reports/iva")
+async def fin_report_iva(
+    company_id: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Apuramento de IVA do período: liquidado (vendas) vs dedutível (compras)."""
+    cid_q = await _fin_report_scope(company_id, current_user)
+    start, end = _fin_report_period(start, end)
+
+    # IVA liquidado (vendas): iva = amount - amount_net por venda.
+    sales = await db.fin_sales.find(
+        {"company_id": cid_q, "date": {"$gte": start, "$lte": end}},
+        {"_id": 0, "amount": 1, "amount_net": 1, "vat_rate": 1},
+    ).to_list(200000)
+    liq_por_taxa: dict = {}
+    liq_total = 0.0
+    for s in sales:
+        net = _fin_clean_num(s.get("amount_net"))
+        amt = _fin_clean_num(s.get("amount"))
+        iva = 0.0 if net is None else round((amt or 0.0) - net, 2)
+        key = _fin_rate_key(s.get("vat_rate"))
+        liq_por_taxa[key] = round(liq_por_taxa.get(key, 0.0) + iva, 2)
+        liq_total += iva
+    liq_total = round(liq_total, 2)
+
+    # IVA dedutível (compras): usa vat_amount das faturas (invoice|payment).
+    invoices = await db.fin_invoices.find(
+        {"company_id": cid_q, "kind": {"$in": ["invoice", "payment"]},
+         "issue_date": {"$gte": start, "$lte": end}},
+        {"_id": 0, "vat_amount": 1, "vat_rate": 1, "approval_status": 1},
+    ).to_list(200000)
+    ded_por_taxa: dict = {}
+    ded_total = 0.0
+    for inv in invoices:
+        if inv.get("approval_status") == "rejected":
+            continue
+        iva = _fin_clean_num(inv.get("vat_amount")) or 0.0
+        key = _fin_rate_key(inv.get("vat_rate"))
+        ded_por_taxa[key] = round(ded_por_taxa.get(key, 0.0) + iva, 2)
+        ded_total += iva
+    ded_total = round(ded_total, 2)
+
+    saldo = round(liq_total - ded_total, 2)
+    return {
+        "periodo": {"start": start, "end": end},
+        "liquidado": {"total": liq_total, "por_taxa": liq_por_taxa},
+        "dedutivel": {"total": ded_total, "por_taxa": ded_por_taxa},
+        "saldo": saldo,
+        "a_pagar": round(max(0.0, saldo), 2),
+        "a_recuperar": round(max(0.0, -saldo), 2),
+    }
+
+
+@api_router.get("/fin/reports/dre")
+async def fin_report_dre(
+    company_id: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Demonstração de resultados simplificada do período."""
+    cid_q = await _fin_report_scope(company_id, current_user)
+    start, end = _fin_report_period(start, end)
+
+    sales = await db.fin_sales.find(
+        {"company_id": cid_q, "date": {"$gte": start, "$lte": end}},
+        {"_id": 0, "amount_net": 1, "amount_cost": 1},
+    ).to_list(200000)
+    vendas_liquidas = round(sum((_fin_clean_num(s.get("amount_net")) or 0.0) for s in sales), 2)
+    cmv = round(sum((_fin_clean_num(s.get("amount_cost")) or 0.0) for s in sales), 2)
+    margem_bruta = round(vendas_liquidas - cmv, 2)
+
+    invoices = await db.fin_invoices.find(
+        {"company_id": cid_q, "kind": {"$in": ["invoice", "payment"]},
+         "issue_date": {"$gte": start, "$lte": end}},
+        {"_id": 0, "amount_net": 1, "amount": 1, "category": 1, "approval_status": 1},
+    ).to_list(200000)
+    por_categoria: dict = {}
+    despesas_total = 0.0
+    for inv in invoices:
+        if inv.get("approval_status") == "rejected":
+            continue
+        base = _fin_clean_num(inv.get("amount_net"))
+        if base is None:
+            base = _fin_clean_num(inv.get("amount")) or 0.0
+        cat = inv.get("category") or "sem_categoria"
+        por_categoria[cat] = round(por_categoria.get(cat, 0.0) + base, 2)
+        despesas_total += base
+    despesas_total = round(despesas_total, 2)
+    resultado = round(margem_bruta - despesas_total, 2)
+
+    return {
+        "periodo": {"start": start, "end": end},
+        "vendas_liquidas": vendas_liquidas,
+        "cmv": cmv,
+        "margem_bruta": margem_bruta,
+        "despesas": {"por_categoria": por_categoria, "total": despesas_total},
+        "resultado": resultado,
+        "food_cost_pct": round(cmv / vendas_liquidas * 100, 1) if vendas_liquidas > 0 else 0,
+    }
+
+
+@api_router.get("/fin/reports/export")
+async def fin_report_export(
+    company_id: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    kind: str = "invoices",
+    current_user: dict = Depends(get_current_user),
+):
+    """Exportação CSV (separador ';', decimais com vírgula, BOM p/ Excel PT).
+    kind=invoices (por omissão) ou kind=sales."""
+    from fastapi.responses import StreamingResponse
+
+    cid_q = await _fin_report_scope(company_id, current_user)
+    start, end = _fin_report_period(start, end)
+    kind = "sales" if (kind or "").strip().lower() == "sales" else "invoices"
+
+    # Nomes de empresas (o Mongo aceita string ou {'$in'} no campo 'id').
+    companies = await db.fin_companies.find(
+        {"id": cid_q}, {"_id": 0, "id": 1, "name": 1}
+    ).to_list(2000)
+    comp_name = {c["id"]: (c.get("name") or "") for c in companies}
+
+    def _cell(v):
+        s = "" if v is None else str(v)
+        if any(c in s for c in (";", '"', "\n", "\r")):
+            s = '"' + s.replace('"', '""') + '"'
+        return s
+
+    def _money(v):
+        n = _fin_clean_num(v)
+        return "" if n is None else f"{n:.2f}".replace(".", ",")
+
+    def _rate(v):
+        n = _fin_clean_num(v)
+        if n is None:
+            return ""
+        txt = str(int(n)) if n == int(n) else f"{n:g}"
+        return txt.replace(".", ",")
+
+    lines = []
+    if kind == "sales":
+        header = ["Empresa", "Data", "Loja", "Base", "IVA", "Total", "CMV", "Origem"]
+        lines.append(";".join(_cell(h) for h in header))
+        units = await db.fin_units.find(
+            {"company_id": cid_q}, {"_id": 0, "id": 1, "name": 1}
+        ).to_list(5000)
+        unit_name = {u["id"]: (u.get("name") or "") for u in units}
+        rows = await db.fin_sales.find(
+            {"company_id": cid_q, "date": {"$gte": start, "$lte": end}}, {"_id": 0}
+        ).to_list(200000)
+        rows.sort(key=lambda r: (r.get("date") or "", comp_name.get(r.get("company_id"), "")))
+        for r in rows:
+            net = _fin_clean_num(r.get("amount_net"))
+            amt = _fin_clean_num(r.get("amount"))
+            iva = "" if (net is None or amt is None) else _money(round(amt - net, 2))
+            loja = unit_name.get(r.get("unit_id")) or "Comum"
+            lines.append(";".join([
+                _cell(comp_name.get(r.get("company_id"), "")),
+                _cell(r.get("date")),
+                _cell(loja),
+                _money(r.get("amount_net")),
+                iva,
+                _money(r.get("amount")),
+                _money(r.get("amount_cost")),
+                _cell(r.get("source")),
+            ]))
+        fname = f"vendas_{start}_a_{end}.csv"
+    else:
+        header = ["Empresa", "Data Emissao", "Vencimento", "Tipo", "Fornecedor",
+                  "NIF", "Nº Fatura", "Base", "IVA", "Taxa", "Total",
+                  "Categoria", "Pago", "Data Pagamento"]
+        lines.append(";".join(_cell(h) for h in header))
+        rows = await db.fin_invoices.find(
+            {"company_id": cid_q, "kind": {"$in": ["invoice", "payment"]},
+             "issue_date": {"$gte": start, "$lte": end}}, {"_id": 0}
+        ).to_list(200000)
+        rows = [r for r in rows if r.get("approval_status") != "rejected"]
+        rows.sort(key=lambda r: (r.get("issue_date") or "", comp_name.get(r.get("company_id"), "")))
+        for r in rows:
+            tipo = "Pagamento" if r.get("kind") == "payment" else "Fatura"
+            pago = "Sim" if r.get("paid") is True else "Não"
+            lines.append(";".join([
+                _cell(comp_name.get(r.get("company_id"), "")),
+                _cell(r.get("issue_date")),
+                _cell(r.get("due_date")),
+                _cell(tipo),
+                _cell(r.get("supplier")),
+                _cell(r.get("nif")),
+                _cell(r.get("invoice_number")),
+                _money(r.get("amount_net")),
+                _money(r.get("vat_amount")),
+                _rate(r.get("vat_rate")),
+                _money(r.get("amount")),
+                _cell(r.get("category")),
+                pago,
+                _cell(r.get("paid_date")),
+            ]))
+        fname = f"faturas_{start}_a_{end}.csv"
+
+    body = "﻿" + "\r\n".join(lines) + "\r\n"
+    return StreamingResponse(
+        iter([body]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@api_router.get("/fin/reports/tesouraria")
+async def fin_report_tesouraria(
+    company_id: str,
+    weeks: int = 8,
+    current_user: dict = Depends(get_current_user),
+):
+    """Mapa de tesouraria previsional: saldo atual + saídas previstas por semana
+    (vencimento efetivo das faturas por pagar) e saldo previsto acumulado."""
+    cid_q = await _fin_report_scope(company_id, current_user)
+    try:
+        weeks = int(weeks)
+    except (TypeError, ValueError):
+        weeks = 8
+    weeks = max(1, min(26, weeks))
+
+    # Saldo atual em banco (mesma lógica do dashboard global): último movimento
+    # de cada conta, somado. Contas sem saldo contam 0.
+    accounts = await db.fin_bank_accounts.find(
+        {"company_id": cid_q}, {"_id": 0, "id": 1}
+    ).to_list(2000)
+    saldo_atual = 0.0
+    for acc in accounts:
+        last = await db.fin_movements.find_one(
+            {"account_id": acc.get("id")},
+            {"_id": 0, "balance": 1, "date_lancamento": 1},
+            sort=[("date_lancamento", -1)],
+        )
+        if last and last.get("balance") is not None:
+            saldo_atual += float(last.get("balance") or 0)
+    saldo_atual = round(saldo_atual, 2)
+
+    # Regras de fornecedor (para o vencimento efetivo).
+    rules_map: dict = {}
+    for r in await db.fin_supplier_rules.find({}, {"_id": 0}).to_list(5000):
+        if r.get("supplier_key"):
+            rules_map[r["supplier_key"]] = r
+
+    invoices = await db.fin_invoices.find(
+        {"company_id": cid_q, "paid": {"$ne": True}},
+        {"_id": 0, "amount": 1, "paid": 1, "approval_status": 1,
+         "due_date": 1, "issue_date": 1, "nif": 1, "supplier": 1},
+    ).to_list(200000)
+
+    today = datetime.now(LISBON_TZ).date()
+    monday = today - timedelta(days=today.weekday())  # 2ª feira desta semana
+    week_starts = [monday + timedelta(days=7 * i) for i in range(weeks)]
+    horizon_end = week_starts[-1] + timedelta(days=6)  # domingo da última semana
+
+    saidas_semana = [0.0] * weeks
+    em_atraso = 0.0
+    for inv in invoices:
+        if inv.get("approval_status") == "rejected" or inv.get("paid") is True:
+            continue
+        amt = _fin_clean_num(inv.get("amount")) or 0.0
+        rule = rules_map.get(fin_supplier_key_of(inv.get("nif"), inv.get("supplier")))
+        eff = _fin_effective_due(inv, rule)
+        if not eff:
+            continue
+        try:
+            eff_d = date.fromisoformat(str(eff)[:10])
+        except (ValueError, TypeError):
+            continue
+        if eff_d < today:
+            em_atraso += amt
+        elif eff_d <= horizon_end:
+            idx = (eff_d - monday).days // 7
+            if 0 <= idx < weeks:
+                saidas_semana[idx] += amt
+        # eff_d além do horizonte: fica de fora das semanas mostradas.
+
+    semanas = []
+    running = 0.0
+    for i in range(weeks):
+        ws = week_starts[i]
+        we = ws + timedelta(days=6)
+        saidas = round(saidas_semana[i], 2)
+        running += saidas
+        saldo_previsto = round(saldo_atual - running, 2)
+        if ws.month == we.month:
+            label = f"{ws.day}–{we.day} {_FIN_MESES_PT[we.month - 1]}"
+        else:
+            label = f"{ws.day} {_FIN_MESES_PT[ws.month - 1]}–{we.day} {_FIN_MESES_PT[we.month - 1]}"
+        semanas.append({
+            "inicio": ws.isoformat(),
+            "fim": we.isoformat(),
+            "label": label,
+            "saidas": saidas,
+            "saldo_previsto": saldo_previsto,
+            "negativo": saldo_previsto < 0,
+        })
+
+    return {
+        "saldo_atual": saldo_atual,
+        "em_atraso": round(em_atraso, 2),
+        "semanas": semanas,
+    }
 
 
 # ==================== HEALTH CHECK ====================

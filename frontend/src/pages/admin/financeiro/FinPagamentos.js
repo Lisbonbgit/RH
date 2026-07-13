@@ -40,11 +40,22 @@ const RECURRENCE = [
   { value: 'yearly', label: 'Anual' },
 ];
 const UNIT_NONE = '__none__';
+// Categorias de despesa (usadas no relatório DRE, que agrupa por categoria).
+const CATEGORIAS = [
+  { value: 'mercadoria', label: 'Mercadoria' },
+  { value: 'rendas', label: 'Rendas' },
+  { value: 'energia_agua', label: 'Água/Energia' },
+  { value: 'salarios', label: 'Salários' },
+  { value: 'servicos', label: 'Serviços' },
+  { value: 'impostos', label: 'Impostos' },
+  { value: 'outros', label: 'Outros' },
+];
+const categoriaLabel = (v) => CATEGORIAS.find((c) => c.value === v)?.label || '';
 
 const emptyForm = () => ({
   kind: 'invoice', supplier: '', nif: '', invoice_number: '',
   issue_date: todayISO(), due_date: '', amount: '', vat_rate: '',
-  description: '', unit_id: UNIT_NONE, recurrence: 'none', paid: false, paid_date: '',
+  description: '', unit_id: UNIT_NONE, category: '', recurrence: 'none', paid: false, paid_date: '',
 });
 
 // Origem da fatura em linguagem humana (ficha de detalhe).
@@ -158,6 +169,7 @@ export default function FinPagamentos() {
       amount: inv.amount ?? '', vat_rate: inv.vat_rate ?? '',
       description: inv.description || '',
       unit_id: inv.unit_id || UNIT_NONE,
+      category: inv.category || '',
       recurrence: inv.recurrence || 'none',
       paid: !!inv.paid, paid_date: inv.paid_date || '',
     });
@@ -186,6 +198,7 @@ export default function FinPagamentos() {
         amount, amount_net, vat_amount, vat_rate: rate,
         description: form.description || null,
         unit_id: form.unit_id === UNIT_NONE ? null : form.unit_id,
+        category: form.category || null,
         recurrence: editing ? 'none' : form.recurrence, // recorrência só ao criar
         paid: !!form.paid,
         paid_date: form.paid_date || null,
@@ -842,6 +855,17 @@ export default function FinPagamentos() {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="space-y-1 col-span-2">
+                <Label className="text-xs">Categoria</Label>
+                <Select value={form.category || UNIT_NONE}
+                  onValueChange={(v) => setForm({ ...form, category: v === UNIT_NONE ? '' : v })}>
+                  <SelectTrigger data-testid="fin-f-category"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={UNIT_NONE}>Sem categoria</SelectItem>
+                    {CATEGORIAS.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
               {!editing && (
                 <div className="space-y-1 col-span-2">
                   <Label className="text-xs">Recorrência</Label>
@@ -925,6 +949,7 @@ export default function FinPagamentos() {
                     ? `${eur(detail.vat_amount)}${detail.vat_rate != null ? ` (${detail.vat_rate}%)` : ''}`
                     : null} />
                 <DetailField label="Unidade / Loja" value={unitName(detail.unit_id)} />
+                <DetailField label="Categoria" value={categoriaLabel(detail.category)} />
                 <DetailField label="Empresa" value={companyName(detail.company_id)} />
                 <DetailField label="Origem" value={SOURCE_LABEL[detail.source] || detail.source} />
               </div>

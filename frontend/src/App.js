@@ -27,6 +27,7 @@ import FinPagamentos from './pages/admin/financeiro/FinPagamentos';
 import FinVendas from './pages/admin/financeiro/FinVendas';
 import FinFornecedores from './pages/admin/financeiro/FinFornecedores';
 import FinExtrato from './pages/admin/financeiro/FinExtrato';
+import FinRelatorios from './pages/admin/financeiro/FinRelatorios';
 import PainelGlobal from './pages/admin/financeiro/PainelGlobal';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeProfile from './pages/employee/EmployeeProfile';
@@ -37,12 +38,10 @@ import EmployeeDocuments from './pages/employee/EmployeeDocuments';
 // Layout
 import AdminLayout from './components/layouts/AdminLayout';
 import EmployeeLayout from './components/layouts/EmployeeLayout';
-import ComingSoon from './components/ComingSoon';
 import MarketingCampaigns from './pages/admin/marketing/MarketingCampaigns';
 import MarketingCalendar from './pages/admin/marketing/MarketingCalendar';
 import MarketingReviews from './pages/admin/marketing/MarketingReviews';
 import MarketingReports from './pages/admin/marketing/MarketingReports';
-import { BarChart3 } from 'lucide-react';
 
 // Protected Route Component - checks for authentication and must_change_password
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -163,7 +162,7 @@ function AppRoutes() {
         <Route path="financeiro" element={<FinInicio />} />
         <Route path="financeiro/pagamentos" element={<FinPagamentos />} />
         <Route path="financeiro/vendas" element={<FinVendas />} />
-        <Route path="financeiro/relatorios" element={<ComingSoon icon={BarChart3} title="Relatórios" subtitle="DRE e custos fixos" />} />
+        <Route path="financeiro/relatorios" element={<FinRelatorios />} />
         <Route path="financeiro/fornecedores" element={<FinFornecedores />} />
         <Route path="financeiro/extrato" element={<FinExtrato />} />
 

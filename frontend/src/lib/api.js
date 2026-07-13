@@ -192,6 +192,12 @@ export const syncNowVendus = () => axios.post(`${API_URL}/fin/sync/vendus`);
 export const syncNowMoloni = () => axios.post(`${API_URL}/fin/sync/moloni`);
 export const syncNowIngest = () => axios.post(`${API_URL}/fin/sync/ingest`);
 
+// Relatórios (financeiro) — params: { company_id, start?, end? }
+export const getFinReportIva = (params) => axios.get(`${API_URL}/fin/reports/iva`, { params });
+export const getFinReportDre = (params) => axios.get(`${API_URL}/fin/reports/dre`, { params });
+export const getFinReportTesouraria = (params) => axios.get(`${API_URL}/fin/reports/tesouraria`, { params });
+export const getFinReportExport = (params) => axios.get(`${API_URL}/fin/reports/export`, { params, responseType: 'blob' });
+
 // Painel Global (financeiro) — cruza KPIs Financeiro + RH + Marketing por empresa
 // params: { company_id, month? }
 export const getFinGlobalDashboard = (params) =>
