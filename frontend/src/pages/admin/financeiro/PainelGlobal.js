@@ -3,7 +3,7 @@ import {
   getFinCompanies, getFinGlobalDashboard, getCompanies, linkFinCompanyRh,
   syncNowVendus, syncNowMoloni, syncNowIngest,
 } from '../../../lib/api';
-import { eur, normSup } from '../../../lib/finance';
+import { eur, normSup, kpiTone } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
@@ -23,12 +23,13 @@ const LS_KEY = 'fin_selected_company';
 const COMPANY_ALL = 'all';
 const currentMonth = () => new Date().toISOString().slice(0, 7);
 
-// Cartão de KPI (mesmo visual do Resumo em FinPagamentos).
-function KpiCard({ label, value, icon: Icon }) {
+// Cartão de KPI (mesmo visual do Resumo em FinPagamentos). `colorIdx` escolhe a cor do badge (paleta RH).
+function KpiCard({ label, value, icon: Icon, colorIdx = 0 }) {
+  const tone = kpiTone(colorIdx);
   return (
     <Card>
       <CardContent className="flex items-center gap-3 p-5">
-        <div className="h-10 w-10 rounded-xl brand-gradient text-white flex items-center justify-center shrink-0">
+        <div className={`h-10 w-10 rounded-xl ${tone.bg} ${tone.icon} flex items-center justify-center shrink-0`}>
           <Icon className="h-5 w-5" />
         </div>
         <div className="min-w-0">
@@ -253,11 +254,11 @@ export default function PainelGlobal() {
           <section className="space-y-3">
             <h2 className="text-sm font-heading font-bold uppercase tracking-wide text-muted-foreground">Financeiro</h2>
             <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-              <KpiCard label="Vendas do mês" value={eur(fin.vendas_mes)} icon={TrendingUp} />
-              <KpiCard label="A pagar" value={eur(fin.a_pagar)} icon={CircleDollarSign} />
-              <KpiCard label="Pago" value={eur(fin.pago)} icon={Check} />
-              <KpiCard label="Vencidas" value={num(fin.vencidas)} icon={AlertTriangle} />
-              <KpiCard label="Saldo banco" value={eur(fin.saldo_banco)} icon={Landmark} />
+              <KpiCard label="Vendas do mês" value={eur(fin.vendas_mes)} icon={TrendingUp} colorIdx={0} />
+              <KpiCard label="A pagar" value={eur(fin.a_pagar)} icon={CircleDollarSign} colorIdx={1} />
+              <KpiCard label="Pago" value={eur(fin.pago)} icon={Check} colorIdx={2} />
+              <KpiCard label="Vencidas" value={num(fin.vencidas)} icon={AlertTriangle} colorIdx={3} />
+              <KpiCard label="Saldo banco" value={eur(fin.saldo_banco)} icon={Landmark} colorIdx={4} />
             </div>
           </section>
 
@@ -274,8 +275,8 @@ export default function PainelGlobal() {
             </div>
             {rh.linked && (
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <KpiCard label="Colaboradores" value={num(rh.colaboradores)} icon={Users} />
-                <KpiCard label="Ausências pendentes" value={num(rh.ausencias_pendentes)} icon={CalendarOff} />
+                <KpiCard label="Colaboradores" value={num(rh.colaboradores)} icon={Users} colorIdx={0} />
+                <KpiCard label="Ausências pendentes" value={num(rh.ausencias_pendentes)} icon={CalendarOff} colorIdx={1} />
               </div>
             )}
             {/* Quem está a trabalhar agora, agrupado por loja */}
@@ -322,7 +323,7 @@ export default function PainelGlobal() {
           <section className="space-y-3">
             <h2 className="text-sm font-heading font-bold uppercase tracking-wide text-muted-foreground">Marketing</h2>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-              <KpiCard label="Campanhas ativas" value={num(mkt.campanhas_ativas)} icon={Megaphone} />
+              <KpiCard label="Campanhas ativas" value={num(mkt.campanhas_ativas)} icon={Megaphone} colorIdx={0} />
             </div>
           </section>
         </div>

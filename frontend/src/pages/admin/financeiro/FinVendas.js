@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { getFinSalesDashboard, syncFinSales, createFinSale, getFinUnits } from '../../../lib/api';
-import { eur, todayISO } from '../../../lib/finance';
+import { eur, todayISO, kpiTone } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
@@ -230,18 +230,19 @@ export default function FinVendas() {
         <>
           {/* ---------- KPIs ---------- */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {KPIS.map((k) => {
+            {KPIS.map((k, i) => {
               const block = dashboard[k.key] || {};
               const cur = pick(block.valor);
               const prev = pick(block.anterior);
               const hasPrev = prev !== 0;
               const diff = hasPrev ? ((cur - prev) / prev) * 100 : null;
               const up = diff != null && diff >= 0;
+              const tone = kpiTone(i);
               return (
                 <Card key={k.key} data-testid={`fin-kpi-${k.key}`}>
                   <CardContent className="p-5 space-y-3">
                     <div className="flex items-center gap-3">
-                      <div className="h-10 w-10 rounded-xl brand-gradient text-white flex items-center justify-center shrink-0">
+                      <div className={`h-10 w-10 rounded-xl ${tone.bg} ${tone.icon} flex items-center justify-center shrink-0`}>
                         <k.icon className="h-5 w-5" />
                       </div>
                       <p className="text-sm text-muted-foreground">{k.label}</p>

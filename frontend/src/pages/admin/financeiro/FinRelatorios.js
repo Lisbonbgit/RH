@@ -3,7 +3,7 @@ import { useOutletContext } from 'react-router-dom';
 import {
   getFinReportIva, getFinReportDre, getFinReportTesouraria, getFinReportExport,
 } from '../../../lib/api';
-import { eur } from '../../../lib/finance';
+import { eur, kpiTone } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
 import { Card, CardContent } from '../../../components/ui/card';
@@ -40,12 +40,14 @@ const CAT_LABEL = {
 const taxaLabel = (k) => (k === 'sem_taxa' ? 'Sem taxa' : `${k}%`);
 
 // Cartão de KPI (mesmo visual das outras páginas do Financeiro).
-function Kpi({ label, value, icon: Icon, tone }) {
+// `tone` controla a cor do VALOR (bom/mau); `colorIdx` escolhe a cor do badge do ícone (paleta RH).
+function Kpi({ label, value, icon: Icon, tone, colorIdx = 0 }) {
   const toneCls = tone === 'bad' ? 'text-destructive' : tone === 'good' ? 'text-emerald-600 dark:text-emerald-400' : '';
+  const badge = kpiTone(colorIdx);
   return (
     <Card>
       <CardContent className="flex items-center gap-3 p-4">
-        <div className="h-10 w-10 rounded-xl brand-gradient text-white flex items-center justify-center shrink-0">
+        <div className={`h-10 w-10 rounded-xl ${badge.bg} ${badge.icon} flex items-center justify-center shrink-0`}>
           <Icon className="h-5 w-5" />
         </div>
         <div className="min-w-0">
@@ -209,11 +211,11 @@ export default function FinRelatorios() {
             loading ? <Spinner /> : !iva ? null : (
               <>
                 <div className="grid gap-4 md:grid-cols-3">
-                  <Kpi label="IVA liquidado (vendas)" value={eur(iva.liquidado?.total)} icon={TrendingUp} />
-                  <Kpi label="IVA dedutível (compras)" value={eur(iva.dedutivel?.total)} icon={Receipt} />
+                  <Kpi label="IVA liquidado (vendas)" value={eur(iva.liquidado?.total)} icon={TrendingUp} colorIdx={0} />
+                  <Kpi label="IVA dedutível (compras)" value={eur(iva.dedutivel?.total)} icon={Receipt} colorIdx={1} />
                   {iva.a_pagar > 0
-                    ? <Kpi label="A pagar ao Estado" value={eur(iva.a_pagar)} icon={Landmark} tone="bad" />
-                    : <Kpi label="A recuperar" value={eur(iva.a_recuperar)} icon={Landmark} tone="good" />}
+                    ? <Kpi label="A pagar ao Estado" value={eur(iva.a_pagar)} icon={Landmark} tone="bad" colorIdx={2} />
+                    : <Kpi label="A recuperar" value={eur(iva.a_recuperar)} icon={Landmark} tone="good" colorIdx={2} />}
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">
                   <Card><CardContent className="p-4 space-y-2">
@@ -235,11 +237,11 @@ export default function FinRelatorios() {
               <>
                 <p className="text-sm font-semibold">{tri.label}</p>
                 <div className="grid gap-4 md:grid-cols-3">
-                  <Kpi label="IVA liquidado (trimestre)" value={eur(tri.liquidado)} icon={TrendingUp} />
-                  <Kpi label="IVA dedutível (trimestre)" value={eur(tri.dedutivel)} icon={Receipt} />
+                  <Kpi label="IVA liquidado (trimestre)" value={eur(tri.liquidado)} icon={TrendingUp} colorIdx={0} />
+                  <Kpi label="IVA dedutível (trimestre)" value={eur(tri.dedutivel)} icon={Receipt} colorIdx={1} />
                   {tri.a_pagar > 0
-                    ? <Kpi label="A pagar ao Estado" value={eur(tri.a_pagar)} icon={Landmark} tone="bad" />
-                    : <Kpi label="A recuperar" value={eur(tri.a_recuperar)} icon={Landmark} tone="good" />}
+                    ? <Kpi label="A pagar ao Estado" value={eur(tri.a_pagar)} icon={Landmark} tone="bad" colorIdx={2} />
+                    : <Kpi label="A recuperar" value={eur(tri.a_recuperar)} icon={Landmark} tone="good" colorIdx={2} />}
                 </div>
                 <Card><CardContent className="p-4 space-y-2">
                   <p className="text-sm font-semibold">Detalhe por mês</p>
@@ -279,11 +281,11 @@ export default function FinRelatorios() {
           {loading ? <Spinner /> : !dre ? null : (
             <>
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <Kpi label="Vendas líquidas" value={eur(dre.vendas_liquidas)} icon={TrendingUp} />
-                <Kpi label="CMV (custo)" value={eur(dre.cmv)} icon={Receipt} />
-                <Kpi label="Margem bruta" value={eur(dre.margem_bruta)} icon={Percent} />
+                <Kpi label="Vendas líquidas" value={eur(dre.vendas_liquidas)} icon={TrendingUp} colorIdx={0} />
+                <Kpi label="CMV (custo)" value={eur(dre.cmv)} icon={Receipt} colorIdx={1} />
+                <Kpi label="Margem bruta" value={eur(dre.margem_bruta)} icon={Percent} colorIdx={2} />
                 <Kpi label="Resultado" value={eur(dre.resultado)} icon={BarChart3}
-                  tone={dre.resultado >= 0 ? 'good' : 'bad'} />
+                  tone={dre.resultado >= 0 ? 'good' : 'bad'} colorIdx={3} />
               </div>
               <Card><CardContent className="p-4 space-y-3">
                 <div className="flex items-center justify-between">
@@ -353,10 +355,10 @@ export default function FinRelatorios() {
           {loading ? <Spinner /> : !tes ? null : (
             <>
               <div className="grid gap-4 sm:grid-cols-2">
-                <Kpi label="Saldo atual em banco" value={eur(tes.saldo_atual)} icon={Landmark} />
+                <Kpi label="Saldo atual em banco" value={eur(tes.saldo_atual)} icon={Landmark} colorIdx={0} />
                 {tes.em_atraso > 0
-                  ? <Kpi label="Em atraso (por pagar)" value={eur(tes.em_atraso)} icon={AlertTriangle} tone="bad" />
-                  : <Kpi label="Em atraso" value={eur(0)} icon={AlertTriangle} />}
+                  ? <Kpi label="Em atraso (por pagar)" value={eur(tes.em_atraso)} icon={AlertTriangle} tone="bad" colorIdx={1} />
+                  : <Kpi label="Em atraso" value={eur(0)} icon={AlertTriangle} colorIdx={1} />}
               </div>
               <Card><CardContent className="p-4 space-y-2">
                 <p className="text-sm font-semibold">Próximas {tes.semanas?.length || 0} semanas</p>

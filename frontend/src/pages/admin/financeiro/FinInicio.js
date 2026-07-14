@@ -19,6 +19,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { Settings, Building2, Store, Users, Plus, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
+import { kpiTone } from '../../../lib/finance';
 
 const ROLE_LABEL = { owner: 'Dono', partner: 'Sócio', accountant: 'Contabilista' };
 const canEditCompany = (role) => role === 'owner';
@@ -180,10 +181,12 @@ export default function FinInicio() {
 
       {/* Resumo */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {stats.map((s) => (
+        {stats.map((s, i) => {
+          const tone = kpiTone(i);
+          return (
           <Card key={s.label}>
             <CardContent className="flex items-center gap-4 p-5">
-              <div className="h-11 w-11 rounded-xl brand-gradient text-white flex items-center justify-center shrink-0">
+              <div className={`h-11 w-11 rounded-xl ${tone.bg} ${tone.icon} flex items-center justify-center shrink-0`}>
                 <s.icon className="h-5 w-5" />
               </div>
               <div>
@@ -192,7 +195,8 @@ export default function FinInicio() {
               </div>
             </CardContent>
           </Card>
-        ))}
+          );
+        })}
       </div>
 
       {/* Empresas */}

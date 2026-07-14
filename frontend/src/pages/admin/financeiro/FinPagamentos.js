@@ -5,8 +5,9 @@ import {
   getFinSupplierRules, createFinInvoice, updateFinInvoice,
   toggleFinInvoicePaid, setFinInvoiceUnit, deleteFinInvoice, cancelFinInvoiceSeries,
   getFinMovements, linkFinMovement, unlinkFinMovement,
+  approveFinInvoice, rejectFinInvoice,
 } from '../../../lib/api';
-import { eur, fmtDate, todayISO, effectiveDue, supplierKeyOf } from '../../../lib/finance';
+import { eur, fmtDate, todayISO, effectiveDue, supplierKeyOf, kpiTone } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
@@ -26,7 +27,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import {
   Receipt, Plus, Search, Check, Pencil, Trash2, CircleDollarSign,
   Clock, AlertTriangle, Wallet, ChevronLeft, ChevronRight,
-  FileText, Link2, Unlink,
+  FileText, Link2, Unlink, X, ClipboardCheck,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
@@ -98,6 +99,11 @@ export default function FinPagamentos() {
   const [linkMovs, setLinkMovs] = useState([]);
   const [linkLoading, setLinkLoading] = useState(false);
   const [linkSearch, setLinkSearch] = useState('');
+
+  // Zona "A confirmar": aprovar/rejeitar faturas pendentes (ex.: entradas do Estoque)
+  const [pendingBusyId, setPendingBusyId] = useState(null); // fatura em processamento (aprovar/rejeitar/PDF)
+  const [rejecting, setRejecting] = useState(null);         // fatura a rejeitar (abre diálogo)
+  const [rejectNote, setRejectNote] = useState('');
 
   const company = companies.find((c) => c.id === companyId) || null;
   const canEdit = company && (company.role === 'owner' || company.role === 'partner');
@@ -289,6 +295,54 @@ export default function FinPagamentos() {
     }
   };
 
+  // ---------- Zona "A confirmar" (faturas pendentes) ----------
+  // Abre o PDF de uma fatura pendente diretamente da linha (mesmo mecanismo do viewPdf).
+  const viewPendingPdf = async (inv) => {
+    setPendingBusyId(inv.id);
+    try {
+      const res = await getFinInvoicePdf(inv.id);
+      const url = URL.createObjectURL(res.data);
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      let msg = 'Erro ao abrir o PDF';
+      try {
+        const txt = await err.response?.data?.text?.();
+        if (txt) msg = JSON.parse(txt)?.detail || msg;
+      } catch (_) { /* mantém a mensagem genérica */ }
+      toast.error(msg);
+    } finally {
+      setPendingBusyId(null);
+    }
+  };
+  const doApproveInvoice = async (inv) => {
+    setPendingBusyId(inv.id);
+    try {
+      await approveFinInvoice(inv.id);
+      toast.success('Fatura confirmada');
+      loadData();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao confirmar');
+    } finally {
+      setPendingBusyId(null);
+    }
+  };
+  const doRejectInvoice = async () => {
+    if (!rejecting) return;
+    setPendingBusyId(rejecting.id);
+    try {
+      await rejectFinInvoice(rejecting.id, rejectNote.trim() || null);
+      toast.success('Fatura rejeitada');
+      setRejecting(null);
+      setRejectNote('');
+      loadData();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao rejeitar');
+    } finally {
+      setPendingBusyId(null);
+    }
+  };
+
   const doUnlinkMov = async () => {
     const mov = detail?.linked_movement;
     if (!mov) return;
@@ -353,6 +407,11 @@ export default function FinPagamentos() {
   };
 
   // ---------- Derivados ----------
+  // Faturas pendentes de confirmação (respeitam o filtro de empresa já aplicado no loadData).
+  const pending = useMemo(
+    () => invoices.filter((i) => i.approval_status === 'pending'),
+    [invoices]
+  );
   const active = invoices.filter((i) => i.approval_status !== 'rejected');
   const kpis = useMemo(() => {
     const today = todayISO();
@@ -502,6 +561,95 @@ export default function FinPagamentos() {
         </div>
       </PageHeader>
 
+      {/* ---------- A CONFIRMAR (faturas pendentes, ex.: entradas do Estoque) ---------- */}
+      {pending.length > 0 && (
+        <Card className="border-amber-500/50 bg-amber-50/40 dark:bg-amber-950/10" data-testid="fin-a-confirmar">
+          <CardContent className="p-4 space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0">
+                <ClipboardCheck className="h-5 w-5" />
+              </div>
+              <div>
+                <p className="text-lg font-heading font-bold leading-none">A confirmar ({pending.length})</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Faturas inseridas pela app do Estoque, à espera de aprovação.
+                </p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {pending.map((inv) => (
+                <div key={inv.id} className="rounded-xl border bg-background p-3 space-y-2"
+                  data-testid={`fin-pending-${inv.id}`}>
+                  <div className="flex items-start justify-between gap-3 flex-wrap">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-semibold break-words">{inv.supplier || '(sem fornecedor)'}</p>
+                        {inv.source === 'estoque' && (
+                          <Badge variant="outline" className="border-amber-500/60 text-amber-700">Estoque</Badge>
+                        )}
+                        {companyId === COMPANY_ALL && companyName(inv.company_id) && (
+                          <span className="text-xs text-muted-foreground">{companyName(inv.company_id)}</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {inv.invoice_number ? `Fatura ${inv.invoice_number} · ` : ''}
+                        Emissão {fmtDate(inv.issue_date)}
+                        {inv.due_date ? ` · Vence ${fmtDate(inv.due_date)}` : ''}
+                      </p>
+                    </div>
+                    <p className="text-xl font-heading font-bold tabular-nums shrink-0">{eur(inv.amount)}</p>
+                  </div>
+
+                  {/* Campos extraídos pela IA */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-1 text-sm">
+                    <DetailField label="NIF" value={inv.nif} />
+                    <DetailField label="Líquido" value={inv.amount_net != null ? eur(inv.amount_net) : null} />
+                    <DetailField label="IVA"
+                      value={inv.vat_amount != null
+                        ? `${eur(inv.vat_amount)}${inv.vat_rate != null ? ` (${inv.vat_rate}%)` : ''}`
+                        : null} />
+                    <DetailField label="Unidade / Loja" value={unitName(inv.unit_id)} />
+                  </div>
+                  {inv.description && (
+                    <p className="text-sm text-muted-foreground break-words">{inv.description}</p>
+                  )}
+
+                  {/* Origem: quem inseriu + loja (para custos por loja) */}
+                  <p className="text-xs text-muted-foreground">
+                    Inserida por <b className="text-foreground">{inv.origin_user || '—'}</b>
+                    {inv.origin_store ? <> · <b className="text-foreground">{inv.origin_store}</b></> : ''}
+                  </p>
+
+                  {/* Ações */}
+                  <div className="flex items-center gap-2 flex-wrap pt-1">
+                    {inv.pdf_path && (
+                      <Button variant="outline" size="sm" onClick={() => viewPendingPdf(inv)}
+                        disabled={pendingBusyId === inv.id} data-testid={`fin-pending-pdf-${inv.id}`}>
+                        <FileText className="h-4 w-4 mr-2" />Ver PDF
+                      </Button>
+                    )}
+                    {canEdit && (
+                      <>
+                        <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                          onClick={() => doApproveInvoice(inv)} disabled={pendingBusyId === inv.id}
+                          data-testid={`fin-approve-${inv.id}`}>
+                          <Check className="h-4 w-4 mr-2" />Confirmar
+                        </Button>
+                        <Button size="sm" variant="outline" className="text-destructive hover:text-destructive"
+                          onClick={() => { setRejecting(inv); setRejectNote(''); }} disabled={pendingBusyId === inv.id}
+                          data-testid={`fin-reject-${inv.id}`}>
+                          <X className="h-4 w-4 mr-2" />Rejeitar
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {companies.length === 0 ? (
         <Card><CardContent className="py-12 text-center text-muted-foreground">
           Ainda não tens empresas. Cria uma no separador <b>Início</b> primeiro.
@@ -523,10 +671,12 @@ export default function FinPagamentos() {
                 { label: 'Pago', value: eur(kpis.pago), icon: Check },
                 { label: 'Por pagar', value: kpis.porPagar, icon: Clock },
                 { label: 'Vencidas', value: kpis.vencidas, icon: AlertTriangle },
-              ].map((k) => (
+              ].map((k, i) => {
+                const tone = kpiTone(i);
+                return (
                 <Card key={k.label}>
                   <CardContent className="flex items-center gap-3 p-5">
-                    <div className="h-10 w-10 rounded-xl brand-gradient text-white flex items-center justify-center shrink-0">
+                    <div className={`h-10 w-10 rounded-xl ${tone.bg} ${tone.icon} flex items-center justify-center shrink-0`}>
                       <k.icon className="h-5 w-5" />
                     </div>
                     <div>
@@ -535,7 +685,8 @@ export default function FinPagamentos() {
                     </div>
                   </CardContent>
                 </Card>
-              ))}
+                );
+              })}
             </div>
 
             {/* ---------- Esta semana: limites de pagamento por dia ---------- */}
@@ -1082,6 +1233,36 @@ export default function FinPagamentos() {
               ))
             )}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---------- Rejeitar fatura pendente ---------- */}
+      <Dialog open={!!rejecting}
+        onOpenChange={(o) => { if (!o) { setRejecting(null); setRejectNote(''); } }}>
+        <DialogContent className="max-w-md" data-testid="fin-reject-dialog">
+          <DialogHeader>
+            <DialogTitle>Rejeitar fatura</DialogTitle>
+            <DialogDescription>
+              {rejecting ? `${rejecting.supplier || 'Fornecedor'} · ${eur(rejecting.amount)}` : ''}
+              {rejecting?.origin_user ? ` · inserida por ${rejecting.origin_user}` : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1">
+            <Label className="text-xs">Motivo (opcional)</Label>
+            <Textarea rows={3} value={rejectNote} onChange={(e) => setRejectNote(e.target.value)}
+              placeholder="Ex.: valor errado, fatura duplicada, loja errada..."
+              data-testid="fin-reject-note" />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline"
+              onClick={() => { setRejecting(null); setRejectNote(''); }}>Cancelar</Button>
+            <Button type="button"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={doRejectInvoice} disabled={pendingBusyId === rejecting?.id}
+              data-testid="fin-confirm-reject">
+              Rejeitar
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

@@ -1,6 +1,6 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -3607,6 +3607,8 @@ async def _fin_insert_invoice(company_id, kind, approval, data: dict, freq, grou
         "approval_by": None,
         "approval_at": None,
         "source": data.get("source") or "manual",
+        "origin_user": data.get("origin_user"),
+        "origin_store": data.get("origin_store"),
         "recurrence": freq,
         "recur_group": group,
         "file_name": data.get("file_name"),
@@ -5030,6 +5032,140 @@ async def fin_cron_ingest(key: str = Query(...)):
                 continue
 
     return summary
+
+
+# ===== FINANCEIRO — PORTA DE SERVIÇO: INGESTÃO DE FATURA VINDA DO ESTOQUE =====
+# POST /api/fin/invoices/ingest-estoque: recebe um PDF de fatura enviado pela app
+# do Estoque (multipart), corre o MESMO pipeline da ingestão por email (extração
+# IA → validação → dedup → match empresa → inserir → guardar PDF), MAS:
+#  - fornecedor e valor confirmados pelo colaborador SUBSTITUEM os da IA;
+#  - entra como "pending" (A confirmar), não aprovada;
+#  - guarda quem inseriu (origin_user) e a loja (origin_store) p/ custos por loja;
+#  - se a IA não identifica a empresa, o colaborador pode confirmar o NIF à mão.
+# Protegido por ?key= contra ESTOQUE_SERVICE_KEY (sem JWT).
+@api_router.post("/fin/invoices/ingest-estoque")
+async def fin_ingest_estoque(
+    file: UploadFile = File(...),
+    fornecedor: str = Form(...),
+    valor: float = Form(...),
+    nif: Optional[str] = Form(None),
+    colaborador: Optional[str] = Form(None),
+    loja: Optional[str] = Form(None),
+    key: str = Query(...),
+):
+    # ---- Auth de serviço ----
+    svc_key = os.environ.get("ESTOQUE_SERVICE_KEY")
+    if not svc_key:
+        raise HTTPException(status_code=503, detail="Serviço indisponível.")
+    if not secrets.compare_digest(str(key), str(svc_key)):
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+
+    # ---- 1) Ficheiro + extração IA ----
+    pdf_bytes = await file.read()
+    if not pdf_bytes:
+        raise HTTPException(status_code=422, detail="Ficheiro vazio.")
+    fn = file.filename or "fatura.pdf"
+
+    ex = await asyncio.to_thread(_fin_extract_pdf_sync, pdf_bytes)
+    if not isinstance(ex, dict) or ex.get("error"):
+        msg = ex.get("error") if isinstance(ex, dict) else "IA inválida"
+        raise HTTPException(status_code=502, detail=f"Falha na leitura da fatura (IA): {msg}")
+
+    # ---- 2) Match da empresa (NIF do adquirente: override do colaborador) ----
+    nif_override = _fin_only_digits(nif) or None
+    acquirer_nif = nif_override or ex.get("customerNif")
+    companies = await db.fin_companies.find({}, {"_id": 0}).to_list(5000)
+    comp = await _fin_match_company(companies, acquirer_nif, ex.get("customerName"), None)
+    if not comp or not comp.get("id"):
+        # Não gravamos nada (nem log de hash) — o Estoque reenvia com o NIF.
+        return JSONResponse(
+            status_code=422,
+            content={
+                "reason": "no_company",
+                "detail": "Não foi possível identificar a empresa. Confirma o NIF.",
+            },
+        )
+    company_id = comp["id"]
+
+    # ---- 3) Validações (é fatura? duplicado?) ----
+    if not _fin_looks_like_invoice(ex):
+        return JSONResponse(
+            status_code=422,
+            content={
+                "reason": "not_invoice",
+                "detail": "O ficheiro não parece ser uma fatura.",
+            },
+        )
+
+    if await _fin_is_duplicate(
+        ex.get("invoiceNumber"), _fin_only_digits(ex.get("nif")), ex.get("supplier")
+    ):
+        return {"duplicate": True, "detail": "Fatura já registada."}
+
+    # ---- 4) Dados (com override de fornecedor e valor confirmados) ----
+    vat_rate = _fin_clean_num(ex.get("vatRate"))
+    amount_net = ex.get("amountNet")
+    vat_amount = ex.get("vatAmount")
+    if vat_rate is not None:
+        amount_net = round(valor / (1 + vat_rate / 100), 2)
+        vat_amount = round(valor - amount_net, 2)
+
+    data = {
+        "supplier": fornecedor,  # override confirmado pelo colaborador
+        "nif": _fin_only_digits(ex.get("nif")) or None,
+        "customer_nif": nif_override or (_fin_only_digits(ex.get("customerNif")) or None),
+        "invoice_number": ex.get("invoiceNumber"),
+        "issue_date": ex.get("issueDate"),
+        "due_date": ex.get("dueDate"),
+        "amount": valor,  # override confirmado pelo colaborador (total c/IVA)
+        "amount_net": amount_net,
+        "vat_amount": vat_amount,
+        "vat_rate": vat_rate,
+        "description": ex.get("description"),
+        "source": "estoque",
+        "file_name": fn,
+        "origin_user": colaborador,
+        "origin_store": loja,
+    }
+
+    # ---- unit_id (best-effort, custos por loja) ----
+    if loja:
+        loja_n = _fin_norm_sup(loja)
+        if loja_n:
+            units = await db.fin_units.find(
+                {"company_id": company_id}, {"_id": 0, "id": 1, "name": 1}
+            ).to_list(1000)
+            for u in units:
+                if _fin_norm_sup(u.get("name")) == loja_n:
+                    data["unit_id"] = u["id"]
+                    break
+
+    # ---- 5) Inserir (pending, sem auto_paid) + guardar PDF ----
+    try:
+        invoice_id = await _fin_insert_invoice(
+            company_id, "invoice", "pending", data, "none", None, "estoque",
+            apply_auto_paid=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Falha ao registar a fatura: {exc}")
+
+    try:
+        dest_dir = UPLOAD_DIR / "fin_invoices" / company_id
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = dest_dir / f"{invoice_id}.pdf"
+        pdf_path.write_bytes(pdf_bytes)
+        await db.fin_invoices.update_one(
+            {"id": invoice_id}, {"$set": {"pdf_path": str(pdf_path)}}
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[fin-estoque] PDF não guardado (%s): %s", invoice_id, exc)
+
+    return {
+        "ok": True,
+        "invoice_id": invoice_id,
+        "company": comp.get("name"),
+        "status": "pending",
+    }
 
 
 # ===== FINANCEIRO · FASE 12 — IMPORTAÇÃO DE EXTRATO PDF (Millennium BCP) =====

@@ -141,6 +141,11 @@ export const setFinInvoiceUnit = (id, unitId) =>
 export const deleteFinInvoice = (id) => axios.delete(`${API_URL}/fin/invoices/${id}`);
 export const cancelFinInvoiceSeries = (id) =>
   axios.delete(`${API_URL}/fin/invoices/${id}`, { params: { series: 'future' } });
+// Aprovação de faturas pendentes (ex.: entradas pela app do Estoque)
+export const approveFinInvoice = (id, note) =>
+  axios.put(`${API_URL}/fin/invoices/${id}/approve`, { note: note || null });
+export const rejectFinInvoice = (id, note) =>
+  axios.put(`${API_URL}/fin/invoices/${id}/reject`, { note: note || null });
 
 // Regras de fornecedor (financeiro)
 export const getFinSupplierRules = () => axios.get(`${API_URL}/fin/supplier-rules`);
