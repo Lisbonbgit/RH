@@ -4753,16 +4753,32 @@ def _fin_gemini_call(pdf_bytes, prompt, max_tokens, timeout):
         },
     }
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    try:
-        with httpx.Client(timeout=timeout) as http_client:
-            # Chave no HEADER (não no URL): evita que apareça nos logs do httpx.
-            resp = http_client.post(
-                url,
-                headers={"content-type": "application/json", "x-goog-api-key": api_key},
-                json=body,
-            )
-    except Exception as exc:  # noqa: BLE001
-        return "", f"ERROR:rede IA: {exc}"
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            with httpx.Client(timeout=timeout) as http_client:
+                # Chave no HEADER (não no URL): evita que apareça nos logs do httpx.
+                resp = http_client.post(
+                    url,
+                    headers={"content-type": "application/json", "x-goog-api-key": api_key},
+                    json=body,
+                )
+        except Exception as exc:  # noqa: BLE001
+            return "", f"ERROR:rede IA: {exc}"
+        # 429 = limite de ritmo do plano gratuito (5/min). Espera o tempo
+        # sugerido pelo Google e repete (até 5 tentativas) para não falhar
+        # bursts de faturas. Depois disso, devolve o erro (fica p/ a próxima).
+        if resp.status_code == 429 and attempts <= 5:
+            try:
+                msg = resp.json().get("error", {}).get("message", "")
+            except Exception:  # noqa: BLE001
+                msg = ""
+            mt = re.search(r"retry in ([\d.]+)s", msg or "")
+            delay = float(mt.group(1)) if mt else 22.0
+            _time.sleep(min(max(delay + 1.0, 5.0), 45.0))
+            continue
+        break
     if resp.status_code >= 400:
         try:
             err = resp.json().get("error", {}).get("message")
