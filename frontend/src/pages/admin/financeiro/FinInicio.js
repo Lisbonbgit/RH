@@ -16,7 +16,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '../../../components/ui/alert-dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../../components/ui/table';
-import { Wallet, Building2, Store, Users, Plus, Pencil, Trash2 } from 'lucide-react';
+import { Settings, Building2, Store, Users, Plus, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
 
@@ -171,7 +171,7 @@ export default function FinInicio() {
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="fin-inicio-page">
-      <PageHeader icon={Wallet} title="Financeiro" subtitle="Empresas, unidades e visão geral do módulo">
+      <PageHeader icon={Settings} title="Configurações" subtitle="Empresas e lojas do Financeiro">
         <Button onClick={() => openCompanyDialog()} data-testid="fin-add-company-btn">
           <Plus className="h-4 w-4 mr-2" />
           Nova Empresa

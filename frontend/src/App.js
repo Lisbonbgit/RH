@@ -159,7 +159,10 @@ function AppRoutes() {
 
         {/* ===== Financeiro ===== */}
         {/* Fase 2: Início (empresas+unidades) e Equipa já implementados. */}
-        <Route path="financeiro" element={<FinInicio />} />
+        {/* Início deixou de existir: aterra em Vendas. Empresas/lojas movidas
+            para Configurações (botão de engrenagem no topo). */}
+        <Route path="financeiro" element={<Navigate to="/admin/financeiro/vendas" replace />} />
+        <Route path="financeiro/configuracoes" element={<FinInicio />} />
         <Route path="financeiro/pagamentos" element={<FinPagamentos />} />
         <Route path="financeiro/vendas" element={<FinVendas />} />
         <Route path="financeiro/relatorios" element={<FinRelatorios />} />

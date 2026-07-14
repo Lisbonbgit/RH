@@ -38,7 +38,7 @@ import {
   User,
   Check,
   ShieldCheck,
-  Wallet,
+  Settings,
   Receipt,
   TrendingUp,
   BarChart3,
@@ -83,12 +83,11 @@ const sections = [
   {
     key: 'financeiro',
     label: 'Financeiro',
-    home: '/admin/financeiro',
+    home: '/admin/financeiro/vendas',
     match: (p) => p.startsWith('/admin/financeiro'),
     items: [
-      { path: '/admin/financeiro', label: 'Início', icon: Wallet, exact: true },
-      { path: '/admin/financeiro/pagamentos', label: 'Pagamentos', icon: Receipt },
       { path: '/admin/financeiro/vendas', label: 'Vendas', icon: TrendingUp },
+      { path: '/admin/financeiro/pagamentos', label: 'Pagamentos', icon: Receipt },
       { path: '/admin/financeiro/relatorios', label: 'Relatórios', icon: BarChart3 },
       { path: '/admin/financeiro/fornecedores', label: 'Fornecedores', icon: Truck },
       { path: '/admin/financeiro/extrato', label: 'Extrato', icon: Landmark },
@@ -313,6 +312,12 @@ export default function AdminLayout() {
         </div>
 
         <div className="ml-auto flex items-center gap-2">
+          {activeSection.key === 'financeiro' && (
+            <Button variant="ghost" size="icon" onClick={() => navigate('/admin/financeiro/configuracoes')}
+              title="Configurações (empresas e lojas)" data-testid="fin-config-btn">
+              <Settings className="h-5 w-5" />
+            </Button>
+          )}
           <ThemeToggle />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -365,6 +370,12 @@ export default function AdminLayout() {
       <header className="hidden lg:flex lg:ml-64 h-16 items-center justify-between border-b bg-card px-6">
         <div />
         <div className="flex items-center gap-4">
+          {activeSection.key === 'financeiro' && (
+            <Button variant="ghost" size="icon" onClick={() => navigate('/admin/financeiro/configuracoes')}
+              title="Configurações (empresas e lojas)" data-testid="fin-config-btn-desktop">
+              <Settings className="h-5 w-5" />
+            </Button>
+          )}
           <ThemeToggle />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
