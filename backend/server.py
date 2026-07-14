@@ -7046,6 +7046,70 @@ async def fin_report_tesouraria(
     }
 
 
+@api_router.get("/fin/reports/vendas-dashboard")
+async def fin_sales_dashboard(
+    company_id: str,
+    unit_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Dashboard de vendas (estilo POS): faturação Hoje/Mensal/Anual com o
+    período anterior (ontem / mês anterior / ano anterior), série diária dos
+    últimos 30 dias e barras dos últimos 6 meses. Cada valor traz c/IVA (amount)
+    e s/IVA (amount_net) para o toggle do frontend. Filtrável por loja (unit_id)."""
+    cid_q = await _fin_report_scope(company_id, current_user)
+    q = {"company_id": cid_q}
+    uni = (unit_id or "").strip()
+    if uni:
+        q["unit_id"] = uni
+
+    today = datetime.now(LISBON_TZ).date()
+    y = today.year
+    q_range = dict(q)
+    q_range["date"] = {"$gte": f"{y - 1}-01-01"}  # cobre ano anterior + tudo o resto
+    sales = await db.fin_sales.find(
+        q_range, {"_id": 0, "date": 1, "amount": 1, "amount_net": 1}
+    ).to_list(500000)
+
+    def soma(pred):
+        c = 0.0
+        s = 0.0
+        for x in sales:
+            if pred(str(x.get("date") or "")):
+                c += float(x.get("amount") or 0)
+                s += float(x.get("amount_net") or 0)
+        return {"c": round(c, 2), "s": round(s, 2)}
+
+    d_today = today.isoformat()
+    d_yest = (today - timedelta(days=1)).isoformat()
+    cur_month = today.strftime("%Y-%m")
+    pm_year, pm_month = (y, today.month - 1) if today.month > 1 else (y - 1, 12)
+    prev_month = f"{pm_year}-{pm_month:02d}"
+    cur_year, prev_year = str(y), str(y - 1)
+
+    hoje = {"valor": soma(lambda d: d == d_today), "anterior": soma(lambda d: d == d_yest)}
+    mensal = {"valor": soma(lambda d: d[:7] == cur_month), "anterior": soma(lambda d: d[:7] == prev_month)}
+    anual = {"valor": soma(lambda d: d[:4] == cur_year), "anterior": soma(lambda d: d[:4] == prev_year)}
+
+    diario = []
+    for k in range(29, -1, -1):
+        dd = (today - timedelta(days=k)).isoformat()
+        v = soma(lambda d, dd=dd: d == dd)
+        diario.append({"date": dd, "c": v["c"], "s": v["s"]})
+
+    meses6 = []
+    for k in range(5, -1, -1):
+        mm = today.month - k
+        yy = y
+        while mm < 1:
+            mm += 12
+            yy -= 1
+        key = f"{yy}-{mm:02d}"
+        v = soma(lambda d, key=key: d[:7] == key)
+        meses6.append({"mes": key, "label": _FIN_MESES_PT[mm - 1], "c": v["c"], "s": v["s"]})
+
+    return {"hoje": hoje, "mensal": mensal, "anual": anual, "diario": diario, "meses6": meses6}
+
+
 # ==================== HEALTH CHECK ====================
 
 @api_router.get("/health")

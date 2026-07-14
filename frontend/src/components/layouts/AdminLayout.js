@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { getNotifications, markAllNotificationsRead, getCompanies, getFinCompanies } from '../../lib/api';
+import { getNotifications, markAllNotificationsRead, getCompanies, getFinCompanies, getFinUnits } from '../../lib/api';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { ScrollArea } from '../ui/scroll-area';
@@ -115,6 +115,8 @@ export default function AdminLayout() {
   const [notifications, setNotifications] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [selectedCompany, setSelectedCompany] = useState(null);
+  const [units, setUnits] = useState([]);           // lojas da empresa selecionada (Financeiro)
+  const [selectedUnit, setSelectedUnit] = useState(null);
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const isMasterAdmin = user?.is_master_admin === true;
@@ -128,9 +130,23 @@ export default function AdminLayout() {
   // de secção, limpa a seleção (as empresas são universos diferentes).
   useEffect(() => {
     setSelectedCompany(null);
+    setSelectedUnit(null);
+    setUnits([]);
     fetchCompanies();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSection.key]);
+
+  // Lojas (unidades) da empresa selecionada — só no Financeiro. Ao trocar de
+  // empresa, limpa a loja e recarrega as lojas dessa empresa.
+  useEffect(() => {
+    setSelectedUnit(null);
+    if (activeSection.key === 'financeiro' && selectedCompany) {
+      getFinUnits(selectedCompany.id).then((r) => setUnits(r.data || [])).catch(() => setUnits([]));
+    } else {
+      setUnits([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCompany, activeSection.key]);
 
   const fetchNotifications = async () => {
     try {
@@ -231,8 +247,8 @@ export default function AdminLayout() {
               <span className={!selectedCompany ? 'font-medium' : ''}>Todas as Empresas</span>
             </DropdownMenuItem>
             {companies.map(company => (
-              <DropdownMenuItem 
-                key={company.id} 
+              <DropdownMenuItem
+                key={company.id}
                 onClick={() => setSelectedCompany(company)}
                 data-testid={`company-${company.id}`}
               >
@@ -242,6 +258,32 @@ export default function AdminLayout() {
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* Seletor de LOJA (só no Financeiro, com uma empresa escolhida e lojas). */}
+        {activeSection.key === 'financeiro' && selectedCompany && units.length > 0 && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" className="w-full justify-between mt-2" data-testid="unit-selector">
+                <span className="truncate">{selectedUnit ? selectedUnit.name : 'Todas as lojas'}</span>
+                <ChevronDown className="h-4 w-4 ml-2 shrink-0" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className="w-56">
+              <DropdownMenuLabel>Selecionar Loja</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setSelectedUnit(null)} data-testid="unit-all">
+                {!selectedUnit && <Check className="h-4 w-4 mr-2" />}
+                <span className={!selectedUnit ? 'font-medium' : ''}>Todas as lojas</span>
+              </DropdownMenuItem>
+              {units.map((u) => (
+                <DropdownMenuItem key={u.id} onClick={() => setSelectedUnit(u)} data-testid={`unit-${u.id}`}>
+                  {selectedUnit?.id === u.id && <Check className="h-4 w-4 mr-2" />}
+                  <span className={selectedUnit?.id === u.id ? 'font-medium' : ''}>{u.name}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
 
       <ScrollArea className="flex-1 px-3 pt-2">
@@ -450,7 +492,7 @@ export default function AdminLayout() {
       {/* Main Content */}
       <main className="lg:ml-64 min-h-[calc(100vh-4rem)]">
         <div className="p-4 md:p-6 lg:p-8">
-          <Outlet context={{ selectedCompany, companies, refreshCompanies: fetchCompanies }} />
+          <Outlet context={{ selectedCompany, selectedUnit, units, companies, refreshCompanies: fetchCompanies }} />
         </div>
       </main>
     </div>

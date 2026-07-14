@@ -192,6 +192,9 @@ export const syncNowVendus = () => axios.post(`${API_URL}/fin/sync/vendus`);
 export const syncNowMoloni = () => axios.post(`${API_URL}/fin/sync/moloni`);
 export const syncNowIngest = () => axios.post(`${API_URL}/fin/sync/ingest`);
 
+// Dashboard de vendas (KPIs + gráficos) — params: { company_id, unit_id? }
+export const getFinSalesDashboard = (params) => axios.get(`${API_URL}/fin/reports/vendas-dashboard`, { params });
+
 // Relatórios (financeiro) — params: { company_id, start?, end? }
 export const getFinReportIva = (params) => axios.get(`${API_URL}/fin/reports/iva`, { params });
 export const getFinReportDre = (params) => axios.get(`${API_URL}/fin/reports/dre`, { params });

@@ -1,14 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import {
-  getFinCompanies, getFinUnits, getFinSales,
-  createFinSale, updateFinSale, deleteFinSale, syncFinSales,
-} from '../../../lib/api';
-import { eur, fmtDate, todayISO, normSup } from '../../../lib/finance';
+import { getFinSalesDashboard, syncFinSales, createFinSale, getFinUnits } from '../../../lib/api';
+import { eur, todayISO } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
-import { Badge } from '../../../components/ui/badge';
+import { Switch } from '../../../components/ui/switch';
 import { Textarea } from '../../../components/ui/textarea';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
@@ -16,241 +13,124 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../../../components/ui/dialog';
 import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-} from '../../../components/ui/alert-dialog';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../../components/ui/table';
-import {
-  TrendingUp, Plus, RefreshCw, Pencil, Trash2, Percent, Wallet, PiggyBank, BarChart3, AlertTriangle,
+  ShoppingCart, CalendarDays, BarChart3, TrendingUp, RefreshCw, ArrowUpRight, ArrowDownRight, Plus,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
 
-const LS_KEY = 'fin_selected_company';
-const COMPANY_ALL = 'all';
-const UNIT_NONE = '__none__';   // valor para "Comum" no Dialog (sem loja)
-const UNIT_ALL = '__all__';     // valor para "Todas" no filtro
+const UNIT_NONE = '__none__'; // "Comum" (sem loja) no Dialog de novo lançamento
 
-// Mês atual no formato YYYY-MM
-const thisMonth = () => todayISO().slice(0, 7);
+// Euro curto para os eixos dos gráficos (ex.: €1,2k). Datas/valores tratados como números simples.
+const eurShort = (n) => {
+  const v = Number(n) || 0;
+  const abs = Math.abs(v);
+  if (abs >= 1000) {
+    const k = v / 1000;
+    return `€${k.toLocaleString('pt-PT', { maximumFractionDigits: Math.abs(k) >= 10 ? 0 : 1 })}k`;
+  }
+  return `€${Math.round(v)}`;
+};
 
-// Percentagem amigável (0 quando o denominador é 0).
-const pct = (num, den) => (den > 0 ? (num / den) * 100 : 0);
-const fmtPct = (n) => `${(Number(n) || 0).toLocaleString('pt-PT', { maximumFractionDigits: 1 })}%`;
+// 'YYYY-MM-DD' -> 'dd-mm' (parte a string; sem Date para evitar fusos).
+const ddmm = (iso) => {
+  const [, m, d] = String(iso || '').slice(0, 10).split('-');
+  return d && m ? `${d}-${m}` : String(iso || '');
+};
 
-const emptyForm = () => ({
-  date: todayISO(), unit_id: UNIT_NONE, amount: '', vat_rate: '', note: '',
-});
+// Capitaliza a 1ª letra (labels dos meses vêm minúsculos: "fev").
+const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+// Variação percentual formatada, com sinal e 2 casas. Devolve null quando não há base.
+const fmtVar = (n) => `${n >= 0 ? '+' : ''}${n.toLocaleString('pt-PT', {
+  minimumFractionDigits: 2, maximumFractionDigits: 2,
+})}%`;
+
+const emptyForm = () => ({ date: todayISO(), amount: '', vat_rate: '', unit_id: UNIT_NONE, note: '' });
 
 export default function FinVendas() {
-  const { selectedCompany } = useOutletContext();
-  const [companies, setCompanies] = useState([]);
-  const [companyId, setCompanyId] = useState('');
-  const [units, setUnits] = useState([]);
-  const [unitId, setUnitId] = useState(UNIT_ALL);
-  const [month, setMonth] = useState(thisMonth());
-  const [sales, setSales] = useState([]);
-  const [loading, setLoading] = useState(false);
+  // Empresa/loja vêm do SELETOR GLOBAL do topo (sem seletores próprios nesta página).
+  const { selectedCompany, selectedUnit } = useOutletContext();
+  const companyId = selectedCompany ? selectedCompany.id : 'all';
+  const unitId = selectedUnit ? selectedUnit.id : undefined;
 
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState(emptyForm());
-  const [saving, setSaving] = useState(false);
-  const [toDelete, setToDelete] = useState(null);
+  const [dashboard, setDashboard] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [withVat, setWithVat] = useState(true); // "Valores c/ IVA" — LIGADO por defeito
   const [syncing, setSyncing] = useState(false);
 
-  const company = companies.find((c) => c.id === companyId) || null;
-  const canEdit = company && (company.role === 'owner' || company.role === 'partner');
+  // Dialog "Novo lançamento"
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [form, setForm] = useState(emptyForm());
+  const [saving, setSaving] = useState(false);
+  const [units, setUnits] = useState([]);
 
-  useEffect(() => { loadCompanies(); }, []);
-  useEffect(() => {
-    if (companyId) {
-      localStorage.setItem(LS_KEY, companyId);
-      setUnitId(UNIT_ALL);
-      loadUnits();
-    }
-  }, [companyId]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (companyId) loadSales();
-  }, [companyId, unitId, month]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Empresa ativa vem do seletor global do topo (secção Financeiro).
-  useEffect(() => {
-    setCompanyId(selectedCompany ? selectedCompany.id : COMPANY_ALL);
-  }, [selectedCompany]);
-
-  const loadCompanies = async () => {
-    try {
-      const c = await getFinCompanies();
-      setCompanies(c.data);
-      // Válido: "Todas as empresas" ou uma empresa existente que não a "Por classificar".
-      const valid = companyId === COMPANY_ALL ||
-        c.data.some((x) => x.id === companyId && normSup(x.name) !== 'por classificar');
-      if (c.data.length && !valid) setCompanyId(COMPANY_ALL);
-    } catch (e) {
-      toast.error('Erro ao carregar empresas');
-    }
-  };
-
-  const loadUnits = async () => {
-    try {
-      const r = await getFinUnits(companyId === COMPANY_ALL ? undefined : companyId);
-      setUnits(r.data || []);
-    } catch (e) {
-      setUnits([]);
-    }
-  };
-
-  const loadSales = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const params = { company_id: companyId };
-      if (month) params.month = month;
-      if (unitId !== UNIT_ALL) params.unit_id = unitId;
-      const r = await getFinSales(params);
-      setSales(r.data || []);
+      if (unitId) params.unit_id = unitId;
+      const r = await getFinSalesDashboard(params);
+      setDashboard(r.data || null);
     } catch (e) {
-      toast.error('Erro ao carregar vendas');
-      setSales([]);
+      toast.error('Erro ao carregar o dashboard de vendas');
+      setDashboard(null);
     } finally {
       setLoading(false);
     }
-  };
+  }, [companyId, unitId]);
 
-  const companyUnits = companyId === COMPANY_ALL ? units : units.filter((u) => u.company_id === companyId);
-  const unitName = (id) => companyUnits.find((u) => u.id === id)?.name || 'Comum';
-  const companyName = (id) => companies.find((c) => c.id === id)?.name || '';
+  // Recarrega quando empresa/loja mudam.
+  useEffect(() => { load(); }, [load]);
 
-  // ---------- KPIs ----------
-  const kpis = useMemo(() => {
-    let amount = 0, net = 0, cost = 0, netNoCost = 0;
-    sales.forEach((s) => {
-      amount += Number(s.amount) || 0;
-      net += Number(s.amount_net) || 0;
-      cost += Number(s.amount_cost) || 0;
-      // Líquido cujo custo (CMV) ainda não é conhecido — ex.: vendas Moloni
-      // (Purple House) que não trazem food-cost. Usa net_nocost quando existe;
-      // senão, considera "sem custo" o líquido das linhas com CMV a zero.
-      netNoCost += Number(s.net_nocost != null ? s.net_nocost : (Number(s.amount_cost) ? 0 : s.amount_net)) || 0;
-    });
-    const margin = net - cost;
-    return {
-      amount, net, cost, margin,
-      foodCost: pct(cost, net),   // CMV / vendas líquidas
-      marginPct: pct(margin, net),
-      // % das vendas líquidas sem custo conhecido (o food-cost real será maior).
-      semCustoPct: pct(netNoCost, net),
-    };
-  }, [sales]);
+  // Escolhe o valor c/ ou s/ IVA de um objeto {c, s}.
+  const pick = useCallback((o) => (o ? Number(withVat ? o.c : o.s) || 0 : 0), [withVat]);
 
-  // ---------- Gráfico diário (vendas por dia do mês) ----------
-  const chart = useMemo(() => {
-    // Nº de dias do mês selecionado (fallback: 31).
-    let days = 31;
-    if (month) {
-      const [y, m] = month.split('-').map(Number);
-      if (y && m) days = new Date(y, m, 0).getDate();
+  // ---------- Gráfico de ÁREA (faturação diária, 30 pontos) ----------
+  const area = useMemo(() => {
+    const pts = (dashboard?.diario || []).map((p) => ({ date: p.date, v: pick(p) }));
+    const n = pts.length;
+    if (!n) return { n: 0 };
+    const X_LEFT = 40, X_RIGHT = 710, Y_TOP = 30, Y_BASE = 230, Y_FILL = 240;
+    const max = Math.max(1, ...pts.map((p) => p.v));
+    const xAt = (i) => (n === 1 ? (X_LEFT + X_RIGHT) / 2 : X_LEFT + (i / (n - 1)) * (X_RIGHT - X_LEFT));
+    const yAt = (v) => Y_BASE - (v / max) * (Y_BASE - Y_TOP);
+    const coords = pts.map((p, i) => ({ x: xAt(i), y: yAt(p.v), ...p }));
+    const line = coords.map((c, i) => `${i === 0 ? 'M' : 'L'} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`).join(' ');
+    const areaPath =
+      `M ${coords[0].x.toFixed(1)} ${Y_FILL} ` +
+      coords.map((c) => `L ${c.x.toFixed(1)} ${c.y.toFixed(1)}`).join(' ') +
+      ` L ${coords[n - 1].x.toFixed(1)} ${Y_FILL} Z`;
+    // Grelha horizontal + labels do eixo Y.
+    const grid = [0, 0.25, 0.5, 0.75, 1].map((f) => ({ y: Y_BASE - f * (Y_BASE - Y_TOP), label: eurShort(f * max) }));
+    // ~6 datas espaçadas no eixo X.
+    const nLabels = Math.min(6, n);
+    const seen = new Set();
+    const xLabels = [];
+    for (let k = 0; k < nLabels; k++) {
+      const idx = nLabels === 1 ? 0 : Math.round((k * (n - 1)) / (nLabels - 1));
+      if (seen.has(idx)) continue;
+      seen.add(idx);
+      xLabels.push({ x: xAt(idx), label: ddmm(pts[idx].date) });
     }
-    const totals = new Array(days).fill(0);
-    sales.forEach((s) => {
-      const d = String(s.date || '').slice(0, 10);
-      if (month && !d.startsWith(month)) return;
-      const day = Number(d.slice(8, 10));
-      if (day >= 1 && day <= days) totals[day - 1] += Number(s.amount) || 0;
+    return { n, max, line, areaPath, grid, xLabels, Y_BASE };
+  }, [dashboard, pick]);
+
+  // ---------- Gráfico de BARRAS (últimos 6 meses) ----------
+  const bars = useMemo(() => {
+    const list = (dashboard?.meses6 || []).map((m) => ({ label: m.label, v: pick(m) }));
+    if (!list.length) return { list: [] };
+    const SLOT = 70, BAR_W = 42, BASE_Y = 186, TOP_Y = 24;
+    const usable = BASE_Y - TOP_Y;
+    const max = Math.max(1, ...list.map((m) => m.v));
+    const rects = list.map((m, i) => {
+      const h = m.v > 0 ? Math.max(3, (m.v / max) * usable) : 0;
+      const x = i * SLOT + (SLOT - BAR_W) / 2;
+      return { ...m, x, w: BAR_W, h, y: BASE_Y - h, cx: i * SLOT + SLOT / 2 };
     });
-    const max = totals.reduce((m, v) => Math.max(m, v), 0);
-    return { days, totals, max };
-  }, [sales, month]);
+    return { list: rects, BASE_Y };
+  }, [dashboard, pick]);
 
-  // ---------- Tabela por loja + dia ----------
-  const rows = useMemo(() => {
-    const map = {};
-    sales.forEach((s) => {
-      const day = String(s.date || '').slice(0, 10);
-      const key = `${day}|${s.unit_id || ''}`;
-      const r = map[key] || {
-        key, date: day, unit_id: s.unit_id || null, company_id: s.company_id || null,
-        amount: 0, net: 0, cost: 0, manualId: null, manualCount: 0, total: 0,
-      };
-      r.amount += Number(s.amount) || 0;
-      r.net += Number(s.amount_net) || 0;
-      r.cost += Number(s.amount_cost) || 0;
-      r.total += 1;
-      if (s.source === 'manual') { r.manualCount += 1; r.manualId = s.id; }
-      map[key] = r;
-    });
-    return Object.values(map)
-      .map((r) => ({ ...r, margin: r.net - r.cost }))
-      .sort((a, b) =>
-        String(b.date).localeCompare(String(a.date)) ||
-        unitName(a.unit_id).localeCompare(unitName(b.unit_id)));
-  }, [sales]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Mapa rápido id->venda manual (para editar/eliminar pela linha agregada de 1 só lançamento).
-  const manualById = useMemo(() => {
-    const m = {};
-    sales.forEach((s) => { if (s.source === 'manual') m[s.id] = s; });
-    return m;
-  }, [sales]);
-
-  // ---------- Dialog ----------
-  const openNew = () => {
-    setEditing(null);
-    setForm(emptyForm());
-    setDialogOpen(true);
-  };
-  const openEdit = (sale) => {
-    setEditing(sale);
-    setForm({
-      date: sale.date || todayISO(),
-      unit_id: sale.unit_id || UNIT_NONE,
-      amount: sale.amount ?? '',
-      vat_rate: sale.vat_rate ?? '',
-      note: sale.note || '',
-    });
-    setDialogOpen(true);
-  };
-
-  const submit = async (e) => {
-    e.preventDefault();
-    setSaving(true);
-    try {
-      const payload = {
-        company_id: companyId,
-        date: form.date || null,
-        unit_id: form.unit_id === UNIT_NONE ? null : form.unit_id,
-        amount: form.amount === '' ? null : Number(form.amount),
-        vat_rate: form.vat_rate === '' ? null : Number(form.vat_rate),
-        note: form.note || null,
-      };
-      if (editing) {
-        await updateFinSale(editing.id, payload);
-        toast.success('Venda atualizada');
-      } else {
-        await createFinSale(payload);
-        toast.success('Venda lançada');
-      }
-      setDialogOpen(false);
-      loadSales();
-    } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao guardar');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const doDelete = async () => {
-    try {
-      await deleteFinSale(toDelete.id);
-      toast.success('Venda eliminada');
-      setToDelete(null);
-      loadSales();
-    } catch (e) {
-      toast.error('Erro ao eliminar');
-    }
-  };
-
-  // Sync rápido (sem CMV — o custo é preenchido pelo cron noturno). O backend
-  // escolhe o motor pela empresa: Vendus (lojas) ou Moloni (Purple House).
+  // ---------- Sync (por empresa) ----------
   const doSync = async () => {
     setSyncing(true);
     try {
@@ -259,13 +139,11 @@ export default function FinVendas() {
       const written = res.data?.written ?? 0;
       const errors = res.data?.errors || [];
       if (errors.length) {
-        toast.warning(`${engine}: ${written} dias sincronizados · ${errors.length} avisos`, {
-          description: errors[0],
-        });
+        toast.warning(`${engine}: ${written} dias sincronizados · ${errors.length} avisos`, { description: errors[0] });
       } else {
         toast.success(`${engine} sincronizado: ${written} dias de vendas`);
       }
-      loadSales();
+      load();
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Erro ao sincronizar');
     } finally {
@@ -273,171 +151,186 @@ export default function FinVendas() {
     }
   };
 
+  // ---------- Dialog: novo lançamento ----------
+  const openNew = async () => {
+    setForm(emptyForm());
+    setDialogOpen(true);
+    try {
+      const r = await getFinUnits(companyId);
+      setUnits(r.data || []);
+    } catch (e) {
+      setUnits([]);
+    }
+  };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await createFinSale({
+        company_id: companyId,
+        date: form.date || null,
+        amount: form.amount === '' ? null : Number(form.amount),
+        vat_rate: form.vat_rate === '' ? null : Number(form.vat_rate),
+        unit_id: form.unit_id === UNIT_NONE ? null : form.unit_id,
+        note: form.note || null,
+      });
+      toast.success('Venda lançada');
+      setDialogOpen(false);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Erro ao guardar');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Uma empresa específica está selecionada? (sync + novo lançamento são por empresa)
+  const hasCompany = !!selectedCompany;
+
+  // ---------- KPIs ----------
+  const KPIS = [
+    { key: 'hoje', label: 'Faturação Hoje', icon: ShoppingCart, prevLabel: 'Ontem' },
+    { key: 'mensal', label: 'Faturação Mensal', icon: CalendarDays, prevLabel: 'Anterior' },
+    { key: 'anual', label: 'Faturação Anual', icon: BarChart3, prevLabel: 'Anterior' },
+  ];
+
   return (
     <div className="space-y-6 animate-fade-in" data-testid="fin-vendas-page">
-      <PageHeader icon={TrendingUp} title="Vendas" subtitle="Receita por loja, food cost e margem">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Select value={unitId} onValueChange={setUnitId}>
-            <SelectTrigger className="w-40" data-testid="fin-unit-picker">
-              <SelectValue placeholder="Loja" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={UNIT_ALL}>Todas as lojas</SelectItem>
-              {companyUnits.map((u) => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
-            className="w-36" data-testid="fin-month-picker" />
-          {canEdit && (
+      <PageHeader icon={TrendingUp} title="Vendas" subtitle="Faturação por dia, mês e ano">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Switch id="fin-vat-toggle" checked={withVat} onCheckedChange={setWithVat} data-testid="fin-vat-toggle" />
+            <Label htmlFor="fin-vat-toggle" className="text-sm cursor-pointer whitespace-nowrap">Valores c/ IVA</Label>
+          </div>
+          {hasCompany && (
             <Button variant="outline" onClick={doSync} disabled={syncing}
-              title="Sincronizar vendas (Vendus/Moloni, últimos 3 dias)" data-testid="fin-sync-btn">
+              title="Sincronizar vendas (Vendus/Moloni)" data-testid="fin-sync-btn">
               <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? 'animate-spin' : ''}`} />
-              {syncing ? 'A sincronizar...' : 'Sincronizar'}
+              {syncing ? 'A sincronizar...' : 'Atualizar'}
             </Button>
           )}
-          {canEdit && (
+          {hasCompany && (
             <Button onClick={openNew} data-testid="fin-new-sale-btn">
-              <Plus className="h-4 w-4 mr-2" />Nova venda
+              <Plus className="h-4 w-4 mr-2" />Novo lançamento
             </Button>
           )}
         </div>
       </PageHeader>
 
-      {companies.length === 0 ? (
+      {loading && !dashboard ? (
+        <div className="flex justify-center h-40 items-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+        </div>
+      ) : !dashboard ? (
         <Card><CardContent className="py-12 text-center text-muted-foreground">
-          Ainda não tens empresas. Cria uma no separador <b>Início</b> primeiro.
+          Sem dados de vendas para mostrar. Escolhe uma empresa no topo e usa <b>Atualizar</b> para sincronizar.
         </CardContent></Card>
       ) : (
         <>
           {/* ---------- KPIs ---------- */}
-          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-            {[
-              { label: 'Vendas', value: eur(kpis.amount), icon: TrendingUp },
-              { label: 'Vendas líq.', value: eur(kpis.net), icon: Wallet },
-              { label: 'CMV', value: eur(kpis.cost), icon: PiggyBank },
-              { label: 'Food cost', value: fmtPct(kpis.foodCost), icon: Percent },
-              { label: 'Margem bruta', value: eur(kpis.margin), icon: BarChart3 },
-              { label: 'Margem %', value: fmtPct(kpis.marginPct), icon: Percent },
-            ].map((k) => (
-              <Card key={k.label}>
-                <CardContent className="flex items-center gap-3 p-4">
-                  <div className="h-10 w-10 rounded-xl brand-gradient text-white flex items-center justify-center shrink-0">
-                    <k.icon className="h-5 w-5" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-lg font-heading font-bold leading-none truncate">{k.value}</p>
-                    <p className="text-xs text-muted-foreground mt-1">{k.label}</p>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {KPIS.map((k) => {
+              const block = dashboard[k.key] || {};
+              const cur = pick(block.valor);
+              const prev = pick(block.anterior);
+              const hasPrev = prev !== 0;
+              const diff = hasPrev ? ((cur - prev) / prev) * 100 : null;
+              const up = diff != null && diff >= 0;
+              return (
+                <Card key={k.key} data-testid={`fin-kpi-${k.key}`}>
+                  <CardContent className="p-5 space-y-3">
+                    <div className="flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-xl brand-gradient text-white flex items-center justify-center shrink-0">
+                        <k.icon className="h-5 w-5" />
+                      </div>
+                      <p className="text-sm text-muted-foreground">{k.label}</p>
+                    </div>
+                    <p className="text-2xl font-heading font-bold leading-none">{eur(cur)}</p>
+                    <div className="flex items-center gap-2 text-xs">
+                      {diff == null ? (
+                        <span className="text-muted-foreground">—</span>
+                      ) : (
+                        <span className={`inline-flex items-center gap-0.5 font-semibold ${
+                          up ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive'}`}>
+                          {up ? <ArrowUpRight className="h-3.5 w-3.5" /> : <ArrowDownRight className="h-3.5 w-3.5" />}
+                          {fmtVar(diff)}
+                        </span>
+                      )}
+                      <span className="text-muted-foreground">{k.prevLabel}: {eur(prev)}</span>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
 
-          {/* Aviso de cobertura de custo: quando parte das vendas líquidas não
-              tem CMV conhecido (ex.: Moloni/Purple House), o food-cost mostrado
-              está subestimado. */}
-          {kpis.semCustoPct >= 0.5 && (
-            <div className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-800 px-3 py-2 text-sm">
-              <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
-              <p className="text-amber-800 dark:text-amber-200">
-                <b>{fmtPct(kpis.semCustoPct)}</b> das vendas líquidas ainda não têm custo (CMV) conhecido —
-                o <b>food cost</b> real é maior do que o indicado.
-              </p>
-            </div>
-          )}
-
-          {/* ---------- Gráfico de barras diário ---------- */}
+          {/* ---------- Gráfico de ÁREA (diário, 30 dias) ---------- */}
           <Card>
             <CardContent className="p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold">Vendas por dia</p>
-                <p className="text-xs text-muted-foreground">Máx. diário: {eur(chart.max)}</p>
-              </div>
-              {chart.max === 0 ? (
-                <p className="text-center text-muted-foreground py-8 text-sm">Sem vendas neste período.</p>
+              <p className="text-sm font-semibold">Faturação diária (últimos 30 dias)</p>
+              {area.n === 0 ? (
+                <p className="text-center text-muted-foreground py-10 text-sm">Sem vendas neste período.</p>
               ) : (
                 <div className="overflow-x-auto">
-                  <div className="flex items-end gap-1 h-40 min-w-[480px]" data-testid="fin-sales-chart">
-                    {chart.totals.map((v, i) => {
-                      const h = chart.max > 0 ? Math.round((v / chart.max) * 100) : 0;
-                      return (
-                        <div key={i} className="flex-1 flex flex-col items-center justify-end h-full group">
-                          <div className="w-full rounded-t brand-gradient transition-all"
-                            style={{ height: `${Math.max(v > 0 ? 4 : 0, h)}%` }}
-                            title={`Dia ${i + 1}: ${eur(v)}`} />
-                          <span className="mt-1 text-[9px] text-muted-foreground tabular-nums">{i + 1}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <svg viewBox="0 0 720 260" className="w-full min-w-[560px]" xmlns="http://www.w3.org/2000/svg"
+                    data-testid="fin-sales-area">
+                    <defs>
+                      <linearGradient id="finVendasAreaGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity="0.35" />
+                        <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity="0.02" />
+                      </linearGradient>
+                    </defs>
+                    {/* Grelha + labels do eixo Y */}
+                    {area.grid.map((g, i) => (
+                      <g key={i}>
+                        <line x1="40" y1={g.y} x2="710" y2={g.y} stroke="hsl(var(--border))" strokeWidth="1" />
+                        <text x="36" y={g.y + 3.5} textAnchor="end" fontSize="10" fill="hsl(var(--muted-foreground))">
+                          {g.label}
+                        </text>
+                      </g>
+                    ))}
+                    {/* Área + linha */}
+                    <path d={area.areaPath} fill="url(#finVendasAreaGrad)" />
+                    <path d={area.line} fill="none" stroke="hsl(var(--primary))" strokeWidth="2"
+                      strokeLinejoin="round" strokeLinecap="round" />
+                    {/* Labels do eixo X */}
+                    {area.xLabels.map((l, i) => (
+                      <text key={i} x={l.x} y="254" textAnchor="middle" fontSize="10" fill="hsl(var(--muted-foreground))">
+                        {l.label}
+                      </text>
+                    ))}
+                  </svg>
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* ---------- Tabela por loja + dia ---------- */}
+          {/* ---------- Gráfico de BARRAS (6 meses) ---------- */}
           <Card>
-            <CardContent className="p-4">
-              {loading ? (
-                <div className="flex justify-center h-24 items-center">
-                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary" />
-                </div>
-              ) : rows.length === 0 ? (
-                <p className="text-center text-muted-foreground py-10">Sem vendas neste período.</p>
+            <CardContent className="p-4 space-y-3">
+              <p className="text-sm font-semibold">Últimos 6 meses</p>
+              {bars.list.length === 0 ? (
+                <p className="text-center text-muted-foreground py-10 text-sm">Sem dados mensais.</p>
               ) : (
                 <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Data</TableHead>
-                        <TableHead>Loja</TableHead>
-                        <TableHead className="text-right">Vendas</TableHead>
-                        <TableHead className="text-right hidden md:table-cell">Líq.</TableHead>
-                        <TableHead className="text-right hidden md:table-cell">CMV</TableHead>
-                        <TableHead className="text-right">Margem</TableHead>
-                        <TableHead className="text-right">Ações</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {rows.map((r) => {
-                        // Linha editável apenas quando agrega exatamente 1 lançamento manual.
-                        const editableSale = (r.manualCount === 1 && r.total === 1)
-                          ? manualById[r.manualId] : null;
-                        return (
-                          <TableRow key={r.key} data-testid={`fin-sale-row-${r.key}`}>
-                            <TableCell className="whitespace-nowrap">{fmtDate(r.date)}</TableCell>
-                            <TableCell className="font-medium">
-                              {unitName(r.unit_id)}
-                              {companyId === COMPANY_ALL && companyName(r.company_id) && (
-                                <span className="ml-2 text-xs text-muted-foreground font-normal">{companyName(r.company_id)}</span>
-                              )}
-                              {r.manualCount > 0 && <Badge variant="outline" className="ml-2">manual</Badge>}
-                            </TableCell>
-                            <TableCell className="text-right whitespace-nowrap">{eur(r.amount)}</TableCell>
-                            <TableCell className="text-right whitespace-nowrap hidden md:table-cell">{eur(r.net)}</TableCell>
-                            <TableCell className="text-right whitespace-nowrap hidden md:table-cell">{eur(r.cost)}</TableCell>
-                            <TableCell className="text-right whitespace-nowrap">{eur(r.margin)}</TableCell>
-                            <TableCell className="text-right">
-                              <div className="flex items-center justify-end gap-1">
-                                {canEdit && editableSale && (
-                                  <>
-                                    <Button variant="ghost" size="icon" className="h-8 w-8" title="Editar"
-                                      onClick={() => openEdit(editableSale)} data-testid={`fin-edit-sale-${editableSale.id}`}>
-                                      <Pencil className="h-4 w-4" />
-                                    </Button>
-                                    <Button variant="ghost" size="icon" className="h-8 w-8" title="Eliminar"
-                                      onClick={() => setToDelete(editableSale)} data-testid={`fin-delete-sale-${editableSale.id}`}>
-                                      <Trash2 className="h-4 w-4 text-destructive" />
-                                    </Button>
-                                  </>
-                                )}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
+                  <svg viewBox="0 0 420 220" className="w-full max-w-xl min-w-[360px]" xmlns="http://www.w3.org/2000/svg"
+                    data-testid="fin-sales-bars">
+                    {bars.list.map((b, i) => (
+                      <g key={i}>
+                        {b.h > 0 && (
+                          <text x={b.cx} y={b.y - 6} textAnchor="middle" fontSize="9" fill="hsl(var(--muted-foreground))">
+                            {eurShort(b.v)}
+                          </text>
+                        )}
+                        <rect x={b.x} y={b.y} width={b.w} height={b.h} rx="6" fill="hsl(var(--primary))" />
+                        <text x={b.cx} y={bars.BASE_Y + 18} textAnchor="middle" fontSize="11"
+                          fill="hsl(var(--muted-foreground))">
+                          {cap(b.label)}
+                        </text>
+                      </g>
+                    ))}
+                  </svg>
                 </div>
               )}
             </CardContent>
@@ -445,12 +338,12 @@ export default function FinVendas() {
         </>
       )}
 
-      {/* ---------- Dialog criar/editar venda manual ---------- */}
+      {/* ---------- Dialog: novo lançamento manual ---------- */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-md" data-testid="fin-sale-dialog">
           <DialogHeader>
-            <DialogTitle>{editing ? 'Editar venda' : 'Nova venda'}</DialogTitle>
-            <DialogDescription>Lançamento manual de receita de um dia.</DialogDescription>
+            <DialogTitle>Novo lançamento</DialogTitle>
+            <DialogDescription>Lançamento manual de faturação de um dia.</DialogDescription>
           </DialogHeader>
           <form onSubmit={submit} className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
@@ -462,24 +355,22 @@ export default function FinVendas() {
               <div className="space-y-1">
                 <Label className="text-xs">Valor *</Label>
                 <Input type="number" step="0.01" value={form.amount}
-                  onChange={(e) => setForm({ ...form, amount: e.target.value })}
-                  required data-testid="fin-s-amount" />
+                  onChange={(e) => setForm({ ...form, amount: e.target.value })} required data-testid="fin-s-amount" />
               </div>
-              <div className="space-y-1 col-span-2">
+              <div className="space-y-1">
+                <Label className="text-xs">IVA %</Label>
+                <Input type="number" step="0.01" value={form.vat_rate}
+                  onChange={(e) => setForm({ ...form, vat_rate: e.target.value })} placeholder="13" data-testid="fin-s-vat" />
+              </div>
+              <div className="space-y-1">
                 <Label className="text-xs">Loja</Label>
                 <Select value={form.unit_id} onValueChange={(v) => setForm({ ...form, unit_id: v })}>
                   <SelectTrigger data-testid="fin-s-unit"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value={UNIT_NONE}>Comum</SelectItem>
-                    {companyUnits.map((u) => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}
+                    {units.map((u) => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">IVA %</Label>
-                <Input type="number" step="0.01" value={form.vat_rate}
-                  onChange={(e) => setForm({ ...form, vat_rate: e.target.value })}
-                  placeholder="13" data-testid="fin-s-vat" />
               </div>
               <div className="space-y-1 col-span-2">
                 <Label className="text-xs">Nota</Label>
@@ -496,25 +387,6 @@ export default function FinVendas() {
           </form>
         </DialogContent>
       </Dialog>
-
-      {/* ---------- Confirmar eliminar ---------- */}
-      <AlertDialog open={!!toDelete} onOpenChange={(o) => !o && setToDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Eliminar venda</AlertDialogTitle>
-            <AlertDialogDescription>
-              Eliminar a venda de {fmtDate(toDelete?.date)} ({eur(toDelete?.amount)})?
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction onClick={doDelete} className="bg-destructive text-destructive-foreground"
-              data-testid="fin-confirm-delete-sale">
-              Eliminar
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }
