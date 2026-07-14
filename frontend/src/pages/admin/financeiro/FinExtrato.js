@@ -149,6 +149,9 @@ export default function FinExtrato() {
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Diálogo "Exportar": escolher o mês a exportar (independente do que está no ecrã).
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportMonth, setExportMonth] = useState(thisMonth());
 
   // edição inline do título
   const [editingId, setEditingId] = useState(null);
@@ -439,62 +442,73 @@ export default function FinExtrato() {
   };
 
   // ---------- Exportar ZIP ----------
-  const exportZip = async () => {
+  // Constrói e descarrega o ZIP a partir de uma lista de movimentos + rótulo do mês.
+  const zipFromMovements = async (mvs, mLabel) => {
     if (!window.JSZip) { toast.error('Biblioteca de ZIP não carregada. Recarrega a página.'); return; }
     if (!window.XLSX) { toast.error('Biblioteca de Excel não carregada. Recarrega a página.'); return; }
-    if (!movements.length) { toast.error('Sem movimentos para exportar.'); return; }
+    if (!mvs.length) { toast.error('Sem movimentos nesse mês para exportar.'); return; }
+    const JSZip = window.JSZip;
+    const XLSX = window.XLSX;
+    const zip = new JSZip();
+
+    // Folha Excel com os movimentos do mês.
+    const data = mvs.map((m) => ({
+      'Data Lançamento': fmtDate(m.date_lancamento),
+      'Data Valor': fmtDate(m.date_valor),
+      'Descrição': m.description || '',
+      'Montante': Number(m.amount) || 0,
+      'Saldo': m.balance != null && m.balance !== '' ? Number(m.balance) : '',
+      'Justificação': m.title || '',
+      'Fatura ligada': m.invoice_id ? invoiceLabel(invoiceById[m.invoice_id], m) : '',
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Extrato');
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    zip.file(`extrato_${mLabel || 'todos'}.xlsx`, wbout);
+
+    // Pasta pdfs/ com os anexos disponíveis (best-effort).
+    const withPdf = mvs.filter((m) => m.attachment_path);
+    if (withPdf.length) {
+      const folder = zip.folder('pdfs');
+      const base = process.env.REACT_APP_BACKEND_URL + '/api';
+      for (const m of withPdf) {
+        try {
+          const resp = await fetch(`${base}/fin/movements/${m.id}/attachment`, {
+            headers: authHeader(),
+          });
+          if (!resp.ok) continue;
+          const blob = await resp.blob();
+          const name = `${m.date_lancamento || 'mov'}_${m.id}.pdf`;
+          folder.file(name, blob);
+        } catch (_) { /* continua se um PDF falhar */ }
+      }
+    }
+
+    const out = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(out);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `extrato_${company?.name || (companyId === COMPANY_ALL ? 'todas-as-empresas' : 'empresa')}_${mLabel || 'todos'}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast.success('ZIP gerado');
+  };
+
+  // Exporta o mês escolhido no diálogo (vai buscar os movimentos desse mês,
+  // independente do que está a ser visto no ecrã).
+  const runExport = async () => {
+    setExportOpen(false);
     setBusy(true);
     try {
-      const JSZip = window.JSZip;
-      const XLSX = window.XLSX;
-      const zip = new JSZip();
-
-      // Folha Excel com os movimentos do mês.
-      const data = movements.map((m) => ({
-        'Data Lançamento': fmtDate(m.date_lancamento),
-        'Data Valor': fmtDate(m.date_valor),
-        'Descrição': m.description || '',
-        'Montante': Number(m.amount) || 0,
-        'Saldo': m.balance != null && m.balance !== '' ? Number(m.balance) : '',
-        'Justificação': m.title || '',
-        'Fatura ligada': m.invoice_id ? invoiceLabel(invoiceById[m.invoice_id], m) : '',
-      }));
-      const ws = XLSX.utils.json_to_sheet(data);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Extrato');
-      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-      zip.file(`extrato_${month || 'todos'}.xlsx`, wbout);
-
-      // Pasta pdfs/ com os anexos disponíveis (best-effort).
-      const withPdf = movements.filter((m) => m.attachment_path);
-      if (withPdf.length) {
-        const folder = zip.folder('pdfs');
-        const base = process.env.REACT_APP_BACKEND_URL + '/api';
-        for (const m of withPdf) {
-          try {
-            const resp = await fetch(`${base}/fin/movements/${m.id}/attachment`, {
-              headers: authHeader(),
-            });
-            if (!resp.ok) continue;
-            const blob = await resp.blob();
-            const name = `${m.date_lancamento || 'mov'}_${m.id}.pdf`;
-            folder.file(name, blob);
-          } catch (_) { /* continua se um PDF falhar */ }
-        }
-      }
-
-      const out = await zip.generateAsync({ type: 'blob' });
-      const url = URL.createObjectURL(out);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `extrato_${company?.name || (companyId === COMPANY_ALL ? 'todas-as-empresas' : 'empresa')}_${month || 'todos'}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      toast.success('ZIP gerado');
+      const params = { company_id: companyId };
+      if (exportMonth) params.month = exportMonth;
+      const r = await getFinMovements(params);
+      await zipFromMovements(r.data || [], exportMonth);
     } catch (e) {
-      toast.error('Erro ao gerar ZIP');
+      toast.error('Erro ao gerar o extrato');
     } finally {
       setBusy(false);
     }
@@ -539,23 +553,9 @@ export default function FinExtrato() {
   return (
     <div className="space-y-6 animate-fade-in" data-testid="fin-extrato-page">
       <PageHeader icon={Landmark} title="Extrato / Tesouraria" subtitle="Importar extrato do banco, conciliar e exportar">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Select value={accountId} onValueChange={setAccountId}>
-            <SelectTrigger className="w-44" data-testid="fin-account-picker">
-              <SelectValue placeholder="Conta" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ACC_NONE}>Todas as contas</SelectItem>
-              {accounts.map((a) => (
-                <SelectItem key={a.id} value={a.id}>
-                  {a.name || a.bank || a.account_number || 'Conta'}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
-            className="w-36" data-testid="fin-month-picker" />
-        </div>
+        {/* Empresa/loja vêm do seletor global do topo. Aqui só o mês para navegar. */}
+        <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
+          className="w-36" data-testid="fin-month-picker" />
       </PageHeader>
 
       {companies.length === 0 ? (
@@ -580,8 +580,8 @@ export default function FinExtrato() {
                 <RefreshCw className="h-4 w-4 mr-2" />Conciliar
               </Button>
             )}
-            <Button variant="outline" onClick={exportZip} disabled={busy || !movements.length}
-              title={!movements.length ? 'Sem movimentos neste mês para exportar' : undefined}
+            <Button variant="outline" disabled={busy}
+              onClick={() => { setExportMonth(month || thisMonth()); setExportOpen(true); }}
               data-testid="fin-export-btn">
               <Download className="h-4 w-4 mr-2" />Exportar ZIP
             </Button>
@@ -805,6 +805,27 @@ export default function FinExtrato() {
               <Button type="submit" data-testid="fin-save-account-btn">Guardar</Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Diálogo: exportar extrato — escolher o mês */}
+      <Dialog open={exportOpen} onOpenChange={setExportOpen}>
+        <DialogContent className="sm:max-w-sm" data-testid="fin-export-dialog">
+          <DialogHeader>
+            <DialogTitle>Exportar extrato</DialogTitle>
+            <DialogDescription>Escolhe o mês a exportar (Excel + PDFs anexados num ZIP).</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label className="text-xs">Mês</Label>
+            <Input type="month" value={exportMonth} onChange={(e) => setExportMonth(e.target.value)}
+              data-testid="fin-export-month" />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setExportOpen(false)}>Cancelar</Button>
+            <Button onClick={runExport} disabled={busy} data-testid="fin-export-confirm">
+              <Download className="h-4 w-4 mr-2" />{busy ? 'A gerar...' : 'Exportar'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
