@@ -5,7 +5,6 @@ import {
 } from '../../../lib/api';
 import { eur, kpiTone } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
-import { Input } from '../../../components/ui/input';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../../components/ui/tabs';
 import { Badge } from '../../../components/ui/badge';
@@ -14,6 +13,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
+import MonthPicker from '../../../components/MonthPicker';
 
 const COMPANY_ALL = 'all';
 const thisMonth = () => new Date().toISOString().slice(0, 7);
@@ -183,8 +183,7 @@ export default function FinRelatorios() {
   return (
     <div className="space-y-6 animate-fade-in" data-testid="fin-relatorios-page">
       <PageHeader icon={BarChart3} title="Relatórios" subtitle="Apuramento de IVA, resultados, exportação e tesouraria">
-        <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
-          className="w-40" data-testid="fin-rel-month" />
+        <MonthPicker value={month} onChange={setMonth} className="w-44" testid="fin-rel-month" />
       </PageHeader>
 
       <Tabs defaultValue="iva">

@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
+import MonthPicker from '../../../components/MonthPicker';
 
 const LS_KEY = 'fin_selected_company';
 const COMPANY_ALL = 'all';
@@ -554,8 +555,7 @@ export default function FinExtrato() {
     <div className="space-y-6 animate-fade-in" data-testid="fin-extrato-page">
       <PageHeader icon={Landmark} title="Extrato / Tesouraria" subtitle="Importar extrato do banco, conciliar e exportar">
         {/* Empresa/loja vêm do seletor global do topo. Aqui só o mês para navegar. */}
-        <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
-          className="w-36" data-testid="fin-month-picker" />
+        <MonthPicker value={month} onChange={setMonth} className="w-44" testid="fin-month-picker" />
       </PageHeader>
 
       {companies.length === 0 ? (
@@ -817,8 +817,7 @@ export default function FinExtrato() {
           </DialogHeader>
           <div className="space-y-2">
             <Label className="text-xs">Mês</Label>
-            <Input type="month" value={exportMonth} onChange={(e) => setExportMonth(e.target.value)}
-              data-testid="fin-export-month" />
+            <MonthPicker value={exportMonth} onChange={setExportMonth} className="w-full" testid="fin-export-month" />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setExportOpen(false)}>Cancelar</Button>
