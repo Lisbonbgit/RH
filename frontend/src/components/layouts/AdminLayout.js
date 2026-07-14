@@ -312,12 +312,10 @@ export default function AdminLayout() {
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          {activeSection.key === 'financeiro' && (
-            <Button variant="ghost" size="icon" onClick={() => navigate('/admin/financeiro/configuracoes')}
-              title="Configurações (empresas e lojas)" data-testid="fin-config-btn">
-              <Settings className="h-5 w-5" />
-            </Button>
-          )}
+          <Button variant="ghost" size="icon" onClick={() => navigate('/admin/financeiro/configuracoes')}
+            title="Configurações (empresas e lojas)" data-testid="fin-config-btn">
+            <Settings className="h-5 w-5" />
+          </Button>
           <ThemeToggle />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -370,12 +368,10 @@ export default function AdminLayout() {
       <header className="hidden lg:flex lg:ml-64 h-16 items-center justify-between border-b bg-card px-6">
         <div />
         <div className="flex items-center gap-4">
-          {activeSection.key === 'financeiro' && (
-            <Button variant="ghost" size="icon" onClick={() => navigate('/admin/financeiro/configuracoes')}
-              title="Configurações (empresas e lojas)" data-testid="fin-config-btn-desktop">
-              <Settings className="h-5 w-5" />
-            </Button>
-          )}
+          <Button variant="ghost" size="icon" onClick={() => navigate('/admin/financeiro/configuracoes')}
+            title="Configurações (empresas e lojas)" data-testid="fin-config-btn-desktop">
+            <Settings className="h-5 w-5" />
+          </Button>
           <ThemeToggle />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
