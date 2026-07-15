@@ -545,6 +545,7 @@ class EmployeeResponse(BaseModel):
     vacation_days: int
     vacation_days_used: int = 0
     vacation_days_available: int = 0
+    vacation_days_pending: int = 0
     observations: Optional[str] = None
     geofence_exempt: bool = False
     # Dados de perfil (editáveis pelo próprio colaborador)
@@ -864,17 +865,20 @@ async def calculate_leave_counted_days(employee_id: str, start_date: str, end_da
 
     return total_days
 
-async def calculate_vacation_days_used(employee_id: str) -> int:
-    """Calculate the number of vacation days used by an employee in the current year"""
-    current_year = datetime.now(timezone.utc).year
-    year_start = f"{current_year}-01-01"
-    year_end = f"{current_year}-12-31"
+async def calculate_vacation_days_used(employee_id: str, year: Optional[int] = None, status: str = "aprovado") -> int:
+    """Vacation days counted for an employee in a given year (default: current year).
 
-    # Find all approved vacation requests for the current year
+    status selects which requests count: "aprovado" (default) or "pendente".
+    """
+    if year is None:
+        year = datetime.now(timezone.utc).year
+    year_start = f"{year}-01-01"
+    year_end = f"{year}-12-31"
+
     vacation_requests = await db.leave_requests.find({
         "employee_id": employee_id,
         "leave_type": "ferias",
-        "status": "aprovado",
+        "status": status,
         "$or": [
             {"start_date": {"$gte": year_start, "$lte": year_end}},
             {"end_date": {"$gte": year_start, "$lte": year_end}},
@@ -887,9 +891,9 @@ async def calculate_vacation_days_used(employee_id: str) -> int:
         start = datetime.fromisoformat(request["start_date"])
         end = datetime.fromisoformat(request["end_date"])
 
-        # Adjust dates to current year boundaries
-        year_start_date = datetime(current_year, 1, 1)
-        year_end_date = datetime(current_year, 12, 31)
+        # Adjust dates to the requested year boundaries
+        year_start_date = datetime(year, 1, 1)
+        year_end_date = datetime(year, 12, 31)
 
         effective_start = max(start, year_start_date)
         effective_end = min(end, year_end_date)
@@ -1647,7 +1651,8 @@ async def get_employees(
         vacation_used = await calculate_vacation_days_used(emp["id"])
         emp["vacation_days_used"] = vacation_used
         emp["vacation_days_available"] = emp["vacation_days"] - vacation_used
-    
+        emp["vacation_days_pending"] = await calculate_vacation_days_used(emp["id"], status="pendente")
+
     return [EmployeeResponse(**e) for e in employees]
 
 @api_router.get("/employees/{employee_id}", response_model=EmployeeResponse)
@@ -1665,13 +1670,15 @@ async def get_employee(employee_id: str, current_user: dict = Depends(get_curren
     
     # Calculate vacation days used and available
     vacation_used = await calculate_vacation_days_used(employee_id)
-    
+    vacation_pending = await calculate_vacation_days_used(employee_id, status="pendente")
+
     return EmployeeResponse(
         **employee,
         company_name=company["name"] if company else None,
         location_name=location["name"] if location else None,
         vacation_days_used=vacation_used,
-        vacation_days_available=employee["vacation_days"] - vacation_used
+        vacation_days_available=employee["vacation_days"] - vacation_used,
+        vacation_days_pending=vacation_pending
     )
 
 async def _build_employee_response(employee: dict) -> EmployeeResponse:
@@ -1680,12 +1687,14 @@ async def _build_employee_response(employee: dict) -> EmployeeResponse:
     if employee.get("location_id"):
         location = await db.locations.find_one({"id": employee["location_id"]}, {"_id": 0})
     vacation_used = await calculate_vacation_days_used(employee["id"])
+    vacation_pending = await calculate_vacation_days_used(employee["id"], status="pendente")
     return EmployeeResponse(
         **employee,
         company_name=company["name"] if company else None,
         location_name=location["name"] if location else None,
         vacation_days_used=vacation_used,
-        vacation_days_available=employee["vacation_days"] - vacation_used
+        vacation_days_available=employee["vacation_days"] - vacation_used,
+        vacation_days_pending=vacation_pending
     )
 
 @api_router.get("/me/profile", response_model=EmployeeResponse)
@@ -2052,6 +2061,38 @@ async def worked_hours_report(
         })
 
     results.sort(key=lambda x: (x["employee_name"] or "").lower())
+    return results
+
+@api_router.get("/reports/vacation-balance")
+async def vacation_balance_report(
+    year: Optional[int] = None,
+    company_id: Optional[str] = None,
+    current_user: dict = Depends(admin_manager_required)
+):
+    """Saldo de férias por colaborador num ano: direito, tirados, pendentes, restantes."""
+    if year is None:
+        year = datetime.now(timezone.utc).year
+
+    emp_query = {}
+    if company_id:
+        emp_query["company_id"] = company_id
+    employees = await db.employees.find(emp_query, {"_id": 0}).to_list(1000)
+
+    results = []
+    for emp in employees:
+        used = await calculate_vacation_days_used(emp["id"], year=year)
+        pending = await calculate_vacation_days_used(emp["id"], year=year, status="pendente")
+        entitled = emp.get("vacation_days", 0)
+        results.append({
+            "employee_id": emp["id"],
+            "name": emp.get("name"),
+            "vacation_days": entitled,
+            "used": used,
+            "pending": pending,
+            "available": entitled - used,
+        })
+
+    results.sort(key=lambda r: (r["name"] or "").lower())
     return results
 
 # ==================== WORK SCHEDULE ROUTES ====================
