@@ -31,6 +31,7 @@ export const getTimeRecords = (params) => axios.get(`${API_URL}/time-records`, {
 export const createTimeRecord = (data) => axios.post(`${API_URL}/time-records`, data);
 export const correctTimeRecord = (id, data) => axios.put(`${API_URL}/time-records/${id}/correct`, data);
 export const getWorkedHoursReport = (params) => axios.get(`${API_URL}/reports/worked-hours`, { params });
+export const getVacationBalance = (params) => axios.get(`${API_URL}/reports/vacation-balance`, { params });
 
 // Leave Requests
 export const getLeaveRequests = (params) => axios.get(`${API_URL}/leave-requests`, { params });

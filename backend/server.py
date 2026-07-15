@@ -2063,6 +2063,38 @@ async def worked_hours_report(
     results.sort(key=lambda x: (x["employee_name"] or "").lower())
     return results
 
+@api_router.get("/reports/vacation-balance")
+async def vacation_balance_report(
+    year: Optional[int] = None,
+    company_id: Optional[str] = None,
+    current_user: dict = Depends(admin_manager_required)
+):
+    """Saldo de férias por colaborador num ano: direito, tirados, pendentes, restantes."""
+    if year is None:
+        year = datetime.now(timezone.utc).year
+
+    emp_query = {}
+    if company_id:
+        emp_query["company_id"] = company_id
+    employees = await db.employees.find(emp_query, {"_id": 0}).to_list(1000)
+
+    results = []
+    for emp in employees:
+        used = await calculate_vacation_days_used(emp["id"], year=year)
+        pending = await calculate_vacation_days_used(emp["id"], year=year, status="pendente")
+        entitled = emp.get("vacation_days", 0)
+        results.append({
+            "employee_id": emp["id"],
+            "name": emp["name"],
+            "vacation_days": entitled,
+            "used": used,
+            "pending": pending,
+            "available": entitled - used,
+        })
+
+    results.sort(key=lambda r: (r["name"] or "").lower())
+    return results
+
 # ==================== WORK SCHEDULE ROUTES ====================
 
 @api_router.post("/schedules", response_model=WorkScheduleTemplateResponse)
