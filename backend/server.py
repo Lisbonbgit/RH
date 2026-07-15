@@ -3549,6 +3549,35 @@ def _fin_num(v, default=0.0):
     n = _fin_clean_num(v)
     return n if n is not None else default
 
+def _fin_require_positive_amount(v, label="valor"):
+    """Valida entrada MANUAL: o montante tem de ser um número > 0. Lança 400
+    senão. NÃO usar na ingestão automática (essa captura mesmo com valores
+    estranhos para o humano corrigir). Devolve o número já limpo."""
+    amt = _fin_clean_num(v)
+    if amt is None or amt <= 0:
+        raise HTTPException(status_code=400, detail=f"O {label} tem de ser um número maior que zero.")
+    return amt
+
+def _fin_consistent_net_vat(amount, amount_net, vat_amount, vat_rate):
+    """Garante líquido+IVA=total (o total é a fonte de verdade — é o que se paga).
+    Usado na INGESTÃO: a IA às vezes extrai um líquido/IVA que não fecha com o
+    total. Se já fechar (tolerância 1 cêntimo), não mexe. Senão deriva do total:
+    pela taxa se existir, ou ajustando o IVA ao líquido. Devolve (net, vat)."""
+    amount = _fin_clean_num(amount)
+    net = _fin_clean_num(amount_net)
+    vat = _fin_clean_num(vat_amount)
+    rate = _fin_clean_num(vat_rate)
+    if amount is None or amount <= 0:
+        return net, vat
+    if net is not None and abs((net + (vat or 0.0)) - amount) <= 0.02:
+        return net, vat  # já é coerente
+    if rate is not None and rate > 0:
+        net2 = round(amount / (1 + rate / 100), 2)
+        return net2, round(amount - net2, 2)
+    if net is not None:
+        return net, round(amount - net, 2)
+    return net, vat
+
 def _fin_norm_sup(s):
     """Normaliza nome de fornecedor (igual ao supKey do frontend PHP)."""
     s = (s or "").lower()
@@ -3761,6 +3790,7 @@ async def fin_create_invoice(payload: FinInvoiceCreate, current_user: dict = Dep
     await fin_require_editor(payload.company_id, current_user)
     uid = current_user["user_id"]
     data = payload.model_dump()
+    _fin_require_positive_amount(data.get("amount"), "valor da fatura")
     kind = "payment" if data.get("kind") == "payment" else "invoice"
     # Sem fluxo de aprovação: faturas e pagamentos entram sempre válidos.
     approval = "approved"
@@ -3789,6 +3819,7 @@ async def fin_update_invoice(invoice_id: str, payload: FinInvoiceCreate, current
         raise HTTPException(status_code=404, detail="Fatura não encontrada.")
     await fin_require_editor(inv["company_id"], current_user)
     data = payload.model_dump()
+    _fin_require_positive_amount(data.get("amount"), "valor da fatura")
     unit = await fin_resolve_unit(inv["company_id"], data.get("unit_id"))
     await db.fin_invoices.update_one(
         {"id": invoice_id},
@@ -3855,7 +3886,12 @@ async def fin_reclassify_invoice(invoice_id: str, payload: FinReclassify, curren
         raise HTTPException(status_code=404, detail="Fatura não encontrada.")
     await fin_require_editor(inv["company_id"], current_user)
     await fin_require_editor(payload.company_id, current_user)
-    await db.fin_invoices.update_one({"id": invoice_id}, {"$set": {"company_id": payload.company_id}})
+    # A unidade pertence à empresa ANTIGA — ao mudar de empresa fica inválida.
+    # Limpa-a (pode reatribuir-se depois via set-unit na empresa nova).
+    await db.fin_invoices.update_one(
+        {"id": invoice_id},
+        {"$set": {"company_id": payload.company_id, "unit_id": None}},
+    )
     return await db.fin_invoices.find_one({"id": invoice_id}, {"_id": 0})
 
 @api_router.put("/fin/invoices/{invoice_id}/set-unit")
@@ -4580,6 +4616,22 @@ async def fin_import_movements(payload: FinMovementImport, current_user: dict = 
         payload.company_id, payload.account_number, payload.bank, payload.account_name
     )
     account_number = (payload.account_number or "").strip()
+    # Dedup de Nível 2 (data + montante + saldo a 2 casas), igual ao importador
+    # de PDF: apanha o MESMO movimento já importado pelo outro caminho (PDF, cujo
+    # dedup_key tem outro formato) e evita duplicar ao reimportar o mesmo extrato.
+    dates = [(r.date_lancamento or "").strip() for r in payload.rows if (r.date_lancamento or "").strip()]
+    seen_lvl2 = set()
+    if dates:
+        existing = await db.fin_movements.find(
+            {"account_id": acc["id"], "date_lancamento": {"$gte": min(dates), "$lte": max(dates)}},
+            {"_id": 0, "date_lancamento": 1, "amount": 1, "balance": 1},
+        ).to_list(50000)
+        for e in existing:
+            ea = _fin_clean_num(e.get("amount"))
+            eb = _fin_clean_num(e.get("balance"))
+            if ea is None or eb is None:
+                continue
+            seen_lvl2.add((e.get("date_lancamento"), round(ea, 2), round(eb, 2)))
     inserted = 0
     skipped = 0
     now = datetime.now(timezone.utc).isoformat()
@@ -4591,8 +4643,13 @@ async def fin_import_movements(payload: FinMovementImport, current_user: dict = 
         dedup_key = hashlib.sha1(
             f"{account_number}|{date_lancamento}|{amount_raw}|{balance_raw}|{description}".encode()
         ).hexdigest()
-        exists = await db.fin_movements.find_one({"dedup_key": dedup_key}, {"_id": 0, "id": 1})
-        if exists:
+        amt = _fin_clean_num(amount_raw)
+        bal = _fin_clean_num(balance_raw)
+        lvl2 = (date_lancamento, round(amt, 2), round(bal, 2)) if (amt is not None and bal is not None) else None
+        if await db.fin_movements.find_one({"dedup_key": dedup_key}, {"_id": 0, "id": 1}):
+            skipped += 1
+            continue
+        if lvl2 is not None and lvl2 in seen_lvl2:
             skipped += 1
             continue
         doc = {
@@ -4602,8 +4659,8 @@ async def fin_import_movements(payload: FinMovementImport, current_user: dict = 
             "date_lancamento": date_lancamento,
             "date_valor": (row.date_valor or "").strip() or None,
             "description": description or None,
-            "amount": _fin_clean_num(amount_raw),
-            "balance": _fin_clean_num(balance_raw),
+            "amount": amt,
+            "balance": bal,
             "currency": (row.currency or "").strip() or acc.get("currency") or "EUR",
             "title": None,
             "invoice_id": None,
@@ -4615,6 +4672,8 @@ async def fin_import_movements(payload: FinMovementImport, current_user: dict = 
             "created_at": now,
         }
         await db.fin_movements.insert_one(doc)
+        if lvl2 is not None:
+            seen_lvl2.add(lvl2)
         inserted += 1
     return {"inserted": inserted, "skipped": skipped, "account_id": acc["id"]}
 
@@ -5145,7 +5204,7 @@ async def _fin_is_duplicate(invoice_number, supplier_nif, supplier):
 async def _fin_match_company(companies, customer_nif, customer_name, fallback_nif):
     """Associa à empresa pelo NIF do adquirente, com os fallbacks do PHP:
     1) NIF do adquirente == company.nif
-    2) nome do adquirente normalizado contido/igual ao da empresa
+    2) nome do adquirente: igualdade exata OU contenção ÚNICA e não-trivial
     3) empresa do company_nif da caixa (fallback)
     4) empresa cujo nome normalizado seja 'por classificar'
     senão None."""
@@ -5156,10 +5215,21 @@ async def _fin_match_company(companies, customer_nif, customer_name, fallback_ni
                 return c
     nn = _fin_norm_sup(customer_name)
     if nn:
-        for c in companies:
-            cn = _fin_norm_sup(c.get("name"))
-            if cn and (cn == nn or nn in cn or cn in nn):
-                return c
+        # Igualdade exata do nome normalizado (o caso normal e seguro).
+        exact = [c for c in companies if _fin_norm_sup(c.get("name")) == nn]
+        if len(exact) == 1:
+            return exact[0]
+        # Contenção (nome parcial) — só se for ÚNICA e com >=6 chars de cada lado,
+        # para não misrotear por substring curta/ambígua. Ambíguo -> 'por
+        # classificar' (revisão humana), em vez de escolher a 1ª à toa.
+        if not exact and len(nn) >= 6:
+            part = []
+            for c in companies:
+                cn = _fin_norm_sup(c.get("name"))
+                if cn and len(cn) >= 6 and (cn in nn or nn in cn):
+                    part.append(c)
+            if len(part) == 1:
+                return part[0]
     fb = _fin_only_digits(fallback_nif)
     if fb:
         for c in companies:
@@ -5267,6 +5337,11 @@ async def fin_cron_ingest(key: str = Query(...)):
                 # só decide a nota informativa (fornecedor recorrente) abaixo.
                 approval = "approved"
 
+                # Coerência líquido+IVA=total (a IA às vezes extrai net/IVA que
+                # não fecha com o total; o total é a fonte de verdade).
+                net_ok, vat_ok = _fin_consistent_net_vat(
+                    ex.get("amount"), ex.get("amountNet"), ex.get("vatAmount"), ex.get("vatRate")
+                )
                 data = {
                     "supplier": supplier,
                     "nif": nifd,
@@ -5275,8 +5350,8 @@ async def fin_cron_ingest(key: str = Query(...)):
                     "issue_date": ex.get("issueDate"),
                     "due_date": ex.get("dueDate"),
                     "amount": ex.get("amount"),
-                    "amount_net": ex.get("amountNet"),
-                    "vat_amount": ex.get("vatAmount"),
+                    "amount_net": net_ok,
+                    "vat_amount": vat_ok,
                     "vat_rate": ex.get("vatRate"),
                     "description": ex.get("description"),
                     "source": "email",
@@ -5385,12 +5460,11 @@ async def fin_ingest_estoque(
         return {"duplicate": True, "detail": "Fatura já registada."}
 
     # ---- 4) Dados (com override de fornecedor e valor confirmados) ----
+    # Coerência líquido+IVA=total (o total confirmado pelo colaborador manda).
     vat_rate = _fin_clean_num(ex.get("vatRate"))
-    amount_net = ex.get("amountNet")
-    vat_amount = ex.get("vatAmount")
-    if vat_rate is not None:
-        amount_net = round(valor / (1 + vat_rate / 100), 2)
-        vat_amount = round(valor - amount_net, 2)
+    amount_net, vat_amount = _fin_consistent_net_vat(
+        valor, ex.get("amountNet"), ex.get("vatAmount"), ex.get("vatRate")
+    )
 
     data = {
         "supplier": fornecedor,  # override confirmado pelo colaborador
@@ -5799,6 +5873,9 @@ async def fin_create_sale(payload: FinSaleCreate, current_user: dict = Depends(g
     await fin_require_editor(payload.company_id, current_user)
     data = payload.model_dump()
     doc = _fin_sale_doc_from_payload(data)
+    _fin_require_positive_amount(doc.get("amount"), "valor da venda")
+    if not doc.get("date"):
+        raise HTTPException(status_code=400, detail="Indique a data da venda.")
     # Evita dupla contagem: se já há vendas automáticas (Vendus/Moloni) nesse
     # dia+unidade, não deixa lançar à mão (somariam no painel). O automático manda.
     if doc.get("date"):
@@ -5831,6 +5908,7 @@ async def fin_update_sale(sale_id: str, payload: FinSaleCreate, current_user: di
     await fin_require_editor(sale["company_id"], current_user)
     data = payload.model_dump()
     doc = _fin_sale_doc_from_payload(data)
+    _fin_require_positive_amount(doc.get("amount"), "valor da venda")
     # Não deixar trocar a venda para outra empresa.
     doc.pop("company_id", None)
     await db.fin_sales.update_one({"id": sale_id}, {"$set": doc})
@@ -6005,10 +6083,13 @@ async def fin_global_dashboard(
         ).to_list(2000)
         saldo_banco = 0.0
         for acc in accounts:
+            # Saldo = balance do ÚLTIMO movimento. Desempate intra-dia por _id
+            # (ordem de inserção do extrato ≈ ordem cronológica), senão apanhava
+            # um movimento arbitrário do dia e dava um saldo errado.
             last = await db.fin_movements.find_one(
                 {"account_id": acc.get("id")},
                 {"_id": 0, "balance": 1, "date_lancamento": 1},
-                sort=[("date_lancamento", -1)],
+                sort=[("date_lancamento", -1), ("_id", -1)],
             )
             if last and last.get("balance") is not None:
                 saldo_banco += _fin_num(last.get("balance"))
@@ -7459,10 +7540,12 @@ async def fin_report_tesouraria(
     ).to_list(2000)
     saldo_atual = 0.0
     for acc in accounts:
+        # Desempate intra-dia por _id (ordem de inserção ≈ cronológica), senão o
+        # saldo podia vir de um movimento não-final do dia mais recente.
         last = await db.fin_movements.find_one(
             {"account_id": acc.get("id")},
             {"_id": 0, "balance": 1, "date_lancamento": 1},
-            sort=[("date_lancamento", -1)],
+            sort=[("date_lancamento", -1), ("_id", -1)],
         )
         if last and last.get("balance") is not None:
             saldo_atual += _fin_num(last.get("balance"))
