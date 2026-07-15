@@ -5799,6 +5799,20 @@ async def fin_create_sale(payload: FinSaleCreate, current_user: dict = Depends(g
     await fin_require_editor(payload.company_id, current_user)
     data = payload.model_dump()
     doc = _fin_sale_doc_from_payload(data)
+    # Evita dupla contagem: se já há vendas automáticas (Vendus/Moloni) nesse
+    # dia+unidade, não deixa lançar à mão (somariam no painel). O automático manda.
+    if doc.get("date"):
+        auto = await db.fin_sales.find_one({
+            "company_id": payload.company_id,
+            "unit_id": doc.get("unit_id"),
+            "date": doc["date"],
+            "source": {"$in": ["vendus", "moloni"]},
+        }, {"_id": 0, "id": 1})
+        if auto:
+            raise HTTPException(status_code=409, detail=(
+                "Já existem vendas automáticas (Vendus/Moloni) para este dia e loja. "
+                "Não é preciso lançar à mão — contaria a dobrar."
+            ))
     doc.update({
         "id": str(uuid.uuid4()),
         "source": "manual",
@@ -6335,6 +6349,29 @@ def _fin_vendus_fetch_store_days(key, store_id, since, until, with_cost, cost_ma
     return by_day, True, None
 
 
+async def _fin_supersede_manual_sales(company_id, unit_id, days):
+    """As vendas automáticas (POS: Vendus/Moloni) são a fonte de verdade. Remove
+    vendas MANUAIS da mesma empresa+unidade nos dias que o automático acabou de
+    gravar, para o mesmo dia não ser contado a dobrar no painel. Devolve quantas
+    foram substituídas (só toca em source='manual' e nos dias indicados)."""
+    days = list({d for d in days if d})
+    if not days:
+        return 0
+    res = await db.fin_sales.delete_many({
+        "source": "manual",
+        "company_id": company_id,
+        "unit_id": unit_id,
+        "date": {"$in": days},
+    })
+    n = res.deleted_count or 0
+    if n:
+        logger.info(
+            "[fin-vendas] %d venda(s) manual substituída(s) por automáticas "
+            "(empresa=%s unidade=%s)", n, company_id, unit_id
+        )
+    return n
+
+
 async def _fin_vendus_write_store(company_id, unit_id, since, until, by_day, with_cost, store_title):
     """Grava os dias agregados de uma loja em fin_sales de forma idempotente:
     delete_many do intervalo (source vendus, mesma empresa/loja) + insert dos
@@ -6390,6 +6427,7 @@ async def _fin_vendus_write_store(company_id, unit_id, since, until, by_day, wit
     await db.fin_sales.delete_many(flt)
     if docs:
         await db.fin_sales.insert_many(docs)
+        await _fin_supersede_manual_sales(company_id, unit_id, [d["date"] for d in docs])
     return len(docs)
 
 
@@ -6425,6 +6463,13 @@ async def _fin_vendus_run_account(acc, since, until, with_cost):
         return out
     cost_map = (await asyncio.to_thread(_fin_vendus_cost_map, key)) if with_cost else {}
 
+    # Agrupa as lojas pela UNIDADE resolvida: várias lojas Vendus podem mapear
+    # para a mesma unidade. Se gravássemos loja a loja, o delete+insert de cada
+    # uma (chave empresa+unidade+dia) apagava as vendas da anterior — só sobrava
+    # a última. Em vez disso somamos os dias de todas as lojas da unidade e
+    # gravamos UMA vez por unidade. Uma unidade só é gravada se TODAS as suas
+    # lojas foram lidas por completo (senão subcontava).
+    by_unit = {}  # unit_id -> {"by_day": {dia:[g,n,cmv,nc]}, "titles":[], "complete":bool}
     for store in stores:
         if not isinstance(store, dict):
             continue
@@ -6442,19 +6487,26 @@ async def _fin_vendus_run_account(acc, since, until, with_cost):
             )
         except Exception as exc:  # noqa: BLE001
             out["errors"].append(f"loja '{title}' (NIF {nif}): falha a ler — {exc}")
+            # Loja falhou: a unidade fica incompleta para não subcontar.
+            agg = by_unit.setdefault(unit_id, {"by_day": {}, "titles": [], "complete": True})
+            agg["complete"] = False
             continue
         if err:
             out["errors"].append(f"loja '{title}': {err}")
 
-        # Só gravamos se a loja foi lida por COMPLETO no intervalo: assim o
-        # delete+insert nunca deixa dias apagados sem voltarem a ser inseridos.
-        if complete:
-            try:
-                out["written"] += await _fin_vendus_write_store(
-                    company_id, unit_id, since, until, by_day, with_cost, title
-                )
-            except Exception:  # noqa: BLE001
-                out["errors"].append(f"loja '{title}' (NIF {nif}): falha a gravar")
+        agg = by_unit.setdefault(unit_id, {"by_day": {}, "titles": [], "complete": True})
+        if not complete:
+            agg["complete"] = False
+        bd = agg["by_day"]
+        for day, vals in by_day.items():
+            cur = bd.get(day)
+            if cur is None:
+                bd[day] = list(vals)
+            else:
+                for i in range(len(vals)):
+                    cur[i] += vals[i]
+        if title:
+            agg["titles"].append(title)
 
         sn = round(sum(v[1] for v in by_day.values()), 2)
         sc = round(sum(v[2] for v in by_day.values()), 2)
@@ -6466,6 +6518,22 @@ async def _fin_vendus_run_account(acc, since, until, with_cost):
             "cmv": sc,
             "complete": complete,
         })
+
+    # Grava uma linha por unidade (soma de todas as suas lojas).
+    for unit_id, agg in by_unit.items():
+        if not agg["complete"]:
+            out["errors"].append(
+                f"unidade {unit_id} (NIF {nif}): uma das lojas ficou incompleta — "
+                "não gravada (evita subcontar)"
+            )
+            continue
+        title = " + ".join(dict.fromkeys(agg["titles"])) or None
+        try:
+            out["written"] += await _fin_vendus_write_store(
+                company_id, unit_id, since, until, agg["by_day"], with_cost, title
+            )
+        except Exception:  # noqa: BLE001
+            out["errors"].append(f"unidade {unit_id} (NIF {nif}): falha a gravar")
     return out
 
 
@@ -6838,6 +6906,7 @@ async def _fin_moloni_write(company_id, unit_id, since, until, by_day):
     await db.fin_sales.delete_many(flt)
     if docs:
         await db.fin_sales.insert_many(docs)
+        await _fin_supersede_manual_sales(company_id, unit_id, [d["date"] for d in docs])
     return len(docs)
 
 
