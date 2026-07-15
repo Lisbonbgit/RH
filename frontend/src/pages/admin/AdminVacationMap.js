@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { getCalendarLeaves, getEmployees } from '../../lib/api';
+import { getCalendarLeaves, getEmployees, getVacationBalance } from '../../lib/api';
 import { Card, CardContent } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
@@ -37,6 +37,7 @@ export default function AdminVacationMap() {
   const [refDate, setRefDate] = useState(new Date());
   const [employees, setEmployees] = useState([]);
   const [leaves, setLeaves] = useState([]);
+  const [balance, setBalance] = useState({});
   const [loading, setLoading] = useState(true);
 
   const month = refDate.getMonth() + 1;
@@ -55,12 +56,16 @@ export default function AdminVacationMap() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [leavesRes, employeesRes] = await Promise.all([
+      const [leavesRes, employeesRes, balanceRes] = await Promise.all([
         getCalendarLeaves({ company_id: selectedCompany?.id, month, year }),
         getEmployees({ company_id: selectedCompany?.id }),
+        getVacationBalance({ company_id: selectedCompany?.id, year }),
       ]);
       setLeaves(leavesRes.data || []);
       setEmployees(employeesRes.data || []);
+      const balMap = {};
+      for (const b of balanceRes.data || []) balMap[b.employee_id] = b;
+      setBalance(balMap);
     } catch (error) {
       toast.error('Erro ao carregar o mapa de férias');
     } finally {
@@ -108,6 +113,10 @@ export default function AdminVacationMap() {
           dias,
         ];
       });
+    const balanceRows = employees.map((e) => {
+      const b = balance[e.id];
+      return b ? [e.name, b.vacation_days, b.used, b.pending, b.available] : [e.name, '—', '—', '—', '—'];
+    });
     downloadTablePDF({
       filename: `mapa-ferias-${year}-${String(month).padStart(2, '0')}${selectedCompany?.name ? '-' + selectedCompany.name : ''}.pdf`,
       title: 'Mapa de Férias',
@@ -118,6 +127,11 @@ export default function AdminVacationMap() {
       headers: ['Colaborador', 'Tipo', 'Início', 'Fim', 'Dias úteis'],
       rows,
       footerNote: 'RH grupo Lisbonb',
+      extraTable: {
+        title: `Saldo anual de férias — ${year}`,
+        headers: ['Colaborador', 'Direito', 'Tirados', 'Pendentes', 'Restantes'],
+        rows: balanceRows,
+      },
     });
     toast.success('PDF gerado');
   };
@@ -183,13 +197,18 @@ export default function AdminVacationMap() {
                         {format(d, 'd')}
                       </th>
                     ))}
-                    <th className="p-2 text-center border-b border-l min-w-[56px]">Dias</th>
+                    <th className="p-2 text-center border-b border-l min-w-[56px]">Dias (mês)</th>
+                    <th className="p-2 text-center border-b border-l min-w-[60px]">Direito</th>
+                    <th className="p-2 text-center border-b min-w-[72px]">Tirados {year}</th>
+                    <th className="p-2 text-center border-b min-w-[76px]">Pendentes</th>
+                    <th className="p-2 text-center border-b min-w-[76px]">Restantes</th>
                   </tr>
                 </thead>
                 <tbody>
                   {employees.map((emp) => {
                     const byDay = leaveByEmployeeDay[emp.id] || {};
                     const total = countDays(emp.id);
+                    const bal = balance[emp.id];
                     return (
                       <tr key={emp.id} data-testid={`vacation-row-${emp.id}`}>
                         <td className="sticky left-0 z-10 bg-card p-2 font-medium border-b border-r truncate max-w-[160px]">
@@ -209,6 +228,14 @@ export default function AdminVacationMap() {
                           );
                         })}
                         <td className="p-2 text-center border-b border-l font-medium">{total || '—'}</td>
+                        <td className="p-2 text-center border-b border-l">{bal ? bal.vacation_days : '—'}</td>
+                        <td className="p-2 text-center border-b font-medium">{bal ? bal.used : '—'}</td>
+                        <td className={`p-2 text-center border-b ${bal && bal.pending > 0 ? 'text-amber-600 font-medium' : 'text-muted-foreground'}`}>
+                          {bal && bal.pending > 0 ? bal.pending : '—'}
+                        </td>
+                        <td className={`p-2 text-center border-b font-semibold ${bal && bal.available < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                          {bal ? bal.available : '—'}
+                        </td>
                       </tr>
                     );
                   })}

@@ -25,10 +25,11 @@ function fmtNow() {
  * @param {Array} [opts.foot]      linha de totais (opcional)
  * @param {'portrait'|'landscape'} [opts.orientation]
  * @param {string} [opts.footerNote] nota no rodapé
+ * @param {Object} [opts.extraTable] segunda tabela {title, headers, rows} (opcional)
  */
 export function downloadTablePDF({
   filename, title, meta = [], headers, rows, foot = null,
-  orientation = 'portrait', footerNote = '',
+  orientation = 'portrait', footerNote = '', extraTable = null,
 }) {
   const doc = new jsPDF({ orientation, unit: 'mm', format: 'a4' });
   const pageW = doc.internal.pageSize.getWidth();
@@ -80,6 +81,25 @@ export function downloadTablePDF({
       doc.text(`Página ${page}`, pageW - marginX, pageH - 8, { align: 'right' });
     },
   });
+
+  // ----- Segunda tabela (opcional) -----
+  if (extraTable) {
+    const startY = (doc.lastAutoTable?.finalY || 40) + 10;
+    doc.setTextColor(...INK);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.text(extraTable.title, marginX, startY);
+    autoTable(doc, {
+      head: [extraTable.headers],
+      body: extraTable.rows,
+      startY: startY + 3,
+      theme: 'striped',
+      styles: { font: 'helvetica', fontSize: 9, cellPadding: 2.6, textColor: INK, lineColor: [229, 231, 235], lineWidth: 0.1 },
+      headStyles: { fillColor: BRAND, textColor: 255, fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: ZEBRA },
+      margin: { left: marginX, right: marginX },
+    });
+  }
 
   doc.save(filename);
 }
