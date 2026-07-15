@@ -114,6 +114,12 @@ export default function FinPagamentos() {
   const canEdit = company && (company.role === 'owner' || company.role === 'partner');
   const companyUnits = companyId === COMPANY_ALL ? units : units.filter((u) => u.company_id === companyId);
   const companyName = (id) => companies.find((c) => c.id === id)?.name || '';
+  // Pode editar ESTA empresa (owner/partner)? Útil em "Todas as empresas", onde
+  // company/canEdit são nulos mas cada sugestão tem a sua própria empresa.
+  const canEditCompany = (id) => {
+    const c = companies.find((x) => x.id === id);
+    return !!c && (c.role === 'owner' || c.role === 'partner');
+  };
 
   const rulesByKey = useMemo(() => {
     const m = {};
@@ -1018,7 +1024,7 @@ export default function FinPagamentos() {
                             <p className="text-xs text-muted-foreground truncate">{s.movement.description || '—'}</p>
                           </div>
                         </div>
-                        {canEdit && (
+                        {canEditCompany(s.invoice.company_id) && (
                           <div className="flex justify-end gap-2 pt-1">
                             <Button size="sm" variant="ghost" disabled={sugBusyId === s.movement.id}
                               onClick={() => rejectSuggestion(s)} data-testid={`sug-reject-${s.movement.id}`}>
