@@ -176,6 +176,12 @@ export default function FinExtrato() {
   // utilizador poder editar ALGUMA empresa (inclui o modo "Todas as empresas").
   const canImport = canEdit || companies.some((c) => c.role === 'owner' || c.role === 'partner');
   const companyName = (id) => companies.find((c) => c.id === id)?.name || '';
+  // Pode editar a empresa de ESTE movimento? (as ações por-movimento têm de
+  // funcionar em "Todas as empresas", onde company/canEdit são nulos.)
+  const canEditCompany = (id) => {
+    const c = companies.find((x) => x.id === id);
+    return !!c && (c.role === 'owner' || c.role === 'partner');
+  };
 
   useEffect(() => { loadCompanies(); }, []);
   useEffect(() => {
@@ -543,13 +549,15 @@ export default function FinExtrato() {
 
   const linkInvoices = useMemo(() => {
     const q = linkSearch.trim().toLowerCase();
-    const list = invoices.filter((i) => i.approval_status !== 'rejected');
+    // Só faturas da MESMA empresa do movimento (importa em "Todas as empresas").
+    const list = invoices.filter((i) =>
+      i.approval_status !== 'rejected' && (!linkFor || i.company_id === linkFor.company_id));
     if (!q) return list.slice(0, 50);
     return list.filter((i) =>
       [i.supplier, i.invoice_number, i.nif, i.amount, i.description]
         .filter(Boolean).some((f) => String(f).toLowerCase().includes(q))
     ).slice(0, 50);
-  }, [invoices, linkSearch]);
+  }, [invoices, linkSearch, linkFor]);
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="fin-extrato-page">
@@ -658,9 +666,9 @@ export default function FinExtrato() {
                               ) : (
                                 <button type="button"
                                   className="text-xs text-muted-foreground hover:text-foreground hover:underline text-left"
-                                  onClick={() => canEdit && startEditTitle(mv)}
+                                  onClick={() => canEditCompany(mv.company_id) && startEditTitle(mv)}
                                   data-testid={`fin-title-${mv.id}`}>
-                                  {mv.title ? mv.title : (canEdit ? '+ Adicionar justificação' : '—')}
+                                  {mv.title ? mv.title : (canEditCompany(mv.company_id) ? '+ Adicionar justificação' : '—')}
                                 </button>
                               )}
                             </div>
@@ -671,7 +679,7 @@ export default function FinExtrato() {
                                   <Link2 className="h-3 w-3 mr-1" />{invoiceLabel(inv, mv)}
                                 </Badge>
                                 {mv.link_auto && <Badge variant="outline" className="text-[10px]">auto</Badge>}
-                                {canEdit && (
+                                {canEditCompany(mv.company_id) && (
                                   <Button variant="ghost" size="sm" className="h-6 px-2 text-xs"
                                     onClick={() => doUnlink(mv)} data-testid={`fin-unlink-${mv.id}`}>
                                     <Unlink className="h-3 w-3 mr-1" />Desligar
@@ -679,7 +687,7 @@ export default function FinExtrato() {
                                 )}
                               </div>
                             ) : (
-                              canEdit && isOut && (
+                              canEditCompany(mv.company_id) && isOut && (
                                 <div className="mt-1.5 flex items-center gap-2 flex-wrap">
                                   <Button variant="outline" size="sm" className="h-7 px-2 text-xs"
                                     onClick={() => { setLinkFor(mv); setLinkSearch(''); }}
