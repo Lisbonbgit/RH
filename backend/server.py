@@ -545,6 +545,7 @@ class EmployeeResponse(BaseModel):
     vacation_days: int
     vacation_days_used: int = 0
     vacation_days_available: int = 0
+    vacation_days_pending: int = 0
     observations: Optional[str] = None
     geofence_exempt: bool = False
     # Dados de perfil (editáveis pelo próprio colaborador)
@@ -1650,7 +1651,8 @@ async def get_employees(
         vacation_used = await calculate_vacation_days_used(emp["id"])
         emp["vacation_days_used"] = vacation_used
         emp["vacation_days_available"] = emp["vacation_days"] - vacation_used
-    
+        emp["vacation_days_pending"] = await calculate_vacation_days_used(emp["id"], status="pendente")
+
     return [EmployeeResponse(**e) for e in employees]
 
 @api_router.get("/employees/{employee_id}", response_model=EmployeeResponse)
@@ -1668,13 +1670,15 @@ async def get_employee(employee_id: str, current_user: dict = Depends(get_curren
     
     # Calculate vacation days used and available
     vacation_used = await calculate_vacation_days_used(employee_id)
-    
+    vacation_pending = await calculate_vacation_days_used(employee_id, status="pendente")
+
     return EmployeeResponse(
         **employee,
         company_name=company["name"] if company else None,
         location_name=location["name"] if location else None,
         vacation_days_used=vacation_used,
-        vacation_days_available=employee["vacation_days"] - vacation_used
+        vacation_days_available=employee["vacation_days"] - vacation_used,
+        vacation_days_pending=vacation_pending
     )
 
 async def _build_employee_response(employee: dict) -> EmployeeResponse:
@@ -1683,12 +1687,14 @@ async def _build_employee_response(employee: dict) -> EmployeeResponse:
     if employee.get("location_id"):
         location = await db.locations.find_one({"id": employee["location_id"]}, {"_id": 0})
     vacation_used = await calculate_vacation_days_used(employee["id"])
+    vacation_pending = await calculate_vacation_days_used(employee["id"], status="pendente")
     return EmployeeResponse(
         **employee,
         company_name=company["name"] if company else None,
         location_name=location["name"] if location else None,
         vacation_days_used=vacation_used,
-        vacation_days_available=employee["vacation_days"] - vacation_used
+        vacation_days_available=employee["vacation_days"] - vacation_used,
+        vacation_days_pending=vacation_pending
     )
 
 @api_router.get("/me/profile", response_model=EmployeeResponse)
