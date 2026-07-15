@@ -864,17 +864,20 @@ async def calculate_leave_counted_days(employee_id: str, start_date: str, end_da
 
     return total_days
 
-async def calculate_vacation_days_used(employee_id: str) -> int:
-    """Calculate the number of vacation days used by an employee in the current year"""
-    current_year = datetime.now(timezone.utc).year
-    year_start = f"{current_year}-01-01"
-    year_end = f"{current_year}-12-31"
+async def calculate_vacation_days_used(employee_id: str, year: Optional[int] = None, status: str = "aprovado") -> int:
+    """Vacation days counted for an employee in a given year (default: current year).
 
-    # Find all approved vacation requests for the current year
+    status selects which requests count: "aprovado" (default) or "pendente".
+    """
+    if year is None:
+        year = datetime.now(timezone.utc).year
+    year_start = f"{year}-01-01"
+    year_end = f"{year}-12-31"
+
     vacation_requests = await db.leave_requests.find({
         "employee_id": employee_id,
         "leave_type": "ferias",
-        "status": "aprovado",
+        "status": status,
         "$or": [
             {"start_date": {"$gte": year_start, "$lte": year_end}},
             {"end_date": {"$gte": year_start, "$lte": year_end}},
@@ -887,9 +890,9 @@ async def calculate_vacation_days_used(employee_id: str) -> int:
         start = datetime.fromisoformat(request["start_date"])
         end = datetime.fromisoformat(request["end_date"])
 
-        # Adjust dates to current year boundaries
-        year_start_date = datetime(current_year, 1, 1)
-        year_end_date = datetime(current_year, 12, 31)
+        # Adjust dates to the requested year boundaries
+        year_start_date = datetime(year, 1, 1)
+        year_end_date = datetime(year, 12, 31)
 
         effective_start = max(start, year_start_date)
         effective_end = min(end, year_end_date)
