@@ -392,6 +392,7 @@ export default function AdminEmployees() {
                     <TableHead className="hidden md:table-cell">Empresa</TableHead>
                     <TableHead className="hidden lg:table-cell">Local</TableHead>
                     <TableHead className="hidden xl:table-cell">Contrato</TableHead>
+                    <TableHead className="hidden md:table-cell">Férias</TableHead>
                     <TableHead className="text-right">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -414,6 +415,12 @@ export default function AdminEmployees() {
                         <Badge variant="secondary">
                           {contractTypes.find(c => c.value === employee.contract_type)?.label || employee.contract_type}
                         </Badge>
+                      </TableCell>
+                      <TableCell className="hidden md:table-cell">
+                        <span className="font-medium">{employee.vacation_days_used}/{employee.vacation_days}</span>
+                        <span className={`ml-2 text-xs ${employee.vacation_days_available < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                          {employee.vacation_days_available} livres
+                        </span>
                       </TableCell>
                       <TableCell className="text-right">
                         <Button
@@ -738,8 +745,24 @@ export default function AdminEmployees() {
                   <p className="font-medium">{format(parseISO(selectedEmployee.start_date), 'dd/MM/yyyy')}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-muted-foreground">Dias de Férias</p>
+                  <p className="text-sm text-muted-foreground">Direito de férias</p>
                   <p className="font-medium">{selectedEmployee.vacation_days} dias</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Tiradas ({new Date().getFullYear()})</p>
+                  <p className="font-medium">{selectedEmployee.vacation_days_used} dias</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Pendentes de aprovação</p>
+                  <p className="font-medium">
+                    {selectedEmployee.vacation_days_pending > 0 ? `${selectedEmployee.vacation_days_pending} dias` : '—'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Por tirar</p>
+                  <p className={`font-medium ${selectedEmployee.vacation_days_available < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                    {selectedEmployee.vacation_days_available} dias
+                  </p>
                 </div>
               </div>
               {selectedEmployee.observations && (
