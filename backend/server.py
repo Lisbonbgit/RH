@@ -3492,13 +3492,62 @@ def _fin_clean_date(v):
     return s or None
 
 def _fin_clean_num(v):
-    """Número (float) ou None."""
+    """Número (float) ou None. Aceita formato PT e EN:
+    '1.234,56' (PT), '1,234.56' (EN), '994,34', '€ 994,34', '-12,5', '(123,45)'.
+    Robusto por design: dados migrados/IA podem trazer strings — nunca rebenta,
+    devolve None quando não consegue interpretar."""
     if v is None or v == "":
         return None
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        f = float(v)
+        return f if math.isfinite(f) else None
+    s = str(v).strip()
+    if not s:
+        return None
+    neg = False
+    # Parênteses = negativo (convenção contabilística): (123,45)
+    if s.startswith("(") and s.endswith(")"):
+        neg = True
+        s = s[1:-1].strip()
+    if s[:1] in "+-":
+        neg = neg or s[0] == "-"
+        s = s[1:].strip()
+    # Manter só dígitos e separadores (remove €, espaços, NBSP, etc.)
+    s = re.sub(r"[^0-9.,]", "", s)
+    if not s:
+        return None
+    has_dot, has_com = "." in s, "," in s
+    if has_dot and has_com:
+        # O separador mais à direita é o decimal; o outro é de milhares.
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    else:
+        # Um único tipo de separador. Vários (ex.: '1.234.567') = milhares.
+        # Um só: se tiver exatamente 3 dígitos a seguir, é milhares ('1.000',
+        # '1,000'); senão é decimal ('12,50', '1.5'). Moeda tem 2 casas decimais.
+        sep = "." if has_dot else ("," if has_com else "")
+        if sep:
+            if s.count(sep) > 1 or len(s.split(sep)[-1]) == 3:
+                s = s.replace(sep, "")          # milhares
+            elif sep == ",":
+                s = s.replace(",", ".")         # vírgula decimal (PT)
     try:
-        return float(v)
+        f = float(s)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(f):
+        return None
+    return -f if neg else f
+
+def _fin_num(v, default=0.0):
+    """Safe-float para agregações: nunca rebenta. Um valor inválido numa linha
+    não deve derrubar um KPI inteiro — devolve `default` (0.0) nesse caso."""
+    n = _fin_clean_num(v)
+    return n if n is not None else default
 
 def _fin_norm_sup(s):
     """Normaliza nome de fornecedor (igual ao supKey do frontend PHP)."""
@@ -4592,6 +4641,18 @@ async def fin_link_movement(movement_id: str, payload: FinMovementLink, current_
         raise HTTPException(status_code=404, detail="Fatura não encontrada.")
     if inv["company_id"] != mv["company_id"]:
         raise HTTPException(status_code=400, detail="A fatura é de outra empresa.")
+    # Integridade 1↔1: uma fatura tem no máximo UM movimento e vice-versa.
+    prev_inv_id = mv.get("invoice_id")
+    if prev_inv_id and prev_inv_id != inv["id"]:
+        # Este movimento estava ligado a outra fatura → repõe-a "por pagar".
+        await db.fin_invoices.update_one(
+            {"id": prev_inv_id}, {"$set": {"paid": False, "paid_date": None}}
+        )
+    # Desliga qualquer OUTRO movimento já ligado a esta fatura (evita dupla conciliação).
+    await db.fin_movements.update_many(
+        {"invoice_id": inv["id"], "id": {"$ne": movement_id}},
+        {"$set": {"invoice_id": None, "link_auto": False}},
+    )
     await db.fin_movements.update_one(
         {"id": movement_id}, {"$set": {"invoice_id": inv["id"], "link_auto": False}}
     )
@@ -4668,7 +4729,16 @@ async def fin_automatch_movements(payload: FinCompanyIdBody, current_user: dict 
         {"_id": 0, "id": 1, "amount": 1, "description": 1, "date_lancamento": 1},
     ).to_list(20000)
     linked = 0
-    used = set()  # faturas já ligadas nesta corrida — nunca reutilizar
+    # Faturas que NÃO podem voltar a ser ligadas: as já ligadas a algum movimento
+    # (de corridas anteriores) + as ligadas nesta corrida. Impede dupla conciliação.
+    used = set(
+        m["invoice_id"]
+        for m in await db.fin_movements.find(
+            {"company_id": payload.company_id, "invoice_id": {"$ne": None}},
+            {"_id": 0, "invoice_id": 1},
+        ).to_list(20000)
+        if m.get("invoice_id")
+    )
     for mv in movements:
         amount = mv.get("amount")
         if amount is None or amount >= 0:
@@ -4679,10 +4749,10 @@ async def fin_automatch_movements(payload: FinCompanyIdBody, current_user: dict 
         for inv in invoices:
             if inv["id"] in used:
                 continue
-            inv_amount = inv.get("amount")
+            inv_amount = _fin_clean_num(inv.get("amount"))
             if inv_amount is None:
                 continue
-            if round(float(inv_amount), 2) != target:
+            if round(inv_amount, 2) != target:
                 continue
             sup_n = _fin_norm_sup(inv.get("supplier"))
             if not sup_n or sup_n not in desc_n:
@@ -4779,18 +4849,18 @@ async def fin_reconcile_suggestions(company_id: str, current_user: dict = Depend
     # Indexa movimentos por (empresa, |montante| a 2 casas).
     by_amt = {}
     for mv in movements:
-        a = mv.get("amount")
+        a = _fin_clean_num(mv.get("amount"))
         if a is None:
             continue
-        by_amt.setdefault((mv.get("company_id"), round(abs(float(a)), 2)), []).append(mv)
+        by_amt.setdefault((mv.get("company_id"), round(abs(a), 2)), []).append(mv)
 
     THRESHOLD = 65
     raw = []
     for inv in invoices:
-        amt = inv.get("amount")
+        amt = _fin_clean_num(inv.get("amount"))
         if amt is None:
             continue
-        cands = by_amt.get((inv.get("company_id"), round(float(amt), 2)), [])
+        cands = by_amt.get((inv.get("company_id"), round(amt, 2)), [])
         if not cands:
             continue
         rule = rules.get(fin_supplier_key_of(inv.get("nif"), inv.get("supplier")))
@@ -5133,6 +5203,17 @@ async def fin_cron_ingest(key: str = Query(...)):
     companies = await db.fin_companies.find({}, {"_id": 0}).to_list(5000)
     processed = 0
 
+    async def _mark_seen(kk):
+        """Marca o anexo como processado (idempotente). Só se chama em resultados
+        DEFINITIVOS: fatura já inserida, não-fatura, duplicado ou sem empresa para
+        rotear. Um erro transitório de IA — ou uma FALHA no insert da fatura — NÃO
+        marca, para o anexo repetir na próxima corrida em vez de se perder."""
+        await db.fin_ingest_log.update_one(
+            {"k": kk},
+            {"$setOnInsert": {"k": kk, "at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+
     for bi, mb in enumerate(mailboxes):
         try:
             attachments = await asyncio.to_thread(_fin_fetch_pdf_attachments_sync, mb)
@@ -5159,18 +5240,13 @@ async def fin_cron_ingest(key: str = Query(...)):
                     summary["errors"].append(f"{fn}: {ex.get('error') if isinstance(ex, dict) else 'IA inválida'}")
                     continue
 
-                # Resultado definitivo (fatura / não-fatura / duplicado): marcar como visto.
-                await db.fin_ingest_log.update_one(
-                    {"k": k},
-                    {"$setOnInsert": {"k": k, "at": datetime.now(timezone.utc).isoformat()}},
-                    upsert=True,
-                )
-
                 if not _fin_looks_like_invoice(ex):
+                    await _mark_seen(k)  # definitivo: não é fatura
                     summary["skipped_not_invoice"] += 1
                     continue
 
                 if await _fin_is_duplicate(ex.get("invoiceNumber"), ex.get("nif"), ex.get("supplier")):
+                    await _mark_seen(k)  # definitivo: duplicado
                     summary["skipped_duplicate"] += 1
                     continue
 
@@ -5179,6 +5255,7 @@ async def fin_cron_ingest(key: str = Query(...)):
                 )
                 company_id = comp.get("id") if comp else None
                 if not company_id:
+                    await _mark_seen(k)  # definitivo: sem empresa para rotear
                     summary["errors"].append(f"{fn}: sem empresa correspondente — ignorada")
                     continue
 
@@ -5227,6 +5304,10 @@ async def fin_cron_ingest(key: str = Query(...)):
                 except Exception as exc:  # noqa: BLE001
                     summary["errors"].append(f"{fn}: PDF não guardado: {exc}")
 
+                # Só agora se marca como visto: a fatura está GARANTIDAMENTE inserida.
+                # Se _fin_insert_invoice tivesse falhado, o except abaixo apanhava a
+                # exceção sem marcar → repetia na próxima corrida (não se perde).
+                await _mark_seen(k)
                 summary["invoices_created"] += 1
             except Exception as exc:  # noqa: BLE001
                 summary["errors"].append(f"{fn}: {exc}")
@@ -5859,7 +5940,7 @@ async def fin_global_dashboard(
             {"_id": 0, "amount": 1},
         ).to_list(100000)
         financeiro["vendas_mes"] = round(
-            sum(float(s.get("amount") or 0) for s in sales), 2
+            sum(_fin_num(s.get("amount")) for s in sales), 2
         )
 
         # Faturas: a pagar (por pagar e não rejeitadas) e já pago
@@ -5880,7 +5961,7 @@ async def fin_global_dashboard(
         vencidas = 0
         today_iso = datetime.now(timezone.utc).date().isoformat()
         for inv in invoices:
-            amt = float(inv.get("amount") or 0)
+            amt = _fin_num(inv.get("amount"))
             is_paid = inv.get("paid") is True
             appr = inv.get("approval_status")
             if is_paid:
@@ -5916,11 +5997,13 @@ async def fin_global_dashboard(
                 sort=[("date_lancamento", -1)],
             )
             if last and last.get("balance") is not None:
-                saldo_banco += float(last.get("balance") or 0)
+                saldo_banco += _fin_num(last.get("balance"))
         financeiro["saldo_banco"] = round(saldo_banco, 2)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
         # Falha defensiva: mantém os valores por omissão sem derrubar o painel.
-        pass
+        # Com _fin_num a blindar cada valor, aqui só devem cair falhas reais de
+        # infra (Mongo/rede) — regista-as em vez de as engolir em silêncio.
+        logger.warning("[fin-painel] KPIs financeiros falharam (cid=%s): %s", company_id, exc)
 
     # ----- RH -----
     rh = {"linked": False}
@@ -7313,7 +7396,7 @@ async def fin_report_tesouraria(
             sort=[("date_lancamento", -1)],
         )
         if last and last.get("balance") is not None:
-            saldo_atual += float(last.get("balance") or 0)
+            saldo_atual += _fin_num(last.get("balance"))
     saldo_atual = round(saldo_atual, 2)
 
     # Regras de fornecedor (para o vencimento efetivo).
@@ -7412,8 +7495,8 @@ async def fin_sales_dashboard(
         s = 0.0
         for x in sales:
             if pred(str(x.get("date") or "")):
-                c += float(x.get("amount") or 0)
-                s += float(x.get("amount_net") or 0)
+                c += _fin_num(x.get("amount"))
+                s += _fin_num(x.get("amount_net"))
         return {"c": round(c, 2), "s": round(s, 2)}
 
     d_today = today.isoformat()
