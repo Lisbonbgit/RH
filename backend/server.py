@@ -4666,6 +4666,150 @@ async def fin_automatch_movements(payload: FinCompanyIdBody, current_user: dict 
     return {"linked": linked}
 
 
+# ---------- Conciliação por sugestão (Fase 1: pontua e propõe; humano confirma) ----------
+
+def _fin_reconcile_score(inv, mov, rule):
+    """Pontua um par (fatura por pagar, movimento de saída) já com o MESMO
+    montante. Devolve (score, reasons). Só sinais fortes sobem a pontuação."""
+    score = 50  # montante exato é pré-requisito dos candidatos
+    reasons = ["montante igual"]
+    desc = (mov.get("description") or "").upper()
+    desc_digits = re.sub(r"\D+", "", desc)
+    desc_alnum = re.sub(r"[^A-Z0-9]", "", desc)
+    nif = re.sub(r"\D+", "", str(inv.get("nif") or ""))
+    if nif and len(nif) >= 9 and nif in desc_digits:
+        score += 30; reasons.append("NIF na descrição")
+    num = re.sub(r"[^A-Z0-9]", "", str(inv.get("invoice_number") or "").upper())
+    if num and len(num) >= 5 and num in desc_alnum:
+        score += 30; reasons.append("nº da fatura na descrição")
+    sup = _fin_norm_sup(inv.get("supplier"))
+    toks = [t for t in sup.split() if len(t) >= 4]
+    if toks and any(t.upper() in desc for t in toks):
+        score += 25; reasons.append("nome do fornecedor")
+    eff = _fin_effective_due(inv, rule)
+    mvd = str(mov.get("date_lancamento") or "")[:10]
+    if eff and mvd:
+        try:
+            dd = abs((date.fromisoformat(mvd) - date.fromisoformat(str(eff)[:10])).days)
+            if dd <= 7:
+                score += 15; reasons.append("data junto ao vencimento")
+            elif dd <= 30:
+                score += 8; reasons.append("data dentro do prazo")
+        except (ValueError, TypeError):
+            pass
+    return score, reasons
+
+
+class FinReconcileDismiss(BaseModel):
+    invoice_id: str
+    movement_id: str
+
+
+@api_router.get("/fin/reconcile/suggestions")
+async def fin_reconcile_suggestions(company_id: str, current_user: dict = Depends(get_current_user)):
+    """Sugestões de conciliação: para cada fatura por pagar, o melhor movimento
+    de saída não ligado com o mesmo montante e sinais coincidentes (NIF, nº,
+    nome, data). NÃO altera nada — só propõe (o humano confirma com 1 clique).
+    Cada movimento aparece no máximo 1 vez (dedup por score). company_id="all"
+    agrega as empresas onde é membro. Limite de pontuação p/ aparecer: 65."""
+    if company_id == "all":
+        ids = await fin_member_company_ids(current_user["user_id"])
+        cid_q = {"$in": ids}
+    else:
+        await fin_require_member(company_id, current_user)
+        cid_q = company_id
+    invoices = await db.fin_invoices.find(
+        {"company_id": cid_q, "paid": {"$ne": True}, "approval_status": {"$ne": "rejected"}},
+        {"_id": 0, "id": 1, "company_id": 1, "supplier": 1, "nif": 1, "invoice_number": 1,
+         "amount": 1, "issue_date": 1, "due_date": 1},
+    ).to_list(20000)
+    movements = await db.fin_movements.find(
+        {"company_id": cid_q, "invoice_id": None, "amount": {"$lt": 0}},
+        {"_id": 0, "id": 1, "company_id": 1, "amount": 1, "description": 1, "date_lancamento": 1},
+    ).to_list(50000)
+    rules = {}
+    for r in await db.fin_supplier_rules.find({}, {"_id": 0}).to_list(5000):
+        if r.get("supplier_key"):
+            rules[r["supplier_key"]] = r
+    dismissed = set()
+    for d in await db.fin_reconcile_dismissed.find({}, {"_id": 0, "invoice_id": 1, "movement_id": 1}).to_list(50000):
+        dismissed.add((d.get("invoice_id"), d.get("movement_id")))
+
+    # Indexa movimentos por (empresa, |montante| a 2 casas).
+    by_amt = {}
+    for mv in movements:
+        a = mv.get("amount")
+        if a is None:
+            continue
+        by_amt.setdefault((mv.get("company_id"), round(abs(float(a)), 2)), []).append(mv)
+
+    THRESHOLD = 65
+    raw = []
+    for inv in invoices:
+        amt = inv.get("amount")
+        if amt is None:
+            continue
+        cands = by_amt.get((inv.get("company_id"), round(float(amt), 2)), [])
+        if not cands:
+            continue
+        rule = rules.get(fin_supplier_key_of(inv.get("nif"), inv.get("supplier")))
+        issue = str(inv.get("issue_date") or "")[:10]
+        best = None
+        for mv in cands:
+            mvd = str(mv.get("date_lancamento") or "")[:10]
+            if issue and mvd and mvd < issue:
+                continue  # nunca pagar antes de emitir
+            if (inv["id"], mv["id"]) in dismissed:
+                continue
+            sc, rs = _fin_reconcile_score(inv, mv, rule)
+            if best is None or sc > best[0]:
+                best = (sc, rs, mv)
+        if not best or best[0] < THRESHOLD:
+            continue
+        sc, rs, mv = best
+        raw.append({"score": sc, "reasons": rs, "inv": inv, "mv": mv})
+
+    # Dedup: cada movimento só numa sugestão (a de maior score).
+    raw.sort(key=lambda x: x["score"], reverse=True)
+    used_mv, out = set(), []
+    for s in raw:
+        mid = s["mv"]["id"]
+        if mid in used_mv:
+            continue
+        used_mv.add(mid)
+        inv, mv = s["inv"], s["mv"]
+        out.append({
+            "score": s["score"],
+            "confianca": "alta" if s["score"] >= 80 else "media",
+            "reasons": s["reasons"],
+            "invoice": {"id": inv["id"], "company_id": inv.get("company_id"),
+                        "supplier": inv.get("supplier"), "nif": inv.get("nif"),
+                        "invoice_number": inv.get("invoice_number"), "amount": inv.get("amount"),
+                        "issue_date": inv.get("issue_date"), "due_date": inv.get("due_date")},
+            "movement": {"id": mv["id"], "date_lancamento": mv.get("date_lancamento"),
+                         "description": mv.get("description"), "amount": mv.get("amount")},
+        })
+    return out
+
+
+@api_router.post("/fin/reconcile/dismiss")
+async def fin_reconcile_dismiss(payload: FinReconcileDismiss, current_user: dict = Depends(get_current_user)):
+    """Rejeita uma sugestão (par fatura↔movimento) para não voltar a aparecer."""
+    inv = await db.fin_invoices.find_one({"id": payload.invoice_id}, {"_id": 0, "company_id": 1})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+    await fin_require_editor(inv["company_id"], current_user)
+    await db.fin_reconcile_dismissed.update_one(
+        {"invoice_id": payload.invoice_id, "movement_id": payload.movement_id},
+        {"$setOnInsert": {
+            "invoice_id": payload.invoice_id, "movement_id": payload.movement_id,
+            "at": datetime.now(timezone.utc).isoformat(), "by": current_user["user_id"],
+        }},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
 # ===== FINANCEIRO · FASE 4B — INGESTÃO IMAP + IA (#1) =====
 # ==========================================================
 # Endpoint de cron (protegido por CRON_KEY, sem JWT) que lê N caixas IMAP,

@@ -159,6 +159,10 @@ export const getFinBankAccounts = (companyId) =>
 export const createFinBankAccount = (data) => axios.post(`${API_URL}/fin/bank-accounts`, data);
 export const getFinMovements = (params) => axios.get(`${API_URL}/fin/movements`, { params });
 export const importFinMovements = (data) => axios.post(`${API_URL}/fin/movements/import`, data);
+// Conciliação por sugestão (fatura ↔ movimento do extrato)
+export const getFinReconcileSuggestions = (companyId) =>
+  axios.get(`${API_URL}/fin/reconcile/suggestions`, { params: { company_id: companyId } });
+export const dismissFinReconcileSuggestion = (data) => axios.post(`${API_URL}/fin/reconcile/dismiss`, data);
 export const importFinMovementsPdf = (file) => {
   const fd = new FormData();
   fd.append('file', file);

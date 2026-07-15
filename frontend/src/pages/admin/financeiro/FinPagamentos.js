@@ -6,6 +6,7 @@ import {
   toggleFinInvoicePaid, setFinInvoiceUnit, deleteFinInvoice, cancelFinInvoiceSeries,
   getFinMovements, linkFinMovement, unlinkFinMovement,
   approveFinInvoice, rejectFinInvoice,
+  getFinReconcileSuggestions, dismissFinReconcileSuggestion,
 } from '../../../lib/api';
 import { eur, fmtDate, todayISO, effectiveDue, supplierKeyOf, kpiTone } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
@@ -105,6 +106,10 @@ export default function FinPagamentos() {
   const [rejecting, setRejecting] = useState(null);         // fatura a rejeitar (abre diálogo)
   const [rejectNote, setRejectNote] = useState('');
 
+  // Conciliação: sugestões fatura↔movimento do extrato (confirmar/rejeitar com 1 clique)
+  const [suggestions, setSuggestions] = useState([]);
+  const [sugBusyId, setSugBusyId] = useState(null);
+
   const company = companies.find((c) => c.id === companyId) || null;
   const canEdit = company && (company.role === 'owner' || company.role === 'partner');
   const companyUnits = companyId === COMPANY_ALL ? units : units.filter((u) => u.company_id === companyId);
@@ -155,6 +160,43 @@ export default function FinPagamentos() {
       toast.error('Erro ao carregar faturas');
     } finally {
       setLoading(false);
+    }
+    loadSuggestions();
+  };
+
+  const loadSuggestions = async () => {
+    try {
+      const r = await getFinReconcileSuggestions(companyId);
+      setSuggestions(r.data || []);
+    } catch (e) {
+      setSuggestions([]);
+    }
+  };
+
+  // Confirma uma sugestão: liga o movimento à fatura (marca-a paga).
+  const confirmSuggestion = async (s) => {
+    setSugBusyId(s.movement.id);
+    try {
+      await linkFinMovement(s.movement.id, s.invoice.id);
+      toast.success('Fatura conciliada e marcada como paga');
+      await Promise.all([loadData(), loadSuggestions()]);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao conciliar');
+    } finally {
+      setSugBusyId(null);
+    }
+  };
+
+  // Rejeita uma sugestão (não volta a aparecer este par).
+  const rejectSuggestion = async (s) => {
+    setSugBusyId(s.movement.id);
+    try {
+      await dismissFinReconcileSuggestion({ invoice_id: s.invoice.id, movement_id: s.movement.id });
+      setSuggestions((prev) => prev.filter((x) => x.movement.id !== s.movement.id));
+    } catch (e) {
+      toast.error('Erro ao rejeitar');
+    } finally {
+      setSugBusyId(null);
     }
   };
 
@@ -660,6 +702,14 @@ export default function FinPagamentos() {
             <TabsTrigger value="resumo" data-testid="tab-resumo">Resumo</TabsTrigger>
             <TabsTrigger value="faturas" data-testid="tab-faturas">Faturas</TabsTrigger>
             <TabsTrigger value="agenda" data-testid="tab-agenda">Agenda</TabsTrigger>
+            <TabsTrigger value="conciliacao" data-testid="tab-conciliacao">
+              Conciliação
+              {suggestions.length > 0 && (
+                <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-primary text-primary-foreground text-[10px] font-bold h-4 min-w-4 px-1">
+                  {suggestions.length}
+                </span>
+              )}
+            </TabsTrigger>
             <TabsTrigger value="conta" data-testid="tab-conta">Conta Corrente</TabsTrigger>
           </TabsList>
 
@@ -913,6 +963,76 @@ export default function FinPagamentos() {
                       ))}
                     </div>
                   ))
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* ---------- CONCILIAÇÃO (sugestões fatura↔extrato) ---------- */}
+          <TabsContent value="conciliacao">
+            <Card>
+              <CardContent className="p-4 space-y-3">
+                <div className="flex items-start gap-2">
+                  <Link2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                  <p className="text-sm text-muted-foreground">
+                    Pagamentos prováveis detetados no extrato do banco. Confirma para marcar a fatura paga
+                    (com a data do movimento) ou rejeita se não corresponder.
+                  </p>
+                </div>
+                {suggestions.length === 0 ? (
+                  <p className="text-center text-muted-foreground py-10 text-sm">
+                    Sem sugestões de momento. Importa o extrato do banco (no <b>Extrato</b>) para o sistema propor os pagamentos.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {suggestions.map((s) => (
+                      <div key={s.movement.id} className="rounded-xl border p-3 space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge className={s.confianca === 'alta'
+                            ? 'bg-emerald-600 hover:bg-emerald-600'
+                            : 'bg-amber-500 hover:bg-amber-500'}>
+                            {s.confianca === 'alta' ? 'Confiança alta' : 'Confiança média'}
+                          </Badge>
+                          {s.reasons.map((r) => (
+                            <span key={r} className="text-[11px] rounded-md bg-muted px-1.5 py-0.5 text-muted-foreground">{r}</span>
+                          ))}
+                          {companyId === COMPANY_ALL && companyName(s.invoice.company_id) && (
+                            <span className="text-[11px] text-muted-foreground">· {companyName(s.invoice.company_id)}</span>
+                          )}
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-[1fr_auto_1fr] items-center">
+                          {/* Fatura */}
+                          <div className="min-w-0">
+                            <p className="text-xs text-muted-foreground">Fatura</p>
+                            <p className="text-sm font-semibold truncate">{s.invoice.supplier || '(sem fornecedor)'}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {s.invoice.invoice_number ? `nº ${s.invoice.invoice_number} · ` : ''}{eur(s.invoice.amount)}
+                              {s.invoice.due_date ? ` · vence ${fmtDate(s.invoice.due_date)}` : ''}
+                            </p>
+                          </div>
+                          <Link2 className="h-4 w-4 text-muted-foreground mx-auto hidden sm:block" />
+                          {/* Movimento */}
+                          <div className="min-w-0">
+                            <p className="text-xs text-muted-foreground">Movimento do banco</p>
+                            <p className="text-sm font-medium truncate">{fmtDate(s.movement.date_lancamento)} · {eur(s.movement.amount)}</p>
+                            <p className="text-xs text-muted-foreground truncate">{s.movement.description || '—'}</p>
+                          </div>
+                        </div>
+                        {canEdit && (
+                          <div className="flex justify-end gap-2 pt-1">
+                            <Button size="sm" variant="ghost" disabled={sugBusyId === s.movement.id}
+                              onClick={() => rejectSuggestion(s)} data-testid={`sug-reject-${s.movement.id}`}>
+                              <X className="h-4 w-4 mr-1" />Rejeitar
+                            </Button>
+                            <Button size="sm" disabled={sugBusyId === s.movement.id}
+                              onClick={() => confirmSuggestion(s)} data-testid={`sug-confirm-${s.movement.id}`}>
+                              <Check className="h-4 w-4 mr-1" />{sugBusyId === s.movement.id ? 'A conciliar...' : 'Confirmar'}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 )}
               </CardContent>
             </Card>
