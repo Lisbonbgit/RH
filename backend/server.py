@@ -2085,7 +2085,7 @@ async def vacation_balance_report(
         entitled = emp.get("vacation_days", 0)
         results.append({
             "employee_id": emp["id"],
-            "name": emp["name"],
+            "name": emp.get("name"),
             "vacation_days": entitled,
             "used": used,
             "pending": pending,
