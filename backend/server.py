@@ -4675,7 +4675,9 @@ async def fin_import_movements(payload: FinMovementImport, current_user: dict = 
         if lvl2 is not None:
             seen_lvl2.add(lvl2)
         inserted += 1
-    return {"inserted": inserted, "skipped": skipped, "account_id": acc["id"]}
+    # Novos movimentos → tenta auto-confirmar faturas por carimbo aprendido.
+    auto = await _fin_auto_reconcile([payload.company_id])
+    return {"inserted": inserted, "skipped": skipped, "account_id": acc["id"], "auto_reconciled": auto}
 
 @api_router.put("/fin/movements/{movement_id}/set-title")
 async def fin_set_movement_title(movement_id: str, payload: FinMovementTitle, current_user: dict = Depends(get_current_user)):
@@ -4718,6 +4720,9 @@ async def fin_link_movement(movement_id: str, payload: FinMovementLink, current_
     await db.fin_invoices.update_one(
         {"id": inv["id"]}, {"$set": {"paid": True, "paid_date": mv.get("date_lancamento")}}
     )
+    # Fase 2: aprende o carimbo deste movimento para o fornecedor — futuros
+    # pagamentos recorrentes do mesmo fornecedor auto-confirmam-se sozinhos.
+    await _fin_learn_carimbo(inv, mv, current_user["user_id"])
     return await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
 
 @api_router.put("/fin/movements/{movement_id}/unlink")
@@ -4838,11 +4843,91 @@ async def fin_automatch_movements(payload: FinCompanyIdBody, current_user: dict 
 
 # ---------- Conciliação por sugestão (Fase 1: pontua e propõe; humano confirma) ----------
 
-def _fin_reconcile_score(inv, mov, rule):
+# Fase 2: "carimbo" do fornecedor — assinatura estável do movimento bancário
+# (identificador longo tipo IBAN/credor + tokens distintivos da descrição). Ao
+# confirmar uma conciliação aprende-se o carimbo; depois auto-confirma-se sozinho
+# quando um movimento bate num carimbo já aprendido do mesmo fornecedor.
+_FIN_CARIMBO_STOP = {
+    "transferencia", "transf", "trf", "pagamento", "pagamentos", "pag", "paga",
+    "debito", "credito", "directo", "direto", "sepa", "compra", "compras",
+    "mbway", "multibanco", "ordem", "referencia", "montante", "conta", "servico",
+    "servicos", "europe", "europa", "portugal", "online", "mensal", "fatura",
+}
+
+def _fin_carimbo(description):
+    """Assinatura de um movimento: 'ident' (1ª sequência de >=15 dígitos —
+    IBAN/NIB/ID de credor, sinal muito estável nos débitos diretos) + 'tokens'
+    (alfabéticos >=4 letras, sem ruído bancário). Devolve {'ident','tokens'}."""
+    up = (description or "").upper()
+    m = re.search(r"\d{15,}", re.sub(r"\s+", "", up))
+    ident = m.group(0) if m else None
+    norm = _fin_norm_sup(description)  # minúsculas, sem sufixos/pontuação
+    tokens = sorted({
+        t for t in norm.split()
+        if len(t) >= 4 and not t.isdigit() and t not in _FIN_CARIMBO_STOP
+    })
+    return {"ident": ident, "tokens": tokens}
+
+def _fin_carimbo_usable(c):
+    """Um carimbo só serve se for distintivo o suficiente para não bater no
+    fornecedor errado: um identificador longo (IBAN/credor — os débitos diretos
+    têm-no sempre) OU pelo menos 2 tokens alfabéticos. Um único token genérico
+    (ex.: 'comunicacoes') não chega."""
+    return bool(c and (c.get("ident") or len(c.get("tokens") or []) >= 2))
+
+def _fin_carimbo_matches(learned, mv_description):
+    """O movimento bate no carimbo aprendido? ident igual OU todos os tokens do
+    carimbo presentes na descrição do movimento."""
+    got = _fin_carimbo(mv_description)
+    if learned.get("ident") and got.get("ident") == learned["ident"]:
+        return True
+    lt = set(learned.get("tokens") or [])
+    return bool(lt) and lt.issubset(set(got.get("tokens") or []))
+
+async def _fin_learn_carimbo(inv, mv, user_id):
+    """Aprende o carimbo do movimento para o fornecedor da fatura (idempotente).
+    Só guarda se for distintivo. Chamado ao confirmar uma conciliação."""
+    skey = fin_supplier_key_of(inv.get("nif"), inv.get("supplier"))
+    if not skey or skey in ("t:", "n:"):
+        return
+    c = _fin_carimbo(mv.get("description"))
+    if not _fin_carimbo_usable(c):
+        return
+    sig = hashlib.sha1(
+        f"{skey}|{c.get('ident') or ''}|{','.join(c.get('tokens') or [])}".encode()
+    ).hexdigest()
+    await db.fin_reconcile_carimbos.update_one(
+        {"sig": sig},
+        {"$setOnInsert": {
+            "sig": sig, "supplier_key": skey,
+            "ident": c.get("ident"), "tokens": c.get("tokens"),
+            "sample": (mv.get("description") or "")[:200],
+            "company_id": inv.get("company_id"),
+            "at": datetime.now(timezone.utc).isoformat(), "by": user_id,
+        }},
+        upsert=True,
+    )
+
+async def _fin_carimbos_by_supplier():
+    """Todos os carimbos aprendidos, agrupados por supplier_key."""
+    out = {}
+    for c in await db.fin_reconcile_carimbos.find(
+        {}, {"_id": 0, "supplier_key": 1, "ident": 1, "tokens": 1}
+    ).to_list(20000):
+        sk = c.get("supplier_key")
+        if sk:
+            out.setdefault(sk, []).append(c)
+    return out
+
+def _fin_reconcile_score(inv, mov, rule, carimbos=None):
     """Pontua um par (fatura por pagar, movimento de saída) já com o MESMO
-    montante. Devolve (score, reasons). Só sinais fortes sobem a pontuação."""
+    montante. Devolve (score, reasons). Só sinais fortes sobem a pontuação.
+    `carimbos` = carimbos aprendidos deste fornecedor (Fase 2): se algum bater,
+    é o sinal mais forte (padrão já confirmado antes por um humano)."""
     score = 50  # montante exato é pré-requisito dos candidatos
     reasons = ["montante igual"]
+    if carimbos and any(_fin_carimbo_matches(c, mov.get("description")) for c in carimbos):
+        score += 35; reasons.append("padrão aprendido do fornecedor")
     desc = (mov.get("description") or "").upper()
     desc_digits = re.sub(r"\D+", "", desc)
     desc_alnum = re.sub(r"[^A-Z0-9]", "", desc)
@@ -4901,6 +4986,7 @@ async def fin_reconcile_suggestions(company_id: str, current_user: dict = Depend
     for r in await db.fin_supplier_rules.find({}, {"_id": 0}).to_list(5000):
         if r.get("supplier_key"):
             rules[r["supplier_key"]] = r
+    carimbos_by_sk = await _fin_carimbos_by_supplier()
     dismissed = set()
     for d in await db.fin_reconcile_dismissed.find({}, {"_id": 0, "invoice_id": 1, "movement_id": 1}).to_list(50000):
         dismissed.add((d.get("invoice_id"), d.get("movement_id")))
@@ -4922,7 +5008,9 @@ async def fin_reconcile_suggestions(company_id: str, current_user: dict = Depend
         cands = by_amt.get((inv.get("company_id"), round(amt, 2)), [])
         if not cands:
             continue
-        rule = rules.get(fin_supplier_key_of(inv.get("nif"), inv.get("supplier")))
+        skey = fin_supplier_key_of(inv.get("nif"), inv.get("supplier"))
+        rule = rules.get(skey)
+        carimbos = carimbos_by_sk.get(skey)
         issue = str(inv.get("issue_date") or "")[:10]
         best = None
         for mv in cands:
@@ -4931,7 +5019,7 @@ async def fin_reconcile_suggestions(company_id: str, current_user: dict = Depend
                 continue  # nunca pagar antes de emitir
             if (inv["id"], mv["id"]) in dismissed:
                 continue
-            sc, rs = _fin_reconcile_score(inv, mv, rule)
+            sc, rs = _fin_reconcile_score(inv, mv, rule, carimbos)
             if best is None or sc > best[0]:
                 best = (sc, rs, mv)
         if not best or best[0] < THRESHOLD:
@@ -4978,6 +5066,103 @@ async def fin_reconcile_dismiss(payload: FinReconcileDismiss, current_user: dict
         upsert=True,
     )
     return {"ok": True}
+
+
+# ---------- Conciliação Fase 2: auto-confirmar por carimbo aprendido ----------
+
+async def _fin_auto_reconcile(company_ids=None):
+    """Auto-confirma conciliações SÓ quando: (a) há carimbo APRENDIDO do
+    fornecedor (padrão já confirmado antes por um humano), (b) o movimento bate
+    nesse carimbo, (c) montante exato, (d) data >= emissão, (e) emparelhamento
+    ÚNICO e mútuo (1 fatura ↔ 1 movimento sem ambiguidade). Reversível
+    (link_auto=True). `company_ids=None` = todas. Devolve nº de ligações feitas."""
+    carimbos_by_sk = await _fin_carimbos_by_supplier()
+    if not carimbos_by_sk:
+        return 0  # ainda não há nada aprendido
+    inv_q = {"paid": {"$ne": True}, "approval_status": {"$ne": "rejected"}}
+    mv_q = {"invoice_id": None, "amount": {"$lt": 0}}
+    if company_ids is not None:
+        cids = list(company_ids)
+        if not cids:
+            return 0
+        inv_q["company_id"] = {"$in": cids}
+        mv_q["company_id"] = {"$in": cids}
+    invoices = await db.fin_invoices.find(
+        inv_q, {"_id": 0, "id": 1, "company_id": 1, "supplier": 1, "nif": 1,
+                "amount": 1, "issue_date": 1},
+    ).to_list(20000)
+    movements = await db.fin_movements.find(
+        mv_q, {"_id": 0, "id": 1, "company_id": 1, "amount": 1, "description": 1,
+               "date_lancamento": 1},
+    ).to_list(50000)
+    dismissed = set()
+    for d in await db.fin_reconcile_dismissed.find(
+        {}, {"_id": 0, "invoice_id": 1, "movement_id": 1}
+    ).to_list(50000):
+        dismissed.add((d.get("invoice_id"), d.get("movement_id")))
+
+    by_amt = {}
+    for mv in movements:
+        a = _fin_clean_num(mv.get("amount"))
+        if a is None:
+            continue
+        by_amt.setdefault((mv.get("company_id"), round(abs(a), 2)), []).append(mv)
+
+    # Pares candidatos (carimbo + montante + data), depois emparelhamento único.
+    pairs, mv_by_id = [], {}
+    inv_count, mv_count = {}, {}
+    for inv in invoices:
+        carimbos = carimbos_by_sk.get(fin_supplier_key_of(inv.get("nif"), inv.get("supplier")))
+        if not carimbos:
+            continue
+        amt = _fin_clean_num(inv.get("amount"))
+        if amt is None:
+            continue
+        issue = str(inv.get("issue_date") or "")[:10]
+        for mv in by_amt.get((inv.get("company_id"), round(amt, 2)), []):
+            mvd = str(mv.get("date_lancamento") or "")[:10]
+            if issue and mvd and mvd < issue:
+                continue
+            if (inv["id"], mv["id"]) in dismissed:
+                continue
+            if not any(_fin_carimbo_matches(c, mv.get("description")) for c in carimbos):
+                continue
+            pairs.append((inv["id"], mv["id"]))
+            mv_by_id[mv["id"]] = mv
+            inv_count[inv["id"]] = inv_count.get(inv["id"], 0) + 1
+            mv_count[mv["id"]] = mv_count.get(mv["id"], 0) + 1
+
+    linked = 0
+    for inv_id, mv_id in pairs:
+        if inv_count[inv_id] != 1 or mv_count[mv_id] != 1:
+            continue  # ambíguo → deixa para revisão humana
+        mv = mv_by_id[mv_id]
+        # Filtros condicionais evitam corridas (só liga se ainda por ligar/pagar).
+        res = await db.fin_movements.update_one(
+            {"id": mv_id, "invoice_id": None},
+            {"$set": {"invoice_id": inv_id, "link_auto": True}},
+        )
+        if res.modified_count:
+            await db.fin_invoices.update_one(
+                {"id": inv_id, "paid": {"$ne": True}},
+                {"$set": {"paid": True, "paid_date": mv.get("date_lancamento")}},
+            )
+            linked += 1
+    return linked
+
+
+@api_router.post("/fin/reconcile/auto")
+async def fin_reconcile_auto(payload: FinCompanyIdBody, current_user: dict = Depends(get_current_user)):
+    """Dispara o auto-confirmar por carimbo (para a empresa selecionada, ou todas
+    onde é membro se company_id='all'). Devolve quantas conciliações fez."""
+    cid = (payload.company_id or "").strip()
+    if cid == "all" or not cid:
+        ids = await fin_member_company_ids(current_user["user_id"])
+    else:
+        await fin_require_editor(cid, current_user)
+        ids = [cid]
+    n = await _fin_auto_reconcile(ids)
+    return {"linked": n}
 
 
 # ===== FINANCEIRO · FASE 4B — INGESTÃO IMAP + IA (#1) =====
@@ -5388,6 +5573,12 @@ async def fin_cron_ingest(key: str = Query(...)):
                 summary["errors"].append(f"{fn}: {exc}")
                 continue
 
+    # Faturas novas → tenta auto-confirmar por carimbo aprendido (todas as empresas).
+    try:
+        summary["auto_reconciled"] = await _fin_auto_reconcile(None)
+    except Exception as exc:  # noqa: BLE001
+        summary["errors"].append(f"auto-conciliação: {exc}")
+
     return summary
 
 
@@ -5784,6 +5975,8 @@ async def fin_import_movements_pdf(
         "[fin-extrato-pdf] conta=***%s empresa=%s total_no_pdf=%d inseridos=%d ignorados=%d periodo=%s..%s",
         acct_digits[-4:], company_id, total, inserted, skipped, d_min, d_max,
     )
+    # Novos movimentos → tenta auto-confirmar faturas por carimbo aprendido.
+    auto = await _fin_auto_reconcile([company_id])
     return {
         "account_number": acct_digits,
         "company_id": company_id,
@@ -5793,6 +5986,7 @@ async def fin_import_movements_pdf(
         "total_no_pdf": total,
         "periodo": {"de": d_min, "ate": d_max},
         "holder": holder,
+        "auto_reconciled": auto,
     }
 
 
