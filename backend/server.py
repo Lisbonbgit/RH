@@ -5151,6 +5151,85 @@ async def _fin_auto_reconcile(company_ids=None):
     return linked
 
 
+@api_router.get("/fin/reconcile/pending")
+async def fin_reconcile_pending(
+    company_id: str,
+    month: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Fase 3 — fecho de tesouraria: o que falta conciliar no mês.
+    (a) movimentos de SAÍDA do banco datados no mês sem fatura ligada — saiu
+    dinheiro e não se sabe a que fatura corresponde; (b) faturas por pagar com
+    vencimento EFETIVO até ao fim do mês — devemos e não se encontrou pagamento.
+    Devolve também o progresso (quantos movimentos do mês já estão conciliados).
+    `month` = AAAA-MM (por omissão o mês atual). company_id="all" agrega."""
+    if company_id == "all":
+        ids = await fin_member_company_ids(current_user["user_id"])
+        cid_q = {"$in": ids}
+    else:
+        await fin_require_member(company_id, current_user)
+        cid_q = company_id
+    mon = (month or "").strip()
+    if not re.match(r"^\d{4}-\d{2}$", mon):
+        mon = datetime.now(timezone.utc).strftime("%Y-%m")
+    y, m = int(mon[:4]), int(mon[5:7])
+    nxt = f"{y + 1}-01-01" if m == 12 else f"{y}-{m + 1:02d}-01"
+
+    # (a) Movimentos de saída do mês: ligados vs por ligar.
+    movs = await db.fin_movements.find(
+        {"company_id": cid_q, "amount": {"$lt": 0},
+         "date_lancamento": {"$gte": f"{mon}-01", "$lt": nxt}},
+        {"_id": 0, "id": 1, "company_id": 1, "amount": 1, "description": 1,
+         "date_lancamento": 1, "invoice_id": 1},
+    ).to_list(50000)
+    por_ligar = [x for x in movs if not x.get("invoice_id")]
+    por_ligar.sort(key=lambda x: str(x.get("date_lancamento") or ""))
+
+    # (b) Faturas por pagar com vencimento efetivo até ao fim do mês.
+    rules_map = {}
+    for r in await db.fin_supplier_rules.find({}, {"_id": 0}).to_list(5000):
+        if r.get("supplier_key"):
+            rules_map[r["supplier_key"]] = r
+    invoices = await db.fin_invoices.find(
+        {"company_id": cid_q, "paid": {"$ne": True}, "approval_status": {"$ne": "rejected"}},
+        {"_id": 0, "id": 1, "company_id": 1, "supplier": 1, "nif": 1,
+         "invoice_number": 1, "amount": 1, "issue_date": 1, "due_date": 1},
+    ).to_list(20000)
+    faturas = []
+    for inv in invoices:
+        rule = rules_map.get(fin_supplier_key_of(inv.get("nif"), inv.get("supplier")))
+        eff = _fin_effective_due(inv, rule)
+        eff_s = str(eff)[:10] if eff else None
+        if not eff_s or eff_s >= nxt:
+            continue  # vence depois deste mês — não entra neste fecho
+        faturas.append({
+            "id": inv["id"], "company_id": inv.get("company_id"),
+            "supplier": inv.get("supplier"), "invoice_number": inv.get("invoice_number"),
+            "amount": _fin_num(inv.get("amount")), "due_date": inv.get("due_date"),
+            "effective_due": eff_s,
+            "direct_debit": bool(rule and rule.get("direct_debit")),
+        })
+    faturas.sort(key=lambda x: x.get("effective_due") or "")
+
+    return {
+        "month": mon,
+        "movimentos_por_ligar": [{
+            "id": x["id"], "company_id": x.get("company_id"),
+            "date_lancamento": x.get("date_lancamento"),
+            "description": x.get("description"), "amount": _fin_num(x.get("amount")),
+        } for x in por_ligar],
+        "faturas_por_pagar": faturas,
+        "totais": {
+            "movimentos_mes": len(movs),
+            "movimentos_ligados": len(movs) - len(por_ligar),
+            "movimentos_por_ligar_n": len(por_ligar),
+            "movimentos_por_ligar_valor": round(sum(abs(_fin_num(x.get("amount"))) for x in por_ligar), 2),
+            "faturas_por_pagar_n": len(faturas),
+            "faturas_por_pagar_valor": round(sum(x["amount"] for x in faturas), 2),
+        },
+    }
+
+
 @api_router.post("/fin/reconcile/auto")
 async def fin_reconcile_auto(payload: FinCompanyIdBody, current_user: dict = Depends(get_current_user)):
     """Dispara o auto-confirmar por carimbo (para a empresa selecionada, ou todas

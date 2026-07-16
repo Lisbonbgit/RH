@@ -164,6 +164,9 @@ export const importFinMovements = (data) => axios.post(`${API_URL}/fin/movements
 export const getFinReconcileSuggestions = (companyId) =>
   axios.get(`${API_URL}/fin/reconcile/suggestions`, { params: { company_id: companyId } });
 export const dismissFinReconcileSuggestion = (data) => axios.post(`${API_URL}/fin/reconcile/dismiss`, data);
+// Fecho de tesouraria: o que falta conciliar no mês (movimentos por ligar + faturas por pagar)
+export const getFinReconcilePending = (companyId, month) =>
+  axios.get(`${API_URL}/fin/reconcile/pending`, { params: { company_id: companyId, month } });
 export const importFinMovementsPdf = (file) => {
   const fd = new FormData();
   fd.append('file', file);

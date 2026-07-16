@@ -6,7 +6,7 @@ import {
   toggleFinInvoicePaid, setFinInvoiceUnit, deleteFinInvoice, cancelFinInvoiceSeries,
   getFinMovements, linkFinMovement, unlinkFinMovement,
   approveFinInvoice, rejectFinInvoice,
-  getFinReconcileSuggestions, dismissFinReconcileSuggestion,
+  getFinReconcileSuggestions, dismissFinReconcileSuggestion, getFinReconcilePending,
 } from '../../../lib/api';
 import { eur, fmtDate, todayISO, effectiveDue, supplierKeyOf, kpiTone } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
+import MonthPicker from '../../../components/MonthPicker';
 
 const COMPANY_ALL = 'all';
 const RECURRENCE = [
@@ -110,6 +111,13 @@ export default function FinPagamentos() {
   const [suggestions, setSuggestions] = useState([]);
   const [sugBusyId, setSugBusyId] = useState(null);
 
+  // Fecho de tesouraria ("Por conciliar"): o que falta bater no mês escolhido.
+  // Tabs controladas para só ir buscar os dados quando a aba é aberta.
+  const [tab, setTab] = useState('resumo');
+  const [fecho, setFecho] = useState(null);
+  const [fechoMonth, setFechoMonth] = useState(() => todayISO().slice(0, 7));
+  const [fechoLoading, setFechoLoading] = useState(false);
+
   const company = companies.find((c) => c.id === companyId) || null;
   const canEdit = company && (company.role === 'owner' || company.role === 'partner');
   const companyUnits = companyId === COMPANY_ALL ? units : units.filter((u) => u.company_id === companyId);
@@ -136,6 +144,10 @@ export default function FinPagamentos() {
   useEffect(() => {
     setCompanyId(selectedCompany ? selectedCompany.id : COMPANY_ALL);
   }, [selectedCompany]);
+  // "Por conciliar": só carrega quando a aba está aberta (e ao mudar empresa/mês).
+  useEffect(() => {
+    if (companyId && tab === 'porconciliar') loadFecho();
+  }, [companyId, fechoMonth, tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadCompanies = async () => {
     try {
@@ -148,6 +160,18 @@ export default function FinPagamentos() {
       if (c.data.length && !valid) setCompanyId(COMPANY_ALL);
     } catch (e) {
       toast.error('Erro ao carregar empresas');
+    }
+  };
+
+  const loadFecho = async () => {
+    setFechoLoading(true);
+    try {
+      const r = await getFinReconcilePending(companyId, fechoMonth);
+      setFecho(r.data);
+    } catch (e) {
+      toast.error('Erro ao carregar o fecho de tesouraria');
+    } finally {
+      setFechoLoading(false);
     }
   };
 
@@ -703,7 +727,7 @@ export default function FinPagamentos() {
           Ainda não tens empresas. Cria uma no separador <b>Início</b> primeiro.
         </CardContent></Card>
       ) : (
-        <Tabs defaultValue="resumo" className="space-y-4">
+        <Tabs value={tab} onValueChange={setTab} className="space-y-4">
           <TabsList>
             <TabsTrigger value="resumo" data-testid="tab-resumo">Resumo</TabsTrigger>
             <TabsTrigger value="faturas" data-testid="tab-faturas">Faturas</TabsTrigger>
@@ -716,6 +740,7 @@ export default function FinPagamentos() {
                 </span>
               )}
             </TabsTrigger>
+            <TabsTrigger value="porconciliar" data-testid="tab-porconciliar">Por conciliar</TabsTrigger>
             <TabsTrigger value="conta" data-testid="tab-conta">Conta Corrente</TabsTrigger>
           </TabsList>
 
@@ -1039,6 +1064,117 @@ export default function FinPagamentos() {
                       </div>
                     ))}
                   </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* ---------- POR CONCILIAR (fecho de tesouraria) ---------- */}
+          <TabsContent value="porconciliar" className="space-y-4">
+            <Card>
+              <CardContent className="p-4 space-y-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex items-start gap-2">
+                    <ClipboardCheck className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                    <p className="text-sm text-muted-foreground max-w-2xl">
+                      Fecho do mês: o que ainda não bate. À esquerda, dinheiro que <b>saiu do banco</b> sem
+                      fatura associada. À direita, <b>faturas já vencidas</b> sem pagamento encontrado.
+                      Quando ambas as listas ficam vazias, o mês está fechado.
+                    </p>
+                  </div>
+                  <MonthPicker value={fechoMonth} onChange={setFechoMonth} className="w-44"
+                    testid="fin-porconciliar-month" />
+                </div>
+
+                {fechoLoading || !fecho ? (
+                  <p className="text-center text-muted-foreground py-10 text-sm">A carregar…</p>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4" data-testid="fin-porconciliar-kpis">
+                      {[
+                        { label: 'Movimentos conciliados',
+                          value: `${fecho.totais.movimentos_ligados}/${fecho.totais.movimentos_mes}`,
+                          icon: Check },
+                        { label: 'Movimentos por ligar', value: fecho.totais.movimentos_por_ligar_n, icon: Link2 },
+                        { label: 'Valor por ligar', value: eur(fecho.totais.movimentos_por_ligar_valor), icon: Wallet },
+                        { label: 'Faturas por pagar', value: eur(fecho.totais.faturas_por_pagar_valor), icon: AlertTriangle },
+                      ].map((k, i) => {
+                        const tone = kpiTone(i);
+                        return (
+                          <Card key={k.label}>
+                            <CardContent className="flex items-center gap-3 p-5">
+                              <div className={`h-10 w-10 rounded-xl ${tone.bg} ${tone.icon} flex items-center justify-center shrink-0`}>
+                                <k.icon className="h-5 w-5" />
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-xl font-heading font-bold leading-none">{k.value}</p>
+                                <p className="text-xs text-muted-foreground mt-1">{k.label}</p>
+                              </div>
+                            </CardContent>
+                          </Card>
+                        );
+                      })}
+                    </div>
+
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      {/* Movimentos do banco por ligar */}
+                      <div className="rounded-xl border">
+                        <div className="flex items-center gap-2 border-b px-4 py-2.5">
+                          <Link2 className="h-4 w-4 text-muted-foreground" />
+                          <p className="text-sm font-semibold">Saiu do banco, sem fatura</p>
+                          <Badge variant="secondary" className="ml-auto">{fecho.movimentos_por_ligar.length}</Badge>
+                        </div>
+                        {fecho.movimentos_por_ligar.length === 0 ? (
+                          <p className="text-center text-muted-foreground py-8 text-sm">Tudo ligado neste mês. ✅</p>
+                        ) : (
+                          <div className="divide-y max-h-[28rem] overflow-y-auto">
+                            {fecho.movimentos_por_ligar.map((m) => (
+                              <div key={m.id} className="px-4 py-2.5" data-testid={`porconciliar-mov-${m.id}`}>
+                                <div className="flex items-baseline justify-between gap-2">
+                                  <p className="text-sm font-medium">{fmtDate(m.date_lancamento)}</p>
+                                  <p className="text-sm font-semibold tabular-nums">{eur(m.amount)}</p>
+                                </div>
+                                <p className="text-xs text-muted-foreground truncate">{m.description || '—'}</p>
+                                {companyId === COMPANY_ALL && companyName(m.company_id) && (
+                                  <p className="text-[11px] text-muted-foreground">{companyName(m.company_id)}</p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Faturas vencidas por pagar */}
+                      <div className="rounded-xl border">
+                        <div className="flex items-center gap-2 border-b px-4 py-2.5">
+                          <Receipt className="h-4 w-4 text-muted-foreground" />
+                          <p className="text-sm font-semibold">Vencidas, sem pagamento</p>
+                          <Badge variant="secondary" className="ml-auto">{fecho.faturas_por_pagar.length}</Badge>
+                        </div>
+                        {fecho.faturas_por_pagar.length === 0 ? (
+                          <p className="text-center text-muted-foreground py-8 text-sm">Nada por pagar neste mês. ✅</p>
+                        ) : (
+                          <div className="divide-y max-h-[28rem] overflow-y-auto">
+                            {fecho.faturas_por_pagar.map((f) => (
+                              <div key={f.id} className="px-4 py-2.5" data-testid={`porconciliar-inv-${f.id}`}>
+                                <div className="flex items-baseline justify-between gap-2">
+                                  <p className="text-sm font-medium truncate">{f.supplier || '(sem fornecedor)'}</p>
+                                  <p className="text-sm font-semibold tabular-nums">{eur(f.amount)}</p>
+                                </div>
+                                <p className="text-xs text-muted-foreground truncate">
+                                  {f.invoice_number ? `nº ${f.invoice_number} · ` : ''}venceu {fmtDate(f.effective_due)}
+                                  {f.direct_debit ? ' · débito direto' : ''}
+                                </p>
+                                {companyId === COMPANY_ALL && companyName(f.company_id) && (
+                                  <p className="text-[11px] text-muted-foreground">{companyName(f.company_id)}</p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </>
                 )}
               </CardContent>
             </Card>
