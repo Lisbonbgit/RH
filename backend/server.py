@@ -5260,7 +5260,8 @@ async def fin_reconcile_auto(payload: FinCompanyIdBody, current_user: dict = Dep
 # ===== FINANCEIRO · FASE 4B — INGESTÃO IMAP + IA (#1) =====
 # ==========================================================
 # Endpoint de cron (protegido por CRON_KEY, sem JWT) que lê N caixas IMAP,
-# manda cada PDF anexo à Claude (Haiku) para extrair os dados da fatura,
+# manda cada PDF anexo ao GEMINI (gemini-2.5-flash, _fin_gemini_call) para
+# extrair os dados da fatura,
 # descarta não-faturas e duplicados, associa à empresa pelo NIF do ADQUIRENTE,
 # aplica as regras do fornecedor, guarda o PDF e cria a fatura.
 # Reimplementação do PHP cron_ingest.php (ref.: PORTING_GUIDE §5.3).
