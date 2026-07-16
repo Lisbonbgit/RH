@@ -7930,10 +7930,11 @@ async def fin_sales_dashboard(
     unit_id: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
 ):
-    """Dashboard de vendas (estilo POS): faturação Hoje/Mensal/Anual com o
-    período anterior (ontem / mês anterior / ano anterior), série diária dos
-    últimos 30 dias e barras dos últimos 6 meses. Cada valor traz c/IVA (amount)
-    e s/IVA (amount_net) para o toggle do frontend. Filtrável por loja (unit_id)."""
+    """Dashboard de vendas (estilo POS): faturação Hoje/Ontem/Mensal/Anual, cada
+    uma com o período anterior para a variação (ontem / anteontem / mês anterior /
+    ano anterior), série diária dos últimos 30 dias e barras dos últimos 6 meses.
+    Cada valor traz c/IVA (amount) e s/IVA (amount_net) para o toggle do frontend.
+    Filtrável por loja (unit_id)."""
     cid_q = await _fin_report_scope(company_id, current_user)
     q = {"company_id": cid_q}
     uni = (unit_id or "").strip()
@@ -7959,12 +7960,16 @@ async def fin_sales_dashboard(
 
     d_today = today.isoformat()
     d_yest = (today - timedelta(days=1)).isoformat()
+    d_yest2 = (today - timedelta(days=2)).isoformat()  # anteontem
     cur_month = today.strftime("%Y-%m")
     pm_year, pm_month = (y, today.month - 1) if today.month > 1 else (y - 1, 12)
     prev_month = f"{pm_year}-{pm_month:02d}"
     cur_year, prev_year = str(y), str(y - 1)
 
     hoje = {"valor": soma(lambda d: d == d_today), "anterior": soma(lambda d: d == d_yest)}
+    # Ontem: o dia fechado. Compara com anteontem (dia fechado anterior) — mais
+    # justo do que comparar com o "hoje" ainda a decorrer.
+    ontem = {"valor": soma(lambda d: d == d_yest), "anterior": soma(lambda d: d == d_yest2)}
     mensal = {"valor": soma(lambda d: d[:7] == cur_month), "anterior": soma(lambda d: d[:7] == prev_month)}
     anual = {"valor": soma(lambda d: d[:4] == cur_year), "anterior": soma(lambda d: d[:4] == prev_year)}
 
@@ -7985,7 +7990,8 @@ async def fin_sales_dashboard(
         v = soma(lambda d, key=key: d[:7] == key)
         meses6.append({"mes": key, "label": _FIN_MESES_PT[mm - 1], "c": v["c"], "s": v["s"]})
 
-    return {"hoje": hoje, "mensal": mensal, "anual": anual, "diario": diario, "meses6": meses6}
+    return {"hoje": hoje, "ontem": ontem, "mensal": mensal, "anual": anual,
+            "diario": diario, "meses6": meses6}
 
 
 # ==================== HEALTH CHECK ====================

@@ -14,6 +14,7 @@ import {
 } from '../../../components/ui/dialog';
 import {
   ShoppingCart, CalendarDays, BarChart3, TrendingUp, RefreshCw, ArrowUpRight, ArrowDownRight, Plus,
+  CalendarCheck,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
@@ -191,6 +192,9 @@ export default function FinVendas() {
   // ---------- KPIs ----------
   const KPIS = [
     { key: 'hoje', label: 'Faturação Hoje', icon: ShoppingCart, prevLabel: 'Ontem' },
+    // Ontem = o último dia FECHADO; compara com anteontem (outro dia fechado),
+    // que é mais justo do que comparar com o "hoje" ainda a decorrer.
+    { key: 'ontem', label: 'Faturação Ontem', icon: CalendarCheck, prevLabel: 'Anteontem' },
     { key: 'mensal', label: 'Faturação Mensal', icon: CalendarDays, prevLabel: 'Anterior' },
     { key: 'anual', label: 'Faturação Anual', icon: BarChart3, prevLabel: 'Anterior' },
   ];
@@ -229,7 +233,7 @@ export default function FinVendas() {
       ) : (
         <>
           {/* ---------- KPIs ---------- */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {KPIS.map((k, i) => {
               const block = dashboard[k.key] || {};
               const cur = pick(block.valor);
