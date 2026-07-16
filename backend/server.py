@@ -3247,9 +3247,19 @@ async def fin_owned_company_ids(user_id: str):
 
 async def fin_member_company_ids(user_id: str):
     """Ids de TODAS as empresas onde o utilizador é membro (qualquer papel).
-    Usado pelo modo 'Todas as empresas' (company_id="all") nas listagens."""
+    Usado pelo modo 'Todas as empresas' (company_id="all") nas LISTAGENS."""
     members = await db.fin_company_members.find(
         {"user_id": user_id}, {"_id": 0, "company_id": 1}
+    ).to_list(500)
+    return [m["company_id"] for m in members]
+
+async def fin_editor_company_ids(user_id: str):
+    """Ids das empresas onde o utilizador pode ESCREVER (owner/partner).
+    Para AÇÕES em massa no modo 'Todas as empresas': o contabilista é só-leitura
+    e não pode desencadear escritas — usar isto, nunca fin_member_company_ids."""
+    members = await db.fin_company_members.find(
+        {"user_id": user_id, "role": {"$in": ["owner", "partner"]}},
+        {"_id": 0, "company_id": 1},
     ).to_list(500)
     return [m["company_id"] for m in members]
 
@@ -5233,10 +5243,13 @@ async def fin_reconcile_pending(
 @api_router.post("/fin/reconcile/auto")
 async def fin_reconcile_auto(payload: FinCompanyIdBody, current_user: dict = Depends(get_current_user)):
     """Dispara o auto-confirmar por carimbo (para a empresa selecionada, ou todas
-    onde é membro se company_id='all'). Devolve quantas conciliações fez."""
+    onde PODE ESCREVER se company_id='all'). Devolve quantas conciliações fez.
+    Marca faturas como pagas → exige owner/partner (o contabilista é só-leitura)."""
     cid = (payload.company_id or "").strip()
     if cid == "all" or not cid:
-        ids = await fin_member_company_ids(current_user["user_id"])
+        ids = await fin_editor_company_ids(current_user["user_id"])
+        if not ids:
+            raise HTTPException(status_code=403, detail="Sem permissão (acesso de leitura).")
     else:
         await fin_require_editor(cid, current_user)
         ids = [cid]
