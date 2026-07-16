@@ -167,6 +167,9 @@ export const dismissFinReconcileSuggestion = (data) => axios.post(`${API_URL}/fi
 // Fecho de tesouraria: o que falta conciliar no mês (movimentos por ligar + faturas por pagar)
 export const getFinReconcilePending = (companyId, month) =>
   axios.get(`${API_URL}/fin/reconcile/pending`, { params: { company_id: companyId, month } });
+// Auto-confirmar conciliações por carimbo aprendido (Fase 2)
+export const runFinReconcileAuto = (companyId) =>
+  axios.post(`${API_URL}/fin/reconcile/auto`, { company_id: companyId });
 export const importFinMovementsPdf = (file) => {
   const fd = new FormData();
   fd.append('file', file);

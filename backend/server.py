@@ -6536,6 +6536,19 @@ import random as _random
 _FIN_VENDUS_BASE = "https://www.vendus.pt/ws/v1.1/"
 _FIN_VENDUS_SALES = ("FT", "FS", "FR", "VD")   # sinal +
 _FIN_VENDUS_CREDIT = ("NC",)                    # sinal −
+# Estado do documento (API Vendus): "N"=Normal, "A"=Anulado, "F"=Faturado.
+# Os ANULADOS não são venda — se contassem, a faturação vinha inflacionada.
+_FIN_VENDUS_STATUS_CANCELLED = "A"
+
+
+def _fin_signed_amount(v, sign):
+    """Valor com o sinal que NÓS decidimos pelo tipo de documento (usado no
+    Vendus e no Moloni). Para a nota de crédito (sign=-1) força negativo com
+    -abs(): a API pode devolver o valor já negativo e um `sign * v` cego somaria
+    em vez de subtrair (dupla negação). Para vendas devolve o valor tal e qual
+    (preserva um eventual negativo real)."""
+    a = _fin_clean_num(v) or 0.0
+    return -abs(a) if sign < 0 else a
 _FIN_VENDUS_COST_TTL = 6 * 3600                 # cache do mapa de custos: 6h
 _FIN_VENDUS_MAX_DOC_PAGES = 60                  # >6000 docs/loja -> reduz o período
 _FIN_VENDUS_MAX_PROD_PAGES = 100
@@ -6672,20 +6685,22 @@ def _fin_vendus_fetch_store_days(key, store_id, since, until, with_cost, cost_ma
             if not isinstance(x, dict):
                 continue
             t = x.get("type") or ""
+            if str(x.get("status") or "").strip().upper() == _FIN_VENDUS_STATUS_CANCELLED:
+                continue  # documento ANULADO — não é venda
             if t in _FIN_VENDUS_SALES:
                 sign = 1
             elif t in _FIN_VENDUS_CREDIT:
                 sign = -1
             else:
                 continue  # RG, DC, etc. — ignorados
-            g = _fin_clean_num(x.get("amount_gross")) or 0.0
-            n = _fin_clean_num(x.get("amount_net")) or 0.0
+            g = _fin_signed_amount(x.get("amount_gross"), sign)
+            n = _fin_signed_amount(x.get("amount_net"), sign)
             day = str(x.get("date") or "")[:10]
             if not day:
                 continue
             acc = by_day.setdefault(day, [0.0, 0.0, 0.0, 0.0])
-            acc[0] += sign * g
-            acc[1] += sign * n
+            acc[0] += g  # g/n já vêm com o sinal aplicado por _fin_vendus_signed
+            acc[1] += n
             if with_cost:
                 det = _fin_vendus_http(key, f"documents/{x.get('id')}/")
                 if isinstance(det, list):  # a resposta pode vir como lista
@@ -6702,10 +6717,12 @@ def _fin_vendus_fetch_store_days(key, store_id, since, until, with_cost, cost_ma
                     amounts = it.get("amounts") if isinstance(it.get("amounts"), dict) else {}
                     itnet = _fin_clean_num(amounts.get("net_total")) or 0.0
                     cost = _fin_clean_num(cost_map.get(ref)) if ref else None
+                    # Idem no CMV: numa NC a devolução reverte o custo, venha a
+                    # quantidade/valor positiva ou já negativa da API.
                     if cost and cost > 0:
-                        acc[2] += sign * qty * cost
+                        acc[2] += _fin_signed_amount(qty * cost, sign)
                     else:
-                        acc[3] += sign * itnet
+                        acc[3] += _fin_signed_amount(itnet, sign)
         if len(docs) < 100:
             break
         page += 1
@@ -7228,8 +7245,10 @@ def _fin_moloni_fetch_days(cfg, moloni_company_id, since, until):
                     total = _fin_clean_num(x.get("net_value")) or 0.0    # c/ IVA
                     taxes = _fin_clean_num(x.get("taxes_value")) or 0.0
                     acc = by_day.setdefault(day, [0.0, 0.0])
-                    acc[0] += sign * total
-                    acc[1] += sign * (total - taxes)                     # s/ IVA
+                    # Sinal robusto (ver _fin_signed_amount): numa nota de crédito
+                    # subtrai sempre, venha o valor positivo ou já negativo da API.
+                    acc[0] += _fin_signed_amount(total, sign)
+                    acc[1] += _fin_signed_amount(total - taxes, sign)    # s/ IVA
                 if len(docs) < _FIN_MOLONI_QTY:
                     break
                 offset += _FIN_MOLONI_QTY

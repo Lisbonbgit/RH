@@ -7,6 +7,7 @@ import {
   getFinMovements, linkFinMovement, unlinkFinMovement,
   approveFinInvoice, rejectFinInvoice,
   getFinReconcileSuggestions, dismissFinReconcileSuggestion, getFinReconcilePending,
+  runFinReconcileAuto,
 } from '../../../lib/api';
 import { eur, fmtDate, todayISO, effectiveDue, supplierKeyOf, kpiTone } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
@@ -110,6 +111,7 @@ export default function FinPagamentos() {
   // Conciliação: sugestões fatura↔movimento do extrato (confirmar/rejeitar com 1 clique)
   const [suggestions, setSuggestions] = useState([]);
   const [sugBusyId, setSugBusyId] = useState(null);
+  const [autoBusy, setAutoBusy] = useState(false); // "Auto-confirmar agora" a correr
 
   // Fecho de tesouraria ("Por conciliar"): o que falta bater no mês escolhido.
   // Tabs controladas para só ir buscar os dados quando a aba é aberta.
@@ -128,6 +130,10 @@ export default function FinPagamentos() {
     const c = companies.find((x) => x.id === id);
     return !!c && (c.role === 'owner' || c.role === 'partner');
   };
+  // Em "Todas as empresas" o `canEdit` é nulo: para ações em massa vale poder
+  // editar PELO MENOS uma empresa (o backend valida empresa a empresa).
+  const canEditAny = companies.some((c) => c.role === 'owner' || c.role === 'partner');
+  const canRunAuto = companyId === COMPANY_ALL ? canEditAny : !!canEdit;
 
   const rulesByKey = useMemo(() => {
     const m = {};
@@ -214,6 +220,28 @@ export default function FinPagamentos() {
       toast.error(e.response?.data?.detail || 'Erro ao conciliar');
     } finally {
       setSugBusyId(null);
+    }
+  };
+
+  // Auto-confirmar agora: liga sozinho as que batem num carimbo já aprendido
+  // (fornecedor que já confirmaste antes) + montante exato + par único. Útil
+  // logo a seguir a ensinar um fornecedor novo, sem esperar pela próxima
+  // importação de extrato. O que precisa de olho continua a pedir 1 clique.
+  const runAutoReconcile = async () => {
+    setAutoBusy(true);
+    try {
+      const r = await runFinReconcileAuto(companyId);
+      const n = r.data?.linked || 0;
+      if (n > 0) {
+        toast.success(`${n} ${n === 1 ? 'fatura conciliada' : 'faturas conciliadas'} automaticamente`);
+        await Promise.all([loadData(), loadSuggestions()]);
+      } else {
+        toast.info('Nada para auto-confirmar. Só se marcam sozinhas as de fornecedores que já confirmaste antes.');
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao auto-confirmar');
+    } finally {
+      setAutoBusy(false);
     }
   };
 
@@ -1003,12 +1031,22 @@ export default function FinPagamentos() {
           <TabsContent value="conciliacao">
             <Card>
               <CardContent className="p-4 space-y-3">
-                <div className="flex items-start gap-2">
-                  <Link2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                  <p className="text-sm text-muted-foreground">
-                    Pagamentos prováveis detetados no extrato do banco. Confirma para marcar a fatura paga
-                    (com a data do movimento) ou rejeita se não corresponder.
-                  </p>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex items-start gap-2">
+                    <Link2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                    <p className="text-sm text-muted-foreground max-w-2xl">
+                      Pagamentos prováveis detetados no extrato do banco. Confirma para marcar a fatura paga
+                      (com a data do movimento) ou rejeita se não corresponder. Cada confirmação <b>ensina</b> o
+                      sistema: da próxima vez, esse fornecedor marca-se sozinho.
+                    </p>
+                  </div>
+                  {canRunAuto && (
+                    <Button size="sm" variant="outline" onClick={runAutoReconcile} disabled={autoBusy}
+                      data-testid="btn-auto-reconcile">
+                      <Check className="h-4 w-4 mr-1" />
+                      {autoBusy ? 'A confirmar...' : 'Auto-confirmar agora'}
+                    </Button>
+                  )}
                 </div>
                 {suggestions.length === 0 ? (
                   <p className="text-center text-muted-foreground py-10 text-sm">
