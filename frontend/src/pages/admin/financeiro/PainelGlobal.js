@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  getFinCompanies, getFinGlobalDashboard, getCompanies, linkFinCompanyRh,
+  getFinCompanies, getFinUnits, getFinGlobalDashboard, getCompanies, linkFinCompanyRh,
   syncNowVendus, syncNowMoloni, syncNowIngest,
 } from '../../../lib/api';
 import { eur, normSup, kpiTone } from '../../../lib/finance';
@@ -21,6 +21,7 @@ import PageHeader from '../../../components/PageHeader';
 
 const LS_KEY = 'fin_selected_company';
 const COMPANY_ALL = 'all';
+const UNIT_ALL = '__all__';
 const currentMonth = () => new Date().toISOString().slice(0, 7);
 
 // Cartão de KPI (mesmo visual do Resumo em FinPagamentos). `colorIdx` escolhe a cor do badge (paleta RH).
@@ -47,6 +48,11 @@ const num = (n) => (n == null ? '—' : Number(n).toLocaleString('pt-PT'));
 export default function PainelGlobal() {
   const [companies, setCompanies] = useState([]);
   const [companyId, setCompanyId] = useState(localStorage.getItem(LS_KEY) || '');
+  // Loja: o Painel é uma secção própria, por isso não recebe a loja do seletor
+  // global (esse só carrega lojas na secção Financeiro). Tem a sua, para os
+  // números poderem bater com os da página de Vendas.
+  const [units, setUnits] = useState([]);
+  const [unitId, setUnitId] = useState(UNIT_ALL);
   const [month, setMonth] = useState(currentMonth());
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -64,7 +70,17 @@ export default function PainelGlobal() {
   useEffect(() => {
     if (companyId) { localStorage.setItem(LS_KEY, companyId); loadDashboard(); }
     else { setData(null); }
-  }, [companyId, month]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [companyId, unitId, month]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Lojas da empresa escolhida. Ao trocar de empresa, volta a "Todas as lojas"
+  // (uma loja de outra empresa não faz sentido).
+  useEffect(() => {
+    setUnitId(UNIT_ALL);
+    if (companyId && companyId !== COMPANY_ALL) {
+      getFinUnits(companyId).then((r) => setUnits(r.data || [])).catch(() => setUnits([]));
+    } else {
+      setUnits([]);
+    }
+  }, [companyId]);
 
   const loadCompanies = async () => {
     try {
@@ -82,7 +98,10 @@ export default function PainelGlobal() {
   const loadDashboard = async () => {
     setLoading(true);
     try {
-      const res = await getFinGlobalDashboard({ company_id: companyId, month });
+      const res = await getFinGlobalDashboard({
+        company_id: companyId, month,
+        unit_id: unitId === UNIT_ALL ? undefined : unitId,
+      });
       setData(res.data);
     } catch (e) {
       toast.error('Erro ao carregar o painel');
@@ -192,6 +211,17 @@ export default function PainelGlobal() {
               </SelectContent>
             </Select>
           )}
+          {units.length > 0 && (
+            <Select value={unitId} onValueChange={setUnitId}>
+              <SelectTrigger className="w-44" data-testid="painel-unit-picker">
+                <SelectValue placeholder="Loja" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={UNIT_ALL}>Todas as lojas</SelectItem>
+                {units.map((u) => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          )}
           <MonthPicker
             value={month}
             onChange={(v) => setMonth(v || currentMonth())}
@@ -253,11 +283,13 @@ export default function PainelGlobal() {
           <section className="space-y-3">
             <h2 className="text-sm font-heading font-bold uppercase tracking-wide text-muted-foreground">Financeiro</h2>
             <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+              {/* FLUXO: seguem o mês escolhido */}
               <KpiCard label="Vendas do mês" value={eur(fin.vendas_mes)} icon={TrendingUp} colorIdx={0} />
-              <KpiCard label="A pagar" value={eur(fin.a_pagar)} icon={CircleDollarSign} colorIdx={1} />
-              <KpiCard label="Pago" value={eur(fin.pago)} icon={Check} colorIdx={2} />
-              <KpiCard label="Vencidas" value={num(fin.vencidas)} icon={AlertTriangle} colorIdx={3} />
-              <KpiCard label="Saldo banco" value={eur(fin.saldo_banco)} icon={Landmark} colorIdx={4} />
+              <KpiCard label="Pago no mês" value={eur(fin.pago)} icon={Check} colorIdx={2} />
+              {/* SALDO: do momento — não mudam com o mês escolhido */}
+              <KpiCard label="A pagar (agora)" value={eur(fin.a_pagar)} icon={CircleDollarSign} colorIdx={1} />
+              <KpiCard label="Vencidas (agora)" value={num(fin.vencidas)} icon={AlertTriangle} colorIdx={3} />
+              <KpiCard label="Saldo banco (agora)" value={eur(fin.saldo_banco)} icon={Landmark} colorIdx={4} />
             </div>
           </section>
 

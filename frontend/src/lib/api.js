@@ -218,7 +218,8 @@ export const getFinReportTesouraria = (params) => axios.get(`${API_URL}/fin/repo
 export const getFinReportExport = (params) => axios.get(`${API_URL}/fin/reports/export`, { params, responseType: 'blob' });
 
 // Painel Global (financeiro) — cruza KPIs Financeiro + RH + Marketing por empresa
-// params: { company_id, month? }
+// params: { company_id, month?, unit_id? } — mês manda nos fluxos (vendas/pago);
+// a_pagar/vencidas/saldo são saldos "agora". unit_id = loja do seletor global.
 export const getFinGlobalDashboard = (params) =>
   axios.get(`${API_URL}/fin/global/dashboard`, { params });
 // Ligação empresa/unidade do Financeiro ao RH

@@ -6274,12 +6274,20 @@ async def fin_link_unit_rh(
 async def fin_global_dashboard(
     company_id: str,
     month: Optional[str] = None,
+    unit_id: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
 ):
     """Cruza KPIs de Financeiro + RH + Marketing para uma empresa e mês.
-    `month` no formato AAAA-MM (por omissão, o mês atual). Cada setor é lido
-    de forma defensiva: se um estiver em falta não derruba o painel todo.
-    company_id="all" = vista agregada de todas as empresas do utilizador."""
+    `month` no formato AAAA-MM (por omissão, o mês atual em Lisboa).
+    `unit_id` = loja do seletor global (filtra vendas e faturas).
+
+    FLUXO vs SALDO: o mês manda nos FLUXOS ("Vendas do mês", "Pago no mês");
+    "A pagar", "Vencidas" e "Saldo banco" são SALDOS do momento e não mudam com
+    o mês escolhido (é o total em dívida / o saldo atual da conta).
+    O saldo do banco não filtra por loja: as contas são da empresa, não da loja.
+
+    Cada setor é lido de forma defensiva: se um estiver em falta não derruba o
+    painel todo. company_id="all" = vista agregada de todas as empresas."""
     if company_id == "all":
         member_ids = await fin_member_company_ids(current_user["user_id"])
         cid_q = {"$in": member_ids}
@@ -6301,7 +6309,9 @@ async def fin_global_dashboard(
 
     mon = (month or "").strip()
     if not mon:
-        mon = datetime.now(timezone.utc).strftime("%Y-%m")
+        # Lisboa (não UTC): tem de concordar com o resto da app sobre que mês é.
+        mon = datetime.now(LISBON_TZ).strftime("%Y-%m")
+    uni = (unit_id or "").strip()
 
     # ----- Financeiro -----
     financeiro = {
@@ -6313,19 +6323,23 @@ async def fin_global_dashboard(
         "saldo_banco": 0.0,
     }
     try:
-        # Vendas do mês (soma de fin_sales.amount cuja date começa por AAAA-MM)
-        sales = await db.fin_sales.find(
-            {"company_id": cid_q, "date": {"$regex": "^" + re.escape(mon)}},
-            {"_id": 0, "amount": 1},
-        ).to_list(100000)
+        # Vendas do mês (FLUXO): fin_sales.amount cuja date começa por AAAA-MM,
+        # da loja escolhida no seletor global (se houver).
+        sales_q = {"company_id": cid_q, "date": {"$regex": "^" + re.escape(mon)}}
+        if uni:
+            sales_q["unit_id"] = uni
+        sales = await db.fin_sales.find(sales_q, {"_id": 0, "amount": 1}).to_list(100000)
         financeiro["vendas_mes"] = round(
             sum(_fin_num(s.get("amount")) for s in sales), 2
         )
 
-        # Faturas: a pagar (por pagar e não rejeitadas) e já pago
+        # Faturas: "a pagar"/"vencidas" = SALDO agora; "pago" = FLUXO do mês.
+        inv_q = {"company_id": cid_q}
+        if uni:
+            inv_q["unit_id"] = uni
         invoices = await db.fin_invoices.find(
-            {"company_id": cid_q},
-            {"_id": 0, "amount": 1, "paid": 1, "approval_status": 1,
+            inv_q,
+            {"_id": 0, "amount": 1, "paid": 1, "paid_date": 1, "approval_status": 1,
              "due_date": 1, "issue_date": 1, "nif": 1, "supplier": 1},
         ).to_list(100000)
         # Regras de fornecedor (partilhadas): para o vencimento efetivo e para
@@ -6338,15 +6352,18 @@ async def fin_global_dashboard(
         pago = 0.0
         pendentes = 0
         vencidas = 0
-        today_iso = datetime.now(timezone.utc).date().isoformat()
+        today_iso = datetime.now(LISBON_TZ).date().isoformat()  # Lisboa, não UTC
         for inv in invoices:
             amt = _fin_num(inv.get("amount"))
             is_paid = inv.get("paid") is True
             appr = inv.get("approval_status")
             if is_paid:
-                pago += amt
+                # FLUXO: só o que foi pago DENTRO do mês escolhido (antes somava
+                # tudo o que alguma vez foi pago — não batia com nada).
+                if str(inv.get("paid_date") or "")[:7] == mon:
+                    pago += amt
             elif appr != "rejected":
-                a_pagar += amt
+                a_pagar += amt  # SALDO: tudo o que está por pagar, agora
             if appr == "pending":
                 pendentes += 1
             # Vencidas: por pagar, não rejeitadas, com vencimento EFETIVO (regras
