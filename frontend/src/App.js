@@ -29,6 +29,7 @@ import FinFornecedores from './pages/admin/financeiro/FinFornecedores';
 import FinExtrato from './pages/admin/financeiro/FinExtrato';
 import FinRelatorios from './pages/admin/financeiro/FinRelatorios';
 import PainelGlobal from './pages/admin/financeiro/PainelGlobal';
+import EstoqueFaturas from './pages/admin/estoque/EstoqueFaturas';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeProfile from './pages/employee/EmployeeProfile';
 import EmployeeTimeRecord from './pages/employee/EmployeeTimeRecord';
@@ -168,6 +169,10 @@ function AppRoutes() {
         <Route path="financeiro/relatorios" element={<FinRelatorios />} />
         <Route path="financeiro/fornecedores" element={<FinFornecedores />} />
         <Route path="financeiro/extrato" element={<FinExtrato />} />
+
+        {/* ===== Estoque ===== */}
+        <Route path="estoque" element={<Navigate to="/admin/estoque/faturas" replace />} />
+        <Route path="estoque/faturas" element={<EstoqueFaturas />} />
 
         {/* ===== Marketing ===== */}
         <Route path="marketing" element={<MarketingCampaigns />} />

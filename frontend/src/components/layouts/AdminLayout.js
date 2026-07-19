@@ -65,7 +65,7 @@ const sections = [
     key: 'rh',
     label: 'RH',
     home: '/admin',
-    match: (p) => !p.startsWith('/admin/painel') && !p.startsWith('/admin/financeiro') && !p.startsWith('/admin/marketing'),
+    match: (p) => !p.startsWith('/admin/painel') && !p.startsWith('/admin/financeiro') && !p.startsWith('/admin/marketing') && !p.startsWith('/admin/estoque'),
     items: [
       { path: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true },
       { path: '/admin/empresas', label: 'Empresas', icon: Building2 },
@@ -91,6 +91,15 @@ const sections = [
       { path: '/admin/financeiro/relatorios', label: 'Relatórios', icon: BarChart3 },
       { path: '/admin/financeiro/fornecedores', label: 'Fornecedores', icon: Truck },
       { path: '/admin/financeiro/extrato', label: 'Extrato', icon: Landmark },
+    ],
+  },
+  {
+    key: 'estoque',
+    label: 'Estoque',
+    home: '/admin/estoque/faturas',
+    match: (p) => p.startsWith('/admin/estoque'),
+    items: [
+      { path: '/admin/estoque/faturas', label: 'Faturas', icon: Receipt },
     ],
   },
   {
@@ -136,11 +145,12 @@ export default function AdminLayout() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSection.key]);
 
-  // Lojas (unidades) da empresa selecionada — só no Financeiro. Ao trocar de
-  // empresa, limpa a loja e recarrega as lojas dessa empresa.
+  // Lojas (unidades) da empresa selecionada — no Financeiro e no Estoque (ambos
+  // usam as empresas/lojas do Financeiro). Ao trocar de empresa, limpa a loja e
+  // recarrega as lojas dessa empresa.
   useEffect(() => {
     setSelectedUnit(null);
-    if (activeSection.key === 'financeiro' && selectedCompany) {
+    if ((activeSection.key === 'financeiro' || activeSection.key === 'estoque') && selectedCompany) {
       getFinUnits(selectedCompany.id).then((r) => setUnits(r.data || [])).catch(() => setUnits([]));
     } else {
       setUnits([]);
@@ -159,7 +169,7 @@ export default function AdminLayout() {
 
   const fetchCompanies = async () => {
     try {
-      const response = activeSection.key === 'financeiro'
+      const response = (activeSection.key === 'financeiro' || activeSection.key === 'estoque')
         ? await getFinCompanies()
         : await getCompanies();
       setCompanies(response.data || []);

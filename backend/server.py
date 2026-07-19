@@ -5808,6 +5808,79 @@ async def fin_ingest_estoque(
     }
 
 
+# ===== SECÇÃO ESTOQUE — faturas inseridas pela app do Estoque =====
+# Vista dedicada (todas as faturas com source="estoque", por confirmar E já
+# tratadas), com quem inseriu e em que loja. Base da futura secção "Estoque"
+# (stock por loja, tabelas de preços por marca, etc.), ligada à app do Estoque.
+
+@api_router.get("/fin/estoque/invoices")
+async def fin_estoque_invoices(
+    company_id: str,
+    month: Optional[str] = None,
+    origin_user: Optional[str] = None,
+    origin_store: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Faturas vindas da app do Estoque (source='estoque'), em qualquer estado.
+    Filtros: mês (AAAA-MM pela data de inserção), colaborador e loja de origem.
+    Devolve a lista + as listas distintas de colaboradores/lojas (para os filtros)
+    + totais. company_id='all' agrega as empresas onde o utilizador é membro."""
+    cid_q = await _fin_report_scope(company_id, current_user)
+    q = {"company_id": cid_q, "source": "estoque"}
+    ou = (origin_user or "").strip()
+    if ou:
+        q["origin_user"] = ou
+    ost = (origin_store or "").strip()
+    if ost:
+        q["origin_store"] = ost
+    mon = (month or "").strip()
+    if re.match(r"^\d{4}-\d{2}$", mon):
+        # Data de inserção (created_at ISO começa por AAAA-MM) = quando o
+        # colaborador digitalizou. É o que interessa para "o que se lançou no mês".
+        q["created_at"] = {"$regex": "^" + re.escape(mon)}
+
+    docs = await db.fin_invoices.find(
+        q,
+        {"_id": 0, "id": 1, "company_id": 1, "supplier": 1, "nif": 1,
+         "invoice_number": 1, "amount": 1, "issue_date": 1, "due_date": 1,
+         "approval_status": 1, "paid": 1, "origin_user": 1, "origin_store": 1,
+         "unit_id": 1, "created_at": 1, "pdf_path": 1, "description": 1},
+    ).to_list(20000)
+    docs.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+
+    invoices = []
+    for d in docs:
+        invoices.append({
+            "id": d["id"], "company_id": d.get("company_id"),
+            "supplier": d.get("supplier"), "nif": d.get("nif"),
+            "invoice_number": d.get("invoice_number"), "amount": _fin_num(d.get("amount")),
+            "issue_date": d.get("issue_date"), "due_date": d.get("due_date"),
+            "approval_status": d.get("approval_status"), "paid": d.get("paid") is True,
+            "origin_user": d.get("origin_user"), "origin_store": d.get("origin_store"),
+            "unit_id": d.get("unit_id"), "created_at": d.get("created_at"),
+            "description": d.get("description"),
+            "has_pdf": bool(d.get("pdf_path")),
+        })
+
+    # Listas distintas para os dropdowns dos filtros — ignoram o mês/filtros
+    # atuais (para nunca ficarem vazias), mas respeitam o âmbito de empresa.
+    base = {"company_id": cid_q, "source": "estoque"}
+    colaboradores = sorted({c for c in await db.fin_invoices.distinct("origin_user", base) if c})
+    lojas = sorted({s for s in await db.fin_invoices.distinct("origin_store", base) if s})
+
+    por_confirmar = sum(1 for i in invoices if i["approval_status"] == "pending")
+    return {
+        "invoices": invoices,
+        "colaboradores": colaboradores,
+        "lojas": lojas,
+        "totais": {
+            "n": len(invoices),
+            "valor": round(sum(i["amount"] for i in invoices), 2),
+            "por_confirmar": por_confirmar,
+        },
+    }
+
+
 # ===== FINANCEIRO · FASE 12 — IMPORTAÇÃO DE EXTRATO PDF (Millennium BCP) =====
 # POST /fin/movements/import-pdf: recebe o PDF do extrato do Millennium BCP
 # (extrato mensal oficial OU consulta de movimentos de um período), extrai os

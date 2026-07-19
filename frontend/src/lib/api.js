@@ -131,6 +131,10 @@ export const getFinInvoices = (companyId) =>
 // Ficha de detalhe: fatura completa + linked_movement (movimento do extrato ligado, ou null)
 export const getFinInvoice = (id) => axios.get(`${API_URL}/fin/invoices/${id}`);
 export const getFinInvoicePdf = (id) => axios.get(`${API_URL}/fin/invoices/${id}/pdf`, { responseType: 'blob' });
+// Secção Estoque — faturas inseridas pela app do Estoque (todos os estados)
+// params: { company_id, month?, origin_user?, origin_store? }
+export const getFinEstoqueInvoices = (params) =>
+  axios.get(`${API_URL}/fin/estoque/invoices`, { params });
 export const createFinInvoice = (data) => axios.post(`${API_URL}/fin/invoices`, data);
 export const updateFinInvoice = (id, data) => axios.put(`${API_URL}/fin/invoices/${id}`, data);
 export const toggleFinInvoicePaid = (id, paid, paidDate) =>
