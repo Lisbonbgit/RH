@@ -48,3 +48,9 @@ estoque.lisbonb.com {
     encode gzip
     reverse_proxy 187.124.4.163:8091
 }
+
+# ===== Menu TV — menus digitais nas TVs das lojas =====
+menu.lisbonb.com {
+    encode gzip
+    reverse_proxy 187.124.4.163:8092
+}
