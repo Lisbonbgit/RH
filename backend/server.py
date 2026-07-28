@@ -5324,7 +5324,7 @@ def _fin_gemini_call(pdf_bytes, prompt, max_tokens, timeout):
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return "", "ERROR:sem GEMINI_API_KEY"
-    model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    model = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
     body = {
         "contents": [{
             "parts": [
@@ -5339,9 +5339,11 @@ def _fin_gemini_call(pdf_bytes, prompt, max_tokens, timeout):
             "temperature": 0,
             "maxOutputTokens": max_tokens,
             "responseMimeType": "application/json",
-            # Extração pura: desliga o "pensamento" do Gemini 2.5 (senão consome
-            # o orçamento de tokens a pensar e devolve conteúdo vazio).
-            "thinkingConfig": {"thinkingBudget": 0},
+            # Extração pura: reduz o "pensamento" ao mínimo (rápido e barato,
+            # sem gastar o orçamento de tokens a pensar). `thinkingLevel:"low"`
+            # é o campo válido nos modelos atuais; o antigo `thinkingBudget:0`
+            # dava HTTP 400 no gemini-flash-latest (era Gemini 3).
+            "thinkingConfig": {"thinkingLevel": "low"},
         },
     }
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
