@@ -54,3 +54,9 @@ menu.lisbonb.com {
     encode gzip
     reverse_proxy 187.124.4.163:8092
 }
+
+# ===== Menu TV (novo/VPS, paralelo) — telas com playlists + rotação =====
+menu2.lisbonb.com {
+    encode gzip
+    reverse_proxy 187.124.4.163:8092
+}
