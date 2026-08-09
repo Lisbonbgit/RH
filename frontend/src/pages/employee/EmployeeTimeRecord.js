@@ -60,9 +60,16 @@ export default function EmployeeTimeRecord() {
       const { position, errorCode } = await getCurrentPositionSmart();
       setLocating(false);
 
-      await createTimeRecord({ record_type: type, ...(position || {}) });
+      const res = await createTimeRecord({ record_type: type, ...(position || {}) });
 
-      if (position) {
+      if (res.data?.out_of_fence) {
+        toast.warning(`${label} registada fora do local`);
+        setFeedback({
+          kind: 'warning',
+          title: `${label} registada fora do local`,
+          description: 'O registo ficou marcado e o gestor será informado. Se a hora não corresponder à saída real, fale com o seu gestor para a corrigir.',
+        });
+      } else if (position) {
         toast.success(`${label} registada com localização!`);
         setFeedback({ kind: 'success', title: `${label} registada`, description: 'Com a sua localização. ✅' });
       } else {
@@ -167,6 +174,8 @@ export default function EmployeeTimeRecord() {
           className={`rounded-xl border p-4 flex items-start gap-3 ${
             feedback.kind === 'success'
               ? 'bg-green-50 border-green-200 text-green-800'
+              : feedback.kind === 'warning'
+              ? 'bg-amber-50 border-amber-200 text-amber-800'
               : 'bg-red-50 border-red-200 text-red-800'
           }`}
           data-testid="record-feedback"
