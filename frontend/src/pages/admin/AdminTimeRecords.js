@@ -261,15 +261,24 @@ export default function AdminTimeRecords() {
                         )}
                       </TableCell>
                       <TableCell className="hidden sm:table-cell">
-                        {record.corrected ? (
-                          <Badge variant="outline" className="text-yellow-600 border-yellow-300">
-                            Corrigido
-                          </Badge>
-                        ) : (
-                          <Badge variant="outline" className="text-green-600 border-green-300">
-                            Original
-                          </Badge>
-                        )}
+                        <div className="flex flex-wrap items-center gap-1">
+                          {record.corrected ? (
+                            <Badge variant="outline" className="text-yellow-600 border-yellow-300">
+                              Corrigido
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-green-600 border-green-300">
+                              Original
+                            </Badge>
+                          )}
+                          {record.out_of_fence && (
+                            <Badge variant="outline" className="text-amber-600 border-amber-300">
+                              {record.out_of_fence_distance != null
+                                ? `Fora do local (${record.out_of_fence_distance} m)`
+                                : 'Fora do local (sem localização)'}
+                            </Badge>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
