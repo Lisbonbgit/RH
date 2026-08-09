@@ -588,6 +588,8 @@ class TimeRecordResponse(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     accuracy: Optional[float] = None
+    out_of_fence: bool = False
+    out_of_fence_distance: Optional[int] = None
 
 class AdminLeaveCreate(BaseModel):
     user_id: str = Field(alias="userId")
@@ -1870,28 +1872,40 @@ async def create_time_record(record: TimeRecordCreate, current_user: dict = Depe
         raise HTTPException(status_code=400, detail="Ainda não tem uma entrada em aberto. Registe primeiro a entrada.")
 
     # Cerca geográfica: se o local do colaborador tiver posição e raio definidos,
-    # o ponto só é aceite se ele estiver dentro do raio.
+    # a ENTRADA só é aceite dentro do raio. A SAÍDA é sempre aceite (quem se
+    # esquece de sair regista depois, de longe), mas fora do raio fica marcada
+    # com out_of_fence para o gestor ver.
     # Colaboradores isentos (ex.: que rodam por várias lojas) não são validados.
+    out_of_fence = False
+    out_of_fence_distance = None
     employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
     if employee and employee.get("location_id") and not employee.get("geofence_exempt"):
         location = await db.locations.find_one({"id": employee["location_id"]}, {"_id": 0})
         if location and location.get("latitude") is not None and location.get("longitude") is not None and location.get("geofence_radius"):
             radius = location["geofence_radius"]
             if record.latitude is None or record.longitude is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Ative a localização no telemóvel para poder registar o ponto neste local."
-                )
-            distance = haversine_meters(record.latitude, record.longitude, location["latitude"], location["longitude"])
-            # Margem para a imprecisão do GPS (sobretudo Safari/iOS em precisão
-            # normal, que pode reportar centenas de metros de erro). Aceita-se se,
-            # descontando a precisão reportada (com limite), ainda estiver no raio.
-            accuracy_slack = min(record.accuracy or 0, max(radius, 150))
-            if distance - accuracy_slack > radius:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Está a {int(distance)} m do local de trabalho (limite {radius} m). Aproxime-se para registar o ponto."
-                )
+                if record.record_type == "entrada":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Ative a localização no telemóvel para poder registar o ponto neste local."
+                    )
+                # Saída sem localização (ex.: GPS desligado já em casa): aceite, marcada.
+                out_of_fence = True
+            else:
+                distance = haversine_meters(record.latitude, record.longitude, location["latitude"], location["longitude"])
+                # Margem para a imprecisão do GPS (sobretudo Safari/iOS em precisão
+                # normal, que pode reportar centenas de metros de erro). Aceita-se se,
+                # descontando a precisão reportada (com limite), ainda estiver no raio.
+                accuracy_slack = min(record.accuracy or 0, max(radius, 150))
+                if distance - accuracy_slack > radius:
+                    if record.record_type == "entrada":
+                        raise HTTPException(
+                            status_code=403,
+                            detail=f"Está a {int(distance)} m do local de trabalho (limite {radius} m). Aproxime-se para registar o ponto."
+                        )
+                    # Saída fora do raio: aceite, marcada com a distância.
+                    out_of_fence = True
+                    out_of_fence_distance = int(distance)
 
     record_id = str(uuid.uuid4())
     record_doc = {
@@ -1903,7 +1917,9 @@ async def create_time_record(record: TimeRecordCreate, current_user: dict = Depe
         "correction_history": [],
         "latitude": record.latitude,
         "longitude": record.longitude,
-        "accuracy": record.accuracy
+        "accuracy": record.accuracy,
+        "out_of_fence": out_of_fence,
+        "out_of_fence_distance": out_of_fence_distance,
     }
     await db.time_records.insert_one(record_doc)
 
