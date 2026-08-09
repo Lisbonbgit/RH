@@ -4,6 +4,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { getNotifications, markAllNotificationsRead, getMyProfile, getMySchedule } from '../../lib/api';
 import { syncShiftReminders, requestNotificationPermission } from '../../lib/notifications';
 import { requestLocationPermission } from '../../lib/geo';
+import { Capacitor } from '@capacitor/core';
+import { App as CapApp } from '@capacitor/app';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { ScrollArea } from '../ui/scroll-area';
@@ -44,15 +46,27 @@ export default function EmployeeLayout() {
   useEffect(() => {
     fetchNotifications();
     getMyProfile().then((res) => setPhoto(res.data?.photo || null)).catch(() => {});
-    // Onboarding (app nativa): pedir permissões à entrada e agendar o lembrete
-    (async () => {
-      await requestLocationPermission();
-      await requestNotificationPermission();
+    const syncReminders = async () => {
       try {
         const res = await getMySchedule();
         await syncShiftReminders(res.data?.work_days, res.data?.start_time);
       } catch { /* sem escala, tudo bem */ }
+    };
+    // Onboarding (app nativa): pedir permissões à entrada e agendar o lembrete
+    (async () => {
+      await requestLocationPermission();
+      await requestNotificationPermission();
+      await syncReminders();
     })();
+    // Re-agendar quando a app volta ao primeiro plano: apanha mudanças de
+    // escala sem depender de um arranque a frio.
+    let handle;
+    if (Capacitor.isNativePlatform()) {
+      CapApp.addListener('appStateChange', ({ isActive }) => {
+        if (isActive) syncReminders();
+      }).then((h) => { handle = h; });
+    }
+    return () => { handle?.remove(); };
   }, []);
 
   const fetchNotifications = async () => {
