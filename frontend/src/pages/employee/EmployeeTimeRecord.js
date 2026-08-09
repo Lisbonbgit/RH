@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { getTimeRecords, createTimeRecord } from '../../lib/api';
+import { getTimeRecords, createTimeRecord, getMySchedule } from '../../lib/api';
+import { Capacitor } from '@capacitor/core';
+import { syncShiftReminders } from '../../lib/notifications';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
@@ -13,7 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '../../components/ui/alert-dialog';
-import { Clock, LogIn, LogOut, History, MapPin, Loader2, CheckCircle2, AlertTriangle, X } from 'lucide-react';
+import { Clock, LogIn, LogOut, History, MapPin, Loader2, CheckCircle2, AlertTriangle, X, BellRing, BellOff } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, parseISO, isToday } from 'date-fns';
 import { pt } from 'date-fns/locale';
@@ -29,6 +31,7 @@ export default function EmployeeTimeRecord() {
   const [confirmType, setConfirmType] = useState(null);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [feedback, setFeedback] = useState(null); // aviso visível no ecrã
+  const [reminder, setReminder] = useState(null); // estado do lembrete de entrada (só app nativa)
 
   useEffect(() => {
     fetchRecords();
@@ -36,6 +39,20 @@ export default function EmployeeTimeRecord() {
       setCurrentTime(new Date());
     }, 1000);
     return () => clearInterval(interval);
+  }, []);
+
+  // Estado do lembrete de entrada: re-agenda (idempotente) e mostra o resultado.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    (async () => {
+      try {
+        const res = await getMySchedule();
+        const sync = await syncShiftReminders(res.data?.work_days, res.data?.start_time);
+        setReminder(sync);
+      } catch {
+        setReminder(null);
+      }
+    })();
   }, []);
 
   const fetchRecords = async () => {
@@ -161,6 +178,25 @@ export default function EmployeeTimeRecord() {
           ? 'Toque em Entrada para iniciar o turno.'
           : 'Tem uma entrada em aberto — registe a Saída.'}
       </p>
+
+      {reminder?.ok && (
+        <p className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground" data-testid="reminder-status">
+          <BellRing className="h-3.5 w-3.5 text-green-600" />
+          Lembrete de entrada agendado para as {reminder.at}
+        </p>
+      )}
+      {reminder && !reminder.ok && reminder.reason === 'no-schedule' && (
+        <p className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground" data-testid="reminder-status">
+          <BellOff className="h-3.5 w-3.5" />
+          Sem lembrete: a sua escala não tem hora de início — fale com o seu gestor.
+        </p>
+      )}
+      {reminder && !reminder.ok && reminder.reason === 'denied' && (
+        <p className="flex items-center justify-center gap-1.5 text-xs text-amber-600" data-testid="reminder-status">
+          <BellOff className="h-3.5 w-3.5" />
+          Notificações desativadas — ative-as nas definições do telemóvel para receber o lembrete.
+        </p>
+      )}
 
       {locating && (
         <p className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
