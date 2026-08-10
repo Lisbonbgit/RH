@@ -61,12 +61,17 @@ export default function EmployeeLayout() {
     // Re-agendar quando a app volta ao primeiro plano: apanha mudanças de
     // escala sem depender de um arranque a frio.
     let handle;
+    let cancelled = false;
     if (Capacitor.isNativePlatform()) {
       CapApp.addListener('appStateChange', ({ isActive }) => {
         if (isActive) syncReminders();
-      }).then((h) => { handle = h; });
+      }).then((h) => {
+        // Se o layout já desmontou entretanto, remover logo (evita listener órfão)
+        if (cancelled) h.remove();
+        else handle = h;
+      });
     }
-    return () => { handle?.remove(); };
+    return () => { cancelled = true; handle?.remove(); };
   }, []);
 
   const fetchNotifications = async () => {
