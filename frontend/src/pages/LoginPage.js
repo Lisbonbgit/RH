@@ -72,8 +72,8 @@ export default function LoginPage() {
           <div className="flex items-center gap-3">
             <BrandMark size="lg" glass />
             <div className="leading-tight">
-              <div className="text-xl font-heading font-bold">Lisbonb</div>
-              <div className="text-[11px] uppercase tracking-[0.18em] text-white/70 font-semibold">Gestão de RH</div>
+              <div className="text-xl font-heading font-bold">Gestão</div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-white/70 font-semibold">Grupo Lisbonb</div>
             </div>
           </div>
 
@@ -116,7 +116,7 @@ export default function LoginPage() {
           {/* Mobile logo */}
           <div className="lg:hidden flex items-center gap-3 mb-8 justify-center">
             <BrandMark />
-            <span className="text-xl font-heading font-bold">RH grupo <span className="text-brand-gradient">Lisbonb</span></span>
+            <span className="text-xl font-heading font-bold">Gestão grupo <span className="text-brand-gradient">Lisbonb</span></span>
           </div>
 
           <Card className="border border-border/70 shadow-[0_20px_60px_-25px_hsl(var(--primary)/0.35)] rounded-2xl">
@@ -183,7 +183,7 @@ export default function LoginPage() {
           </Card>
 
           <p className="text-center text-sm text-muted-foreground mt-6">
-            © {new Date().getFullYear()} Grupo Lisbonb · Sistema interno de RH
+            © {new Date().getFullYear()} Grupo Lisbonb · Sistema interno de gestão
           </p>
           <p className="text-center text-xs text-muted-foreground/70 mt-1">v{APP_VERSION}</p>
         </div>

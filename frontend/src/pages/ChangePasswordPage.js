@@ -82,7 +82,7 @@ export default function ChangePasswordPage() {
           <div className="h-11 w-11 rounded-xl brand-gradient flex items-center justify-center font-heading font-bold text-white text-xl shadow-lg shadow-primary/30">
             L
           </div>
-          <span className="text-xl font-heading font-bold">RH grupo <span className="text-brand-gradient">Lisbonb</span></span>
+          <span className="text-xl font-heading font-bold">Gestão grupo <span className="text-brand-gradient">Lisbonb</span></span>
         </div>
 
         <Card className="border-0 shadow-lg">

@@ -47,7 +47,7 @@ export default function ForgotPasswordPage() {
           <div className="h-11 w-11 rounded-xl brand-gradient flex items-center justify-center font-heading font-bold text-white text-xl shadow-lg shadow-primary/30" data-testid="forgot-brand-icon">
             L
           </div>
-          <span className="text-xl font-heading font-bold" data-testid="forgot-brand-title">RH grupo <span className="text-brand-gradient">Lisbonb</span></span>
+          <span className="text-xl font-heading font-bold" data-testid="forgot-brand-title">Gestão grupo <span className="text-brand-gradient">Lisbonb</span></span>
         </div>
 
         <Card className="border-0 shadow-lg" data-testid="forgot-card">
