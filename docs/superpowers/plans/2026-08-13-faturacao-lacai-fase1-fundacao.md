@@ -1746,12 +1746,14 @@ async def editar(motivo_id: str, dados: MotivoEntrada, _: dict = Depends(gestor_
 @router.put("/motivos-nc/{motivo_id}/predefinir")
 async def predefinir(motivo_id: str, _: dict = Depends(gestor_atual)) -> dict:
     db = obter_db()
+    # A ordem importa: confirmar que existe ANTES de desmarcar os outros. Ao contrário,
+    # um clique num motivo já apagado deixava a lista inteira sem predefinido.
+    if not await db[COLECOES["motivos_nc"]].find_one({"id": motivo_id}):
+        raise HTTPException(status_code=404, detail="Motivo não encontrado")
     await db[COLECOES["motivos_nc"]].update_many({}, {"$set": {"predefinido": False}})
-    r = await db[COLECOES["motivos_nc"]].update_one(
+    await db[COLECOES["motivos_nc"]].update_one(
         {"id": motivo_id}, {"$set": {"predefinido": True}}
     )
-    if r.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Motivo não encontrado")
     return {"predefinido": motivo_id}
 
 
