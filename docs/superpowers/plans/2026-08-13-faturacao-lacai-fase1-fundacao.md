@@ -960,7 +960,7 @@ def pin_valido(pin: str, hash_guardado: str) -> bool:
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/ -v
 ```
 
-Esperado: 37 passed.
+Esperado: **zero falhas**, incluindo os 9 testes novos desta tarefa. (Não persigas o total: ele sobe a cada tarefa e a cada correcção.)
 
 - [ ] **Step 5: Commit**
 
@@ -1194,7 +1194,7 @@ router.include_router(_lojas)
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/ -v
 ```
 
-Esperado: 43 passed.
+Esperado: **zero falhas**, incluindo os 6 testes novos desta tarefa. (Não persigas o total: ele sobe a cada tarefa e a cada correcção.)
 
 - [ ] **Step 5: Commit**
 
@@ -1390,7 +1390,7 @@ router.include_router(_pagamentos)
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/ -v
 ```
 
-Esperado: 48 passed.
+Esperado: **zero falhas**, incluindo os 5 testes novos desta tarefa. (Não persigas o total: ele sobe a cada tarefa e a cada correcção.)
 
 - [ ] **Step 5: Commit**
 
@@ -1622,7 +1622,7 @@ router.include_router(_utilizadores)
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/ -v
 ```
 
-Esperado: 55 passed.
+Esperado: **zero falhas**, incluindo os 7 testes novos desta tarefa. (Não persigas o total: ele sobe a cada tarefa e a cada correcção.)
 
 - [ ] **Step 5: Commit**
 
@@ -1766,7 +1766,7 @@ router.include_router(_motivos)
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/ -v
 ```
 
-Esperado: 58 passed.
+Esperado: **zero falhas**, incluindo os 3 testes novos desta tarefa. (Não persigas o total: ele sobe a cada tarefa e a cada correcção.)
 
 - [ ] **Step 5: Commit**
 
