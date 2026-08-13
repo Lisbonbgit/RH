@@ -32,3 +32,6 @@ httpx==0.28.1
 
 # --- Fusos horários (zoneinfo "Europe/Lisbon" em qualquer SO) ---
 tzdata==2025.2
+
+# --- Testes ---
+pytest>=8.0,<9

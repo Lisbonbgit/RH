@@ -8108,6 +8108,9 @@ async def fin_sales_dashboard(
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
+from faturacao import router as faturacao_router
+app.include_router(faturacao_router)
+
 # Include the router in the main app
 app.include_router(api_router)
 
