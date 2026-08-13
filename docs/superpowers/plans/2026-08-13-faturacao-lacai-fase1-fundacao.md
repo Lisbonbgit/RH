@@ -1758,7 +1758,9 @@ async def predefinir(motivo_id: str, _: dict = Depends(gestor_atual)) -> dict:
 @router.delete("/motivos-nc/{motivo_id}")
 async def apagar(motivo_id: str, _: dict = Depends(gestor_atual)) -> dict:
     db = obter_db()
-    await db[COLECOES["motivos_nc"]].delete_one({"id": motivo_id})
+    r = await db[COLECOES["motivos_nc"]].delete_one({"id": motivo_id})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Motivo não encontrado")
     return {"apagado": True}
 ```
 
@@ -1827,4 +1829,5 @@ aqui porque os blocos de código acima já não são fiéis ao que está no repo
 | C3 | Task 3 | `auth.py` lia `os.environ["JWT_SECRET"]` e o `server.py` tem valor por omissão: num ambiente sem a variável, o portal funcionava e o módulo dava `KeyError` → 500 em vez de 401. Passou a paritário, com teste em guarda. |
 | C4 | Task 4 | `float` + `round(x, 2)` come cêntimos (`round(2.675, 2)` = `2.67`). Fechado **à entrada**: `linha_de_venda` recusa preço base, preço de opção e desconto em € com mais de 2 casas decimais. |
 | C5 | Task 2 + 5 | O índice único `(loja_id, pin_hash)` foi **removido**: o sal do `bcrypt` torna cada hash diferente, logo nunca detectaria dois PIN iguais. O teste passou a garantir que ele não existe. A unicidade passa a ser verificada no servidor (ver Regra 2 da Task 8). |
+| C7 | Tasks 6, 7 e 9 | Os endpoints de apagar devolviam sucesso para um `id` inexistente. Passaram todos a devolver 404, usando o `deleted_count`. |
 | C6 | Task 5 | `pin_valido` rebentava com um hash bcrypt truncado — o motor Rust do bcrypt levanta `PanicException`, que herda de `BaseException` e escapa ao `except`. Passou a validar o formato do hash antes de o entregar ao bcrypt. |
