@@ -102,6 +102,18 @@ def test_apagar_tipo_protegido_e_recusado_409(monkeypatch):
     assert not any(chamada[0] == "delete_one" for chamada in registo)
 
 
+def test_apagar_tipo_inexistente_devolve_404(monkeypatch):
+    """Um tipo que não existe não pode ser apagado."""
+    registo = []
+    coleccao = ColeccaoFalsa(registo, find_one_devolve=None, delete_one_devolve=0)
+    monkeypatch.setattr(pagamentos_mod, "obter_db", lambda: DbFalsa(coleccao))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(apagar("nao-existe", _={}))
+    assert excinfo.value.status_code == 404
+    assert "Tipo de pagamento não encontrado" in excinfo.value.detail
+
+
 def test_apagar_tipo_normal_e_apagado(monkeypatch):
     """Regressão: o caminho feliz continua a devolver sucesso."""
     registo = []

@@ -95,5 +95,7 @@ async def apagar(tipo_id: str, _: dict = Depends(gestor_atual)) -> dict:
             status_code=409,
             detail="Este tipo de pagamento é usado pela app L'Açaí e não pode ser apagado.",
         )
-    await db[COLECOES["tipos_pagamento"]].delete_one({"id": tipo_id})
+    r = await db[COLECOES["tipos_pagamento"]].delete_one({"id": tipo_id})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Tipo de pagamento não encontrado")
     return {"apagado": True}
