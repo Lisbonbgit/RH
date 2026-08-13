@@ -1,0 +1,118 @@
+"""Preços, IVA e linhas de venda — lógica pura, sem I/O.
+
+Modelo: um produto pertence a uma categoria (Venda ao Público ou Vendas Aplicações)
+e tem UM preço e UM IVA — como no Vendus (spec D7).
+"""
+import pytest
+
+from faturacao.precos import erros_do_produto, linha_de_venda, tax_id_de_taxa
+
+
+def _produto(**over):
+    p = {"id": "p1", "nome": "Açaí Regular", "preco": 8.99, "tax_id": "INT"}
+    p.update(over)
+    return p
+
+
+# --- IVA -------------------------------------------------------------------
+
+def test_taxas_conhecidas():
+    assert tax_id_de_taxa(23) == "NOR"
+    assert tax_id_de_taxa(13) == "INT"
+    assert tax_id_de_taxa(6) == "RED"
+    assert tax_id_de_taxa(0) == "ISE"
+
+
+def test_taxa_desconhecida_nao_inventa_nada():
+    """A app antiga devolvia INT por omissão. Aqui devolve None: quem chama decide,
+    e o produto fica marcado como incompleto em vez de sair a 13% em silêncio."""
+    assert tax_id_de_taxa(17) is None
+    assert tax_id_de_taxa(None) is None
+    assert tax_id_de_taxa("treze") is None
+
+
+# --- Validação -------------------------------------------------------------
+
+def test_produto_completo_nao_tem_erros():
+    assert erros_do_produto(_produto()) == []
+
+
+def test_produto_sem_iva_tem_erro():
+    p = _produto()
+    del p["tax_id"]
+    assert erros_do_produto(p) == ["Sem IVA definido"]
+
+
+def test_produto_sem_preco_tem_erro():
+    p = _produto()
+    del p["preco"]
+    assert erros_do_produto(p) == ["Sem preço definido"]
+
+
+def test_produto_sem_preco_nem_iva():
+    assert erros_do_produto({"nome": "X"}) == ["Sem preço definido", "Sem IVA definido"]
+
+
+def test_preco_zero_e_valido():
+    """Um artigo a 0,00€ (ex.: 'Incluído') é legítimo — o que não pode é faltar o campo."""
+    assert erros_do_produto(_produto(preco=0)) == []
+
+
+# --- Linha de venda --------------------------------------------------------
+
+def test_linha_simples():
+    li = linha_de_venda(_produto(), 2)
+    assert li == {"title": "Açaí Regular", "qty": 2, "gross_price": 8.99, "tax_id": "INT"}
+
+
+def test_linha_com_opcoes_soma_ao_preco_unitario():
+    """As personalizações entram no preço unitário da linha, como a app já faz em
+    produção — e não como linhas separadas na fatura."""
+    opcoes = [{"nome": "Nutella", "preco": 0.95}, {"nome": "Banana", "preco": 0.0}]
+    li = linha_de_venda(_produto(), 1, opcoes=opcoes)
+    assert li["gross_price"] == 9.94
+    assert li["title"] == "Açaí Regular (Nutella, Banana)"
+
+
+def test_linha_recusa_produto_sem_iva():
+    p = _produto()
+    del p["tax_id"]
+    with pytest.raises(ValueError) as e:
+        linha_de_venda(p, 1)
+    assert "IVA" in str(e.value)
+
+
+def test_linha_recusa_produto_sem_preco():
+    p = _produto()
+    del p["preco"]
+    with pytest.raises(ValueError) as e:
+        linha_de_venda(p, 1)
+    assert "preço" in str(e.value)
+
+
+def test_override_de_preco_e_de_iva():
+    li = linha_de_venda(_produto(), 1, preco_override=7.5, tax_override="NOR")
+    assert li["gross_price"] == 7.5
+    assert li["tax_id"] == "NOR"
+
+
+def test_override_de_preco_zero_e_respeitado():
+    """0 é um preço, não é 'vazio'. Um `if preco_override:` daria 8,99 aqui."""
+    assert linha_de_venda(_produto(), 1, preco_override=0)["gross_price"] == 0.0
+
+
+def test_desconto_em_euros_tem_precedencia_sobre_percentagem():
+    """O Vendus só aceita um dos dois por linha. O € ganha, como na Pizzaria."""
+    li = linha_de_venda(_produto(), 1, desconto_pct=10, desconto_eur=2)
+    assert li["discount_amount"] == 2.0
+    assert "discount_percentage" not in li
+
+
+def test_desconto_em_percentagem():
+    li = linha_de_venda(_produto(), 1, desconto_pct=10)
+    assert li["discount_percentage"] == 10.0
+    assert "discount_amount" not in li
+
+
+def test_quantidade_zero_conta_como_um():
+    assert linha_de_venda(_produto(), 0)["qty"] == 1
