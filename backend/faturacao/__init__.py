@@ -13,6 +13,9 @@ router = APIRouter(prefix="/api/faturacao", tags=["faturacao"])
 from .lojas import router as _lojas
 router.include_router(_lojas)
 
+from .pagamentos import router as _pagamentos
+router.include_router(_pagamentos)
+
 
 async def arrancar():
     """Chamado pelo server.py no arranque."""
