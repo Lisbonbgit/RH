@@ -35,10 +35,15 @@ def obter_db():
 
 
 # (coleccao, chaves, opcoes). Declarados como dados para serem testáveis sem Mongo.
+#
+# NOTA: propositadamente NÃO há índice único sobre pin_hash. O bcrypt usa sal
+# aleatório, por isso o mesmo PIN gera um pin_hash diferente de cada vez — um
+# índice único sobre esse campo nunca detectaria PINs repetidos. Ver
+# test_nao_existe_indice_unico_sobre_pin_hash e o comentário em
+# faturacao/pins.py sobre como a unicidade do PIN é garantida.
 INDICES = [
     ("fat_lojas", [("empresa_id", 1)], {}),
     ("fat_caixas", [("loja_id", 1)], {}),
-    ("fat_utilizadores", [("loja_id", 1), ("pin_hash", 1)], {"unique": True}),
     ("fat_utilizadores", [("ativo", 1)], {}),
     ("fat_tipos_pagamento", [("ordem", 1)], {}),
     ("fat_categorias", [("ordem", 1)], {}),

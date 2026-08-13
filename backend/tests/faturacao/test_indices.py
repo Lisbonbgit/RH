@@ -25,9 +25,20 @@ class DbFalsa:
         return ColeccaoFalsa(nome, self.registo)
 
 
-def test_declara_indice_unico_de_pin_por_loja():
-    chaves = [(c, k) for (c, k, o) in INDICES if c == "fat_utilizadores" and o.get("unique")]
-    assert ("fat_utilizadores", [("loja_id", 1), ("pin_hash", 1)]) in chaves
+def test_nao_existe_indice_unico_sobre_pin_hash():
+    """Um índice único que inclua pin_hash NUNCA pode detectar PINs repetidos:
+    o bcrypt usa sal aleatório, por isso o mesmo PIN "1234" gera um pin_hash
+    diferente de cada vez (ver test_hash_muda_de_cada_vez em test_pins.py).
+    Um índice (loja_id, pin_hash) nunca rejeitaria a duplicação real — por
+    isso NÃO deve existir. A unicidade do PIN é garantida no servidor: ao
+    criar/mudar um PIN, compara-se com bcrypt.checkpw contra os utilizadores
+    activos da mesma loja. Não voltes a acrescentar este índice."""
+    indices_unicos_com_pin_hash = [
+        (coleccao, chaves)
+        for (coleccao, chaves, opcoes) in INDICES
+        if opcoes.get("unique") and any(chave == "pin_hash" for chave, _direccao in chaves)
+    ]
+    assert indices_unicos_com_pin_hash == []
 
 
 def test_criar_indices_aplica_todos():
