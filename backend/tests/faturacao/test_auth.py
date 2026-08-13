@@ -47,3 +47,19 @@ def test_colaborador_nao_passa_na_gestao():
 
 def test_admin_passa_na_gestao():
     assert exigir_gestao({"role": "admin"})["role"] == "admin"
+
+
+def test_sem_jwt_secret_no_ambiente_aceita_token_do_valor_por_omissao(monkeypatch):
+    """Trava a paridade com o server.py (linha 52): quando JWT_SECRET não está
+    definido no ambiente, o server.py cai para o valor por omissão
+    'hr-system-secret-key-2024' e continua a emitir tokens válidos com ele. Se o
+    auth.py não usar o mesmo valor por omissão, este teste falha (antes só dava
+    KeyError, um 500 não tratado, em vez de aceitar o token do portal).
+    """
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    token = jwt.encode(
+        {"user_id": "u1", "email": "a@b.pt", "role": "admin"},
+        "hr-system-secret-key-2024",
+        algorithm="HS256",
+    )
+    assert descodificar_token(token)["email"] == "a@b.pt"
