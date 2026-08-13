@@ -19,6 +19,9 @@ router.include_router(_pagamentos)
 from .utilizadores import router as _utilizadores
 router.include_router(_utilizadores)
 
+from .motivos import router as _motivos
+router.include_router(_motivos)
+
 
 async def arrancar():
     """Chamado pelo server.py no arranque."""
