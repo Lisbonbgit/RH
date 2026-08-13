@@ -525,12 +525,17 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 # Os mesmos papéis do server.py (MANAGER_ROLES). Ver server.py:62.
 PERFIS_GESTAO = ["admin", "gerente", "contabilista"]
 
+# Valor por omissão copiado de server.py:52. A paridade é deliberada: se os dois
+# divergirem, o portal emite tokens que este módulo recusa.
+JWT_SECRET_POR_OMISSAO = "hr-system-secret-key-2024"
+
 _seguranca = HTTPBearer(auto_error=True)
 
 
 def descodificar_token(token: str) -> Dict:
     try:
-        return jwt.decode(token, os.environ["JWT_SECRET"], algorithms=["HS256"])
+        segredo = os.environ.get("JWT_SECRET", JWT_SECRET_POR_OMISSAO)
+        return jwt.decode(token, segredo, algorithms=["HS256"])
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Sessão inválida ou expirada")
 
