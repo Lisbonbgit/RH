@@ -137,13 +137,13 @@ Segue a convenção que o Financeiro já usa (`fin_`) e o Marketing (`mkt_`).
 | Colecção | Guarda | Índices |
 |---|---|---|
 | `fat_lojas` | nome, morada, CP, localidade, email, telefone, CAE, `rh_location_id` | |
-| `fat_caixas` | nome, `loja_id`, `vendus_register_id`, activa | |
-| `fat_utilizadores` | nome, `pin_hash`, perfil, lojas[], activo, `employee_id`, foto | único (`loja_id`,`pin_hash`) |
+| `fat_caixas` | nome, `loja_id`, activa. **Sem `register_id`** — o do Vendus é um só, em variável de ambiente | (`loja_id`) |
+| `fat_utilizadores` | nome, `pin_hash`, perfil, lojas[], activo, `employee_id`, foto | (`ativo`). **Nenhum índice único sobre `pin_hash`** — o sal do bcrypt torna-o inútil; a unicidade é verificada no servidor (§7.1) |
 | `fat_tipos_pagamento` | nome, tipo fiscal Vendus, dá troco, ordem, activo, `vendus_payment_method_id`, **protegido** | |
 | `fat_motivos_nc` | texto, predefinido | |
 | `fat_categorias` | nome, grupo de preços, ordem, activa | |
-| `fat_grupos_personalizacao` | nome, `min_select`, `max_select`, opções[{nome, preço por grupo, `tax_id`}] | |
-| `fat_produtos` | nome, categoria, **preço por grupo**, **`tax_id` por grupo**, foto, grupos de personalização[], activo | |
+| `fat_grupos_personalizacao` | nome, `min_select`, `max_select`, opções[{nome, preço}] | (`nome`) |
+| `fat_produtos` | nome, categoria, **preço**, **`tax_id` (obrigatório)**, foto, grupos de personalização[], activo | (`categoria_id`), (`ativo`), (`vendus_ref`) |
 | `fat_sessoes_caixa` | `caixa_id`, aberta por/em, fundo, fechada por/em, contado, esperado | **único parcial** em `{estado:'aberta'}` por caixa |
 | `fat_movimentos_caixa` | `sessao_id`, tipo (entrada/saída), valor, motivo, quem | |
 | `fat_vendas` | linhas, totais, pagamentos, cliente/NIF, `sessao_id`, operador, loja, estado | (`sessao_id`), (`loja_id`,`criada_em`) |
