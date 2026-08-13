@@ -31,6 +31,11 @@ httpx · React 19 / CRACO / Tailwind / shadcn · pytest 8
 - **Prefixo `fat_`** em todas as colecções novas. **Prefixo `/api/faturacao/`** em todas as rotas.
 - **Não existe MongoDB local nem Docker.** Todos os testes deste plano são de lógica pura ou usam
   duplos de teste. Nenhum teste liga a uma base de dados.
+- **O `.venv` local já existe** em `backend/.venv` (Python 3.9), criado na Task 1. Correr sempre
+  `backend/.venv/bin/pytest`. **Não voltar a correr `pip install -r requirements.txt`** e **não
+  alterar os pins do repositório**: `python-multipart==0.0.21` e `dnspython==2.8.0` exigem Python
+  ≥3.10 e não instalam nesta máquina, mas a produção corre Python 3.11 no Docker e está correcta.
+  O `.venv` foi montado com esses dois pins rebaixados apenas localmente.
 - **O módulo nunca escreve no Vendus neste plano.** Só lê (importação do catálogo).
 - **PT-PT** em todo o texto visível e nos comentários.
 - Identidade visual existente: tokens em `frontend/src/index.css`, componentes shadcn em
