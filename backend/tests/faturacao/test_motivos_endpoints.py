@@ -120,23 +120,27 @@ def test_apagar_motivo_existente_e_apagado(monkeypatch):
 
 def test_predefinir_motivo_existente_desmarca_os_outros(monkeypatch):
     registo = []
-    coleccao = ColeccaoFalsa(registo, update_one_matched=1)
+    coleccao = ColeccaoFalsa(
+        registo,
+        update_one_matched=1,
+        find_one_devolve={"id": "x", "texto": "Erro na fatura", "predefinido": False},
+    )
     monkeypatch.setattr(motivos_mod, "obter_db", lambda: DbFalsa(coleccao))
 
     resultado = _corre(predefinir("x", _={}))
     assert resultado == {"predefinido": "x"}
-    assert registo[0] == ("update_many", {}, {"$set": {"predefinido": False}})
-    assert registo[1] == ("update_one", {"id": "x"}, {"$set": {"predefinido": True}})
+    assert registo[0] == ("find_one", {"id": "x"})
+    assert registo[1] == ("update_many", {}, {"$set": {"predefinido": False}})
+    assert registo[2] == ("update_one", {"id": "x"}, {"$set": {"predefinido": True}})
 
 
-def test_predefinir_motivo_inexistente_devolve_404_mas_ja_desmarcou_todos(monkeypatch):
-    """Documenta um comportamento do código do brief que NÃO foi alterado sem decisão:
+def test_predefinir_motivo_inexistente_devolve_404_sem_escrever_nada(monkeypatch):
+    """Com um motivo_id inexistente, o endpoint devolve 404 e não escreve nada.
 
-    o update_many (desmarcar todos) corre incondicionalmente, ANTES de se saber se o
-    motivo_id existe. Se o id não existir, o 404 é lançado depois do efeito secundário
-    já ter acontecido — a lista fica sem nenhum motivo predefinido por causa de um
-    clique num registo que já não existe. Ver task-9-report.md: sinalizado ao humano,
-    não corrigido por decisão de desenho, não por omissão.
+    A ordem das operações importa: verificar a existência ANTES de desmarcar todos
+    evita deixar o sistema num estado pior do que estava (sem nenhum predefinido).
+    Usa o registo de chamadas para garantir que update_many e update_one nunca foram
+    invocados — mesmo que o BD estivesse no ar, não haveria efeitos secundários.
     """
     registo = []
     coleccao = ColeccaoFalsa(registo, update_one_matched=0)
@@ -145,4 +149,7 @@ def test_predefinir_motivo_inexistente_devolve_404_mas_ja_desmarcou_todos(monkey
     with pytest.raises(HTTPException) as excinfo:
         _corre(predefinir("nao-existe", _={}))
     assert excinfo.value.status_code == 404
-    assert any(chamada[0] == "update_many" for chamada in registo)
+    assert not any(chamada[0] == "update_many" for chamada in registo), \
+        "update_many não deve ser chamado com id inexistente"
+    assert not any(chamada[0] == "update_one" for chamada in registo), \
+        "update_one não deve ser chamado com id inexistente"

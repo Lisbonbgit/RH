@@ -48,12 +48,21 @@ async def editar(motivo_id: str, dados: MotivoEntrada, _: dict = Depends(gestor_
 @router.put("/motivos-nc/{motivo_id}/predefinir")
 async def predefinir(motivo_id: str, _: dict = Depends(gestor_atual)) -> dict:
     db = obter_db()
+    # Verificar que o motivo existe ANTES de qualquer alteração.
+    # A ordem importa: se o motivo_id não existir, devolvemos 404 sem ter escrito nada.
+    # Assim evitamos deixar o sistema num estado pior (sem nenhum predefinido)
+    # por causa de um clique num registo que entretanto foi apagado.
+    motivo = await db[COLECOES["motivos_nc"]].find_one({"id": motivo_id}, {"_id": 0})
+    if motivo is None:
+        raise HTTPException(status_code=404, detail="Motivo não encontrado")
+
+    # Agora podemos desmarcar todos os outros com confiança
     await db[COLECOES["motivos_nc"]].update_many({}, {"$set": {"predefinido": False}})
-    r = await db[COLECOES["motivos_nc"]].update_one(
+
+    # E marcar o escolhido
+    await db[COLECOES["motivos_nc"]].update_one(
         {"id": motivo_id}, {"$set": {"predefinido": True}}
     )
-    if r.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Motivo não encontrado")
     return {"predefinido": motivo_id}
 
 
