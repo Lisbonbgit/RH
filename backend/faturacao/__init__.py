@@ -16,6 +16,9 @@ router.include_router(_lojas)
 from .pagamentos import router as _pagamentos
 router.include_router(_pagamentos)
 
+from .utilizadores import router as _utilizadores
+router.include_router(_utilizadores)
+
 
 async def arrancar():
     """Chamado pelo server.py no arranque."""
