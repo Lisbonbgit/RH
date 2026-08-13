@@ -116,3 +116,60 @@ def test_desconto_em_percentagem():
 
 def test_quantidade_zero_conta_como_um():
     assert linha_de_venda(_produto(), 0)["qty"] == 1
+
+
+# --- Precisão dos valores (o cêntimo que não pode desaparecer) -------------
+#
+# round(2.675, 2) == 2.67 e round(8.995, 2) == 8.99 — o arredondamento
+# bancário do Python sobre a representação binária come um cêntimo sem
+# ninguém dar por isso. A defesa é recusar à entrada qualquer valor com mais
+# de 2 casas decimais: se tudo o que entra tem no máximo 2 casas, a soma
+# exacta também tem 2 casas e o round(x, 2) final recupera-a sem perda.
+
+def test_preco_base_do_produto_com_3_casas_e_recusado():
+    with pytest.raises(ValueError) as e:
+        linha_de_venda(_produto(preco=8.995), 1)
+    assert "8.995" in str(e.value)
+
+
+def test_preco_override_com_3_casas_e_recusado():
+    with pytest.raises(ValueError) as e:
+        linha_de_venda(_produto(), 1, preco_override=8.995)
+    assert "8.995" in str(e.value)
+
+
+def test_preco_de_opcao_com_3_casas_e_recusado():
+    opcoes = [{"nome": "Nutella", "preco": 0.995}]
+    with pytest.raises(ValueError) as e:
+        linha_de_venda(_produto(), 1, opcoes=opcoes)
+    assert "0.995" in str(e.value)
+
+
+def test_desconto_eur_com_3_casas_e_recusado():
+    with pytest.raises(ValueError) as e:
+        linha_de_venda(_produto(), 1, desconto_eur=2.005)
+    assert "2.005" in str(e.value)
+
+
+@pytest.mark.parametrize("preco", [8.99, 8.9, 9, 0, 0.0])
+def test_precos_com_ate_2_casas_sao_aceites(preco):
+    """8,99 / 8,9 / 9 / 0 / 0.0 têm no máximo 2 casas decimais (ou nenhuma) e
+    não podem ser recusados — só o que passa dos 2 é problema."""
+    li = linha_de_venda(_produto(preco=preco), 1)
+    assert li["gross_price"] == round(float(preco), 2)
+
+
+@pytest.mark.parametrize("preco", [8.99, 8.9, 9, 0, 0.0])
+def test_precos_de_opcao_com_ate_2_casas_sao_aceites(preco):
+    opcoes = [{"nome": "Extra", "preco": preco}]
+    li = linha_de_venda(_produto(), 1, opcoes=opcoes)
+    assert li["gross_price"] == round(8.99 + float(preco), 2)
+
+
+@pytest.mark.parametrize("desconto", [8.99, 8.9, 9, 0, 0.0])
+def test_desconto_eur_com_ate_2_casas_e_aceite(desconto):
+    li = linha_de_venda(_produto(), 1, desconto_eur=desconto)
+    if desconto:
+        assert li["discount_amount"] == round(float(desconto), 2)
+    else:
+        assert "discount_amount" not in li

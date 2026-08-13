@@ -22,6 +22,30 @@ def tax_id_de_taxa(taxa) -> Optional[str]:
         return None
 
 
+def _tem_mais_de_2_casas_decimais(valor) -> bool:
+    """Diz se `valor` foi escrito com mais de 2 casas decimais.
+
+    Porquê isto existe: `round(x, 2)` faz arredondamento bancário sobre a
+    representação BINÁRIA do float, e isso come cêntimos sem avisar — p.ex.
+    `round(2.675, 2)` dá `2.67`, não `2.68`. A defesa não é "arredondar
+    melhor", é não deixar entrar valores com 3+ casas: se tudo o que entra
+    numa linha tem no máximo 2 casas, a soma exacta também tem 2 casas e o
+    `round(x, 2)` já não perde nada.
+
+    E porque não `round(valor, 2) == valor`? Porque essa comparação volta a
+    fazer contas em binário sobre o próprio valor que se quer proteger — é o
+    mesmo arredondamento que estamos a tentar evitar, só que escondido numa
+    comparação. Em vez disso, olhamos para o texto da representação decimal
+    mais curta que reconstrói o float (a mesma que o Python usa em `repr`):
+    é aí, sem arredondar nada, que se vê quantas casas decimais o valor tem
+    "de origem" — e é por isso que `8.99`, `8.9`, `9` e `0` passam sempre,
+    sejam int ou float.
+    """
+    texto = repr(float(valor))
+    casas = texto.partition(".")[2]
+    return len(casas) > 2
+
+
 def erros_do_produto(produto: Dict) -> List[str]:
     """Lista, em português, o que falta a um produto para poder ser vendido."""
     erros = []
@@ -57,8 +81,21 @@ def linha_de_venda(
     base = preco_override if preco_override is not None else produto.get("preco")
     if base is None:
         raise ValueError("O produto '%s' não tem preço definido." % produto.get("nome", "?"))
+    if _tem_mais_de_2_casas_decimais(base):
+        raise ValueError(
+            "O preço %s do produto '%s' tem mais de 2 casas decimais — a fatura recusa-o "
+            "para não perder um cêntimo no arredondamento." % (base, produto.get("nome", "?"))
+        )
 
     opcoes = opcoes or []
+    for o in opcoes:
+        preco_opcao = o.get("preco", 0) or 0
+        if _tem_mais_de_2_casas_decimais(preco_opcao):
+            raise ValueError(
+                "O preço %s da opção '%s' tem mais de 2 casas decimais — a fatura recusa-o "
+                "para não perder um cêntimo no arredondamento."
+                % (preco_opcao, o.get("nome", "?"))
+            )
     extra = sum(float(o.get("preco", 0) or 0) for o in opcoes)
 
     titulo = produto.get("nome", "Produto")
@@ -75,6 +112,11 @@ def linha_de_venda(
 
     # O Vendus só aceita um dos dois por linha. O € tem precedência.
     if desconto_eur:
+        if _tem_mais_de_2_casas_decimais(desconto_eur):
+            raise ValueError(
+                "O desconto de %s € tem mais de 2 casas decimais — a fatura recusa-o "
+                "para não perder um cêntimo no arredondamento." % desconto_eur
+            )
         linha["discount_amount"] = round(float(desconto_eur), 2)
     elif desconto_pct:
         linha["discount_percentage"] = float(desconto_pct)
