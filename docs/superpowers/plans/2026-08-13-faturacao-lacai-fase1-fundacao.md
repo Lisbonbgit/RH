@@ -1418,6 +1418,15 @@ git commit -m "Faturação: tipos de pagamento (mapeamento local, protegidos nã
 **Regra:** quem sai fica **inactivo**, nunca apagado — senão parte-se o histórico de quem fez cada
 venda. Não há endpoint DELETE de propósito.
 
+**Regra 2 (acrescentada durante a execução, ver §Correcções):** o PIN tem de ser **único entre os
+utilizadores activos da mesma loja**, e essa unicidade **não pode ser garantida por um índice** — o
+sal do `bcrypt` faz com que duas pessoas com o PIN `1234` tenham hashes diferentes. Logo, ao criar
+um utilizador e ao mudar um PIN, o servidor verifica o PIN novo com `bcrypt` contra os
+`pin_hash` dos utilizadores **activos** das lojas em causa e recusa com 409 e mensagem clara se já
+existir. São poucas verificações (uma loja tem uma mão-cheia de pessoas) e é uma operação rara.
+Acrescenta testes: PIN repetido na mesma loja é recusado; o mesmo PIN noutra loja é aceite; um PIN
+que pertence a alguém **inactivo** pode ser reutilizado.
+
 - [ ] **Step 1: Escrever o teste que falha**
 
 Criar `backend/tests/faturacao/test_utilizadores.py`:
@@ -1802,3 +1811,20 @@ real e não de suposições:
 - [ ] Criar uma loja, uma caixa, um utilizador com PIN e um tipo de pagamento pelo backoffice
 - [ ] Importar o catálogo do Vendus e confirmar a contagem de produtos contra o backoffice do Vendus
 - [ ] O ecrã "Produtos sem IVA definido" mostra a lista e impede a publicação enquanto não estiver vazia
+
+
+---
+
+## Correcções aplicadas durante a execução
+
+O plano é o mapa; estas foram as divergências que a implementação e as revisões obrigaram. Ficam
+aqui porque os blocos de código acima já não são fiéis ao que está no repositório.
+
+| # | Onde | O quê e porquê |
+|---|---|---|
+| C1 | Task 1 | Foi preciso criar `backend/tests/__init__.py` (não listado): sem ele o pytest colide o pacote de testes com o pacote `faturacao`. |
+| C2 | Task 1 | O `.venv` local foi montado com dois pins rebaixados (`python-multipart`, `dnspython`), que exigem Python ≥3.10. **Os pins do repositório não foram alterados** — a produção corre Python 3.11 no Docker. |
+| C3 | Task 3 | `auth.py` lia `os.environ["JWT_SECRET"]` e o `server.py` tem valor por omissão: num ambiente sem a variável, o portal funcionava e o módulo dava `KeyError` → 500 em vez de 401. Passou a paritário, com teste em guarda. |
+| C4 | Task 4 | `float` + `round(x, 2)` come cêntimos (`round(2.675, 2)` = `2.67`). Fechado **à entrada**: `linha_de_venda` recusa preço base, preço de opção e desconto em € com mais de 2 casas decimais. |
+| C5 | Task 2 + 5 | O índice único `(loja_id, pin_hash)` foi **removido**: o sal do `bcrypt` torna cada hash diferente, logo nunca detectaria dois PIN iguais. O teste passou a garantir que ele não existe. A unicidade passa a ser verificada no servidor (ver Regra 2 da Task 8). |
+| C6 | Task 5 | `pin_valido` rebentava com um hash bcrypt truncado — o motor Rust do bcrypt levanta `PanicException`, que herda de `BaseException` e escapa ao `except`. Passou a validar o formato do hash antes de o entregar ao bcrypt. |
