@@ -8139,6 +8139,9 @@ async def startup_event():
     """Initialize application on startup"""
     await ensure_master_admin_exists()
 
+    from faturacao import arrancar as faturacao_arrancar
+    await faturacao_arrancar()
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()

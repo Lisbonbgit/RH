@@ -3,10 +3,13 @@
 O cliente é criado à PRIMEIRA UTILIZAÇÃO (e não ao importar o módulo) para que o
 pacote possa ser importado em testes sem MONGO_URL/DB_NAME definidos.
 """
+import logging
 import os
 from typing import Optional
 
-from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
+from motor.motor_asyncio import AsyncIOMotorClient
+
+logger = logging.getLogger(__name__)
 
 # Nomes das colecções, todos com prefixo fat_ (convenção do repositório: fin_, mkt_).
 COLECOES = {
@@ -29,3 +32,28 @@ def obter_db():
     if _cliente is None:
         _cliente = AsyncIOMotorClient(os.environ["MONGO_URL"])
     return _cliente[os.environ["DB_NAME"]]
+
+
+# (coleccao, chaves, opcoes). Declarados como dados para serem testáveis sem Mongo.
+INDICES = [
+    ("fat_lojas", [("empresa_id", 1)], {}),
+    ("fat_caixas", [("loja_id", 1)], {}),
+    ("fat_utilizadores", [("loja_id", 1), ("pin_hash", 1)], {"unique": True}),
+    ("fat_utilizadores", [("ativo", 1)], {}),
+    ("fat_tipos_pagamento", [("ordem", 1)], {}),
+    ("fat_categorias", [("ordem", 1)], {}),
+    ("fat_produtos", [("categoria_id", 1)], {}),
+    ("fat_produtos", [("ativo", 1)], {}),
+    ("fat_produtos", [("vendus_ref", 1)], {"sparse": True}),
+    ("fat_grupos_personalizacao", [("nome", 1)], {}),
+]
+
+
+async def criar_indices(db):
+    """Aplica os índices. Uma falha é registada mas NÃO impede o arranque —
+    o módulo tem de subir mesmo que um índice não possa ser criado."""
+    for coleccao, chaves, opcoes in INDICES:
+        try:
+            await db[coleccao].create_index(chaves, **opcoes)
+        except Exception as e:  # noqa: BLE001 — arrancar é mais importante
+            logger.error("[faturacao] índice %s %s falhou: %s", coleccao, chaves, e)

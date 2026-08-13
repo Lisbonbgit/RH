@@ -6,7 +6,14 @@ o RH, o Financeiro nem o Marketing.
 """
 from fastapi import APIRouter
 
+from .db import COLECOES, criar_indices, obter_db  # noqa: F401
+
 router = APIRouter(prefix="/api/faturacao", tags=["faturacao"])
+
+
+async def arrancar():
+    """Chamado pelo server.py no arranque."""
+    await criar_indices(obter_db())
 
 
 @router.get("/saude")
