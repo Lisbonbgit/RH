@@ -39,7 +39,7 @@ Estas foram todas validadas com o dono e não se rediscutem sem razão nova.
 | D4 | Menu POS: Iniciar Ponto de Venda · Movimentos de Caixa · Lojas. |
 | D5 | Configuração, à parte: Lojas e Caixas · Tipos de Pagamento · Utilizadores · Motivos de Notas de Crédito. |
 | D6 | Produtos tem três sub-ecrãs: Produtos · Categorias · Personalizações. |
-| D7 | O módulo é dono do catálogo, com dois grupos de preços: **Venda ao Público** e **Vendas Aplicações**. |
+| D7 | O módulo é dono do catálogo. **As categorias são as do Vendus** — Venda ao Público e Vendas Aplicações — e cada produto pertence a uma, com **um preço e um IVA**. Decidido pelo dono em 2026-08-13, mantendo a gestão igual à de hoje; consequência aceite em §9.1. |
 | D8 | **Sem salas nem mesas.** Venda ao balcão directa. |
 | D9 | **Sem contas em espera.** Cada venda começa do zero e fecha logo. |
 | D10 | POS = página web no PC Windows + **agente de impressão instalado** (talão, cozinha, gaveta; IP e USB). |
@@ -374,10 +374,22 @@ Semântica derivada, sem campos redundantes:
 - escolha única (radio) = `max_select == 1`
 - `max_select == 0` = ilimitado
 
-**Duas diferenças em relação ao modelo da app**, ambas obrigatórias aqui:
+**O modelo espelha o Vendus** (decisão do dono, D7): a **categoria** é "Venda ao Público" ou
+"Vendas Aplicações", o produto pertence a **uma** e tem **um** preço e **um** IVA. No POS, os
+separadores de cima são as categorias — exactamente como hoje.
 
-1. **Dois grupos de preços por produto** (Venda ao Público / Vendas Aplicações). A app só tem um.
-2. **IVA por artigo e por grupo de preços**, obrigatório.
+**Consequência aceite:** os artigos continuam duplicados. "Açaí Regular" (€8,99, Venda ao Público)
+e "Açaí Regular App" (€10,99, Vendas Aplicações) são dois produtos, e mudar o nome ou a foto
+obriga a fazê-lo duas vezes. O mesmo se aplica aos toppings: "Nutella" como personalização a €0,95
+no balcão e "Extra Nutella" como produto a €1,00 na app continuam separados, porque uma opção de
+personalização também só tem um preço.
+
+Foi apresentada a alternativa (um produto com dois preços, categorias por família) e o dono
+escolheu manter a gestão igual à de hoje. Se um dia isso pesar — sobretudo na Fase 5, quando o
+backoffice da app vier para cá — a mudança é de modelo de dados e de migração, não de arquitectura.
+
+**Uma diferença em relação ao modelo da app, obrigatória aqui:** o **IVA por artigo**, sem valor
+por omissão (§9.2).
 
 ### 9.2 IVA — sem valores por omissão
 
@@ -401,9 +413,8 @@ mão. Duas notas:
 
 - Marcar os produtos que vierem com categoria "Não Definido" (o dashboard mostra 0,04% das vendas
   assim) para arrumar.
-- Assinalar os **toppings duplicados**: no Vendus, "Nutella" existe como personalização a €0,95 no
-  Venda ao Público *e* como produto "Extra Nutella" a €1,00 nas Vendas Aplicações. No modelo novo é
-  **um** topping com dois preços. A migração propõe a fusão; a decisão é do dono.
+- A importação traz o catálogo **tal como está**, incluindo os artigos duplicados entre as duas
+  categorias — é o que a decisão D7 implica. Nada é fundido automaticamente.
 
 ### 9.4 Não escrevemos no catálogo do Vendus
 
@@ -516,4 +527,4 @@ Stock · Compras · Migração das outras 4 lojas.
 | Q3 | Reconfigurar a loja Vendus "App-Online" com o nome e a morada da **sede** da Fordaimon Foods (passa a ser o cabeçalho de todos os talões) | Contabilista + acção manual no Vendus |
 | Q4 | `tx_id` dá mesmo idempotência nativa? | Teste em `mode=tests` |
 | Q5 | Faturar linha só com `title` cria produtos fantasma no Vendus? | Teste em `mode=tests` |
-| Q6 | Fundir os toppings duplicados (personalização vs "Extra …") | Dono |
+| Q6 | ~~Fundir os toppings duplicados~~ — **decidido 2026-08-13: não se funde nada**, o catálogo espelha o Vendus (D7) | ✅ |

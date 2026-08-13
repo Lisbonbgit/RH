@@ -39,21 +39,16 @@ httpx · React 19 / CRACO / Tailwind / shadcn · pytest 8
 
 ---
 
-## Decisão a confirmar antes da Task 9
+## Decisão tomada (2026-08-13)
 
-O dono disse: *"categorias (venda ao público e venda aplicação por exemplo), depois dentro do
-produto eu vou atribuir a uma categoria"*. A spec (D7) modela isso de outra forma: **categoria** é
-a família do produto (Açaís, Salgados, Bebidas) e **grupo de preços** é um eixo separado (Venda ao
-Público / Vendas Aplicações), com **um** produto a ter os dois preços.
+O dono escolheu que **categoria = Venda ao Público / Vendas Aplicações**, como no Vendus. Cada
+produto pertence a **uma** categoria e tem **um** preço e **um** IVA. Os separadores do POS são as
+categorias, tal como hoje.
 
-Este plano segue a spec, porque é o que elimina os produtos duplicados ("Açaí Regular" e "Açaí
-Regular App" passam a ser um só) e os toppings duplicados. **No POS o resultado visual é igual ao
-Vendus**: os dois separadores continuam lá em cima — só que são o grupo de preços, não a categoria.
-
-Se o dono preferir a leitura literal (categorias = Venda ao Público / Vendas Aplicações), as Tasks
-9 e 10 mudam e este plano tem de ser revisto antes de as executar.
-
----
+Foi-lhe apresentada a alternativa (um produto com dois preços e categorias por família, que
+acabava com os artigos duplicados) e ele preferiu manter a gestão igual à que já conhece.
+Consequência aceite e registada na spec §9.1: "Açaí Regular" e "Açaí Regular App" continuam a ser
+dois produtos, e os toppings continuam duplicados entre personalização e produto "Extra ...".
 
 ## Estrutura de ficheiros
 
@@ -65,7 +60,7 @@ Se o dono preferir a leitura literal (categorias = Venda ao Público / Vendas Ap
 | `backend/faturacao/__init__.py` | Router raiz `/api/faturacao` + inclusão dos sub-routers |
 | `backend/faturacao/db.py` | Cliente Motor próprio (preguiçoso) + criação de índices |
 | `backend/faturacao/auth.py` | Descodificação do JWT do backoffice + dependências de perfil |
-| `backend/faturacao/precos.py` | **Puro:** IVA, grupos de preço, validação de produto |
+| `backend/faturacao/precos.py` | **Puro:** IVA, validação de produto, linha de venda |
 | `backend/faturacao/pins.py` | **Puro:** normalização e verificação de PIN |
 | `backend/faturacao/lojas.py` | Endpoints de Lojas e Caixas |
 | `backend/faturacao/pagamentos.py` | Endpoints de Tipos de Pagamento |
@@ -572,8 +567,9 @@ git commit -m "Faturação: autenticação do backoffice (JWT próprio, sem impo
 ## Task 4: Lógica pura de preços e IVA
 
 O ponto mais importante deste plano. A app de hoje resolve o IVA com
-`prod.get('vat_rate', 13)` — um produto sem IVA sai a 13% sem erro nenhum. Aqui, **um produto sem
-IVA definido não pode ser vendido**.
+`prod.get('vat_rate', 13)` — um produto sem IVA sai a 13% sem erro nenhum. Bastaria criar
+"Coca-Cola 33cl" sem preencher o IVA para faturar refrigerantes a 13% em vez de 23% durante meses.
+Aqui, **um produto sem IVA definido não pode ser vendido**.
 
 **Files:**
 - Create: `backend/faturacao/precos.py`
@@ -581,38 +577,27 @@ IVA definido não pode ser vendido**.
 
 **Interfaces:**
 - Produces:
-  `GRUPOS_PRECO = ["publico", "aplicacoes"]`;
   `tax_id_de_taxa(taxa) -> Optional[str]`;
-  `preco_do_grupo(produto, grupo) -> Optional[dict]`;
   `erros_do_produto(produto) -> List[str]`;
-  `linha_de_venda(produto, grupo, quantidade, opcoes, preco_override, tax_override, desconto_pct, desconto_eur) -> dict`
+  `linha_de_venda(produto, quantidade, opcoes, preco_override, tax_override, desconto_pct, desconto_eur) -> dict`
 
 - [ ] **Step 1: Escrever o teste que falha**
 
 Criar `backend/tests/faturacao/test_precos.py`:
 
 ```python
-"""Preços, IVA e linhas de venda — lógica pura, sem I/O."""
+"""Preços, IVA e linhas de venda — lógica pura, sem I/O.
+
+Modelo: um produto pertence a uma categoria (Venda ao Público ou Vendas Aplicações)
+e tem UM preço e UM IVA — como no Vendus (spec D7).
+"""
 import pytest
 
-from faturacao.precos import (
-    GRUPOS_PRECO,
-    erros_do_produto,
-    linha_de_venda,
-    preco_do_grupo,
-    tax_id_de_taxa,
-)
+from faturacao.precos import erros_do_produto, linha_de_venda, tax_id_de_taxa
 
 
 def _produto(**over):
-    p = {
-        "id": "p1",
-        "nome": "Açaí Regular",
-        "precos": {
-            "publico": {"preco": 8.99, "tax_id": "INT"},
-            "aplicacoes": {"preco": 10.99, "tax_id": "INT"},
-        },
-    }
+    p = {"id": "p1", "nome": "Açaí Regular", "preco": 8.99, "tax_id": "INT"}
     p.update(over)
     return p
 
@@ -634,85 +619,91 @@ def test_taxa_desconhecida_nao_inventa_nada():
     assert tax_id_de_taxa("treze") is None
 
 
-# --- Preço por grupo -------------------------------------------------------
-
-def test_preco_do_grupo():
-    assert preco_do_grupo(_produto(), "publico")["preco"] == 8.99
-    assert preco_do_grupo(_produto(), "aplicacoes")["preco"] == 10.99
-
-
-def test_grupo_inexistente():
-    assert preco_do_grupo(_produto(), "nao_existe") is None
-
-
-def test_grupos_sao_dois():
-    assert GRUPOS_PRECO == ["publico", "aplicacoes"]
-
-
 # --- Validação -------------------------------------------------------------
 
 def test_produto_completo_nao_tem_erros():
     assert erros_do_produto(_produto()) == []
 
 
-def test_produto_sem_iva_num_grupo_tem_erro():
-    p = _produto(precos={"publico": {"preco": 8.99}, "aplicacoes": {"preco": 10.99, "tax_id": "INT"}})
-    assert erros_do_produto(p) == ["Sem IVA definido em Venda ao Público"]
+def test_produto_sem_iva_tem_erro():
+    p = _produto()
+    del p["tax_id"]
+    assert erros_do_produto(p) == ["Sem IVA definido"]
 
 
-def test_produto_sem_preco_num_grupo_tem_erro():
-    p = _produto(precos={"publico": {"tax_id": "INT"}, "aplicacoes": {"preco": 10.99, "tax_id": "INT"}})
-    assert erros_do_produto(p) == ["Sem preço definido em Venda ao Público"]
+def test_produto_sem_preco_tem_erro():
+    p = _produto()
+    del p["preco"]
+    assert erros_do_produto(p) == ["Sem preço definido"]
 
 
-def test_produto_sem_precos_nenhuns():
-    assert len(erros_do_produto(_produto(precos={}))) == 4
+def test_produto_sem_preco_nem_iva():
+    assert erros_do_produto({"nome": "X"}) == ["Sem preço definido", "Sem IVA definido"]
+
+
+def test_preco_zero_e_valido():
+    """Um artigo a 0,00€ (ex.: 'Incluído') é legítimo — o que não pode é faltar o campo."""
+    assert erros_do_produto(_produto(preco=0)) == []
 
 
 # --- Linha de venda --------------------------------------------------------
 
 def test_linha_simples():
-    li = linha_de_venda(_produto(), "publico", 2)
+    li = linha_de_venda(_produto(), 2)
     assert li == {"title": "Açaí Regular", "qty": 2, "gross_price": 8.99, "tax_id": "INT"}
 
 
 def test_linha_com_opcoes_soma_ao_preco_unitario():
-    """As personalizações entram no preço unitário da linha, como a app já faz —
-    não como linhas separadas."""
+    """As personalizações entram no preço unitário da linha, como a app já faz em
+    produção — e não como linhas separadas na fatura."""
     opcoes = [{"nome": "Nutella", "preco": 0.95}, {"nome": "Banana", "preco": 0.0}]
-    li = linha_de_venda(_produto(), "publico", 1, opcoes=opcoes)
+    li = linha_de_venda(_produto(), 1, opcoes=opcoes)
     assert li["gross_price"] == 9.94
     assert li["title"] == "Açaí Regular (Nutella, Banana)"
 
 
 def test_linha_recusa_produto_sem_iva():
-    p = _produto(precos={"publico": {"preco": 8.99}})
+    p = _produto()
+    del p["tax_id"]
     with pytest.raises(ValueError) as e:
-        linha_de_venda(p, "publico", 1)
+        linha_de_venda(p, 1)
     assert "IVA" in str(e.value)
 
 
+def test_linha_recusa_produto_sem_preco():
+    p = _produto()
+    del p["preco"]
+    with pytest.raises(ValueError) as e:
+        linha_de_venda(p, 1)
+    assert "preço" in str(e.value)
+
+
 def test_override_de_preco_e_de_iva():
-    li = linha_de_venda(_produto(), "publico", 1, preco_override=7.5, tax_override="NOR")
+    li = linha_de_venda(_produto(), 1, preco_override=7.5, tax_override="NOR")
     assert li["gross_price"] == 7.5
     assert li["tax_id"] == "NOR"
 
 
+def test_override_de_preco_zero_e_respeitado():
+    """0 é um preço, não é 'vazio'. Um `if preco_override:` daria 8,99 aqui."""
+    assert linha_de_venda(_produto(), 1, preco_override=0)["gross_price"] == 0.0
+
+
 def test_desconto_em_euros_tem_precedencia_sobre_percentagem():
     """O Vendus só aceita um dos dois por linha. O € ganha, como na Pizzaria."""
-    li = linha_de_venda(_produto(), "publico", 1, desconto_pct=10, desconto_eur=2)
+    li = linha_de_venda(_produto(), 1, desconto_pct=10, desconto_eur=2)
     assert li["discount_amount"] == 2.0
     assert "discount_percentage" not in li
 
 
 def test_desconto_em_percentagem():
-    li = linha_de_venda(_produto(), "publico", 1, desconto_pct=10)
+    li = linha_de_venda(_produto(), 1, desconto_pct=10)
     assert li["discount_percentage"] == 10.0
     assert "discount_amount" not in li
 
 
 def test_quantidade_zero_conta_como_um():
-    assert linha_de_venda(_produto(), "publico", 0)["qty"] == 1
+    assert linha_de_venda(_produto(), 0)["qty"] == 1
 ```
 
 - [ ] **Step 2: Correr para confirmar que falha**
@@ -723,7 +714,7 @@ cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_precos.py -v
 
 Esperado: FALHA com `ModuleNotFoundError: No module named 'faturacao.precos'`.
 
-- [ ] **Step 3: Implementar**
+- [ ] **Step 3: Escrever a implementação**
 
 Criar `backend/faturacao/precos.py`:
 
@@ -733,12 +724,11 @@ Criar `backend/faturacao/precos.py`:
 Regra de ouro deste módulo: NUNCA inventar um IVA. A app antiga tinha
 `vat_rate = prod.get('vat_rate', 13)`, e bastava criar um refrigerante sem IVA
 para o faturar a 13% em vez de 23% durante meses. Aqui, sem IVA não há venda.
+
+Modelo (spec D7): um produto pertence a uma categoria — Venda ao Público ou
+Vendas Aplicações — e tem UM preço e UM IVA.
 """
 from typing import Dict, List, Optional
-
-GRUPOS_PRECO = ["publico", "aplicacoes"]
-
-NOMES_GRUPO = {"publico": "Venda ao Público", "aplicacoes": "Vendas Aplicações"}
 
 # Códigos de imposto do Vendus.
 _TAXAS = {23: "NOR", 13: "INT", 6: "RED", 0: "ISE"}
@@ -753,25 +743,18 @@ def tax_id_de_taxa(taxa) -> Optional[str]:
         return None
 
 
-def preco_do_grupo(produto: Dict, grupo: str) -> Optional[Dict]:
-    return (produto.get("precos") or {}).get(grupo)
-
-
 def erros_do_produto(produto: Dict) -> List[str]:
     """Lista, em português, o que falta a um produto para poder ser vendido."""
     erros = []
-    for grupo in GRUPOS_PRECO:
-        p = preco_do_grupo(produto, grupo) or {}
-        if p.get("preco") is None:
-            erros.append("Sem preço definido em " + NOMES_GRUPO[grupo])
-        if not p.get("tax_id"):
-            erros.append("Sem IVA definido em " + NOMES_GRUPO[grupo])
+    if produto.get("preco") is None:
+        erros.append("Sem preço definido")
+    if not produto.get("tax_id"):
+        erros.append("Sem IVA definido")
     return erros
 
 
 def linha_de_venda(
     produto: Dict,
-    grupo: str,
     quantidade: int = 1,
     opcoes: Optional[List[Dict]] = None,
     preco_override: Optional[float] = None,
@@ -784,15 +767,15 @@ def linha_de_venda(
     As personalizações somam ao preço unitário (é o que a app já faz em produção)
     e os nomes vão entre parêntesis no título, para saírem no talão.
     """
-    p = preco_do_grupo(produto, grupo) or {}
-    tax_id = tax_override or p.get("tax_id")
+    tax_id = tax_override or produto.get("tax_id")
     if not tax_id:
         raise ValueError(
-            "O produto '%s' não tem IVA definido em %s e não pode ser vendido."
-            % (produto.get("nome", "?"), NOMES_GRUPO.get(grupo, grupo))
+            "O produto '%s' não tem IVA definido e não pode ser vendido."
+            % produto.get("nome", "?")
         )
 
-    base = preco_override if preco_override is not None else p.get("preco")
+    # Cuidado: `preco_override or produto[...]` daria 8,99 quando o override é 0.
+    base = preco_override if preco_override is not None else produto.get("preco")
     if base is None:
         raise ValueError("O produto '%s' não tem preço definido." % produto.get("nome", "?"))
 
@@ -826,19 +809,22 @@ def linha_de_venda(
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_precos.py -v
 ```
 
-Esperado: 16 passed.
+Esperado: 13 passed.
 
 - [ ] **Step 5: Validar os testes por mutação**
 
 Um teste verde não vale nada até se o ver vermelho pela razão certa. Fazer **uma de cada vez**,
-confirmar que falha, e reverter:
+confirmar que o teste indicado falha, e reverter antes da seguinte:
 
 1. Em `tax_id_de_taxa`, trocar o `return None` do `except` por `return "INT"` →
    `test_taxa_desconhecida_nao_inventa_nada` tem de falhar.
-2. Em `linha_de_venda`, trocar o `elif desconto_pct` por `if desconto_pct` →
+2. Em `linha_de_venda`, trocar `base = preco_override if preco_override is not None else ...`
+   por `base = preco_override or produto.get("preco")` →
+   `test_override_de_preco_zero_e_respeitado` tem de falhar.
+3. Em `linha_de_venda`, trocar o `elif desconto_pct` por `if desconto_pct` →
    `test_desconto_em_euros_tem_precedencia_sobre_percentagem` tem de falhar.
-3. Em `erros_do_produto`, remover a verificação do `tax_id` →
-   `test_produto_sem_iva_num_grupo_tem_erro` tem de falhar.
+4. Em `erros_do_produto`, remover a verificação do `tax_id` →
+   `test_produto_sem_iva_tem_erro` tem de falhar.
 
 - [ ] **Step 6: Commit**
 
@@ -964,7 +950,7 @@ def pin_valido(pin: str, hash_guardado: str) -> bool:
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/ -v
 ```
 
-Esperado: 36 passed.
+Esperado: 33 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1198,7 +1184,7 @@ router.include_router(_lojas)
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/ -v
 ```
 
-Esperado: 42 passed.
+Esperado: 39 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1394,7 +1380,7 @@ router.include_router(_pagamentos)
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/ -v
 ```
 
-Esperado: 47 passed.
+Esperado: 44 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1626,7 +1612,7 @@ router.include_router(_utilizadores)
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/ -v
 ```
 
-Esperado: 54 passed.
+Esperado: 51 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1770,7 +1756,7 @@ router.include_router(_motivos)
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/ -v
 ```
 
-Esperado: 57 passed.
+Esperado: 54 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1784,11 +1770,12 @@ git commit -m "Faturação: motivos de nota de crédito"
 
 ## Estado: o resto do Plano 1
 
-As tarefas seguintes ficam por escrever até a **decisão da secção "Decisão a confirmar antes da
-Task 9"** estar tomada com o dono, porque mudam o modelo de dados do catálogo:
+A decisão do catálogo já está tomada (ver acima). As tarefas seguintes escrevem-se a seguir às
+Tasks 1-9, quando estas estiverem implementadas e revistas — assim o detalhe delas parte de código
+real e não de suposições:
 
 - **Task 10:** Categorias e Grupos de Personalização (endpoints + validação de `min_select`/`max_select`)
-- **Task 11:** Produtos (endpoints, dois grupos de preços, `tax_id` obrigatório, ecrã "Produtos sem IVA")
+- **Task 11:** Produtos (endpoints, categoria, preço, `tax_id` obrigatório, ecrã "Produtos sem IVA")
 - **Task 12:** Cliente Vendus de leitura + importação do catálogo (com paginação — o bug do
   `per_page` em falta que existe hoje no import da Pizzaria importa só 20 produtos)
 - **Task 13:** Frontend — secção Faturação no `AdminLayout` (incluindo a correcção do apanha-tudo
