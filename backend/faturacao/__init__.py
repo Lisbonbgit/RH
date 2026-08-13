@@ -10,6 +10,9 @@ from .db import COLECOES, criar_indices, obter_db  # noqa: F401
 
 router = APIRouter(prefix="/api/faturacao", tags=["faturacao"])
 
+from .lojas import router as _lojas
+router.include_router(_lojas)
+
 
 async def arrancar():
     """Chamado pelo server.py no arranque."""
