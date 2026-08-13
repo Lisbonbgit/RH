@@ -17,7 +17,7 @@ from .db import COLECOES, obter_db
 
 router = APIRouter()
 
-_CP = re.compile(r"^\d{4}-\d{3}$")
+_CP = re.compile(r"^\d{4}-\d{3}\Z")
 
 
 class LojaEntrada(BaseModel):
@@ -35,6 +35,8 @@ class LojaEntrada(BaseModel):
     @field_validator("codigo_postal")
     @classmethod
     def _valida_cp(cls, v):
+        if v == "":
+            return None
         if v and not _CP.match(v):
             raise ValueError("Código postal tem de ser no formato 0000-000")
         return v
@@ -87,7 +89,9 @@ async def apagar_loja(loja_id: str, _: dict = Depends(gestor_atual)) -> dict:
     db = obter_db()
     if await db[COLECOES["caixas"]].count_documents({"loja_id": loja_id}) > 0:
         raise HTTPException(status_code=409, detail="A loja ainda tem caixas. Apague-as primeiro.")
-    await db[COLECOES["lojas"]].delete_one({"id": loja_id})
+    r = await db[COLECOES["lojas"]].delete_one({"id": loja_id})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Loja não encontrada")
     return {"apagada": True}
 
 
@@ -120,5 +124,7 @@ async def editar_caixa(caixa_id: str, dados: CaixaEntrada, _: dict = Depends(ges
 @router.delete("/caixas/{caixa_id}")
 async def apagar_caixa(caixa_id: str, _: dict = Depends(gestor_atual)) -> dict:
     db = obter_db()
-    await db[COLECOES["caixas"]].delete_one({"id": caixa_id})
+    r = await db[COLECOES["caixas"]].delete_one({"id": caixa_id})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Caixa não encontrada")
     return {"apagada": True}
