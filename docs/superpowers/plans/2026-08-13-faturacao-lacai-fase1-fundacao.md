@@ -819,7 +819,7 @@ def linha_de_venda(
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_precos.py -v
 ```
 
-Esperado: 13 passed.
+Esperado: 16 passed.
 
 - [ ] **Step 5: Validar os testes por mutação**
 
@@ -960,7 +960,7 @@ def pin_valido(pin: str, hash_guardado: str) -> bool:
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/ -v
 ```
 
-Esperado: 33 passed.
+Esperado: 37 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1194,7 +1194,7 @@ router.include_router(_lojas)
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/ -v
 ```
 
-Esperado: 39 passed.
+Esperado: 43 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1390,7 +1390,7 @@ router.include_router(_pagamentos)
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/ -v
 ```
 
-Esperado: 44 passed.
+Esperado: 48 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1622,7 +1622,7 @@ router.include_router(_utilizadores)
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/ -v
 ```
 
-Esperado: 51 passed.
+Esperado: 55 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1766,7 +1766,7 @@ router.include_router(_motivos)
 cd ~/Developer/RH/backend && .venv/bin/pytest tests/faturacao/ -v
 ```
 
-Esperado: 54 passed.
+Esperado: 58 passed.
 
 - [ ] **Step 5: Commit**
 
