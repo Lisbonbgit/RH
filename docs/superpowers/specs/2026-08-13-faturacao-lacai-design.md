@@ -256,6 +256,15 @@ encontrou no código da Pizzaria.
 `/faturacao/pos`, ecrã cheio. Na primeira vez naquele PC pede a **loja e a caixa** — fica guardado
 no browser, só se muda pelo menu. Depois disso, **teclado numérico e PIN de 4 dígitos**.
 
+**Guarda obrigatória na entrada (achado da revisão da Task 8 do Plano 1):** a unicidade do PIN
+dentro de uma loja **não pode ser garantida por um índice** — o sal do `bcrypt` faz com que duas
+pessoas com o mesmo PIN tenham hashes diferentes. É verificada no servidor ao criar utilizadores e
+ao mudar PIN, mas essa verificação **não cobre** o caso de alguém ser movido de loja (nesse momento
+o servidor só tem o hash, não o PIN). Portanto, o endpoint de entrada no POS tem de tratar
+**mais do que uma correspondência** como erro explícito — *"PIN em conflito, contacte o gestor"* —
+e **nunca escolher a primeira**. Escolher a primeira atribuiria as vendas à pessoa errada e
+destruía a responsabilização do fecho de caixa.
+
 A tela de descanso aparece aos **5 minutos** de inactividade: relógio grande e as **fotos da
 equipa** (as que já existem no perfil do RH). Toca-se na própria cara, mete-se o PIN. É uma camada
 **sobreposta** — não desmonta nada por baixo, portanto a venda em curso mantém-se intacta.
