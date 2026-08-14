@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from faturacao import lojas as lojas_mod
-from faturacao.lojas import CaixaEntrada, LojaEntrada, apagar_caixa, apagar_loja
+from faturacao.lojas import CaixaEntrada, LojaEntrada, apagar_caixa, apagar_loja, listar_caixas
 
 
 def _corre(coro):
@@ -25,13 +25,40 @@ class ResultadoDelete:
         self.deleted_count = deleted_count
 
 
+class CursorFalso:
+    """Duplo de um cursor Mongo: imita find().sort().to_list() do Motor. Mesmo
+    padrão de test_motivos_endpoints.py: só ordena os dados devolvidos se
+    sort() tiver sido mesmo chamado, para o teste apanhar um sort() em falta
+    e não só um sort() com o campo errado."""
+
+    def __init__(self, dados):
+        self._dados = dados
+        self._ordem = None  # Tuplo (campo, direcção)
+
+    def sort(self, campo, direcção=1):
+        self._ordem = (campo, direcção)
+        return self
+
+    async def to_list(self, limite):
+        dados = list(self._dados)
+        if self._ordem:
+            campo, direcção = self._ordem
+            dados.sort(key=lambda d: d.get(campo, ""), reverse=(direcção == -1))
+        return dados
+
+
 class ColeccaoFalsa:
     """Duplo de uma colecção Mongo: regista as chamadas e devolve resultados à escolha do teste."""
 
-    def __init__(self, registo, count_documents_devolve=0, delete_one_devolve=0):
+    def __init__(self, registo, count_documents_devolve=0, delete_one_devolve=0, find_devolve=None):
         self.registo = registo
         self._count_documents_devolve = count_documents_devolve
         self._delete_one_devolve = delete_one_devolve
+        self._find_devolve = find_devolve or []
+
+    def find(self, filtro, projecao=None):
+        self.registo.append(("find", filtro))
+        return CursorFalso(self._find_devolve)
 
     async def count_documents(self, filtro):
         self.registo.append(("count_documents", filtro))
@@ -168,3 +195,20 @@ def test_apagar_caixa_existente_e_apagada(monkeypatch):
 
     resultado = _corre(apagar_caixa("caixa-normal", _={}))
     assert resultado == {"apagada": True}
+
+
+def test_listar_caixas_ordena_por_nome(monkeypatch):
+    """listar_caixas era o único listar do módulo sem ordenação — a lista das
+    caixas de uma loja chegava à interface na ordem que o Mongo desse (não
+    garantida). Ordena por nome, como listar_lojas já faz."""
+    registo = []
+    dados_desordenados = [
+        {"id": "3", "nome": "Caixa C"},
+        {"id": "1", "nome": "Caixa A"},
+        {"id": "2", "nome": "Caixa B"},
+    ]
+    db = DbFalsa({"fat_caixas": ColeccaoFalsa(registo, find_devolve=dados_desordenados)})
+    monkeypatch.setattr(lojas_mod, "obter_db", lambda: db)
+
+    resultado = _corre(listar_caixas("loja-1", _={}))
+    assert [c["nome"] for c in resultado] == ["Caixa A", "Caixa B", "Caixa C"]

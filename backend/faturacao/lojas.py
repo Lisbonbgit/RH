@@ -98,7 +98,12 @@ async def apagar_loja(loja_id: str, _: dict = Depends(gestor_atual)) -> dict:
 @router.get("/lojas/{loja_id}/caixas")
 async def listar_caixas(loja_id: str, _: dict = Depends(gestor_atual)) -> List[dict]:
     db = obter_db()
-    return await db[COLECOES["caixas"]].find({"loja_id": loja_id}, {"_id": 0}).to_list(100)
+    return (
+        await db[COLECOES["caixas"]]
+        .find({"loja_id": loja_id}, {"_id": 0})
+        .sort("nome", 1)
+        .to_list(100)
+    )
 
 
 @router.post("/lojas/{loja_id}/caixas", status_code=201)
