@@ -1927,6 +1927,77 @@ Um `<input type="number">` come-os — usa `type="password"` ou `text` com `inpu
 
 ---
 
+## Task 17: Backend do Dashboard — ler as vendas do Vendus
+
+**Porque é que lê do Vendus:** o nosso POS ainda não vende. Todos os números que o dono quer ver
+— hoje, mensal, anual, por loja — estão hoje no Vendus, e vêm de duas origens que ele quer somadas:
+o balcão e a app (49% da faturação). Quando o POS começar a vender, a fonte muda por dentro e o
+ecrã não muda.
+
+**O defeito do Vendus que NÃO se copia:** o dashboard dele compara períodos desiguais. No dia 13 de
+agosto mostrava *"Mensal €21.180,28, −64,31%, anterior €59.335,11"* — 13 dias de agosto contra
+**julho inteiro**. E *"Anual €385.761,41, −28,76%, anterior €541.642,40"* — 225 dias de 2026 contra
+365 de 2025, quando à mesma data o ano anterior ia em ~€334.000, ou seja o negócio está **acima**.
+Aqui a comparação é **período contra período equivalente** (1–13 de agosto contra 1–13 de julho e
+contra 1–13 de agosto do ano anterior), e a resposta diz explicitamente o que comparou.
+
+**Files:**
+- Create: `backend/faturacao/vendus/__init__.py`, `backend/faturacao/vendus/cliente.py`
+- Create: `backend/faturacao/periodos.py` (**puro**), `backend/faturacao/dashboard.py`
+- Create: `backend/tests/faturacao/test_periodos.py`, `test_dashboard.py`
+- Modify: `backend/faturacao/__init__.py`
+
+**A chave da API:** ler `VENDUS_ACCOUNTS` (JSON, já usado pelo Financeiro) e escolher a entrada cujo
+`company_nif` bate com `FAT_NIF` (nova variável, por omissão `517542510` — Fordaimon Foods). Sem
+chave, o endpoint devolve `configurado: false` e o ecrã explica o que falta. **Nunca rebentar.**
+
+**`periodos.py` (puro, testável sem rede):**
+- `janela_hoje(agora)`, `janela_mes(agora)`, `janela_ano(agora)` — em `Europe/Lisbon`
+- `janela_anterior_equivalente(inicio, fim)` — o **mesmo número de dias**, no mês/ano anterior
+- `variacao(actual, anterior)` — devolve `None` se o anterior for zero (não inventar `-100%`)
+- Testes obrigatórios: 13 de agosto compara com 1–13 de julho e 1–13 de agosto do ano anterior,
+  **não** com os meses inteiros; mês de 31 dias contra mês de 30; 29 de fevereiro; e a mudança da
+  hora (o dia de verão tem 23h).
+
+**`cliente.py` (leitura apenas):** Basic auth com a chave; `GET documents/` com `since`, `until`,
+`per_page` (máx. 1000) e **paginação até esgotar** pelos cabeçalhos `X-Paginator-Pages`; erros
+tipados (429 lê `Rate-Limit-Reset`, 404 com `A001`/"No data" **não é erro, é zero vendas**).
+Filtrar `type` em `FS/FR/FT/NC` e **descartar `status == "A"`** (anulados). As **NC contam com sinal
+negativo**. Se a leitura ficar incompleta, **dizê-lo** em vez de devolver um número a menos.
+
+**`GET /api/faturacao/dashboard?com_iva=true`** devolve: `configurado`, `cartoes` (hoje/mensal/anual,
+cada um com valor, valor do período comparado, variação e **a frase que descreve a comparação**),
+`serie_diaria` (últimos 30 dias), `ultimos_6_meses`, `por_loja` (nome, hoje, mensal, série diária),
+e `leitura_completa`.
+
+**Cuidado com o `com_iva`:** o Vendus devolve `amount_gross` e `amount_net`. O interruptor tem de
+trocar de campo, não de fazer contas com uma taxa assumida.
+
+**Commit:** `Faturação: backend do dashboard (lê o Vendus, comparações por período equivalente)`
+
+---
+
+## Task 18: O ecrã do Dashboard
+
+**Files:** Modify `frontend/src/App.js` (trocar o `ComingSoon` pela página) · Create
+`frontend/src/pages/admin/faturacao/FatDashboard.js` · Modify `frontend/src/lib/faturacao.js`
+
+**O ecrã, pela ordem do backoffice que o dono usa hoje:**
+1. Interruptor **"Valores c/ IVA"** no topo, a comandar todos os números da página
+2. Três cartões — **Hoje · Mensal · Anual** — cada um com o valor grande, a variação em % e, por
+   baixo, o valor comparado **e a frase a dizer com o que foi comparado** (é isto que o Vendus não
+   faz e que o dono precisa para confiar no número)
+3. **Gráfico de área** com a faturação diária do último mês
+4. **Últimos 6 meses** em barras
+5. **Uma linha por loja** com Hoje e Mensal, cada uma com o seu mini-gráfico
+
+Sem chave configurada, um aviso claro a dizer o que falta — não um ecrã vazio.
+Gráficos sem bibliotecas novas (SVG, como o `MarketingReports.js` já faz com barras em CSS).
+
+**Commit:** `Faturação: ecrã do Dashboard`
+
+---
+
 ## Verificação final do Plano 1
 
 - [ ] `cd ~/Developer/RH/backend && .venv/bin/pytest tests/ -v` — tudo verde
