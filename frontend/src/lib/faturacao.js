@@ -4,9 +4,26 @@ import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL + '/api';
 
+// Traduz o erro do axios numa mensagem amigável e, quando o 422 aponta para
+// um campo, devolve também o nome desse campo. O `detail` de um 422 do
+// FastAPI/Pydantic é um array de objectos ([{type, loc, msg, input}, ...]) — e
+// não uma string, por isso nunca pode ir directo para o toast (o sonner
+// tentaria renderizar o array como filho React e desmontava a página).
+export const detalhesErro = (error, fallback) => {
+  const status = error.response?.status;
+  const detail = error.response?.data?.detail;
+  if (status === 422 && Array.isArray(detail) && detail.length > 0) {
+    const primeiro = detail[0];
+    const campo = Array.isArray(primeiro.loc) ? primeiro.loc[primeiro.loc.length - 1] : null;
+    const mensagem = (primeiro.msg || '').replace(/^Value error,\s*/i, '') || fallback;
+    return { campo, mensagem };
+  }
+  if (typeof detail === 'string' && detail) return { campo: null, mensagem: detail };
+  return { campo: null, mensagem: fallback };
+};
+
 // Lojas
 export const getLojas = () => axios.get(`${API_URL}/faturacao/lojas`);
-export const getLoja = (id) => axios.get(`${API_URL}/faturacao/lojas/${id}`);
 export const criarLoja = (data) => axios.post(`${API_URL}/faturacao/lojas`, data);
 export const editarLoja = (id, data) => axios.put(`${API_URL}/faturacao/lojas/${id}`, data);
 export const apagarLoja = (id) => axios.delete(`${API_URL}/faturacao/lojas/${id}`);

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   getLojas, criarLoja, editarLoja, apagarLoja,
   getCaixas, criarCaixa, editarCaixa, apagarCaixa,
+  detalhesErro,
 } from '../../../lib/faturacao';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
@@ -40,21 +41,6 @@ const moradaCompleta = (loja) => {
   return [loja.morada, linha2].filter(Boolean).join(', ');
 };
 
-// Traduz o erro do axios numa mensagem amigável e, quando o 422 aponta para
-// um campo (ex: código postal), devolve também o nome desse campo.
-const detalhesErro = (error, fallback) => {
-  const status = error.response?.status;
-  const detail = error.response?.data?.detail;
-  if (status === 422 && Array.isArray(detail) && detail.length > 0) {
-    const primeiro = detail[0];
-    const campo = Array.isArray(primeiro.loc) ? primeiro.loc[primeiro.loc.length - 1] : null;
-    const mensagem = (primeiro.msg || '').replace(/^Value error,\s*/i, '') || fallback;
-    return { campo, mensagem };
-  }
-  if (typeof detail === 'string' && detail) return { campo: null, mensagem: detail };
-  return { campo: null, mensagem: fallback };
-};
-
 const estadoBadge = (ativa) => (
   ativa !== false
     ? <Badge variant="outline" className="bg-teal-50 text-teal-700 border-teal-200">Ativa</Badge>
@@ -88,10 +74,28 @@ export default function FatLojas() {
       const { data } = await getLojas();
       const listaLojas = data || [];
       setLojas(listaLojas);
-      const resultados = await Promise.all(listaLojas.map((l) => getCaixas(l.id)));
+      // allSettled: uma loja cujas caixas falhem a carregar (sessão expirada,
+      // blip de rede) não pode apagar as caixas das restantes lojas, que já
+      // vieram bem. Mostra-se o que se conseguiu ler e avisa-se do que faltou.
+      const resultados = await Promise.allSettled(listaLojas.map((l) => getCaixas(l.id)));
       const mapa = {};
-      listaLojas.forEach((l, i) => { mapa[l.id] = resultados[i].data || []; });
+      let falhas = 0;
+      listaLojas.forEach((l, i) => {
+        const resultado = resultados[i];
+        if (resultado.status === 'fulfilled') {
+          mapa[l.id] = resultado.value.data || [];
+        } else {
+          falhas += 1;
+        }
+      });
       setCaixasPorLoja(mapa);
+      if (falhas > 0) {
+        toast.error(
+          falhas === 1
+            ? 'Não foi possível carregar as caixas de uma loja. Verifique antes de criar caixas novas.'
+            : `Não foi possível carregar as caixas de ${falhas} lojas. Verifique antes de criar caixas novas.`
+        );
+      }
     } catch (error) {
       toast.error('Erro ao carregar lojas');
     } finally {
@@ -104,7 +108,7 @@ export default function FatLojas() {
       const { data } = await getCaixas(lojaId);
       setCaixasPorLoja((prev) => ({ ...prev, [lojaId]: data || [] }));
     } catch (error) {
-      // mantém a lista anterior; a próxima ação já força uma atualização
+      toast.error('Não foi possível atualizar a lista de caixas desta loja. Atualize a página para confirmar se a operação foi guardada.');
     }
   };
 
@@ -150,6 +154,14 @@ export default function FatLojas() {
       cae: lojaForm.cae.trim() || null,
       ativa: lojaForm.ativa,
     };
+    // O PUT do servidor substitui o registo inteiro (não é um PATCH parcial).
+    // empresa_id e rh_location_id não têm campo neste formulário — sem os
+    // reenviar aqui, gravar a loja punha-os a null e cortava, em silêncio,
+    // a ligação à empresa/loja do RH.
+    if (editingLoja) {
+      payload.empresa_id = editingLoja.empresa_id ?? null;
+      payload.rh_location_id = editingLoja.rh_location_id ?? null;
+    }
     setSavingLoja(true);
     setLojaFieldErrors({});
     try {
@@ -225,7 +237,8 @@ export default function FatLojas() {
         setCaixaDialogOpen(false);
         fetchAll();
       } else {
-        toast.error(error.response?.data?.detail || 'Erro ao guardar a caixa');
+        const { mensagem } = detalhesErro(error, 'Erro ao guardar a caixa');
+        toast.error(mensagem);
       }
     } finally {
       setSavingCaixa(false);
@@ -374,6 +387,7 @@ export default function FatLojas() {
                   onChange={(e) => setLojaForm({ ...lojaForm, nome: e.target.value })}
                   placeholder="Ex: Açaí Algueirão"
                   required
+                  maxLength={120}
                   data-testid="loja-nome-input"
                 />
               </div>
@@ -497,6 +511,7 @@ export default function FatLojas() {
                   onChange={(e) => setCaixaForm({ ...caixaForm, nome: e.target.value })}
                   placeholder="Ex: Caixa 1"
                   required
+                  maxLength={60}
                   data-testid="caixa-nome-input"
                 />
               </div>
@@ -519,7 +534,7 @@ export default function FatLojas() {
           <AlertDialogHeader>
             <AlertDialogTitle>Eliminar caixa</AlertDialogTitle>
             <AlertDialogDescription>
-              Tem a certeza que pretende eliminar a caixa "{deleteCaixaTarget?.caixa?.nome}"?
+              Tem a certeza que pretende eliminar a caixa "{deleteCaixaTarget?.caixa?.nome}"? Esta ação não pode ser desfeita.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

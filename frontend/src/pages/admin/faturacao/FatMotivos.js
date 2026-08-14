@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   getMotivos, criarMotivo, editarMotivo, predefinirMotivo, apagarMotivo,
+  detalhesErro,
 } from '../../../lib/faturacao';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
@@ -69,7 +70,8 @@ export default function FatMotivos() {
         fetchAll();
         return;
       }
-      toast.error(error.response?.data?.detail || 'Erro ao guardar o motivo');
+      const { mensagem } = detalhesErro(error, 'Erro ao guardar o motivo');
+      toast.error(mensagem);
     } finally {
       setSaving(false);
     }
@@ -88,7 +90,8 @@ export default function FatMotivos() {
         toast.error('Este motivo já não existe. A atualizar a lista...');
         fetchAll();
       } else {
-        toast.error(error.response?.data?.detail || 'Erro ao eliminar o motivo');
+        const { mensagem } = detalhesErro(error, 'Erro ao eliminar o motivo');
+        toast.error(mensagem);
       }
     }
   };
@@ -106,7 +109,8 @@ export default function FatMotivos() {
         toast.error('Este motivo já não existe. A atualizar a lista...');
         fetchAll();
       } else {
-        toast.error(error.response?.data?.detail || 'Erro ao predefinir o motivo');
+        const { mensagem } = detalhesErro(error, 'Erro ao predefinir o motivo');
+        toast.error(mensagem);
       }
     } finally {
       setSettingDefaultId(null);

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   getUtilizadores, criarUtilizador, editarUtilizador, mudarPin, mudarEstado, getLojas,
+  detalhesErro,
 } from '../../../lib/faturacao';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
@@ -32,7 +33,7 @@ const PERFIL_ESTILOS = {
   contabilista: 'bg-amber-50 text-amber-700 border-amber-200',
 };
 
-const MSG_PIN_DIGITOS = 'O PIN tem de ter exactamente 4 dígitos.';
+const MSG_PIN_DIGITOS = 'O PIN tem de ter exatamente 4 dígitos.';
 const MSG_PIN_REPETIDO = 'Já existe alguém nesta loja com esse PIN.';
 const MSG_OPERADOR_SEM_LOJA = 'Um operador de caixa tem de ter pelo menos uma loja.';
 
@@ -40,22 +41,6 @@ const emptyForm = { nome: '', pin: '', perfil: '', lojas: [] };
 
 // Só dígitos, no máximo 4 — preserva zeros à esquerda porque nunca passa por Number().
 const soDigitos = (value) => value.replace(/\D/g, '').slice(0, 4);
-
-// Traduz o erro do axios numa mensagem amigável e, quando o 422 aponta para
-// um campo, devolve também o nome desse campo. Igual ao padrão dos outros
-// ecrãs de Faturação (FatLojas, FatPagamentos, FatMotivos).
-const detalhesErro = (error, fallback) => {
-  const status = error.response?.status;
-  const detail = error.response?.data?.detail;
-  if (status === 422 && Array.isArray(detail) && detail.length > 0) {
-    const primeiro = detail[0];
-    const campo = Array.isArray(primeiro.loc) ? primeiro.loc[primeiro.loc.length - 1] : null;
-    const mensagem = (primeiro.msg || '').replace(/^Value error,\s*/i, '') || fallback;
-    return { campo, mensagem };
-  }
-  if (typeof detail === 'string' && detail) return { campo: null, mensagem: detail };
-  return { campo: null, mensagem: fallback };
-};
 
 const perfilBadge = (perfil) => (
   <Badge variant="outline" className={PERFIL_ESTILOS[perfil] || 'bg-slate-100 text-slate-600 border-slate-200'}>
@@ -143,6 +128,11 @@ export default function FatUtilizadores() {
       lojas: form.lojas,
     };
     if (!editing) payload.pin = form.pin;
+    // O PUT do servidor substitui o registo inteiro. employee_id não tem
+    // campo neste formulário — sem o reenviar aqui, editar o utilizador
+    // punha-o a null e cortava, em silêncio, a ligação ao colaborador do RH
+    // (é o campo que traz a foto para a tela de descanso do POS).
+    if (editing) payload.employee_id = editing.employee_id ?? null;
     setSaving(true);
     setFieldErrors({});
     try {
@@ -333,6 +323,7 @@ export default function FatUtilizadores() {
                   onChange={(e) => setForm({ ...form, nome: e.target.value })}
                   placeholder="Ex: Rafaela Prates"
                   required
+                  maxLength={120}
                   data-testid="utilizador-nome-input"
                 />
               </div>
@@ -344,7 +335,7 @@ export default function FatUtilizadores() {
                     id="utilizador-pin"
                     type="password"
                     inputMode="numeric"
-                    autoComplete="off"
+                    autoComplete="new-password"
                     value={form.pin}
                     onChange={(e) => {
                       setForm({ ...form, pin: soDigitos(e.target.value) });
@@ -423,7 +414,7 @@ export default function FatUtilizadores() {
                 id="novo-pin"
                 type="password"
                 inputMode="numeric"
-                autoComplete="off"
+                autoComplete="new-password"
                 value={novoPin}
                 onChange={(e) => { setNovoPin(soDigitos(e.target.value)); setPinError(''); }}
                 placeholder="0000"

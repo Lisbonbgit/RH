@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   getTiposPagamento, getCodigosFiscais, criarTipoPagamento, editarTipoPagamento, apagarTipoPagamento,
+  detalhesErro,
 } from '../../../lib/faturacao';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
@@ -27,21 +28,6 @@ import { toast } from 'sonner';
 const emptyForm = { nome: '', tipo_fiscal: '', da_troco: null, ordem: '0', ativo: true };
 
 const AVISO_PROTEGIDO = "Este tipo de pagamento é usado pela app L'Açaí e não pode ser alterado nem apagado aqui.";
-
-// Traduz o erro do axios numa mensagem amigável e, quando o 422 aponta para
-// um campo, devolve também o nome desse campo.
-const detalhesErro = (error, fallback) => {
-  const status = error.response?.status;
-  const detail = error.response?.data?.detail;
-  if (status === 422 && Array.isArray(detail) && detail.length > 0) {
-    const primeiro = detail[0];
-    const campo = Array.isArray(primeiro.loc) ? primeiro.loc[primeiro.loc.length - 1] : null;
-    const mensagem = (primeiro.msg || '').replace(/^Value error,\s*/i, '') || fallback;
-    return { campo, mensagem };
-  }
-  if (typeof detail === 'string' && detail) return { campo: null, mensagem: detail };
-  return { campo: null, mensagem: fallback };
-};
 
 const estadoBadge = (ativo) => (
   ativo !== false
@@ -120,6 +106,10 @@ export default function FatPagamentos() {
       ordem: parseInt(form.ordem, 10) || 0,
       ativo: form.ativo,
     };
+    // O PUT do servidor substitui o registo inteiro. vendus_payment_method_id
+    // não tem campo neste formulário — sem o reenviar aqui, gravar o tipo de
+    // pagamento punha-o a null e cortava, em silêncio, a ligação ao Vendus.
+    if (editing) payload.vendus_payment_method_id = editing.vendus_payment_method_id ?? null;
     setSaving(true);
     setFieldErrors({});
     try {
@@ -274,6 +264,7 @@ export default function FatPagamentos() {
                   onChange={(e) => setForm({ ...form, nome: e.target.value })}
                   placeholder="Ex: Glovo"
                   required
+                  maxLength={60}
                   data-testid="pagamento-nome-input"
                 />
                 {fieldErrors.nome && <p className="text-xs text-destructive">{fieldErrors.nome}</p>}
