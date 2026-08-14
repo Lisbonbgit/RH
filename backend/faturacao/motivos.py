@@ -23,7 +23,7 @@ class MotivoEntrada(BaseModel):
 @router.get("/motivos-nc")
 async def listar(_: dict = Depends(gestor_atual)) -> List[dict]:
     db = obter_db()
-    return await db[COLECOES["motivos_nc"]].find({}, {"_id": 0}).to_list(100)
+    return await db[COLECOES["motivos_nc"]].find({}, {"_id": 0}).sort("texto", 1).to_list(100)
 
 
 @router.post("/motivos-nc", status_code=201)
@@ -59,10 +59,12 @@ async def predefinir(motivo_id: str, _: dict = Depends(gestor_atual)) -> dict:
     # Agora podemos desmarcar todos os outros com confiança
     await db[COLECOES["motivos_nc"]].update_many({}, {"$set": {"predefinido": False}})
 
-    # E marcar o escolhido
-    await db[COLECOES["motivos_nc"]].update_one(
+    # E marcar o escolhido (com verificação da escrita final)
+    r = await db[COLECOES["motivos_nc"]].update_one(
         {"id": motivo_id}, {"$set": {"predefinido": True}}
     )
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Motivo não encontrado")
     return {"predefinido": motivo_id}
 
 

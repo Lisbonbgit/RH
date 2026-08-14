@@ -9,11 +9,33 @@ import pytest
 from fastapi import HTTPException
 
 from faturacao import motivos as motivos_mod
-from faturacao.motivos import MotivoEntrada, apagar, editar, predefinir
+from faturacao.motivos import MotivoEntrada, apagar, editar, listar, predefinir
 
 
 def _corre(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
+
+
+class CursorFalso:
+    """Duplo de um cursor Mongo: imita find().sort().to_list() do Motor."""
+
+    def __init__(self, dados):
+        self._dados = dados
+        self._ordem = None  # Tuplo (campo, direcção)
+
+    def sort(self, campo, direcção=1):
+        """Sort por campo (1=asc, -1=desc). Devolve o próprio cursor como o Motor."""
+        self._ordem = (campo, direcção)
+        return self
+
+    async def to_list(self, limite):
+        """Devolve os dados, ordenados se sort() foi chamado."""
+        dados = list(self._dados)
+        if self._ordem:
+            campo, direcção = self._ordem
+            reverse = (direcção == -1)
+            dados.sort(key=lambda d: d.get(campo, ""), reverse=reverse)
+        return dados
 
 
 class ResultadoUpdate:
@@ -39,11 +61,18 @@ class ColeccaoFalsa:
         update_one_matched=0,
         delete_one_devolve=0,
         find_one_devolve=None,
+        find_devolve=None,
     ):
         self.registo = registo
         self._update_one_matched = update_one_matched
         self._delete_one_devolve = delete_one_devolve
         self._find_one_devolve = find_one_devolve
+        self._find_devolve = find_devolve or []
+
+    def find(self, filtro, projecao=None):
+        """Devolve um cursor falso que suporta sort().to_list()."""
+        self.registo.append(("find", filtro))
+        return CursorFalso(self._find_devolve)
 
     async def find_one(self, filtro, projecao=None):
         self.registo.append(("find_one", filtro))
@@ -153,3 +182,51 @@ def test_predefinir_motivo_inexistente_devolve_404_sem_escrever_nada(monkeypatch
         "update_many não deve ser chamado com id inexistente"
     assert not any(chamada[0] == "update_one" for chamada in registo), \
         "update_one não deve ser chamado com id inexistente"
+
+
+def test_predefinir_janela_estreita_motivo_apagado_entre_find_e_update(monkeypatch):
+    """A janela: find_one encontra o motivo, mas o update_one final falha.
+
+    Cenário: o motivo é apagado por outro pedido entre o find_one e o update_one final.
+    O endpoint deve detetar isso e devolver 404, não 200 "sucesso" falso.
+
+    Defesa de duas camadas: o find_one evita desmarcar tudo sem motivo,
+    o matched_count do update_one apanha a corrida.
+    """
+    registo = []
+    coleccao = ColeccaoFalsa(
+        registo,
+        update_one_matched=0,  # O update_one final não encontra nada
+        find_one_devolve={"id": "x", "texto": "Erro na fatura", "predefinido": False},
+    )
+    monkeypatch.setattr(motivos_mod, "obter_db", lambda: DbFalsa(coleccao))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(predefinir("x", _={}))
+    assert excinfo.value.status_code == 404
+    assert "Motivo não encontrado" in excinfo.value.detail
+    # Confirma a sequência: find_one passou, mas update_one falhou
+    assert any(chamada[0] == "find_one" for chamada in registo)
+    assert any(chamada[0] == "update_one" for chamada in registo)
+
+
+def test_listar_motivos_ordenados_por_texto(monkeypatch):
+    """O endpoint listar() devolve motivos ordenados por texto (ascendente).
+
+    Coerência com lojas.py e pagamentos.py, que ordenam igualmente.
+    Importante num dropdown: o utilizador espera uma ordem previsível.
+    """
+    registo = []
+    dados = [
+        {"id": "z", "texto": "Zebra", "predefinido": False},
+        {"id": "a", "texto": "Apple", "predefinido": False},
+        {"id": "m", "texto": "Middle", "predefinido": True},
+    ]
+    coleccao = ColeccaoFalsa(registo, find_devolve=dados)
+    monkeypatch.setattr(motivos_mod, "obter_db", lambda: DbFalsa(coleccao))
+
+    resultado = _corre(listar(_={}))
+    assert len(resultado) == 3
+    assert resultado[0]["texto"] == "Apple"
+    assert resultado[1]["texto"] == "Middle"
+    assert resultado[2]["texto"] == "Zebra"
