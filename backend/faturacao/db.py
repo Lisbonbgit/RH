@@ -21,6 +21,10 @@ COLECOES = {
     "categorias": "fat_categorias",
     "grupos_personalizacao": "fat_grupos_personalizacao",
     "produtos": "fat_produtos",
+    # Documentos fiscais emitidos pelo POS próprio (Plano 2 enche esta colecção;
+    # até lá está vazia, e uma procura numa colecção vazia devolve vazio — não
+    # dá erro). É esta colecção, não o Vendus, que o Dashboard (Plano 3) lê.
+    "documentos": "fat_documentos",
 }
 
 _cliente = None  # type: Optional[AsyncIOMotorClient]
@@ -51,6 +55,9 @@ INDICES = [
     ("fat_produtos", [("ativo", 1)], {}),
     ("fat_produtos", [("vendus_ref", 1)], {"sparse": True}),
     ("fat_grupos_personalizacao", [("nome", 1)], {}),
+    # Dashboard: a série diária/mensal lê por data (todas as lojas) e por loja+data.
+    ("fat_documentos", [("emitido_em", 1)], {}),
+    ("fat_documentos", [("loja_id", 1), ("emitido_em", 1)], {}),
 ]
 
 
