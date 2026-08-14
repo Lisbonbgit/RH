@@ -30,6 +30,19 @@ import FinExtrato from './pages/admin/financeiro/FinExtrato';
 import FinRelatorios from './pages/admin/financeiro/FinRelatorios';
 import PainelGlobal from './pages/admin/financeiro/PainelGlobal';
 import EstoqueFaturas from './pages/admin/estoque/EstoqueFaturas';
+import ComingSoon from './components/ComingSoon';
+import {
+  LayoutDashboard,
+  Package,
+  FileText,
+  Percent,
+  Users,
+  BarChart3,
+  Truck,
+  Monitor,
+  Banknote,
+  Store,
+} from 'lucide-react';
 import FatLojas from './pages/admin/faturacao/FatLojas';
 import FatPagamentos from './pages/admin/faturacao/FatPagamentos';
 import FatUtilizadores from './pages/admin/faturacao/FatUtilizadores';
@@ -179,11 +192,35 @@ function AppRoutes() {
         <Route path="estoque/faturas" element={<EstoqueFaturas />} />
 
         {/* ===== Faturação ===== */}
-        <Route path="faturacao" element={<Navigate to="/admin/faturacao/lojas" replace />} />
-        <Route path="faturacao/lojas" element={<FatLojas />} />
-        <Route path="faturacao/pagamentos" element={<FatPagamentos />} />
-        <Route path="faturacao/utilizadores" element={<FatUtilizadores />} />
-        <Route path="faturacao/motivos" element={<FatMotivos />} />
+        <Route path="faturacao" element={<Navigate to="/admin/faturacao/dashboard" replace />} />
+
+        {/* Gestão — a estrutura pedida pelo dono, decalcada do backoffice do
+            Vendus. O que ainda não está construído mostra "Brevemente", como o
+            Financeiro fez enquanto crescia. */}
+        <Route path="faturacao/dashboard" element={<ComingSoon icon={LayoutDashboard} title="Dashboard" subtitle="Faturação · Gestão" note="Faturação de hoje, do mês e do ano, vendas por loja, mais vendidos e mais rentáveis. Chega na fase dos relatórios." />} />
+        <Route path="faturacao/produtos" element={<ComingSoon icon={Package} title="Produtos" subtitle="Faturação · Gestão" note="Produtos, categorias e personalizações, importados do Vendus. É a próxima peça a ser construída." />} />
+        <Route path="faturacao/documentos" element={<ComingSoon icon={FileText} title="Documentos" subtitle="Faturação · Gestão" note="Pesquisar faturas e notas de crédito, reimprimir e anular." />} />
+        <Route path="faturacao/taloes-desconto" element={<ComingSoon icon={Percent} title="Talões de Desconto" subtitle="Faturação · Gestão" />} />
+        <Route path="faturacao/clientes" element={<ComingSoon icon={Users} title="Clientes" subtitle="Faturação · Gestão" note="Fichas de cliente e NIF para as faturas." />} />
+        <Route path="faturacao/relatorios" element={<ComingSoon icon={BarChart3} title="Relatórios" subtitle="Faturação · Gestão" note="Movimentos de caixa, produtos, categorias, lojas, utilizadores, diário, por hora, dias da semana e mensal." />} />
+        <Route path="faturacao/compras" element={<ComingSoon icon={Truck} title="Compras" subtitle="Faturação · Gestão" note="Entrada de mercadoria a partir das faturas de compra que já existem no Financeiro." />} />
+
+        {/* POS */}
+        <Route path="faturacao/pos" element={<ComingSoon icon={Monitor} title="Iniciar Ponto de Venda" subtitle="Faturação · POS" note="O ecrã de venda ao balcão, com sessão de caixa, personalizações e emissão da fatura. É a fase seguinte." />} />
+        <Route path="faturacao/movimentos-caixa" element={<ComingSoon icon={Banknote} title="Movimentos de Caixa" subtitle="Faturação · POS" note="Aberturas, entradas, saídas e fechos de caixa, loja a loja." />} />
+        <Route path="faturacao/pos-lojas" element={<ComingSoon icon={Store} title="Lojas" subtitle="Faturação · POS" note="Definições de cada loja e o que sai impresso no talão do cliente." />} />
+
+        {/* Configuração — os ecrãs que já funcionam */}
+        <Route path="faturacao/config/lojas" element={<FatLojas />} />
+        <Route path="faturacao/config/pagamentos" element={<FatPagamentos />} />
+        <Route path="faturacao/config/utilizadores" element={<FatUtilizadores />} />
+        <Route path="faturacao/config/motivos" element={<FatMotivos />} />
+
+        {/* Os caminhos antigos, de antes da estrutura por secções */}
+        <Route path="faturacao/lojas" element={<Navigate to="/admin/faturacao/config/lojas" replace />} />
+        <Route path="faturacao/pagamentos" element={<Navigate to="/admin/faturacao/config/pagamentos" replace />} />
+        <Route path="faturacao/utilizadores" element={<Navigate to="/admin/faturacao/config/utilizadores" replace />} />
+        <Route path="faturacao/motivos" element={<Navigate to="/admin/faturacao/config/motivos" replace />} />
 
         {/* ===== Marketing ===== */}
         <Route path="marketing" element={<MarketingCampaigns />} />

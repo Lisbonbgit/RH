@@ -49,7 +49,12 @@ import {
   Star,
   Store,
   CreditCard,
-  FileMinus
+  FileMinus,
+  Package,
+  Percent,
+  Monitor,
+  Banknote,
+  UserCog
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -106,15 +111,31 @@ const sections = [
     ],
   },
   {
+    // O módulo Faturação tem estrutura própria, pedida pelo dono e decalcada do
+    // backoffice do Vendus que ele usa hoje: duas secções (Gestão e POS) e a
+    // Configuração à parte, em baixo. O campo `group` desenha esses cabeçalhos
+    // na barra lateral (ver a navegação mais abaixo).
     key: 'faturacao',
     label: 'Faturação',
-    home: '/admin/faturacao/lojas',
+    home: '/admin/faturacao/dashboard',
     match: (p) => p.startsWith('/admin/faturacao'),
     items: [
-      { path: '/admin/faturacao/lojas', label: 'Lojas e Caixas', icon: Store },
-      { path: '/admin/faturacao/pagamentos', label: 'Tipos de Pagamento', icon: CreditCard },
-      { path: '/admin/faturacao/utilizadores', label: 'Utilizadores', icon: Users },
-      { path: '/admin/faturacao/motivos', label: 'Motivos de NC', icon: FileMinus },
+      { group: 'Gestão', path: '/admin/faturacao/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+      { group: 'Gestão', path: '/admin/faturacao/produtos', label: 'Produtos', icon: Package },
+      { group: 'Gestão', path: '/admin/faturacao/documentos', label: 'Documentos', icon: FileText },
+      { group: 'Gestão', path: '/admin/faturacao/taloes-desconto', label: 'Talões de Desconto', icon: Percent },
+      { group: 'Gestão', path: '/admin/faturacao/clientes', label: 'Clientes', icon: Users },
+      { group: 'Gestão', path: '/admin/faturacao/relatorios', label: 'Relatórios', icon: BarChart3 },
+      { group: 'Gestão', path: '/admin/faturacao/compras', label: 'Compras', icon: Truck },
+
+      { group: 'POS', path: '/admin/faturacao/pos', label: 'Iniciar Ponto de Venda', icon: Monitor },
+      { group: 'POS', path: '/admin/faturacao/movimentos-caixa', label: 'Movimentos de Caixa', icon: Banknote },
+      { group: 'POS', path: '/admin/faturacao/pos-lojas', label: 'Lojas', icon: Store },
+
+      { group: 'Configuração', path: '/admin/faturacao/config/lojas', label: 'Lojas e Caixas', icon: Store },
+      { group: 'Configuração', path: '/admin/faturacao/config/pagamentos', label: 'Tipos de Pagamento', icon: CreditCard },
+      { group: 'Configuração', path: '/admin/faturacao/config/utilizadores', label: 'Utilizadores', icon: UserCog },
+      { group: 'Configuração', path: '/admin/faturacao/config/motivos', label: 'Motivos - Notas Crédito', icon: FileMinus },
     ],
   },
   {
@@ -313,25 +334,42 @@ export default function AdminLayout() {
 
       <ScrollArea className="flex-1 px-3 pt-2">
         <nav className="space-y-1">
-          {activeSection.items.filter(item => !item.masterOnly || isMasterAdmin).map((item) => (
-            <NavLink
-              key={item.path}
-              to={item.path}
-              end={item.exact}
-              onClick={() => setMobileOpen(false)}
-              className={({ isActive }) =>
-                `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                  isActive
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                }`
-              }
-              data-testid={`nav-${item.path.split('/').pop() || 'dashboard'}`}
-            >
-              <item.icon className="h-4 w-4" />
-              {item.label}
-            </NavLink>
-          ))}
+          {(() => {
+            const itens = activeSection.items.filter(item => !item.masterOnly || isMasterAdmin);
+            let grupoAnterior = null;
+            return itens.map((item) => {
+              // Cabeçalho de grupo: só aparece quando o grupo muda, e só nas
+              // secções que os declaram (as antigas não têm `group` e continuam
+              // a desenhar uma lista corrida, como sempre).
+              const abreGrupo = item.group && item.group !== grupoAnterior;
+              grupoAnterior = item.group || null;
+              return (
+                <React.Fragment key={item.path}>
+                  {abreGrupo && (
+                    <p className="px-3 pt-4 pb-1 text-[10px] uppercase tracking-[0.16em] text-muted-foreground font-semibold">
+                      {item.group}
+                    </p>
+                  )}
+                  <NavLink
+                    to={item.path}
+                    end={item.exact}
+                    onClick={() => setMobileOpen(false)}
+                    className={({ isActive }) =>
+                      `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                        isActive
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                      }`
+                    }
+                    data-testid={`nav-${item.path.split('/').pop() || 'dashboard'}`}
+                  >
+                    <item.icon className="h-4 w-4" />
+                    {item.label}
+                  </NavLink>
+                </React.Fragment>
+              );
+            });
+          })()}
         </nav>
       </ScrollArea>
 
