@@ -22,6 +22,10 @@ export const detalhesErro = (error, fallback) => {
   return { campo: null, mensagem: fallback };
 };
 
+// Dashboard
+export const getFatDashboard = (comIva = true) =>
+  axios.get(`${API_URL}/faturacao/dashboard`, { params: { com_iva: comIva } });
+
 // Lojas
 export const getLojas = () => axios.get(`${API_URL}/faturacao/lojas`);
 export const criarLoja = (data) => axios.post(`${API_URL}/faturacao/lojas`, data);

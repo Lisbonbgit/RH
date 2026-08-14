@@ -32,7 +32,6 @@ import PainelGlobal from './pages/admin/financeiro/PainelGlobal';
 import EstoqueFaturas from './pages/admin/estoque/EstoqueFaturas';
 import ComingSoon from './components/ComingSoon';
 import {
-  LayoutDashboard,
   Package,
   FileText,
   Percent,
@@ -43,6 +42,7 @@ import {
   Banknote,
   Store,
 } from 'lucide-react';
+import FatDashboard from './pages/admin/faturacao/FatDashboard';
 import FatLojas from './pages/admin/faturacao/FatLojas';
 import FatPagamentos from './pages/admin/faturacao/FatPagamentos';
 import FatUtilizadores from './pages/admin/faturacao/FatUtilizadores';
@@ -197,7 +197,7 @@ function AppRoutes() {
         {/* Gestão — a estrutura pedida pelo dono, decalcada do backoffice do
             Vendus. O que ainda não está construído mostra "Brevemente", como o
             Financeiro fez enquanto crescia. */}
-        <Route path="faturacao/dashboard" element={<ComingSoon icon={LayoutDashboard} title="Dashboard" subtitle="Faturação · Gestão" note="Faturação de hoje, do mês e do ano, vendas por loja, mais vendidos e mais rentáveis. Chega na fase dos relatórios." />} />
+        <Route path="faturacao/dashboard" element={<FatDashboard />} />
         <Route path="faturacao/produtos" element={<ComingSoon icon={Package} title="Produtos" subtitle="Faturação · Gestão" note="Produtos, categorias e personalizações, importados do Vendus. É a próxima peça a ser construída." />} />
         <Route path="faturacao/documentos" element={<ComingSoon icon={FileText} title="Documentos" subtitle="Faturação · Gestão" note="Pesquisar faturas e notas de crédito, reimprimir e anular." />} />
         <Route path="faturacao/taloes-desconto" element={<ComingSoon icon={Percent} title="Talões de Desconto" subtitle="Faturação · Gestão" />} />
