@@ -1927,53 +1927,54 @@ Um `<input type="number">` come-os — usa `type="password"` ou `text` com `inpu
 
 ---
 
-## Task 17: Backend do Dashboard — ler as vendas do Vendus
+## Task 17: Backend do Dashboard
 
-**Porque é que lê do Vendus:** o nosso POS ainda não vende. Todos os números que o dono quer ver
-— hoje, mensal, anual, por loja — estão hoje no Vendus, e vêm de duas origens que ele quer somadas:
-o balcão e a app (49% da faturação). Quando o POS começar a vender, a fonte muda por dentro e o
-ecrã não muda.
+**Decisão do dono (2026-08-14):** o dashboard **não lê o Vendus**. Lê as **nossas** vendas. O
+sistema fica pronto para quando começar a faturar por si — enquanto o POS não vender, os números
+são zero e o ecrã diz que ainda não há vendas. No dia em que a primeira loja faturar, acende
+sozinho, sem ninguém lá voltar.
+
+**Consequência prática:** esta tarefa não precisa de chave de API, não depende da rede, não tem
+limites de pedidos e não tem nada que possa falhar por causa de um serviço de terceiros.
 
 **O defeito do Vendus que NÃO se copia:** o dashboard dele compara períodos desiguais. No dia 13 de
 agosto mostrava *"Mensal €21.180,28, −64,31%, anterior €59.335,11"* — 13 dias de agosto contra
-**julho inteiro**. E *"Anual €385.761,41, −28,76%, anterior €541.642,40"* — 225 dias de 2026 contra
-365 de 2025, quando à mesma data o ano anterior ia em ~€334.000, ou seja o negócio está **acima**.
-Aqui a comparação é **período contra período equivalente** (1–13 de agosto contra 1–13 de julho e
-contra 1–13 de agosto do ano anterior), e a resposta diz explicitamente o que comparou.
+**julho inteiro**. E *"Anual −28,76%"* — 225 dias de 2026 contra 365 de 2025, quando à mesma data o
+ano anterior ia em ~€334.000 e o negócio está afinal **acima**. Aqui a comparação é **período contra
+período equivalente**, e a resposta diz por escrito o que comparou.
 
 **Files:**
-- Create: `backend/faturacao/vendus/__init__.py`, `backend/faturacao/vendus/cliente.py`
-- Create: `backend/faturacao/periodos.py` (**puro**), `backend/faturacao/dashboard.py`
-- Create: `backend/tests/faturacao/test_periodos.py`, `test_dashboard.py`
+- Create: `backend/faturacao/periodos.py` (**puro**) e `backend/tests/faturacao/test_periodos.py`
+- Create: `backend/faturacao/dashboard.py` e `backend/tests/faturacao/test_dashboard.py`
+- Modify: `backend/faturacao/db.py` (declarar as colecções de vendas e os seus índices)
 - Modify: `backend/faturacao/__init__.py`
 
-**A chave da API:** ler `VENDUS_ACCOUNTS` (JSON, já usado pelo Financeiro) e escolher a entrada cujo
-`company_nif` bate com `FAT_NIF` (nova variável, por omissão `517542510` — Fordaimon Foods). Sem
-chave, o endpoint devolve `configurado: false` e o ecrã explica o que falta. **Nunca rebentar.**
+**As colecções que o Plano 2 vai encher** — declaram-se agora para o dashboard ter onde procurar
+(uma colecção que ainda não existe devolve vazio, não dá erro):
+- `fat_documentos` — um documento fiscal emitido: `loja_id`, `emitido_em` (ISO, UTC), `total_bruto`,
+  `total_liquido`, `tipo` (`FS`/`NC`), `anulado`
+- Índices: (`emitido_em`), (`loja_id`, `emitido_em`)
 
-**`periodos.py` (puro, testável sem rede):**
+**`periodos.py` (puro, sem I/O):**
 - `janela_hoje(agora)`, `janela_mes(agora)`, `janela_ano(agora)` — em `Europe/Lisbon`
-- `janela_anterior_equivalente(inicio, fim)` — o **mesmo número de dias**, no mês/ano anterior
-- `variacao(actual, anterior)` — devolve `None` se o anterior for zero (não inventar `-100%`)
-- Testes obrigatórios: 13 de agosto compara com 1–13 de julho e 1–13 de agosto do ano anterior,
-  **não** com os meses inteiros; mês de 31 dias contra mês de 30; 29 de fevereiro; e a mudança da
-  hora (o dia de verão tem 23h).
+- `janela_anterior_equivalente(inicio, fim)` — **o mesmo número de dias**, no mês/ano anterior
+- `descreve_comparacao(janela_actual, janela_anterior)` — a frase que o ecrã mostra
+- `variacao(actual, anterior)` — `None` se o anterior for zero (não inventar `-100%`)
+- Testes obrigatórios: 13 de agosto compara com 1–13 de julho e com 1–13 de agosto do ano anterior,
+  **não** com os períodos inteiros; mês de 31 dias contra um de 30; 29 de fevereiro; e o dia da
+  mudança da hora, que só tem 23 horas.
 
-**`cliente.py` (leitura apenas):** Basic auth com a chave; `GET documents/` com `since`, `until`,
-`per_page` (máx. 1000) e **paginação até esgotar** pelos cabeçalhos `X-Paginator-Pages`; erros
-tipados (429 lê `Rate-Limit-Reset`, 404 com `A001`/"No data" **não é erro, é zero vendas**).
-Filtrar `type` em `FS/FR/FT/NC` e **descartar `status == "A"`** (anulados). As **NC contam com sinal
-negativo**. Se a leitura ficar incompleta, **dizê-lo** em vez de devolver um número a menos.
+**`GET /api/faturacao/dashboard?com_iva=true`** (exige `gestor_atual`) devolve:
+`cartoes` (hoje/mensal/anual, cada um com valor, valor comparado, variação e **a frase da
+comparação**), `serie_diaria` (últimos 30 dias), `ultimos_6_meses`, `por_loja` (nome, hoje, mensal,
+série diária) e `ha_vendas` (falso enquanto ninguém vendeu).
 
-**`GET /api/faturacao/dashboard?com_iva=true`** devolve: `configurado`, `cartoes` (hoje/mensal/anual,
-cada um com valor, valor do período comparado, variação e **a frase que descreve a comparação**),
-`serie_diaria` (últimos 30 dias), `ultimos_6_meses`, `por_loja` (nome, hoje, mensal, série diária),
-e `leitura_completa`.
+**Notas:** as notas de crédito contam com **sinal negativo**; os anulados não contam; o interruptor
+`com_iva` **troca de campo** (`total_bruto`/`total_liquido`), nunca faz contas com uma taxa
+assumida; as fronteiras dos dias são as de Lisboa, e os registos guardam-se em UTC (é o padrão
+deste repositório — ver `LISBON_TZ` no `server.py`).
 
-**Cuidado com o `com_iva`:** o Vendus devolve `amount_gross` e `amount_net`. O interruptor tem de
-trocar de campo, não de fazer contas com uma taxa assumida.
-
-**Commit:** `Faturação: backend do dashboard (lê o Vendus, comparações por período equivalente)`
+**Commit:** `Faturação: backend do dashboard (vendas próprias, comparações por período equivalente)`
 
 ---
 
@@ -1984,15 +1985,18 @@ trocar de campo, não de fazer contas com uma taxa assumida.
 
 **O ecrã, pela ordem do backoffice que o dono usa hoje:**
 1. Interruptor **"Valores c/ IVA"** no topo, a comandar todos os números da página
-2. Três cartões — **Hoje · Mensal · Anual** — cada um com o valor grande, a variação em % e, por
-   baixo, o valor comparado **e a frase a dizer com o que foi comparado** (é isto que o Vendus não
-   faz e que o dono precisa para confiar no número)
+2. Três cartões — **Hoje · Mensal · Anual** — com o valor grande, a variação em % e, por baixo, o
+   valor comparado **e a frase a dizer com o que foi comparado**. É isto que o Vendus não faz e é
+   o que permite confiar no número.
 3. **Gráfico de área** com a faturação diária do último mês
 4. **Últimos 6 meses** em barras
 5. **Uma linha por loja** com Hoje e Mensal, cada uma com o seu mini-gráfico
 
-Sem chave configurada, um aviso claro a dizer o que falta — não um ecrã vazio.
-Gráficos sem bibliotecas novas (SVG, como o `MarketingReports.js` já faz com barras em CSS).
+**Enquanto não houver vendas** (`ha_vendas: false`), o ecrã mostra a estrutura toda com zeros e uma
+faixa a explicar que ainda não há vendas registadas e que os números acendem quando o POS começar a
+faturar. **Não é um ecrã vazio nem um "Brevemente"** — é o dashboard verdadeiro, à espera de dados.
+
+Gráficos sem bibliotecas novas (SVG à mão, ou barras em CSS como o `MarketingReports.js` já faz).
 
 **Commit:** `Faturação: ecrã do Dashboard`
 
