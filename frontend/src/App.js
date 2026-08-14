@@ -30,6 +30,10 @@ import FinExtrato from './pages/admin/financeiro/FinExtrato';
 import FinRelatorios from './pages/admin/financeiro/FinRelatorios';
 import PainelGlobal from './pages/admin/financeiro/PainelGlobal';
 import EstoqueFaturas from './pages/admin/estoque/EstoqueFaturas';
+import FatLojas from './pages/admin/faturacao/FatLojas';
+import FatPagamentos from './pages/admin/faturacao/FatPagamentos';
+import FatUtilizadores from './pages/admin/faturacao/FatUtilizadores';
+import FatMotivos from './pages/admin/faturacao/FatMotivos';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeProfile from './pages/employee/EmployeeProfile';
 import EmployeeTimeRecord from './pages/employee/EmployeeTimeRecord';
@@ -173,6 +177,13 @@ function AppRoutes() {
         {/* ===== Estoque ===== */}
         <Route path="estoque" element={<Navigate to="/admin/estoque/faturas" replace />} />
         <Route path="estoque/faturas" element={<EstoqueFaturas />} />
+
+        {/* ===== Faturação ===== */}
+        <Route path="faturacao" element={<Navigate to="/admin/faturacao/lojas" replace />} />
+        <Route path="faturacao/lojas" element={<FatLojas />} />
+        <Route path="faturacao/pagamentos" element={<FatPagamentos />} />
+        <Route path="faturacao/utilizadores" element={<FatUtilizadores />} />
+        <Route path="faturacao/motivos" element={<FatMotivos />} />
 
         {/* ===== Marketing ===== */}
         <Route path="marketing" element={<MarketingCampaigns />} />

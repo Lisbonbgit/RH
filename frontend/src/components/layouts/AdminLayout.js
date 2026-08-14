@@ -46,7 +46,10 @@ import {
   Landmark,
   Megaphone,
   CalendarDays,
-  Star
+  Star,
+  Store,
+  CreditCard,
+  FileMinus
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -65,7 +68,7 @@ const sections = [
     key: 'rh',
     label: 'RH',
     home: '/admin',
-    match: (p) => !p.startsWith('/admin/painel') && !p.startsWith('/admin/financeiro') && !p.startsWith('/admin/marketing') && !p.startsWith('/admin/estoque'),
+    match: (p) => !p.startsWith('/admin/painel') && !p.startsWith('/admin/financeiro') && !p.startsWith('/admin/marketing') && !p.startsWith('/admin/estoque') && !p.startsWith('/admin/faturacao'),
     items: [
       { path: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true },
       { path: '/admin/empresas', label: 'Empresas', icon: Building2 },
@@ -100,6 +103,18 @@ const sections = [
     match: (p) => p.startsWith('/admin/estoque'),
     items: [
       { path: '/admin/estoque/faturas', label: 'Faturas', icon: Receipt },
+    ],
+  },
+  {
+    key: 'faturacao',
+    label: 'Faturação',
+    home: '/admin/faturacao/lojas',
+    match: (p) => p.startsWith('/admin/faturacao'),
+    items: [
+      { path: '/admin/faturacao/lojas', label: 'Lojas e Caixas', icon: Store },
+      { path: '/admin/faturacao/pagamentos', label: 'Tipos de Pagamento', icon: CreditCard },
+      { path: '/admin/faturacao/utilizadores', label: 'Utilizadores', icon: Users },
+      { path: '/admin/faturacao/motivos', label: 'Motivos de NC', icon: FileMinus },
     ],
   },
   {
