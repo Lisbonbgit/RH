@@ -1791,19 +1791,139 @@ git commit -m "Faturação: motivos de nota de crédito"
 
 ---
 
-## Estado: o resto do Plano 1
+## Task 13: A secção Faturação aparece no portal
 
-A decisão do catálogo já está tomada (ver acima). As tarefas seguintes escrevem-se a seguir às
-Tasks 1-9, quando estas estiverem implementadas e revistas — assim o detalhe delas parte de código
-real e não de suposições:
+**Objectivo:** entrar no `rh.lisbonb.com`, ver **Faturação** ao lado de RH · Financeiro · Marketing,
+clicar, e navegar entre quatro ecrãs. Ainda sem dados — é a navegação a nascer.
 
-- **Task 10:** Categorias e Grupos de Personalização (endpoints + validação de `min_select`/`max_select`)
-- **Task 11:** Produtos (endpoints, categoria, preço, `tax_id` obrigatório, ecrã "Produtos sem IVA")
-- **Task 12:** Cliente Vendus de leitura + importação do catálogo (com paginação — o bug do
-  `per_page` em falta que existe hoje no import da Pizzaria importa só 20 produtos)
-- **Task 13:** Frontend — secção Faturação no `AdminLayout` (incluindo a correcção do apanha-tudo
-  do RH), rotas em `App.js`, `lib/faturacao.js`, e as páginas de Configuração
-- **Task 14:** Frontend — páginas do Catálogo e ecrã "Produtos sem IVA definido"
+**Files:**
+- Create: `frontend/src/lib/faturacao.js`
+- Create: `frontend/src/pages/admin/faturacao/FatLojas.js`, `FatPagamentos.js`, `FatUtilizadores.js`, `FatMotivos.js` (esqueletos)
+- Modify: `frontend/src/components/layouts/AdminLayout.js`
+- Modify: `frontend/src/App.js`
+
+**Convenções da casa (seguir, não inventar):**
+- O token vai em `axios.defaults.headers.common['Authorization']`, posto pelo `AuthContext`. O
+  ficheiro novo usa `axios` directo, como o `lib/api.js` e o `lib/finance.js`.
+- `const API_URL = process.env.REACT_APP_BACKEND_URL + '/api';`
+- Ícones de `lucide-react`, componentes de `components/ui/`, notificações com `toast` de `sonner`.
+
+**⚠️ ARMADILHA (a mais importante desta tarefa):** em `AdminLayout.js`, a secção `rh` é um
+apanha-tudo **negativo**:
+```js
+match: (p) => !p.startsWith('/admin/painel') && !p.startsWith('/admin/financeiro') && !p.startsWith('/admin/marketing') && !p.startsWith('/admin/estoque'),
+```
+Sem lhe acrescentar `&& !p.startsWith('/admin/faturacao')`, o RH **engole** a secção nova: clica-se
+em Faturação e o menu lateral continua a mostrar o do RH.
+
+**A secção a acrescentar** (a seguir a `estoque`, antes de `marketing`):
+```js
+{
+  key: 'faturacao',
+  label: 'Faturação',
+  home: '/admin/faturacao/lojas',
+  match: (p) => p.startsWith('/admin/faturacao'),
+  items: [
+    { path: '/admin/faturacao/lojas', label: 'Lojas e Caixas', icon: Store },
+    { path: '/admin/faturacao/pagamentos', label: 'Tipos de Pagamento', icon: CreditCard },
+    { path: '/admin/faturacao/utilizadores', label: 'Utilizadores', icon: Users },
+    { path: '/admin/faturacao/motivos', label: 'Motivos de NC', icon: FileMinus },
+  ],
+},
+```
+
+**Os wrappers** (`lib/faturacao.js`) — a superfície do servidor, já no ar:
+
+| Função | Chamada |
+|---|---|
+| `getLojas()` | `GET /faturacao/lojas` |
+| `getLoja(id)` | `GET /faturacao/lojas/{id}` |
+| `criarLoja(d)` / `editarLoja(id,d)` / `apagarLoja(id)` | `POST` / `PUT` / `DELETE /faturacao/lojas[/{id}]` |
+| `getCaixas(lojaId)` / `criarCaixa(lojaId,d)` | `GET` / `POST /faturacao/lojas/{lojaId}/caixas` |
+| `editarCaixa(id,d)` / `apagarCaixa(id)` | `PUT` / `DELETE /faturacao/caixas/{id}` |
+| `getTiposPagamento()` / `getCodigosFiscais()` | `GET /faturacao/tipos-pagamento[/codigos-fiscais]` |
+| `criarTipoPagamento(d)` / `editarTipoPagamento(id,d)` / `apagarTipoPagamento(id)` | `POST` / `PUT` / `DELETE` |
+| `getUtilizadores()` / `criarUtilizador(d)` / `editarUtilizador(id,d)` | `GET` / `POST` / `PUT /faturacao/utilizadores[/{id}]` |
+| `mudarPin(id,pin)` | `PUT /faturacao/utilizadores/{id}/pin` com `{pin}` |
+| `mudarEstado(id,ativo)` | `PUT /faturacao/utilizadores/{id}/estado` com `{ativo}` |
+| `getMotivos()` / `criarMotivo(d)` / `editarMotivo(id,d)` / `predefinirMotivo(id)` / `apagarMotivo(id)` | `/faturacao/motivos-nc[...]` |
+
+**Passos:** criar `lib/faturacao.js` com todos os wrappers · criar os quatro ecrãs como esqueleto
+(`PageHeader` com título e uma frase, nada mais) · acrescentar a secção ao `AdminLayout` **e
+corrigir o apanha-tudo do RH** · acrescentar o bloco de rotas ao `App.js`, dentro do `AdminLayout`,
+com `<Route path="faturacao" element={<Navigate to="/admin/faturacao/lojas" replace />} />` ·
+`CI=false yarn build` tem de compilar · **verificar no browser** que ao clicar em Faturação o menu
+lateral muda mesmo (é a prova de que a armadilha foi fechada) e que o RH continua a funcionar.
+
+**Commit:** `Faturação: secção no portal, rotas e wrappers da API`
+
+---
+
+## Task 14: Ecrã Lojas e Caixas
+
+**Files:** Modify `frontend/src/pages/admin/faturacao/FatLojas.js`
+
+**Modelo a seguir:** `frontend/src/pages/admin/AdminHolidays.js` (259 linhas) — mesma estrutura de
+lista + diálogo + confirmação. Copiar o padrão, não reinventar.
+
+**O ecrã:** lista de lojas; cada loja mostra as suas caixas por baixo (o Vendus faz igual). Criar,
+editar e apagar loja; criar, editar e apagar caixa dentro de uma loja.
+
+**Campos da loja:** nome (obrigatório) · morada · código postal (formato `0000-000`, o servidor
+recusa outro) · localidade · email · telefone · CAE · activa.
+**Campos da caixa:** nome (obrigatório) · activa.
+
+**Erros do servidor a mostrar como deve ser** (não um "erro" genérico):
+- **409** ao apagar uma loja com caixas → *"Esta loja ainda tem caixas. Apague-as primeiro."*
+- **404** → o registo já não existe; recarregar a lista.
+- **422** do código postal → mostrar a mensagem do campo.
+
+**Nota:** não existe nenhum campo de caixa do Vendus, e **não pode aparecer nenhum** — a caixa do
+motor fiscal é uma só, em variável de ambiente. Se sentires falta dela no ecrã, é sinal de que
+percebeste mal.
+
+**Commit:** `Faturação: ecrã de Lojas e Caixas`
+
+---
+
+## Task 15: Ecrãs de Tipos de Pagamento e Motivos de NC
+
+**Files:** Modify `FatPagamentos.js` e `FatMotivos.js`
+
+**Tipos de Pagamento** — tabela com Título · Troco · Tipo fiscal · Estado, como o Vendus mostra.
+Criar/editar: nome livre, **código fiscal** escolhido de uma lista (vem de
+`GET /faturacao/tipos-pagamento/codigos-fiscais`), **dá troco** (sim/não), ordem, activo.
+- Um tipo com `protegido: true` **não é editável nem apagável** — mostra um cadeado e a explicação
+  *"usado pela app L'Açaí"*. O servidor devolve **409**; o ecrã não deve sequer deixar tentar.
+- O campo "dá troco" tem de ser escolha explícita, com o aviso de que só faz sentido em dinheiro.
+
+**Motivos de NC** — lista simples: texto (máx. 200 caracteres), criar, editar, apagar, e **marcar
+como predefinido** (só um pode estar; marcar um desmarca os outros).
+
+**Commit:** `Faturação: ecrãs de Tipos de Pagamento e Motivos de Nota de Crédito`
+
+---
+
+## Task 16: Ecrã de Utilizadores
+
+**Files:** Modify `frontend/src/pages/admin/faturacao/FatUtilizadores.js`
+
+**O ecrã:** tabela Nome · Perfil · Lojas · Estado. Criar utilizador (nome, **PIN de 4 dígitos**,
+perfil, lojas). Editar (sem o PIN). **Mudar PIN** em acção própria. **Activar/desactivar** —
+nunca apagar, porque o histórico de vendas aponta para o utilizador.
+
+**Perfis:** `administrador` · `operador_caixa` · `contabilista`. Um operador de caixa **tem de ter
+pelo menos uma loja**; um administrador pode não ter nenhuma (entra em todas).
+
+**Erros do servidor a mostrar bem:**
+- **409** ao criar ou mudar PIN → *"Já existe alguém nesta loja com esse PIN."* É a guarda que
+  garante que se sabe quem fez cada venda.
+- **422** de PIN inválido → *"O PIN tem de ter exactamente 4 dígitos."*
+
+**Cuidado:** o campo do PIN é numérico de 4 dígitos e **tem de aceitar zeros à esquerda** (`0007`).
+Um `<input type="number">` come-os — usa `type="password"` ou `text` com `inputMode="numeric"`.
+
+**Commit:** `Faturação: ecrã de Utilizadores do POS`
 
 ---
 
