@@ -83,7 +83,18 @@ def linha_de_venda(
     As personalizações somam ao preço unitário (é o que a app já faz em produção)
     e os nomes vão entre parêntesis no título, para saírem no talão.
     """
-    tax_id = tax_override or produto.get("tax_id")
+    # O diálogo do produto, no POS, deixa a operadora forçar o IVA de uma
+    # linha. Esse valor tem de passar pelo mesmo crivo do IVA do produto
+    # (erros_do_produto) — sem isto, um "XPTO" escrito à mão seguia sem
+    # validação nenhuma até o Vendus recusar o documento à frente do
+    # cliente, ou pior, aceitá-lo com o imposto errado.
+    if tax_override is not None:
+        if tax_override not in _CODIGOS_IVA_VALIDOS:
+            raise ValueError("Código de IVA desconhecido: %s" % tax_override)
+        tax_id = tax_override
+    else:
+        tax_id = produto.get("tax_id")
+
     if not tax_id:
         raise ValueError(
             "O produto '%s' não tem IVA definido e não pode ser vendido."

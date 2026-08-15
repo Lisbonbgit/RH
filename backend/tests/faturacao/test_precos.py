@@ -103,6 +103,20 @@ def test_override_de_preco_e_de_iva():
     assert li["tax_id"] == "NOR"
 
 
+def test_override_de_iva_invalido_e_recusado():
+    """O diálogo do produto no POS deixa a operadora forçar o IVA de uma
+    linha — esse valor tem de passar pelo mesmo crivo do IVA do produto,
+    senão um 'XPTO' escrito à mão sai para o Vendus sem validação nenhuma."""
+    with pytest.raises(ValueError) as e:
+        linha_de_venda(_produto(), 1, tax_override="XPTO")
+    assert "IVA" in str(e.value)
+
+
+def test_override_de_iva_none_usa_o_iva_do_produto():
+    li = linha_de_venda(_produto(tax_id="RED"), 1, tax_override=None)
+    assert li["tax_id"] == "RED"
+
+
 def test_override_de_preco_zero_e_respeitado():
     """0 é um preço, não é 'vazio'. Um `if preco_override:` daria 8,99 aqui."""
     assert linha_de_venda(_produto(), 1, preco_override=0)["gross_price"] == 0.0
