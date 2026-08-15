@@ -71,6 +71,7 @@ _MSG_PIN_EM_CONFLITO = "PIN em conflito, contacte o gestor."
 _MSG_CODIGO_INVALIDO = "Código de emparelhamento inválido ou expirado."
 _MSG_DISPOSITIVO_INVALIDO = "Dispositivo não emparelhado."
 _MSG_SESSAO_OPERADOR_INVALIDA = "Sessão de operador inválida ou expirada."
+_MSG_DISPOSITIVO_NAO_ENCONTRADO = "Dispositivo não encontrado ou já revogado."
 
 
 def _agora() -> datetime:
@@ -87,6 +88,11 @@ def _hash_token(valor: str) -> str:
 
 class PedidoCodigo(BaseModel):
     loja_id: str
+    # Opcional (Task 5, spec do buraco achado na Task 2): o nome que o gestor
+    # dá a este PC ao gerar o código (ex.: "PC Balcão", "PC Drive-Thru") — é o
+    # que distingue os dispositivos na listagem, quando uma loja tem mais do
+    # que um. Sem nome, listar_dispositivos mostra apenas o id.
+    nome: Optional[str] = Field(default=None, max_length=60)
 
 
 class PedidoEmparelhar(BaseModel):
@@ -110,6 +116,7 @@ async def gerar_codigo_emparelhamento(dados: PedidoCodigo, _: dict = Depends(ges
     doc = {
         "id": str(uuid.uuid4()),
         "loja_id": dados.loja_id,
+        "nome": dados.nome,
         "codigo_hash": _hash_token(codigo),
         "estado": "pendente",
         "criado_em": _agora().isoformat(),
@@ -139,20 +146,78 @@ async def emparelhar(dados: PedidoEmparelhar) -> dict:
         raise HTTPException(status_code=401, detail=_MSG_CODIGO_INVALIDO)
 
     token = secrets.token_urlsafe(32)
+    agora = _agora().isoformat()
     await db[COLECOES["dispositivos"]].update_one(
         {"id": disp["id"]},
         {"$set": {
             "estado": "activo",
             "token_hash": _hash_token(token),
-            "emparelhado_em": _agora().isoformat(),
+            "emparelhado_em": agora,
+            # O próprio emparelhamento já é "falar connosco" — inicializa a
+            # marca da Task 5 aqui, para um PC nunca emparelhado (activo mas
+            # sem ninguém a usá-lo ainda) já ter uma data e não um vazio
+            # ambíguo na listagem.
+            "ultima_atividade_em": agora,
         }},
     )
     return {"device_token": token, "loja_id": disp["loja_id"]}
 
 
+@router.get("/dispositivos-pos")
+async def listar_dispositivos(_: dict = Depends(gestor_atual)) -> List[dict]:
+    """Lista os dispositivos alguma vez emparelhados — activos e revogados.
+
+    Não inclui códigos "pendentes" (gerados e nunca trocados): esses ainda
+    não são um dispositivo, só um convite por usar. Task 5 (buraco achado na
+    Task 2): sem `ultima_atividade_em`, um PC emparelhado uma vez ficava
+    válido para sempre e não havia forma de perceber qual já não existe —
+    esta lista é o que permite ao gestor decidir o que revogar.
+    """
+    db = obter_db()
+    todos = await db[COLECOES["dispositivos"]].find({}).to_list(500)
+    return [
+        {
+            "id": d["id"],
+            "loja_id": d["loja_id"],
+            "nome": d.get("nome"),
+            "estado": d["estado"],
+            "emparelhado_em": d.get("emparelhado_em"),
+            "ultima_atividade_em": d.get("ultima_atividade_em"),
+        }
+        for d in todos
+        if d.get("estado") != "pendente"
+    ]
+
+
+@router.delete("/dispositivos-pos/{dispositivo_id}")
+async def revogar_dispositivo(dispositivo_id: str, _: dict = Depends(gestor_atual)) -> dict:
+    """Revoga um dispositivo: a partir daqui, `dispositivo_atual` deixa de o
+    aceitar (deixa de haver `estado='activo'` a casar), e o /pos desse PC
+    deixa de carregar. Mesmo padrão de `emparelhar`: confirma primeiro com
+    find_one (também serve para distinguir "nunca existiu" de "já estava
+    revogado" — os dois dão 404, mas nenhum finge sucesso)."""
+    db = obter_db()
+    disp = await db[COLECOES["dispositivos"]].find_one(
+        {"id": dispositivo_id, "estado": "activo"}
+    )
+    if not disp:
+        raise HTTPException(status_code=404, detail=_MSG_DISPOSITIVO_NAO_ENCONTRADO)
+    await db[COLECOES["dispositivos"]].update_one(
+        {"id": dispositivo_id},
+        {"$set": {"estado": "revogado", "revogado_em": _agora().isoformat()}},
+    )
+    return {"revogado": True}
+
+
 async def dispositivo_atual(x_device_token: Optional[str] = Header(default=None)) -> Dict:
     """Dependência das rotas do POS que só precisam do dispositivo (ainda
-    sem operador identificado) — usa-se directamente em /pos/entrar."""
+    sem operador identificado) — usa-se directamente em /pos/entrar.
+
+    Um dispositivo revogado (Task 5) já não tem estado='activo', por isso
+    deixa de casar com o filtro abaixo e cai no mesmo 401 de sempre — é
+    assim que "revogar corta o /pos desse PC" acontece, sem precisar de
+    nenhuma lógica extra aqui.
+    """
     if not x_device_token:
         raise HTTPException(status_code=401, detail=_MSG_DISPOSITIVO_INVALIDO)
     db = obter_db()
@@ -161,6 +226,13 @@ async def dispositivo_atual(x_device_token: Optional[str] = Header(default=None)
     )
     if not disp:
         raise HTTPException(status_code=401, detail=_MSG_DISPOSITIVO_INVALIDO)
+    # Task 5: regista "a última vez que este PC falou connosco" — é o que
+    # distingue, na listagem, o PC ainda em uso do que já foi arrumado numa
+    # gaveta. Não bloqueia nem faz o pedido falhar se a escrita não voltar
+    # a tempo — é só um sinal para o gestor, não uma condição de entrada.
+    await db[COLECOES["dispositivos"]].update_one(
+        {"id": disp["id"]}, {"$set": {"ultima_atividade_em": _agora().isoformat()}}
+    )
     return disp
 
 

@@ -32,7 +32,9 @@ from faturacao.pos_auth import (
     emparelhar,
     entrar,
     gerar_codigo_emparelhamento,
+    listar_dispositivos,
     operador_atual,
+    revogar_dispositivo,
 )
 
 
@@ -403,3 +405,161 @@ def test_operador_atual_token_expirado_e_recusado_401():
     with pytest.raises(HTTPException) as excinfo:
         _corre(operador_atual(x_operator_token=token_expirado))
     assert excinfo.value.status_code == 401
+
+
+# --- Ver e revogar dispositivos (Task 5) ---------------------------------------
+#
+# Buraco achado durante a Task 2: um PC emparelhado ficava válido para
+# sempre. Se for roubado, vendido ou substituído, tinha de haver forma de o
+# cortar — é o que estes testes cobrem.
+
+
+def test_gerar_codigo_com_nome_guarda_o_nome_no_dispositivo(monkeypatch):
+    """O nome dado ao gerar o código (ex.: "PC Balcão") é o que a Task 5 lista
+    depois — sem ele, o gestor via só uma lista de ids sem saber qual PC é qual."""
+    registo = []
+    db = _db(registo, lojas=[{"id": "loja-1", "nome": "Belém"}])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    resultado_codigo = _corre(
+        gerar_codigo_emparelhamento(PedidoCodigo(loja_id="loja-1", nome="PC Balcão"), _={})
+    )
+    _corre(emparelhar(PedidoEmparelhar(codigo=resultado_codigo["codigo"])))
+
+    dispositivos = _corre(listar_dispositivos(_={}))
+    assert dispositivos[0]["nome"] == "PC Balcão"
+
+
+def test_gerar_codigo_sem_nome_e_aceite(monkeypatch):
+    """O nome é opcional — não pode passar a ser obrigatório e partir a Task 2."""
+    registo = []
+    db = _db(registo, lojas=[{"id": "loja-1", "nome": "Belém"}])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    resultado_codigo = _corre(gerar_codigo_emparelhamento(PedidoCodigo(loja_id="loja-1"), _={}))
+    _corre(emparelhar(PedidoEmparelhar(codigo=resultado_codigo["codigo"])))
+
+    dispositivos = _corre(listar_dispositivos(_={}))
+    assert dispositivos[0]["nome"] is None
+
+
+def test_listar_dispositivos_nao_mostra_codigos_pendentes(monkeypatch):
+    """Um código gerado e nunca trocado não é um dispositivo — não pode
+    aparecer na lista de "dispositivos autorizados"."""
+    registo = []
+    db = _db(registo, lojas=[{"id": "loja-1", "nome": "Belém"}])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    _corre(gerar_codigo_emparelhamento(PedidoCodigo(loja_id="loja-1"), _={}))
+
+    dispositivos = _corre(listar_dispositivos(_={}))
+    assert dispositivos == []
+
+
+def test_listar_dispositivos_mostra_loja_estado_e_ultima_atividade(monkeypatch):
+    registo = []
+    db = _db(registo, lojas=[{"id": "loja-1", "nome": "Belém"}])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+    resultado_codigo = _corre(gerar_codigo_emparelhamento(PedidoCodigo(loja_id="loja-1"), _={}))
+    par = _corre(emparelhar(PedidoEmparelhar(codigo=resultado_codigo["codigo"])))
+
+    dispositivos = _corre(listar_dispositivos(_={}))
+    assert len(dispositivos) == 1
+    disp = dispositivos[0]
+    assert disp["loja_id"] == "loja-1"
+    assert disp["estado"] == "activo"
+    assert disp["ultima_atividade_em"] is not None
+
+    # A entrada por PIN passa por dispositivo_atual — actualiza "a última vez
+    # que falou connosco" (é assim que se distingue o PC ainda em uso do que
+    # já não existe).
+    marca_antes = disp["ultima_atividade_em"]
+    _corre(dispositivo_atual(x_device_token=par["device_token"]))
+    dispositivos_depois = _corre(listar_dispositivos(_={}))
+    assert dispositivos_depois[0]["ultima_atividade_em"] >= marca_antes
+
+
+def test_revogar_dispositivo_com_sucesso(monkeypatch):
+    registo = []
+    db = _db(registo, lojas=[{"id": "loja-1", "nome": "Belém"}])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+    resultado_codigo = _corre(gerar_codigo_emparelhamento(PedidoCodigo(loja_id="loja-1"), _={}))
+    par = _corre(emparelhar(PedidoEmparelhar(codigo=resultado_codigo["codigo"])))
+    dispositivo_id = _corre(listar_dispositivos(_={}))[0]["id"]
+
+    resultado = _corre(revogar_dispositivo(dispositivo_id, _={}))
+    assert resultado["revogado"] is True
+    assert _corre(listar_dispositivos(_={}))[0]["estado"] == "revogado"
+
+
+def test_revogar_dispositivo_inexistente_e_recusado_404(monkeypatch):
+    registo = []
+    db = _db(registo)
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(revogar_dispositivo("nao-existe", _={}))
+    assert excinfo.value.status_code == 404
+
+
+def test_revogar_dispositivo_ja_revogado_e_recusado_404(monkeypatch):
+    """Revogar duas vezes não pode "revogar mais" nem confundir o gestor com
+    um sucesso silencioso — a segunda tentativa já não encontra nada activo."""
+    registo = []
+    db = _db(registo, lojas=[{"id": "loja-1", "nome": "Belém"}])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+    resultado_codigo = _corre(gerar_codigo_emparelhamento(PedidoCodigo(loja_id="loja-1"), _={}))
+    _corre(emparelhar(PedidoEmparelhar(codigo=resultado_codigo["codigo"])))
+    dispositivo_id = _corre(listar_dispositivos(_={}))[0]["id"]
+    _corre(revogar_dispositivo(dispositivo_id, _={}))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(revogar_dispositivo(dispositivo_id, _={}))
+    assert excinfo.value.status_code == 404
+
+
+def test_token_de_dispositivo_revogado_e_recusado_401(monkeypatch):
+    """A regra central da Task 5: a partir da revogação, o /pos desse PC
+    deixa de carregar — dispositivo_atual já não aceita o token."""
+    registo = []
+    db = _db(registo, lojas=[{"id": "loja-1", "nome": "Belém"}])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+    resultado_codigo = _corre(gerar_codigo_emparelhamento(PedidoCodigo(loja_id="loja-1"), _={}))
+    par = _corre(emparelhar(PedidoEmparelhar(codigo=resultado_codigo["codigo"])))
+    dispositivo_id = _corre(listar_dispositivos(_={}))[0]["id"]
+
+    _corre(revogar_dispositivo(dispositivo_id, _={}))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(dispositivo_atual(x_device_token=par["device_token"]))
+    assert excinfo.value.status_code == 401
+
+
+def test_revogar_um_dispositivo_nao_afecta_os_outros_da_mesma_loja(monkeypatch):
+    """Duas caixas da mesma loja Belém, cada uma com o seu PC — revogar o PC
+    do balcão não pode derrubar o PC do drive-thru ao lado."""
+    registo = []
+    db = _db(registo, lojas=[{"id": "loja-1", "nome": "Belém"}])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    codigo_balcao = _corre(
+        gerar_codigo_emparelhamento(PedidoCodigo(loja_id="loja-1", nome="PC Balcão"), _={})
+    )
+    par_balcao = _corre(emparelhar(PedidoEmparelhar(codigo=codigo_balcao["codigo"])))
+
+    codigo_drive = _corre(
+        gerar_codigo_emparelhamento(PedidoCodigo(loja_id="loja-1", nome="PC Drive-Thru"), _={})
+    )
+    par_drive = _corre(emparelhar(PedidoEmparelhar(codigo=codigo_drive["codigo"])))
+
+    dispositivos = _corre(listar_dispositivos(_={}))
+    id_balcao = next(d["id"] for d in dispositivos if d["nome"] == "PC Balcão")
+
+    _corre(revogar_dispositivo(id_balcao, _={}))
+
+    with pytest.raises(HTTPException):
+        _corre(dispositivo_atual(x_device_token=par_balcao["device_token"]))
+
+    # O drive-thru continua vivo.
+    disp_drive = _corre(dispositivo_atual(x_device_token=par_drive["device_token"]))
+    assert disp_drive["loja_id"] == "loja-1"
