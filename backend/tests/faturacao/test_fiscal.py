@@ -799,6 +799,96 @@ def test_finalizar_com_pagamento_misto_grava_o_tipo_fiscal_de_cada_um(monkeypatc
     assert {p["tipo_fiscal"]: p["valor"] for p in resultado["pagamentos"]} == {"NU": 10.0, "CD": 7.98}
 
 
+def test_finalizar_grava_pagamento_e_nif_so_depois_de_ganhar_a_reserva(monkeypatch):
+    """C2: pagamentos/cliente_nif eram gravados no CORPO da rota, ANTES de a
+    reserva sequer ser tentada, e sem nenhuma condição — reproduzido aqui
+    observando a ORDEM real das operações na base de dados: o registo dos
+    pagamentos escolhidos pela operadora tem de vir DEPOIS da reserva (dela
+    depender), nunca antes. Sem isto, uma tentativa que perca a corrida
+    grava à mesma o que escolheu, mesmo sem ter sido ela a emitir — cenário
+    da loja: Dinheiro grava primeiro, a operadora repete com Multibanco, sai
+    UMA fatura (idempotência funciona) mas fica gravado o tipo errado, e o Z
+    não explica a diferença na gaveta."""
+    _configura_vendus_env(monkeypatch)
+    db = _db(vendas=[_venda(linhas=[_linha()])], tipos_pagamento=[_tipo_pagamento()])
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", ClienteEmissaoVendusFalso)
+    ClienteEmissaoVendusFalso.instancias.clear()
+
+    ordem = []
+    colecao_vendas = db[COLECOES["vendas"]]
+    colecao_refs = db[COLECOES["refs_fiscais"]]
+    update_original = colecao_vendas.update_one
+    insert_original = colecao_refs.insert_one
+
+    async def update_vendas_rastreado(filtro, atualizacao):
+        if "pagamentos" in atualizacao.get("$set", {}):
+            ordem.append("grava_pagamento")
+        return await update_original(filtro, atualizacao)
+
+    async def insert_refs_rastreado(doc):
+        ordem.append("reserva")
+        return await insert_original(doc)
+
+    colecao_vendas.update_one = update_vendas_rastreado
+    colecao_refs.insert_one = insert_refs_rastreado
+
+    _corre(finalizar(
+        "venda-1",
+        PedidoFinalizarVenda(pagamentos=[PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)]),
+        operador=_operador(),
+    ))
+
+    assert "grava_pagamento" in ordem and "reserva" in ordem
+    assert ordem.index("reserva") < ordem.index("grava_pagamento"), (
+        "os pagamentos gravaram-se ANTES da reserva (ordem=%r) — uma "
+        "tentativa que perca a corrida grava à mesma o que a operadora "
+        "escolheu, mesmo sem ter sido esta a emitir" % ordem
+    )
+
+
+def test_duplo_toque_com_pagamentos_diferentes_so_o_vencedor_grava_o_seu(monkeypatch):
+    """O mesmo cenário C2, ao nível do núcleo: duas tentativas CONCORRENTES
+    da mesma venda, com escolhas de pagamento DIFERENTES (Dinheiro vs
+    Multibanco) — só a que realmente ganhou a reserva (e por isso emitiu)
+    pode gravar o seu `pagamentos`/`cliente_nif`; a que só esperou e
+    reaproveitou o documento nunca pode sobrepor-se."""
+    db = _db(vendas=[_venda()])
+    chamadas_emitir = []
+
+    async def emitir(ref):
+        chamadas_emitir.append(ref)
+        await asyncio.sleep(0)
+        return _bruto()
+
+    async def verificar(ref):
+        raise AssertionError("não devia haver timeout neste teste")
+
+    dinheiro = {"pagamentos": [{"tipo_pagamento_id": "tipo-dinheiro", "valor": 8.99}], "cliente_nif": None}
+    multibanco = {"pagamentos": [{"tipo_pagamento_id": "tipo-mb", "valor": 8.99}], "cliente_nif": "123456789"}
+
+    async def correr():
+        return await asyncio.gather(
+            finalizar_venda(
+                db, _venda(), emitir, verificar, esperar=_instantaneo, dados_pagamento=dinheiro,
+            ),
+            finalizar_venda(
+                db, _venda(), emitir, verificar, esperar=_instantaneo, dados_pagamento=multibanco,
+            ),
+        )
+
+    _corre(correr())
+
+    assert len(chamadas_emitir) == 1  # idempotência: continua a sair UMA só fatura
+    venda_gravada = db[COLECOES["vendas"]]._documentos[0]
+    # O que ficou gravado tem de ser de UMA das duas tentativas por inteiro
+    # — nunca uma mistura (ex.: pagamentos de uma, cliente_nif de outra).
+    assert (venda_gravada["pagamentos"], venda_gravada["cliente_nif"]) in [
+        (dinheiro["pagamentos"], dinheiro["cliente_nif"]),
+        (multibanco["pagamentos"], multibanco["cliente_nif"]),
+    ]
+
+
 def test_finalizar_venda_ja_emitida_e_recusado_409(monkeypatch):
     _configura_vendus_env(monkeypatch)
     db = _db(vendas=[_venda(estado="emitida", linhas=[_linha()])], tipos_pagamento=[_tipo_pagamento()])

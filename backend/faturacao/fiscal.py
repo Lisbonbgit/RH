@@ -322,6 +322,7 @@ async def _emitir_e_gravar(
     venda: Dict,
     emitir: Callable[[str], Awaitable[Dict]],
     verificar: Callable[[str], Awaitable[Optional[Dict]]],
+    dados_pagamento: Optional[Dict] = None,
 ) -> Dict:
     """Chama `emitir`, com o único fallback permitido (ver a docstring do
     módulo): um timeout/indisponibilidade tenta UMA verificação exacta.
@@ -338,7 +339,21 @@ async def _emitir_e_gravar(
        processar o pedido original; liberta-se a reserva, propaga-se o erro
        original (o POS mostra "tente outra vez").
     3. A PRÓPRIA verificação falha → não se sabe nada; a reserva NÃO se
-       liberta, fica marcada incerta (ver VerificacaoFiscalIncerta)."""
+       liberta, fica marcada incerta (ver VerificacaoFiscalIncerta).
+
+    `dados_pagamento` (C2, achado na mesma revisão): `pagamentos`/
+    `cliente_nif`, se vierem, só se gravam AQUI — depois de esta chamada já
+    ter GANHO a reserva e estar mesmo prestes a tentar emitir. É essa a
+    correcção: a rota `finalizar` costumava gravar isto incondicionalmente
+    ANTES de tocar na reserva, e uma tentativa que perdesse a corrida
+    gravava à mesma o que a operadora tinha escolhido, mesmo sem ter sido
+    ela a emitir (a idempotência escondia o erro: as duas respostas eram
+    200, mas o tipo de pagamento gravado podia ser o da tentativa errada —
+    o Z não bate e ninguém percebe porquê)."""
+    if dados_pagamento is not None:
+        await db[COLECOES["vendas"]].update_one(
+            {"id": venda["id"]}, {"$set": dados_pagamento}
+        )
     try:
         bruto = await emitir(ext_ref)
     except VendusIndisponivel as erro_emissao:
@@ -375,13 +390,18 @@ async def _retomar_reserva_incerta(
     venda: Dict,
     emitir: Callable[[str], Awaitable[Dict]],
     verificar: Callable[[str], Awaitable[Optional[Dict]]],
+    dados_pagamento: Optional[Dict] = None,
 ) -> Dict:
     """Quem encontra uma reserva marcada `incerta` (a tentativa anterior
     teve um timeout na emissão E a verificação também falhou — nunca se
     soube se o Vendus criou o documento) é OBRIGADO a verificar antes de
     poder fazer seja o que for: nunca herda o direito de emitir só por ter
     encontrado a reserva, porque essa reserva pode já corresponder a um
-    documento fiscal real do outro lado."""
+    documento fiscal real do outro lado.
+
+    Se a verificação ENCONTRAR o documento, é da tentativa ANTERIOR (a que
+    ganhou a reserva) que ele saiu — os `dados_pagamento` DESTA tentativa
+    nunca se gravam nesse caso (ver C2 na docstring de `_emitir_e_gravar`)."""
     try:
         encontrado = await verificar(ext_ref)
     except Exception as erro_verificacao:
@@ -394,8 +414,10 @@ async def _retomar_reserva_incerta(
         return await _gravar_documento(db, ext_ref, venda, encontrado)
     # A verificação correu bem e não encontrou nada: só agora é seguro
     # tentar emitir — com a MESMA rede de segurança de sempre (se este
-    # timeout também falhar, a reserva volta a ficar incerta).
-    return await _emitir_e_gravar(db, ext_ref, venda, emitir, verificar)
+    # timeout também falhar, a reserva volta a ficar incerta), e É esta
+    # tentativa que vai emitir de facto, por isso É o seu dados_pagamento
+    # que deve gravar-se.
+    return await _emitir_e_gravar(db, ext_ref, venda, emitir, verificar, dados_pagamento)
 
 
 async def finalizar_venda(
@@ -405,6 +427,7 @@ async def finalizar_venda(
     verificar: Callable[[str], Awaitable[Optional[Dict]]],
     esperar: Optional[Callable[[float], Awaitable[None]]] = None,
     tentativas_espera: int = _TENTATIVAS_ESPERA_VENCEDOR,
+    dados_pagamento: Optional[Dict] = None,
 ) -> Dict:
     """O núcleo da Task 3 — a sequência das quatro defesas (ver a docstring
     do módulo). `emitir(ext_ref)` e `verificar(ext_ref)` já vêm resolvidos
@@ -412,21 +435,25 @@ async def finalizar_venda(
     responsabilidade de quem chama, normalmente a rota `finalizar` mais
     abaixo); este núcleo só sabe de reserva, emissão-ou-verificação, e
     gravação — é o que o torna testável sem tocar em rede nem em threads.
-    """
+
+    `dados_pagamento` (opcional: `{"pagamentos": [...], "cliente_nif": ...}`)
+    só se grava na venda no ramo que realmente tenta emitir (ver C2) — nunca
+    em quem só espera pelo vencedor."""
     esperar = esperar if esperar is not None else asyncio.sleep
     ext_ref = ext_ref_determinista(venda["loja_id"], venda["sessao_id"], venda["id"])
 
     ganhou = await _reservar(db, ext_ref, venda["id"])
     if ganhou:
-        return await _emitir_e_gravar(db, ext_ref, venda, emitir, verificar)
+        return await _emitir_e_gravar(db, ext_ref, venda, emitir, verificar, dados_pagamento)
 
     # Perdeu a reserva: OU alguém está mesmo a meio da emissão (espera pelo
-    # documento, comportamento de sempre), OU a reserva existente ficou
-    # `incerta` numa tentativa anterior (C1) — nesse caso é OBRIGADA a
+    # documento, comportamento de sempre — NUNCA grava dados_pagamento,
+    # porque não foi esta tentativa que emitiu), OU a reserva existente
+    # ficou `incerta` numa tentativa anterior (C1) — nesse caso é OBRIGADA a
     # verificar antes de poder fazer seja o que for.
     reserva = await db[COLECOES["refs_fiscais"]].find_one({"ext_ref": ext_ref})
     if reserva is not None and reserva.get("incerta"):
-        return await _retomar_reserva_incerta(db, ext_ref, venda, emitir, verificar)
+        return await _retomar_reserva_incerta(db, ext_ref, venda, emitir, verificar, dados_pagamento)
     return await _esperar_documento_do_vencedor(db, ext_ref, esperar, tentativas_espera)
 
 
@@ -651,14 +678,14 @@ async def finalizar(
             detail="VENDUS_REGISTER_ID não está configurado — sem isto não há como emitir.",
         )
 
-    # A partir daqui grava-se já o que a operadora escolheu (pagamentos e
-    # NIF) — mesmo que a emissão a seguir falhe ou tenha de esperar por um
-    # vencedor, esta informação fica disponível para o fecho de caixa (Task
-    # 4) e para uma eventual repetição não perder o que já foi escolhido.
-    await db[COLECOES["vendas"]].update_one(
-        {"id": venda_id},
-        {"$set": {"pagamentos": pagamentos_venda, "cliente_nif": dados.nif}},
-    )
+    # O que a operadora escolheu (pagamentos e NIF) só se grava depois de
+    # GANHAR a reserva — nunca aqui, incondicionalmente, ANTES de a tentar
+    # (defeito C2 da revisão: uma tentativa que perdesse a corrida gravava à
+    # mesma o que tinha escolhido, mesmo sem ter sido ela a emitir, e a
+    # idempotência escondia o erro — as duas respostas eram 200, mas o Z não
+    # batia com o que saiu no papel). `finalizar_venda` só grava isto no
+    # ramo que realmente emite.
+    dados_pagamento = {"pagamentos": pagamentos_venda, "cliente_nif": dados.nif}
 
     itens = _itens_vendus(venda)
     cliente_payload = {"fiscal_id": dados.nif} if dados.nif else None
@@ -681,7 +708,9 @@ async def finalizar(
             )
 
         try:
-            documento = await finalizar_venda(db, venda, emitir, verificar)
+            documento = await finalizar_venda(
+                db, venda, emitir, verificar, dados_pagamento=dados_pagamento
+            )
         except EmissaoEmCurso as e:
             raise HTTPException(status_code=409, detail=str(e))
         except ConflitoDocumentoFiscal as e:
