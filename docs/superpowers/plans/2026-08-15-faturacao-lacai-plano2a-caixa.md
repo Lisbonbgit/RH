@@ -134,6 +134,24 @@ nosso lado e deixa o sítio feito.)*
 
 ---
 
+## Task 5: Ver e revogar dispositivos
+
+**Buraco encontrado durante a Task 2:** um PC de loja é autorizado uma vez e o token fica válido
+para sempre. Se o PC for roubado, vendido ou substituído, não há forma de o invalidar — e esse
+token dá acesso ao ecrã de venda de uma loja. Antes de a loja piloto arrancar, tem de haver forma
+de o cortar.
+
+**Files:** Modify `backend/faturacao/pos_auth.py` e os testes
+
+- [ ] `GET /dispositivos-pos` — lista os dispositivos autorizados, com loja, nome dado no
+      emparelhamento, e **quando falaram connosco pela última vez** (é assim que se percebe qual é
+      o PC que já não existe).
+- [ ] `DELETE /dispositivos-pos/{id}` — revoga. A partir daí o `/pos` desse PC deixa de carregar.
+- [ ] Teste: um token revogado é recusado; revogar um dispositivo não afecta os outros da mesma loja.
+- [ ] Commit: `Faturação: ver e revogar dispositivos do POS`
+
+---
+
 ## Verificação final do Plano 2A
 
 - [ ] `backend/.venv/bin/pytest tests/faturacao/ -v` — tudo verde
