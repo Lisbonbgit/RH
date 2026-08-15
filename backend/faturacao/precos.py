@@ -141,6 +141,18 @@ def linha_de_venda(
                 "O desconto de %s € tem mais de 2 casas decimais — a fatura recusa-o "
                 "para não perder um cêntimo no arredondamento." % desconto_eur
             )
+        # Tecto: o desconto não pode exceder o bruto da linha INTEIRA (preço
+        # unitário × quantidade, já com as personalizações somadas) — sem
+        # isto, nada impedia um desconto maior do que a própria linha, o que
+        # produziria discount_amount > gross_price*qty: uma linha NEGATIVA
+        # numa fatura real, ou seja, uma nota de crédito escondida dentro de
+        # uma fatura (buraco achado no Plano 2B, Task 3).
+        bruto_linha = round(linha["gross_price"] * linha["qty"], 2)
+        if float(desconto_eur) > bruto_linha:
+            raise ValueError(
+                "O desconto de %s € é maior do que o valor desta linha (%s €) — "
+                "produziria uma linha negativa numa fatura real." % (desconto_eur, bruto_linha)
+            )
         linha["discount_amount"] = round(float(desconto_eur), 2)
     elif desconto_pct:
         linha["discount_percentage"] = float(desconto_pct)

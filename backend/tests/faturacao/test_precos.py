@@ -187,10 +187,58 @@ def test_precos_de_opcao_com_ate_2_casas_sao_aceites(preco):
     assert li["gross_price"] == round(8.99 + float(preco), 2)
 
 
-@pytest.mark.parametrize("desconto", [8.99, 8.9, 9, 0, 0.0])
+@pytest.mark.parametrize("desconto", [8.99, 8.9, 5, 0, 0.0])
 def test_desconto_eur_com_ate_2_casas_e_aceite(desconto):
+    """9 (int) saiu desta lista de propósito: o produto de teste custa 8,99€,
+    e 9€ de desconto numa linha de 8,99€ é EXACTAMENTE o caso que o tecto do
+    desconto (ver os testes abaixo) passou a recusar — ficou coberto lá, não
+    aqui."""
     li = linha_de_venda(_produto(), 1, desconto_eur=desconto)
     if desconto:
         assert li["discount_amount"] == round(float(desconto), 2)
     else:
         assert "discount_amount" not in li
+
+
+# --- Tecto do desconto em euros (buraco achado no Plano 2B, Task 3) --------
+#
+# Nada impedia um desconto_eur maior do que o valor da própria linha — o que
+# produzia uma linha com discount_amount > gross_price*qty, ou seja, uma
+# linha NEGATIVA numa fatura real: uma nota de crédito escondida dentro de
+# uma fatura. O tecto é o próprio bruto da linha (preço unitário × quantidade,
+# já com as personalizações somadas) — igual ao que venda.py::_bruto_da_linha
+# calcula a partir desta mesma linha.
+
+def test_desconto_eur_maior_que_o_bruto_da_linha_e_recusado():
+    with pytest.raises(ValueError) as e:
+        linha_de_venda(_produto(preco=8.99), 1, desconto_eur=9.00)
+    assert "9.0" in str(e.value) or "9.00" in str(e.value)
+
+
+def test_desconto_eur_maior_que_o_bruto_com_quantidade_e_recusado():
+    """O tecto é sobre a linha INTEIRA (preço × quantidade), não só o preço
+    unitário — um desconto de 15€ é legítimo em 2 unidades a 8,99€ (bruto
+    17,98€) mas não seria legítimo numa só."""
+    with pytest.raises(ValueError):
+        linha_de_venda(_produto(preco=8.99), 1, desconto_eur=15.00)
+
+
+def test_desconto_eur_maior_que_o_bruto_com_2_unidades_e_aceite():
+    li = linha_de_venda(_produto(preco=8.99), 2, desconto_eur=15.00)
+    assert li["discount_amount"] == 15.00
+
+
+def test_desconto_eur_igual_ao_bruto_da_linha_e_aceite():
+    """Igual ao bruto é legítimo (linha a zero, ex.: brinde) — só o que
+    ULTRAPASSA o bruto é que produz uma linha negativa."""
+    li = linha_de_venda(_produto(preco=8.99), 1, desconto_eur=8.99)
+    assert li["discount_amount"] == 8.99
+
+
+def test_desconto_eur_maior_que_o_bruto_com_opcoes_considera_o_extra():
+    """O tecto tem de incluir o preço das personalizações, não só o preço
+    base do produto — senão um desconto que já era maior do que o produto
+    sozinho, mas cabia no produto+extras, era recusado por engano."""
+    opcoes = [{"nome": "Nutella", "preco": 0.95}]
+    li = linha_de_venda(_produto(preco=8.99), 1, opcoes=opcoes, desconto_eur=9.94)
+    assert li["discount_amount"] == 9.94

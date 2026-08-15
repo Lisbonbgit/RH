@@ -58,6 +58,33 @@ def test_existe_indice_unico_parcial_para_sessao_aberta_por_caixa():
     assert opcoes.get("partialFilterExpression") == {"estado": "aberta"}
 
 
+def test_existe_indice_unico_de_ext_ref_em_fat_refs_fiscais():
+    """A GARANTIA da Task 3 (spec §6.1 passo 2): a reserva atómica só
+    funciona se este índice existir — sem ele, duas tentativas concorrentes
+    da mesma venda podiam inserir as duas com sucesso e emitir duas
+    faturas."""
+    unicos = [
+        chaves
+        for (coleccao, chaves, opcoes) in INDICES
+        if coleccao == "fat_refs_fiscais" and opcoes.get("unique")
+    ]
+    assert unicos == [[("ext_ref", 1)]]
+
+
+def test_existe_indice_unico_de_vendus_document_id_e_de_atcud_em_fat_documentos():
+    """Terceira e quarta defesa da Task 3: mesmo que a reserva falhasse por
+    alguma razão, o Vendus nunca atribui o mesmo `vendus_document_id` nem o
+    mesmo ATCUD a dois documentos — um índice único sobre cada um recusa uma
+    segunda gravação."""
+    unicos_documentos = [
+        chaves
+        for (coleccao, chaves, opcoes) in INDICES
+        if coleccao == "fat_documentos" and opcoes.get("unique")
+    ]
+    assert [("vendus_document_id", 1)] in unicos_documentos
+    assert [("atcud", 1)] in unicos_documentos
+
+
 def test_criar_indices_aplica_todos():
     db = DbFalsa()
     asyncio.get_event_loop().run_until_complete(criar_indices(db))

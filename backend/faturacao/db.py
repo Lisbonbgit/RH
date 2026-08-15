@@ -37,6 +37,15 @@ COLECOES = {
     # A conta do balcão (Plano 2B, Task 2, faturacao/venda.py): nasce
     # 'aberta', acumula linhas, e só a Task 3 (emissão) a passa a 'emitida'.
     "vendas": "fat_vendas",
+    # A RESERVA atómica da Task 3 (faturacao/fiscal.py, spec §6.1 passo 2):
+    # um documento por `ext_ref`, inserido ANTES de qualquer pedido ao
+    # Vendus. O índice único em `ext_ref` (ver INDICES abaixo) É a garantia
+    # — quem perde a corrida (dois toques na mesma venda, ou um retry a
+    # cruzar-se com o pedido original) apanha DuplicateKeyError e nunca
+    # chega a emitir. Coleção pequena e efémera por natureza: cada linha
+    # representa UMA tentativa de emissão, não um documento fiscal em si
+    # (isso é fat_documentos).
+    "refs_fiscais": "fat_refs_fiscais",
 }
 
 _cliente = None  # type: Optional[AsyncIOMotorClient]
@@ -70,6 +79,17 @@ INDICES = [
     # Dashboard: a série diária/mensal lê por data (todas as lojas) e por loja+data.
     ("fat_documentos", [("emitido_em", 1)], {}),
     ("fat_documentos", [("loja_id", 1), ("emitido_em", 1)], {}),
+    # A Task 3 (spec §4.3): terceira e quarta defesa contra a fatura a dobrar
+    # — únicos em `vendus_document_id` E em `atcud`. Mesmo que a reserva em
+    # fat_refs_fiscais falhasse por alguma razão, um documento com o mesmo id
+    # (ou ATCUD, que a AT nunca repete) do Vendus não consegue ser gravado
+    # duas vezes aqui.
+    ("fat_documentos", [("vendus_document_id", 1)], {"unique": True}),
+    ("fat_documentos", [("atcud", 1)], {"unique": True}),
+    # A verificação por timeout (Task 3, passo 4) e a reconciliação do fecho
+    # (Task 4) procuram por `ext_ref` — não é único aqui (o único de verdade
+    # é o de fat_refs_fiscais), só um índice de leitura.
+    ("fat_documentos", [("ext_ref", 1)], {}),
     # Entrada no POS: busca o dispositivo pelo hash do código (emparelhar) ou
     # do token (dispositivo_atual, em cada pedido).
     ("fat_dispositivos", [("codigo_hash", 1)], {"sparse": True}),
@@ -94,6 +114,13 @@ INDICES = [
     # loja+data (spec §4.3).
     ("fat_vendas", [("sessao_id", 1)], {}),
     ("fat_vendas", [("loja_id", 1), ("criada_em", 1)], {}),
+    # A GARANTIA central da Task 3 (spec §6.1 passo 2): impossível duas
+    # tentativas de emissão da MESMA venda reservarem com sucesso ao mesmo
+    # tempo — quem perde a corrida apanha DuplicateKeyError e nunca chega a
+    # falar com o Vendus. É este índice, não uma leitura antes de inserir,
+    # que decide a corrida real (mesmo raciocínio do índice de sessão aberta
+    # acima).
+    ("fat_refs_fiscais", [("ext_ref", 1)], {"unique": True}),
 ]
 
 
