@@ -34,6 +34,9 @@ COLECOES = {
     "sessoes_caixa": "fat_sessoes_caixa",
     # Entradas e saídas de dinheiro ao longo da sessão (faturacao/caixa.py).
     "movimentos_caixa": "fat_movimentos_caixa",
+    # A conta do balcão (Plano 2B, Task 2, faturacao/venda.py): nasce
+    # 'aberta', acumula linhas, e só a Task 3 (emissão) a passa a 'emitida'.
+    "vendas": "fat_vendas",
 }
 
 _cliente = None  # type: Optional[AsyncIOMotorClient]
@@ -86,6 +89,11 @@ INDICES = [
     ("fat_sessoes_caixa", [("loja_id", 1)], {}),
     # O fecho (Task 4) lê todos os movimentos de uma sessão de uma vez.
     ("fat_movimentos_caixa", [("sessao_id", 1)], {}),
+    # A venda do balcão (Plano 2B, Task 2): o fecho de caixa (Task 4) vai
+    # somar as vendas em dinheiro de uma sessão; o backoffice lista por
+    # loja+data (spec §4.3).
+    ("fat_vendas", [("sessao_id", 1)], {}),
+    ("fat_vendas", [("loja_id", 1), ("criada_em", 1)], {}),
 ]
 
 

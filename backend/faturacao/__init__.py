@@ -51,6 +51,9 @@ router.include_router(_pos_auth)
 from .caixa import router as _caixa
 router.include_router(_caixa)
 
+from .venda import router as _venda
+router.include_router(_venda)
+
 
 async def arrancar():
     """Chamado pelo server.py no arranque.
