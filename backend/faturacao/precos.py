@@ -12,6 +12,11 @@ from typing import Dict, List, Optional
 # Códigos de imposto do Vendus.
 _TAXAS = {23: "NOR", 13: "INT", 6: "RED", 0: "ISE"}
 
+# Fonte de verdade única dos códigos válidos — reutilizada em catalogo.py
+# (validação do ProdutoEntrada.tax_id) e aqui em erros_do_produto, para as
+# duas nunca divergirem.
+_CODIGOS_IVA_VALIDOS = frozenset(_TAXAS.values())
+
 
 def tax_id_de_taxa(taxa) -> Optional[str]:
     """Converte uma percentagem de IVA no código do Vendus. Devolve None se a
@@ -47,12 +52,20 @@ def _tem_mais_de_2_casas_decimais(valor) -> bool:
 
 
 def erros_do_produto(produto: Dict) -> List[str]:
-    """Lista, em português, o que falta a um produto para poder ser vendido."""
+    """Lista, em português, o que falta a um produto para poder ser vendido.
+
+    O `tax_id` não só tem de existir como tem de ser um dos códigos do
+    Vendus (NOR/INT/RED/ISE) — sem isto, um `tax_id` corrompido ou escrito
+    à mão (ex.: 'XPTO') passava por "IVA definido" e só rebentava mais
+    tarde, no `linha_de_venda`."""
     erros = []
     if produto.get("preco") is None:
         erros.append("Sem preço definido")
-    if not produto.get("tax_id"):
+    tax_id = produto.get("tax_id")
+    if not tax_id:
         erros.append("Sem IVA definido")
+    elif tax_id not in _CODIGOS_IVA_VALIDOS:
+        erros.append("Código de IVA desconhecido: %s" % tax_id)
     return erros
 
 

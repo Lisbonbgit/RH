@@ -53,6 +53,13 @@ def test_produto_sem_preco_nem_iva():
     assert erros_do_produto({"nome": "X"}) == ["Sem preço definido", "Sem IVA definido"]
 
 
+def test_produto_com_tax_id_desconhecido_tem_erro():
+    """MINOR: `erros_do_produto` só verificava que `tax_id` existe, não que é
+    um dos códigos válidos do Vendus (NOR/INT/RED/ISE) — o ecrã 'Produtos
+    sem IVA' apoia-se nesta função para avisar ANTES da venda."""
+    assert erros_do_produto(_produto(tax_id="XPTO")) == ["Código de IVA desconhecido: XPTO"]
+
+
 def test_preco_zero_e_valido():
     """Um artigo a 0,00€ (ex.: 'Incluído') é legítimo — o que não pode é faltar o campo."""
     assert erros_do_produto(_produto(preco=0)) == []

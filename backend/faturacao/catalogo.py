@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .auth import gestor_atual
 from .db import COLECOES, obter_db
-from .precos import _TAXAS, _tem_mais_de_2_casas_decimais, erros_do_produto
+from .precos import _CODIGOS_IVA_VALIDOS, _tem_mais_de_2_casas_decimais, erros_do_produto
 
 router = APIRouter()
 
@@ -49,6 +49,11 @@ class CategoriaEntrada(BaseModel):
     nome: str = Field(min_length=1, max_length=80)
     ordem: int = 0
     ativa: bool = True
+    # Id da categoria no Vendus — só preenchido pela importação
+    # (faturacao/importacao.py). Uma categoria criada aqui à mão fica sem
+    # ele; é por isso que a importação casa por ele quando existe, e cai
+    # para o nome só como reserva (ver a docstring de importacao.py).
+    vendus_ref: Optional[str] = None
 
 
 @router.get("/categorias")
@@ -110,8 +115,10 @@ class OpcaoEntrada(BaseModel):
     id: Optional[str] = None
     nome: str = Field(min_length=1, max_length=60)
     # ge=0: deixado em aberto na Task 19 — sem esta guarda um topping a -2€
-    # baixava o total da linha em vez de o subir.
-    preco: float = Field(default=0.0, ge=0)
+    # baixava o total da linha em vez de o subir. allow_inf_nan=False:
+    # Infinity não é negativo nem tem casas decimais — passava por todas as
+    # outras guardas, e o json do Python aceita o literal sem se queixar.
+    preco: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     ativa: bool = True
 
     @field_validator("preco")
@@ -122,8 +129,11 @@ class OpcaoEntrada(BaseModel):
 
 class GrupoPersonalizacaoEntrada(BaseModel):
     nome: str = Field(min_length=1, max_length=80)
-    min_select: int = 0
-    max_select: int = 0
+    # ge=0: é nestes dois números que vive toda a semântica de selecção
+    # (0=ilimitado, 1=escolha única) — sem esta guarda, min_select=-3 e
+    # max_select=-5 gravavam sem queixa e o POS ia depender disso.
+    min_select: int = Field(default=0, ge=0)
+    max_select: int = Field(default=0, ge=0)
     opcoes: List[OpcaoEntrada] = Field(default_factory=list)
     ativo: bool = True
 
@@ -210,9 +220,6 @@ async def apagar_grupo(grupo_id: str, _: dict = Depends(gestor_atual)) -> dict:
 # --- Produtos ---------------------------------------------------------------------
 
 
-_CODIGOS_IVA_VALIDOS = frozenset(_TAXAS.values())
-
-
 class ProdutoEntrada(BaseModel):
     """Um produto pertence a uma categoria e tem UM preço e UM tax_id (spec D7,
     ver faturacao/precos.py). O mesmo artigo pode existir duas vezes — ex.:
@@ -229,7 +236,7 @@ class ProdutoEntrada(BaseModel):
 
     nome: str = Field(min_length=1, max_length=120)
     categoria_id: str = Field(min_length=1)
-    preco: float = Field(ge=0)
+    preco: float = Field(ge=0, allow_inf_nan=False)
     tax_id: str
     foto_url: Optional[str] = None
     grupos_personalizacao: List[str] = Field(default_factory=list)

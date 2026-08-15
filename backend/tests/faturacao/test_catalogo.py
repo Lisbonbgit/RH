@@ -185,6 +185,14 @@ def test_opcao_com_preco_negativo_e_recusada():
         OpcaoEntrada(nome="Desconto fantasma", preco=-2)
 
 
+def test_opcao_com_preco_infinito_e_recusada():
+    """MINOR: Infinity não é negativo nem tem casas decimais — passava por
+    todas as outras guardas, e o `json` do Python aceita o literal
+    `Infinity` sem se queixar."""
+    with pytest.raises(ValidationError):
+        OpcaoEntrada(nome="Topping", preco=float("inf"))
+
+
 # --- Grupos de personalização: modelo -----------------------------------------
 
 
@@ -206,6 +214,18 @@ def test_grupo_nao_tem_campos_redundantes():
     'obrigatorio' nem 'tipo', que seriam uma segunda fonte de verdade."""
     assert "obrigatorio" not in GrupoPersonalizacaoEntrada.model_fields
     assert "tipo" not in GrupoPersonalizacaoEntrada.model_fields
+
+
+def test_min_select_negativo_e_recusado():
+    """Mesma guarda de sinal do `preco` (Field(ge=0)) — é nestes dois números
+    que vive toda a semântica de selecção (0=ilimitado, 1=escolha única)."""
+    with pytest.raises(ValidationError):
+        GrupoPersonalizacaoEntrada(nome="Toppings", min_select=-3)
+
+
+def test_max_select_negativo_e_recusado():
+    with pytest.raises(ValidationError):
+        GrupoPersonalizacaoEntrada(nome="Toppings", min_select=-3, max_select=-5)
 
 
 def test_min_select_maior_que_max_select_e_recusado():
@@ -345,6 +365,13 @@ def test_produto_com_preco_de_3_casas_e_recusado():
 @pytest.mark.parametrize("preco", [8.99, 8.9, 9, 0, 0.0])
 def test_produto_com_preco_valido_e_aceite(preco):
     assert ProdutoEntrada(**_dados_produto(preco=preco)).preco == preco
+
+
+def test_produto_com_preco_infinito_e_recusado():
+    """MINOR: Infinity não é negativo nem tem casas decimais — passava por
+    todas as outras guardas."""
+    with pytest.raises(ValidationError):
+        ProdutoEntrada(**_dados_produto(preco=float("inf")))
 
 
 def test_produto_com_grupos_de_personalizacao():
