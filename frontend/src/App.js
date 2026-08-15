@@ -32,7 +32,6 @@ import PainelGlobal from './pages/admin/financeiro/PainelGlobal';
 import EstoqueFaturas from './pages/admin/estoque/EstoqueFaturas';
 import ComingSoon from './components/ComingSoon';
 import {
-  Package,
   FileText,
   Percent,
   Users,
@@ -43,6 +42,9 @@ import {
   Store,
 } from 'lucide-react';
 import FatDashboard from './pages/admin/faturacao/FatDashboard';
+import FatProdutos from './pages/admin/faturacao/FatProdutos';
+import FatCategorias from './pages/admin/faturacao/FatCategorias';
+import FatPersonalizacoes from './pages/admin/faturacao/FatPersonalizacoes';
 import FatLojas from './pages/admin/faturacao/FatLojas';
 import FatPagamentos from './pages/admin/faturacao/FatPagamentos';
 import FatUtilizadores from './pages/admin/faturacao/FatUtilizadores';
@@ -199,9 +201,9 @@ function AppRoutes() {
             Financeiro fez enquanto crescia. */}
         <Route path="faturacao/dashboard" element={<FatDashboard />} />
         <Route path="faturacao/produtos" element={<Navigate to="/admin/faturacao/produtos/lista" replace />} />
-        <Route path="faturacao/produtos/lista" element={<ComingSoon icon={Package} title="Produtos" subtitle="Faturação · Gestão · Produtos" note="Criar, editar e eliminar produtos, com preço, IVA e as personalizações que cada um aceita. Importados do Vendus para não escrever nada à mão." />} />
-        <Route path="faturacao/produtos/categorias" element={<ComingSoon icon={Package} title="Categorias" subtitle="Faturação · Gestão · Produtos" note="Venda ao Público e Vendas Aplicações. Cada produto pertence a uma categoria." />} />
-        <Route path="faturacao/produtos/personalizacoes" element={<ComingSoon icon={Package} title="Personalizações" subtitle="Faturação · Gestão · Produtos" note="Os grupos de toppings — nome, quantas escolhas são obrigatórias e o preço de cada opção — que depois se atribuem aos produtos." />} />
+        <Route path="faturacao/produtos/lista" element={<FatProdutos />} />
+        <Route path="faturacao/produtos/categorias" element={<FatCategorias />} />
+        <Route path="faturacao/produtos/personalizacoes" element={<FatPersonalizacoes />} />
         <Route path="faturacao/documentos" element={<ComingSoon icon={FileText} title="Documentos" subtitle="Faturação · Gestão" note="Pesquisar faturas e notas de crédito, reimprimir e anular." />} />
         <Route path="faturacao/taloes-desconto" element={<ComingSoon icon={Percent} title="Talões de Desconto" subtitle="Faturação · Gestão" />} />
         <Route path="faturacao/clientes" element={<ComingSoon icon={Users} title="Clientes" subtitle="Faturação · Gestão" note="Fichas de cliente e NIF para as faturas." />} />

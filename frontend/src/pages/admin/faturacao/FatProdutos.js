@@ -1,0 +1,634 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  getProdutos, getProdutosSemIva, criarProduto, editarProduto, apagarProduto, mudarEstadoProduto,
+  getCategorias, getGrupos, importarVendus,
+  detalhesErro, temMaisDe2CasasDecimais,
+} from '../../../lib/faturacao';
+import { Card, CardContent } from '../../../components/ui/card';
+import { Button } from '../../../components/ui/button';
+import { Input } from '../../../components/ui/input';
+import { Label } from '../../../components/ui/label';
+import { Badge } from '../../../components/ui/badge';
+import { Switch } from '../../../components/ui/switch';
+import { Checkbox } from '../../../components/ui/checkbox';
+import { Alert, AlertTitle, AlertDescription } from '../../../components/ui/alert';
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from '../../../components/ui/dialog';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '../../../components/ui/alert-dialog';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '../../../components/ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../../components/ui/table';
+import {
+  Package, Plus, Pencil, Trash2, AlertTriangle, RefreshCw, Search, X, Link2,
+} from 'lucide-react';
+import PageHeader from '../../../components/PageHeader';
+import { toast } from 'sonner';
+
+const NOME_MAX = 120;
+
+// Códigos do Vendus (faturacao/precos.py:_TAXAS) — a mesma fonte de verdade
+// que faz a venda. Não se inventa um código novo aqui.
+const TAXA_OPCOES = [
+  { value: 'NOR', label: 'NOR — 23% (Normal)' },
+  { value: 'INT', label: 'INT — 13% (Intermédia)' },
+  { value: 'RED', label: 'RED — 6% (Reduzida)' },
+  { value: 'ISE', label: 'ISE — Isento (0%)' },
+];
+const TAXA_LABEL = Object.fromEntries(TAXA_OPCOES.map((t) => [t.value, t.label]));
+
+const fmtEUR = (n) => new Intl.NumberFormat('pt-PT', { style: 'currency', currency: 'EUR' }).format(Number(n) || 0);
+
+const emptyForm = {
+  nome: '', categoria_id: '', preco: '', tax_id: '', foto_url: '', grupos_personalizacao: [], ativo: true,
+};
+
+export default function FatProdutos() {
+  const [produtos, setProdutos] = useState([]);
+  const [categorias, setCategorias] = useState([]);
+  const [grupos, setGrupos] = useState([]);
+  const [semIva, setSemIva] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [togglingId, setTogglingId] = useState(null);
+
+  const [filtroTexto, setFiltroTexto] = useState('');
+  const [filtroCategoria, setFiltroCategoria] = useState('');
+  const [somenteSemIva, setSomenteSemIva] = useState(false);
+  const tabelaRef = useRef(null);
+
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState(emptyForm);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const [importResultOpen, setImportResultOpen] = useState(false);
+
+  useEffect(() => { fetchAll(); }, []);
+
+  const fetchAll = async () => {
+    setLoading(true);
+    try {
+      const [p, c, g, s] = await Promise.all([getProdutos(), getCategorias(), getGrupos(), getProdutosSemIva()]);
+      setProdutos(p.data || []);
+      setCategorias(c.data || []);
+      setGrupos(g.data || []);
+      setSemIva(s.data || []);
+    } catch (error) {
+      toast.error('Erro ao carregar produtos');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const categoriasPorId = useMemo(() => Object.fromEntries(categorias.map((c) => [c.id, c])), [categorias]);
+  const gruposPorId = useMemo(() => Object.fromEntries(grupos.map((g) => [g.id, g])), [grupos]);
+  const semIvaIds = useMemo(() => new Set(semIva.map((p) => p.id)), [semIva]);
+
+  const produtosFiltrados = useMemo(() => {
+    const texto = filtroTexto.trim().toLowerCase();
+    return produtos.filter((p) => {
+      if (filtroCategoria && p.categoria_id !== filtroCategoria) return false;
+      if (texto && !p.nome.toLowerCase().includes(texto)) return false;
+      if (somenteSemIva && !semIvaIds.has(p.id)) return false;
+      return true;
+    });
+  }, [produtos, filtroCategoria, filtroTexto, somenteSemIva, semIvaIds]);
+
+  const verProdutosSemIva = () => {
+    setSomenteSemIva(true);
+    setFiltroCategoria('');
+    setFiltroTexto('');
+    tabelaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  // --- Formulário de produto ---
+
+  const openNew = () => {
+    setEditing(null);
+    setForm(emptyForm);
+    setFieldErrors({});
+    setDialogOpen(true);
+  };
+
+  const openEdit = (produto) => {
+    setEditing(produto);
+    setForm({
+      nome: produto.nome || '',
+      categoria_id: produto.categoria_id || '',
+      preco: produto.preco != null ? String(produto.preco) : '',
+      tax_id: produto.tax_id || '',
+      foto_url: produto.foto_url || '',
+      grupos_personalizacao: produto.grupos_personalizacao || [],
+      ativo: produto.ativo !== false,
+    });
+    setFieldErrors({});
+    setDialogOpen(true);
+  };
+
+  const toggleGrupo = (id) => {
+    setForm((prev) => ({
+      ...prev,
+      grupos_personalizacao: prev.grupos_personalizacao.includes(id)
+        ? prev.grupos_personalizacao.filter((g) => g !== id)
+        : [...prev.grupos_personalizacao, id],
+    }));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const nome = form.nome.trim();
+    const erros = {};
+    if (!nome) erros.nome = 'Indique o nome do produto';
+    else if (nome.length > NOME_MAX) erros.nome = `O nome não pode ter mais de ${NOME_MAX} caracteres`;
+    if (!form.categoria_id) erros.categoria_id = 'Escolha a categoria';
+    const preco = Number(form.preco);
+    if (form.preco === '' || !Number.isFinite(preco)) erros.preco = 'Indique um preço válido';
+    else if (preco < 0) erros.preco = 'O preço não pode ser negativo';
+    else if (temMaisDe2CasasDecimais(form.preco)) erros.preco = 'O preço não pode ter mais de 2 casas decimais';
+    if (!form.tax_id) erros.tax_id = 'Escolha o IVA';
+    if (Object.keys(erros).length > 0) {
+      setFieldErrors(erros);
+      toast.error('Há campos por corrigir');
+      return;
+    }
+
+    const payload = {
+      nome,
+      categoria_id: form.categoria_id,
+      preco,
+      tax_id: form.tax_id,
+      foto_url: form.foto_url.trim() || null,
+      grupos_personalizacao: form.grupos_personalizacao,
+      ativo: form.ativo,
+    };
+    // O PUT do servidor substitui o registo inteiro. vendus_ref não tem campo
+    // neste formulário (é o produto importado do Vendus, não se edita à mão)
+    // — sem o reenviar aqui, gravar o produto punha-o a null e cortava, em
+    // silêncio, a ligação que a importação usa para não duplicar (mesmo
+    // padrão de empresa_id em FatLojas e de employee_id em FatUtilizadores).
+    if (editing) payload.vendus_ref = editing.vendus_ref ?? null;
+
+    setSaving(true);
+    setFieldErrors({});
+    try {
+      if (editing) { await editarProduto(editing.id, payload); toast.success('Produto atualizado'); }
+      else { await criarProduto(payload); toast.success('Produto criado'); }
+      setDialogOpen(false);
+      fetchAll();
+    } catch (error) {
+      const status = error.response?.status;
+      if (status === 404) {
+        toast.error('Este produto já não existe. A atualizar a lista...');
+        setDialogOpen(false);
+        fetchAll();
+        return;
+      }
+      const { campo, mensagem } = detalhesErro(error, 'Erro ao guardar o produto');
+      if (campo) setFieldErrors({ [campo]: mensagem });
+      toast.error(mensagem);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    const alvo = deleteTarget;
+    setDeleteTarget(null);
+    try {
+      await apagarProduto(alvo.id);
+      toast.success('Produto eliminado');
+      fetchAll();
+    } catch (error) {
+      const status = error.response?.status;
+      if (status === 404) {
+        toast.error('Este produto já não existe. A atualizar a lista...');
+        fetchAll();
+      } else {
+        toast.error(error.response?.data?.detail || 'Erro ao eliminar o produto');
+      }
+    }
+  };
+
+  const handleToggleEstado = async (produto) => {
+    const novoEstado = !(produto.ativo !== false);
+    setTogglingId(produto.id);
+    try {
+      await mudarEstadoProduto(produto.id, novoEstado);
+      toast.success(novoEstado ? 'Produto ativado' : 'Produto desativado');
+      fetchAll();
+    } catch (error) {
+      const status = error.response?.status;
+      if (status === 404) {
+        toast.error('Este produto já não existe. A atualizar a lista...');
+        fetchAll();
+      } else {
+        toast.error(error.response?.data?.detail || 'Erro ao mudar o estado do produto');
+      }
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  // --- Importação do Vendus ---
+
+  const handleImportar = async () => {
+    setImporting(true);
+    try {
+      const { data } = await importarVendus();
+      setImportResult(data);
+      setImportResultOpen(true);
+      const resumo = `${data.produtos_lidos} produtos e ${data.categorias_lidas} categorias lidos do Vendus`;
+      const temProblemas = (data.problemas || []).length > 0;
+      if (temProblemas) toast.warning(`Importação concluída com avisos — ${resumo}`);
+      else toast.success(`Importação concluída — ${resumo}`);
+      fetchAll();
+    } catch (error) {
+      const { mensagem } = detalhesErro(error, 'Erro ao importar do Vendus');
+      toast.error(mensagem);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6 animate-fade-in" data-testid="fat-produtos-page">
+      <PageHeader icon={Package} title="Produtos" subtitle="O catálogo vendido no POS e na app — importado do Vendus">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={handleImportar}
+            disabled={importing}
+            title="Traz categorias e produtos da conta Vendus configurada"
+            data-testid="importar-vendus-btn"
+          >
+            <RefreshCw className={`h-4 w-4 mr-2 ${importing ? 'animate-spin' : ''}`} />
+            {importing ? 'A importar...' : 'Importar do Vendus'}
+          </Button>
+          <Button onClick={openNew} data-testid="add-produto-btn"><Plus className="h-4 w-4 mr-2" />Novo produto</Button>
+        </div>
+      </PageHeader>
+
+      {semIva.length > 0 && (
+        <Alert variant="destructive" data-testid="alerta-sem-iva">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>
+            {semIva.length === 1
+              ? '1 produto sem IVA definido'
+              : `${semIva.length} produtos sem IVA definido`}
+          </AlertTitle>
+          <AlertDescription>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>
+                Um produto sem IVA não pode ser vendido — o sistema recusa a venda em vez de adivinhar uma taxa.
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="border-destructive/50 text-destructive hover:bg-destructive/10 shrink-0"
+                onClick={verProdutosSemIva}
+                data-testid="ver-produtos-sem-iva-btn"
+              >
+                Ver produtos
+              </Button>
+            </div>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <div ref={tabelaRef} className="flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 min-w-[220px]">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            value={filtroTexto}
+            onChange={(e) => setFiltroTexto(e.target.value)}
+            placeholder="Pesquisar por nome..."
+            className="pl-8"
+            data-testid="filtro-texto-produto"
+          />
+        </div>
+        <Select value={filtroCategoria || '__todas__'} onValueChange={(v) => setFiltroCategoria(v === '__todas__' ? '' : v)}>
+          <SelectTrigger className="w-56" data-testid="filtro-categoria-select"><SelectValue placeholder="Todas as categorias" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__todas__">Todas as categorias</SelectItem>
+            {categorias.map((c) => (
+              <SelectItem key={c.id} value={c.id}>{c.nome}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {somenteSemIva && (
+          <Badge
+            variant="outline"
+            className="bg-red-50 text-red-700 border-red-200 gap-1.5 cursor-pointer h-9 px-3"
+            onClick={() => setSomenteSemIva(false)}
+            data-testid="limpar-filtro-sem-iva"
+          >
+            Só sem IVA <X className="h-3.5 w-3.5" />
+          </Badge>
+        )}
+      </div>
+
+      <Card>
+        <CardContent className="p-0">
+          {loading ? (
+            <div className="flex items-center justify-center h-32"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div></div>
+          ) : produtosFiltrados.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <Package className="h-12 w-12 text-muted-foreground mb-4" />
+              <h3 className="font-medium text-lg">Sem produtos</h3>
+              <p className="text-sm text-muted-foreground mt-1">
+                {produtos.length === 0
+                  ? 'Importe do Vendus ou crie o primeiro produto.'
+                  : 'Nenhum produto corresponde ao filtro.'}
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Nome</TableHead>
+                    <TableHead>Categoria</TableHead>
+                    <TableHead>Preço</TableHead>
+                    <TableHead>IVA</TableHead>
+                    <TableHead>Personalizações</TableHead>
+                    <TableHead>Estado</TableHead>
+                    <TableHead className="text-right">Ações</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {produtosFiltrados.map((produto) => {
+                    const semIvaProduto = semIvaIds.has(produto.id);
+                    return (
+                      <TableRow
+                        key={produto.id}
+                        data-testid={`produto-row-${produto.id}`}
+                        className={semIvaProduto ? 'bg-red-50/60 hover:bg-red-50' : undefined}
+                      >
+                        <TableCell className="font-medium">
+                          <div className="flex items-center gap-2">
+                            {produto.nome}
+                            {produto.vendus_ref && (
+                              <Link2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-label="Importado do Vendus" />
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">{categoriasPorId[produto.categoria_id]?.nome || '—'}</TableCell>
+                        <TableCell>{fmtEUR(produto.preco)}</TableCell>
+                        <TableCell>
+                          {produto.tax_id ? (
+                            <Badge variant="outline" className="bg-slate-100 text-slate-700 border-slate-200" title={TAXA_LABEL[produto.tax_id]}>
+                              {produto.tax_id}
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 gap-1">
+                              <AlertTriangle className="h-3 w-3" />Sem IVA
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {(produto.grupos_personalizacao || []).length === 0 ? (
+                            <span className="text-sm text-muted-foreground">—</span>
+                          ) : (
+                            <div className="flex flex-wrap gap-1 max-w-[220px]">
+                              {produto.grupos_personalizacao.map((gid) => (
+                                <Badge key={gid} variant="secondary">{gruposPorId[gid]?.nome || gid}</Badge>
+                              ))}
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <Switch
+                              checked={produto.ativo !== false}
+                              onCheckedChange={() => handleToggleEstado(produto)}
+                              disabled={togglingId === produto.id}
+                              data-testid={`produto-estado-switch-${produto.id}`}
+                            />
+                            <span className="text-sm text-muted-foreground">{produto.ativo !== false ? 'Ativo' : 'Inativo'}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <Button variant="ghost" size="icon" onClick={() => openEdit(produto)} data-testid={`edit-produto-${produto.id}`}>
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button variant="ghost" size="icon" onClick={() => setDeleteTarget(produto)} data-testid={`delete-produto-${produto.id}`}>
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Dialog criar/editar produto */}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent data-testid="produto-dialog" className="max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{editing ? 'Editar produto' : 'Novo produto'}</DialogTitle>
+            <DialogDescription>Um produto pertence a uma só categoria, com um preço e um IVA.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleSubmit}>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="produto-nome">Nome *</Label>
+                <Input
+                  id="produto-nome"
+                  value={form.nome}
+                  onChange={(e) => { setForm({ ...form, nome: e.target.value }); setFieldErrors((prev) => ({ ...prev, nome: undefined })); }}
+                  placeholder="Ex: Açaí Regular"
+                  required
+                  maxLength={NOME_MAX}
+                  aria-invalid={!!fieldErrors.nome}
+                  data-testid="produto-nome-input"
+                />
+                {fieldErrors.nome && <p className="text-xs text-destructive">{fieldErrors.nome}</p>}
+              </div>
+
+              <div className="space-y-2">
+                <Label>Categoria *</Label>
+                <Select
+                  value={form.categoria_id}
+                  onValueChange={(v) => { setForm({ ...form, categoria_id: v }); setFieldErrors((prev) => ({ ...prev, categoria_id: undefined })); }}
+                >
+                  <SelectTrigger aria-invalid={!!fieldErrors.categoria_id} data-testid="produto-categoria-select">
+                    <SelectValue placeholder="Selecionar categoria" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categorias.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>{c.nome}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {categorias.length === 0 && <p className="text-xs text-muted-foreground">Crie uma categoria primeiro.</p>}
+                {fieldErrors.categoria_id && <p className="text-xs text-destructive">{fieldErrors.categoria_id}</p>}
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="produto-preco">Preço (€) *</Label>
+                  <Input
+                    id="produto-preco"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={form.preco}
+                    onChange={(e) => { setForm({ ...form, preco: e.target.value }); setFieldErrors((prev) => ({ ...prev, preco: undefined })); }}
+                    placeholder="8.99"
+                    aria-invalid={!!fieldErrors.preco}
+                    data-testid="produto-preco-input"
+                  />
+                  {fieldErrors.preco && <p className="text-xs text-destructive">{fieldErrors.preco}</p>}
+                </div>
+                <div className="space-y-2">
+                  <Label>IVA *</Label>
+                  <Select
+                    value={form.tax_id}
+                    onValueChange={(v) => { setForm({ ...form, tax_id: v }); setFieldErrors((prev) => ({ ...prev, tax_id: undefined })); }}
+                  >
+                    <SelectTrigger aria-invalid={!!fieldErrors.tax_id} data-testid="produto-tax-select">
+                      <SelectValue placeholder="Selecionar IVA" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TAXA_OPCOES.map((t) => (
+                        <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {fieldErrors.tax_id && <p className="text-xs text-destructive">{fieldErrors.tax_id}</p>}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="produto-foto">URL da foto (opcional)</Label>
+                <Input
+                  id="produto-foto"
+                  value={form.foto_url}
+                  onChange={(e) => setForm({ ...form, foto_url: e.target.value })}
+                  placeholder="https://..."
+                  data-testid="produto-foto-input"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Personalizações</Label>
+                <div className="flex flex-col gap-2 max-h-40 overflow-y-auto border rounded-md p-3" data-testid="produto-grupos-options">
+                  {grupos.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Sem grupos de personalização criados ainda.</p>
+                  ) : (
+                    grupos.map((grupo) => (
+                      <label key={grupo.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                        <Checkbox
+                          checked={form.grupos_personalizacao.includes(grupo.id)}
+                          onCheckedChange={() => toggleGrupo(grupo.id)}
+                          data-testid={`produto-grupo-checkbox-${grupo.id}`}
+                        />
+                        {grupo.nome}
+                      </label>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {editing?.vendus_ref && (
+                <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                  <Link2 className="h-3.5 w-3.5" />Este produto veio do Vendus (ref. {editing.vendus_ref}). Uma nova importação atualiza nome, preço, IVA e categoria; as personalizações e a foto ficam como estão aqui.
+                </p>
+              )}
+
+              <div className="flex items-center gap-2 pt-1">
+                <Switch id="produto-ativo" checked={form.ativo} onCheckedChange={(v) => setForm({ ...form, ativo: v })} data-testid="produto-ativo-switch" />
+                <Label htmlFor="produto-ativo" className="cursor-pointer">Produto ativo</Label>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancelar</Button>
+              <Button type="submit" disabled={saving} data-testid="save-produto-btn">{saving ? 'A guardar...' : 'Guardar'}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirmar eliminação */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Eliminar produto</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tem a certeza que pretende eliminar "{deleteTarget?.nome}"? Esta ação não pode ser desfeita.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground">Eliminar</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Resultado da importação */}
+      <Dialog open={importResultOpen} onOpenChange={setImportResultOpen}>
+        <DialogContent data-testid="import-result-dialog">
+          <DialogHeader>
+            <DialogTitle>Importação do Vendus</DialogTitle>
+            <DialogDescription>Confirme estes números contra o backoffice do Vendus.</DialogDescription>
+          </DialogHeader>
+          {importResult && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">Categorias lidas</p>
+                  <p className="text-xl font-semibold" data-testid="import-categorias-lidas">{importResult.categorias_lidas}</p>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">Produtos lidos</p>
+                  <p className="text-xl font-semibold" data-testid="import-produtos-lidos">{importResult.produtos_lidos}</p>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">Produtos criados</p>
+                  <p className="text-xl font-semibold text-teal-700">{importResult.produtos_criados}</p>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">Produtos atualizados</p>
+                  <p className="text-xl font-semibold text-blue-700">{importResult.produtos_atualizados}</p>
+                </div>
+              </div>
+              {(importResult.problemas || []).length > 0 ? (
+                <div className="space-y-1.5">
+                  <p className="text-sm font-medium text-amber-700 flex items-center gap-1.5">
+                    <AlertTriangle className="h-4 w-4" />
+                    {importResult.problemas.length === 1 ? '1 aviso' : `${importResult.problemas.length} avisos`} — não impedem o resto da importação, mas convém rever
+                  </p>
+                  <div className="max-h-52 overflow-y-auto rounded-md border bg-amber-50/50 p-2 space-y-1">
+                    {importResult.problemas.map((problema, i) => (
+                      <p key={i} className="text-xs text-amber-900" data-testid={`import-problema-${i}`}>{problema}</p>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">Sem avisos a reportar.</p>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button onClick={() => setImportResultOpen(false)} data-testid="fechar-import-result-btn">Fechar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
