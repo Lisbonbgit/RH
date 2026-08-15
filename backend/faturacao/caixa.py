@@ -23,6 +23,7 @@ mesmo crivo de 2 casas decimais de faturacao/precos.py
 (`_tem_mais_de_2_casas_decimais`), reutilizado e não reescrito — round() sobre
 a representação binária come cêntimos sem avisar.
 """
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Literal, Optional
@@ -30,23 +31,18 @@ from typing import Dict, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .caixa_math import diferenca, esperado, total_por_tipo
+from .caixa_math import diferenca, esperado, soma_vendas_dinheiro, total_por_tipo
 from .db import COLECOES, obter_db
 from .pos_auth import operador_atual
 from .precos import _tem_mais_de_2_casas_decimais
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 _MSG_CAIXA_INEXISTENTE = "Caixa não encontrada."
 _MSG_CAIXA_JA_ABERTA = "Esta caixa já tem uma sessão aberta."
 _MSG_SEM_SESSAO_ABERTA = "Esta caixa não tem nenhuma sessão aberta."
-
-# Task 4: o Plano 2A ainda não vende (isso é o Plano 2B) — por isso não há
-# nenhuma venda em dinheiro para somar. É honestamente 0.0, não um número
-# inventado: quando o Plano 2B ligar as vendas, este valor passa a vir de
-# uma soma real sobre fat_documentos. Até lá, fingir outra coisa seria
-# exactamente o que a regra 4 do dono proíbe.
-_VENDAS_DINHEIRO_AINDA_SEM_VENDAS = 0.0
 
 
 def _agora() -> str:
@@ -190,9 +186,10 @@ async def fechar_caixa(
 
     Regra 3 do dono (vem de um erro já cometido noutro projecto): o fecho
     NUNCA bloqueia por a contagem não bater — regista a diferença e segue
-    em frente, para a funcionária poder ir para casa. A verificação contra
-    o Vendus é só de leitura e entra no Plano 2B; aqui o esperado calcula-se
-    sempre das NOSSAS vendas (regra 1), nunca do Vendus.
+    em frente, para a funcionária poder ir para casa. O esperado calcula-se
+    sempre das NOSSAS vendas (regra 1), nunca do Vendus — a verificação
+    contra o Vendus (Plano 2B, Task 4) é só uma segunda opinião de leitura,
+    nunca a fonte de verdade, e nunca pode bloquear o fecho.
     """
     db = obter_db()
     await _obter_caixa_da_loja(db, dados.caixa_id, operador["loja_id"])
@@ -201,12 +198,24 @@ async def fechar_caixa(
     movimentos = await db[COLECOES["movimentos_caixa"]].find(
         {"sessao_id": sessao["id"]}
     ).to_list(10000)
+    vendas = await db[COLECOES["vendas"]].find(
+        {"sessao_id": sessao["id"], "estado": "emitida"}
+    ).to_list(10000)
 
-    vendas_dinheiro = _VENDAS_DINHEIRO_AINDA_SEM_VENDAS
+    vendas_dinheiro = soma_vendas_dinheiro(vendas)
     entradas = total_por_tipo(movimentos, "entrada")
     saidas = total_por_tipo(movimentos, "saida")
     esperado_valor = esperado(sessao["fundo"], vendas_dinheiro, movimentos)
     diferenca_valor = diferenca(esperado_valor, dados.contado)
+
+    # A verificação contra o Vendus é só leitura e NUNCA pode impedir o
+    # fecho — apanhada aqui, além da guarda que já existe dentro da própria
+    # função (dupla rede de segurança, regra 3 do dono).
+    try:
+        verificacao_vendus = await _verificar_vendas_dinheiro(db, sessao, vendas_dinheiro)
+    except Exception as e:  # noqa: BLE001 — o fecho nunca pode falhar por causa disto
+        logger.warning("[faturacao] verificação de fecho contra o Vendus falhou: %s", e)
+        verificacao_vendus = {"nao_verificado": "Falha inesperada na verificação."}
 
     fechada_em = _agora()
     fechada_por = _quem(operador)
@@ -239,4 +248,19 @@ async def fechar_caixa(
         "contado": dados.contado,
         "esperado": esperado_valor,
         "diferenca": diferenca_valor,
+        "verificacao_vendus": verificacao_vendus,
     }
+
+
+async def _verificar_vendas_dinheiro(db, sessao: Dict, vendas_dinheiro_local: float) -> Optional[Dict]:
+    """Ponte para `fiscal.py::verificar_vendas_dinheiro_no_vendus`, com um
+    import LOCAL (não ao nível do módulo) de propósito: `fiscal.py` importa
+    de `venda.py`, que por sua vez importa deste módulo
+    (`_obter_caixa_da_loja`/`_sessao_aberta`) — um `import` de `fiscal.py`
+    aqui no topo do ficheiro fechava um ciclo (`caixa → fiscal → venda →
+    caixa`). Adiar a importação para dentro da chamada resolve-o sem mudar
+    a ordem de carregamento em `__init__.py`. Uma função à parte (em vez de
+    inline em `fechar_caixa`) também é o que torna isto substituível nos
+    testes com `monkeypatch.setattr(caixa_mod, "_verificar_vendas_dinheiro", ...)`."""
+    from .fiscal import verificar_vendas_dinheiro_no_vendus
+    return await verificar_vendas_dinheiro_no_vendus(db, sessao, vendas_dinheiro_local)

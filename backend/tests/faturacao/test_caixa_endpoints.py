@@ -89,12 +89,29 @@ class DbFalsa:
         return self._coleccoes.setdefault(nome, ColeccaoFalsa([]))
 
 
-def _db(registo, caixas=None, sessoes=None, movimentos=None):
+def _db(registo, caixas=None, sessoes=None, movimentos=None, vendas=None, tipos_pagamento=None):
     return DbFalsa({
         COLECOES["caixas"]: ColeccaoFalsa(registo, caixas),
         COLECOES["sessoes_caixa"]: ColeccaoFalsa(registo, sessoes),
         COLECOES["movimentos_caixa"]: ColeccaoFalsa(registo, movimentos),
+        COLECOES["vendas"]: ColeccaoFalsa(registo, vendas),
+        COLECOES["tipos_pagamento"]: ColeccaoFalsa(registo, tipos_pagamento),
     })
+
+
+def _pagamento(**over):
+    p = {"tipo_pagamento_id": "tipo-dinheiro", "nome": "Dinheiro", "tipo_fiscal": "NU", "valor": 8.99}
+    p.update(over)
+    return p
+
+
+def _venda_emitida(**over):
+    v = {
+        "id": "venda-1", "loja_id": "loja-1", "sessao_id": "sessao-1", "estado": "emitida",
+        "pagamentos": [_pagamento()],
+    }
+    v.update(over)
+    return v
 
 
 def _operador(**over):
@@ -316,11 +333,12 @@ def test_movimento_ignora_sessao_id_vindo_do_corpo_mesmo_que_apareca(monkeypatch
     assert resultado["sessao_id"] == "sessao-amiga"
 
 
-# --- Fecho de caixa e relatório Z (Task 4) --------------------------------------
+# --- Fecho de caixa e relatório Z (Task 4 do Plano 2A) --------------------------
 #
-# O esperado calcula-se das NOSSAS vendas, não do Vendus (regra 1 da Task 4)
-# — e o Plano 2A ainda não vende, por isso vendas_dinheiro é honestamente 0
-# aqui, não uma invenção. A ligação de leitura ao Vendus é o Plano 2B.
+# O esperado calcula-se das NOSSAS vendas, não do Vendus (regra 1) — os
+# testes desta secção não passam nenhuma venda, por isso vendas_dinheiro
+# continua honestamente 0.0 (soma_vendas_dinheiro de uma lista vazia). A
+# ligação real às vendas está na secção seguinte (Task 4 do Plano 2B).
 
 
 def test_fecho_com_diferenca_zero_quando_conta_bate_certo(monkeypatch):
@@ -493,3 +511,124 @@ def test_fecho_nunca_bloqueia_mesmo_com_diferenca_grande(monkeypatch):
     )
     assert resultado["estado"] == "fechada"
     assert resultado["diferenca"] == -47.0
+
+
+# --- A venda entra na caixa (Task 4 do Plano 2B) --------------------------------
+#
+# Uma venda paga em dinheiro conta para o esperado; uma venda em cartão não.
+# A matemática em si (pagamento misto, vendas não emitidas) já está testada
+# em test_caixa_math.py::soma_vendas_dinheiro — aqui só importa que
+# fechar_caixa lê as vendas CERTAS (da sessão a fechar, nenhuma outra) e as
+# entrega a essa função.
+
+
+def test_fecho_soma_as_vendas_em_dinheiro_da_sessao(monkeypatch):
+    registo = []
+    db = _db(
+        registo, caixas=[_caixa()], sessoes=[_sessao(fundo=50.0)], movimentos=[],
+        vendas=[_venda_emitida()],  # 8.99 em dinheiro
+    )
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(
+        fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=58.99), operador=_operador())
+    )
+    assert resultado["vendas_dinheiro"] == 8.99
+    assert resultado["esperado"] == 58.99
+    assert resultado["diferenca"] == 0.0
+
+
+def test_fecho_com_pagamento_misto_conta_so_a_parte_em_dinheiro(monkeypatch):
+    registo = []
+    venda_mista = _venda_emitida(pagamentos=[
+        _pagamento(valor=10.0),
+        _pagamento(tipo_pagamento_id="tipo-mb", nome="Multibanco", tipo_fiscal="CD", valor=7.98),
+    ])
+    db = _db(
+        registo, caixas=[_caixa()], sessoes=[_sessao(fundo=50.0)], movimentos=[],
+        vendas=[venda_mista],
+    )
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(
+        fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=60.0), operador=_operador())
+    )
+    assert resultado["vendas_dinheiro"] == 10.0  # só a parte em dinheiro, não os 17.98 todos
+
+
+def test_fecho_ignora_venda_de_outra_sessao(monkeypatch):
+    registo = []
+    venda_de_ontem = _venda_emitida(id="venda-ontem", sessao_id="sessao-ontem")
+    db = _db(
+        registo, caixas=[_caixa()], sessoes=[_sessao(fundo=50.0)], movimentos=[],
+        vendas=[venda_de_ontem],
+    )
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(
+        fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador())
+    )
+    assert resultado["vendas_dinheiro"] == 0.0
+
+
+def test_fecho_ignora_venda_ainda_aberta(monkeypatch):
+    """Uma venda no meio de uma conta (nunca chegou a emitir) não pode
+    contar como dinheiro na gaveta."""
+    registo = []
+    venda_aberta = _venda_emitida(estado="aberta")
+    db = _db(
+        registo, caixas=[_caixa()], sessoes=[_sessao(fundo=50.0)], movimentos=[],
+        vendas=[venda_aberta],
+    )
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(
+        fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador())
+    )
+    assert resultado["vendas_dinheiro"] == 0.0
+
+
+# --- Verificação de leitura contra o Vendus (prometida no Plano 2A) -------------
+#
+# Bate certo -> não diz nada. Não bate -> avisa, mas deixa fechar. Não
+# conseguiu ler tudo -> diz que não conseguiu verificar. NUNCA bloqueia.
+
+
+def test_fecho_sem_vendus_configurado_diz_que_nao_conseguiu_verificar(monkeypatch):
+    """Sem VENDUS_REGISTER_ID/conta configurados (o caso normal nestes
+    testes — nenhum env var de Vendus está definido), a verificação não
+    pode fingir que bateu certo: diz claramente que não conseguiu, e o
+    fecho segue em frente na mesma."""
+    monkeypatch.delenv("VENDUS_REGISTER_ID", raising=False)
+    monkeypatch.delenv("VENDUS_ACCOUNTS", raising=False)
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao(fundo=50.0)], movimentos=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(
+        fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador())
+    )
+    assert resultado["estado"] == "fechada"  # nunca bloqueia
+    assert resultado["verificacao_vendus"] is not None
+    assert "nao_verificado" in resultado["verificacao_vendus"]
+
+
+def test_fecho_com_verificacao_vendus_a_rebentar_no_meio_nao_bloqueia_o_fecho(monkeypatch):
+    """Defesa extra (além da que já existe dentro da própria função de
+    verificação): mesmo que a chamada a verificar_vendas_dinheiro_no_vendus
+    levantasse uma excepção inesperada, o fecho em si nunca pode falhar por
+    causa disto — regra 3 do dono."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao(fundo=50.0)], movimentos=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    async def rebenta(*args, **kwargs):
+        raise RuntimeError("falha inesperada simulada")
+
+    monkeypatch.setattr(caixa_mod, "_verificar_vendas_dinheiro", rebenta)
+
+    resultado = _corre(
+        fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador())
+    )
+    assert resultado["estado"] == "fechada"
+    assert "nao_verificado" in resultado["verificacao_vendus"]

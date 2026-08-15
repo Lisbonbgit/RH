@@ -40,3 +40,26 @@ def diferenca(esperado_valor: float, contado: float) -> float:
     isso o fecho (faturacao/caixa.py) NUNCA bloqueia por causa dele, só o
     regista (Task 4 do Plano 2A, spec §7.6)."""
     return round(float(contado or 0) - float(esperado_valor or 0), 2)
+
+
+def soma_vendas_dinheiro(vendas: List[Dict]) -> float:
+    """A parte em DINHEIRO das vendas emitidas de uma sessão (Task 4 do
+    Plano 2B, spec §6/§7.6) — é isto que entra no `vendas_dinheiro` de
+    `esperado`, acima.
+
+    Só conta vendas `estado == "emitida"` (uma venda aberta ou cancelada
+    nunca foi facturada, não pode contar para a gaveta) e, dentro de cada
+    uma, só os pagamentos com `tipo_fiscal == "NU"` — um pagamento MISTO
+    (parte dinheiro, parte multibanco) só soma a parte em dinheiro. Lê o
+    `tipo_fiscal` do SNAPSHOT gravado em cada pagamento no momento da
+    emissão (faturacao/fiscal.py::finalizar), nunca reconsulta
+    fat_tipos_pagamento ao vivo — um tipo de pagamento reconfigurado
+    amanhã não pode mudar retroactivamente o Z de uma sessão já fechada."""
+    total = 0.0
+    for venda in vendas or []:
+        if venda.get("estado") != "emitida":
+            continue
+        for pagamento in venda.get("pagamentos") or []:
+            if pagamento.get("tipo_fiscal") == "NU":
+                total += float(pagamento.get("valor", 0) or 0)
+    return round(total, 2)

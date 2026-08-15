@@ -43,9 +43,11 @@ liga esses dois parâmetros ao `ClienteEmissaoVendus` real, através de
 bloquearia o event loop do portal inteiro, RH e Financeiro incluídos).
 """
 import asyncio
+import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Awaitable, Callable, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Awaitable, Callable, Dict, List, Optional, Set
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
@@ -68,7 +70,11 @@ from .venda import (
 from .vendus.cliente import VendusErro, VendusIndisponivel, obter_conta
 from .vendus.emissao import ClienteEmissaoVendus, _register_id_configurado
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+_LISBOA = ZoneInfo("Europe/Lisbon")
 
 # Orçamento de espera de quem perde a reserva: a reserva já existe mas o
 # documento ainda não foi gravado (o vencedor está a meio da chamada ao
@@ -313,6 +319,109 @@ async def finalizar_venda(
         {"$set": {"estado": "emitida", "documento_id": documento["id"]}},
     )
     return documento
+
+
+# --- Verificação de leitura contra o Vendus (Task 4, prometida no Plano 2A) ---
+#
+# O esperado do fecho (faturacao/caixa.py) calcula-se SEMPRE das nossas
+# vendas (regra 1 do dono) — isto é só uma segunda opinião de leitura, nunca
+# a fonte de verdade. Bate certo → não diz nada. Não bate → avisa, mas
+# NUNCA bloqueia o fecho (regra 3). Não conseguiu ler tudo → diz que não
+# conseguiu verificar, e nunca inventa um número que a operadora vá usar
+# para justificar dinheiro.
+
+
+def _datas_da_janela(sessao: Dict) -> List[str]:
+    """Os dias (Europe/Lisbon, formato YYYY-MM-DD) a consultar — da abertura
+    da sessão até agora, inclusive. Midnight-safe: uma sessão que atravessa
+    a meia-noite não perde a parte de ontem (mesmo raciocínio da Pizzaria,
+    `server.py::close_table`, `dedup_dates`) — sem isto, fechar às 00:10
+    depois de abrir às 23h só consultaria hoje, e as vendas de ontem à noite
+    nunca apareceriam na verificação."""
+    agora = datetime.now(_LISBOA).date()
+    try:
+        inicio = datetime.fromisoformat(sessao["aberta_em"]).astimezone(_LISBOA).date()
+    except (KeyError, TypeError, ValueError):
+        inicio = agora
+    datas = []
+    dia = inicio
+    while dia <= agora:
+        datas.append(dia.isoformat())
+        dia += timedelta(days=1)
+    return datas
+
+
+def _reconciliar_vendas_dinheiro(
+    vendas_dinheiro_local: float,
+    documentos_vendus: List[Dict],
+    prefixo_ext_ref: str,
+    ids_pagamento_dinheiro: Set[str],
+) -> Optional[Dict]:
+    """Núcleo PURO da reconciliação (sem I/O, testável sem MockTransport):
+    soma, dos documentos lidos, só os que são NOSSOS desta sessão
+    (`external_reference` com o prefixo `pos-{loja}-{sessao}-`) e não estão
+    ANULADOS, e dentro deles só os pagamentos cujo `id` (no Vendus) é de um
+    tipo local marcado `tipo_fiscal == 'NU'`. Devolve `None` se bater certo
+    com `vendas_dinheiro_local`; um aviso claro se não bater."""
+    relevantes = [
+        d for d in documentos_vendus
+        if str(d.get("external_reference") or "").startswith(prefixo_ext_ref)
+        and d.get("status") != "A"
+    ]
+    soma_vendus = 0.0
+    for documento in relevantes:
+        for pagamento in documento.get("payments") or []:
+            if str(pagamento.get("id")) in ids_pagamento_dinheiro:
+                soma_vendus += float(pagamento.get("amount") or 0)
+    soma_vendus = round(soma_vendus, 2)
+
+    if soma_vendus == round(vendas_dinheiro_local, 2):
+        return None
+    return {
+        "aviso": (
+            "O Vendus regista %.2f € em dinheiro nesta sessão; as nossas "
+            "vendas somam %.2f €." % (soma_vendus, vendas_dinheiro_local)
+        )
+    }
+
+
+async def verificar_vendas_dinheiro_no_vendus(
+    db, sessao: Dict, vendas_dinheiro_local: float
+) -> Optional[Dict]:
+    """A leitura de reconciliação em si (I/O): configuração, janela de dias,
+    paginação completa (nunca a armadilha per_page sem paginar) e a
+    comparação pura acima. QUALQUER falha — configuração em falta, rede,
+    paginação truncada — devolve `{"nao_verificado": ...}` em vez de deixar
+    rebentar ou de inventar um número (regra 3 do dono: o fecho nunca pode
+    ficar bloqueado, nem mentir, por causa disto)."""
+    try:
+        register_id = _register_id_configurado()
+        if register_id is None:
+            return {"nao_verificado": "VENDUS_REGISTER_ID não está configurado."}
+        conta = obter_conta(_nif_configurado())
+        if conta is None:
+            return {"nao_verificado": "Conta Vendus não configurada."}
+
+        tipos_dinheiro = await db[COLECOES["tipos_pagamento"]].find(
+            {"tipo_fiscal": "NU"}
+        ).to_list(200)
+        ids_dinheiro = {
+            str(t["vendus_payment_method_id"])
+            for t in tipos_dinheiro if t.get("vendus_payment_method_id")
+        }
+
+        documentos: List[Dict] = []
+        with ClienteEmissaoVendus(conta.chave) as cliente:
+            for data in _datas_da_janela(sessao):
+                documentos.extend(
+                    await asyncio.to_thread(cliente.listar_documentos_por_dia, data, register_id)
+                )
+
+        prefixo = "pos-%s-%s-" % (sessao["loja_id"], sessao["id"])
+        return _reconciliar_vendas_dinheiro(vendas_dinheiro_local, documentos, prefixo, ids_dinheiro)
+    except Exception as e:  # noqa: BLE001 — nunca pode propagar e bloquear o fecho
+        logger.warning("[faturacao] verificação de fecho contra o Vendus falhou: %s", e)
+        return {"nao_verificado": "Não foi possível confirmar contra o Vendus: %s" % e}
 
 
 # --- A rota: liga o núcleo acima ao Vendus real e à conta do balcão --------

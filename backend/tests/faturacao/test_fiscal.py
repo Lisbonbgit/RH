@@ -33,10 +33,13 @@ from faturacao.fiscal import (
     EmissaoEmCurso,
     PagamentoEntrada,
     PedidoFinalizarVenda,
+    _datas_da_janela,
     _itens_vendus,
+    _reconciliar_vendas_dinheiro,
     ext_ref_determinista,
     finalizar,
     finalizar_venda,
+    verificar_vendas_dinheiro_no_vendus,
 )
 from faturacao.vendus.cliente import VendusHTTPErro, VendusIndisponivel
 from faturacao.venda import _totais
@@ -55,6 +58,17 @@ def _corresponde(item, filtro):
     return all(item.get(chave) == valor for chave, valor in filtro.items())
 
 
+class CursorFalso:
+    def __init__(self, itens):
+        self._itens = itens
+
+    def sort(self, *args, **kwargs):
+        return self
+
+    async def to_list(self, n=None):
+        return self._itens
+
+
 class ColeccaoFalsa:
     """Duplo de uma colecção Mongo. `insert_one` cede o controlo (await
     sleep(0)) e SÓ DEPOIS verifica os campos únicos e insere — tudo isso sem
@@ -68,7 +82,7 @@ class ColeccaoFalsa:
         self.chamadas_insert = 0
 
     def find(self, filtro=None):
-        return [d for d in self._documentos if _corresponde(d, filtro)]
+        return CursorFalso([d for d in self._documentos if _corresponde(d, filtro)])
 
     async def find_one(self, filtro, projecao=None):
         await asyncio.sleep(0)
@@ -906,3 +920,176 @@ def test_pagamento_com_valor_negativo_e_recusado():
 def test_pagamento_com_3_casas_decimais_e_recusado():
     with pytest.raises(ValidationError):
         PagamentoEntrada(tipo_pagamento_id="t1", valor=8.995)
+
+
+# ============================================================================
+# Verificação de leitura contra o Vendus (Task 4 do Plano 2B)
+# ============================================================================
+
+
+def _doc_vendus(**over):
+    d = {
+        "id": 900, "external_reference": "pos-loja-1-sessao-1-venda-1", "status": "N",
+        "payments": [{"id": "316430468", "amount": 8.99}],
+    }
+    d.update(over)
+    return d
+
+
+# --- _reconciliar_vendas_dinheiro (núcleo puro) --------------------------------
+
+
+def test_reconciliar_bate_certo_nao_diz_nada():
+    resultado = _reconciliar_vendas_dinheiro(
+        8.99, [_doc_vendus()], "pos-loja-1-sessao-1-", {"316430468"}
+    )
+    assert resultado is None
+
+
+def test_reconciliar_nao_bate_avisa_com_os_dois_valores():
+    resultado = _reconciliar_vendas_dinheiro(
+        5.0, [_doc_vendus()], "pos-loja-1-sessao-1-", {"316430468"}
+    )
+    assert resultado is not None
+    assert "8.99" in resultado["aviso"]
+    assert "5.00" in resultado["aviso"]
+
+
+def test_reconciliar_ignora_documento_de_outra_sessao():
+    """Um documento com um prefixo diferente (outra sessão, ou da app
+    L'Açaí) não pode contaminar a soma desta sessão."""
+    doc_de_outra_sessao = _doc_vendus(external_reference="pos-loja-1-sessao-OUTRA-venda-9")
+    resultado = _reconciliar_vendas_dinheiro(
+        0.0, [doc_de_outra_sessao], "pos-loja-1-sessao-1-", {"316430468"}
+    )
+    assert resultado is None  # 0.0 local == 0.0 do Vendus (o documento foi ignorado)
+
+
+def test_reconciliar_descarta_documento_anulado():
+    doc_anulado = _doc_vendus(status="A")
+    resultado = _reconciliar_vendas_dinheiro(
+        0.0, [doc_anulado], "pos-loja-1-sessao-1-", {"316430468"}
+    )
+    assert resultado is None
+
+
+def test_reconciliar_ignora_pagamento_que_nao_e_dinheiro():
+    doc_multibanco = _doc_vendus(payments=[{"id": "999", "amount": 8.99}])
+    resultado = _reconciliar_vendas_dinheiro(
+        0.0, [doc_multibanco], "pos-loja-1-sessao-1-", {"316430468"}
+    )
+    assert resultado is None  # o pagamento existe mas não é do id 'dinheiro'
+
+
+def test_reconciliar_soma_varios_documentos_da_sessao():
+    docs = [_doc_vendus(id=1), _doc_vendus(id=2, payments=[{"id": "316430468", "amount": 2.5}])]
+    resultado = _reconciliar_vendas_dinheiro(11.49, docs, "pos-loja-1-sessao-1-", {"316430468"})
+    assert resultado is None
+
+
+# --- _datas_da_janela -----------------------------------------------------------
+
+
+def test_datas_da_janela_sessao_aberta_hoje_e_um_so_dia():
+    from datetime import datetime, timezone
+    hoje = datetime.now(timezone.utc).isoformat()
+    datas = _datas_da_janela({"aberta_em": hoje})
+    assert len(datas) == 1
+
+
+def test_datas_da_janela_com_aberta_em_invalido_nao_rebenta():
+    datas = _datas_da_janela({"aberta_em": "isto-nao-e-uma-data"})
+    assert len(datas) == 1  # cai para hoje, não rebenta
+
+
+def test_datas_da_janela_sem_aberta_em_nao_rebenta():
+    assert len(_datas_da_janela({})) == 1
+
+
+def test_datas_da_janela_cobre_do_inicio_ate_hoje_inclusive():
+    from datetime import datetime, timedelta, timezone
+    ha_tres_dias = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    datas = _datas_da_janela({"aberta_em": ha_tres_dias})
+    assert len(datas) == 4  # 3 dias atrás + os 2 entre + hoje
+
+
+# --- verificar_vendas_dinheiro_no_vendus (I/O) ---------------------------------
+
+
+def test_verificar_sem_register_id_diz_nao_verificado(monkeypatch):
+    monkeypatch.delenv("VENDUS_REGISTER_ID", raising=False)
+    db = _db()
+    resultado = _corre(verificar_vendas_dinheiro_no_vendus(db, _sessao_fake(), 8.99))
+    assert "nao_verificado" in resultado
+
+
+def test_verificar_sem_conta_configurada_diz_nao_verificado(monkeypatch):
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+    monkeypatch.delenv("VENDUS_ACCOUNTS", raising=False)
+    monkeypatch.setenv("FAT_NIF", "517542510")
+    db = _db()
+    resultado = _corre(verificar_vendas_dinheiro_no_vendus(db, _sessao_fake(), 8.99))
+    assert "nao_verificado" in resultado
+
+
+def test_verificar_feliz_bate_certo_nao_diz_nada(monkeypatch):
+    _configura_vendus_env(monkeypatch)
+    db = _db(tipos_pagamento=[_tipo_pagamento()])
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", ClienteEmissaoVendusFalso)
+    ClienteEmissaoVendusFalso.instancias.clear()
+
+    def fabrica(chave):
+        cliente = ClienteEmissaoVendusFalso(chave)
+        cliente.listar_documentos_por_dia = lambda data, register_id: [_doc_vendus()]
+        return cliente
+
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", fabrica)
+
+    resultado = _corre(verificar_vendas_dinheiro_no_vendus(db, _sessao_fake(), 8.99))
+    assert resultado is None
+
+
+def test_verificar_feliz_nao_bate_avisa(monkeypatch):
+    _configura_vendus_env(monkeypatch)
+    db = _db(tipos_pagamento=[_tipo_pagamento()])
+
+    def fabrica(chave):
+        cliente = ClienteEmissaoVendusFalso(chave)
+        cliente.listar_documentos_por_dia = lambda data, register_id: [_doc_vendus()]
+        return cliente
+
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", fabrica)
+
+    resultado = _corre(verificar_vendas_dinheiro_no_vendus(db, _sessao_fake(), 20.0))
+    assert resultado is not None
+    assert "aviso" in resultado
+
+
+def test_verificar_com_leitura_a_rebentar_diz_nao_verificado(monkeypatch):
+    """Nunca deixa a excepção propagar — mesmo se listar_documentos_por_dia
+    (que já pagina até esgotar ou levanta um erro tipado, nunca devolve uma
+    lista truncada em silêncio) rebentar."""
+    _configura_vendus_env(monkeypatch)
+    db = _db(tipos_pagamento=[_tipo_pagamento()])
+
+    def fabrica(chave):
+        cliente = ClienteEmissaoVendusFalso(chave)
+
+        def rebenta(data, register_id):
+            raise VendusIndisponivel("falha de leitura simulada")
+        cliente.listar_documentos_por_dia = rebenta
+        return cliente
+
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", fabrica)
+
+    resultado = _corre(verificar_vendas_dinheiro_no_vendus(db, _sessao_fake(), 8.99))
+    assert "nao_verificado" in resultado
+
+
+def _sessao_fake(**over):
+    s = {
+        "id": "sessao-1", "loja_id": "loja-1", "caixa_id": "caixa-1",
+        "aberta_em": "2026-08-15T09:00:00+00:00", "estado": "aberta",
+    }
+    s.update(over)
+    return s

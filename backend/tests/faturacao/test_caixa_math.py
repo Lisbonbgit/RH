@@ -6,11 +6,29 @@ sozinho, sem Mongo, porque é a parte que tem de estar matematicamente
 certa — é o que sustenta a confiança entre o dono e a equipa quando a
 contagem não bate e alguém tem de explicar a diferença.
 """
-from faturacao.caixa_math import diferenca, esperado, total_movimentos, total_por_tipo
+from faturacao.caixa_math import (
+    diferenca,
+    esperado,
+    soma_vendas_dinheiro,
+    total_movimentos,
+    total_por_tipo,
+)
 
 
 def _mov(tipo, valor):
     return {"tipo": tipo, "valor": valor}
+
+
+def _pagamento(**over):
+    p = {"tipo_pagamento_id": "tipo-dinheiro", "nome": "Dinheiro", "tipo_fiscal": "NU", "valor": 8.99}
+    p.update(over)
+    return p
+
+
+def _venda(**over):
+    v = {"id": "venda-1", "estado": "emitida", "pagamentos": [_pagamento()]}
+    v.update(over)
+    return v
 
 
 # --- total_por_tipo ------------------------------------------------------------
@@ -99,3 +117,55 @@ def test_diferenca_negativa_quando_falta_dinheiro():
 
 def test_diferenca_zero_quando_bate_certo():
     assert diferenca(100.0, 100.0) == 0.0
+
+
+# --- soma_vendas_dinheiro (Task 4 do Plano 2B) ----------------------------------
+#
+# Uma venda paga em dinheiro conta para o esperado do fecho; uma venda em
+# multibanco não. Lê o snapshot de `tipo_fiscal` gravado em cada pagamento
+# no momento da emissão (fiscal.py::finalizar) — nunca reconsulta
+# fat_tipos_pagamento ao vivo (que podia ter mudado entretanto).
+
+
+def test_soma_vendas_dinheiro_com_uma_venda_em_dinheiro():
+    assert soma_vendas_dinheiro([_venda()]) == 8.99
+
+
+def test_soma_vendas_dinheiro_ignora_venda_so_em_multibanco():
+    venda_mb = _venda(pagamentos=[_pagamento(tipo_fiscal="CD", valor=8.99)])
+    assert soma_vendas_dinheiro([venda_mb]) == 0.0
+
+
+def test_soma_vendas_dinheiro_com_pagamento_misto_conta_so_a_parte_em_dinheiro():
+    """A regra central da Task 4: um pagamento MISTO (parte dinheiro, parte
+    cartão) só soma a parte em dinheiro para o esperado da gaveta."""
+    venda_mista = _venda(pagamentos=[
+        _pagamento(valor=10.0),
+        _pagamento(tipo_pagamento_id="tipo-mb", nome="Multibanco", tipo_fiscal="CD", valor=7.98),
+    ])
+    assert soma_vendas_dinheiro([venda_mista]) == 10.0
+
+
+def test_soma_vendas_dinheiro_com_varias_vendas_soma_todas():
+    vendas = [_venda(id="v1"), _venda(id="v2", pagamentos=[_pagamento(valor=2.5)])]
+    assert soma_vendas_dinheiro(vendas) == 11.49
+
+
+def test_soma_vendas_dinheiro_ignora_venda_nao_emitida():
+    """Uma venda 'aberta' (nunca chegou a emitir) ou 'cancelada' não pode
+    contar para o esperado — só o dinheiro de vendas REALMENTE facturadas."""
+    venda_aberta = _venda(estado="aberta")
+    venda_cancelada = _venda(estado="cancelada")
+    assert soma_vendas_dinheiro([venda_aberta, venda_cancelada]) == 0.0
+
+
+def test_soma_vendas_dinheiro_com_lista_vazia_e_zero():
+    assert soma_vendas_dinheiro([]) == 0.0
+
+
+def test_soma_vendas_dinheiro_venda_sem_pagamentos_nao_rebenta():
+    """Defensivo: uma venda emitida sem o campo 'pagamentos' (não devia
+    acontecer, mas não pode rebentar o fecho de caixa)."""
+    venda_sem_pagamentos = _venda()
+    del venda_sem_pagamentos["pagamentos"]
+    assert soma_vendas_dinheiro([venda_sem_pagamentos]) == 0.0
