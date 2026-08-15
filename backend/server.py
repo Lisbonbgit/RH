@@ -2799,6 +2799,10 @@ async def mark_all_notifications_read(current_user: dict = Depends(get_current_u
 
 # ==================== DASHBOARD ROUTES ====================
 
+# Minutos após a hora de início da escala a partir dos quais quem não deu
+# entrada passa a "Em falta" (antes disso é só "Ainda não deu entrada").
+LATE_TOLERANCE_MINUTES = 15
+
 @api_router.get("/dashboard/admin")
 async def get_admin_dashboard(company_id: Optional[str] = None, current_user: dict = Depends(admin_manager_required)):
     query = {}
@@ -2920,24 +2924,25 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
     templates_by_id = {}
     if template_ids:
         templates = await db.work_schedule_templates.find(
-            {"id": {"$in": list(template_ids)}}, {"_id": 0, "id": 1, "name": 1, "work_days": 1}
+            {"id": {"$in": list(template_ids)}}, {"_id": 0, "id": 1, "name": 1, "work_days": 1, "start_time": 1}
         ).to_list(500)
         templates_by_id = {t["id"]: t for t in templates}
 
     def _schedule_today(eid):
-        """Escala ativa hoje. Devolve (work_days, name) com a atribuição ativa,
-        ou (None, None) se não houver atribuição a cobrir hoje. work_days pode ser
-        lista vazia se a atribuição não definir dias."""
+        """Escala ativa hoje. Devolve (work_days, name, start_time) com a
+        atribuição ativa, ou (None, None, None) se não houver atribuição a
+        cobrir hoje. work_days pode ser lista vazia se a atribuição não definir
+        dias; start_time é "HH:MM" ou None."""
         assignment = find_schedule_assignment(assignments_by_emp.get(eid, []), today_date)
         if not assignment:
-            return None, None
+            return None, None, None
         tpl = templates_by_id.get(assignment.get("template_id"), {})
         work_days = assignment.get("work_days") or tpl.get("work_days") or []
-        return list(work_days), tpl.get("name")
+        return list(work_days), tpl.get("name"), tpl.get("start_time")
 
     def _mini(eid):
         e = emp_by_id.get(eid, {})
-        sched_days, sched_name = _schedule_today(eid)
+        sched_days, sched_name, sched_start = _schedule_today(eid)
         item = {
             "id": eid,
             "name": e.get("name"),
@@ -2948,6 +2953,7 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
             # Para o frontend: só consideramos "tem escala" se houver dias definidos
             "schedule_days": sched_days if sched_days else None,
             "schedule_name": sched_name if sched_days else None,
+            "expected_start": sched_start if sched_days else None,
         }
         if eid in working_ids:
             item["since"] = first_entry_by_emp.get(eid)
@@ -2966,7 +2972,7 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
         # Ausência aprovada e "a trabalhar" têm prioridade
         if eid in on_leave_ids or eid in working_ids:
             continue
-        sched_days, _ = _schedule_today(eid)
+        sched_days, _, _ = _schedule_today(eid)
         if sched_days is None:
             continue
         if today_weekday not in sched_days:
@@ -2978,8 +2984,40 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
         if eid not in dayoff_all:
             dayoff_all.append(eid)
 
+    # Devia estar a trabalhar (escala diz que hoje é dia de trabalho) e ainda
+    # não deu NENHUMA entrada hoje. Quem já entrou (mesmo que já tenha saído)
+    # não conta. Ausência aprovada tem prioridade.
+    #   missing    -> escala com hora de início e já passou hora + tolerância
+    #   not_in_yet -> ainda dentro da tolerância, ou escala sem hora definida
+    now_minutes = now_lis.hour * 60 + now_lis.minute
+    missing_items = []      # (minutos_previstos, eid)
+    not_in_yet_items = []   # (minutos_previstos ou 10**6 se sem hora, eid)
+    for eid in emp_id_set:
+        if eid in on_leave_ids or eid in first_entry_by_emp:
+            continue
+        sched_days, _, sched_start = _schedule_today(eid)
+        if not sched_days or today_weekday not in sched_days:
+            continue
+        start_minutes = None
+        if sched_start:
+            try:
+                h, m = str(sched_start).split(":")
+                start_minutes = int(h) * 60 + int(m)
+            except (ValueError, AttributeError):
+                start_minutes = None
+        if start_minutes is not None and now_minutes >= start_minutes + LATE_TOLERANCE_MINUTES:
+            missing_items.append((start_minutes, eid))
+        else:
+            not_in_yet_items.append((start_minutes if start_minutes is not None else 10**6, eid))
+    missing_items.sort(key=lambda x: x[0])
+    not_in_yet_items.sort(key=lambda x: x[0])
+    missing_ids = [eid for _, eid in missing_items]
+    not_in_yet_ids = [eid for _, eid in not_in_yet_items]
+
     whos_in = {
         "working": [_mini(eid) for eid in working_ids[:18]],
+        "missing": [_mini(eid) for eid in missing_ids[:18]],
+        "not_in_yet": [_mini(eid) for eid in not_in_yet_ids[:18]],
         "vacation": [_mini(eid) for eid in vacation_ids[:18]],
         "dayoff": [_mini(eid) for eid in dayoff_all[:18]],
         "absent": [_mini(eid) for eid in absent_ids[:18]],
@@ -3051,6 +3089,7 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
         "today_records": today_records,
         "on_leave_today": len(on_leave_ids),
         "working_now": len(working_ids),
+        "missing_now": len(missing_ids),
         "employees_by_company": employees_by_company,
         "recent_requests": recent_requests,
         "whos_in": whos_in,
