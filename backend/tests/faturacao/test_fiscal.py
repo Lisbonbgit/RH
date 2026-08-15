@@ -122,12 +122,19 @@ class DbFalsa:
         return self._coleccoes[nome]
 
 
-def _db(vendas=None, documentos=None, refs=None, tipos_pagamento=None):
+def _db(vendas=None, documentos=None, refs=None, tipos_pagamento=None, sessoes=None):
+    # Por omissão, uma sessão ABERTA "sessao-1" — o sessao_id da _venda()
+    # por omissão — para os testes que não são sobre a sessão de caixa (a
+    # maioria) não terem de a passar sempre à mão (I1: finalizar recusa
+    # emitir contra uma sessão fechada, ver os testes dedicados a isso).
+    if sessoes is None:
+        sessoes = [{"id": "sessao-1", "loja_id": "loja-1", "caixa_id": "caixa-1", "estado": "aberta"}]
     return DbFalsa({
         COLECOES["vendas"]: ColeccaoFalsa(vendas),
         COLECOES["documentos"]: ColeccaoFalsa(documentos, indices_unicos=["vendus_document_id", "atcud"]),
         COLECOES["refs_fiscais"]: ColeccaoFalsa(refs, indices_unicos=["ext_ref"]),
         COLECOES["tipos_pagamento"]: ColeccaoFalsa(tipos_pagamento),
+        COLECOES["sessoes_caixa"]: ColeccaoFalsa(sessoes),
     })
 
 
@@ -954,6 +961,74 @@ def test_finalizar_venda_ja_emitida_e_recusado_409(monkeypatch):
             operador=_operador(),
         ))
     assert excinfo.value.status_code == 409
+
+
+def test_finalizar_com_sessao_de_caixa_fechada_e_recusado_409(monkeypatch):
+    """I1: finalizar verificava o estado da VENDA mas nunca o da SESSÃO de
+    caixa — uma venda aberta ANTES do fecho, mas só finalizada DEPOIS
+    (ex.: a operadora esqueceu-se de fechar a conta, ou o ecrã ficou aberto
+    numa mesa/balcão), emitia à mesma. O dinheiro entrava na gaveta sem
+    pertencer a fecho nenhum, nem hoje nem amanhã (o Z de hoje já foi
+    emitido, e o de amanhã só vai contar as vendas da PRÓXIMA sessão)."""
+    _configura_vendus_env(monkeypatch)
+    db = _db(
+        vendas=[_venda(linhas=[_linha()])],
+        tipos_pagamento=[_tipo_pagamento()],
+        sessoes=[{"id": "sessao-1", "loja_id": "loja-1", "caixa_id": "caixa-1", "estado": "fechada"}],
+    )
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", ClienteEmissaoVendusFalso)
+    ClienteEmissaoVendusFalso.instancias.clear()
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(finalizar(
+            "venda-1",
+            PedidoFinalizarVenda(pagamentos=[PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)]),
+            operador=_operador(),
+        ))
+    assert excinfo.value.status_code == 409
+    assert ClienteEmissaoVendusFalso.instancias == []  # nunca chega a falar com o Vendus
+
+
+def test_finalizar_com_sessao_de_caixa_inexistente_e_recusado_409(monkeypatch):
+    """Caso extremo: a sessão referida pela venda nem sequer existe mais
+    (dados corrompidos, ou uma migração) — trata-se exactamente como
+    'fechada', nunca como 'aberta por omissão'."""
+    _configura_vendus_env(monkeypatch)
+    db = _db(vendas=[_venda(linhas=[_linha()])], tipos_pagamento=[_tipo_pagamento()], sessoes=[])
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", ClienteEmissaoVendusFalso)
+    ClienteEmissaoVendusFalso.instancias.clear()
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(finalizar(
+            "venda-1",
+            PedidoFinalizarVenda(pagamentos=[PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)]),
+            operador=_operador(),
+        ))
+    assert excinfo.value.status_code == 409
+
+
+def test_finalizar_com_sessao_de_caixa_aberta_prossegue(monkeypatch):
+    """Confirma que a guarda nova não bloqueia o caminho feliz — _db() já dá
+    uma sessão aberta por omissão, mas este teste torna a intenção
+    explícita."""
+    _configura_vendus_env(monkeypatch)
+    db = _db(
+        vendas=[_venda(linhas=[_linha()])],
+        tipos_pagamento=[_tipo_pagamento()],
+        sessoes=[{"id": "sessao-1", "loja_id": "loja-1", "caixa_id": "caixa-1", "estado": "aberta"}],
+    )
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", ClienteEmissaoVendusFalso)
+    ClienteEmissaoVendusFalso.instancias.clear()
+
+    resultado = _corre(finalizar(
+        "venda-1",
+        PedidoFinalizarVenda(pagamentos=[PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)]),
+        operador=_operador(),
+    ))
+    assert resultado["estado"] == "emitida"
 
 
 def test_finalizar_venda_de_outra_loja_e_recusado_404(monkeypatch):

@@ -94,6 +94,10 @@ _MSG_TIPO_PAGAMENTO_SEM_VENDUS = (
     "Este tipo de pagamento não tem um método do Vendus associado — "
     "não pode ser usado para emitir uma fatura real."
 )
+_MSG_SESSAO_NAO_ABERTA = (
+    "A sessão de caixa desta venda já não está aberta — não é possível "
+    "emitir fatura para uma venda de um turno já fechado."
+)
 
 
 class FiscalErro(Exception):
@@ -658,6 +662,23 @@ def _resposta_documento(documento: Dict) -> Dict:
     }
 
 
+async def _garante_sessao_da_venda_aberta(db, venda: Dict) -> None:
+    """I1 (a revisão do núcleo fiscal): `finalizar` verificava o estado da
+    VENDA (`_garante_aberta`) mas nunca o da SESSÃO de caixa a que ela
+    pertence. Uma venda aberta antes do fecho mas só finalizada depois (o
+    ecrã ficou aberto, a operadora esqueceu-se) emitia à mesma — o dinheiro
+    entrava na gaveta sem pertencer a fecho nenhum, nem ao de hoje (já
+    fechado) nem ao de amanhã (só vai contar as vendas da PRÓXIMA sessão).
+
+    Confirma especificamente a sessão DESTA venda (`venda["sessao_id"]`) —
+    nunca "há alguma sessão aberta nesta caixa", que seria a pergunta
+    errada: uma caixa pode ter reaberto com uma sessão NOVA entretanto, e
+    essa sessão não tem nada a ver com esta venda antiga."""
+    sessao = await db[COLECOES["sessoes_caixa"]].find_one({"id": venda["sessao_id"]})
+    if not sessao or sessao.get("estado") != "aberta":
+        raise HTTPException(status_code=409, detail=_MSG_SESSAO_NAO_ABERTA)
+
+
 @router.post("/pos/venda/{venda_id}/finalizar")
 async def finalizar(
     venda_id: str, dados: PedidoFinalizarVenda, operador: Dict = Depends(operador_atual)
@@ -673,6 +694,7 @@ async def finalizar(
     db = obter_db()
     venda = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
     _garante_aberta(venda)
+    await _garante_sessao_da_venda_aberta(db, venda)
     if not venda.get("linhas"):
         raise HTTPException(status_code=422, detail=_MSG_LINHAS_VAZIAS)
 
