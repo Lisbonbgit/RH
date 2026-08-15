@@ -13,6 +13,7 @@ real, e não apenas confiem que o Mongo filtraria por nós.
 Nenhum teste liga a uma base de dados nem à rede — tudo por duplos.
 """
 import asyncio
+import importlib
 import os
 
 import jwt
@@ -20,6 +21,12 @@ import pytest
 from fastapi import HTTPException
 
 os.environ.setdefault("JWT_SECRET", "segredo-de-teste")
+# POS_JWT_SECRET já NÃO tem valor por omissão no código (ver C4 na revisão
+# do núcleo fiscal) — definido em conftest.py, ANTES desta colecção (tem de
+# ser lá, não aqui: POS_JWT_SECRET é lido uma única vez à importação de
+# faturacao.pos_auth, e outros ficheiros de teste podem importá-lo primeiro
+# — ver a docstring do conftest.py). Os testes que reproduzem C4 (a seguir)
+# desligam esta variável de propósito e recarregam o módulo.
 
 from faturacao import pos_auth as pos_auth_mod
 from faturacao.db import COLECOES
@@ -405,6 +412,97 @@ def test_operador_atual_token_expirado_e_recusado_401():
     with pytest.raises(HTTPException) as excinfo:
         _corre(operador_atual(x_operator_token=token_expirado))
     assert excinfo.value.status_code == 401
+
+
+# --- C4: sem valor por omissão para o POS_JWT_SECRET ---------------------------
+#
+# Achado da revisão: `os.environ.get("POS_JWT_SECRET", "faturacao-pos-secret-
+# key-2026")` — um segredo com valor por omissão GRAVADO NO REPOSITÓRIO. Sem
+# ninguém pôr a variável no servidor (e nada o avisava disto), qualquer
+# pessoa com o código forja um token de operador para qualquer loja e
+# qualquer operador, e emite Faturas Simplificadas reais em nome de uma
+# funcionária. Reproduzido uma vez, manualmente, recarregando o módulo sem a
+# variável definida — `pos_auth_mod.POS_JWT_SECRET` resolvia para a string
+# hardcoded e `operador_atual` aceitava um token assinado com ela. Os testes
+# abaixo cobrem a correcção: nenhum valor por omissão, nunca.
+
+
+def test_entrar_recusa_quando_pos_jwt_secret_nao_esta_configurado(monkeypatch):
+    """Sem POS_JWT_SECRET no ambiente, /pos/entrar recusa-se a emitir
+    QUALQUER token de operador — nunca cai num valor por omissão."""
+    monkeypatch.setattr(pos_auth_mod, "POS_JWT_SECRET", None)
+    registo = []
+    db = _db(registo, utilizadores=[_operador()])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(entrar(PedidoEntrar(pin="1234"), dispositivo={"loja_id": "loja-1"}))
+    assert excinfo.value.status_code == 503
+    assert "POS_JWT_SECRET" in excinfo.value.detail
+
+
+def test_operador_atual_recusa_quando_pos_jwt_secret_nao_esta_configurado(monkeypatch):
+    """Mesma recusa do lado de quem VERIFICA o token — mesmo com um token
+    bem formado (assinado com o antigo valor por omissão, ou com qualquer
+    outra coisa), sem o segredo configurado o POS não serve nenhuma rota
+    que dependa de operador_atual."""
+    monkeypatch.setattr(pos_auth_mod, "POS_JWT_SECRET", None)
+    token_qualquer = jwt.encode(
+        {"operador_id": "op-1", "tipo": "operador_pos", "loja_id": "loja-1"},
+        "qualquer-coisa", algorithm="HS256",
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(operador_atual(x_operator_token=token_qualquer))
+    assert excinfo.value.status_code == 503
+    assert "POS_JWT_SECRET" in excinfo.value.detail
+
+
+def test_operador_atual_recusa_token_forjado_com_o_antigo_valor_por_omissao(monkeypatch):
+    """A defesa central: mesmo que alguém tenha o código antigo e conheça a
+    string 'faturacao-pos-secret-key-2026' (o valor por omissão que existia
+    no repositório), um token assinado com ela NUNCA é aceite quando o
+    servidor tem um POS_JWT_SECRET a sério configurado — os dois segredos
+    não têm nada a ver um com o outro."""
+    monkeypatch.setattr(pos_auth_mod, "POS_JWT_SECRET", "segredo-real-do-servidor-em-producao")
+    token_forjado = jwt.encode(
+        {
+            "operador_id": "atacante", "nome": "Atacante", "perfil": "operador_caixa",
+            "loja_id": "loja-1", "tipo": "operador_pos",
+        },
+        "faturacao-pos-secret-key-2026",
+        algorithm="HS256",
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(operador_atual(x_operator_token=token_forjado))
+    assert excinfo.value.status_code == 401
+
+
+def test_reproducao_c4_sem_pos_jwt_secret_o_valor_por_omissao_hardcoded_era_aceite():
+    """Reprodução exacta do defeito, ANTES da correcção existir: recarrega o
+    módulo tal como o servidor arrancaria, sem POS_JWT_SECRET no ambiente —
+    hoje (depois da correcção) isto resolve para None, e um token assinado
+    com o antigo valor por omissão já NÃO é aceite. Documenta o que este
+    teste apanhava antes: `pos_auth_mod.POS_JWT_SECRET ==
+    "faturacao-pos-secret-key-2026"` e o token forjado passava."""
+    ambiente_tinha = os.environ.pop("POS_JWT_SECRET", None)
+    try:
+        modulo = importlib.reload(pos_auth_mod)
+        assert modulo.POS_JWT_SECRET is None  # já não há valor por omissão nenhum
+
+        token_forjado = jwt.encode(
+            {
+                "operador_id": "atacante", "tipo": "operador_pos", "loja_id": "loja-1",
+            },
+            "faturacao-pos-secret-key-2026",
+            algorithm="HS256",
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            _corre(modulo.operador_atual(x_operator_token=token_forjado))
+        assert excinfo.value.status_code == 503
+    finally:
+        if ambiente_tinha is not None:
+            os.environ["POS_JWT_SECRET"] = ambiente_tinha
+        importlib.reload(pos_auth_mod)
 
 
 # --- Ver e revogar dispositivos (Task 5) ---------------------------------------

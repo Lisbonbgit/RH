@@ -60,7 +60,17 @@ router = APIRouter()
 # JWT_SECRET de gestão (auth.py). Não é só para não colidir por acaso: é a
 # garantia de que um JWT de gestão nunca decodifica aqui, mesmo que alguém
 # tente usá-lo num cabeçalho X-Operator-Token.
-POS_JWT_SECRET = os.environ.get("POS_JWT_SECRET", "faturacao-pos-secret-key-2026")
+#
+# SEM valor por omissão — nunca. C4 (a revisão do núcleo fiscal): a versão
+# anterior tinha `os.environ.get("POS_JWT_SECRET", "faturacao-pos-secret-
+# key-2026")`, uma string gravada no próprio repositório. Não estava no
+# .env.example nem em nenhum script de deploy — se ninguém a definisse no
+# servidor, e nada avisava disso, qualquer pessoa com o código forjava um
+# token de operador válido para QUALQUER loja e QUALQUER operador, e emitia
+# Faturas Simplificadas reais em nome de uma funcionária. Ver
+# `_segredo_operador_configurado`: as rotas do POS que dependem disto
+# recusam-se a servir em vez de cair num valor previsível.
+POS_JWT_SECRET = os.environ.get("POS_JWT_SECRET")
 _ALGORITMO = "HS256"
 _TIPO_TOKEN_OPERADOR = "operador_pos"
 _TTL_OPERADOR_HORAS = 12
@@ -72,6 +82,20 @@ _MSG_CODIGO_INVALIDO = "Código de emparelhamento inválido ou expirado."
 _MSG_DISPOSITIVO_INVALIDO = "Dispositivo não emparelhado."
 _MSG_SESSAO_OPERADOR_INVALIDA = "Sessão de operador inválida ou expirada."
 _MSG_DISPOSITIVO_NAO_ENCONTRADO = "Dispositivo não encontrado ou já revogado."
+_MSG_SEGREDO_OPERADOR_EM_FALTA = (
+    "POS_JWT_SECRET não está configurado no servidor — as rotas do POS que "
+    "dependem da identidade do operador estão desactivadas por segurança. "
+    "Defina POS_JWT_SECRET no ambiente (.env) antes de usar o POS."
+)
+
+
+def _segredo_operador_configurado() -> str:
+    """Devolve o POS_JWT_SECRET, ou recusa o pedido com uma mensagem clara
+    (503) se não estiver definido — nunca um valor por omissão (ver C4 na
+    docstring do módulo, acima de POS_JWT_SECRET)."""
+    if not POS_JWT_SECRET:
+        raise HTTPException(status_code=503, detail=_MSG_SEGREDO_OPERADOR_EM_FALTA)
+    return POS_JWT_SECRET
 
 
 def _agora() -> datetime:
@@ -244,6 +268,11 @@ def _ambito_bate_com_loja(lojas_do_operador: List[str], loja_id: str) -> bool:
 
 @router.post("/pos/entrar")
 async def entrar(dados: PedidoEntrar, dispositivo: Dict = Depends(dispositivo_atual)) -> dict:
+    # Verificado ANTES de tocar na base de dados ou gastar bcrypt a comparar
+    # PINs: sem segredo configurado não há token nenhum para emitir, e é
+    # melhor a operadora ver "sistema por configurar" do que "PIN
+    # incorrecto" quando na verdade o PIN estava certo.
+    _segredo_operador_configurado()
     db = obter_db()
     loja_id = dispositivo["loja_id"]
 
@@ -273,7 +302,7 @@ async def entrar(dados: PedidoEntrar, dispositivo: Dict = Depends(dispositivo_at
         "iat": int(agora.timestamp()),
         "exp": int((agora + timedelta(hours=_TTL_OPERADOR_HORAS)).timestamp()),
     }
-    token = jwt.encode(payload, POS_JWT_SECRET, algorithm=_ALGORITMO)
+    token = jwt.encode(payload, _segredo_operador_configurado(), algorithm=_ALGORITMO)
     return {
         "operator_token": token,
         "operador": {
@@ -289,8 +318,9 @@ async def operador_atual(x_operator_token: Optional[str] = Header(default=None))
     vender (abrir/fechar caixa, vender — Tasks seguintes do Plano 2A)."""
     if not x_operator_token:
         raise HTTPException(status_code=401, detail=_MSG_SESSAO_OPERADOR_INVALIDA)
+    segredo = _segredo_operador_configurado()
     try:
-        payload = jwt.decode(x_operator_token, POS_JWT_SECRET, algorithms=[_ALGORITMO])
+        payload = jwt.decode(x_operator_token, segredo, algorithms=[_ALGORITMO])
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail=_MSG_SESSAO_OPERADOR_INVALIDA)
     if payload.get("tipo") != _TIPO_TOKEN_OPERADOR:
