@@ -15,6 +15,7 @@ por omissão) — com 9 índices, minutos com a aplicação a não servir nada, 
 HEALTHCHECK do Dockerfile marca unhealthy aos 110s.
 """
 import asyncio
+import time
 
 import pytest
 
@@ -151,3 +152,35 @@ def test_arrancar_nao_propaga_se_criar_indices_demorar_demais(monkeypatch):
     monkeypatch.setattr(faturacao_mod, "LIMITE_INDICES_SEGUNDOS", 0.05)
 
     _corre(arrancar())  # não pode levantar nem esperar os 2s todos
+
+
+def test_arrancar_nao_espera_o_mongo_pendurado_na_verificacao_do_indice(monkeypatch):
+    """Achado da re-revisão do núcleo fiscal: `indice_idempotencia_presente`
+    corria FORA do `asyncio.wait_for` que protege `criar_indices` — com o
+    Mongo pendurado (não a levantar excepção, só nunca a responder — o
+    caso real de um Atlas em baixo, `index_information()` bloqueado à
+    espera de selecção de servidor), isto somava ~30s (o tempo limite por
+    omissão do PyMongo) ao arranque do portal INTEIRO, RH e Financeiro
+    incluídos, mesmo com criar_indices já bem-sucedido. arrancar() tem de
+    cortar esta espera TAMBÉM, dentro do MESMO limite — e tratar o esgotar
+    do tempo como 'não está presente', nunca como 'não consegui verificar,
+    assumo que está lá'."""
+
+    async def _criar_indices_rapido(db):
+        return None
+
+    async def _indice_pendurado(db):
+        await asyncio.sleep(2)
+        return True  # nunca chega a devolver isto dentro do limite
+
+    monkeypatch.setattr(faturacao_mod, "obter_db", lambda: object())
+    monkeypatch.setattr(faturacao_mod, "criar_indices", _criar_indices_rapido)
+    monkeypatch.setattr(faturacao_mod, "indice_idempotencia_presente", _indice_pendurado)
+    monkeypatch.setattr(faturacao_mod, "LIMITE_INDICES_SEGUNDOS", 0.05)
+
+    inicio = time.monotonic()
+    _corre(arrancar())  # não pode esperar os 2s todos
+    duracao = time.monotonic() - inicio
+
+    assert duracao < 1.0, "arrancar() esperou pela verificação pendurada em vez de a cortar"
+    assert db_mod.indice_idempotencia_confirmado() is False

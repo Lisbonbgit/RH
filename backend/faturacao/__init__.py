@@ -95,7 +95,27 @@ async def arrancar():
         # quando o LIMITE_INDICES_SEGUNDOS corta a espera. Verificado a
         # sério, SEMPRE, independentemente de criar_indices ter conseguido
         # correr até ao fim ou não.
-        indice_ok = await indice_idempotencia_presente(db)
+        #
+        # Achado da re-revisão do núcleo fiscal: esta chamada corria FORA do
+        # wait_for que protege criar_indices — com o Mongo pendurado (não a
+        # levantar excepção, só nunca a responder: um Atlas em baixo,
+        # index_information() bloqueado à espera de selecção de servidor),
+        # isto somava o tempo limite por omissão do PyMongo (~30s) ao
+        # arranque do PORTAL INTEIRO, RH e Financeiro incluídos — mesmo com
+        # criar_indices já bem-sucedido. Envolvida no MESMO limite; esgotar
+        # o tempo conta como "não está presente", nunca como "não consegui
+        # verificar, assumo que está lá".
+        try:
+            indice_ok = await asyncio.wait_for(
+                indice_idempotencia_presente(db), timeout=LIMITE_INDICES_SEGUNDOS
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "[faturacao] verificação do índice de idempotência excedeu "
+                "%ss — tratada como ausente",
+                LIMITE_INDICES_SEGUNDOS,
+            )
+            indice_ok = False
         marcar_indice_idempotencia(indice_ok)
         if not indice_ok:
             logger.error(

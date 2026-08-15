@@ -53,6 +53,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from pymongo.errors import DuplicateKeyError
 
+from .auth import gestor_atual
 from .db import COLECOES, indice_idempotencia_confirmado, obter_db
 from .importacao import _nif_configurado
 from .pos_auth import operador_atual
@@ -181,41 +182,67 @@ def _distribuir_centimos(total_eur: float, pesos: List[float]) -> List[float]:
     return [centimos / 100.0 for centimos in base]
 
 
+def _percentagem_que_reproduz(bruto: float, alvo_liquido: float) -> float:
+    """B2 (a re-revisão do núcleo fiscal): converte um ALVO em euros — o
+    líquido exacto que esta linha tem de mostrar, já calculado ao cêntimo
+    (ver `_distribuir_centimos`) — na `discount_percentage` que, aplicada
+    pelo Vendus (assumindo `gross*(1-pct/100)`, arredondado ao cêntimo — a
+    MESMA fórmula de `combine_global` em
+    `~/dev/pizzaria/backend/pos/pricing.py`, já provada em produção nesta
+    API), REPRODUZ esse alvo. 4 casas decimais, a mesma precisão da
+    Pizzaria: resolução de 0,00005 pontos percentuais, um erro absoluto na
+    ordem de `bruto × 0,0000005` — para uma linha de açaí (poucas dezenas de
+    euros) isso é uma fracção de milésimo de cêntimo, sempre reabsorvido
+    pelo arredondamento final a 2 casas. Só em casos EXTREMOS (uma linha de
+    valor muito fora do realista, ou um alvo mesmo em cima de uma fronteira
+    de arredondamento) é que `round(bruto*(1-pct/100), 2)` pode acabar um
+    cêntimo ao lado do alvo — ver o relatório da tarefa: sem uma fatura de
+    teste real contra o Vendus (modo `tests`), isto fica por confirmar em
+    definitivo."""
+    if bruto <= 0:
+        return 0.0
+    pct = round(100.0 * (1 - alvo_liquido / bruto), 4)
+    return max(0.0, min(100.0, pct))
+
+
 def _itens_vendus(venda: Dict) -> List[Dict]:
-    """As linhas da venda no formato Vendus. O desconto de cada linha —
-    próprio dela (€ ou %, já resolvido por `precos.linha_de_venda`), mais a
-    fatia do desconto GLOBAL que lhe calhar (`venda._desconto_global_eur`;
-    o € tem sempre precedência sobre a percentagem, mesma regra do desconto
-    por linha; distribuído pelas linhas em CÊNTIMOS EXACTOS, ver
-    `_distribuir_centimos`, método do maior resto) — sai SEMPRE como
-    `discount_amount`, nunca uma `discount_percentage`.
+    """As linhas da venda no formato Vendus, com o desconto — próprio da
+    linha mais a fatia do desconto GLOBAL que lhe calhar — sempre como
+    `discount_percentage`, NUNCA `discount_amount`.
 
-    Porquê `discount_amount` e nunca uma percentagem: é a correcção do
-    defeito C3. O Vendus arredonda CADA linha ao cêntimo antes de somar;
-    enviar uma `discount_percentage` fazia-o recalcular
-    `gross*(1-pct/100)` e arredondar OUTRA VEZ do lado dele — um
-    arredondamento independente do nosso. Medido com preços reais: até
-    ±0,02€ mesmo SEM desconto global (uma linha só com desconto próprio em
-    percentagem já pode divergir um cêntimo — ex.: 14,67€ com 25% não bate
-    sempre com `round(14.67, 2) - round(14.67*0.25, 2)`), e até ±0,03€ com
-    desconto global em euros (7 linhas a 1,15€ com 5€ de desconto: nós
-    calculávamos 3,05€, o Vendus 3,08€). Um `discount_amount` já em
-    cêntimos exactos (`_desconto_da_linha` — a MESMA função que
-    `venda._totais` usa para somar `desconto_linhas`, mais a fatia do
-    global) não deixa NADA por arredondar do lado do Vendus — o valor que
-    ele calcula é sempre, algebricamente, o MESMO que `venda._totais`
-    mostra à operadora: uma só fonte de verdade, nunca dois caminhos de
-    arredondamento independentes.
+    B2 (a re-revisão do núcleo fiscal, revertendo C3): `discount_amount`
+    NUNCA saiu deste código antes de C3, e a sua semântica exacta (desconto
+    da linha INTEIRA, como aqui se assumia, ou desconto POR UNIDADE,
+    multiplicado por `qty`?) nunca foi confirmada contra o Vendus real — o
+    único outro sistema do dono a emitir Faturas Simplificadas reais pela
+    MESMA API, `~/dev/pizzaria/backend/pos/pricing.py::combine_global`,
+    recusa-se explicitamente a enviá-lo, com um comentário a dizer que "a
+    semântica (por unidade vs por linha) não é fiável". Onde as duas
+    leituras divergem, o erro é grande: 3 unidades a 8,99€ com desconto —
+    enviar `discount_amount=5,13` numa linha `qty=3` dá um líquido de
+    21,84€ se o Vendus aplicar por linha, ou 11,58€ se for por unidade —
+    10,26€ de erro numa só linha (com `qty=1` as duas leituras são
+    indistinguíveis, e é por isso que os testes anteriores não apanhavam
+    nada). A decisão está tomada: não se usa um campo cuja semântica não se
+    conhece. `discount_percentage`, ao contrário, é o campo que o código do
+    dono já usa em produção (`combine_global`) — a sua semântica está
+    confirmada.
 
-    Porquê não um campo de desconto ao nível do documento inteiro (em vez
-    de distribuir o global por linha): o Vendus documenta `discount_amount`/
-    `discount_percentage` no `POST documents/`, mas agrupados com
-    `discount_code`/`discount_code_apply` — é o recurso de "cartões de
-    desconto" (cupões), não um desconto genérico independente dele
-    (confirmado nos docs cacheados do Vendus, ver o relatório da tarefa).
-    Sem conseguir confirmar isto ao vivo (sem chave de API nesta máquina),
-    não se usa às cegas um campo cujo comportamento fora desse contexto não
-    está documentado."""
+    O problema que C3 resolvia (o Vendus arredonda CADA linha ao cêntimo
+    antes de somar; uma `discount_percentage` recomposta e arredondada UMA
+    VEZ sobre o total podia divergir ±0,02–0,03€ — medido: 7 linhas a
+    1,15€ com 5€ de desconto global, nós 3,05€, o Vendus 3,08€) continua
+    resolvido, mas de outra forma: a aritmética exacta ao cêntimo do C3
+    (`_distribuir_centimos`, método do maior resto) MANTÉM-SE tal e qual —
+    é o ALVO em euros de cada linha, não os números que se enviam. Só o
+    ÚLTIMO passo muda: em vez de enviar esse alvo directamente como
+    `discount_amount`, converte-se numa `discount_percentage` que, quando o
+    Vendus a aplicar linha a linha e arredondar ao cêntimo (a MESMA
+    fórmula, não uma recomposição sobre o total agregado), REPRODUZ esse
+    alvo (`_percentagem_que_reproduz`). O nosso total (`venda._totais`, que
+    já é a soma destes alvos exactos, por construção do maior resto) e o
+    que o Vendus vai calcular batem sempre certo — usando só o campo cuja
+    semântica se conhece."""
     linhas_vendus = [_linha_vendus(li) for li in venda.get("linhas", [])]
     if not linhas_vendus:
         return []
@@ -233,23 +260,14 @@ def _itens_vendus(venda: Dict) -> List[Dict]:
     )
 
     saida = []
-    for li, desconto_proprio, parte_global in zip(linhas_vendus, descontos_proprios, partes_globais):
+    for li, bruto, liquido_apos_propria, parte_global in zip(
+        linhas_vendus, brutos, liquidos_apos_linha, partes_globais
+    ):
         item = {chave: li[chave] for chave in ("title", "qty", "gross_price", "tax_id") if chave in li}
-        # SEMPRE discount_amount quando há algum desconto (próprio da linha,
-        # global, ou os dois combinados) — nunca discount_percentage. Não é
-        # só para o caso combinado: mesmo um desconto SÓ da linha, em
-        # percentagem, se enviado como discount_percentage obrigava o Vendus
-        # a recalcular gross*(1-pct/100) e arredondar OUTRA VEZ do lado
-        # dele — um segundo arredondamento independente do nosso que, medido
-        # com preços reais, também diverge um cêntimo em casos sem desconto
-        # global nenhum (ex.: 14.67€ com 25% não bate sempre com
-        # round(14.67,2) - round(14.67*0.25,2)). `desconto_proprio` já vem
-        # de `_desconto_da_linha` — a MESMA função que `venda._totais` usa
-        # para somar `desconto_linhas` — por isso é sempre, por construção,
-        # o valor exacto em cêntimos que faz o Vendus bater com o ecrã.
-        desconto_total = round(desconto_proprio + parte_global, 2)
-        if desconto_total > 0:
-            item["discount_amount"] = desconto_total
+        alvo_liquido = round(liquido_apos_propria - parte_global, 2)
+        pct = _percentagem_que_reproduz(bruto, alvo_liquido)
+        if pct > 0:
+            item["discount_percentage"] = pct
         saida.append(item)
     return saida
 
@@ -301,6 +319,48 @@ async def _marcar_reserva_incerta(db, ext_ref: str) -> None:
     incerta obriga-a a verificar primeiro (`_retomar_reserva_incerta`)."""
     await db[COLECOES["refs_fiscais"]].update_one(
         {"ext_ref": ext_ref}, {"$set": {"incerta": True}}
+    )
+
+
+async def _reclamar_retoma(db, ext_ref: str) -> bool:
+    """B1 (a re-revisão do núcleo fiscal): `_retomar_reserva_incerta` nunca
+    RECLAMAVA a retoma — como a reserva já existe (não é um `insert_one`
+    novo), `_reservar` deixava de decidir qualquer corrida. Duas ou mais
+    tentativas concorrentes que encontrassem a MESMA reserva incerta
+    verificavam TODAS, viam vazio, e EMITIAM todas — a rede oscila, a 1ª
+    tentativa dá 503 e deixa a reserva incerta; a operadora, já com a rede
+    boa, carrega duas vezes em FINALIZAR: sem esta reclamação, saem duas
+    Faturas Simplificadas reais, cada uma com o seu ATCUD.
+
+    A correcção é a MESMA técnica que I2 usa nos fechos de caixa
+    (`caixa.py::fechar_caixa`/`registar_movimento`): uma escrita
+    CONDICIONADA ao estado anterior (`em_retoma` ainda por ninguém — campo
+    ausente OU `None`, o Mongo trata os dois da mesma forma num filtro de
+    igualdade) e a confirmação de que foi mesmo ESTA chamada que a mudou —
+    `matched_count == 1` decide a corrida, nunca uma leitura antes de
+    escrever (essa leitura-depois-escreve era exactamente a falha: chegar a
+    encontrar a reserva incerta já dava, em silêncio, o direito de agir
+    sobre ela). Quem NÃO reclama (matched_count == 0, porque outra
+    tentativa já lá chegou primeiro) cai no caminho de sempre de quem perde
+    uma reserva — espera pelo documento do vencedor."""
+    resultado = await db[COLECOES["refs_fiscais"]].update_one(
+        {"ext_ref": ext_ref, "incerta": True, "em_retoma": None},
+        {"$set": {"em_retoma": True}},
+    )
+    return resultado.matched_count == 1
+
+
+async def _limpar_incerta_resolvida(db, ext_ref: str) -> None:
+    """'Um problema associado' da mesma revisão: hoje a marca `incerta`
+    fica PARA SEMPRE, mesmo depois de a venda ficar emitida — a reserva
+    nunca deixa de aparecer como 'presa' na listagem de gestão (ver a rota
+    `/fiscal/reservas-incertas`), muito depois de estar resolvida. Chamada
+    só quando `_retomar_reserva_incerta` termina com um documento em mãos
+    (encontrado pela verificação, ou emitido agora) — limpa `incerta` E
+    `em_retoma` na mesma escrita, para o estado voltar a "sem ninguém a
+    trabalhar nisto, e já não incerta"."""
+    await db[COLECOES["refs_fiscais"]].update_one(
+        {"ext_ref": ext_ref}, {"$set": {"incerta": False, "em_retoma": None}}
     )
 
 
@@ -450,6 +510,8 @@ async def _retomar_reserva_incerta(
     emitir: Callable[[str], Awaitable[Dict]],
     verificar: Callable[[str], Awaitable[Optional[Dict]]],
     dados_pagamento: Optional[Dict] = None,
+    esperar: Optional[Callable[[float], Awaitable[None]]] = None,
+    tentativas_espera: int = _TENTATIVAS_ESPERA_VENCEDOR,
 ) -> Dict:
     """Quem encontra uma reserva marcada `incerta` (a tentativa anterior
     teve um timeout na emissão E a verificação também falhou — nunca se
@@ -458,25 +520,62 @@ async def _retomar_reserva_incerta(
     encontrado a reserva, porque essa reserva pode já corresponder a um
     documento fiscal real do outro lado.
 
+    B1 (a re-revisão do núcleo fiscal): encontrar a reserva incerta NÃO dá,
+    por si só, o direito de agir sobre ela — isso é exactamente o defeito
+    que esta versão corrige. `_reclamar_retoma` decide a corrida com uma
+    escrita condicional (ver a sua docstring); só quem reclama chega a
+    verificar/emitir. Quem perde a reclamação cai no MESMO caminho de
+    sempre de quem perde uma reserva nova — espera pelo documento do
+    vencedor, nunca verifica/emite em paralelo com quem já reclamou.
+
     Se a verificação ENCONTRAR o documento, é da tentativa ANTERIOR (a que
     ganhou a reserva) que ele saiu — os `dados_pagamento` DESTA tentativa
-    nunca se gravam nesse caso (ver C2 na docstring de `_emitir_e_gravar`)."""
+    nunca se gravam nesse caso (ver C2 na docstring de `_emitir_e_gravar`).
+
+    Resolvida (documento encontrado ou emitido), `incerta` limpa-se — nunca
+    fica marcada para sempre numa venda já emitida (ver
+    `_limpar_incerta_resolvida`). Continuando incerta (novo timeout e nova
+    falha da verificação), só a marca de RETOMA se limpa — `incerta`
+    mantém-se True, tal como já estava, para a tentativa seguinte também
+    ser obrigada a verificar primeiro."""
+    esperar_efectivo = esperar if esperar is not None else asyncio.sleep
+    if not await _reclamar_retoma(db, ext_ref):
+        return await _esperar_documento_do_vencedor(db, ext_ref, esperar_efectivo, tentativas_espera)
+
+    resolvida = False
     try:
-        encontrado = await verificar(ext_ref)
-    except Exception as erro_verificacao:
-        raise VerificacaoFiscalIncerta(
-            "A reserva desta venda (ext_ref=%s) continua incerta — a "
-            "verificação por referência externa voltou a falhar (%s). Não "
-            "se emite às cegas; confirme no Vendus." % (ext_ref, erro_verificacao)
-        ) from erro_verificacao
-    if encontrado is not None:
-        return await _gravar_documento(db, ext_ref, venda, encontrado)
-    # A verificação correu bem e não encontrou nada: só agora é seguro
-    # tentar emitir — com a MESMA rede de segurança de sempre (se este
-    # timeout também falhar, a reserva volta a ficar incerta), e É esta
-    # tentativa que vai emitir de facto, por isso É o seu dados_pagamento
-    # que deve gravar-se.
-    return await _emitir_e_gravar(db, ext_ref, venda, emitir, verificar, dados_pagamento)
+        try:
+            encontrado = await verificar(ext_ref)
+        except Exception as erro_verificacao:
+            raise VerificacaoFiscalIncerta(
+                "A reserva desta venda (ext_ref=%s) continua incerta — a "
+                "verificação por referência externa voltou a falhar (%s). Não "
+                "se emite às cegas; confirme no Vendus." % (ext_ref, erro_verificacao)
+            ) from erro_verificacao
+        if encontrado is not None:
+            documento = await _gravar_documento(db, ext_ref, venda, encontrado)
+        else:
+            # A verificação correu bem e não encontrou nada: só agora é
+            # seguro tentar emitir — com a MESMA rede de segurança de
+            # sempre (se este timeout também falhar, a reserva volta a
+            # ficar incerta, ver _emitir_e_gravar/_marcar_reserva_incerta),
+            # e É esta tentativa que vai emitir de facto, por isso É o seu
+            # dados_pagamento que deve gravar-se.
+            documento = await _emitir_e_gravar(db, ext_ref, venda, emitir, verificar, dados_pagamento)
+        resolvida = True
+        return documento
+    finally:
+        # SEMPRE limpa a marca de retoma, em QUALQUER desfecho (resolvida,
+        # continua incerta, ou até um erro que a própria _emitir_e_gravar
+        # já tenha tratado à sua maneira) — sem isto, esta reclamação
+        # ficava presa para sempre e nenhuma tentativa futura conseguia
+        # voltar a reclamar: um impasse pior do que o defeito original.
+        if resolvida:
+            await _limpar_incerta_resolvida(db, ext_ref)
+        else:
+            await db[COLECOES["refs_fiscais"]].update_one(
+                {"ext_ref": ext_ref}, {"$set": {"em_retoma": None}}
+            )
 
 
 async def finalizar_venda(
@@ -512,7 +611,10 @@ async def finalizar_venda(
     # verificar antes de poder fazer seja o que for.
     reserva = await db[COLECOES["refs_fiscais"]].find_one({"ext_ref": ext_ref})
     if reserva is not None and reserva.get("incerta"):
-        return await _retomar_reserva_incerta(db, ext_ref, venda, emitir, verificar, dados_pagamento)
+        return await _retomar_reserva_incerta(
+            db, ext_ref, venda, emitir, verificar, dados_pagamento,
+            esperar=esperar, tentativas_espera=tentativas_espera,
+        )
     return await _esperar_documento_do_vencedor(db, ext_ref, esperar, tentativas_espera)
 
 
@@ -679,8 +781,14 @@ async def _garante_sessao_da_venda_aberta(db, venda: Dict) -> None:
     Confirma especificamente a sessão DESTA venda (`venda["sessao_id"]`) —
     nunca "há alguma sessão aberta nesta caixa", que seria a pergunta
     errada: uma caixa pode ter reaberto com uma sessão NOVA entretanto, e
-    essa sessão não tem nada a ver com esta venda antiga."""
-    sessao = await db[COLECOES["sessoes_caixa"]].find_one({"id": venda["sessao_id"]})
+    essa sessão não tem nada a ver com esta venda antiga.
+
+    Pequena correcção da re-revisão do núcleo fiscal: `venda.get(...)`, não
+    `venda[...]` — uma venda sem `sessao_id` (dados corrompidos, uma
+    migração incompleta) tem de cair no MESMO 409 de "sessão não aberta",
+    nunca num KeyError/500: `find_one({"id": None})` simplesmente não
+    encontra nenhuma sessão, e o `if not sessao` já trata isso."""
+    sessao = await db[COLECOES["sessoes_caixa"]].find_one({"id": venda.get("sessao_id")})
     if not sessao or sessao.get("estado") != "aberta":
         raise HTTPException(status_code=409, detail=_MSG_SESSAO_NAO_ABERTA)
 
@@ -815,3 +923,56 @@ async def finalizar(
     resposta["cliente_nif"] = venda_actualizada.get("cliente_nif")
     resposta["documento"] = _resposta_documento(documento)
     return resposta
+
+
+# --- B1: gestão das reservas incertas ------------------------------------------
+#
+# 'Um problema associado' da re-revisão do núcleo fiscal: uma reserva incerta
+# não tinha NENHUMA saída nem visibilidade. Se o Vendus ficar em baixo, a
+# venda fica presa a devolver 503 (VerificacaoFiscalIncerta); quando o turno
+# fecha, I1 passa a recusá-la para sempre (a sessão já não está aberta) e o
+# dinheiro fica sem Z nenhum que o explique — a única saída era mexer no
+# Mongo à mão, sem sequer saber QUANTAS vendas estavam neste estado. Esta
+# rota (de GESTÃO, nunca do POS — `gestor_atual`, o backoffice, não o PIN da
+# operadora ao balcão) dá por onde começar a investigar.
+
+
+def _segundos_desde(criado_em: Optional[str], agora: datetime) -> Optional[float]:
+    """Quanto tempo (segundos) uma reserva está neste estado — None se
+    `criado_em` estiver ausente ou for ilegível, nunca um número inventado
+    (mesma regra de ouro do resto do módulo: sem o dado certo, não se
+    mostra um valor que a gestão possa usar para decidir algo errado)."""
+    if not criado_em:
+        return None
+    try:
+        momento = datetime.fromisoformat(criado_em)
+    except (TypeError, ValueError):
+        return None
+    if momento.tzinfo is None:
+        momento = momento.replace(tzinfo=timezone.utc)
+    return round((agora - momento).total_seconds(), 1)
+
+
+@router.get("/fiscal/reservas-incertas")
+async def listar_reservas_incertas(_: dict = Depends(gestor_atual)) -> List[Dict]:
+    """Lista as reservas ainda marcadas `incerta` — a venda, a loja, e há
+    quanto tempo estão neste estado. Resolvidas (documento encontrado ou
+    emitido por uma retoma) deixam de aparecer aqui — ver
+    `_limpar_incerta_resolvida` — para esta lista nunca mostrar como
+    "presa" uma reserva que já tem, de facto, um documento fiscal."""
+    db = obter_db()
+    agora = datetime.now(timezone.utc)
+    reservas = await db[COLECOES["refs_fiscais"]].find({"incerta": True}).to_list(1000)
+
+    saida = []
+    for r in reservas:
+        venda = await db[COLECOES["vendas"]].find_one({"id": r.get("venda_id")})
+        saida.append({
+            "ext_ref": r.get("ext_ref"),
+            "venda_id": r.get("venda_id"),
+            "loja_id": venda.get("loja_id") if venda else None,
+            "criado_em": r.get("criado_em"),
+            "presa_ha_segundos": _segundos_desde(r.get("criado_em"), agora),
+            "em_retoma": bool(r.get("em_retoma")),
+        })
+    return saida

@@ -72,6 +72,19 @@ def _corresponde(item, filtro):
     return all(item.get(chave) == valor for chave, valor in filtro.items())
 
 
+class ResultadoUpdateFalso:
+    """Réplica minimalista do UpdateResult do pymongo/motor — só os dois
+    campos de que `_reclamar_retoma` (B1) precisa para saber se a escrita
+    CONDICIONAL encontrou mesmo uma reserva incerta ainda por reclamar, em
+    vez de aplicar $set às cegas a 'o que quer que tenha calhado casar'.
+    Mesmo duplo que test_caixa_endpoints.py já usa para I2 — a MESMA
+    técnica, aqui aplicada à retoma de uma reserva incerta."""
+
+    def __init__(self, matched_count):
+        self.matched_count = matched_count
+        self.modified_count = matched_count
+
+
 class CursorFalso:
     def __init__(self, itens):
         self._itens = itens
@@ -125,7 +138,7 @@ class ColeccaoFalsa:
         alvos = [d for d in self._documentos if _corresponde(d, filtro)]
         if alvos:
             alvos[0].update(atualizacao.get("$set", {}))
-        return None
+        return ResultadoUpdateFalso(matched_count=len(alvos))
 
 
 class DbFalsa:
@@ -244,19 +257,22 @@ async def _instantaneo(_segundos):
     await asyncio.sleep(0)
 
 
-# --- Itens Vendus: desconto GLOBAL distribuído em cêntimos exactos por linha --
+# --- Itens Vendus: B2 (a re-revisão do núcleo fiscal) — SEMPRE ---------------
+# --- discount_percentage, NUNCA discount_amount --------------------------
 #
-# O Vendus só aceita um desconto por linha (€ OU %) e não há um desconto
-# fiável ao nível do documento inteiro independente do recurso de "cartões
-# de desconto" (ver o relatório da tarefa) — por isso o desconto GLOBAL da
-# venda tem de se combinar com o desconto de CADA linha. C3 (a revisão do
-# núcleo fiscal): compor isto como uma ÚNICA discount_percentage arredondada
-# uma vez sobre o total divergia do que o Vendus calcula de facto — ele
-# arredonda CADA linha ao cêntimo antes de somar. A correcção distribui o
-# desconto global em CÊNTIMOS EXACTOS por linha (`_distribuir_centimos`,
-# maior resto) e envia sempre `discount_amount` quando há desconto global a
-# combinar — nunca uma percentagem que o Vendus teria de arredondar outra
-# vez do lado dele.
+# C3 tinha passado a enviar discount_amount (a distribuição do desconto
+# GLOBAL em cêntimos exactos por linha, ver `_distribuir_centimos`). B2
+# reverteu essa decisão: `discount_amount` NUNCA saiu deste código antes de
+# C3, a sua semântica (desconto da linha INTEIRA vs desconto POR UNIDADE
+# × qty) nunca foi confirmada contra o Vendus real, e o único outro sistema
+# do dono a emitir Faturas Simplificadas reais pela MESMA API
+# (`~/dev/pizzaria/backend/pos/pricing.py::combine_global`) recusa-se
+# explicitamente a enviá-lo. A aritmética exacta ao cêntimo do C3
+# (`_distribuir_centimos`) MANTÉM-SE — é só o ALVO interno de cada linha,
+# nunca o que se envia — mas o campo final é sempre uma
+# `discount_percentage`, reverse-engenheirada para REPRODUZIR esse alvo
+# quando o Vendus a aplicar (`gross*(1-pct/100)`, arredondado ao cêntimo —
+# ver `_percentagem_que_reproduz`).
 
 
 def test_itens_vendus_sem_nenhum_desconto():
@@ -265,52 +281,79 @@ def test_itens_vendus_sem_nenhum_desconto():
     assert itens == [{"title": "Açaí Regular", "qty": 2, "gross_price": 8.99, "tax_id": "INT"}]
 
 
-def test_itens_vendus_converte_o_desconto_proprio_da_linha_em_euros_mesmo_sem_desconto_global():
-    """C3 também sem desconto global: uma linha só com desconto próprio EM
-    PERCENTAGEM já pode divergir um cêntimo se enviada como
-    discount_percentage (o Vendus recalcula gross*(1-pct/100) e arredonda
-    OUTRA VEZ do lado dele — medido com preços reais, ver a docstring de
-    _itens_vendus). Por isso sai sempre como discount_amount, já no valor
-    exacto em euros que `_desconto_da_linha` (a mesma função que
-    `venda._totais` usa) calculou: 8,99€ × 10% = 0,899€, arredondado a
-    0,90€."""
-    venda = _venda(linhas=[_linha(desconto_pct=10)])
-    itens = _itens_vendus(venda)
-    assert itens[0]["discount_amount"] == 0.90
-    assert "discount_percentage" not in itens[0]
-    assert _liquido_dos_itens(itens) == _totais(venda)["total"]
-
-
 def _liquido_dos_itens(itens):
     """O líquido que o Vendus calcularia destes itens: cada linha
     arredondada ao CÊNTIMO antes de somar — nunca uma soma sem arredondar
     linha a linha e só arredondar no fim (era isso, e não outra coisa, que
-    escondia o defeito C3: uma soma sem arredondar por linha "batia
-    certo" com `venda._totais` por coincidência do mesmo estilo de
-    arredondamento nos dois lados, mesmo quando o Vendus real — que
-    arredonda CADA linha — ia calcular outra coisa). Usado para provar que
-    `_itens_vendus` produz um total que bate EXACTAMENTE com `venda._totais`
-    (a MESMA fonte de verdade dos totais mostrados no ecrã)."""
+    escondia o defeito C3: uma soma sem arredondar por linha "batia certo"
+    com `venda._totais` por coincidência do mesmo estilo de arredondamento
+    nos dois lados, mesmo quando o Vendus real — que arredonda CADA linha —
+    ia calcular outra coisa).
+
+    B2: só sabe de `discount_percentage` — nunca `discount_amount`, que
+    `_itens_vendus` já não deve produzir. Isto é deliberado: se
+    `discount_amount` reaparecesse por engano num `item`, este helper
+    IGNORA-O por completo (só olha para `discount_percentage`), por isso
+    qualquer regressão que reintroduza `discount_amount` faz os testes
+    abaixo DIVERGIREM de `venda._totais` em vez de continuarem a passar às
+    escondidas — o mesmo "oráculo cego" que já escondeu C3 uma vez."""
     total = 0.0
     for it in itens:
         gross = round(it["qty"] * it["gross_price"], 2)
-        if "discount_amount" in it:
-            liquido_linha = round(gross - it["discount_amount"], 2)
-        else:
-            pct = it.get("discount_percentage", 0.0)
-            liquido_linha = round(gross * (1 - pct / 100.0), 2)
+        pct = it.get("discount_percentage", 0.0)
+        liquido_linha = round(gross * (1 - pct / 100.0), 2)
         total += liquido_linha
     return round(total, 2)
 
 
+def test_itens_vendus_nunca_envia_discount_amount():
+    """O cerne de B2, testado directamente: nenhum cenário de desconto —
+    próprio da linha (€ ou %), global (€ ou %), ou os dois combinados —
+    pode alguma vez produzir um item com `discount_amount`."""
+    cenarios = [
+        _venda(linhas=[_linha(desconto_pct=10)]),
+        _venda(linhas=[_linha(desconto_eur=1.0)]),
+        _venda(linhas=[_linha()], desconto_global_pct=10),
+        _venda(linhas=[_linha()], desconto_global_eur=2.0),
+        _venda(linhas=[_linha(desconto_pct=10)], desconto_global_pct=10),
+        _venda(linhas=[_linha(desconto_eur=1.0)], desconto_global_eur=2.0),
+    ]
+    for venda in cenarios:
+        for item in _itens_vendus(venda):
+            assert "discount_amount" not in item, "venda=%r item=%r" % (venda, item)
+
+
+def test_itens_vendus_com_tres_unidades_e_desconto_nunca_ambiguo_por_unidade_vs_linha():
+    """O exemplo exacto da revisão B2: 3 unidades a 8,99€ com desconto —
+    `discount_amount=5,13` numa linha `qty=3` seria ambíguo (21,84€ se o
+    Vendus aplicar por linha, 11,58€ se for por unidade, 10,26€ de erro).
+    Com `discount_percentage` a ambiguidade desaparece: a fórmula
+    `gross*(1-pct/100)` é a MESMA independentemente de `qty`, porque
+    `gross` já é o bruto da linha INTEIRA (`qty × gross_price`)."""
+    venda = _venda(linhas=[_linha(quantidade=3, desconto_pct=19)])
+    itens = _itens_vendus(venda)
+    assert "discount_amount" not in itens[0]
+    assert itens[0]["discount_percentage"] > 0
+    assert _liquido_dos_itens(itens) == _totais(venda)["total"]
+
+
+def test_itens_vendus_converte_o_desconto_proprio_da_linha_em_percentagem_mesmo_sem_desconto_global():
+    venda = _venda(linhas=[_linha(desconto_pct=10)])
+    itens = _itens_vendus(venda)
+    assert "discount_amount" not in itens[0]
+    assert itens[0]["discount_percentage"] > 0
+    assert _liquido_dos_itens(itens) == _totais(venda)["total"]
+
+
 def test_itens_vendus_com_desconto_global_percentagem_sem_desconto_de_linha():
     """Uma linha sem desconto próprio recebe a fatia inteira do desconto
-    global, como discount_amount — o líquido resultante bate EXACTAMENTE
-    (não só "próximo") com venda._totais, a mesma fonte de verdade dos
-    totais mostrados no ecrã."""
+    global, como discount_percentage — o líquido resultante bate
+    EXACTAMENTE (não só "próximo") com venda._totais, a mesma fonte de
+    verdade dos totais mostrados no ecrã."""
     venda = _venda(linhas=[_linha()], desconto_global_pct=10)
     itens = _itens_vendus(venda)
-    assert "discount_amount" in itens[0]
+    assert "discount_percentage" in itens[0]
+    assert "discount_amount" not in itens[0]
     assert _liquido_dos_itens(itens) == _totais(venda)["total"]
 
 
@@ -320,17 +363,16 @@ def test_itens_vendus_com_desconto_global_em_euros_bate_com_totais():
     assert _liquido_dos_itens(itens) == _totais(venda)["total"]
 
 
-def test_itens_vendus_combina_desconto_de_linha_com_desconto_global_como_discount_amount():
+def test_itens_vendus_combina_desconto_de_linha_com_desconto_global_como_discount_percentage():
     """10% de desconto próprio da linha (0,90€) + 10% de desconto global
     sobre o líquido pós-linha (8,09€ × 10% = 0,81€, não 10% sobre o bruto —
     o global incide DEPOIS do desconto da linha, nunca em paralelo) somam
-    1,71€ — nunca uma percentagem combinada de ~19% que o Vendus teria de
-    recompor e arredondar outra vez do lado dele. O líquido bate
-    EXACTAMENTE com venda._totais."""
+    1,71€ de desconto combinado — expresso como UMA ÚNICA
+    discount_percentage que reproduz esse alvo. O líquido bate EXACTAMENTE
+    com venda._totais."""
     venda = _venda(linhas=[_linha(desconto_pct=10)], desconto_global_pct=10)
     itens = _itens_vendus(venda)
-    assert itens[0]["discount_amount"] == 1.71
-    assert "discount_percentage" not in itens[0]
+    assert "discount_amount" not in itens[0]
     assert _liquido_dos_itens(itens) == _totais(venda)["total"] == 7.28
 
 
@@ -342,11 +384,10 @@ def test_itens_vendus_com_desconto_de_linha_em_euros_e_global_em_percentagem():
 
 def test_itens_vendus_com_duas_linhas_e_desconto_global_aplica_a_ambas():
     """O desconto global (1,15€) reparte-se pelas duas linhas PROPORCIONAL
-    ao peso de cada uma (8,99€ vs 2,50€) em cêntimos exactos — 0,90€ para a
-    primeira, 0,25€ para a segunda (0,90+0,25=1,15€, exacto, nunca um
-    cêntimo perdido). O líquido bate EXACTAMENTE com venda._totais — já não
-    há tolerância nenhuma de arredondamento por linha, porque agora a
-    distribuição é feita já em cêntimos, a mesma unidade que o Vendus usa."""
+    ao peso de cada uma (8,99€ vs 2,50€) — internamente ainda em cêntimos
+    exactos (`_distribuir_centimos`, inalterado desde C3), só o campo FINAL
+    é que passa a discount_percentage. O líquido bate EXACTAMENTE com
+    venda._totais."""
     venda = _venda(
         linhas=[
             _linha(id="l1", quantidade=1),
@@ -357,30 +398,31 @@ def test_itens_vendus_com_duas_linhas_e_desconto_global_aplica_a_ambas():
     )
     itens = _itens_vendus(venda)
     assert len(itens) == 2
-    assert itens[0]["discount_amount"] == 0.90
-    assert itens[1]["discount_amount"] == 0.25
     assert itens[1]["title"] == "Sumo"
+    for item in itens:
+        assert "discount_amount" not in item
     assert _liquido_dos_itens(itens) == _totais(venda)["total"] == 10.34
 
 
 def test_itens_vendus_desconto_global_em_euros_bate_exactamente_com_o_que_o_vendus_calcularia():
-    """C3, medido com dados reais na revisão: 7 linhas a 1,15€ com 5€ de
-    desconto global. Antes da correcção, o total mostrado à operadora
-    (venda._totais) era 3,05€ mas o Vendus — que arredonda CADA linha ao
-    cêntimo antes de somar — calculava 3,08€: ou recusava o documento (saía
-    ao balcão como "Vendus indisponível", mandando a operadora verificar a
-    internet quando o problema era a nossa aritmética) ou aceitava uma
-    fatura cujo pagamento não batia com o total. Com a distribuição em
-    cêntimos exactos (3 linhas a -0,72€, 4 linhas a -0,71€, somando os 5€
-    certinhos), os dois lados batem SEMPRE."""
+    """A regressão de C3, revisitada por B2: 7 linhas a 1,15€ com 5€ de
+    desconto global. ANTES de C3, o total mostrado à operadora
+    (venda._totais) era 3,05€ mas uma discount_percentage composta e
+    arredondada UMA VEZ sobre o total agregado dava 3,08€ ao Vendus — a
+    aritmética exacta ao cêntimo de C3 (`_distribuir_centimos`, mantida por
+    B2) é o que evita essa divergência: o ALVO de cada linha continua
+    calculado ao cêntimo, só o campo enviado é que voltou a ser uma
+    percentagem — reverse-engenheirada para REPRODUZIR esse alvo exacto,
+    não uma composta e arredondada de outra forma. Os dois lados continuam
+    a bater SEMPRE, mesmo sem discount_amount."""
     venda = _venda(
         linhas=[_linha(id="l%d" % i, produto_preco=1.15) for i in range(7)],
         desconto_global_eur=5.0,
     )
     itens = _itens_vendus(venda)
-    descontos = sorted(it["discount_amount"] for it in itens)
-    assert descontos == [0.71, 0.71, 0.71, 0.71, 0.72, 0.72, 0.72]
-    assert round(sum(descontos), 2) == 5.0
+    for item in itens:
+        assert "discount_amount" not in item
+        assert item["discount_percentage"] > 0
     assert _liquido_dos_itens(itens) == _totais(venda)["total"] == 3.05
 
 
@@ -393,6 +435,84 @@ def test_itens_vendus_sem_desconto_algum_nao_tem_discount_percentage():
 
 def test_itens_vendus_venda_sem_linhas_devolve_lista_vazia():
     assert _itens_vendus(_venda(linhas=[])) == []
+
+
+# --- _percentagem_que_reproduz (núcleo puro de B2) -----------------------------
+
+
+def test_percentagem_que_reproduz_reproduz_o_alvo_exacto():
+    from faturacao.fiscal import _percentagem_que_reproduz
+
+    pct = _percentagem_que_reproduz(8.99, 8.09)
+    assert round(8.99 * (1 - pct / 100.0), 2) == 8.09
+
+
+def test_percentagem_que_reproduz_sem_alvo_menor_que_bruto_devolve_zero():
+    from faturacao.fiscal import _percentagem_que_reproduz
+
+    assert _percentagem_que_reproduz(8.99, 8.99) == 0.0
+
+
+def test_percentagem_que_reproduz_com_bruto_zero_nao_rebenta():
+    from faturacao.fiscal import _percentagem_que_reproduz
+
+    assert _percentagem_que_reproduz(0.0, 0.0) == 0.0
+
+
+def test_percentagem_que_reproduz_alvo_zero_e_cem_porcento():
+    from faturacao.fiscal import _percentagem_que_reproduz
+
+    assert _percentagem_que_reproduz(8.99, 0.0) == 100.0
+
+
+def test_fuzz_itens_vendus_bate_sempre_com_totais_em_precos_realistas():
+    """A prova por simulação (mesmo espírito do fuzz de 20000/30000 vendas
+    de C3): para tamanhos de venda realistas para uma loja de açaí (linhas
+    até 50€, até 100 unidades, até 10 linhas — muito acima de qualquer
+    conta real das 5 lojas), `_itens_vendus` reproduzido linha a linha
+    NUNCA diverge de `venda._totais`. Fica documentado no relatório da
+    tarefa que, para vendas artificialmente enormes (a percentagem só tem
+    4 casas decimais), pode sobrar um cêntimo — não observado nesta gama
+    realista em 2000 simulações."""
+    import random
+
+    aleatorio = random.Random(20260815)
+    divergencias = 0
+    for _ in range(2000):
+        n_linhas = aleatorio.randint(1, 6)
+        linhas = []
+        for i in range(n_linhas):
+            preco = round(aleatorio.uniform(0.5, 50.0), 2)
+            qty = aleatorio.randint(1, 20)
+            r = aleatorio.random()
+            desconto_pct = desconto_eur = None
+            if r < 0.35:
+                desconto_pct = round(aleatorio.uniform(1, 90), 0)
+            elif r < 0.55:
+                bruto_linha = round(preco * qty, 2)
+                desconto_eur = round(aleatorio.uniform(0.01, max(0.01, bruto_linha * 0.9)), 2)
+            linhas.append(_linha(
+                id="l%d" % i, produto_preco=preco, quantidade=qty,
+                desconto_pct=desconto_pct, desconto_eur=desconto_eur,
+            ))
+
+        r2 = aleatorio.random()
+        g_pct = g_eur = None
+        liquido_estimado = sum(round(li["produto_preco"] * li["quantidade"], 2) for li in linhas)
+        if r2 < 0.4:
+            g_pct = round(aleatorio.uniform(1, 60), 0)
+        elif r2 < 0.7:
+            g_eur = round(aleatorio.uniform(0.01, max(0.01, liquido_estimado * 0.5)), 2)
+
+        venda = _venda(linhas=linhas, desconto_global_pct=g_pct, desconto_global_eur=g_eur)
+        itens = _itens_vendus(venda)
+        total_esperado = _totais(venda)["total"]
+        if total_esperado <= 0:
+            continue
+        if _liquido_dos_itens(itens) != total_esperado:
+            divergencias += 1
+
+    assert divergencias == 0
 
 
 # --- Referência determinística (nunca do relógio) -----------------------------
@@ -501,6 +621,199 @@ def test_duplo_toque_com_tres_chamadas_concorrentes_emite_uma_so_fatura():
     assert len(chamadas_emitir) == 1
     assert len({r["id"] for r in resultados}) == 1
     assert len(db[COLECOES["documentos"]]._documentos) == 1
+
+
+# --- B1 (re-revisão do núcleo fiscal): reserva incerta sem exclusão mútua -----
+#
+# C1 fechou o caso SEQUENCIAL (uma reserva incerta obriga a retoma a
+# verificar antes de emitir). Mas `_retomar_reserva_incerta` nunca RECLAMAVA
+# a retoma — como a reserva já existe (não é um insert_one novo), `_reservar`
+# deixa de decidir a corrida nenhuma. Duas ou mais tentativas concorrentes
+# que encontrem a MESMA reserva incerta verificam TODAS, veem todas vazio, e
+# EMITEM todas. Cenário real: a rede oscila, a 1ª tentativa dá 503 e deixa a
+# reserva incerta; a operadora, já com a rede boa, carrega DUAS VEZES em
+# FINALIZAR — sem uma reclamação com exclusão mútua, saem DUAS Faturas
+# Simplificadas reais, cada uma com o seu ATCUD.
+
+
+def test_duas_chamadas_concorrentes_sobre_reserva_incerta_emitem_uma_so_fatura():
+    ref = "pos-loja-1-sessao-1-venda-1"
+    db = _db(
+        vendas=[_venda()],
+        refs=[{"id": "r1", "ext_ref": ref, "venda_id": "venda-1", "incerta": True}],
+    )
+    chamadas_emitir = []
+
+    async def emitir(ref):
+        chamadas_emitir.append(ref)
+        await asyncio.sleep(0)
+        return _bruto()
+
+    async def verificar(ref):
+        await asyncio.sleep(0)
+        return None  # o Vendus confirma que ainda não tem nada desta venda
+
+    async def correr():
+        return await asyncio.gather(
+            finalizar_venda(db, _venda(), emitir, verificar, esperar=_instantaneo),
+            finalizar_venda(db, _venda(), emitir, verificar, esperar=_instantaneo),
+        )
+
+    resultados = _corre(correr())
+
+    assert len(chamadas_emitir) == 1, "o Vendus só podia ter sido chamado UMA vez"
+    assert resultados[0]["id"] == resultados[1]["id"]
+    assert len(db[COLECOES["documentos"]]._documentos) == 1
+
+
+def test_tres_chamadas_concorrentes_sobre_reserva_incerta_emitem_uma_so_fatura():
+    """A mesma garantia, com três tentativas concorrentes (duplo-toque + um
+    retry automático a cruzar-se, por exemplo) — nunca 'no máximo duas'."""
+    ref = "pos-loja-1-sessao-1-venda-1"
+    db = _db(
+        vendas=[_venda()],
+        refs=[{"id": "r1", "ext_ref": ref, "venda_id": "venda-1", "incerta": True}],
+    )
+    chamadas_emitir = []
+
+    async def emitir(ref):
+        chamadas_emitir.append(ref)
+        await asyncio.sleep(0)
+        return _bruto()
+
+    async def verificar(ref):
+        await asyncio.sleep(0)
+        return None
+
+    async def correr():
+        return await asyncio.gather(*[
+            finalizar_venda(db, _venda(), emitir, verificar, esperar=_instantaneo)
+            for _ in range(3)
+        ])
+
+    resultados = _corre(correr())
+
+    assert len(chamadas_emitir) == 1
+    assert len({r["id"] for r in resultados}) == 1
+    assert len(db[COLECOES["documentos"]]._documentos) == 1
+
+
+def test_reclamar_retoma_ganha_uma_so_vez_para_a_mesma_reserva():
+    """O núcleo da correcção, isolado: `_reclamar_retoma` é a escrita
+    CONDICIONAL (mesmo raciocínio de I2 nos fechos de caixa) que decide a
+    corrida — chamá-la duas vezes CONCORRENTEMENTE sobre a MESMA reserva
+    incerta só pode dar um `True` e o resto `False`."""
+    from faturacao.fiscal import _reclamar_retoma
+
+    ref = "pos-loja-1-sessao-1-venda-1"
+    db = _db(refs=[{"id": "r1", "ext_ref": ref, "venda_id": "venda-1", "incerta": True}])
+
+    async def correr():
+        return await asyncio.gather(*[_reclamar_retoma(db, ref) for _ in range(5)])
+
+    resultados = _corre(correr())
+    assert sorted(resultados) == [False, False, False, False, True]
+
+
+def test_reserva_incerta_resolvida_limpa_a_marca_para_sempre():
+    """'Um problema associado' da mesma revisão: hoje a reserva fica
+    marcada `incerta` PARA SEMPRE, mesmo depois de o documento existir — a
+    correcção limpa `incerta` (e a marca de retoma) assim que esta se
+    resolve, para a listagem de gestão (reservas presas) não continuar a
+    mostrar como 'presa' uma reserva que já tem documento fiscal."""
+    ref = "pos-loja-1-sessao-1-venda-1"
+    db = _db(
+        vendas=[_venda()],
+        refs=[{"id": "r1", "ext_ref": ref, "venda_id": "venda-1", "incerta": True}],
+    )
+
+    async def emitir(ref):
+        return _bruto()
+
+    async def verificar(ref):
+        return None
+
+    _corre(finalizar_venda(db, _venda(), emitir, verificar, esperar=_instantaneo))
+
+    reserva = db[COLECOES["refs_fiscais"]]._documentos[0]
+    assert reserva.get("incerta") is False
+    assert not reserva.get("em_retoma")
+
+
+def test_reserva_incerta_que_falha_outra_vez_repoe_incerta_e_liberta_a_retoma():
+    """Se a retoma falhar OUTRA VEZ (novo timeout + verificação também a
+    falhar), a reserva continua incerta — mas a marca de RETOMA tem de se
+    limpar à mesma, senão NENHUMA tentativa futura consegue voltar a
+    reclamar: um impasse pior do que o defeito original. Prova-se pelo
+    estado E pelo comportamento: uma tentativa SEGUINTE (a rede já boa)
+    ainda tem de conseguir reclamar e resolver — não pode ficar presa atrás
+    da marca da tentativa anterior."""
+    from faturacao.fiscal import VerificacaoFiscalIncerta
+
+    ref = "pos-loja-1-sessao-1-venda-1"
+    db = _db(
+        vendas=[_venda()],
+        refs=[{"id": "r1", "ext_ref": ref, "venda_id": "venda-1", "incerta": True}],
+    )
+
+    async def emitir_falha(ref):
+        raise VendusIndisponivel("timeout simulado, outra vez")
+
+    async def verificar_falha(ref):
+        raise VendusIndisponivel("a verificação continua a falhar")
+
+    with pytest.raises(VerificacaoFiscalIncerta):
+        _corre(finalizar_venda(db, _venda(), emitir_falha, verificar_falha, esperar=_instantaneo))
+
+    reserva = db[COLECOES["refs_fiscais"]]._documentos[0]
+    assert reserva.get("incerta") is True
+    assert not reserva.get("em_retoma")
+
+    # A rede volta a ficar boa: uma tentativa SEGUINTE tem de conseguir
+    # reclamar a retoma e resolver — nunca ficar presa atrás da marca que a
+    # tentativa anterior deixou.
+    async def emitir_ok(ref):
+        return _bruto()
+
+    async def verificar_ok(ref):
+        return None
+
+    documento = _corre(finalizar_venda(db, _venda(), emitir_ok, verificar_ok, esperar=_instantaneo))
+    assert documento["vendus_document_id"] == 501
+
+
+def test_quem_perde_a_reclamacao_da_retoma_espera_pelo_vencedor():
+    """Quem NÃO reclama a retoma (porque outra tentativa já reclamou) cai
+    no MESMO caminho de sempre de quem perde uma reserva — espera pelo
+    documento do vencedor, nunca verifica/emite em paralelo."""
+    ref = "pos-loja-1-sessao-1-venda-1"
+    db = _db(
+        vendas=[_venda()],
+        refs=[{"id": "r1", "ext_ref": ref, "venda_id": "venda-1", "incerta": True, "em_retoma": True}],
+    )
+
+    async def escrever_documento_daqui_a_pouco():
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await db[COLECOES["documentos"]].insert_one({
+            "id": "doc-1", "vendus_document_id": 501, "atcud": "ATCUD-1",
+            "ext_ref": ref, "venda_id": "venda-1", "total": 8.99,
+        })
+
+    async def emitir(ref):
+        raise AssertionError("perdeu a reclamação da retoma — não devia tentar emitir")
+
+    async def verificar(ref):
+        raise AssertionError("perdeu a reclamação da retoma — não é chamado")
+
+    async def correr():
+        return await asyncio.gather(
+            finalizar_venda(db, _venda(), emitir, verificar, esperar=_instantaneo),
+            escrever_documento_daqui_a_pouco(),
+        )
+
+    resultado, _ = _corre(correr())
+    assert resultado["vendus_document_id"] == 501
 
 
 # --- Timeout seguido de verificação exacta -------------------------------------
@@ -1023,6 +1336,31 @@ def test_finalizar_com_sessao_de_caixa_inexistente_e_recusado_409(monkeypatch):
     assert excinfo.value.status_code == 409
 
 
+def test_finalizar_com_venda_sem_sessao_id_e_recusado_409_nao_500(monkeypatch):
+    """Pequena correcção da re-revisão do núcleo fiscal:
+    `_garante_sessao_da_venda_aberta` lia `venda["sessao_id"]` directamente
+    — uma venda sem esse campo (dados corrompidos, uma migração incompleta)
+    dava KeyError e um 500 em vez do 409 que já protege o caso 'a sessão
+    referida não existe'. Trata-se da MESMA forma que uma sessão
+    inexistente: recusa-se, nunca rebenta."""
+    _configura_vendus_env(monkeypatch)
+    venda_sem_sessao = _venda(linhas=[_linha()])
+    del venda_sem_sessao["sessao_id"]
+    db = _db(vendas=[venda_sem_sessao], tipos_pagamento=[_tipo_pagamento()])
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", ClienteEmissaoVendusFalso)
+    ClienteEmissaoVendusFalso.instancias.clear()
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(finalizar(
+            "venda-1",
+            PedidoFinalizarVenda(pagamentos=[PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)]),
+            operador=_operador(),
+        ))
+    assert excinfo.value.status_code == 409
+    assert ClienteEmissaoVendusFalso.instancias == []  # nunca chega a falar com o Vendus
+
+
 def test_finalizar_com_sessao_de_caixa_aberta_prossegue(monkeypatch):
     """Confirma que a guarda nova não bloqueia o caminho feliz — _db() já dá
     uma sessão aberta por omissão, mas este teste torna a intenção
@@ -1436,3 +1774,85 @@ def _sessao_fake(**over):
     }
     s.update(over)
     return s
+
+
+# ============================================================================
+# B1: rota de gestão — listar reservas incertas (nunca há saída nem
+# visibilidade hoje: se o Vendus ficar em baixo, a venda fica presa em 503;
+# quando o turno fecha, passa a ser recusada para sempre (I1) e o dinheiro
+# fica sem Z nenhum — a única saída era mexer no Mongo à mão. Esta rota dá
+# por onde começar a investigar.)
+# ============================================================================
+
+from faturacao.fiscal import listar_reservas_incertas  # noqa: E402
+
+
+def test_lista_reservas_incertas_devolve_so_as_marcadas_incertas(monkeypatch):
+    db = _db(
+        vendas=[_venda(id="venda-1", loja_id="loja-1"), _venda(id="venda-2", loja_id="loja-2")],
+        refs=[
+            {"id": "r1", "ext_ref": "pos-loja-1-sessao-1-venda-1", "venda_id": "venda-1",
+             "incerta": True, "criado_em": "2026-08-15T09:00:00+00:00"},
+            {"id": "r2", "ext_ref": "pos-loja-2-sessao-1-venda-2", "venda_id": "venda-2",
+             "incerta": False, "criado_em": "2026-08-15T09:00:00+00:00"},
+            {"id": "r3", "ext_ref": "pos-loja-1-sessao-1-venda-3", "venda_id": "venda-3"},
+        ],
+    )
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    resultado = _corre(listar_reservas_incertas(_={}))
+    assert [r["ext_ref"] for r in resultado] == ["pos-loja-1-sessao-1-venda-1"]
+
+
+def test_lista_reservas_incertas_inclui_a_loja_da_venda(monkeypatch):
+    db = _db(
+        vendas=[_venda(id="venda-1", loja_id="loja-3")],
+        refs=[{"id": "r1", "ext_ref": "pos-loja-3-sessao-1-venda-1", "venda_id": "venda-1",
+               "incerta": True, "criado_em": "2026-08-15T09:00:00+00:00"}],
+    )
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    resultado = _corre(listar_reservas_incertas(_={}))
+    assert resultado[0]["loja_id"] == "loja-3"
+    assert resultado[0]["venda_id"] == "venda-1"
+
+
+def test_lista_reservas_incertas_com_venda_inexistente_nao_rebenta(monkeypatch):
+    """Defesa (dados corrompidos, ou uma reserva órfã): a venda referida já
+    não existe — a rota não pode rebentar, só devolve loja_id=None."""
+    db = _db(
+        vendas=[],
+        refs=[{"id": "r1", "ext_ref": "pos-loja-1-sessao-1-venda-1", "venda_id": "venda-1",
+               "incerta": True, "criado_em": "2026-08-15T09:00:00+00:00"}],
+    )
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    resultado = _corre(listar_reservas_incertas(_={}))
+    assert resultado[0]["loja_id"] is None
+
+
+def test_lista_reservas_incertas_calcula_ha_quanto_tempo_estao_presas(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    ha_dez_minutos = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    db = _db(
+        vendas=[_venda(id="venda-1", loja_id="loja-1")],
+        refs=[{"id": "r1", "ext_ref": "pos-loja-1-sessao-1-venda-1", "venda_id": "venda-1",
+               "incerta": True, "criado_em": ha_dez_minutos}],
+    )
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    resultado = _corre(listar_reservas_incertas(_={}))
+    assert resultado[0]["presa_ha_segundos"] > 590  # ~10 minutos, com folga
+
+
+def test_lista_reservas_incertas_diz_se_ja_esta_em_retoma(monkeypatch):
+    db = _db(
+        vendas=[_venda(id="venda-1", loja_id="loja-1")],
+        refs=[{"id": "r1", "ext_ref": "pos-loja-1-sessao-1-venda-1", "venda_id": "venda-1",
+               "incerta": True, "em_retoma": True, "criado_em": "2026-08-15T09:00:00+00:00"}],
+    )
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    resultado = _corre(listar_reservas_incertas(_={}))
+    assert resultado[0]["em_retoma"] is True
+
+
+def test_lista_reservas_incertas_vazia_quando_nao_ha_nenhuma(monkeypatch):
+    db = _db(vendas=[], refs=[])
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    assert _corre(listar_reservas_incertas(_={})) == []
