@@ -121,7 +121,13 @@ const sections = [
     match: (p) => p.startsWith('/admin/faturacao'),
     items: [
       { group: 'Gestão', path: '/admin/faturacao/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+      // Produtos abre três sub-itens, como no backoffice do Vendus: o catálogo,
+      // as categorias (Venda ao Público / Vendas Aplicações) e os grupos de
+      // personalização (os toppings) que depois se atribuem aos produtos.
       { group: 'Gestão', path: '/admin/faturacao/produtos', label: 'Produtos', icon: Package },
+      { group: 'Gestão', path: '/admin/faturacao/produtos/lista', label: 'Produtos', pai: '/admin/faturacao/produtos' },
+      { group: 'Gestão', path: '/admin/faturacao/produtos/categorias', label: 'Categorias', pai: '/admin/faturacao/produtos' },
+      { group: 'Gestão', path: '/admin/faturacao/produtos/personalizacoes', label: 'Personalizações', pai: '/admin/faturacao/produtos' },
       { group: 'Gestão', path: '/admin/faturacao/documentos', label: 'Documentos', icon: FileText },
       { group: 'Gestão', path: '/admin/faturacao/taloes-desconto', label: 'Talões de Desconto', icon: Percent },
       { group: 'Gestão', path: '/admin/faturacao/clientes', label: 'Clientes', icon: Users },
@@ -335,7 +341,12 @@ export default function AdminLayout() {
       <ScrollArea className="flex-1 px-3 pt-2">
         <nav className="space-y-1">
           {(() => {
-            const itens = activeSection.items.filter(item => !item.masterOnly || isMasterAdmin);
+            const itens = activeSection.items
+              .filter(item => !item.masterOnly || isMasterAdmin)
+              // Sub-itens (os que declaram um `pai`) só aparecem quando se está
+              // dentro desse ramo — é como o backoffice do Vendus se comporta:
+              // clica-se em Produtos e os três sub-itens abrem por baixo.
+              .filter(item => !item.pai || location.pathname.startsWith(item.pai));
             let grupoAnterior = null;
             return itens.map((item) => {
               // Cabeçalho de grupo: só aparece quando o grupo muda, e só nas
@@ -355,7 +366,9 @@ export default function AdminLayout() {
                     end={item.exact}
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                      `flex items-center gap-3 rounded-lg text-sm font-medium transition-colors ${
+                        item.pai ? 'pl-10 pr-3 py-2' : 'px-3 py-2.5'
+                      } ${
                         isActive
                           ? 'bg-primary text-primary-foreground'
                           : 'text-muted-foreground hover:bg-muted hover:text-foreground'
@@ -363,7 +376,7 @@ export default function AdminLayout() {
                     }
                     data-testid={`nav-${item.path.split('/').pop() || 'dashboard'}`}
                   >
-                    <item.icon className="h-4 w-4" />
+                    {item.icon && <item.icon className="h-4 w-4" />}
                     {item.label}
                   </NavLink>
                 </React.Fragment>

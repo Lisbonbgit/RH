@@ -198,7 +198,10 @@ function AppRoutes() {
             Vendus. O que ainda não está construído mostra "Brevemente", como o
             Financeiro fez enquanto crescia. */}
         <Route path="faturacao/dashboard" element={<FatDashboard />} />
-        <Route path="faturacao/produtos" element={<ComingSoon icon={Package} title="Produtos" subtitle="Faturação · Gestão" note="Produtos, categorias e personalizações, importados do Vendus. É a próxima peça a ser construída." />} />
+        <Route path="faturacao/produtos" element={<Navigate to="/admin/faturacao/produtos/lista" replace />} />
+        <Route path="faturacao/produtos/lista" element={<ComingSoon icon={Package} title="Produtos" subtitle="Faturação · Gestão · Produtos" note="Criar, editar e eliminar produtos, com preço, IVA e as personalizações que cada um aceita. Importados do Vendus para não escrever nada à mão." />} />
+        <Route path="faturacao/produtos/categorias" element={<ComingSoon icon={Package} title="Categorias" subtitle="Faturação · Gestão · Produtos" note="Venda ao Público e Vendas Aplicações. Cada produto pertence a uma categoria." />} />
+        <Route path="faturacao/produtos/personalizacoes" element={<ComingSoon icon={Package} title="Personalizações" subtitle="Faturação · Gestão · Produtos" note="Os grupos de toppings — nome, quantas escolhas são obrigatórias e o preço de cada opção — que depois se atribuem aos produtos." />} />
         <Route path="faturacao/documentos" element={<ComingSoon icon={FileText} title="Documentos" subtitle="Faturação · Gestão" note="Pesquisar faturas e notas de crédito, reimprimir e anular." />} />
         <Route path="faturacao/taloes-desconto" element={<ComingSoon icon={Percent} title="Talões de Desconto" subtitle="Faturação · Gestão" />} />
         <Route path="faturacao/clientes" element={<ComingSoon icon={Users} title="Clientes" subtitle="Faturação · Gestão" note="Fichas de cliente e NIF para as faturas." />} />
