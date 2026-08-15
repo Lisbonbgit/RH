@@ -1,5 +1,5 @@
-"""Sessão de caixa do POS: abrir e registar movimentos (Task 3 do Plano 2A,
-spec §7.2/§7.5). O fecho e o relatório Z entram na Task 4.
+"""Sessão de caixa do POS: abrir, registar movimentos e fechar com o
+relatório Z (Tasks 3 e 4 do Plano 2A, spec §7.2/§7.5/§7.6).
 
 A sessão é sempre resolvida no SERVIDOR, nunca a partir de um valor que o
 corpo do pedido diga que é a sessão: o cliente indica a caixa (`caixa_id`,
@@ -30,6 +30,7 @@ from typing import Dict, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .caixa_math import diferenca, esperado, total_por_tipo
 from .db import COLECOES, obter_db
 from .pos_auth import operador_atual
 from .precos import _tem_mais_de_2_casas_decimais
@@ -39,6 +40,13 @@ router = APIRouter()
 _MSG_CAIXA_INEXISTENTE = "Caixa não encontrada."
 _MSG_CAIXA_JA_ABERTA = "Esta caixa já tem uma sessão aberta."
 _MSG_SEM_SESSAO_ABERTA = "Esta caixa não tem nenhuma sessão aberta."
+
+# Task 4: o Plano 2A ainda não vende (isso é o Plano 2B) — por isso não há
+# nenhuma venda em dinheiro para somar. É honestamente 0.0, não um número
+# inventado: quando o Plano 2B ligar as vendas, este valor passa a vir de
+# uma soma real sobre fat_documentos. Até lá, fingir outra coisa seria
+# exactamente o que a regra 4 do dono proíbe.
+_VENDAS_DINHEIRO_AINDA_SEM_VENDAS = 0.0
 
 
 def _agora() -> str:
@@ -89,6 +97,18 @@ class PedidoMovimento(BaseModel):
         if self.tipo == "saida" and not (self.motivo and self.motivo.strip()):
             raise ValueError("O motivo é obrigatório numa saída de dinheiro.")
         return self
+
+
+class PedidoFecharCaixa(BaseModel):
+    # Também sem sessao_id — o fecho resolve a sessão aberta da mesma forma
+    # que o movimento, pela mesma razão (ver docstring do módulo).
+    caixa_id: str = Field(min_length=1)
+    contado: float = Field(ge=0, allow_inf_nan=False)
+
+    @field_validator("contado")
+    @classmethod
+    def _valida_contado(cls, v):
+        return _recusa_mais_de_2_casas(v)
 
 
 async def _obter_caixa_da_loja(db, caixa_id: str, loja_id: str) -> Dict:
@@ -160,3 +180,63 @@ async def registar_movimento(
     }
     await db[COLECOES["movimentos_caixa"]].insert_one(dict(movimento))
     return movimento
+
+
+@router.post("/pos/caixa/fechar")
+async def fechar_caixa(
+    dados: PedidoFecharCaixa, operador: Dict = Depends(operador_atual)
+) -> dict:
+    """Fecha a sessão aberta da caixa e devolve o relatório Z.
+
+    Regra 3 do dono (vem de um erro já cometido noutro projecto): o fecho
+    NUNCA bloqueia por a contagem não bater — regista a diferença e segue
+    em frente, para a funcionária poder ir para casa. A verificação contra
+    o Vendus é só de leitura e entra no Plano 2B; aqui o esperado calcula-se
+    sempre das NOSSAS vendas (regra 1), nunca do Vendus.
+    """
+    db = obter_db()
+    await _obter_caixa_da_loja(db, dados.caixa_id, operador["loja_id"])
+    sessao = await _sessao_aberta(db, dados.caixa_id)
+
+    movimentos = await db[COLECOES["movimentos_caixa"]].find(
+        {"sessao_id": sessao["id"]}
+    ).to_list(10000)
+
+    vendas_dinheiro = _VENDAS_DINHEIRO_AINDA_SEM_VENDAS
+    entradas = total_por_tipo(movimentos, "entrada")
+    saidas = total_por_tipo(movimentos, "saida")
+    esperado_valor = esperado(sessao["fundo"], vendas_dinheiro, movimentos)
+    diferenca_valor = diferenca(esperado_valor, dados.contado)
+
+    fechada_em = _agora()
+    fechada_por = _quem(operador)
+    atualizacao = {
+        "estado": "fechada",
+        "fechada_por": fechada_por,
+        "fechada_em": fechada_em,
+        "contado": dados.contado,
+        "esperado": esperado_valor,
+        "diferenca": diferenca_valor,
+    }
+    await db[COLECOES["sessoes_caixa"]].update_one({"id": sessao["id"]}, {"$set": atualizacao})
+
+    # Construído campo a campo (não `dict(sessao)`): sessao vem de find_one
+    # sem projecção e, em Mongo real, traria _id — nunca deixar isso vazar
+    # para uma resposta JSON.
+    return {
+        "id": sessao["id"],
+        "caixa_id": sessao["caixa_id"],
+        "loja_id": sessao["loja_id"],
+        "aberta_por": sessao["aberta_por"],
+        "aberta_em": sessao["aberta_em"],
+        "fundo": sessao["fundo"],
+        "vendas_dinheiro": vendas_dinheiro,
+        "entradas": entradas,
+        "saidas": saidas,
+        "estado": atualizacao["estado"],
+        "fechada_por": fechada_por,
+        "fechada_em": fechada_em,
+        "contado": dados.contado,
+        "esperado": esperado_valor,
+        "diferenca": diferenca_valor,
+    }

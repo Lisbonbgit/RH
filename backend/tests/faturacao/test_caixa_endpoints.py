@@ -14,8 +14,10 @@ from pydantic import ValidationError
 from faturacao import caixa as caixa_mod
 from faturacao.caixa import (
     PedidoAbrirCaixa,
+    PedidoFecharCaixa,
     PedidoMovimento,
     abrir_caixa,
+    fechar_caixa,
     registar_movimento,
 )
 from faturacao.db import COLECOES
@@ -312,3 +314,182 @@ def test_movimento_ignora_sessao_id_vindo_do_corpo_mesmo_que_apareca(monkeypatch
     })
     resultado = _corre(registar_movimento(dados, operador=_operador()))
     assert resultado["sessao_id"] == "sessao-amiga"
+
+
+# --- Fecho de caixa e relatório Z (Task 4) --------------------------------------
+#
+# O esperado calcula-se das NOSSAS vendas, não do Vendus (regra 1 da Task 4)
+# — e o Plano 2A ainda não vende, por isso vendas_dinheiro é honestamente 0
+# aqui, não uma invenção. A ligação de leitura ao Vendus é o Plano 2B.
+
+
+def test_fecho_com_diferenca_zero_quando_conta_bate_certo(monkeypatch):
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    movimentos = [
+        {"id": "m1", "sessao_id": "sessao-1", "tipo": "entrada", "valor": 20.0},
+        {"id": "m2", "sessao_id": "sessao-1", "tipo": "saida", "valor": 5.0},
+    ]
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=movimentos)
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    # esperado = 50 (fundo) + 0 (vendas) + 20 (entrada) - 5 (saída) = 65
+    resultado = _corre(
+        fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=65.0), operador=_operador())
+    )
+    assert resultado["esperado"] == 65.0
+    assert resultado["contado"] == 65.0
+    assert resultado["diferenca"] == 0.0
+    assert resultado["estado"] == "fechada"
+
+
+def test_fecho_com_diferenca_positiva_quando_ha_sobra(monkeypatch):
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao(fundo=50.0)], movimentos=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(
+        fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=55.0), operador=_operador())
+    )
+    assert resultado["esperado"] == 50.0
+    assert resultado["diferenca"] == 5.0
+
+
+def test_fecho_com_diferenca_negativa_quando_falta_dinheiro(monkeypatch):
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao(fundo=50.0)], movimentos=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(
+        fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=42.5), operador=_operador())
+    )
+    assert resultado["esperado"] == 50.0
+    assert resultado["diferenca"] == -7.5
+
+
+def test_fecho_marca_a_sessao_como_fechada(monkeypatch):
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador()))
+    assert sessao["estado"] == "fechada"
+    assert sessao["fechada_por"] == {"id": "op-1", "nome": "Rafaela"}
+    assert sessao["fechada_em"] is not None
+    assert sessao["contado"] == 50.0
+    assert sessao["esperado"] == 50.0
+    assert sessao["diferenca"] == 0.0
+
+
+def test_fechar_sessao_ja_fechada_e_recusado_409(monkeypatch):
+    registo = []
+    sessao_fechada = _sessao(estado="fechada")
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao_fechada], movimentos=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(
+            fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador())
+        )
+    assert excinfo.value.status_code == 409
+
+
+def test_fechar_caixa_sem_sessao_aberta_e_recusado_409(monkeypatch):
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[], movimentos=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(
+            fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador())
+        )
+    assert excinfo.value.status_code == 409
+
+
+def test_fechar_caixa_de_outra_loja_e_recusado_404(monkeypatch):
+    registo = []
+    db = _db(registo, caixas=[_caixa(loja_id="loja-2")], sessoes=[], movimentos=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(
+            fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador())
+        )
+    assert excinfo.value.status_code == 404
+
+
+def test_fechar_caixa_com_contado_negativo_e_recusado():
+    with pytest.raises(ValidationError):
+        PedidoFecharCaixa(caixa_id="caixa-1", contado=-5.0)
+
+
+def test_fechar_caixa_com_contado_de_3_casas_e_recusado():
+    with pytest.raises(ValidationError):
+        PedidoFecharCaixa(caixa_id="caixa-1", contado=50.995)
+
+
+def test_relatorio_z_inclui_todos_os_campos_pedidos(monkeypatch):
+    """O Z tem de mostrar abertura (fundo), vendas em dinheiro, entradas,
+    saídas, esperado, contado e diferença — o suficiente para a funcionária
+    e o dono perceberem o dia inteiro sem adivinhar nada."""
+    registo = []
+    sessao = _sessao(fundo=100.0)
+    movimentos = [
+        {"id": "m1", "sessao_id": "sessao-1", "tipo": "entrada", "valor": 30.0},
+        {"id": "m2", "sessao_id": "sessao-1", "tipo": "entrada", "valor": 10.0},
+        {"id": "m3", "sessao_id": "sessao-1", "tipo": "saida", "valor": 15.0},
+    ]
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=movimentos)
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(
+        fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=130.0), operador=_operador())
+    )
+
+    assert resultado["fundo"] == 100.0
+    assert resultado["vendas_dinheiro"] == 0.0
+    assert resultado["entradas"] == 40.0
+    assert resultado["saidas"] == 15.0
+    assert resultado["esperado"] == 125.0
+    assert resultado["contado"] == 130.0
+    assert resultado["diferenca"] == 5.0
+    assert resultado["aberta_por"] == {"id": "op-1", "nome": "Rafaela"}
+    assert resultado["aberta_em"] is not None
+    assert resultado["fechada_por"] == {"id": "op-1", "nome": "Rafaela"}
+    assert resultado["fechada_em"] is not None
+
+
+def test_relatorio_z_com_sessao_sem_movimentos(monkeypatch):
+    """Listas vazias não podem rebentar o fecho — é o caso mais comum (uma
+    caixa tranquila, sem entradas nem saídas no turno)."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao(fundo=50.0)], movimentos=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(
+        fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador())
+    )
+    assert resultado["entradas"] == 0.0
+    assert resultado["saidas"] == 0.0
+    assert resultado["diferenca"] == 0.0
+
+
+def test_fecho_nunca_bloqueia_mesmo_com_diferenca_grande(monkeypatch):
+    """Mutação própria da Task 4 (pedida no brief, além das do plano): a
+    funcionária tem de poder ir para casa mesmo que a conta não bata por
+    muito. Este teste é o canário — se o fecho passar a recusar (levantar
+    HTTPException) quando a diferença é grande, em vez de só a registar,
+    fica vermelho. Confirmado manualmente com uma guarda de bloqueio
+    acrescentada a fechar_caixa e revertida (ver relatório da tarefa)."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao(fundo=50.0)], movimentos=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    # Devia haver 50€ na gaveta; a funcionária conta 3€. Uma diferença deste
+    # tamanho não pode impedir o fecho — só ficar registada para o gestor ver.
+    resultado = _corre(
+        fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=3.0), operador=_operador())
+    )
+    assert resultado["estado"] == "fechada"
+    assert resultado["diferenca"] == -47.0

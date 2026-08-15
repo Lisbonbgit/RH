@@ -32,3 +32,11 @@ def esperado(fundo: float, vendas_dinheiro: float, movimentos: List[Dict]) -> fl
     """O valor que devia estar na gaveta: fundo de maneio + vendas em
     dinheiro + entradas - saídas."""
     return round(float(fundo or 0) + float(vendas_dinheiro or 0) + total_movimentos(movimentos), 2)
+
+
+def diferenca(esperado_valor: float, contado: float) -> float:
+    """contado - esperado: positivo é sobra na gaveta, negativo é falta. É
+    este número que a funcionária tem de explicar quando não bate — por
+    isso o fecho (faturacao/caixa.py) NUNCA bloqueia por causa dele, só o
+    regista (Task 4 do Plano 2A, spec §7.6)."""
+    return round(float(contado or 0) - float(esperado_valor or 0), 2)

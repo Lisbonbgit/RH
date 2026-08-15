@@ -6,7 +6,7 @@ sozinho, sem Mongo, porque é a parte que tem de estar matematicamente
 certa — é o que sustenta a confiança entre o dono e a equipa quando a
 contagem não bate e alguém tem de explicar a diferença.
 """
-from faturacao.caixa_math import esperado, total_movimentos, total_por_tipo
+from faturacao.caixa_math import diferenca, esperado, total_movimentos, total_por_tipo
 
 
 def _mov(tipo, valor):
@@ -81,3 +81,21 @@ def test_esperado_com_lista_vazia_de_movimentos():
 
 def test_esperado_com_fundo_e_vendas_a_zero():
     assert esperado(0.0, 0.0, []) == 0.0
+
+
+# --- diferenca (Task 4: fecho de caixa) -----------------------------------------
+#
+# contado - esperado: positivo é sobra na gaveta, negativo é falta. É este
+# número que a funcionária tem de explicar quando não bate.
+
+
+def test_diferenca_positiva_quando_ha_sobra():
+    assert diferenca(100.0, 105.0) == 5.0
+
+
+def test_diferenca_negativa_quando_falta_dinheiro():
+    assert diferenca(100.0, 92.5) == -7.5
+
+
+def test_diferenca_zero_quando_bate_certo():
+    assert diferenca(100.0, 100.0) == 0.0
