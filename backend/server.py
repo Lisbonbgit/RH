@@ -3009,8 +3009,11 @@ async def get_admin_dashboard(company_id: Optional[str] = None, current_user: di
             missing_items.append((start_minutes, eid))
         else:
             not_in_yet_items.append((start_minutes if start_minutes is not None else 10**6, eid))
-    missing_items.sort(key=lambda x: x[0])
-    not_in_yet_items.sort(key=lambda x: x[0])
+    # Desempate por nome (emp_id_set é um set — sem isto a ordem mudaria entre pedidos)
+    def _by_time_then_name(x):
+        return (x[0], (emp_by_id.get(x[1], {}).get("name") or "").lower())
+    missing_items.sort(key=_by_time_then_name)
+    not_in_yet_items.sort(key=_by_time_then_name)
     missing_ids = [eid for _, eid in missing_items]
     not_in_yet_ids = [eid for _, eid in not_in_yet_items]
 

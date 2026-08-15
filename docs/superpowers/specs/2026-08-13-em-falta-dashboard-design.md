@@ -60,7 +60,7 @@ Lisboa (`LISBON_TZ`), incluindo a comparação com `start_time`.
   - `not_in_yet`: `previsto {expected_start}` ou `sem hora na escala`.
 - Métrica nova nos cartões do topo: **"Em falta"** (`missing_now`, ícone
   `UserX`, `text-red-600`, `bg-red-50`), ao lado de "A trabalhar agora".
-- Grupos vazios não aparecem (comportamento atual do `AvatarGroup`).
+- Grupos vazios mostram "Ninguém" (comportamento atual do `AvatarGroup`).
 
 ## Fora de âmbito
 

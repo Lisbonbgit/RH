@@ -65,7 +65,7 @@ const statusFor = (person, status) => {
     case 'missing':
       return { className: 'text-red-600', text: person?.expected_start ? `Em falta · previsto ${person.expected_start}` : 'Em falta' };
     case 'not_in_yet':
-      return { className: 'text-amber-600', text: person?.expected_start ? `Ainda não deu entrada · previsto ${person.expected_start}` : 'Ainda não deu entrada · sem hora na escala' };
+      return { className: 'text-orange-600', text: person?.expected_start ? `Ainda não deu entrada · previsto ${person.expected_start}` : 'Ainda não deu entrada · sem hora na escala' };
     default:
       return null;
   }
@@ -227,7 +227,7 @@ export default function AdminDashboard() {
       </div>
 
       {/* Metric cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4">
         {metrics.map((m) => (
           <Card key={m.label} className="card-hover" data-testid={`stat-${m.label}`}>
             <CardContent className="p-4 md:p-5">
@@ -252,7 +252,7 @@ export default function AdminDashboard() {
             <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-5">
               <AvatarGroup people={stats?.whos_in?.working || []} icon={Clock} label="A trabalhar" accent="text-teal-600" status="working" />
               <AvatarGroup people={stats?.whos_in?.missing || []} icon={UserX} label="Em falta" accent="text-red-600" status="missing" />
-              <AvatarGroup people={stats?.whos_in?.not_in_yet || []} icon={Hourglass} label="Ainda não deu entrada" accent="text-amber-600" status="not_in_yet" />
+              <AvatarGroup people={stats?.whos_in?.not_in_yet || []} icon={Hourglass} label="Ainda não deu entrada" accent="text-orange-600" status="not_in_yet" />
               <AvatarGroup people={stats?.whos_in?.vacation || []} icon={Palmtree} label="Férias" accent="text-amber-600" status="vacation" />
               <AvatarGroup people={stats?.whos_in?.dayoff || []} icon={Coffee} label="Folga" accent="text-violet-600" status="dayoff" />
               <AvatarGroup people={stats?.whos_in?.absent || []} icon={UserMinus} label="Ausentes" accent="text-rose-600" status="absent" />
