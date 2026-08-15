@@ -105,12 +105,30 @@ def test_extrai_preco_de_gross_price():
     assert _extrair_preco({"gross_price": "8.99"}) == 8.99
 
 
-def test_extrai_preco_cai_para_price_se_sem_gross_price():
-    assert _extrair_preco({"price": 8.5}) == 8.5
+def test_extrai_preco_nao_cai_para_price_liquido_sem_gross_price():
+    """`price` no Vendus é o preço LÍQUIDO (sem IVA) — não é `gross_price`
+    com outro nome. Um açaí a €8,99 (IVA 13%) tem `price` perto de 7,96;
+    gravá-lo como preço de venda faturaria sem o IVA embutido, em silêncio.
+    Sem `gross_price`, o produto fica por resolver (None) — nunca com o
+    líquido a fingir de preço final."""
+    assert _extrair_preco({"price": 8.5}) is None
 
 
 def test_extrai_preco_ausente_devolve_none():
     assert _extrair_preco({}) is None
+
+
+def test_extrai_preco_gross_price_com_mais_de_2_casas_devolve_none():
+    """Antes, `round(bruto, 2)` fazia o valor 'parecer limpo' e o crivo das 2
+    casas decimais do resto do módulo nunca chegava a disparar neste
+    caminho. Agora usa o mesmo crivo (precos._tem_mais_de_2_casas_decimais):
+    um preço com mais de 2 casas fica por resolver, não é arredondado às
+    escondidas."""
+    assert _extrair_preco({"gross_price": 8.995}) is None
+
+
+def test_extrai_preco_gross_price_invalido_devolve_none():
+    assert _extrair_preco({"gross_price": "não é um número"}) is None
 
 
 def test_extrai_tax_id_direto():
@@ -170,6 +188,62 @@ def test_sincroniza_categorias_sem_id_ou_nome_e_ignorada_com_problema():
     assert mapa == {}
     assert len(problemas) == 2
     assert db.categorias.documentos == []
+
+
+def test_sincroniza_categorias_cria_categoria_nova_com_vendus_ref():
+    db = DbMemoria()
+    mapa, problemas = _corre(_sincronizar_categorias(db, [{"id": "7", "title": "Vendas Aplicações"}]))
+    assert problemas == []
+    doc = db.categorias.documentos[0]
+    assert doc["vendus_ref"] == "7"
+    assert mapa == {"7": doc["id"]}
+
+
+def test_sincroniza_categorias_liga_vendus_ref_a_categoria_existente_por_nome_na_primeira_vez():
+    """Uma categoria criada no backoffice antes desta ligação existir (sem
+    vendus_ref) não pode ser duplicada — o nome serve de reserva só nesta
+    primeira ligação (ver docstring do módulo)."""
+    db = DbMemoria()
+    db.categorias.documentos.append(
+        {"id": "cat-antiga-1", "nome": "Venda ao Público", "ordem": 0, "ativa": True,
+         "vendus_ref": None}
+    )
+
+    mapa, problemas = _corre(_sincronizar_categorias(db, [{"id": "1", "title": "Venda ao Público"}]))
+
+    assert problemas == []
+    assert len(db.categorias.documentos) == 1  # não duplicou
+    doc = db.categorias.documentos[0]
+    assert doc["id"] == "cat-antiga-1"
+    assert doc["vendus_ref"] == "1"  # ligado
+    assert mapa == {"1": "cat-antiga-1"}
+
+
+def test_renomear_categoria_no_backoffice_nao_causa_duplicado_na_reimportacao():
+    """IMPORTANT: antes, casar por nome fazia uma categoria renomeada no
+    backoffice ser 'perdida' na reimportação seguinte — o Vendus recriava-a
+    com o nome de lá, arrastava-lhe os produtos todos e deixava a antiga
+    vazia, com a ordem que o dono tinha arrumado perdida. Guardar
+    vendus_ref e casar por ele resolve: o nome muda-se aqui, o vendus_ref
+    no Vendus não muda, a categoria continua a ser a mesma."""
+    db = DbMemoria()
+    categorias_vendus = [{"id": "1", "title": "Venda ao Público"}]
+    _corre(_sincronizar_categorias(db, categorias_vendus))
+    categoria_id = db.categorias.documentos[0]["id"]
+
+    # O dono renomeia a categoria e reordena-a no backoffice:
+    db.categorias.documentos[0]["nome"] = "Loja Física"
+    db.categorias.documentos[0]["ordem"] = 5
+
+    mapa2, problemas2 = _corre(_sincronizar_categorias(db, categorias_vendus))
+
+    assert len(db.categorias.documentos) == 1  # não duplicou
+    doc = db.categorias.documentos[0]
+    assert doc["id"] == categoria_id
+    assert doc["nome"] == "Loja Física"  # preservado, não pisado pelo Vendus
+    assert doc["ordem"] == 5
+    assert mapa2 == {"1": categoria_id}
+    assert problemas2 == []
 
 
 # --- Produtos: criação, actualização e idempotência ---------------------------
@@ -283,6 +357,117 @@ def test_sincroniza_produtos_sem_preco_e_ignorado_com_problema():
 
     assert resultado["criados"] == 0
     assert any("preço" in p.lower() for p in resultado["problemas"])
+
+
+def test_sincroniza_produtos_so_com_price_liquido_vai_para_problemas_nao_e_criado():
+    """CRITICAL: `price` é o preço LÍQUIDO no Vendus, `gross_price` é o preço
+    COM IVA — não são o mesmo número com nomes diferentes. Um produto que só
+    tenha `price` (sem `gross_price`) tem de ficar por resolver em
+    `problemas`, nunca criado com o líquido a fazer de preço de venda."""
+    db = DbMemoria()
+    produtos_vendus = [
+        {"id": "500", "title": "Açaí Regular", "price": 7.9558, "tax_id": "NOR",
+         "category_id": "10"}
+    ]
+
+    resultado = _corre(_sincronizar_produtos(db, produtos_vendus, {"10": "cat-local-1"}))
+
+    assert resultado["criados"] == 0
+    assert db.produtos.documentos == []
+    assert any("preço" in p.lower() for p in resultado["problemas"])
+
+
+def test_sincroniza_produtos_sem_vendus_ref_liga_por_nome_e_categoria_em_vez_de_duplicar():
+    """Um produto criado à mão no backoffice (vendus_ref=None) com o mesmo
+    nome e categoria de um produto do Vendus não pode ser duplicado — o
+    ecrã vazio convida precisamente a isso ('Importe do Vendus ou crie o
+    primeiro produto'). Em vez de criar um segundo, liga-se o vendus_ref ao
+    que já lá está, preservando a foto e os grupos de personalização que o
+    dono já tinha atribuído."""
+    db = DbMemoria()
+    db.produtos.documentos.append({
+        "id": "prod-mao-1",
+        "nome": "Açaí Regular",
+        "categoria_id": "cat-local-1",
+        "preco": 8.99,
+        "tax_id": "NOR",
+        "foto_url": "https://cdn.exemplo/acai.jpg",
+        "grupos_personalizacao": ["grupo-toppings"],
+        "ativo": True,
+        "vendus_ref": None,
+    })
+    produtos_vendus = [
+        {"id": "500", "title": "Açaí Regular", "gross_price": 8.99, "tax_id": "NOR",
+         "category_id": "10"}
+    ]
+
+    resultado = _corre(_sincronizar_produtos(db, produtos_vendus, {"10": "cat-local-1"}))
+
+    assert len(db.produtos.documentos) == 1  # não duplicou
+    assert resultado["criados"] == 0
+    assert resultado["ligados"] == 1
+    doc = db.produtos.documentos[0]
+    assert doc["id"] == "prod-mao-1"
+    assert doc["vendus_ref"] == "500"  # ligado
+    assert doc["foto_url"] == "https://cdn.exemplo/acai.jpg"  # preservado
+    assert doc["grupos_personalizacao"] == ["grupo-toppings"]  # preservado
+
+
+def test_sincroniza_produtos_liga_por_nome_so_dentro_da_mesma_categoria():
+    """O nome sozinho não basta — duas categorias podem legitimamente ter um
+    produto com o mesmo nome (spec: 'Açaí Regular' na Venda ao Público E nas
+    Vendas Aplicações). Sem bater a categoria também, cria-se um novo em vez
+    de roubar o de outra categoria."""
+    db = DbMemoria()
+    db.produtos.documentos.append({
+        "id": "prod-mao-2",
+        "nome": "Açaí Regular",
+        "categoria_id": "cat-outra-categoria",
+        "preco": 8.99,
+        "tax_id": "NOR",
+        "foto_url": None,
+        "grupos_personalizacao": [],
+        "ativo": True,
+        "vendus_ref": None,
+    })
+    produtos_vendus = [
+        {"id": "500", "title": "Açaí Regular", "gross_price": 8.99, "tax_id": "NOR",
+         "category_id": "10"}
+    ]
+
+    resultado = _corre(_sincronizar_produtos(db, produtos_vendus, {"10": "cat-local-1"}))
+
+    assert resultado["criados"] == 1
+    assert resultado["ligados"] == 0
+    assert len(db.produtos.documentos) == 2  # não ligou ao de outra categoria
+
+
+def test_sincroniza_produtos_nao_rouba_produto_ja_ligado_a_outro_vendus_ref():
+    """Um produto já ligado a outro vendus_ref (importação anterior) não é
+    candidato à ligação por nome — só produtos sem vendus_ref (criados à
+    mão) o são."""
+    db = DbMemoria()
+    db.produtos.documentos.append({
+        "id": "prod-ja-ligado",
+        "nome": "Açaí Regular",
+        "categoria_id": "cat-local-1",
+        "preco": 8.99,
+        "tax_id": "NOR",
+        "foto_url": None,
+        "grupos_personalizacao": [],
+        "ativo": True,
+        "vendus_ref": "999",
+    })
+    produtos_vendus = [
+        {"id": "500", "title": "Açaí Regular", "gross_price": 8.99, "tax_id": "NOR",
+         "category_id": "10"}
+    ]
+
+    resultado = _corre(_sincronizar_produtos(db, produtos_vendus, {"10": "cat-local-1"}))
+
+    assert resultado["criados"] == 1
+    assert resultado["ligados"] == 0
+    assert len(db.produtos.documentos) == 2
 
 
 def test_sincroniza_produtos_sem_id_vendus_e_ignorado():
