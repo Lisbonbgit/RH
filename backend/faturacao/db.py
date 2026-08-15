@@ -25,6 +25,10 @@ COLECOES = {
     # até lá está vazia, e uma procura numa colecção vazia devolve vazio — não
     # dá erro). É esta colecção, não o Vendus, que o Dashboard (Plano 3) lê.
     "documentos": "fat_documentos",
+    # Dispositivos do POS: um código de emparelhamento de uso único (gerado
+    # pelo gestor) que se troca por um token de dispositivo persistente (ver
+    # faturacao/pos_auth.py). O PC da loja guarda o token no localStorage.
+    "dispositivos": "fat_dispositivos",
 }
 
 _cliente = None  # type: Optional[AsyncIOMotorClient]
@@ -58,6 +62,10 @@ INDICES = [
     # Dashboard: a série diária/mensal lê por data (todas as lojas) e por loja+data.
     ("fat_documentos", [("emitido_em", 1)], {}),
     ("fat_documentos", [("loja_id", 1), ("emitido_em", 1)], {}),
+    # Entrada no POS: busca o dispositivo pelo hash do código (emparelhar) ou
+    # do token (dispositivo_atual, em cada pedido).
+    ("fat_dispositivos", [("codigo_hash", 1)], {"sparse": True}),
+    ("fat_dispositivos", [("token_hash", 1)], {"sparse": True}),
 ]
 
 

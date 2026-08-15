@@ -45,6 +45,9 @@ router.include_router(_importacao)
 from .dashboard import router as _dashboard
 router.include_router(_dashboard)
 
+from .pos_auth import router as _pos_auth
+router.include_router(_pos_auth)
+
 
 async def arrancar():
     """Chamado pelo server.py no arranque.
