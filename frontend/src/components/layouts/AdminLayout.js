@@ -341,19 +341,33 @@ export default function AdminLayout() {
       <ScrollArea className="flex-1 px-3 pt-2">
         <nav className="space-y-1">
           {(() => {
-            const itens = activeSection.items
-              .filter(item => !item.masterOnly || isMasterAdmin)
-              // Sub-itens (os que declaram um `pai`) só aparecem quando se está
-              // dentro desse ramo — é como o backoffice do Vendus se comporta:
-              // clica-se em Produtos e os três sub-itens abrem por baixo.
-              .filter(item => !item.pai || location.pathname.startsWith(item.pai));
+            const visiveis = activeSection.items.filter(item => !item.masterOnly || isMasterAdmin);
+            // Os sub-itens declaram o caminho do `pai`. Aqui pendura-se cada um
+            // no seu pai, para o ramo poder abrir e fechar como um todo em vez
+            // de os itens aparecerem soltos no meio da lista.
+            const raiz = visiveis.filter(i => !i.pai);
+            const filhosDe = (caminho) => visiveis.filter(i => i.pai === caminho);
+
+            const classeItem = (isActive, indentado) =>
+              `flex items-center gap-3 rounded-lg text-sm transition-colors ${
+                indentado ? 'px-3 py-2 font-normal' : 'px-3 py-2.5 font-medium'
+              } ${
+                isActive
+                  ? 'bg-primary text-primary-foreground font-medium'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              }`;
+
             let grupoAnterior = null;
-            return itens.map((item) => {
-              // Cabeçalho de grupo: só aparece quando o grupo muda, e só nas
-              // secções que os declaram (as antigas não têm `group` e continuam
-              // a desenhar uma lista corrida, como sempre).
+            return raiz.map((item) => {
+              // Cabeçalho de grupo: só quando o grupo muda, e só nas secções que
+              // os declaram (as antigas não têm `group` e continuam uma lista
+              // corrida, como sempre).
               const abreGrupo = item.group && item.group !== grupoAnterior;
               grupoAnterior = item.group || null;
+
+              const filhos = filhosDe(item.path);
+              const aberto = filhos.length > 0 && location.pathname.startsWith(item.path);
+
               return (
                 <React.Fragment key={item.path}>
                   {abreGrupo && (
@@ -361,24 +375,60 @@ export default function AdminLayout() {
                       {item.group}
                     </p>
                   )}
+
                   <NavLink
                     to={item.path}
                     end={item.exact}
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `flex items-center gap-3 rounded-lg text-sm font-medium transition-colors ${
-                        item.pai ? 'pl-10 pr-3 py-2' : 'px-3 py-2.5'
-                      } ${
-                        isActive
-                          ? 'bg-primary text-primary-foreground'
-                          : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                      // Um pai com o ramo aberto não fica pintado de azul: quem
+                      // está seleccionado é o filho. O pai só ganha o tom de
+                      // texto cheio, para se ver que é ali que estamos.
+                      `${classeItem(isActive && !aberto, false)} ${
+                        aberto ? 'text-foreground font-medium' : ''
                       }`
                     }
                     data-testid={`nav-${item.path.split('/').pop() || 'dashboard'}`}
                   >
-                    {item.icon && <item.icon className="h-4 w-4" />}
-                    {item.label}
+                    {item.icon && <item.icon className="h-4 w-4 shrink-0" />}
+                    <span className="flex-1">{item.label}</span>
+                    {filhos.length > 0 && (
+                      <ChevronDown
+                        className={`h-4 w-4 shrink-0 opacity-60 transition-transform duration-200 motion-reduce:transition-none ${
+                          aberto ? 'rotate-0' : '-rotate-90'
+                        }`}
+                      />
+                    )}
                   </NavLink>
+
+                  {filhos.length > 0 && (
+                    // Abertura suave: a grelha passa de 0fr para 1fr, o que anima
+                    // a altura sem ninguém ter de a medir. Quem tiver o sistema
+                    // com menos movimento salta a transição.
+                    <div
+                      className="grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
+                      style={{ gridTemplateRows: aberto ? '1fr' : '0fr' }}
+                      aria-hidden={!aberto}
+                    >
+                      <div className="overflow-hidden">
+                        <div className="ml-[22px] border-l border-border pl-3 space-y-1 py-1">
+                          {filhos.map((filho) => (
+                            <NavLink
+                              key={filho.path}
+                              to={filho.path}
+                              end={filho.exact}
+                              tabIndex={aberto ? 0 : -1}
+                              onClick={() => setMobileOpen(false)}
+                              className={({ isActive }) => classeItem(isActive, true)}
+                              data-testid={`nav-${filho.path.split('/').pop()}`}
+                            >
+                              {filho.label}
+                            </NavLink>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </React.Fragment>
               );
             });
