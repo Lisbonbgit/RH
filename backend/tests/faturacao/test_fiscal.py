@@ -479,11 +479,16 @@ def test_timeout_seguido_de_verificacao_sem_documento_propaga_o_erro_e_liberta_a
     assert venda_gravada["estado"] == "aberta"  # não foi tocada
 
 
-def test_verificacao_apos_timeout_e_uma_so_chamada_nunca_um_varrimento():
-    """A defesa explícita do brief: nunca 'emitir à mesma se a consulta de
-    verificação rebentar', e a verificação em si é UMA chamada exacta — não
-    há aqui espaço para um varrimento de dias/páginas, o contrato é UM único
-    `await verificar(ext_ref)`."""
+def test_verificacao_apos_timeout_que_tambem_falha_mantem_a_reserva_incerta():
+    """C1: o POST em timeout E a própria verificação a rebentar é a falha
+    CORRELACIONADA e mais provável (a mesma rede que derrubou o POST derruba
+    o GET a seguir) — nunca se pode concluir daqui que é seguro reservar de
+    novo. A verificação continua a ser UMA chamada exacta (nunca um
+    varrimento), mas agora a reserva FICA — marcada incerta — em vez de se
+    libertar (era isto que test_verificacao_apos_timeout_e_uma_so_chamada_
+    nunca_um_varrimento defendia ao contrário: 'refs_fiscais == []')."""
+    from faturacao.fiscal import VerificacaoFiscalIncerta
+
     db = _db(vendas=[_venda()])
 
     async def emitir(ref):
@@ -495,11 +500,95 @@ def test_verificacao_apos_timeout_e_uma_so_chamada_nunca_um_varrimento():
         contagem["chamadas"] += 1
         raise VendusIndisponivel("a própria verificação também rebentou")
 
-    with pytest.raises(VendusIndisponivel):
+    with pytest.raises(VerificacaoFiscalIncerta):
         _corre(finalizar_venda(db, _venda(), emitir, verificar, esperar=_instantaneo))
 
     assert contagem["chamadas"] == 1  # nunca insiste a verificar às cegas
-    assert db[COLECOES["refs_fiscais"]]._documentos == []  # reserva libertada
+    refs = db[COLECOES["refs_fiscais"]]._documentos
+    assert len(refs) == 1 and refs[0]["incerta"] is True  # a reserva FICA, marcada incerta
+    assert db[COLECOES["documentos"]]._documentos == []
+    assert db[COLECOES["vendas"]]._documentos[0]["estado"] == "aberta"
+
+
+def test_retry_apos_reserva_incerta_e_obrigado_a_verificar_antes_de_emitir():
+    """O cenário da loja (C1): a rede oscila, o timeout da 1ª tentativa
+    deixa a reserva incerta (teste acima), a operadora carrega outra vez em
+    FINALIZAR. A 2ª tentativa NÃO pode emitir às cegas — tem de verificar
+    primeiro. Aqui a verificação encontra o documento que a 1ª tentativa
+    afinal tinha conseguido emitir no Vendus (só a resposta é que se
+    perdeu) — reutiliza-o, NUNCA chama `emitir` uma segunda vez. Sem esta
+    defesa, saíam duas Faturas Simplificadas reais da mesma venda."""
+    ref = "pos-loja-1-sessao-1-venda-1"
+    db = _db(
+        vendas=[_venda()],
+        refs=[{"id": "r1", "ext_ref": ref, "venda_id": "venda-1", "incerta": True}],
+    )
+
+    async def emitir(ref):
+        raise AssertionError("a 2ª tentativa não podia emitir sem verificar primeiro")
+
+    chamadas_verificar = []
+
+    async def verificar(ref):
+        chamadas_verificar.append(ref)
+        return _bruto(id=888, atcud="ATCUD-888")
+
+    documento = _corre(finalizar_venda(db, _venda(), emitir, verificar, esperar=_instantaneo))
+
+    assert chamadas_verificar == [ref]
+    assert documento["vendus_document_id"] == 888
+    assert db[COLECOES["vendas"]]._documentos[0]["estado"] == "emitida"
+
+
+def test_retry_apos_reserva_incerta_com_verificacao_limpa_emite_uma_so_vez():
+    """Mesmo cenário, mas desta vez a verificação confirma que o Vendus
+    NUNCA recebeu a 1ª tentativa (POST e GET falharam os dois, nada foi
+    criado do outro lado) — só então a 2ª tentativa pode emitir a sério, e
+    apenas uma vez."""
+    ref = "pos-loja-1-sessao-1-venda-1"
+    db = _db(
+        vendas=[_venda()],
+        refs=[{"id": "r1", "ext_ref": ref, "venda_id": "venda-1", "incerta": True}],
+    )
+    chamadas_emitir = []
+
+    async def emitir(ref):
+        chamadas_emitir.append(ref)
+        return _bruto()
+
+    async def verificar(ref):
+        return None  # o Vendus confirma que não tem nada desta venda
+
+    documento = _corre(finalizar_venda(db, _venda(), emitir, verificar, esperar=_instantaneo))
+
+    assert chamadas_emitir == [ref]
+    assert documento["vendus_document_id"] == 501
+    assert db[COLECOES["vendas"]]._documentos[0]["estado"] == "emitida"
+
+
+def test_retry_apos_reserva_incerta_com_verificacao_a_falhar_outra_vez_nao_emite():
+    """Se a verificação voltar a falhar na 2ª tentativa, continua sem se
+    poder concluir nada — não emite (nunca às cegas), e a reserva continua
+    incerta para a tentativa seguinte."""
+    from faturacao.fiscal import VerificacaoFiscalIncerta
+
+    ref = "pos-loja-1-sessao-1-venda-1"
+    db = _db(
+        vendas=[_venda()],
+        refs=[{"id": "r1", "ext_ref": ref, "venda_id": "venda-1", "incerta": True}],
+    )
+
+    async def emitir(ref):
+        raise AssertionError("não pode emitir sem confirmar primeiro")
+
+    async def verificar(ref):
+        raise VendusIndisponivel("a verificação continua a falhar")
+
+    with pytest.raises(VerificacaoFiscalIncerta):
+        _corre(finalizar_venda(db, _venda(), emitir, verificar, esperar=_instantaneo))
+
+    refs = db[COLECOES["refs_fiscais"]]._documentos
+    assert len(refs) == 1 and refs[0]["incerta"] is True
 
 
 # --- Falha depois da reserva liberta-a -----------------------------------------

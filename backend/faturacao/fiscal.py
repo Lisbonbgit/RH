@@ -119,6 +119,24 @@ class ConflitoDocumentoFiscal(FiscalErro):
     investigação manual."""
 
 
+class VerificacaoFiscalIncerta(FiscalErro):
+    """Depois de um timeout na emissão, a PRÓPRIA verificação por
+    `external_reference` também falhou — a falha CORRELACIONADA e mais
+    provável (a mesma rede que derrubou o POST derruba o GET a seguir).
+    Sem essa verificação não há forma de saber se o Vendus chegou a criar o
+    documento: nem se pode assumir que não (e emitir outra vez, arriscando
+    uma segunda Fatura Simplificada real da mesma venda), nem se pode
+    inventar que sim.
+
+    A reserva NÃO se liberta — fica marcada `incerta` (ver
+    `_marcar_reserva_incerta`), para a tentativa seguinte ser OBRIGADA a
+    verificar antes de poder fazer seja o que for (ver
+    `_retomar_reserva_incerta`). Quem chama (a rota `finalizar`) devolve
+    isto ao POS como "não foi possível confirmar, veja o Vendus" — nunca
+    como um "tente outra vez" genérico que convidaria a operadora a repetir
+    às cegas."""
+
+
 def _itens_vendus(venda: Dict) -> List[Dict]:
     """As linhas da venda no formato Vendus, com o desconto GLOBAL da venda
     (já resolvido a euros por `venda._desconto_global_eur` — o € tem sempre
@@ -216,6 +234,17 @@ async def _libertar_reserva(db, ext_ref: str) -> None:
     await db[COLECOES["refs_fiscais"]].delete_one({"ext_ref": ext_ref})
 
 
+async def _marcar_reserva_incerta(db, ext_ref: str) -> None:
+    """Marca a reserva como incerta em vez de a libertar — ver
+    VerificacaoFiscalIncerta. A diferença para `_libertar_reserva` é
+    exactamente o ponto desta defesa: libertar convidava a tentativa
+    seguinte a reservar de novo e emitir sem mais nenhuma pergunta; marcar
+    incerta obriga-a a verificar primeiro (`_retomar_reserva_incerta`)."""
+    await db[COLECOES["refs_fiscais"]].update_one(
+        {"ext_ref": ext_ref}, {"$set": {"incerta": True}}
+    )
+
+
 async def _esperar_documento_do_vencedor(
     db,
     ext_ref: str,
@@ -237,47 +266,13 @@ async def _esperar_documento_do_vencedor(
     )
 
 
-async def finalizar_venda(
-    db,
-    venda: Dict,
-    emitir: Callable[[str], Awaitable[Dict]],
-    verificar: Callable[[str], Awaitable[Optional[Dict]]],
-    esperar: Optional[Callable[[float], Awaitable[None]]] = None,
-    tentativas_espera: int = _TENTATIVAS_ESPERA_VENCEDOR,
-) -> Dict:
-    """O núcleo da Task 3 — a sequência das quatro defesas (ver a docstring
-    do módulo). `emitir(ext_ref)` e `verificar(ext_ref)` já vêm resolvidos
-    para ESTA venda (linhas, pagamentos, cliente, register_id — tudo isso é
-    responsabilidade de quem chama, normalmente a rota `finalizar` mais
-    abaixo); este núcleo só sabe de reserva, emissão-ou-verificação, e
-    gravação — é o que o torna testável sem tocar em rede nem em threads.
-    """
-    esperar = esperar if esperar is not None else asyncio.sleep
-    ext_ref = ext_ref_determinista(venda["loja_id"], venda["sessao_id"], venda["id"])
-
-    ganhou = await _reservar(db, ext_ref, venda["id"])
-    if not ganhou:
-        return await _esperar_documento_do_vencedor(db, ext_ref, esperar, tentativas_espera)
-
-    try:
-        try:
-            bruto = await emitir(ext_ref)
-        except VendusIndisponivel:
-            # Não sabemos se o pedido chegou a ser processado do outro
-            # lado — UMA verificação exacta, nunca um varrimento (ver a
-            # docstring do módulo).
-            encontrado = await verificar(ext_ref)
-            if encontrado is None:
-                raise
-            bruto = encontrado
-    except Exception:
-        # Qualquer falha a partir daqui significa que NENHUM documento foi
-        # confirmado como emitido para esta venda — a reserva liberta-se,
-        # para a próxima tentativa (correcção de dados, nova tentativa
-        # manual) poder reservar de novo.
-        await _libertar_reserva(db, ext_ref)
-        raise
-
+async def _gravar_documento(db, ext_ref: str, venda: Dict, bruto: Dict) -> Dict:
+    """Grava `bruto` (o que o Vendus devolveu — criado agora OU encontrado
+    por uma verificação) em `fat_documentos` e marca a venda emitida —
+    passo 3 da sequência (ver a docstring do módulo). Partilhado por todos
+    os caminhos que chegam a um documento real: quem acabou de emitir, e
+    quem retoma uma reserva incerta e encontra o documento já lá (ver
+    `_retomar_reserva_incerta`)."""
     documento = {
         "id": str(uuid.uuid4()),
         "vendus_document_id": bruto.get("id"),
@@ -319,6 +314,120 @@ async def finalizar_venda(
         {"$set": {"estado": "emitida", "documento_id": documento["id"]}},
     )
     return documento
+
+
+async def _emitir_e_gravar(
+    db,
+    ext_ref: str,
+    venda: Dict,
+    emitir: Callable[[str], Awaitable[Dict]],
+    verificar: Callable[[str], Awaitable[Optional[Dict]]],
+) -> Dict:
+    """Chama `emitir`, com o único fallback permitido (ver a docstring do
+    módulo): um timeout/indisponibilidade tenta UMA verificação exacta.
+
+    Há três desfechos possíveis depois de um timeout na emissão, cada um
+    com uma consequência DIFERENTE sobre a reserva — é aqui que vivia o
+    defeito C1 (a revisão do núcleo fiscal): um `except Exception` genérico
+    à volta de tudo libertava a reserva mesmo quando a PRÓPRIA verificação
+    rebentava, que é precisamente o caso em que nada se sabe sobre se o
+    Vendus chegou a emitir.
+
+    1. A verificação encontra o documento → usa-o, nunca uma segunda emissão.
+    2. A verificação corre bem e não encontra nada → o Vendus não chegou a
+       processar o pedido original; liberta-se a reserva, propaga-se o erro
+       original (o POS mostra "tente outra vez").
+    3. A PRÓPRIA verificação falha → não se sabe nada; a reserva NÃO se
+       liberta, fica marcada incerta (ver VerificacaoFiscalIncerta)."""
+    try:
+        bruto = await emitir(ext_ref)
+    except VendusIndisponivel as erro_emissao:
+        try:
+            encontrado = await verificar(ext_ref)
+        except Exception as erro_verificacao:
+            await _marcar_reserva_incerta(db, ext_ref)
+            raise VerificacaoFiscalIncerta(
+                "Timeout na emissão (ext_ref=%s) e a própria verificação por "
+                "referência externa também falhou (%s) — não é seguro "
+                "concluir nada sobre se o Vendus criou o documento. A "
+                "reserva foi mantida, marcada incerta; confirme no Vendus "
+                "antes de repetir." % (ext_ref, erro_verificacao)
+            ) from erro_emissao
+        if encontrado is None:
+            await _libertar_reserva(db, ext_ref)
+            raise erro_emissao
+        bruto = encontrado
+    except Exception:
+        # Qualquer outra falha (4xx, validação nossa, RegisterIdInvalido,
+        # VendusModoInvalido, VendusRateLimitado...) significa que sabemos
+        # que o Vendus NÃO criou nada — a reserva liberta-se, para a
+        # próxima tentativa (correcção de dados, nova tentativa manual)
+        # poder reservar de novo.
+        await _libertar_reserva(db, ext_ref)
+        raise
+
+    return await _gravar_documento(db, ext_ref, venda, bruto)
+
+
+async def _retomar_reserva_incerta(
+    db,
+    ext_ref: str,
+    venda: Dict,
+    emitir: Callable[[str], Awaitable[Dict]],
+    verificar: Callable[[str], Awaitable[Optional[Dict]]],
+) -> Dict:
+    """Quem encontra uma reserva marcada `incerta` (a tentativa anterior
+    teve um timeout na emissão E a verificação também falhou — nunca se
+    soube se o Vendus criou o documento) é OBRIGADO a verificar antes de
+    poder fazer seja o que for: nunca herda o direito de emitir só por ter
+    encontrado a reserva, porque essa reserva pode já corresponder a um
+    documento fiscal real do outro lado."""
+    try:
+        encontrado = await verificar(ext_ref)
+    except Exception as erro_verificacao:
+        raise VerificacaoFiscalIncerta(
+            "A reserva desta venda (ext_ref=%s) continua incerta — a "
+            "verificação por referência externa voltou a falhar (%s). Não "
+            "se emite às cegas; confirme no Vendus." % (ext_ref, erro_verificacao)
+        ) from erro_verificacao
+    if encontrado is not None:
+        return await _gravar_documento(db, ext_ref, venda, encontrado)
+    # A verificação correu bem e não encontrou nada: só agora é seguro
+    # tentar emitir — com a MESMA rede de segurança de sempre (se este
+    # timeout também falhar, a reserva volta a ficar incerta).
+    return await _emitir_e_gravar(db, ext_ref, venda, emitir, verificar)
+
+
+async def finalizar_venda(
+    db,
+    venda: Dict,
+    emitir: Callable[[str], Awaitable[Dict]],
+    verificar: Callable[[str], Awaitable[Optional[Dict]]],
+    esperar: Optional[Callable[[float], Awaitable[None]]] = None,
+    tentativas_espera: int = _TENTATIVAS_ESPERA_VENCEDOR,
+) -> Dict:
+    """O núcleo da Task 3 — a sequência das quatro defesas (ver a docstring
+    do módulo). `emitir(ext_ref)` e `verificar(ext_ref)` já vêm resolvidos
+    para ESTA venda (linhas, pagamentos, cliente, register_id — tudo isso é
+    responsabilidade de quem chama, normalmente a rota `finalizar` mais
+    abaixo); este núcleo só sabe de reserva, emissão-ou-verificação, e
+    gravação — é o que o torna testável sem tocar em rede nem em threads.
+    """
+    esperar = esperar if esperar is not None else asyncio.sleep
+    ext_ref = ext_ref_determinista(venda["loja_id"], venda["sessao_id"], venda["id"])
+
+    ganhou = await _reservar(db, ext_ref, venda["id"])
+    if ganhou:
+        return await _emitir_e_gravar(db, ext_ref, venda, emitir, verificar)
+
+    # Perdeu a reserva: OU alguém está mesmo a meio da emissão (espera pelo
+    # documento, comportamento de sempre), OU a reserva existente ficou
+    # `incerta` numa tentativa anterior (C1) — nesse caso é OBRIGADA a
+    # verificar antes de poder fazer seja o que for.
+    reserva = await db[COLECOES["refs_fiscais"]].find_one({"ext_ref": ext_ref})
+    if reserva is not None and reserva.get("incerta"):
+        return await _retomar_reserva_incerta(db, ext_ref, venda, emitir, verificar)
+    return await _esperar_documento_do_vencedor(db, ext_ref, esperar, tentativas_espera)
 
 
 # --- Verificação de leitura contra o Vendus (Task 4, prometida no Plano 2A) ---
@@ -577,6 +686,11 @@ async def finalizar(
             raise HTTPException(status_code=409, detail=str(e))
         except ConflitoDocumentoFiscal as e:
             raise HTTPException(status_code=500, detail=str(e))
+        except VerificacaoFiscalIncerta as e:
+            # Não se sabe se o Vendus emitiu (timeout + verificação também
+            # falhou) — nunca um "tente outra vez" genérico, que convidaria
+            # a operadora a repetir às cegas (ver a docstring da excepção).
+            raise HTTPException(status_code=503, detail=str(e))
         except VendusErro as e:
             raise HTTPException(status_code=502, detail="Vendus indisponível: %s" % e)
 
