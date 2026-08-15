@@ -223,15 +223,19 @@ async def _instantaneo(_segundos):
     await asyncio.sleep(0)
 
 
-# --- Itens Vendus, com o desconto GLOBAL dobrado por linha --------------------
+# --- Itens Vendus: desconto GLOBAL distribuído em cêntimos exactos por linha --
 #
 # O Vendus só aceita um desconto por linha (€ OU %) e não há um desconto
 # fiável ao nível do documento inteiro independente do recurso de "cartões
 # de desconto" (ver o relatório da tarefa) — por isso o desconto GLOBAL da
-# venda tem de se dobrar dentro do desconto de CADA linha, como uma única
-# discount_percentage. Mesmo raciocínio do `combine_global` da Pizzaria
-# (~/dev/pizzaria/backend/pos/pricing.py), já validado em produção:
-# composição multiplicativa, o global aplica-se sempre por cima do da linha.
+# venda tem de se combinar com o desconto de CADA linha. C3 (a revisão do
+# núcleo fiscal): compor isto como uma ÚNICA discount_percentage arredondada
+# uma vez sobre o total divergia do que o Vendus calcula de facto — ele
+# arredonda CADA linha ao cêntimo antes de somar. A correcção distribui o
+# desconto global em CÊNTIMOS EXACTOS por linha (`_distribuir_centimos`,
+# maior resto) e envia sempre `discount_amount` quando há desconto global a
+# combinar — nunca uma percentagem que o Vendus teria de arredondar outra
+# vez do lado dele.
 
 
 def test_itens_vendus_sem_nenhum_desconto():
@@ -240,34 +244,52 @@ def test_itens_vendus_sem_nenhum_desconto():
     assert itens == [{"title": "Açaí Regular", "qty": 2, "gross_price": 8.99, "tax_id": "INT"}]
 
 
-def test_itens_vendus_mantem_o_desconto_proprio_da_linha_sem_desconto_global():
+def test_itens_vendus_converte_o_desconto_proprio_da_linha_em_euros_mesmo_sem_desconto_global():
+    """C3 também sem desconto global: uma linha só com desconto próprio EM
+    PERCENTAGEM já pode divergir um cêntimo se enviada como
+    discount_percentage (o Vendus recalcula gross*(1-pct/100) e arredonda
+    OUTRA VEZ do lado dele — medido com preços reais, ver a docstring de
+    _itens_vendus). Por isso sai sempre como discount_amount, já no valor
+    exacto em euros que `_desconto_da_linha` (a mesma função que
+    `venda._totais` usa) calculou: 8,99€ × 10% = 0,899€, arredondado a
+    0,90€."""
     venda = _venda(linhas=[_linha(desconto_pct=10)])
     itens = _itens_vendus(venda)
-    assert itens[0]["discount_percentage"] == 10.0
+    assert itens[0]["discount_amount"] == 0.90
+    assert "discount_percentage" not in itens[0]
+    assert _liquido_dos_itens(itens) == _totais(venda)["total"]
 
 
 def _liquido_dos_itens(itens):
-    """O líquido que o Vendus calcularia destes itens: soma de
-    qty*gross_price*(1-discount_percentage/100), arredondado a 2 casas —
-    usado para provar que _itens_vendus produz um total que bate com
-    venda._totais (a MESMA fonte de verdade dos totais mostrados no ecrã),
-    nunca uma soma inventada à parte (mesma regra de ouro do Task 2)."""
+    """O líquido que o Vendus calcularia destes itens: cada linha
+    arredondada ao CÊNTIMO antes de somar — nunca uma soma sem arredondar
+    linha a linha e só arredondar no fim (era isso, e não outra coisa, que
+    escondia o defeito C3: uma soma sem arredondar por linha "batia
+    certo" com `venda._totais` por coincidência do mesmo estilo de
+    arredondamento nos dois lados, mesmo quando o Vendus real — que
+    arredonda CADA linha — ia calcular outra coisa). Usado para provar que
+    `_itens_vendus` produz um total que bate EXACTAMENTE com `venda._totais`
+    (a MESMA fonte de verdade dos totais mostrados no ecrã)."""
     total = 0.0
     for it in itens:
-        gross = it["qty"] * it["gross_price"]
-        pct = it.get("discount_percentage", 0.0)
-        total += gross * (1 - pct / 100.0)
+        gross = round(it["qty"] * it["gross_price"], 2)
+        if "discount_amount" in it:
+            liquido_linha = round(gross - it["discount_amount"], 2)
+        else:
+            pct = it.get("discount_percentage", 0.0)
+            liquido_linha = round(gross * (1 - pct / 100.0), 2)
+        total += liquido_linha
     return round(total, 2)
 
 
 def test_itens_vendus_com_desconto_global_percentagem_sem_desconto_de_linha():
-    """Uma linha sem desconto próprio recebe uma discount_percentage tal que
-    o líquido resultante bate com venda._totais — não um número
-    hard-coded (o desconto global já passou por um arredondamento a
-    cêntimos dentro de _desconto_global_eur, por isso a percentagem
-    equivalente NÃO é exactamente 10.0, é a que reproduz esse cêntimo)."""
+    """Uma linha sem desconto próprio recebe a fatia inteira do desconto
+    global, como discount_amount — o líquido resultante bate EXACTAMENTE
+    (não só "próximo") com venda._totais, a mesma fonte de verdade dos
+    totais mostrados no ecrã."""
     venda = _venda(linhas=[_linha()], desconto_global_pct=10)
     itens = _itens_vendus(venda)
+    assert "discount_amount" in itens[0]
     assert _liquido_dos_itens(itens) == _totais(venda)["total"]
 
 
@@ -277,14 +299,18 @@ def test_itens_vendus_com_desconto_global_em_euros_bate_com_totais():
     assert _liquido_dos_itens(itens) == _totais(venda)["total"]
 
 
-def test_itens_vendus_combina_desconto_de_linha_com_desconto_global_multiplicativamente():
-    """10% na linha + 10% global não é 20% (soma), é composição
-    multiplicativa — 1-(1-0.1)(1-0.1) ≈ 19%, nunca 20%."""
+def test_itens_vendus_combina_desconto_de_linha_com_desconto_global_como_discount_amount():
+    """10% de desconto próprio da linha (0,90€) + 10% de desconto global
+    sobre o líquido pós-linha (8,09€ × 10% = 0,81€, não 10% sobre o bruto —
+    o global incide DEPOIS do desconto da linha, nunca em paralelo) somam
+    1,71€ — nunca uma percentagem combinada de ~19% que o Vendus teria de
+    recompor e arredondar outra vez do lado dele. O líquido bate
+    EXACTAMENTE com venda._totais."""
     venda = _venda(linhas=[_linha(desconto_pct=10)], desconto_global_pct=10)
     itens = _itens_vendus(venda)
-    assert itens[0]["discount_percentage"] < 20.0
-    assert itens[0]["discount_percentage"] == pytest.approx(19.0, abs=0.05)
-    assert _liquido_dos_itens(itens) == _totais(venda)["total"]
+    assert itens[0]["discount_amount"] == 1.71
+    assert "discount_percentage" not in itens[0]
+    assert _liquido_dos_itens(itens) == _totais(venda)["total"] == 7.28
 
 
 def test_itens_vendus_com_desconto_de_linha_em_euros_e_global_em_percentagem():
@@ -294,6 +320,12 @@ def test_itens_vendus_com_desconto_de_linha_em_euros_e_global_em_percentagem():
 
 
 def test_itens_vendus_com_duas_linhas_e_desconto_global_aplica_a_ambas():
+    """O desconto global (1,15€) reparte-se pelas duas linhas PROPORCIONAL
+    ao peso de cada uma (8,99€ vs 2,50€) em cêntimos exactos — 0,90€ para a
+    primeira, 0,25€ para a segunda (0,90+0,25=1,15€, exacto, nunca um
+    cêntimo perdido). O líquido bate EXACTAMENTE com venda._totais — já não
+    há tolerância nenhuma de arredondamento por linha, porque agora a
+    distribuição é feita já em cêntimos, a mesma unidade que o Vendus usa."""
     venda = _venda(
         linhas=[
             _linha(id="l1", quantidade=1),
@@ -304,10 +336,31 @@ def test_itens_vendus_com_duas_linhas_e_desconto_global_aplica_a_ambas():
     )
     itens = _itens_vendus(venda)
     assert len(itens) == 2
-    assert itens[0]["discount_percentage"] == pytest.approx(10.0, abs=0.05)
-    assert itens[1]["discount_percentage"] == pytest.approx(10.0, abs=0.05)
+    assert itens[0]["discount_amount"] == 0.90
+    assert itens[1]["discount_amount"] == 0.25
     assert itens[1]["title"] == "Sumo"
-    assert abs(_liquido_dos_itens(itens) - _totais(venda)["total"]) <= 0.02  # tolerância de arredondamento por linha
+    assert _liquido_dos_itens(itens) == _totais(venda)["total"] == 10.34
+
+
+def test_itens_vendus_desconto_global_em_euros_bate_exactamente_com_o_que_o_vendus_calcularia():
+    """C3, medido com dados reais na revisão: 7 linhas a 1,15€ com 5€ de
+    desconto global. Antes da correcção, o total mostrado à operadora
+    (venda._totais) era 3,05€ mas o Vendus — que arredonda CADA linha ao
+    cêntimo antes de somar — calculava 3,08€: ou recusava o documento (saía
+    ao balcão como "Vendus indisponível", mandando a operadora verificar a
+    internet quando o problema era a nossa aritmética) ou aceitava uma
+    fatura cujo pagamento não batia com o total. Com a distribuição em
+    cêntimos exactos (3 linhas a -0,72€, 4 linhas a -0,71€, somando os 5€
+    certinhos), os dois lados batem SEMPRE."""
+    venda = _venda(
+        linhas=[_linha(id="l%d" % i, produto_preco=1.15) for i in range(7)],
+        desconto_global_eur=5.0,
+    )
+    itens = _itens_vendus(venda)
+    descontos = sorted(it["discount_amount"] for it in itens)
+    assert descontos == [0.71, 0.71, 0.71, 0.71, 0.72, 0.72, 0.72]
+    assert round(sum(descontos), 2) == 5.0
+    assert _liquido_dos_itens(itens) == _totais(venda)["total"] == 3.05
 
 
 def test_itens_vendus_sem_desconto_algum_nao_tem_discount_percentage():

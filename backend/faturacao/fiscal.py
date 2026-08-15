@@ -137,60 +137,109 @@ class VerificacaoFiscalIncerta(FiscalErro):
     às cegas."""
 
 
+def _distribuir_centimos(total_eur: float, pesos: List[float]) -> List[float]:
+    """Distribui `total_eur` (positivo, arredondado a cêntimos) pelos
+    `pesos` (uma lista de valores >= 0 — tipicamente o líquido de cada linha
+    depois do seu desconto próprio), proporcionalmente e em CÊNTIMOS
+    EXACTOS — nunca uma fracção de cêntimo por linha.
+
+    Método do maior resto (Hamilton): cada linha recebe primeiro os
+    cêntimos inteiros da sua quota proporcional (arredondada por baixo); o
+    resto se ficarem cêntimos por atribuir (sempre < nº de linhas) vai, um a
+    um, para as linhas com a maior parte fraccionária perdida — em caso de
+    empate, a de índice mais baixo, para o resultado ser sempre o MESMO
+    para os mesmos dados, nunca dependente de instabilidade de ordenação.
+
+    Garante, por construção, que a soma dos valores devolvidos bate
+    EXACTAMENTE com `total_eur` (arredondado a cêntimos) — é esta garantia,
+    e não uma percentagem recomposta que o Vendus tinha de arredondar outra
+    vez do lado dele, que fecha o defeito C3 (a revisão do núcleo fiscal):
+    o Vendus arredonda cada linha ao cêntimo; nós arredondávamos o desconto
+    GLOBAL uma única vez sobre o total, e as duas somas podiam divergir até
+    ±0,02–0,03€ numa venda com várias linhas."""
+    total_centimos = round(total_eur * 100)
+    soma_pesos = sum(pesos)
+    if total_centimos <= 0 or soma_pesos <= 0:
+        return [0.0] * len(pesos)
+
+    quotas = [total_centimos * peso / soma_pesos for peso in pesos]
+    base = [int(q) for q in quotas]  # trunca — a parte inteira da quota
+    restantes = total_centimos - sum(base)
+    ordem = sorted(range(len(pesos)), key=lambda i: (-(quotas[i] - base[i]), i))
+    for indice in ordem[:restantes]:
+        base[indice] += 1
+    return [centimos / 100.0 for centimos in base]
+
+
 def _itens_vendus(venda: Dict) -> List[Dict]:
-    """As linhas da venda no formato Vendus, com o desconto GLOBAL da venda
-    (já resolvido a euros por `venda._desconto_global_eur` — o € tem sempre
-    precedência sobre a percentagem, mesma regra do desconto por linha)
-    dobrado dentro do desconto de CADA linha como uma ÚNICA
-    `discount_percentage`.
+    """As linhas da venda no formato Vendus. O desconto de cada linha —
+    próprio dela (€ ou %, já resolvido por `precos.linha_de_venda`), mais a
+    fatia do desconto GLOBAL que lhe calhar (`venda._desconto_global_eur`;
+    o € tem sempre precedência sobre a percentagem, mesma regra do desconto
+    por linha; distribuído pelas linhas em CÊNTIMOS EXACTOS, ver
+    `_distribuir_centimos`, método do maior resto) — sai SEMPRE como
+    `discount_amount`, nunca uma `discount_percentage`.
 
-    Porquê não um campo de desconto ao nível do documento inteiro: o Vendus
-    documenta `discount_amount`/`discount_percentage` no `POST documents/`,
-    mas agrupados com `discount_code`/`discount_code_apply` — é o recurso de
-    "cartões de desconto" (cupões), não um desconto genérico independente
-    dele (confirmado nos docs cacheados do Vendus, ver o relatório da
-    tarefa). Sem conseguir confirmar isto ao vivo (sem chave de API nesta
-    máquina), não se usa às cegas um campo cujo comportamento fora desse
-    contexto não está documentado.
+    Porquê `discount_amount` e nunca uma percentagem: é a correcção do
+    defeito C3. O Vendus arredonda CADA linha ao cêntimo antes de somar;
+    enviar uma `discount_percentage` fazia-o recalcular
+    `gross*(1-pct/100)` e arredondar OUTRA VEZ do lado dele — um
+    arredondamento independente do nosso. Medido com preços reais: até
+    ±0,02€ mesmo SEM desconto global (uma linha só com desconto próprio em
+    percentagem já pode divergir um cêntimo — ex.: 14,67€ com 25% não bate
+    sempre com `round(14.67, 2) - round(14.67*0.25, 2)`), e até ±0,03€ com
+    desconto global em euros (7 linhas a 1,15€ com 5€ de desconto: nós
+    calculávamos 3,05€, o Vendus 3,08€). Um `discount_amount` já em
+    cêntimos exactos (`_desconto_da_linha` — a MESMA função que
+    `venda._totais` usa para somar `desconto_linhas`, mais a fatia do
+    global) não deixa NADA por arredondar do lado do Vendus — o valor que
+    ele calcula é sempre, algebricamente, o MESMO que `venda._totais`
+    mostra à operadora: uma só fonte de verdade, nunca dois caminhos de
+    arredondamento independentes.
 
-    Em vez disso, o MESMO raciocínio do `combine_global` da Pizzaria
-    (`~/dev/pizzaria/backend/pos/pricing.py`), já validado em produção:
-    a percentagem da própria linha compõe-se multiplicativamente com a
-    percentagem equivalente do desconto global — `1-(1-p)(1-g)` — nunca
-    dois descontos em paralelo. O desconto global aplica-se SEMPRE por cima
-    do desconto da linha, igual ao que `venda._totais` já calcula."""
+    Porquê não um campo de desconto ao nível do documento inteiro (em vez
+    de distribuir o global por linha): o Vendus documenta `discount_amount`/
+    `discount_percentage` no `POST documents/`, mas agrupados com
+    `discount_code`/`discount_code_apply` — é o recurso de "cartões de
+    desconto" (cupões), não um desconto genérico independente dele
+    (confirmado nos docs cacheados do Vendus, ver o relatório da tarefa).
+    Sem conseguir confirmar isto ao vivo (sem chave de API nesta máquina),
+    não se usa às cegas um campo cujo comportamento fora desse contexto não
+    está documentado."""
     linhas_vendus = [_linha_vendus(li) for li in venda.get("linhas", [])]
     if not linhas_vendus:
         return []
 
-    subtotal = round(sum(_bruto_da_linha(li) for li in linhas_vendus), 2)
-    desconto_linhas = round(sum(_desconto_da_linha(li) for li in linhas_vendus), 2)
-    liquido_linhas = round(subtotal - desconto_linhas, 2)
+    brutos = [_bruto_da_linha(li) for li in linhas_vendus]
+    descontos_proprios = [_desconto_da_linha(li) for li in linhas_vendus]
+    liquidos_apos_linha = [round(b - d, 2) for b, d in zip(brutos, descontos_proprios)]
+    liquido_linhas = round(sum(liquidos_apos_linha), 2)
     desconto_global = _desconto_global_eur(venda, liquido_linhas)
-    pct_global = (
-        round(100.0 * desconto_global / liquido_linhas, 6) if liquido_linhas > 0 else 0.0
+
+    partes_globais = (
+        _distribuir_centimos(desconto_global, liquidos_apos_linha)
+        if desconto_global > 0
+        else [0.0] * len(linhas_vendus)
     )
-    pct_global = max(0.0, min(100.0, pct_global))
 
     saida = []
-    for li in linhas_vendus:
-        qty = li.get("qty", 1) or 1
-        unit = float(li.get("gross_price", 0) or 0)
-        gross = round(unit * qty, 2)
-
-        damount = li.get("discount_amount")
-        dpct = li.get("discount_percentage")
-        if damount:
-            liquido_apos_linha = max(0.0, gross - float(damount))
-            pct_linha = round(100.0 * (1 - liquido_apos_linha / gross), 6) if gross > 0 else 0.0
-        else:
-            pct_linha = float(dpct or 0)
-
-        eff = round(100.0 * (1 - (1 - pct_linha / 100.0) * (1 - pct_global / 100.0)), 6)
-
+    for li, desconto_proprio, parte_global in zip(linhas_vendus, descontos_proprios, partes_globais):
         item = {chave: li[chave] for chave in ("title", "qty", "gross_price", "tax_id") if chave in li}
-        if eff > 0:
-            item["discount_percentage"] = eff
+        # SEMPRE discount_amount quando há algum desconto (próprio da linha,
+        # global, ou os dois combinados) — nunca discount_percentage. Não é
+        # só para o caso combinado: mesmo um desconto SÓ da linha, em
+        # percentagem, se enviado como discount_percentage obrigava o Vendus
+        # a recalcular gross*(1-pct/100) e arredondar OUTRA VEZ do lado
+        # dele — um segundo arredondamento independente do nosso que, medido
+        # com preços reais, também diverge um cêntimo em casos sem desconto
+        # global nenhum (ex.: 14.67€ com 25% não bate sempre com
+        # round(14.67,2) - round(14.67*0.25,2)). `desconto_proprio` já vem
+        # de `_desconto_da_linha` — a MESMA função que `venda._totais` usa
+        # para somar `desconto_linhas` — por isso é sempre, por construção,
+        # o valor exacto em cêntimos que faz o Vendus bater com o ecrã.
+        desconto_total = round(desconto_proprio + parte_global, 2)
+        if desconto_total > 0:
+            item["discount_amount"] = desconto_total
         saida.append(item)
     return saida
 
