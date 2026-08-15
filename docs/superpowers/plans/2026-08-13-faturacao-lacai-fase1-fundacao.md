@@ -2002,6 +2002,82 @@ Gráficos sem bibliotecas novas (SVG à mão, ou barras em CSS como o `Marketing
 
 ---
 
+## Task 19: Backend do catálogo — categorias e grupos de personalização
+
+**Ordem obrigatória:** um produto aponta para uma categoria e para grupos de personalização, por
+isso estes dois nascem primeiro.
+
+**Files:** Create `backend/faturacao/catalogo.py` e `backend/tests/faturacao/test_catalogo.py` ·
+Modify `backend/faturacao/db.py` (índices) e `backend/faturacao/__init__.py`
+
+**Categorias** (`fat_categorias`): `nome`, `ordem`, `ativa`. São as do Vendus — "Venda ao Público" e
+"Vendas Aplicações" (decisão D7 da spec). Endpoints `GET/POST /categorias`, `PUT/DELETE
+/categorias/{id}`. **Apagar uma categoria com produtos → 409** com mensagem clara, como o
+`apagar_loja` já faz com as caixas.
+
+**Grupos de personalização** (`fat_grupos_personalizacao`): `nome`, `min_select`, `max_select`,
+`opcoes: [{id, nome, preco, ativa}]`, `ativo`.
+Semântica **derivada, sem campos redundantes** (é o modelo que a app L'Açaí já usa em produção):
+obrigatório = `min_select ≥ 1`; escolha única = `max_select == 1`; `max_select == 0` = ilimitado.
+Validações: `min_select ≤ max_select` quando `max_select > 0`; `min_select` nunca maior do que o
+número de opções; preço de opção com **no máximo 2 casas decimais** (o `precos.py` recusa mais —
+e é o mesmo cêntimo que desaparecia com `round()` sobre binário).
+
+**Commit:** `Faturação: categorias e grupos de personalização`
+
+---
+
+## Task 20: Backend do catálogo — produtos
+
+**Files:** Modify `backend/faturacao/catalogo.py` e os testes · Modify `backend/faturacao/db.py`
+
+**Produtos** (`fat_produtos`): `nome`, `categoria_id`, `preco`, `tax_id`, `foto_url`,
+`grupos_personalizacao: [ids]`, `ativo`, `vendus_ref`.
+
+**A regra que não se negoceia:** `tax_id` **obrigatório**, sem valor por omissão. Um produto sem
+IVA definido não pode ser vendido — o `precos.py` já levanta erro, e o backoffice tem de o mostrar
+antes de chegar lá. Endpoint `GET /produtos/sem-iva` devolve a lista dos incompletos, para o ecrã
+poder avisar.
+
+Endpoints `GET/POST /produtos`, `GET/PUT/DELETE /produtos/{id}`, `PUT /produtos/{id}/estado`.
+`GET /produtos` aceita filtro por `categoria_id` e por texto.
+Recusar `categoria_id` ou grupos que não existam — 422 com mensagem em português.
+
+**Commit:** `Faturação: produtos`
+
+---
+
+## Task 21: Importação do catálogo do Vendus
+
+**Files:** Create `backend/faturacao/vendus/cliente.py` (**só leitura**) e `backend/faturacao/importacao.py`
+
+Traz categorias e produtos da conta Vendus da Fordaimon (NIF 517542510), com preço, IVA e
+referência. **Idempotente** — correr duas vezes não duplica nada (casar por `vendus_ref`).
+
+**A armadilha conhecida:** o import equivalente noutro projecto nosso chama a API **sem `per_page`**
+e o Vendus devolve **20 por omissão** — importava 20 produtos e ninguém dava por isso. Paginar até
+esgotar, pelos cabeçalhos `X-Paginator-Pages`, e **dizer quantos leu**.
+
+A chave vem de `VENDUS_ACCOUNTS` (JSON já usado pelo Financeiro), escolhendo a entrada cujo
+`company_nif` bate com `FAT_NIF` (por omissão `517542510`). Sem chave → mensagem clara, nunca 500.
+
+**Commit:** `Faturação: importar o catálogo do Vendus`
+
+---
+
+## Task 22: Os três ecrãs de Produtos
+
+**Files:** `frontend/src/pages/admin/faturacao/FatProdutos.js`, `FatCategorias.js`,
+`FatPersonalizacoes.js` · Modify `App.js` e `lib/faturacao.js`
+
+Substituem os três "Brevemente" em `/admin/faturacao/produtos/{lista,categorias,personalizacoes}`.
+Estilo dos ecrãs de Configuração já feitos. No de Produtos: aviso no topo com a contagem de
+**produtos sem IVA definido**, e botão para **importar do Vendus**.
+
+**Commit:** `Faturação: ecrãs de Produtos, Categorias e Personalizações`
+
+---
+
 ## Verificação final do Plano 1
 
 - [ ] `cd ~/Developer/RH/backend && .venv/bin/pytest tests/ -v` — tudo verde
