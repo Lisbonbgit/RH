@@ -66,13 +66,21 @@ def test_sem_documentos_tudo_a_zero():
 
 def test_lojas_sem_documentos_aparecem_em_por_loja_a_zero():
     """Uma loja configurada mas que ainda não vendeu nada aparece na lista,
-    com zeros — não desaparece do dashboard."""
+    com zeros (incluindo os campos de comparação, ricos, novos) — não
+    desaparece do dashboard."""
     lojas = [{"id": "l1", "nome": "Loja Alfa"}]
     resultado = calcula_dashboard([], lojas, AGORA, com_iva=True)
-    assert resultado["por_loja"] == [
-        {"loja_id": "l1", "nome": "Loja Alfa", "hoje": 0, "mensal": 0, "serie_diaria": resultado["por_loja"][0]["serie_diaria"]}
-    ]
-    assert len(resultado["por_loja"][0]["serie_diaria"]) == 30
+    loja = resultado["por_loja"][0]
+    assert loja["loja_id"] == "l1"
+    assert loja["nome"] == "Loja Alfa"
+    assert loja["hoje"] == 0
+    assert loja["hoje_anterior"] == 0
+    assert loja["variacao_hoje"] is None  # sem período anterior, não se inventa percentagem
+    assert loja["mensal"] == 0
+    assert loja["mensal_anterior"] == 0
+    assert loja["variacao_mensal"] is None
+    assert len(loja["serie_diaria"]) == 30
+    assert len(loja["serie_mensal"]) == 6
 
 
 # --- cartão "hoje" -----------------------------------------------------------
@@ -254,6 +262,124 @@ def test_por_loja_nao_mistura_vendas_de_lojas_diferentes():
     por_loja = {p["nome"]: p for p in resultado["por_loja"]}
     assert por_loja["Loja Alfa"]["hoje"] == 25.00
     assert por_loja["Loja Beta"]["hoje"] == 40.00
+
+
+def test_por_loja_nota_de_credito_conta_negativa_e_anulado_nao_conta():
+    """A regra da NC (sinal negativo) e do anulado (não conta) vale por loja,
+    não só no total (era o que faltava antes desta tarefa)."""
+    lojas = [{"id": "l1", "nome": "Loja Alfa"}]
+    documentos = [
+        _doc("l1", _agora(2026, 8, 13, 9, 0), 25.00, 20.00, tipo="FS"),
+        _doc("l1", _agora(2026, 8, 13, 11, 0), 5.00, 4.00, tipo="NC"),
+        _doc("l1", _agora(2026, 8, 13, 12, 0), 999.00, 900.00, tipo="FS", anulado=True),
+    ]
+    resultado = calcula_dashboard(documentos, lojas, AGORA, com_iva=True)
+    assert resultado["por_loja"][0]["hoje"] == 20.00  # 25 - 5, o anulado fica de fora
+
+
+# --- por_loja "rico": hoje_anterior/variacao_hoje, mensal_anterior/variacao_mensal, serie_mensal ---
+#
+# O pedido do dono: cada loja do backoffice do Vendus mostra QUATRO números
+# (hoje+ontem+sparkline, mensal+anterior+mini-gráfico), não dois. Estes testes
+# provam que a loja usa exactamente as MESMAS janelas (`j_hoje_anterior`,
+# `j_mes`/`j_mes_anterior`) que os cartões do total — nunca uma versão
+# encurtada ou reinventada por loja (era esse, literalmente, o defeito do
+# Vendus que periodos.py corrige: comparar com o dia/mês anterior INTEIRO em
+# vez do período equivalente).
+
+def test_por_loja_hoje_anterior_usa_o_periodo_equivalente_nao_o_dia_inteiro():
+    """Réplica, por loja, de test_cartao_hoje_negocio_estavel_nao_mostra_queda_de_manha:
+    um negócio estável não pode mostrar queda de manhã só porque 'ontem'
+    seria contado por inteiro (24h) em vez de até à mesma hora do relógio."""
+    agora = _agora(2026, 8, 13, 9, 0)
+    lojas = [{"id": "l1", "nome": "Loja Alfa"}]
+    documentos = [
+        _doc("l1", _agora(2026, 8, 13, 8, 0), 500.00, 400.00),    # hoje, antes das 9h
+        _doc("l1", _agora(2026, 8, 12, 8, 0), 500.00, 400.00),    # ontem, à mesma hora: conta
+        _doc("l1", _agora(2026, 8, 12, 20, 0), 1000.00, 800.00),  # ontem à noite: NÃO pode contar
+    ]
+    resultado = calcula_dashboard(documentos, lojas, agora, com_iva=True)
+    loja = resultado["por_loja"][0]
+    assert loja["hoje"] == 500.00
+    assert loja["hoje_anterior"] == 500.00  # não 1500.00 (dia de ontem inteiro)
+    assert loja["variacao_hoje"] == 0.0
+    # E tem de bater com o cartão do total, que usa a mesma janela e o mesmo
+    # único documento/loja neste teste.
+    assert loja["hoje_anterior"] == resultado["cartoes"]["hoje"]["valor_comparado"]
+
+
+def test_por_loja_mensal_anterior_usa_1_a_13_de_julho_e_nao_julho_inteiro():
+    """Réplica, por loja, de test_cartao_mensal_compara_1_a_13_de_julho_e_nao_julho_inteiro."""
+    lojas = [{"id": "l1", "nome": "Loja Alfa"}]
+    documentos = [
+        _doc("l1", _agora(2026, 8, 5, 10, 0), 80.00, 70.00),      # agosto: conta em "mensal"
+        _doc("l1", _agora(2026, 7, 5, 10, 0), 50.00, 40.00),      # 1-13 julho: conta no equivalente
+        _doc("l1", _agora(2026, 7, 20, 10, 0), 999.00, 900.00),   # fora do 1-13: NÃO pode contar
+    ]
+    resultado = calcula_dashboard(documentos, lojas, AGORA, com_iva=True)
+    loja = resultado["por_loja"][0]
+    assert loja["mensal"] == 80.00
+    assert loja["mensal_anterior"] == 50.00  # não 50 + 999 (julho inteiro)
+    assert loja["mensal_anterior"] == resultado["cartoes"]["mensal"]["valor_comparado"]
+
+
+def test_por_loja_variacao_e_com_iva_trocam_de_campo_tal_como_o_total():
+    """com_iva tem de valer também nos campos novos por loja — nunca uma
+    percentagem calculada com o campo errado."""
+    lojas = [{"id": "l1", "nome": "Loja Alfa"}]
+    documentos = [
+        _doc("l1", _agora(2026, 8, 13, 10, 0), 123.45, 100.00),
+        _doc("l1", _agora(2026, 8, 12, 9, 0), 100.00, 80.00),
+    ]
+    com_iva = calcula_dashboard(documentos, lojas, AGORA, com_iva=True)
+    sem_iva = calcula_dashboard(documentos, lojas, AGORA, com_iva=False)
+    loja_com_iva = com_iva["por_loja"][0]
+    loja_sem_iva = sem_iva["por_loja"][0]
+    assert loja_com_iva["hoje"] == 123.45
+    assert loja_com_iva["hoje_anterior"] == 100.00
+    assert loja_sem_iva["hoje"] == 100.00
+    assert loja_sem_iva["hoje_anterior"] == 80.00
+
+
+def test_por_loja_serie_mensal_tem_6_meses_isolados_por_loja():
+    lojas = [{"id": "l1", "nome": "Loja Alfa"}, {"id": "l2", "nome": "Loja Beta"}]
+    documentos = [
+        _doc("l1", _agora(2026, 8, 5, 9, 0), 80.00, 70.00),
+        _doc("l1", _agora(2026, 3, 5, 9, 0), 30.00, 25.00),
+        _doc("l2", _agora(2026, 8, 5, 9, 0), 999.00, 900.00),
+    ]
+    resultado = calcula_dashboard(documentos, lojas, AGORA, com_iva=True)
+    por_loja = {p["nome"]: p for p in resultado["por_loja"]}
+
+    serie_alfa = por_loja["Loja Alfa"]["serie_mensal"]
+    assert [m["mes"] for m in serie_alfa] == ["2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08"]
+    assert serie_alfa[0]["valor"] == 30.00
+    assert serie_alfa[-1]["valor"] == 80.00  # bate com o "mensal" da própria loja
+    assert serie_alfa[-1]["valor"] == por_loja["Loja Alfa"]["mensal"]
+
+    # Isolamento: a Loja Beta não vê o valor da Loja Alfa nem vice-versa.
+    assert por_loja["Loja Beta"]["serie_mensal"][-1]["valor"] == 999.00
+
+
+# --- mais_vendidos / mais_rentaveis: sem linhas de artigos, sem dados ------
+#
+# fat_documentos, hoje, não guarda as LINHAS dos artigos vendidos (isso só
+# chega com o POS próprio, fase seguinte) — sem linhas não há como saber o
+# que vendeu mais ou deu mais margem. Devolve-se sempre lista vazia; o ecrã
+# mostra "Sem informação disponível", tal como o Vendus mostra hoje ao dono
+# (porque também não tem essa configuração feita).
+
+def test_mais_vendidos_e_mais_rentaveis_sao_sempre_listas_vazias():
+    documentos = [_doc("l1", _agora(2026, 8, 13, 9, 0), 25.00, 20.00)]
+    resultado = calcula_dashboard(documentos, [{"id": "l1", "nome": "Loja Alfa"}], AGORA, com_iva=True)
+    assert resultado["mais_vendidos"] == []
+    assert resultado["mais_rentaveis"] == []
+
+
+def test_mais_vendidos_e_mais_rentaveis_sem_documentos_tambem_vazios():
+    resultado = calcula_dashboard([], [], AGORA, com_iva=True)
+    assert resultado["mais_vendidos"] == []
+    assert resultado["mais_rentaveis"] == []
 
 
 # --- série diária e série mensal --------------------------------------------

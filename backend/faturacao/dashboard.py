@@ -144,9 +144,17 @@ def _serie_mensal(documentos: List[Dict], campo: str, agora: datetime, meses: in
     return serie
 
 
-def _cartao(documentos: List[Dict], campo: str, janela_actual: Janela, janela_ant: Janela) -> Dict:
-    valor_actual = _soma_periodo(documentos, campo, janela_actual)
-    valor_anterior = _soma_periodo(documentos, campo, janela_ant)
+def _cartao(documentos: List[Dict], campo: str, janela_actual: Janela, janela_ant: Janela,
+            loja_id: Optional[str] = None) -> Dict:
+    """`loja_id` opcional: quando vem preenchido, o cartão isola-se a essa
+    loja (mesmo filtro que `_soma_periodo` já aplica) — sem loja_id, mantém-
+    -se o comportamento de sempre (o total de todas as lojas). É esta função,
+    e só esta, que sabe calcular "valor, valor_comparado, variação,
+    descrição" — reutilizá-la para cada loja evita ter uma segunda cópia da
+    lógica de comparação (a mesma que corrigiu os defeitos do Vendus em
+    periodos.py) só porque agora também serve por loja."""
+    valor_actual = _soma_periodo(documentos, campo, janela_actual, loja_id)
+    valor_anterior = _soma_periodo(documentos, campo, janela_ant, loja_id)
     return {
         "valor": round(valor_actual, 2),
         "valor_comparado": round(valor_anterior, 2),
@@ -188,12 +196,24 @@ def calcula_dashboard(documentos: List[Dict], lojas: List[Dict], agora: datetime
     por_loja = []
     for loja in sorted(lojas, key=lambda l: l.get("nome") or ""):
         loja_id = loja.get("id")
+        # Mesma lógica dos cartões do total (_cartao), com loja_id — nunca
+        # uma segunda conta à parte. As janelas (j_hoje/j_hoje_anterior,
+        # j_mes/j_mes_anterior) são também as mesmas calculadas acima para o
+        # total: uma loja não pode comparar-se com um período diferente do
+        # que o cartão do total usa.
+        cartao_hoje_loja = _cartao(documentos, campo, j_hoje, j_hoje_anterior, loja_id)
+        cartao_mensal_loja = _cartao(documentos, campo, j_mes, j_mes_anterior, loja_id)
         por_loja.append({
             "loja_id": loja_id,
             "nome": loja.get("nome"),
-            "hoje": round(_soma_periodo(documentos, campo, j_hoje, loja_id), 2),
-            "mensal": round(_soma_periodo(documentos, campo, j_mes, loja_id), 2),
+            "hoje": cartao_hoje_loja["valor"],
+            "hoje_anterior": cartao_hoje_loja["valor_comparado"],
+            "variacao_hoje": cartao_hoje_loja["variacao"],
+            "mensal": cartao_mensal_loja["valor"],
+            "mensal_anterior": cartao_mensal_loja["valor_comparado"],
+            "variacao_mensal": cartao_mensal_loja["variacao"],
             "serie_diaria": _serie_diaria(documentos, campo, agora, DIAS_SERIE_DIARIA, loja_id),
+            "serie_mensal": _serie_mensal(documentos, campo, agora, MESES_SERIE_MENSAL, loja_id),
         })
 
     # NOTA: `ha_vendas` não faz parte desta resposta (I3) — é o endpoint que
@@ -207,6 +227,16 @@ def calcula_dashboard(documentos: List[Dict], lojas: List[Dict], agora: datetime
         "serie_diaria": _serie_diaria(documentos, campo, agora, DIAS_SERIE_DIARIA),
         "ultimos_6_meses": _serie_mensal(documentos, campo, agora, MESES_SERIE_MENSAL),
         "por_loja": por_loja,
+        # mais_vendidos / mais_rentaveis: sempre lista vazia, por agora.
+        # fat_documentos (o que este ecrã lê) guarda o DOCUMENTO da venda,
+        # não as LINHAS dos artigos vendidos — isso só chega com o POS
+        # próprio (Plano 2, fase seguinte). Sem linhas não há como saber o
+        # que se vendeu mais nem o que deu mais margem; não se inventa nem
+        # se estima a partir do total do documento. O ecrã mostra "Sem
+        # informação disponível" — exactamente o que o Vendus também mostra
+        # hoje ao dono, porque também não tem essa configuração feita.
+        "mais_vendidos": [],
+        "mais_rentaveis": [],
     }
 
 
