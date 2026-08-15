@@ -36,6 +36,9 @@ router.include_router(_utilizadores)
 from .motivos import router as _motivos
 router.include_router(_motivos)
 
+from .catalogo import router as _catalogo
+router.include_router(_catalogo)
+
 from .dashboard import router as _dashboard
 router.include_router(_dashboard)
 
