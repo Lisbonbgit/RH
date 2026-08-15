@@ -43,6 +43,14 @@ router = APIRouter()
 _MSG_CAIXA_INEXISTENTE = "Caixa não encontrada."
 _MSG_CAIXA_JA_ABERTA = "Esta caixa já tem uma sessão aberta."
 _MSG_SEM_SESSAO_ABERTA = "Esta caixa não tem nenhuma sessão aberta."
+_MSG_SESSAO_FECHADA_ENTRETANTO = (
+    "Esta sessão foi fechada por outro pedido entretanto — não é possível "
+    "registar o movimento."
+)
+_MSG_FECHO_EM_CONFLITO = (
+    "Esta sessão já foi fechada por outro pedido — o Z já foi emitido, "
+    "não se fecha duas vezes."
+)
 
 
 def _agora() -> str:
@@ -165,6 +173,20 @@ async def registar_movimento(
     await _obter_caixa_da_loja(db, dados.caixa_id, operador["loja_id"])
     sessao = await _sessao_aberta(db, dados.caixa_id)
 
+    # I2 ("o mesmo raciocínio para um movimento a cruzar-se com o fecho"):
+    # entre a leitura acima (_sessao_aberta) e este ponto, um fecho
+    # concorrente pode ter fechado a sessão — o Z desse fecho já foi
+    # calculado sem este movimento. Uma escrita CONDICIONAL a
+    # {"estado": "aberta"}, mesmo sem alterar nada de essencial, é o mais
+    # perto que se chega de uma confirmação atómica sem transacções
+    # multi-documento: se não encontrar a sessão ainda aberta, recusa — o
+    # dinheiro deste movimento nunca fica sem fecho nenhum que o explique.
+    confirmacao = await db[COLECOES["sessoes_caixa"]].update_one(
+        {"id": sessao["id"], "estado": "aberta"}, {"$set": {"estado": "aberta"}}
+    )
+    if confirmacao.matched_count == 0:
+        raise HTTPException(status_code=409, detail=_MSG_SESSAO_FECHADA_ENTRETANTO)
+
     movimento = {
         "id": str(uuid.uuid4()),
         "sessao_id": sessao["id"],
@@ -227,7 +249,19 @@ async def fechar_caixa(
         "esperado": esperado_valor,
         "diferenca": diferenca_valor,
     }
-    await db[COLECOES["sessoes_caixa"]].update_one({"id": sessao["id"]}, {"$set": atualizacao})
+    # I2 (a revisão do núcleo fiscal): esta escrita não tinha condição de
+    # estado nenhuma — dois fechos concorrentes da MESMA sessão passavam os
+    # dois, e o último a escrever "ganhava" em silêncio (uma respondeu 50€,
+    # a outra 30€, ficava só 30€ com diferenca=-20, e saíam dois Z
+    # diferentes que o backoffice contradiz o papel que a funcionária
+    # levou). Condicionar a {"estado": "aberta"} e confirmar matched_count
+    # é a mesma defesa que o índice único de sessão aberta (db.py) já dá na
+    # ABERTURA — aqui aplicada ao FECHO.
+    resultado = await db[COLECOES["sessoes_caixa"]].update_one(
+        {"id": sessao["id"], "estado": "aberta"}, {"$set": atualizacao}
+    )
+    if resultado.matched_count == 0:
+        raise HTTPException(status_code=409, detail=_MSG_FECHO_EM_CONFLITO)
 
     # Construído campo a campo (não `dict(sessao)`): sessao vem de find_one
     # sem projecção e, em Mongo real, traria _id — nunca deixar isso vazar

@@ -49,6 +49,17 @@ class CursorFalso:
         return self._itens
 
 
+class ResultadoUpdateFalso:
+    """Réplica minimalista do UpdateResult do pymongo/motor — só os dois
+    campos de que caixa.py precisa (I2) para saber se a escrita CONDICIONAL
+    (`{"id": ..., "estado": "aberta"}`) encontrou mesmo alguma coisa, em vez
+    de aplicar $set às cegas a "o que quer que tenha calhado casar"."""
+
+    def __init__(self, matched_count):
+        self.matched_count = matched_count
+        self.modified_count = matched_count
+
+
 class ColeccaoFalsa:
     """Duplo de uma colecção Mongo: find()/find_one() filtram de facto."""
 
@@ -75,7 +86,7 @@ class ColeccaoFalsa:
         alvos = [d for d in self._documentos if _corresponde(d, filtro)]
         if alvos:
             alvos[0].update(atualizacao.get("$set", {}))
-        return None
+        return ResultadoUpdateFalso(matched_count=len(alvos))
 
 
 class DbFalsa:
@@ -411,6 +422,77 @@ def test_fechar_sessao_ja_fechada_e_recusado_409(monkeypatch):
             fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador())
         )
     assert excinfo.value.status_code == 409
+
+
+def test_dois_fechos_concorrentes_o_segundo_e_recusado_409(monkeypatch):
+    """I2, reproduzido: `update_one({"id": ...})` sem condição de estado
+    deixava DOIS fechos em paralelo passarem os dois — a última contagem
+    escrita "ganhava" sem nenhum aviso (uma respondeu 50€, a outra 30€,
+    ficava só 30€ com diferenca=-20, e saíam dois Z diferentes que o
+    backoffice contradiz o papel que a funcionária levou).
+
+    Sem sleep points no duplo de base de dados deste ficheiro (ao contrário
+    do de test_fiscal.py), simula-se a corrida real com um espião que fecha
+    a sessão "por fora" — outro pedido de fecho, que já chegou primeiro —
+    exactamente no instante em que ESTE pedido tentaria confirmar
+    {"id": ..., "estado": "aberta"}. O primeiro fecho (que já tinha corrido
+    a computação toda) não pode escrever por cima do segundo."""
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    colecao_sessoes = db[COLECOES["sessoes_caixa"]]
+    update_original = colecao_sessoes.update_one
+
+    async def fecha_por_fora_antes_de_escrever(filtro, atualizacao):
+        # Simula: OUTRO pedido de fecho (a operadora do turno seguinte,
+        # ou um duplo-toque) já fechou esta sessão mesmo antes de este
+        # pedido conseguir escrever a sua própria contagem.
+        sessao["estado"] = "fechada"
+        sessao["contado"] = 30.0
+        return await update_original(filtro, atualizacao)
+
+    colecao_sessoes.update_one = fecha_por_fora_antes_de_escrever
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(
+            fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador())
+        )
+    assert excinfo.value.status_code == 409
+    # A contagem do "outro" fecho (30€) não pode ter sido pisada pela deste
+    # pedido (50€) — é exactamente essa pisadela que o índice condicional
+    # evita.
+    assert sessao["contado"] == 30.0
+
+
+def test_movimento_com_sessao_fechada_entre_a_leitura_e_a_confirmacao_e_recusado_409(monkeypatch):
+    """I2, "o mesmo raciocínio para um movimento a cruzar-se com o fecho":
+    entre `_sessao_aberta` (a leitura inicial) e o registo do movimento,
+    outro pedido fechou a sessão — sem uma confirmação atómica logo antes
+    de gravar, o movimento entrava na gaveta depois de o Z já ter sido
+    calculado, e nenhum fecho (nem o de hoje, já fechado, nem o de amanhã)
+    o explica."""
+    registo = []
+    sessao = _sessao()
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    colecao_sessoes = db[COLECOES["sessoes_caixa"]]
+    update_original = colecao_sessoes.update_one
+
+    async def fecha_entre_a_leitura_e_a_confirmacao(filtro, atualizacao):
+        sessao["estado"] = "fechada"
+        return await update_original(filtro, atualizacao)
+
+    colecao_sessoes.update_one = fecha_entre_a_leitura_e_a_confirmacao
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(registar_movimento(
+            PedidoMovimento(caixa_id="caixa-1", tipo="entrada", valor=20.0), operador=_operador()
+        ))
+    assert excinfo.value.status_code == 409
+    assert not any(chamada[0] == "insert_one" for chamada in registo)
 
 
 def test_fechar_caixa_sem_sessao_aberta_e_recusado_409(monkeypatch):
