@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from faturacao import dashboard as dashboard_mod
 from faturacao.dashboard import calcula_dashboard, obter_dashboard
 from faturacao.db import COLECOES
+from faturacao.periodos import janela_anterior_equivalente, janela_ano
 
 LISBOA = ZoneInfo("Europe/Lisbon")
 
@@ -44,10 +45,14 @@ AGORA = _agora(2026, 8, 13, 15, 0)
 
 
 # --- calcula_dashboard: sem vendas ------------------------------------------
+#
+# `ha_vendas` NÃO faz parte da resposta de `calcula_dashboard` (I3, ver
+# secção mais abaixo "ha_vendas — pergunta à BD, não deduz"): é o endpoint
+# que a acrescenta, com uma pergunta directa à base de dados — nunca
+# deduzida da janela de `documentos` que aqui entra.
 
-def test_sem_documentos_ha_vendas_e_falso_e_tudo_a_zero():
+def test_sem_documentos_tudo_a_zero():
     resultado = calcula_dashboard([], [], AGORA, com_iva=True)
-    assert resultado["ha_vendas"] is False
     for cartao in resultado["cartoes"].values():
         assert cartao["valor"] == 0
         assert cartao["valor_comparado"] == 0
@@ -103,6 +108,25 @@ def test_cartao_hoje_no_dia_da_mudanca_da_hora_nao_rebenta():
     assert resultado["cartoes"]["hoje"]["valor"] == 0
 
 
+def test_cartao_hoje_negocio_estavel_nao_mostra_queda_de_manha():
+    """C2: um negócio com o MESMO valor todos os dias não pode mostrar uma
+    queda só porque ainda é de manhã. Antes desta correcção, 'ontem'
+    contava o dia inteiro (incl. a noite, ainda por vir hoje) — aqui 'ontem'
+    pára às 09:00, a mesma hora a que 'hoje' já vai."""
+    agora = _agora(2026, 8, 13, 9, 0)
+    documentos = [
+        _doc("l1", _agora(2026, 8, 13, 8, 0), 500.00, 400.00),    # hoje, antes das 9h
+        _doc("l1", _agora(2026, 8, 12, 8, 0), 500.00, 400.00),    # ontem, à mesma hora: conta
+        _doc("l1", _agora(2026, 8, 12, 20, 0), 1000.00, 800.00),  # ontem à noite: NÃO pode contar
+    ]
+    resultado = calcula_dashboard(documentos, [], agora, com_iva=True)
+    cartao = resultado["cartoes"]["hoje"]
+    assert cartao["valor"] == 500.00
+    assert cartao["valor_comparado"] == 500.00
+    assert cartao["variacao"] == 0.0
+    assert "até às 09:00" in cartao["comparacao"]
+
+
 # --- cartão "mensal" — a correção do defeito do Vendus ----------------------
 
 def test_cartao_mensal_compara_1_a_13_de_julho_e_nao_julho_inteiro():
@@ -134,6 +158,46 @@ def test_cartao_anual_compara_periodo_equivalente_do_ano_anterior():
     assert cartao["valor_comparado"] == 60.00
 
 
+def test_cartao_mensal_marco_mais_longo_que_fevereiro_nao_finge_crescimento():
+    """I1: negócio estável (1500€/dia). A 31 de março, o mês tem 31 dias mas
+    fevereiro só 28 — se só se encurtasse fevereiro, março (31 dias
+    inteiros) pareceria maior por causa do calendário, não das vendas. Os
+    dois lados ficam em 1-28."""
+    agora = _agora(2026, 3, 31, 18, 0)
+    documentos = (
+        [_doc("l1", _agora(2026, 2, dia, 10, 0), 1500.00, 1200.00) for dia in range(1, 29)]
+        + [_doc("l1", _agora(2026, 3, dia, 10, 0), 1500.00, 1200.00) for dia in range(1, 32)]
+    )
+    resultado = calcula_dashboard(documentos, [], agora, com_iva=True)
+    cartao = resultado["cartoes"]["mensal"]
+    assert cartao["valor"] == 28 * 1500.00        # só 1-28 de março contam (29-31 ficam de fora)
+    assert cartao["valor_comparado"] == 28 * 1500.00  # fevereiro inteiro (é tudo o que ele tem)
+    assert cartao["variacao"] == 0.0
+    assert cartao["comparacao"] == "1–28 de março de 2026, comparado com 1–28 de fevereiro de 2026"
+
+
+def test_cartoes_mensal_e_anual_a_1_de_janeiro_nao_ficam_vermelhos_o_dia_inteiro():
+    """C2, o caso extremo do brief: às 09:00 de 1 de Janeiro, tanto o mês
+    como o ano mal começaram. Comparar com Dezembro/o ano anterior inteiros
+    (o defeito) dava sempre queda; com o corte por hora, um negócio estável
+    mostra 0% em ambos os cartões."""
+    agora = _agora(2027, 1, 1, 9, 0)
+    documentos = [
+        _doc("l1", _agora(2027, 1, 1, 8, 0), 500.00, 400.00),     # este mês E este ano, antes das 9h
+        _doc("l1", _agora(2026, 12, 1, 8, 0), 500.00, 400.00),    # dezembro anterior, à mesma hora: conta (mensal)
+        _doc("l1", _agora(2026, 12, 1, 20, 0), 999.00, 900.00),   # dezembro anterior, à noite: NÃO pode contar
+        _doc("l1", _agora(2026, 1, 1, 8, 0), 500.00, 400.00),     # ano anterior, à mesma hora: conta (anual)
+        _doc("l1", _agora(2026, 1, 1, 20, 0), 999.00, 900.00),    # ano anterior, à noite: NÃO pode contar
+    ]
+    resultado = calcula_dashboard(documentos, [], agora, com_iva=True)
+    assert resultado["cartoes"]["mensal"]["valor"] == 500.00
+    assert resultado["cartoes"]["mensal"]["valor_comparado"] == 500.00
+    assert resultado["cartoes"]["mensal"]["variacao"] == 0.0
+    assert resultado["cartoes"]["anual"]["valor"] == 500.00
+    assert resultado["cartoes"]["anual"]["valor_comparado"] == 500.00
+    assert resultado["cartoes"]["anual"]["variacao"] == 0.0
+
+
 # --- notas de crédito e documentos anulados ---------------------------------
 
 def test_nota_de_credito_conta_com_sinal_negativo():
@@ -160,13 +224,6 @@ def test_documento_anulado_nao_conta():
     ]
     resultado = calcula_dashboard(documentos, [], AGORA, com_iva=True)
     assert resultado["cartoes"]["hoje"]["valor"] == 25.00
-    assert resultado["ha_vendas"] is True
-
-
-def test_so_documentos_anulados_ha_vendas_continua_falso():
-    documentos = [_doc("l1", _agora(2026, 8, 13, 9, 0), 999.00, 900.00, anulado=True)]
-    resultado = calcula_dashboard(documentos, [], AGORA, com_iva=True)
-    assert resultado["ha_vendas"] is False
 
 
 # --- com_iva troca de campo, nunca inventa uma taxa -------------------------
@@ -235,21 +292,38 @@ class CursorFalso:
 
 
 class ColeccaoFalsa:
-    def __init__(self, dados, registo, nome):
+    def __init__(self, dados, registo, nome, existe_documento=None):
         self._dados = dados
         self.registo = registo
         self.nome = nome
+        # I3: resultado canónico para find_one, INDEPENDENTE de `dados` (que
+        # alimenta .find(), a consulta principal por janela) — por omissão
+        # deriva de `dados` (o primeiro não-anulado), mas um teste pode
+        # definir isto à parte para simular uma venda FORA da janela que
+        # .find() devolve, exactamente o cenário que I3 corrige.
+        self._existe_documento = existe_documento
 
     def find(self, filtro=None, projecao=None):
         self.registo.append((self.nome, filtro))
         return CursorFalso(self._dados)
 
+    async def find_one(self, filtro=None, projecao=None):
+        self.registo.append((self.nome, filtro))
+        if self._existe_documento is not None:
+            return {"_id": "fixture"} if self._existe_documento else None
+        for doc in self._dados:
+            if not doc.get("anulado"):
+                return doc
+        return None
+
 
 class DbFalsa:
-    def __init__(self, documentos=None, lojas=None, registo=None):
+    def __init__(self, documentos=None, lojas=None, registo=None, existe_documento=None):
         self.registo = registo if registo is not None else []
         self._coleccoes = {
-            COLECOES["documentos"]: ColeccaoFalsa(documentos or [], self.registo, "documentos"),
+            COLECOES["documentos"]: ColeccaoFalsa(
+                documentos or [], self.registo, "documentos", existe_documento=existe_documento
+            ),
             COLECOES["lojas"]: ColeccaoFalsa(lojas or [], self.registo, "lojas"),
         }
 
@@ -267,7 +341,83 @@ def test_endpoint_sem_vendas_devolve_zeros_e_ha_vendas_falso(monkeypatch):
     assert resposta["por_loja"] == []
 
 
-def test_endpoint_consulta_documentos_desde_o_inicio_do_ano_e_lojas(monkeypatch):
+# --- ha_vendas — pergunta à BD, não deduz da janela carregada (I3) ---------
+#
+# O defeito: `ha_vendas` deduzia-se de `documentos`, que só cobre desde o
+# início do ano anterior (C1) — a consulta certa para os cartões/gráficos,
+# mas errada para "alguma vez existiu uma venda?". A 1 de Janeiro, com um
+# negócio que vendeu há anos e nada este ano nem o anterior, a janela
+# carregada estaria vazia e a faixa "ainda não há vendas" apareceria por
+# engano. Aqui `ha_vendas` vem de uma pergunta DIRECTA à BD (find_one),
+# desligada da janela que .find() devolve — os testes a seguir provam essa
+# independência dos dois lados.
+
+def test_endpoint_ha_vendas_verdadeiro_mesmo_com_janela_de_documentos_vazia(monkeypatch):
+    """O cenário do brief: a consulta principal (a janela) não devolve nada,
+    mas alguma vez existiu uma venda (fora dessa janela) — ha_vendas tem de
+    ser True."""
+    db = DbFalsa(documentos=[], existe_documento=True)
+    monkeypatch.setattr(dashboard_mod, "obter_db", lambda: db)
+    resposta = _corre(obter_dashboard(com_iva=True, _={}))
+    assert resposta["ha_vendas"] is True
+    assert resposta["cartoes"]["hoje"]["valor"] == 0  # a janela em si continua vazia
+
+
+def test_endpoint_ha_vendas_falso_apesar_de_documentos_na_janela_se_bd_disser_que_nao(monkeypatch):
+    """O inverso, para provar a independência dos dois lados: mesmo com
+    documentos na janela carregada, ha_vendas segue o que find_one disser —
+    nunca volta a deduzir de `documentos`."""
+    doc = {
+        "loja_id": "l1",
+        "emitido_em": datetime.now(timezone.utc).isoformat(),
+        "total_bruto": 123.45,
+        "total_liquido": 100.00,
+        "tipo": "FS",
+        "anulado": False,
+    }
+    db = DbFalsa(documentos=[doc], existe_documento=False)
+    monkeypatch.setattr(dashboard_mod, "obter_db", lambda: db)
+    resposta = _corre(obter_dashboard(com_iva=True, _={}))
+    assert resposta["ha_vendas"] is False
+
+
+def test_endpoint_ha_vendas_pergunta_por_documento_nao_anulado(monkeypatch):
+    """A pergunta directa à BD tem de excluir documentos anulados — não
+    'alguma vez existiu um documento', mas 'alguma vez existiu uma venda'."""
+    registo = []
+    db = DbFalsa(registo=registo)
+    monkeypatch.setattr(dashboard_mod, "obter_db", lambda: db)
+    _corre(obter_dashboard(com_iva=True, _={}))
+    filtros_documentos = [f for (n, f) in registo if n == "documentos"]
+    # duas consultas a "documentos": a principal (find, por janela) e a
+    # directa (find_one, por existência) — a segunda filtra por "anulado".
+    assert any(f.get("anulado") == {"$ne": True} for f in filtros_documentos)
+
+
+def test_existe_venda_verdadeiro_quando_ha_documento_nao_anulado():
+    registo = []
+    db = DbFalsa(documentos=[{"anulado": False}], registo=registo)
+    assert _corre(dashboard_mod._existe_venda(db)) is True
+
+
+def test_existe_venda_falso_quando_so_ha_documentos_anulados():
+    db = DbFalsa(documentos=[{"anulado": True}])
+    assert _corre(dashboard_mod._existe_venda(db)) is False
+
+
+def test_existe_venda_falso_quando_a_coleccao_esta_vazia():
+    db = DbFalsa(documentos=[])
+    assert _corre(dashboard_mod._existe_venda(db)) is False
+
+
+def test_endpoint_consulta_documentos_desde_o_inicio_do_ano_anterior_e_lojas(monkeypatch):
+    """A maior janela que o dashboard usa não é o ano corrente — é o cartão
+    Anual, que compara com o ANO ANTERIOR equivalente (sempre a começar a 1
+    de Janeiro do ano passado, ver janela_anterior_equivalente). Ir buscar só
+    desde o início do ano CORRENTE (o defeito original, C1) deixava de fora
+    todo o ano anterior, sem erro nem aviso: o cartão Anual ficava sempre
+    'Sem período anterior comparável' e metade das barras/dias das séries
+    ficavam a zero perto do início do ano."""
     registo = []
     monkeypatch.setattr(dashboard_mod, "obter_db", lambda: DbFalsa(registo=registo))
     _corre(obter_dashboard(com_iva=True, _={}))
@@ -276,6 +426,17 @@ def test_endpoint_consulta_documentos_desde_o_inicio_do_ano_e_lojas(monkeypatch)
     assert "lojas" in nomes_consultados
     filtro_documentos = next(f for (n, f) in registo if n == "documentos")
     assert "emitido_em" in filtro_documentos and "$gte" in filtro_documentos["emitido_em"]
+
+    # O limite tem de bater com o início do ANO ANTERIOR equivalente (o
+    # mesmo cálculo que o cartão Anual usa) — nunca o início do ano corrente.
+    agora = datetime.now(timezone.utc)
+    j_ano = janela_ano(agora)
+    _, j_ano_anterior = janela_anterior_equivalente(j_ano.inicio, j_ano.fim, "ano")
+    assert filtro_documentos["emitido_em"]["$gte"] == j_ano_anterior.inicio.isoformat()
+    # E, por construção, isso é sempre um ano inteiro antes do início do ano
+    # corrente — nunca o início do ano corrente (é essa a distinção que
+    # importa: o defeito original passava aqui).
+    assert filtro_documentos["emitido_em"]["$gte"] != j_ano.inicio.isoformat()
 
 
 def test_endpoint_respeita_o_parametro_com_iva(monkeypatch):

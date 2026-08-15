@@ -28,6 +28,7 @@ from .periodos import (
     janela_anterior_equivalente,
     janela_hoje,
     janela_mes,
+    janela_ontem_equivalente,
     variacao,
 )
 
@@ -162,16 +163,21 @@ def calcula_dashboard(documentos: List[Dict], lojas: List[Dict], agora: datetime
     campo = _campo_valor(com_iva)
 
     j_hoje = janela_hoje(agora)
-    # "Ontem" reaproveita janela_hoje com um instante um microssegundo antes
-    # da meia-noite de hoje — dá sempre a data certa (mesmo no dia da mudança
-    # de hora) sem repetir aqui a lógica de fuso de periodos.py.
-    j_hoje_anterior = janela_hoje(j_hoje.inicio - timedelta(microseconds=1))
+    # "Ontem" NÃO é o dia anterior inteiro (24h) — seria comparar um dia a
+    # meio (poucas horas de vendas) com um dia completo, e mostraria sempre
+    # uma queda enorme de manhã (C2). janela_ontem_equivalente pára "ontem"
+    # à mesma hora do relógio a que "hoje" ainda vai.
+    j_hoje_anterior = janela_ontem_equivalente(agora)
 
-    j_mes = janela_mes(agora)
-    j_mes_anterior = janela_anterior_equivalente(j_mes.inicio, j_mes.fim, "mes")
+    # janela_anterior_equivalente devolve os DOIS lados (actual, anterior):
+    # o anterior termina sempre à mesma hora do relógio que o actual (C2), e
+    # se o mês/ano anterior for mais curto, o actual também é encurtado
+    # (I1) — daí reatribuir j_mes/j_ano aqui, em vez de só ler ".anterior".
+    j_mes_bruto = janela_mes(agora)
+    j_mes, j_mes_anterior = janela_anterior_equivalente(j_mes_bruto.inicio, j_mes_bruto.fim, "mes")
 
-    j_ano = janela_ano(agora)
-    j_ano_anterior = janela_anterior_equivalente(j_ano.inicio, j_ano.fim, "ano")
+    j_ano_bruto = janela_ano(agora)
+    j_ano, j_ano_anterior = janela_anterior_equivalente(j_ano_bruto.inicio, j_ano_bruto.fim, "ano")
 
     cartoes = {
         "hoje": _cartao(documentos, campo, j_hoje, j_hoje_anterior),
@@ -190,35 +196,60 @@ def calcula_dashboard(documentos: List[Dict], lojas: List[Dict], agora: datetime
             "serie_diaria": _serie_diaria(documentos, campo, agora, DIAS_SERIE_DIARIA, loja_id),
         })
 
+    # NOTA: `ha_vendas` não faz parte desta resposta (I3) — é o endpoint que
+    # a acrescenta, com uma pergunta directa à base de dados (`_existe_venda`).
+    # `documentos` aqui está limitado à janela que os cartões/gráficos
+    # precisam (desde o início do ano anterior, ver o endpoint) — deduzir
+    # "alguma vez existiu uma venda?" a partir dessa janela dava um "não"
+    # errado sempre que o negócio tivesse vendas mais antigas do que ela.
     return {
         "cartoes": cartoes,
         "serie_diaria": _serie_diaria(documentos, campo, agora, DIAS_SERIE_DIARIA),
         "ultimos_6_meses": _serie_mensal(documentos, campo, agora, MESES_SERIE_MENSAL),
         "por_loja": por_loja,
-        # Falso enquanto ninguém vendeu — é o que diz ao ecrã para mostrar
-        # "ainda não há vendas" em vez de um gráfico de zeros sem explicação.
-        "ha_vendas": any(not doc.get("anulado") for doc in documentos),
     }
 
 
 # --- endpoint ----------------------------------------------------------------
+
+async def _existe_venda(db) -> bool:
+    """Pergunta DIRECTAMENTE à base de dados se alguma vez existiu um
+    documento de venda não anulado (I3) — independente da janela de datas
+    que a consulta principal usa (essa está limitada ao ano anterior para
+    trás, só para alimentar os cartões/gráficos). Um negócio pode ter
+    vendido antes dessa janela; a faixa "ainda não há vendas" não pode
+    ignorar isso só porque a janela dos gráficos não chega lá."""
+    doc = await db[COLECOES["documentos"]].find_one({"anulado": {"$ne": True}}, {"_id": 1})
+    return doc is not None
+
 
 @router.get("/dashboard")
 async def obter_dashboard(com_iva: bool = True, _: dict = Depends(gestor_atual)) -> Dict:
     db = obter_db()
     agora = datetime.now(timezone.utc)
 
-    # Só é preciso ir buscar desde o início do ano: é a maior janela que o
-    # dashboard usa (o cartão anual). Comparação por string funciona porque
-    # emitido_em é sempre ISO em UTC (mesmo padrão do server.py: LISBON_TZ,
-    # day_start_utc = ...isoformat(), filtro por $gte sobre a string).
-    inicio_ano = janela_ano(agora).inicio.isoformat()
+    # A maior janela que o dashboard usa não é o ano corrente — é o cartão
+    # Anual, que compara com o ANO ANTERIOR equivalente (janela_anterior_
+    # equivalente começa sempre a 1 de Janeiro do ano passado). Ir buscar só
+    # desde o início do ano corrente deixava o ano anterior inteiro de fora,
+    # sem erro nem aviso: o cartão Anual ficava sempre "Sem período anterior
+    # comparável" e as séries ficavam a zero perto do início do ano. Compa-
+    # ração por string funciona porque emitido_em é sempre ISO em UTC (mesmo
+    # padrão do server.py: LISBON_TZ, day_start_utc = ...isoformat(), filtro
+    # por $gte sobre a string).
+    j_ano = janela_ano(agora)
+    _, j_ano_anterior = janela_anterior_equivalente(j_ano.inicio, j_ano.fim, "ano")
+    inicio_consulta = j_ano_anterior.inicio.isoformat()
     documentos = await db[COLECOES["documentos"]].find(
-        {"emitido_em": {"$gte": inicio_ano}}, {"_id": 0}
+        {"emitido_em": {"$gte": inicio_consulta}}, {"_id": 0}
     ).to_list(LIMITE_DOCUMENTOS)
 
     lojas = await db[COLECOES["lojas"]].find(
         {}, {"_id": 0, "id": 1, "nome": 1}
     ).to_list(LIMITE_LOJAS)
 
-    return calcula_dashboard(documentos, lojas, agora, com_iva)
+    resultado = calcula_dashboard(documentos, lojas, agora, com_iva)
+    # I3: pergunta à parte, nunca deduzida de `documentos` (essa janela é
+    # limitada, ver acima — não serve para responder "alguma vez vendeu?").
+    resultado["ha_vendas"] = await _existe_venda(db)
+    return resultado
