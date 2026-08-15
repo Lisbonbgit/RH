@@ -11,7 +11,13 @@ import {
 import PageHeader from '../../../components/PageHeader';
 import { toast } from 'sonner';
 
-// Euro à portuguesa: "€ 1.503,20" — ponto nos milhares, vírgula nos decimais.
+// Euro à portuguesa via Intl.NumberFormat('pt-PT', ...): símbolo DEPOIS do
+// número, vírgula nos decimais — ex.: 1503.20 -> "1503,20 €" (o pt-PT só
+// agrupa milhares a partir de 5 dígitos: 12345.67 -> "12 345,67 €", com
+// espaço, não ponto). Não é "€ 1.503,20" como este comentário dizia antes —
+// confirmado com Intl.NumberFormat directamente, não de memória. O formato
+// é o mesmo em todo o portal (lib/finance.js, MarketingReports.js); não
+// mudar aqui isoladamente.
 const fmtEUR = (n) => new Intl.NumberFormat('pt-PT', { style: 'currency', currency: 'EUR' }).format(Number(n) || 0);
 
 // Versão curta para os eixos dos gráficos (ex.: €1,2k).
@@ -59,19 +65,37 @@ const TONS = [
 // Constrói a linha + a área preenchida de um gráfico a partir de uma lista de
 // pontos {v}. Genérico (usado no gráfico principal e nos mini-gráficos por
 // loja) — quem chama é que decide as dimensões do desenho.
+//
+// As notas de crédito são cidadãs de primeira classe neste módulo — um dia
+// de saldo negativo é um valor real, não uma excepção. Por isso a escala usa
+// SEMPRE mínimo e máximo dos próprios dados (nunca só 0..max): um único dia
+// negativo, ou uma série inteira negativa, tem de continuar dentro do
+// viewBox, com a linha de base (0€) visível lá dentro — nunca a fugir por
+// cima ou por baixo do desenho.
 const buildArea = (points, { xLeft = 40, xRight = 710, yTop = 30, yBase = 230, yFill = 240 } = {}) => {
   const n = points.length;
   if (!n) return null;
-  const max = Math.max(1, ...points.map((p) => p.v));
+  const valores = points.map((p) => p.v);
+  // Math.min/max(..., 0) garante que a linha de base (0€) está sempre dentro
+  // do intervalo [min, max], mesmo quando todos os valores são positivos
+  // (min fica 0, como antes) ou todos negativos (max fica 0).
+  const max = Math.max(...valores, 0);
+  const min = Math.min(...valores, 0);
+  const amplitude = max - min || 1; // evita divisão por zero numa série toda a 0
   const xAt = (i) => (n === 1 ? (xLeft + xRight) / 2 : xLeft + (i / (n - 1)) * (xRight - xLeft));
-  const yAt = (v) => yBase - (v / max) * (yBase - yTop);
+  const yAt = (v) => yBase - ((v - min) / amplitude) * (yBase - yTop);
   const coords = points.map((p, i) => ({ ...p, x: xAt(i), y: yAt(p.v) }));
+  // A área fecha um pouco ABAIXO da linha de base (0€), não do fundo fixo do
+  // desenho — preserva o mesmo "sangramento" decorrativo de antes (quando o
+  // 0 estava sempre em yBase) também quando a linha de base agora fica a
+  // meio do gráfico (série com valores negativos).
+  const yFechoArea = yAt(0) + (yFill - yBase);
   const line = coords.map((c, i) => `${i === 0 ? 'M' : 'L'} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`).join(' ');
   const areaPath =
-    `M ${coords[0].x.toFixed(1)} ${yFill} ` +
+    `M ${coords[0].x.toFixed(1)} ${yFechoArea.toFixed(1)} ` +
     coords.map((c) => `L ${c.x.toFixed(1)} ${c.y.toFixed(1)}`).join(' ') +
-    ` L ${coords[n - 1].x.toFixed(1)} ${yFill} Z`;
-  return { n, max, coords, line, areaPath };
+    ` L ${coords[n - 1].x.toFixed(1)} ${yFechoArea.toFixed(1)} Z`;
+  return { n, max, min, yAt, coords, line, areaPath };
 };
 
 // Mini gráfico de área (sparkline) para a linha de uma loja — sem eixos nem
@@ -124,9 +148,12 @@ export default function FatDashboard() {
     const pontos = (dashboard?.serie_diaria || []).map((p) => ({ data: p.data, v: Number(p.valor) || 0 }));
     const area = buildArea(pontos);
     if (!area) return null;
-    const grid = [0, 0.25, 0.5, 0.75, 1].map((f) => ({
-      y: 230 - f * (230 - 30), label: fmtEURShort(f * area.max),
-    }));
+    // Interpola entre min e max (não entre 0 e max) — com valores negativos
+    // a linha de base já não está necessariamente no fundo do desenho.
+    const grid = [0, 0.25, 0.5, 0.75, 1].map((f) => {
+      const valor = area.min + f * (area.max - area.min);
+      return { y: area.yAt(valor), label: fmtEURShort(valor) };
+    });
     const nLabels = Math.min(6, area.n);
     const seen = new Set();
     const xLabels = [];
@@ -162,6 +189,12 @@ export default function FatDashboard() {
     <div className="space-y-6 animate-fade-in" data-testid="fat-dashboard-page">
       <PageHeader icon={LayoutDashboard} title="Dashboard" subtitle="Faturação · Gestão">
         <div className="flex items-center gap-2">
+          {/* Sinal discreto de que há um pedido novo em curso — sem isto, ao
+              mudar o interruptor com o dashboard já carregado, os números
+              trocavam sem nenhum aviso de que tinham sido recarregados. */}
+          {loading && dashboard && (
+            <RefreshCw className="h-3.5 w-3.5 text-muted-foreground animate-spin" data-testid="fat-dashboard-a-actualizar" />
+          )}
           <Switch id="fat-vat-toggle" checked={comIva} onCheckedChange={setComIva} data-testid="fat-vat-toggle" />
           <Label htmlFor="fat-vat-toggle" className="text-sm cursor-pointer whitespace-nowrap">Valores c/ IVA</Label>
         </div>
