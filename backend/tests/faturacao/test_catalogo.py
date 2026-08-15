@@ -21,14 +21,23 @@ from faturacao.catalogo import (
     CategoriaEntrada,
     GrupoPersonalizacaoEntrada,
     OpcaoEntrada,
+    ProdutoEntrada,
+    ProdutoEstado,
     apagar_categoria,
     apagar_grupo,
+    apagar_produto,
     criar_categoria,
     criar_grupo,
+    criar_produto,
     editar_categoria,
     editar_grupo,
+    editar_produto,
     listar_categorias,
     listar_grupos,
+    listar_produtos,
+    mudar_estado_produto,
+    obter_produto,
+    produtos_sem_iva,
 )
 
 
@@ -169,6 +178,13 @@ def test_opcao_com_ate_2_casas_e_aceite(preco):
     assert OpcaoEntrada(nome="Nutella", preco=preco).preco == preco
 
 
+def test_opcao_com_preco_negativo_e_recusada():
+    """Deixado em aberto na Task 19: sem esta guarda, um topping a -2€ baixava
+    o total da linha em vez de o subir."""
+    with pytest.raises(ValidationError):
+        OpcaoEntrada(nome="Desconto fantasma", preco=-2)
+
+
 # --- Grupos de personalização: modelo -----------------------------------------
 
 
@@ -260,6 +276,84 @@ def test_preco_de_opcao_dentro_do_grupo_com_3_casas_e_recusado():
     with pytest.raises(ValidationError) as e:
         GrupoPersonalizacaoEntrada(nome="Toppings", opcoes=[{"nome": "Nutella", "preco": 0.995}])
     assert "0.995" in str(e.value)
+
+
+# --- Produtos: modelo -----------------------------------------------------------
+
+
+def _dados_produto(**over):
+    base = dict(nome="Açaí Regular", categoria_id="cat-1", preco=8.99, tax_id="INT")
+    base.update(over)
+    return base
+
+
+def test_produto_minimo():
+    p = ProdutoEntrada(**_dados_produto())
+    assert p.nome == "Açaí Regular"
+    assert p.preco == 8.99
+    assert p.tax_id == "INT"
+    assert p.foto_url is None
+    assert p.grupos_personalizacao == []
+    assert p.ativo is True
+    assert p.vendus_ref is None
+
+
+def test_produto_sem_tax_id_e_recusado():
+    """A regra que não se negoceia: sem valor por omissão nenhum — ver o
+    cabeçalho de precos.py sobre a app antiga que faturava a 13% em silêncio."""
+    dados = _dados_produto()
+    del dados["tax_id"]
+    with pytest.raises(ValidationError):
+        ProdutoEntrada(**dados)
+
+
+def test_produto_tax_id_vazio_e_recusado():
+    with pytest.raises(ValidationError):
+        ProdutoEntrada(**_dados_produto(tax_id=""))
+
+
+def test_produto_tax_id_desconhecido_e_recusado():
+    with pytest.raises(ValidationError) as e:
+        ProdutoEntrada(**_dados_produto(tax_id="XYZ"))
+    assert "IVA" in str(e.value)
+
+
+@pytest.mark.parametrize("tax_id", ["NOR", "INT", "RED", "ISE"])
+def test_produto_tax_id_valido_do_vendus_e_aceite(tax_id):
+    assert ProdutoEntrada(**_dados_produto(tax_id=tax_id)).tax_id == tax_id
+
+
+def test_produto_sem_categoria_e_recusado():
+    dados = _dados_produto()
+    del dados["categoria_id"]
+    with pytest.raises(ValidationError):
+        ProdutoEntrada(**dados)
+
+
+def test_produto_com_preco_negativo_e_recusado():
+    """Guarda de sinal também no preço do produto, não só nas opções."""
+    with pytest.raises(ValidationError):
+        ProdutoEntrada(**_dados_produto(preco=-1))
+
+
+def test_produto_com_preco_de_3_casas_e_recusado():
+    with pytest.raises(ValidationError) as e:
+        ProdutoEntrada(**_dados_produto(preco=8.995))
+    assert "8.995" in str(e.value)
+
+
+@pytest.mark.parametrize("preco", [8.99, 8.9, 9, 0, 0.0])
+def test_produto_com_preco_valido_e_aceite(preco):
+    assert ProdutoEntrada(**_dados_produto(preco=preco)).preco == preco
+
+
+def test_produto_com_grupos_de_personalizacao():
+    p = ProdutoEntrada(**_dados_produto(grupos_personalizacao=["g1", "g2"]))
+    assert p.grupos_personalizacao == ["g1", "g2"]
+
+
+def test_produto_estado_minimo():
+    assert ProdutoEstado(ativo=False).ativo is False
 
 
 # --- Categorias: endpoints -----------------------------------------------------
@@ -444,9 +538,33 @@ def test_editar_grupo_inexistente_devolve_404(monkeypatch):
     assert excinfo.value.status_code == 404
 
 
+def test_apagar_grupo_atribuido_a_produtos_e_recusado_409(monkeypatch):
+    """Deixado em aberto na Task 19 (o campo que liga produtos a grupos só
+    nasce agora): mesmo padrão do apagar_loja com as caixas e do apagar de
+    categorias — um grupo atribuído não pode desaparecer debaixo dos produtos."""
+    registo = []
+    db = DbFalsa(
+        {
+            "fat_produtos": ColeccaoFalsa(registo, count_documents_devolve=2),
+            "fat_grupos_personalizacao": ColeccaoFalsa(registo, delete_one_devolve=1),
+        }
+    )
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(apagar_grupo("g1", _={}))
+    assert excinfo.value.status_code == 409
+    assert not any(chamada[0] == "delete_one" for chamada in registo)
+
+
 def test_apagar_grupo_inexistente_devolve_404(monkeypatch):
     registo = []
-    db = DbFalsa({"fat_grupos_personalizacao": ColeccaoFalsa(registo, delete_one_devolve=0)})
+    db = DbFalsa(
+        {
+            "fat_produtos": ColeccaoFalsa(registo, count_documents_devolve=0),
+            "fat_grupos_personalizacao": ColeccaoFalsa(registo, delete_one_devolve=0),
+        }
+    )
     monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
 
     with pytest.raises(HTTPException) as excinfo:
@@ -456,8 +574,261 @@ def test_apagar_grupo_inexistente_devolve_404(monkeypatch):
 
 def test_apagar_grupo_existente_e_apagado(monkeypatch):
     registo = []
-    db = DbFalsa({"fat_grupos_personalizacao": ColeccaoFalsa(registo, delete_one_devolve=1)})
+    db = DbFalsa(
+        {
+            "fat_produtos": ColeccaoFalsa(registo, count_documents_devolve=0),
+            "fat_grupos_personalizacao": ColeccaoFalsa(registo, delete_one_devolve=1),
+        }
+    )
     monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
 
     resultado = _corre(apagar_grupo("g1", _={}))
     assert resultado == {"apagado": True}
+
+
+# --- Produtos: endpoints ---------------------------------------------------------
+
+_PRODUTO = ProdutoEntrada(nome="Açaí Regular", categoria_id="cat-1", preco=8.99, tax_id="INT")
+
+_DADOS_CATEGORIA_OK = {"id": "cat-1", "nome": "Venda ao Público", "ordem": 1, "ativa": True}
+_DADOS_GRUPO_1 = {"id": "g1", "nome": "Toppings"}
+_DADOS_GRUPO_2 = {"id": "g2", "nome": "Tamanho"}
+
+
+def _db_produtos(
+    registo,
+    produtos_find_devolve=None,
+    produtos_find_one_devolve=None,
+    produtos_update_one_matched=0,
+    produtos_delete_one_devolve=0,
+    categoria_find_one_devolve=_DADOS_CATEGORIA_OK,
+    grupos_find_devolve=None,
+):
+    """Monta a DbFalsa com as 3 colecções de que os endpoints de produto
+    precisam: produtos (CRUD), categorias e grupos (validação de referências)."""
+    return DbFalsa(
+        {
+            "fat_produtos": ColeccaoFalsa(
+                registo,
+                find_devolve=produtos_find_devolve,
+                find_one_devolve=produtos_find_one_devolve,
+                update_one_matched=produtos_update_one_matched,
+                delete_one_devolve=produtos_delete_one_devolve,
+            ),
+            "fat_categorias": ColeccaoFalsa(registo, find_one_devolve=categoria_find_one_devolve),
+            "fat_grupos_personalizacao": ColeccaoFalsa(
+                registo, find_devolve=grupos_find_devolve or []
+            ),
+        }
+    )
+
+
+def test_listar_produtos_sem_filtro(monkeypatch):
+    registo = []
+    dados = [
+        {"id": "p2", "nome": "Batido", "categoria_id": "cat-1"},
+        {"id": "p1", "nome": "Açaí Regular", "categoria_id": "cat-1"},
+    ]
+    db = _db_produtos(registo, produtos_find_devolve=dados)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    resultado = _corre(listar_produtos(categoria_id=None, texto=None, _={}))
+    assert [p["nome"] for p in resultado] == ["Açaí Regular", "Batido"]
+
+
+def test_listar_produtos_filtra_por_categoria(monkeypatch):
+    registo = []
+    db = _db_produtos(registo, produtos_find_devolve=[])
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    _corre(listar_produtos(categoria_id="cat-2", texto=None, _={}))
+    chamada_find = next(c for c in registo if c[0] == "find")
+    assert chamada_find[1]["categoria_id"] == "cat-2"
+
+
+def test_listar_produtos_filtra_por_texto(monkeypatch):
+    registo = []
+    db = _db_produtos(registo, produtos_find_devolve=[])
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    _corre(listar_produtos(categoria_id=None, texto="açaí", _={}))
+    chamada_find = next(c for c in registo if c[0] == "find")
+    assert "nome" in chamada_find[1]
+
+
+def test_criar_produto_atribui_id(monkeypatch):
+    registo = []
+    db = _db_produtos(registo)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    resultado = _corre(criar_produto(_PRODUTO, _={}))
+    assert resultado["id"]
+    assert resultado["nome"] == "Açaí Regular"
+    assert any(chamada[0] == "insert_one" for chamada in registo)
+
+
+def test_criar_produto_com_categoria_inexistente_e_recusado_422(monkeypatch):
+    registo = []
+    db = _db_produtos(registo, categoria_find_one_devolve=None)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(criar_produto(_PRODUTO, _={}))
+    assert excinfo.value.status_code == 422
+    assert not any(chamada[0] == "insert_one" for chamada in registo)
+
+
+def test_criar_produto_com_grupo_inexistente_e_recusado_422(monkeypatch):
+    registo = []
+    dados = ProdutoEntrada(
+        nome="Açaí Regular",
+        categoria_id="cat-1",
+        preco=8.99,
+        tax_id="INT",
+        grupos_personalizacao=["g1", "g-fantasma"],
+    )
+    db = _db_produtos(registo, grupos_find_devolve=[_DADOS_GRUPO_1])
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(criar_produto(dados, _={}))
+    assert excinfo.value.status_code == 422
+    assert "g-fantasma" in excinfo.value.detail
+    assert not any(chamada[0] == "insert_one" for chamada in registo)
+
+
+def test_criar_produto_com_grupos_existentes_e_criado(monkeypatch):
+    registo = []
+    dados = ProdutoEntrada(
+        nome="Açaí Regular",
+        categoria_id="cat-1",
+        preco=8.99,
+        tax_id="INT",
+        grupos_personalizacao=["g1", "g2"],
+    )
+    db = _db_produtos(registo, grupos_find_devolve=[_DADOS_GRUPO_1, _DADOS_GRUPO_2])
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    resultado = _corre(criar_produto(dados, _={}))
+    assert resultado["grupos_personalizacao"] == ["g1", "g2"]
+
+
+def test_obter_produto_inexistente_devolve_404(monkeypatch):
+    registo = []
+    db = _db_produtos(registo, produtos_find_one_devolve=None)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(obter_produto("nao-existe", _={}))
+    assert excinfo.value.status_code == 404
+
+
+def test_obter_produto_existente(monkeypatch):
+    registo = []
+    dados_produto = {"id": "p1", "nome": "Açaí Regular", "categoria_id": "cat-1"}
+    db = _db_produtos(registo, produtos_find_one_devolve=dados_produto)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    resultado = _corre(obter_produto("p1", _={}))
+    assert resultado["nome"] == "Açaí Regular"
+
+
+def test_editar_produto_inexistente_devolve_404(monkeypatch):
+    registo = []
+    db = _db_produtos(registo, produtos_update_one_matched=0)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(editar_produto("nao-existe", _PRODUTO, _={}))
+    assert excinfo.value.status_code == 404
+
+
+def test_editar_produto_com_categoria_inexistente_e_recusado_422(monkeypatch):
+    registo = []
+    db = _db_produtos(registo, categoria_find_one_devolve=None)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(editar_produto("p1", _PRODUTO, _={}))
+    assert excinfo.value.status_code == 422
+    assert not any(chamada[0] == "update_one" for chamada in registo)
+
+
+def test_editar_produto_existente_e_editado(monkeypatch):
+    registo = []
+    dados_produto = {"id": "p1", "nome": "Açaí Regular", "categoria_id": "cat-1"}
+    db = _db_produtos(
+        registo, produtos_update_one_matched=1, produtos_find_one_devolve=dados_produto
+    )
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    resultado = _corre(editar_produto("p1", _PRODUTO, _={}))
+    assert resultado["nome"] == "Açaí Regular"
+
+
+def test_apagar_produto_inexistente_devolve_404(monkeypatch):
+    registo = []
+    db = _db_produtos(registo, produtos_delete_one_devolve=0)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(apagar_produto("nao-existe", _={}))
+    assert excinfo.value.status_code == 404
+
+
+def test_apagar_produto_existente_e_apagado(monkeypatch):
+    registo = []
+    db = _db_produtos(registo, produtos_delete_one_devolve=1)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    resultado = _corre(apagar_produto("p1", _={}))
+    assert resultado == {"apagado": True}
+
+
+def test_mudar_estado_produto_inexistente_devolve_404(monkeypatch):
+    registo = []
+    db = _db_produtos(registo, produtos_update_one_matched=0)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(mudar_estado_produto("nao-existe", ProdutoEstado(ativo=False), _={}))
+    assert excinfo.value.status_code == 404
+
+
+def test_mudar_estado_produto_desativa(monkeypatch):
+    registo = []
+    db = _db_produtos(registo, produtos_update_one_matched=1)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    resultado = _corre(mudar_estado_produto("p1", ProdutoEstado(ativo=False), _={}))
+    assert resultado == {"ativo": False}
+    escrita = next(c for c in registo if c[0] == "update_one")
+    assert escrita[2]["$set"] == {"ativo": False}
+
+
+def test_produtos_sem_iva_devolve_so_os_incompletos(monkeypatch):
+    """O endpoint apoia-se em erros_do_produto (precos.py) — não reimplementa
+    a regra do que falta a um produto para poder ser vendido."""
+    registo = []
+    dados = [
+        {"id": "p1", "nome": "Açaí Regular", "preco": 8.99, "tax_id": "INT"},
+        {"id": "p2", "nome": "Refrigerante", "preco": 2.5},
+        {"id": "p3", "nome": "Sem preço nem IVA"},
+    ]
+    db = _db_produtos(registo, produtos_find_devolve=dados)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    resultado = _corre(produtos_sem_iva(_={}))
+    nomes = {p["nome"] for p in resultado}
+    assert nomes == {"Refrigerante", "Sem preço nem IVA"}
+    refrigerante = next(p for p in resultado if p["nome"] == "Refrigerante")
+    assert refrigerante["erros"] == ["Sem IVA definido"]
+
+
+def test_produtos_sem_iva_vazio_quando_todos_completos(monkeypatch):
+    registo = []
+    dados = [{"id": "p1", "nome": "Açaí Regular", "preco": 8.99, "tax_id": "INT"}]
+    db = _db_produtos(registo, produtos_find_devolve=dados)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    assert _corre(produtos_sem_iva(_={})) == []
