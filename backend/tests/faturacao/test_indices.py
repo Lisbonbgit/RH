@@ -4,7 +4,13 @@ Testa-se com um duplo que regista as chamadas, para não ser preciso um Mongo.
 """
 import asyncio
 
-from faturacao.db import INDICES, criar_indices
+from faturacao.db import (
+    INDICES,
+    criar_indices,
+    indice_idempotencia_confirmado,
+    indice_idempotencia_presente,
+    marcar_indice_idempotencia,
+)
 
 
 class ColeccaoFalsa:
@@ -103,3 +109,85 @@ def test_criar_indices_nao_rebenta_se_um_falhar():
             return ColeccaoRebentada(nome, self.registo)
 
     asyncio.get_event_loop().run_until_complete(criar_indices(DbRebentada()))
+
+
+# --- I3: o índice de idempotência é VERIFICADO, nunca assumido ------------------
+#
+# criar_indices (acima) engole a falha de CADA índice individualmente, e o
+# arranque (faturacao/__init__.py) corta a criação toda aos
+# LIMITE_INDICES_SEGUNDOS — com um Mongo Atlas lento, o índice único de
+# fat_refs_fiscais.ext_ref (o último dos 22, o mais provável de ficar por
+# criar) podia nunca chegar a existir, em silêncio, e o POS continuava a
+# servir sem defesa nenhuma contra o duplo-toque. `indice_idempotencia_
+# presente` confirma esse índice concreto, a sério — nunca "criar_indices
+# não rebentou, logo deve estar lá".
+
+
+class ColeccaoComIndices:
+    def __init__(self, indices):
+        self._indices = indices
+
+    async def index_information(self):
+        return self._indices
+
+
+class DbComIndices:
+    def __init__(self, indices_por_coleccao):
+        self._indices_por_coleccao = indices_por_coleccao
+
+    def __getitem__(self, nome):
+        return ColeccaoComIndices(self._indices_por_coleccao.get(nome, {}))
+
+
+def _corre(coro):
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+def test_indice_idempotencia_presente_quando_o_indice_unico_existe():
+    db = DbComIndices({
+        "fat_refs_fiscais": {
+            "_id_": {"key": [("_id", 1)]},
+            "ext_ref_1": {"key": [("ext_ref", 1)], "unique": True},
+        }
+    })
+    assert _corre(indice_idempotencia_presente(db)) is True
+
+
+def test_indice_idempotencia_ausente_quando_o_indice_nao_existe():
+    """O caso concreto do defeito: criar_indices "correu" (não levantou
+    nada), mas o índice único nunca ficou criado (Atlas lento + timeout
+    global) — só sobra o _id_ automático."""
+    db = DbComIndices({"fat_refs_fiscais": {"_id_": {"key": [("_id", 1)]}}})
+    assert _corre(indice_idempotencia_presente(db)) is False
+
+
+def test_indice_idempotencia_ausente_quando_existe_mas_nao_e_unico():
+    """Um índice em ext_ref que exista mas NÃO seja único não dá nenhuma
+    garantia contra o duplo-toque — não conta como presente."""
+    db = DbComIndices({
+        "fat_refs_fiscais": {"ext_ref_1": {"key": [("ext_ref", 1)]}},  # sem unique
+    })
+    assert _corre(indice_idempotencia_presente(db)) is False
+
+
+def test_indice_idempotencia_ausente_se_a_verificacao_rebentar():
+    class ColeccaoRebentada:
+        async def index_information(self):
+            raise RuntimeError("Atlas indisponível")
+
+    class DbRebentada:
+        def __getitem__(self, nome):
+            return ColeccaoRebentada()
+
+    assert _corre(indice_idempotencia_presente(DbRebentada())) is False
+
+
+def test_marcar_e_ler_o_estado_confirmado():
+    marcar_indice_idempotencia(True)
+    assert indice_idempotencia_confirmado() is True
+    marcar_indice_idempotencia(False)
+    assert indice_idempotencia_confirmado() is False
+    # None (nunca confirmado, ex.: arrancar() nunca correu) conta como "não
+    # confirmado" — nunca um "assumido OK" por omissão.
+    marcar_indice_idempotencia(None)
+    assert indice_idempotencia_confirmado() is False

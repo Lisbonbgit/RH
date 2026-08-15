@@ -26,6 +26,7 @@ from pymongo.errors import DuplicateKeyError
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+from faturacao import db as db_mod
 from faturacao import fiscal as fiscal_mod
 from faturacao.db import COLECOES
 from faturacao.fiscal import (
@@ -47,6 +48,19 @@ from faturacao.venda import _totais
 
 def _corre(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
+
+
+@pytest.fixture(autouse=True)
+def _arranque_saudavel_por_omissao():
+    """I3: `finalizar` recusa-se (503) sem o índice de idempotência
+    confirmado por `arrancar()`. Este ficheiro testa a ROTA directamente,
+    sem nunca chamar `arrancar()` — por isso assume, como toda a suite já
+    assumia implicitamente antes desta guarda existir, que o arranque
+    correu bem; os testes que exercitam a PRÓPRIA guarda (I3) desligam-na
+    explicitamente."""
+    db_mod.marcar_indice_idempotencia(True)
+    yield
+    db_mod.marcar_indice_idempotencia(None)
 
 
 # --- Duplo de base de dados, com uniqueness REAL ------------------------------
@@ -1167,6 +1181,28 @@ def test_finalizar_sem_register_id_configurado_e_recusado_502(monkeypatch):
             operador=_operador(),
         ))
     assert excinfo.value.status_code == 502
+
+
+def test_finalizar_recusa_sem_indice_de_idempotencia_confirmado(monkeypatch):
+    """I3: sem a confirmação explícita (por `arrancar()`) de que o índice
+    único de `fat_refs_fiscais.ext_ref` existe mesmo, o POS recusa emitir —
+    nunca serve 'às cegas' sem a defesa contra o duplo-toque. É a PRIMEIRA
+    verificação da rota: nem chega a tocar na venda nem no Vendus."""
+    db_mod.marcar_indice_idempotencia(False)
+    _configura_vendus_env(monkeypatch)
+    db = _db(vendas=[_venda(linhas=[_linha()])], tipos_pagamento=[_tipo_pagamento()])
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", ClienteEmissaoVendusFalso)
+    ClienteEmissaoVendusFalso.instancias.clear()
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(finalizar(
+            "venda-1",
+            PedidoFinalizarVenda(pagamentos=[PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)]),
+            operador=_operador(),
+        ))
+    assert excinfo.value.status_code == 503
+    assert ClienteEmissaoVendusFalso.instancias == []  # nunca chega a falar com o Vendus
 
 
 def test_finalizar_com_vendus_indisponivel_devolve_502_e_nao_marca_emitida(monkeypatch):

@@ -53,7 +53,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from pymongo.errors import DuplicateKeyError
 
-from .db import COLECOES, obter_db
+from .db import COLECOES, indice_idempotencia_confirmado, obter_db
 from .importacao import _nif_configurado
 from .pos_auth import operador_atual
 from .precos import _tem_mais_de_2_casas_decimais
@@ -97,6 +97,12 @@ _MSG_TIPO_PAGAMENTO_SEM_VENDUS = (
 _MSG_SESSAO_NAO_ABERTA = (
     "A sessão de caixa desta venda já não está aberta — não é possível "
     "emitir fatura para uma venda de um turno já fechado."
+)
+_MSG_INDICE_IDEMPOTENCIA_EM_FALTA = (
+    "O índice de idempotência (fat_refs_fiscais.ext_ref) não está "
+    "confirmado no arranque — o POS recusa emitir faturas até isto ser "
+    "corrigido, para nunca arriscar duas Faturas Simplificadas reais da "
+    "mesma venda."
 )
 
 
@@ -690,7 +696,16 @@ async def finalizar(
     de pagamento válidos e mapeados no Vendus) corre TODA antes de tocar na
     reserva atómica — um erro de configuração ou de dados não pode gastar
     uma tentativa de emissão nem confundir o operador com um 502 do Vendus
-    quando o problema é, por exemplo, um pagamento mal somado."""
+    quando o problema é, por exemplo, um pagamento mal somado.
+
+    I3 (a revisão do núcleo fiscal): sem o índice único de
+    `fat_refs_fiscais.ext_ref` confirmado no arranque (`faturacao.
+    arrancar`), a reserva atómica (passo 2 da sequência) não tem NENHUMA
+    garantia real por trás — o duplo-toque deixava de ter defesa nenhuma,
+    em silêncio. Por isso esta é a PRIMEIRA verificação da rota, antes de
+    tocar em qualquer venda."""
+    if not indice_idempotencia_confirmado():
+        raise HTTPException(status_code=503, detail=_MSG_INDICE_IDEMPOTENCIA_EM_FALTA)
     db = obter_db()
     venda = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
     _garante_aberta(venda)

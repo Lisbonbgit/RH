@@ -132,3 +132,53 @@ async def criar_indices(db):
             await db[coleccao].create_index(chaves, **opcoes)
         except Exception as e:  # noqa: BLE001 — arrancar é mais importante
             logger.error("[faturacao] índice %s %s falhou: %s", coleccao, chaves, e)
+
+
+# --- I3: o índice de idempotência é VERIFICADO, nunca assumido -----------------
+#
+# `criar_indices` engole a falha de CADA índice individualmente, e o arranque
+# (`faturacao/__init__.py::arrancar`) corta a espera total aos
+# LIMITE_INDICES_SEGUNDOS — com um Atlas lento, o índice único de
+# `fat_refs_fiscais.ext_ref` (o ÚLTIMO dos 22 declarados acima, por isso o
+# PRIMEIRO a ficar por criar quando o tempo esgota) podia nunca chegar a
+# existir, em silêncio, e o POS continuava a servir vendas sem defesa nenhuma
+# contra o duplo-toque. Isto verifica esse índice concreto a sério — nunca
+# "criar_indices não rebentou, logo deve estar lá" — e `arrancar()` usa o
+# resultado para decidir se o POS pode servir `/pos/venda/{id}/finalizar`.
+
+_indice_idempotencia_ok = None  # type: Optional[bool]  # None = ainda não confirmado
+
+
+async def indice_idempotencia_presente(db) -> bool:
+    """Lê os índices REAIS de `fat_refs_fiscais` e confirma que existe um
+    único sobre `ext_ref` — não assume nada a partir de `criar_indices` ter
+    corrido sem excepção. Qualquer falha a ler os índices (Atlas em baixo,
+    por exemplo) conta como AUSENTE, nunca como "não consegui verificar,
+    assumo que está lá"."""
+    try:
+        indices = await db[COLECOES["refs_fiscais"]].index_information()
+    except Exception as e:  # noqa: BLE001 — falha na verificação = ausente
+        logger.error("[faturacao] não foi possível confirmar o índice de idempotência: %s", e)
+        return False
+    for detalhes in indices.values():
+        chave = list(detalhes.get("key") or [])
+        if chave == [("ext_ref", 1)] and detalhes.get("unique"):
+            return True
+    return False
+
+
+def marcar_indice_idempotencia(ok: Optional[bool]) -> None:
+    """Chamado por `arrancar()` depois de `indice_idempotencia_presente` —
+    guarda o resultado para as rotas do POS consultarem sem repetir a
+    leitura a cada pedido."""
+    global _indice_idempotencia_ok
+    _indice_idempotencia_ok = ok
+
+
+def indice_idempotencia_confirmado() -> bool:
+    """`True` só depois de `arrancar()` confirmar mesmo que o índice único
+    de `ext_ref` existe — NUNCA por omissão (`None`, o valor antes de
+    `arrancar()` correr, conta como "não confirmado", não como "assumido
+    OK"). É esta função que `fiscal.finalizar` consulta antes de tocar na
+    reserva atómica."""
+    return _indice_idempotencia_ok is True
