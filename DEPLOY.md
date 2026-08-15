@@ -115,6 +115,15 @@ Preencha:
   (substitua `A-SUA-PASSWORD`). Cole o resultado no `.env`.
 - **CORS_ORIGINS** e **FRONTEND_URL** — o seu domínio, ex.: `https://rh.grupolisbonb.pt`.
 - **RESEND_API_KEY** e **SENDER_EMAIL** — da conta Resend (veja passo 8).
+- **POS_JWT_SECRET** — só se usar o módulo Faturação (POS das lojas de açaí).
+  Gere uma chave forte, a mesma forma do JWT_SECRET acima:
+  ```bash
+  python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+  ```
+  Nunca partilhe o valor do JWT_SECRET de gestão — têm de ser chaves
+  DIFERENTES. Sem esta variável definida, as rotas do POS (emparelhar
+  dispositivo, PIN do operador, vender, finalizar) respondem 503 e o POS
+  fica inteiramente indisponível nas lojas.
 
 Grave com `Ctrl+O`, `Enter`, `Ctrl+X`.
 

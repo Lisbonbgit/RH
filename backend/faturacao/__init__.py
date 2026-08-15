@@ -9,7 +9,13 @@ import logging
 
 from fastapi import APIRouter
 
-from .db import COLECOES, criar_indices, obter_db  # noqa: F401
+from .db import (  # noqa: F401
+    COLECOES,
+    criar_indices,
+    indice_idempotencia_presente,
+    marcar_indice_idempotencia,
+    obter_db,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +51,18 @@ router.include_router(_importacao)
 from .dashboard import router as _dashboard
 router.include_router(_dashboard)
 
+from .pos_auth import router as _pos_auth
+router.include_router(_pos_auth)
+
+from .caixa import router as _caixa
+router.include_router(_caixa)
+
+from .venda import router as _venda
+router.include_router(_venda)
+
+from .fiscal import router as _fiscal
+router.include_router(_fiscal)
+
 
 async def arrancar():
     """Chamado pelo server.py no arranque.
@@ -63,13 +81,50 @@ async def arrancar():
     """
     try:
         db = obter_db()
-        await asyncio.wait_for(criar_indices(db), timeout=LIMITE_INDICES_SEGUNDOS)
-    except asyncio.TimeoutError:
-        logger.error(
-            "[faturacao] criação de índices excedeu %ss — módulo arrancado sem eles",
-            LIMITE_INDICES_SEGUNDOS,
-        )
+        try:
+            await asyncio.wait_for(criar_indices(db), timeout=LIMITE_INDICES_SEGUNDOS)
+        except asyncio.TimeoutError:
+            logger.error(
+                "[faturacao] criação de índices excedeu %ss — módulo arrancado sem eles",
+                LIMITE_INDICES_SEGUNDOS,
+            )
+        # I3: nunca ASSUMIR que o índice único de fat_refs_fiscais.ext_ref
+        # (a garantia central da idempotência do POS) ficou criado só
+        # porque criar_indices não levantou nada — com um Atlas lento, é o
+        # último dos 22 índices declarados, o primeiro a ficar por criar
+        # quando o LIMITE_INDICES_SEGUNDOS corta a espera. Verificado a
+        # sério, SEMPRE, independentemente de criar_indices ter conseguido
+        # correr até ao fim ou não.
+        #
+        # Achado da re-revisão do núcleo fiscal: esta chamada corria FORA do
+        # wait_for que protege criar_indices — com o Mongo pendurado (não a
+        # levantar excepção, só nunca a responder: um Atlas em baixo,
+        # index_information() bloqueado à espera de selecção de servidor),
+        # isto somava o tempo limite por omissão do PyMongo (~30s) ao
+        # arranque do PORTAL INTEIRO, RH e Financeiro incluídos — mesmo com
+        # criar_indices já bem-sucedido. Envolvida no MESMO limite; esgotar
+        # o tempo conta como "não está presente", nunca como "não consegui
+        # verificar, assumo que está lá".
+        try:
+            indice_ok = await asyncio.wait_for(
+                indice_idempotencia_presente(db), timeout=LIMITE_INDICES_SEGUNDOS
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "[faturacao] verificação do índice de idempotência excedeu "
+                "%ss — tratada como ausente",
+                LIMITE_INDICES_SEGUNDOS,
+            )
+            indice_ok = False
+        marcar_indice_idempotencia(indice_ok)
+        if not indice_ok:
+            logger.error(
+                "[faturacao] índice único de fat_refs_fiscais.ext_ref não "
+                "confirmado — o POS vai recusar emitir faturas até isto "
+                "ser corrigido (ver faturacao.fiscal.finalizar)."
+            )
     except Exception as e:  # noqa: BLE001 — nada pode propagar daqui, ver docstring acima
+        marcar_indice_idempotencia(False)
         logger.error("[faturacao] arranque do módulo falhou: %s", e)
 
 

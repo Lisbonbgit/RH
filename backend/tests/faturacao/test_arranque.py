@@ -15,13 +15,114 @@ por omissão) — com 9 índices, minutos com a aplicação a não servir nada, 
 HEALTHCHECK do Dockerfile marca unhealthy aos 110s.
 """
 import asyncio
+import time
+
+import pytest
 
 import faturacao as faturacao_mod
 from faturacao import arrancar
+from faturacao import db as db_mod
+from faturacao.db import COLECOES
 
 
 def _corre(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
+
+
+@pytest.fixture(autouse=True)
+def _reset_indice_idempotencia():
+    """`db_mod._indice_idempotencia_ok` é global — sem isto, o resultado de
+    um teste "vazava" para o seguinte."""
+    db_mod.marcar_indice_idempotencia(None)
+    yield
+    db_mod.marcar_indice_idempotencia(None)
+
+
+class _ColeccaoFalsa:
+    def __init__(self, indices=None):
+        self._indices = indices if indices is not None else {}
+
+    async def create_index(self, chaves, **opcoes):
+        return "ok"
+
+    async def index_information(self):
+        return self._indices
+
+
+class _DbFalsa:
+    """`refs_fiscais` tem os índices que lhe passarmos; qualquer outra
+    colecção aceita create_index sem fazer nada (não é o que este ficheiro
+    testa)."""
+
+    def __init__(self, indices_refs_fiscais=None):
+        self._indices_refs_fiscais = indices_refs_fiscais
+
+    def __getitem__(self, nome):
+        if nome == COLECOES["refs_fiscais"]:
+            return _ColeccaoFalsa(self._indices_refs_fiscais)
+        return _ColeccaoFalsa()
+
+
+_INDICE_EXT_REF_PRESENTE = {"ext_ref_1": {"key": [("ext_ref", 1)], "unique": True}}
+
+
+def test_arrancar_confirma_o_indice_de_idempotencia_quando_presente(monkeypatch):
+    monkeypatch.setattr(faturacao_mod, "obter_db", lambda: _DbFalsa(_INDICE_EXT_REF_PRESENTE))
+    _corre(arrancar())
+    assert db_mod.indice_idempotencia_confirmado() is True
+
+
+def test_arrancar_nao_confirma_o_indice_de_idempotencia_quando_ausente(monkeypatch):
+    """I3, reproduzido: criar_indices "correu" sem levantar nada (o duplo
+    aceita create_index sempre — exactamente o que acontece em produção
+    quando o índice simplesmente ainda não chegou a ser criado, sem
+    nenhuma excepção no meio), mas o índice de `ext_ref` nunca ficou
+    mesmo lá. Sem a verificação dedicada, isto passava em silêncio."""
+    monkeypatch.setattr(faturacao_mod, "obter_db", lambda: _DbFalsa({}))
+    _corre(arrancar())
+    assert db_mod.indice_idempotencia_confirmado() is False
+
+
+def test_arrancar_confirma_o_indice_mesmo_se_criar_indices_demorar_demais(monkeypatch):
+    """A verificação dedicada é INDEPENDENTE de criar_indices ter
+    conseguido correr — um índice criado num deploy anterior continua lá
+    mesmo que ESTA chamada a criar_indices() nunca resolva a tempo."""
+
+    async def _criar_indices_que_nunca_acaba(db):
+        await asyncio.sleep(2)
+
+    monkeypatch.setattr(faturacao_mod, "obter_db", lambda: _DbFalsa(_INDICE_EXT_REF_PRESENTE))
+    monkeypatch.setattr(faturacao_mod, "criar_indices", _criar_indices_que_nunca_acaba)
+    monkeypatch.setattr(faturacao_mod, "LIMITE_INDICES_SEGUNDOS", 0.05)
+
+    _corre(arrancar())
+    assert db_mod.indice_idempotencia_confirmado() is True
+
+
+def test_arrancar_nao_confirma_o_indice_quando_criar_indices_demora_e_o_indice_nao_existe(monkeypatch):
+    """O cenário concreto do defeito: Atlas lento, criar_indices corta aos
+    LIMITE_INDICES_SEGUNDOS antes de chegar ao índice de ext_ref (o
+    último dos 22) — a verificação dedicada apanha isto e recusa
+    confirmar."""
+
+    async def _criar_indices_que_nunca_acaba(db):
+        await asyncio.sleep(2)
+
+    monkeypatch.setattr(faturacao_mod, "obter_db", lambda: _DbFalsa({}))
+    monkeypatch.setattr(faturacao_mod, "criar_indices", _criar_indices_que_nunca_acaba)
+    monkeypatch.setattr(faturacao_mod, "LIMITE_INDICES_SEGUNDOS", 0.05)
+
+    _corre(arrancar())
+    assert db_mod.indice_idempotencia_confirmado() is False
+
+
+def test_arrancar_nao_confirma_o_indice_se_obter_db_rebentar(monkeypatch):
+    def _obter_db_rebentada():
+        raise RuntimeError("falha de configuração simulada (DNS do Atlas)")
+
+    monkeypatch.setattr(faturacao_mod, "obter_db", _obter_db_rebentada)
+    _corre(arrancar())
+    assert db_mod.indice_idempotencia_confirmado() is False
 
 
 def test_arrancar_nao_propaga_se_obter_db_rebentar(monkeypatch):
@@ -51,3 +152,35 @@ def test_arrancar_nao_propaga_se_criar_indices_demorar_demais(monkeypatch):
     monkeypatch.setattr(faturacao_mod, "LIMITE_INDICES_SEGUNDOS", 0.05)
 
     _corre(arrancar())  # não pode levantar nem esperar os 2s todos
+
+
+def test_arrancar_nao_espera_o_mongo_pendurado_na_verificacao_do_indice(monkeypatch):
+    """Achado da re-revisão do núcleo fiscal: `indice_idempotencia_presente`
+    corria FORA do `asyncio.wait_for` que protege `criar_indices` — com o
+    Mongo pendurado (não a levantar excepção, só nunca a responder — o
+    caso real de um Atlas em baixo, `index_information()` bloqueado à
+    espera de selecção de servidor), isto somava ~30s (o tempo limite por
+    omissão do PyMongo) ao arranque do portal INTEIRO, RH e Financeiro
+    incluídos, mesmo com criar_indices já bem-sucedido. arrancar() tem de
+    cortar esta espera TAMBÉM, dentro do MESMO limite — e tratar o esgotar
+    do tempo como 'não está presente', nunca como 'não consegui verificar,
+    assumo que está lá'."""
+
+    async def _criar_indices_rapido(db):
+        return None
+
+    async def _indice_pendurado(db):
+        await asyncio.sleep(2)
+        return True  # nunca chega a devolver isto dentro do limite
+
+    monkeypatch.setattr(faturacao_mod, "obter_db", lambda: object())
+    monkeypatch.setattr(faturacao_mod, "criar_indices", _criar_indices_rapido)
+    monkeypatch.setattr(faturacao_mod, "indice_idempotencia_presente", _indice_pendurado)
+    monkeypatch.setattr(faturacao_mod, "LIMITE_INDICES_SEGUNDOS", 0.05)
+
+    inicio = time.monotonic()
+    _corre(arrancar())  # não pode esperar os 2s todos
+    duracao = time.monotonic() - inicio
+
+    assert duracao < 1.0, "arrancar() esperou pela verificação pendurada em vez de a cortar"
+    assert db_mod.indice_idempotencia_confirmado() is False

@@ -25,6 +25,27 @@ COLECOES = {
     # até lá está vazia, e uma procura numa colecção vazia devolve vazio — não
     # dá erro). É esta colecção, não o Vendus, que o Dashboard (Plano 3) lê.
     "documentos": "fat_documentos",
+    # Dispositivos do POS: um código de emparelhamento de uso único (gerado
+    # pelo gestor) que se troca por um token de dispositivo persistente (ver
+    # faturacao/pos_auth.py). O PC da loja guarda o token no localStorage.
+    "dispositivos": "fat_dispositivos",
+    # Sessão de caixa (Task 3 do Plano 2A, spec §7.2): abre com o fundo de
+    # maneio, acumula movimentos, fecha com a contagem e o Z (faturacao/caixa.py).
+    "sessoes_caixa": "fat_sessoes_caixa",
+    # Entradas e saídas de dinheiro ao longo da sessão (faturacao/caixa.py).
+    "movimentos_caixa": "fat_movimentos_caixa",
+    # A conta do balcão (Plano 2B, Task 2, faturacao/venda.py): nasce
+    # 'aberta', acumula linhas, e só a Task 3 (emissão) a passa a 'emitida'.
+    "vendas": "fat_vendas",
+    # A RESERVA atómica da Task 3 (faturacao/fiscal.py, spec §6.1 passo 2):
+    # um documento por `ext_ref`, inserido ANTES de qualquer pedido ao
+    # Vendus. O índice único em `ext_ref` (ver INDICES abaixo) É a garantia
+    # — quem perde a corrida (dois toques na mesma venda, ou um retry a
+    # cruzar-se com o pedido original) apanha DuplicateKeyError e nunca
+    # chega a emitir. Coleção pequena e efémera por natureza: cada linha
+    # representa UMA tentativa de emissão, não um documento fiscal em si
+    # (isso é fat_documentos).
+    "refs_fiscais": "fat_refs_fiscais",
 }
 
 _cliente = None  # type: Optional[AsyncIOMotorClient]
@@ -58,6 +79,48 @@ INDICES = [
     # Dashboard: a série diária/mensal lê por data (todas as lojas) e por loja+data.
     ("fat_documentos", [("emitido_em", 1)], {}),
     ("fat_documentos", [("loja_id", 1), ("emitido_em", 1)], {}),
+    # A Task 3 (spec §4.3): terceira e quarta defesa contra a fatura a dobrar
+    # — únicos em `vendus_document_id` E em `atcud`. Mesmo que a reserva em
+    # fat_refs_fiscais falhasse por alguma razão, um documento com o mesmo id
+    # (ou ATCUD, que a AT nunca repete) do Vendus não consegue ser gravado
+    # duas vezes aqui.
+    ("fat_documentos", [("vendus_document_id", 1)], {"unique": True}),
+    ("fat_documentos", [("atcud", 1)], {"unique": True}),
+    # A verificação por timeout (Task 3, passo 4) e a reconciliação do fecho
+    # (Task 4) procuram por `ext_ref` — não é único aqui (o único de verdade
+    # é o de fat_refs_fiscais), só um índice de leitura.
+    ("fat_documentos", [("ext_ref", 1)], {}),
+    # Entrada no POS: busca o dispositivo pelo hash do código (emparelhar) ou
+    # do token (dispositivo_atual, em cada pedido).
+    ("fat_dispositivos", [("codigo_hash", 1)], {"sparse": True}),
+    ("fat_dispositivos", [("token_hash", 1)], {"sparse": True}),
+    # A GARANTIA da Task 3 (spec §7.2): único PARCIAL em {caixa_id,
+    # estado:'aberta'} — impossível haver duas sessões abertas na mesma
+    # caixa, mesmo com dois PCs a tentar ao mesmo tempo. Sem isto, o fecho e
+    # o Z (Task 4) partiam-se com uma corrida entre duas sessões paralelas.
+    # PARCIAL, não simples: só se aplica aos documentos com estado='aberta',
+    # senão a segunda sessão FECHADA da mesma caixa (perfeitamente normal, é
+    # o histórico do dia seguinte) colidiria com a primeira.
+    (
+        "fat_sessoes_caixa",
+        [("caixa_id", 1)],
+        {"unique": True, "partialFilterExpression": {"estado": "aberta"}},
+    ),
+    ("fat_sessoes_caixa", [("loja_id", 1)], {}),
+    # O fecho (Task 4) lê todos os movimentos de uma sessão de uma vez.
+    ("fat_movimentos_caixa", [("sessao_id", 1)], {}),
+    # A venda do balcão (Plano 2B, Task 2): o fecho de caixa (Task 4) vai
+    # somar as vendas em dinheiro de uma sessão; o backoffice lista por
+    # loja+data (spec §4.3).
+    ("fat_vendas", [("sessao_id", 1)], {}),
+    ("fat_vendas", [("loja_id", 1), ("criada_em", 1)], {}),
+    # A GARANTIA central da Task 3 (spec §6.1 passo 2): impossível duas
+    # tentativas de emissão da MESMA venda reservarem com sucesso ao mesmo
+    # tempo — quem perde a corrida apanha DuplicateKeyError e nunca chega a
+    # falar com o Vendus. É este índice, não uma leitura antes de inserir,
+    # que decide a corrida real (mesmo raciocínio do índice de sessão aberta
+    # acima).
+    ("fat_refs_fiscais", [("ext_ref", 1)], {"unique": True}),
 ]
 
 
@@ -69,3 +132,53 @@ async def criar_indices(db):
             await db[coleccao].create_index(chaves, **opcoes)
         except Exception as e:  # noqa: BLE001 — arrancar é mais importante
             logger.error("[faturacao] índice %s %s falhou: %s", coleccao, chaves, e)
+
+
+# --- I3: o índice de idempotência é VERIFICADO, nunca assumido -----------------
+#
+# `criar_indices` engole a falha de CADA índice individualmente, e o arranque
+# (`faturacao/__init__.py::arrancar`) corta a espera total aos
+# LIMITE_INDICES_SEGUNDOS — com um Atlas lento, o índice único de
+# `fat_refs_fiscais.ext_ref` (o ÚLTIMO dos 22 declarados acima, por isso o
+# PRIMEIRO a ficar por criar quando o tempo esgota) podia nunca chegar a
+# existir, em silêncio, e o POS continuava a servir vendas sem defesa nenhuma
+# contra o duplo-toque. Isto verifica esse índice concreto a sério — nunca
+# "criar_indices não rebentou, logo deve estar lá" — e `arrancar()` usa o
+# resultado para decidir se o POS pode servir `/pos/venda/{id}/finalizar`.
+
+_indice_idempotencia_ok = None  # type: Optional[bool]  # None = ainda não confirmado
+
+
+async def indice_idempotencia_presente(db) -> bool:
+    """Lê os índices REAIS de `fat_refs_fiscais` e confirma que existe um
+    único sobre `ext_ref` — não assume nada a partir de `criar_indices` ter
+    corrido sem excepção. Qualquer falha a ler os índices (Atlas em baixo,
+    por exemplo) conta como AUSENTE, nunca como "não consegui verificar,
+    assumo que está lá"."""
+    try:
+        indices = await db[COLECOES["refs_fiscais"]].index_information()
+    except Exception as e:  # noqa: BLE001 — falha na verificação = ausente
+        logger.error("[faturacao] não foi possível confirmar o índice de idempotência: %s", e)
+        return False
+    for detalhes in indices.values():
+        chave = list(detalhes.get("key") or [])
+        if chave == [("ext_ref", 1)] and detalhes.get("unique"):
+            return True
+    return False
+
+
+def marcar_indice_idempotencia(ok: Optional[bool]) -> None:
+    """Chamado por `arrancar()` depois de `indice_idempotencia_presente` —
+    guarda o resultado para as rotas do POS consultarem sem repetir a
+    leitura a cada pedido."""
+    global _indice_idempotencia_ok
+    _indice_idempotencia_ok = ok
+
+
+def indice_idempotencia_confirmado() -> bool:
+    """`True` só depois de `arrancar()` confirmar mesmo que o índice único
+    de `ext_ref` existe — NUNCA por omissão (`None`, o valor antes de
+    `arrancar()` correr, conta como "não confirmado", não como "assumido
+    OK"). É esta função que `fiscal.finalizar` consulta antes de tocar na
+    reserva atómica."""
+    return _indice_idempotencia_ok is True

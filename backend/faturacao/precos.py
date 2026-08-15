@@ -83,7 +83,18 @@ def linha_de_venda(
     As personalizações somam ao preço unitário (é o que a app já faz em produção)
     e os nomes vão entre parêntesis no título, para saírem no talão.
     """
-    tax_id = tax_override or produto.get("tax_id")
+    # O diálogo do produto, no POS, deixa a operadora forçar o IVA de uma
+    # linha. Esse valor tem de passar pelo mesmo crivo do IVA do produto
+    # (erros_do_produto) — sem isto, um "XPTO" escrito à mão seguia sem
+    # validação nenhuma até o Vendus recusar o documento à frente do
+    # cliente, ou pior, aceitá-lo com o imposto errado.
+    if tax_override is not None:
+        if tax_override not in _CODIGOS_IVA_VALIDOS:
+            raise ValueError("Código de IVA desconhecido: %s" % tax_override)
+        tax_id = tax_override
+    else:
+        tax_id = produto.get("tax_id")
+
     if not tax_id:
         raise ValueError(
             "O produto '%s' não tem IVA definido e não pode ser vendido."
@@ -129,6 +140,18 @@ def linha_de_venda(
             raise ValueError(
                 "O desconto de %s € tem mais de 2 casas decimais — a fatura recusa-o "
                 "para não perder um cêntimo no arredondamento." % desconto_eur
+            )
+        # Tecto: o desconto não pode exceder o bruto da linha INTEIRA (preço
+        # unitário × quantidade, já com as personalizações somadas) — sem
+        # isto, nada impedia um desconto maior do que a própria linha, o que
+        # produziria discount_amount > gross_price*qty: uma linha NEGATIVA
+        # numa fatura real, ou seja, uma nota de crédito escondida dentro de
+        # uma fatura (buraco achado no Plano 2B, Task 3).
+        bruto_linha = round(linha["gross_price"] * linha["qty"], 2)
+        if float(desconto_eur) > bruto_linha:
+            raise ValueError(
+                "O desconto de %s € é maior do que o valor desta linha (%s €) — "
+                "produziria uma linha negativa numa fatura real." % (desconto_eur, bruto_linha)
             )
         linha["discount_amount"] = round(float(desconto_eur), 2)
     elif desconto_pct:
