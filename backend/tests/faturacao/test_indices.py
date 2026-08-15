@@ -41,6 +41,23 @@ def test_nao_existe_indice_unico_sobre_pin_hash():
     assert indices_unicos_com_pin_hash == []
 
 
+def test_existe_indice_unico_parcial_para_sessao_aberta_por_caixa():
+    """A garantia central da Task 3 (spec §7.2): impossível haver duas
+    sessões abertas na mesma caixa, mesmo com dois PCs a tentar ao mesmo
+    tempo. Tem de ser PARCIAL (só estado='aberta') — senão duas sessões
+    FECHADAS da mesma caixa (o histórico normal de dois dias diferentes)
+    colidiam entre si."""
+    unicos = [
+        (chaves, opcoes)
+        for (coleccao, chaves, opcoes) in INDICES
+        if coleccao == "fat_sessoes_caixa" and opcoes.get("unique")
+    ]
+    assert len(unicos) == 1
+    chaves, opcoes = unicos[0]
+    assert chaves == [("caixa_id", 1)]
+    assert opcoes.get("partialFilterExpression") == {"estado": "aberta"}
+
+
 def test_criar_indices_aplica_todos():
     db = DbFalsa()
     asyncio.get_event_loop().run_until_complete(criar_indices(db))

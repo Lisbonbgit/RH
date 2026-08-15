@@ -29,6 +29,11 @@ COLECOES = {
     # pelo gestor) que se troca por um token de dispositivo persistente (ver
     # faturacao/pos_auth.py). O PC da loja guarda o token no localStorage.
     "dispositivos": "fat_dispositivos",
+    # Sessão de caixa (Task 3 do Plano 2A, spec §7.2): abre com o fundo de
+    # maneio, acumula movimentos, fecha com a contagem e o Z (faturacao/caixa.py).
+    "sessoes_caixa": "fat_sessoes_caixa",
+    # Entradas e saídas de dinheiro ao longo da sessão (faturacao/caixa.py).
+    "movimentos_caixa": "fat_movimentos_caixa",
 }
 
 _cliente = None  # type: Optional[AsyncIOMotorClient]
@@ -66,6 +71,21 @@ INDICES = [
     # do token (dispositivo_atual, em cada pedido).
     ("fat_dispositivos", [("codigo_hash", 1)], {"sparse": True}),
     ("fat_dispositivos", [("token_hash", 1)], {"sparse": True}),
+    # A GARANTIA da Task 3 (spec §7.2): único PARCIAL em {caixa_id,
+    # estado:'aberta'} — impossível haver duas sessões abertas na mesma
+    # caixa, mesmo com dois PCs a tentar ao mesmo tempo. Sem isto, o fecho e
+    # o Z (Task 4) partiam-se com uma corrida entre duas sessões paralelas.
+    # PARCIAL, não simples: só se aplica aos documentos com estado='aberta',
+    # senão a segunda sessão FECHADA da mesma caixa (perfeitamente normal, é
+    # o histórico do dia seguinte) colidiria com a primeira.
+    (
+        "fat_sessoes_caixa",
+        [("caixa_id", 1)],
+        {"unique": True, "partialFilterExpression": {"estado": "aberta"}},
+    ),
+    ("fat_sessoes_caixa", [("loja_id", 1)], {}),
+    # O fecho (Task 4) lê todos os movimentos de uma sessão de uma vez.
+    ("fat_movimentos_caixa", [("sessao_id", 1)], {}),
 ]
 
 
