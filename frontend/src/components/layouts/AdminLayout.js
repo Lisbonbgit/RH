@@ -48,13 +48,11 @@ import {
   CalendarDays,
   Star,
   Store,
-  CreditCard,
-  FileMinus,
   Package,
   Percent,
   Monitor,
   Banknote,
-  UserCog
+  LayoutGrid
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -111,14 +109,33 @@ const sections = [
     ],
   },
   {
-    // O módulo Faturação tem estrutura própria, pedida pelo dono e decalcada do
-    // backoffice do Vendus que ele usa hoje: duas secções (Gestão e POS) e a
-    // Configuração à parte, em baixo. O campo `group` desenha esses cabeçalhos
-    // na barra lateral (ver a navegação mais abaixo).
+    // O módulo Faturação tem navegação própria, pedida pelo dono e decalcada
+    // do backoffice do Vendus que ele usa hoje: um carril estreito à esquerda
+    // com Gestão/POS, um painel à direita com os itens do grupo escolhido, e
+    // a Configuração presa ao fundo, fora do carril. O bloco `rail` é o que
+    // liga essa navegação especial (ver `SecaoComCarril` mais abaixo); as
+    // outras secções não o declaram e continuam a desenhar a lista corrida.
     key: 'faturacao',
     label: 'Faturação',
     home: '/admin/faturacao/dashboard',
     match: (p) => p.startsWith('/admin/faturacao'),
+    rail: {
+      tabs: [
+        { group: 'Gestão', label: 'Gestão', icon: LayoutGrid },
+        { group: 'POS', label: 'POS', icon: Monitor },
+      ],
+      // A Configuração não é uma aba do carril — fica presa ao fundo (ver
+      // pinnedGroup em SecaoComCarril), com os seus próprios itens pendurados
+      // como filhos, o mesmo mecanismo do Produtos.
+      pinnedGroup: 'Configuração',
+      // "Iniciar Ponto de Venda" deixou de ser um item de menu: no Vendus é
+      // um botão largo no topo da secção POS, que abre o ecrã de venda num
+      // separador novo — e agora é uma rota de topo fora do /admin, porque a
+      // funcionária da loja entra com PIN, sem sessão de backoffice.
+      cta: {
+        POS: { label: 'Iniciar Ponto de Venda', icon: Monitor, href: '/faturacao/pos' },
+      },
+    },
     items: [
       { group: 'Gestão', path: '/admin/faturacao/dashboard', label: 'Dashboard', icon: LayoutDashboard },
       // Produtos abre três sub-itens, como no backoffice do Vendus: o catálogo,
@@ -134,14 +151,16 @@ const sections = [
       { group: 'Gestão', path: '/admin/faturacao/relatorios', label: 'Relatórios', icon: BarChart3 },
       { group: 'Gestão', path: '/admin/faturacao/compras', label: 'Compras', icon: Truck },
 
-      { group: 'POS', path: '/admin/faturacao/pos', label: 'Iniciar Ponto de Venda', icon: Monitor },
       { group: 'POS', path: '/admin/faturacao/movimentos-caixa', label: 'Movimentos de Caixa', icon: Banknote },
       { group: 'POS', path: '/admin/faturacao/pos-lojas', label: 'Lojas', icon: Store },
 
-      { group: 'Configuração', path: '/admin/faturacao/config/lojas', label: 'Lojas e Caixas', icon: Store },
-      { group: 'Configuração', path: '/admin/faturacao/config/pagamentos', label: 'Tipos de Pagamento', icon: CreditCard },
-      { group: 'Configuração', path: '/admin/faturacao/config/utilizadores', label: 'Utilizadores', icon: UserCog },
-      { group: 'Configuração', path: '/admin/faturacao/config/motivos', label: 'Motivos - Notas Crédito', icon: FileMinus },
+      // A Configuração pendura os 4 ecrãs já construídos no mesmo item pai,
+      // tal como o Produtos pendura a Lista/Categorias/Personalizações.
+      { group: 'Configuração', path: '/admin/faturacao/config', label: 'Configuração', icon: Settings },
+      { group: 'Configuração', path: '/admin/faturacao/config/lojas', label: 'Lojas e Caixas', pai: '/admin/faturacao/config' },
+      { group: 'Configuração', path: '/admin/faturacao/config/pagamentos', label: 'Tipos de Pagamento', pai: '/admin/faturacao/config' },
+      { group: 'Configuração', path: '/admin/faturacao/config/utilizadores', label: 'Utilizadores', pai: '/admin/faturacao/config' },
+      { group: 'Configuração', path: '/admin/faturacao/config/motivos', label: 'Motivos - Notas Crédito', pai: '/admin/faturacao/config' },
     ],
   },
   {
@@ -157,6 +176,195 @@ const sections = [
     ],
   },
 ];
+
+// Estilo comum de uma linha de navegação — usado na lista corrida das secções
+// simples, no painel do carril da Faturação e na Configuração presa ao fundo.
+const classeItemNav = (isActive, indentado) =>
+  `flex items-center gap-3 rounded-lg text-sm transition-colors ${
+    indentado ? 'px-3 py-2 font-normal' : 'px-3 py-2.5 font-medium'
+  } ${
+    isActive
+      ? 'bg-primary text-primary-foreground font-medium'
+      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+  }`;
+
+// Uma entrada de navegação, com os filhos que ela possa ter pendurados por
+// baixo (seta que roda, abertura suave, fio vertical). É o mecanismo que já
+// existia para o Produtos — aqui vira um componente para poder ser reutilizado
+// também pela Configuração presa ao fundo do carril da Faturação.
+function ItemNav({ item, filhos, location, onNavigate }) {
+  const aberto = filhos.length > 0 && location.pathname.startsWith(item.path);
+  return (
+    <>
+      <NavLink
+        to={item.path}
+        end={item.exact}
+        onClick={onNavigate}
+        className={({ isActive }) =>
+          // Um pai com o ramo aberto não fica pintado de azul: quem está
+          // seleccionado é o filho. O pai só ganha o tom de texto cheio, para
+          // se ver que é ali que estamos.
+          `${classeItemNav(isActive && !aberto, false)} ${aberto ? 'text-foreground font-medium' : ''}`
+        }
+        data-testid={`nav-${item.path.split('/').pop() || 'dashboard'}`}
+      >
+        {item.icon && <item.icon className="h-4 w-4 shrink-0" />}
+        <span className="flex-1">{item.label}</span>
+        {filhos.length > 0 && (
+          <ChevronDown
+            className={`h-4 w-4 shrink-0 opacity-60 transition-transform duration-200 motion-reduce:transition-none ${
+              aberto ? 'rotate-0' : '-rotate-90'
+            }`}
+          />
+        )}
+      </NavLink>
+
+      {filhos.length > 0 && (
+        // Abertura suave: a grelha passa de 0fr para 1fr, o que anima a altura
+        // sem ninguém ter de a medir. Quem tiver o sistema com menos
+        // movimento salta a transição.
+        <div
+          className="grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
+          style={{ gridTemplateRows: aberto ? '1fr' : '0fr' }}
+          aria-hidden={!aberto}
+        >
+          <div className="overflow-hidden">
+            <div className="ml-[22px] border-l border-border pl-3 space-y-1 py-1">
+              {filhos.map((filho) => (
+                <NavLink
+                  key={filho.path}
+                  to={filho.path}
+                  end={filho.exact}
+                  tabIndex={aberto ? 0 : -1}
+                  onClick={onNavigate}
+                  className={({ isActive }) => classeItemNav(isActive, true)}
+                  data-testid={`nav-${filho.path.split('/').pop()}`}
+                >
+                  {filho.label}
+                </NavLink>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// A lista corrida de itens de uma secção — com cabeçalhos de grupo opcionais
+// (`item.group`) e filhos pendurados no pai (`item.pai`). É o que a barra
+// lateral sempre desenhou; o painel do carril da Faturação reutiliza-a com
+// `showGroupHeaders={false}`, já que o próprio carril identifica o grupo.
+function ListaNav({ items, location, onNavigate, showGroupHeaders = true }) {
+  const raiz = items.filter((i) => !i.pai);
+  const filhosDe = (caminho) => items.filter((i) => i.pai === caminho);
+  let grupoAnterior = null;
+
+  return (
+    <nav className="space-y-1">
+      {raiz.map((item) => {
+        const abreGrupo = showGroupHeaders && item.group && item.group !== grupoAnterior;
+        grupoAnterior = item.group || null;
+
+        return (
+          <React.Fragment key={item.path}>
+            {abreGrupo && (
+              <p className="px-3 pt-4 pb-1 text-[10px] uppercase tracking-[0.16em] text-muted-foreground font-semibold">
+                {item.group}
+              </p>
+            )}
+            <ItemNav item={item} filhos={filhosDe(item.path)} location={location} onNavigate={onNavigate} />
+          </React.Fragment>
+        );
+      })}
+    </nav>
+  );
+}
+
+// O carril estreito (Gestão/POS) + o painel com os itens do grupo escolhido —
+// a navegação do módulo Faturação, decalcada do backoffice do Vendus. Só
+// entra em jogo quando a secção declara `rail`; as outras continuam a usar a
+// ListaNav directamente, em lista corrida.
+function SecaoComCarril({ section, items, location, navigate, onNavigate }) {
+  const { tabs, pinnedGroup, cta } = section.rail;
+
+  // O grupo activo deduz-se do caminho actual: de entre todos os itens com
+  // `group`, o mais específico (caminho mais longo) cujo caminho é o próprio
+  // ou um prefixo do actual.
+  const activeItem = [...items]
+    .filter((i) => i.group)
+    .sort((a, b) => b.path.length - a.path.length)
+    .find((i) => location.pathname === i.path || location.pathname.startsWith(`${i.path}/`));
+  const activeGroup = activeItem ? activeItem.group : null;
+
+  // O painel só mostra itens quando o grupo activo é uma aba do carril — a
+  // Configuração (presa em baixo) mostra os seus filhos ali mesmo, não aqui.
+  const itemsDoGrupo = tabs.some((t) => t.group === activeGroup)
+    ? items.filter((i) => i.group === activeGroup)
+    : [];
+
+  const ctaAtivo = cta && cta[activeGroup];
+
+  const pinnedItems = pinnedGroup ? items.filter((i) => i.group === pinnedGroup) : [];
+  const pinnedRaiz = pinnedItems.find((i) => !i.pai);
+  const pinnedFilhos = pinnedRaiz ? pinnedItems.filter((i) => i.pai === pinnedRaiz.path) : [];
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col">
+      <div className="flex flex-1 min-h-0">
+        {/* Carril */}
+        <div className="w-16 shrink-0 border-r border-border bg-muted/40 flex flex-col items-center gap-1 py-3">
+          {tabs.map((tab) => {
+            const isActive = tab.group === activeGroup;
+            // Um clique no carril navega para o primeiro item desse grupo.
+            const alvo = items.find((i) => i.group === tab.group && !i.pai);
+            return (
+              <button
+                key={tab.group}
+                type="button"
+                onClick={() => { if (alvo) navigate(alvo.path); onNavigate?.(); }}
+                className={`flex flex-col items-center justify-center gap-1 w-14 rounded-lg py-2 text-[10px] font-semibold uppercase tracking-wide transition-colors ${
+                  isActive
+                    ? 'bg-card text-primary shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-card/60'
+                }`}
+                data-testid={`rail-${tab.group}`}
+              >
+                <tab.icon className="h-5 w-5" />
+                <span className="truncate max-w-full px-0.5">{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Painel */}
+        <ScrollArea className="flex-1 min-w-0 px-3 pt-3">
+          {ctaAtivo && (
+            <a
+              href={ctaAtivo.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={onNavigate}
+              className="mb-4 flex items-center justify-center gap-2 rounded-xl bg-primary text-primary-foreground py-3 px-3 text-sm font-semibold shadow-md shadow-primary/30 hover:opacity-90 transition-opacity motion-reduce:transition-none"
+              data-testid="pos-iniciar-btn"
+            >
+              <ctaAtivo.icon className="h-5 w-5 shrink-0" />
+              <span>{ctaAtivo.label}</span>
+            </a>
+          )}
+          <ListaNav items={itemsDoGrupo} location={location} onNavigate={onNavigate} showGroupHeaders={false} />
+        </ScrollArea>
+      </div>
+
+      {/* Configuração — presa ao fundo, separada por uma linha, fora do carril */}
+      {pinnedRaiz && (
+        <div className="border-t border-border px-3 py-2 shrink-0">
+          <ItemNav item={pinnedRaiz} filhos={pinnedFilhos} location={location} onNavigate={onNavigate} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function AdminLayout() {
   const { user, logout } = useAuth();
@@ -338,103 +546,27 @@ export default function AdminLayout() {
         )}
       </div>
 
-      <ScrollArea className="flex-1 px-3 pt-2">
-        <nav className="space-y-1">
-          {(() => {
-            const visiveis = activeSection.items.filter(item => !item.masterOnly || isMasterAdmin);
-            // Os sub-itens declaram o caminho do `pai`. Aqui pendura-se cada um
-            // no seu pai, para o ramo poder abrir e fechar como um todo em vez
-            // de os itens aparecerem soltos no meio da lista.
-            const raiz = visiveis.filter(i => !i.pai);
-            const filhosDe = (caminho) => visiveis.filter(i => i.pai === caminho);
+      {(() => {
+        const visiveis = activeSection.items.filter(item => !item.masterOnly || isMasterAdmin);
+        const fecharMobile = () => setMobileOpen(false);
 
-            const classeItem = (isActive, indentado) =>
-              `flex items-center gap-3 rounded-lg text-sm transition-colors ${
-                indentado ? 'px-3 py-2 font-normal' : 'px-3 py-2.5 font-medium'
-              } ${
-                isActive
-                  ? 'bg-primary text-primary-foreground font-medium'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              }`;
-
-            let grupoAnterior = null;
-            return raiz.map((item) => {
-              // Cabeçalho de grupo: só quando o grupo muda, e só nas secções que
-              // os declaram (as antigas não têm `group` e continuam uma lista
-              // corrida, como sempre).
-              const abreGrupo = item.group && item.group !== grupoAnterior;
-              grupoAnterior = item.group || null;
-
-              const filhos = filhosDe(item.path);
-              const aberto = filhos.length > 0 && location.pathname.startsWith(item.path);
-
-              return (
-                <React.Fragment key={item.path}>
-                  {abreGrupo && (
-                    <p className="px-3 pt-4 pb-1 text-[10px] uppercase tracking-[0.16em] text-muted-foreground font-semibold">
-                      {item.group}
-                    </p>
-                  )}
-
-                  <NavLink
-                    to={item.path}
-                    end={item.exact}
-                    onClick={() => setMobileOpen(false)}
-                    className={({ isActive }) =>
-                      // Um pai com o ramo aberto não fica pintado de azul: quem
-                      // está seleccionado é o filho. O pai só ganha o tom de
-                      // texto cheio, para se ver que é ali que estamos.
-                      `${classeItem(isActive && !aberto, false)} ${
-                        aberto ? 'text-foreground font-medium' : ''
-                      }`
-                    }
-                    data-testid={`nav-${item.path.split('/').pop() || 'dashboard'}`}
-                  >
-                    {item.icon && <item.icon className="h-4 w-4 shrink-0" />}
-                    <span className="flex-1">{item.label}</span>
-                    {filhos.length > 0 && (
-                      <ChevronDown
-                        className={`h-4 w-4 shrink-0 opacity-60 transition-transform duration-200 motion-reduce:transition-none ${
-                          aberto ? 'rotate-0' : '-rotate-90'
-                        }`}
-                      />
-                    )}
-                  </NavLink>
-
-                  {filhos.length > 0 && (
-                    // Abertura suave: a grelha passa de 0fr para 1fr, o que anima
-                    // a altura sem ninguém ter de a medir. Quem tiver o sistema
-                    // com menos movimento salta a transição.
-                    <div
-                      className="grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
-                      style={{ gridTemplateRows: aberto ? '1fr' : '0fr' }}
-                      aria-hidden={!aberto}
-                    >
-                      <div className="overflow-hidden">
-                        <div className="ml-[22px] border-l border-border pl-3 space-y-1 py-1">
-                          {filhos.map((filho) => (
-                            <NavLink
-                              key={filho.path}
-                              to={filho.path}
-                              end={filho.exact}
-                              tabIndex={aberto ? 0 : -1}
-                              onClick={() => setMobileOpen(false)}
-                              className={({ isActive }) => classeItem(isActive, true)}
-                              data-testid={`nav-${filho.path.split('/').pop()}`}
-                            >
-                              {filho.label}
-                            </NavLink>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </React.Fragment>
-              );
-            });
-          })()}
-        </nav>
-      </ScrollArea>
+        // Só a Faturação declara `rail` — carril + painel, como o Vendus. As
+        // outras secções não declaram nada de especial e caem na lista
+        // corrida de sempre.
+        return activeSection.rail ? (
+          <SecaoComCarril
+            section={activeSection}
+            items={visiveis}
+            location={location}
+            navigate={navigate}
+            onNavigate={fecharMobile}
+          />
+        ) : (
+          <ScrollArea className="flex-1 px-3 pt-2">
+            <ListaNav items={visiveis} location={location} onNavigate={fecharMobile} />
+          </ScrollArea>
+        );
+      })()}
 
       {isMasterAdmin && (
         <div className="lg:hidden p-4 border-t">

@@ -37,7 +37,6 @@ import {
   Users,
   BarChart3,
   Truck,
-  Monitor,
   Banknote,
   Store,
 } from 'lucide-react';
@@ -49,6 +48,7 @@ import FatLojas from './pages/admin/faturacao/FatLojas';
 import FatPagamentos from './pages/admin/faturacao/FatPagamentos';
 import FatUtilizadores from './pages/admin/faturacao/FatUtilizadores';
 import FatMotivos from './pages/admin/faturacao/FatMotivos';
+import PosStandalone from './pages/pos/PosStandalone';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeProfile from './pages/employee/EmployeeProfile';
 import EmployeeTimeRecord from './pages/employee/EmployeeTimeRecord';
@@ -146,6 +146,12 @@ function AppRoutes() {
       <Route path="/esqueci-senha" element={<ForgotPasswordPage />} />
       <Route path="/redefinir-senha" element={<ResetPasswordPage />} />
       <Route path="/privacidade" element={<PrivacyPolicy />} />
+
+      {/* Ponto de Venda: rota de topo, fora do /admin e sem sessão de
+          backoffice — as lojas vão usar só este link, com PIN de loja (por
+          construir), nunca o login do portal. Ver AdminLayout: o botão
+          "Iniciar Ponto de Venda" abre este caminho num separador novo. */}
+      <Route path="/faturacao/pos" element={<PosStandalone />} />
       <Route path="/alterar-senha" element={
         <ChangePasswordRoute>
           <ChangePasswordPage />
@@ -210,12 +216,16 @@ function AppRoutes() {
         <Route path="faturacao/relatorios" element={<ComingSoon icon={BarChart3} title="Relatórios" subtitle="Faturação · Gestão" note="Movimentos de caixa, produtos, categorias, lojas, utilizadores, diário, por hora, dias da semana e mensal." />} />
         <Route path="faturacao/compras" element={<ComingSoon icon={Truck} title="Compras" subtitle="Faturação · Gestão" note="Entrada de mercadoria a partir das faturas de compra que já existem no Financeiro." />} />
 
-        {/* POS */}
-        <Route path="faturacao/pos" element={<ComingSoon icon={Monitor} title="Iniciar Ponto de Venda" subtitle="Faturação · POS" note="O ecrã de venda ao balcão, com sessão de caixa, personalizações e emissão da fatura. É a fase seguinte." />} />
+        {/* POS — o "Iniciar Ponto de Venda" já não vive aqui: é o botão do
+            topo do painel, e abre /faturacao/pos (fora do /admin) num
+            separador novo. Ver App.js, rotas de topo, e AdminLayout. */}
         <Route path="faturacao/movimentos-caixa" element={<ComingSoon icon={Banknote} title="Movimentos de Caixa" subtitle="Faturação · POS" note="Aberturas, entradas, saídas e fechos de caixa, loja a loja." />} />
         <Route path="faturacao/pos-lojas" element={<ComingSoon icon={Store} title="Lojas" subtitle="Faturação · POS" note="Definições de cada loja e o que sai impresso no talão do cliente." />} />
 
-        {/* Configuração — os ecrãs que já funcionam */}
+        {/* Configuração — os ecrãs que já funcionam. A Configuração pendura-se
+            no carril como um item com filhos (ver AdminLayout); precisa de
+            um caminho próprio para o pai poder navegar antes de expandir. */}
+        <Route path="faturacao/config" element={<Navigate to="/admin/faturacao/config/lojas" replace />} />
         <Route path="faturacao/config/lojas" element={<FatLojas />} />
         <Route path="faturacao/config/pagamentos" element={<FatPagamentos />} />
         <Route path="faturacao/config/utilizadores" element={<FatUtilizadores />} />
