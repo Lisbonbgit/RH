@@ -5814,11 +5814,15 @@ async def fin_ingest_estoque(
 
     # ---- 2b) GUIA DE TRANSPORTE: sem valor, só conferência. Guarda à parte
     # (coleção fin_guias), NÃO entra nas faturas/pagamentos do Financeiro. ----
+    # IMPORTANTE: o valor confirmado pelo colaborador é o sinal mais forte de que
+    # é uma FATURA (as guias não têm total). Por isso só se trata como guia quando
+    # NÃO há valor — evita que uma fatura mal classificada pela IA seja desviada
+    # das faturas/pagamentos e perca o total confirmado.
     doc_type = (ex.get("docType") or "").strip().lower()
     is_guia = doc_type in (
         "guia_transporte", "guia", "guia de transporte", "guia de remessa", "remessa",
     )
-    if is_guia:
+    if is_guia and valor is None:
         content_hash = hashlib.sha256(pdf_bytes).hexdigest()
         if await db.fin_guias.find_one({"content_hash": content_hash}):
             return {"kind": "guia", "duplicate": True, "detail": "Guia já registada."}
