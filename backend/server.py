@@ -5350,12 +5350,16 @@ except Exception:  # noqa: BLE001
     pass
 
 _FIN_INGEST_PROMPT = (
-    "Esta é uma fatura de fornecedor (Portugal). Devolve APENAS um JSON válido com: "
-    '{"supplier":"nome do fornecedor/emitente",'
+    "Este é um documento de fornecedor (Portugal): pode ser uma FATURA/recibo de "
+    "compra OU uma GUIA DE TRANSPORTE/REMESSA (documento de entrega, normalmente "
+    "SEM preços/total, só artigos e quantidades). Devolve APENAS um JSON válido com: "
+    '{"docType":"fatura" se for fatura/recibo de compra, "guia_transporte" se for '
+    'guia de transporte ou guia de remessa, "outro" se não for nenhum,'
+    '"supplier":"nome do fornecedor/emitente",'
     '"nif":"NIF do FORNECEDOR (9 dígitos) ou null",'
     '"customerNif":"NIF do ADQUIRENTE/cliente (9 dígitos) ou null",'
     '"customerName":"nome do adquirente ou null",'
-    '"invoiceNumber":"número da fatura",'
+    '"invoiceNumber":"número da fatura ou da guia",'
     '"issueDate":"YYYY-MM-DD ou null",'
     '"dueDate":"YYYY-MM-DD ou null",'
     '"amount":valor TOTAL com IVA (número) ou null,'
@@ -5363,7 +5367,9 @@ _FIN_INGEST_PROMPT = (
     '"vatAmount":valor do IVA (número) ou null,'
     '"vatRate":taxa de IVA principal em % (número) ou null,'
     '"description":"breve descrição",'
-    '"isInvoice":true se for mesmo uma fatura/recibo de compra, false caso contrário}'
+    '"items":[{"descricao":"artigo","quantidade":número ou null,"unidade":"un/kg/L/cx ou null"}] '
+    "(lista dos artigos do documento; [] se não conseguires ler),"
+    '"isInvoice":true se for fatura/recibo de compra, false caso contrário}'
 )
 
 
@@ -5747,8 +5753,8 @@ async def fin_cron_ingest(key: str = Query(...)):
 @api_router.post("/fin/invoices/ingest-estoque")
 async def fin_ingest_estoque(
     file: UploadFile = File(...),
-    fornecedor: str = Form(...),
-    valor: float = Form(...),
+    fornecedor: Optional[str] = Form(None),
+    valor: Optional[float] = Form(None),
     nif: Optional[str] = Form(None),
     colaborador: Optional[str] = Form(None),
     loja: Optional[str] = Form(None),
@@ -5788,6 +5794,72 @@ async def fin_ingest_estoque(
         )
     company_id = comp["id"]
 
+    def _unit_da_loja() -> Optional[str]:
+        if not loja:
+            return None
+        loja_n = _fin_norm_sup(loja)
+        return loja_n or None
+
+    async def _resolve_unit_id() -> Optional[str]:
+        ln = _unit_da_loja()
+        if not ln:
+            return None
+        units = await db.fin_units.find(
+            {"company_id": company_id}, {"_id": 0, "id": 1, "name": 1}
+        ).to_list(1000)
+        for u in units:
+            if _fin_norm_sup(u.get("name")) == ln:
+                return u["id"]
+        return None
+
+    # ---- 2b) GUIA DE TRANSPORTE: sem valor, só conferência. Guarda à parte
+    # (coleção fin_guias), NÃO entra nas faturas/pagamentos do Financeiro. ----
+    doc_type = (ex.get("docType") or "").strip().lower()
+    is_guia = doc_type in (
+        "guia_transporte", "guia", "guia de transporte", "guia de remessa", "remessa",
+    )
+    if is_guia:
+        content_hash = hashlib.sha256(pdf_bytes).hexdigest()
+        if await db.fin_guias.find_one({"content_hash": content_hash}):
+            return {"kind": "guia", "duplicate": True, "detail": "Guia já registada."}
+        gid = str(uuid.uuid4())
+        raw_items = ex.get("items")
+        items = raw_items if isinstance(raw_items, list) else []
+        gdoc = {
+            "id": gid,
+            "company_id": company_id,
+            "unit_id": await _resolve_unit_id(),
+            "supplier": (fornecedor or ex.get("supplier") or "").strip() or None,
+            "nif": _fin_only_digits(ex.get("nif")) or None,
+            "customer_nif": nif_override or (_fin_only_digits(ex.get("customerNif")) or None),
+            "doc_number": ex.get("invoiceNumber"),
+            "issue_date": _fin_clean_date(ex.get("issueDate")),
+            "description": ex.get("description"),
+            "items": items,
+            "source": "estoque",
+            "file_name": fn,
+            "origin_user": colaborador,
+            "origin_store": loja,
+            "content_hash": content_hash,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.fin_guias.insert_one(gdoc)
+        try:
+            dest_dir = UPLOAD_DIR / "fin_guias" / company_id
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            gpath = dest_dir / f"{gid}.pdf"
+            gpath.write_bytes(pdf_bytes)
+            await db.fin_guias.update_one({"id": gid}, {"$set": {"pdf_path": str(gpath)}})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[fin-estoque] PDF da guia não guardado (%s): %s", gid, exc)
+        return {
+            "kind": "guia",
+            "guia_id": gid,
+            "company": comp.get("name"),
+            "supplier": gdoc["supplier"],
+            "items": len(items),
+        }
+
     # ---- 3) Validações (é fatura? duplicado?) ----
     if not _fin_looks_like_invoice(ex):
         return JSONResponse(
@@ -5803,21 +5875,22 @@ async def fin_ingest_estoque(
     ):
         return {"duplicate": True, "detail": "Fatura já registada."}
 
-    # ---- 4) Dados (com override de fornecedor e valor confirmados) ----
-    # Coerência líquido+IVA=total (o total confirmado pelo colaborador manda).
+    # ---- 4) Dados. O valor confirmado pelo colaborador manda; se não vier
+    # (valor opcional), usa-se o total lido pela IA. ----
+    valor_efetivo = valor if valor is not None else _fin_clean_num(ex.get("amount"))
     vat_rate = _fin_clean_num(ex.get("vatRate"))
     amount_net, vat_amount = _fin_consistent_net_vat(
-        valor, ex.get("amountNet"), ex.get("vatAmount"), ex.get("vatRate")
+        valor_efetivo, ex.get("amountNet"), ex.get("vatAmount"), ex.get("vatRate")
     )
 
     data = {
-        "supplier": fornecedor,  # override confirmado pelo colaborador
+        "supplier": (fornecedor or ex.get("supplier")),  # confirmado ou lido pela IA
         "nif": _fin_only_digits(ex.get("nif")) or None,
         "customer_nif": nif_override or (_fin_only_digits(ex.get("customerNif")) or None),
         "invoice_number": ex.get("invoiceNumber"),
         "issue_date": ex.get("issueDate"),
         "due_date": ex.get("dueDate"),
-        "amount": valor,  # override confirmado pelo colaborador (total c/IVA)
+        "amount": valor_efetivo,  # confirmado pelo colaborador ou lido pela IA
         "amount_net": amount_net,
         "vat_amount": vat_amount,
         "vat_rate": vat_rate,
@@ -5872,6 +5945,73 @@ async def fin_ingest_estoque(
 # Vista dedicada (todas as faturas com source="estoque", por confirmar E já
 # tratadas), com quem inseriu e em que loja. Base da futura secção "Estoque"
 # (stock por loja, tabelas de preços por marca, etc.), ligada à app do Estoque.
+
+@api_router.get("/fin/estoque/guias")
+async def fin_estoque_guias(
+    company_id: str,
+    month: Optional[str] = None,
+    origin_user: Optional[str] = None,
+    origin_store: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Guias de transporte vindas da app do Estoque (coleção fin_guias).
+
+    São SÓ para conferência (sem valor) — não entram nas faturas/pagamentos.
+    Filtros: mês (AAAA-MM pela data de inserção), colaborador e loja de origem.
+    company_id='all' agrega as empresas onde o utilizador é membro.
+    """
+    cid_q = await _fin_report_scope(company_id, current_user)
+    q = {"company_id": cid_q}
+    ou = (origin_user or "").strip()
+    if ou:
+        q["origin_user"] = ou
+    ost = (origin_store or "").strip()
+    if ost:
+        q["origin_store"] = ost
+    mon = (month or "").strip()
+    if re.match(r"^\d{4}-\d{2}$", mon):
+        q["created_at"] = {"$regex": "^" + re.escape(mon)}
+
+    docs = await db.fin_guias.find(q, {"_id": 0}).to_list(20000)
+    docs.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    guias = [{
+        "id": d["id"],
+        "supplier": d.get("supplier"),
+        "nif": d.get("nif"),
+        "doc_number": d.get("doc_number"),
+        "issue_date": d.get("issue_date"),
+        "description": d.get("description"),
+        "items": d.get("items") or [],
+        "origin_user": d.get("origin_user"),
+        "origin_store": d.get("origin_store"),
+        "unit_id": d.get("unit_id"),
+        "created_at": d.get("created_at"),
+        "has_pdf": bool(d.get("pdf_path")),
+    } for d in docs]
+    # Listas distintas para os dropdowns dos filtros (ignoram mês/filtros ativos).
+    base = {"company_id": cid_q}
+    todos = await db.fin_guias.find(base, {"_id": 0, "origin_user": 1, "origin_store": 1}).to_list(20000)
+    lojas = sorted({d.get("origin_store") for d in todos if d.get("origin_store")})
+    colaboradores = sorted({d.get("origin_user") for d in todos if d.get("origin_user")})
+    return {"guias": guias, "lojas": lojas, "colaboradores": colaboradores, "total": len(guias)}
+
+
+@api_router.get("/fin/estoque/guias/{guia_id}/pdf")
+async def fin_estoque_guia_pdf(guia_id: str, current_user: dict = Depends(get_current_user)):
+    """Serve o PDF/imagem guardado da guia (valida pertença à empresa)."""
+    g = await db.fin_guias.find_one({"id": guia_id}, {"_id": 0})
+    if not g:
+        raise HTTPException(status_code=404, detail="Guia não encontrada.")
+    await fin_require_member(g["company_id"], current_user)
+    pdf_path = g.get("pdf_path")
+    if not pdf_path or not Path(pdf_path).exists():
+        raise HTTPException(status_code=404, detail="Esta guia não tem ficheiro guardado.")
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        filename=f"guia-{g.get('doc_number') or guia_id}.pdf",
+    )
+
 
 @api_router.get("/fin/estoque/invoices")
 async def fin_estoque_invoices(
