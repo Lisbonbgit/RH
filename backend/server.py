@@ -5784,7 +5784,19 @@ async def fin_ingest_estoque(
     companies = await db.fin_companies.find({}, {"_id": 0}).to_list(5000)
     comp = await _fin_match_company(companies, acquirer_nif, ex.get("customerName"), None)
     if not comp or not comp.get("id"):
-        # Não gravamos nada (nem log de hash) — o Estoque reenvia com o NIF.
+        # Fallback: a empresa é a da LOJA que fotografou (o comprador é a loja).
+        # Assim quase nunca falha, e o documento não se perde por causa do NIF.
+        loja_n = _fin_norm_sup(loja) if loja else None
+        if loja_n:
+            units_all = await db.fin_units.find(
+                {}, {"_id": 0, "id": 1, "name": 1, "company_id": 1}
+            ).to_list(5000)
+            for u in units_all:
+                if _fin_norm_sup(u.get("name")) == loja_n:
+                    comp = next((c for c in companies if c.get("id") == u.get("company_id")), None)
+                    break
+    if not comp or not comp.get("id"):
+        # Sem empresa (loja desconhecida): o Estoque reenvia com o NIF.
         return JSONResponse(
             status_code=422,
             content={
@@ -5864,17 +5876,17 @@ async def fin_ingest_estoque(
             "items": len(items),
         }
 
-    # ---- 3) Validações (é fatura? duplicado?) ----
-    if not _fin_looks_like_invoice(ex):
-        return JSONResponse(
-            status_code=422,
-            content={
-                "reason": "not_invoice",
-                "detail": "O ficheiro não parece ser uma fatura.",
-            },
-        )
-
-    if await _fin_is_duplicate(
+    # ---- 3) Reconhecida ou "por classificar"? NUNCA se rejeita: um documento
+    # não reconhecido pela IA é guardado na mesma (pending + needs_data) para o
+    # admin completar os dados no portal — não se perde nada. ----
+    needs_data = not _fin_looks_like_invoice(ex)
+    content_hash = hashlib.sha256(pdf_bytes).hexdigest()
+    if needs_data:
+        dup = await db.fin_invoices.find_one({"content_hash": content_hash})
+        if dup:
+            return {"ok": True, "invoice_id": dup["id"], "duplicate": True,
+                    "needs_data": True, "status": "pending", "company": comp.get("name")}
+    elif await _fin_is_duplicate(
         ex.get("invoiceNumber"), _fin_only_digits(ex.get("nif")), ex.get("supplier")
     ):
         return {"duplicate": True, "detail": "Fatura já registada."}
@@ -5898,7 +5910,10 @@ async def fin_ingest_estoque(
         "amount_net": amount_net,
         "vat_amount": vat_amount,
         "vat_rate": vat_rate,
-        "description": ex.get("description"),
+        "description": (
+            "Por classificar (documento não reconhecido — completar dados)"
+            if needs_data else ex.get("description")
+        ),
         "source": "estoque",
         "file_name": fn,
         "origin_user": colaborador,
@@ -5926,6 +5941,12 @@ async def fin_ingest_estoque(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Falha ao registar a fatura: {exc}")
 
+    # Marca "por classificar" (needs_data) + hash para dedup de reenvios.
+    await db.fin_invoices.update_one(
+        {"id": invoice_id},
+        {"$set": {"needs_data": bool(needs_data), "content_hash": content_hash}},
+    )
+
     try:
         dest_dir = UPLOAD_DIR / "fin_invoices" / company_id
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -5942,6 +5963,7 @@ async def fin_ingest_estoque(
         "invoice_id": invoice_id,
         "company": comp.get("name"),
         "status": "pending",
+        "needs_data": bool(needs_data),
     }
 
 
