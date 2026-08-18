@@ -48,6 +48,7 @@ import FatLojas from './pages/admin/faturacao/FatLojas';
 import FatPagamentos from './pages/admin/faturacao/FatPagamentos';
 import FatUtilizadores from './pages/admin/faturacao/FatUtilizadores';
 import FatMotivos from './pages/admin/faturacao/FatMotivos';
+import FatDispositivos from './pages/admin/faturacao/FatDispositivos';
 import PosApp from './pages/pos/PosApp';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeProfile from './pages/employee/EmployeeProfile';
@@ -233,6 +234,7 @@ function AppRoutes() {
         <Route path="faturacao/config/pagamentos" element={<FatPagamentos />} />
         <Route path="faturacao/config/utilizadores" element={<FatUtilizadores />} />
         <Route path="faturacao/config/motivos" element={<FatMotivos />} />
+        <Route path="faturacao/config/dispositivos" element={<FatDispositivos />} />
 
         {/* Os caminhos antigos, de antes da estrutura por secções */}
         <Route path="faturacao/lojas" element={<Navigate to="/admin/faturacao/config/lojas" replace />} />

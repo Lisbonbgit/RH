@@ -161,6 +161,7 @@ const sections = [
       { group: 'Configuração', path: '/admin/faturacao/config/pagamentos', label: 'Tipos de Pagamento', pai: '/admin/faturacao/config' },
       { group: 'Configuração', path: '/admin/faturacao/config/utilizadores', label: 'Utilizadores', pai: '/admin/faturacao/config' },
       { group: 'Configuração', path: '/admin/faturacao/config/motivos', label: 'Motivos - Notas Crédito', pai: '/admin/faturacao/config' },
+      { group: 'Configuração', path: '/admin/faturacao/config/dispositivos', label: 'Dispositivos', pai: '/admin/faturacao/config' },
     ],
   },
   {

@@ -52,6 +52,11 @@ export const editarUtilizador = (id, data) => axios.put(`${API_URL}/faturacao/ut
 export const mudarPin = (id, pin) => axios.put(`${API_URL}/faturacao/utilizadores/${id}/pin`, { pin });
 export const mudarEstado = (id, ativo) => axios.put(`${API_URL}/faturacao/utilizadores/${id}/estado`, { ativo });
 
+// Dispositivos POS (emparelhamento de PCs de loja)
+export const getDispositivosPos = () => axios.get(`${API_URL}/faturacao/dispositivos-pos`);
+export const gerarCodigoDispositivo = (data) => axios.post(`${API_URL}/faturacao/dispositivos-pos`, data);
+export const revogarDispositivo = (id) => axios.delete(`${API_URL}/faturacao/dispositivos-pos/${id}`);
+
 // Motivos de Nota de Crédito
 export const getMotivos = () => axios.get(`${API_URL}/faturacao/motivos-nc`);
 export const criarMotivo = (data) => axios.post(`${API_URL}/faturacao/motivos-nc`, data);
