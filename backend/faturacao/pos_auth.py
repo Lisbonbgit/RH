@@ -184,7 +184,16 @@ async def emparelhar(dados: PedidoEmparelhar) -> dict:
             "ultima_atividade_em": agora,
         }},
     )
-    return {"device_token": token, "loja_id": disp["loja_id"]}
+    # loja_nome só para o ecrã mostrar "emparelhado com a Loja X" logo a
+    # seguir ao código (spec §7.1) — não é usado para nada de segurança, por
+    # isso uma loja entretanto apagada não impede o emparelhamento em si:
+    # cai só para None, e o ecrã mostra o id em vez do nome.
+    loja = await db[COLECOES["lojas"]].find_one({"id": disp["loja_id"]})
+    return {
+        "device_token": token,
+        "loja_id": disp["loja_id"],
+        "loja_nome": loja.get("nome") if loja else None,
+    }
 
 
 @router.get("/dispositivos-pos")
@@ -264,6 +273,41 @@ def _ambito_bate_com_loja(lojas_do_operador: List[str], loja_id: str) -> bool:
     """Lista vazia = administrador, entra em qualquer loja (mesma convenção
     de utilizadores.py::_sobrepoe_lojas)."""
     return not lojas_do_operador or loja_id in lojas_do_operador
+
+
+@router.get("/pos/operadores")
+async def listar_operadores_do_dispositivo(dispositivo: Dict = Depends(dispositivo_atual)) -> List[dict]:
+    """A grelha de caras do ecrã de entrada/tela de descanso (spec §7.1).
+
+    Depende só de dispositivo_atual — nunca de operador_atual: é
+    precisamente o ecrã que aparece ANTES de existir qualquer operador
+    identificado, por isso não pode exigir um. Usa o MESMO âmbito de loja
+    que `entrar` usa para comparar o PIN (`_ambito_bate_com_loja`), para a
+    grelha mostrar exactamente quem vai conseguir entrar ali — nem mais
+    nem menos.
+
+    Nunca devolve pin_hash nem qualquer outro campo do utilizador. A foto
+    vem do colaborador do RH (colecção `employees`, fora do prefixo fat_ —
+    é o resto do portal) só quando o utilizador está ligado a um
+    employee_id (faturacao/utilizadores.py); sem ligação, o ecrã mostra as
+    iniciais do nome numa cor da marca."""
+    db = obter_db()
+    loja_id = dispositivo["loja_id"]
+    activos = await db[COLECOES["utilizadores"]].find({"ativo": True}).to_list(1000)
+    candidatos = [u for u in activos if _ambito_bate_com_loja(u.get("lojas") or [], loja_id)]
+
+    employee_ids = sorted({u["employee_id"] for u in candidatos if u.get("employee_id")})
+    fotos: Dict[str, Optional[str]] = {}
+    if employee_ids:
+        colaboradores = await db["employees"].find(
+            {"id": {"$in": employee_ids}}, {"_id": 0, "id": 1, "photo": 1}
+        ).to_list(len(employee_ids))
+        fotos = {c["id"]: c.get("photo") for c in colaboradores}
+
+    return [
+        {"id": u["id"], "nome": u.get("nome"), "foto": fotos.get(u.get("employee_id"))}
+        for u in candidatos
+    ]
 
 
 @router.post("/pos/entrar")

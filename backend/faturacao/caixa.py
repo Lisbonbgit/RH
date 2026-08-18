@@ -41,6 +41,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _MSG_CAIXA_INEXISTENTE = "Caixa não encontrada."
+_MSG_SEM_CAIXA_CONFIGURADA = (
+    "Não há nenhuma caixa activa configurada para esta loja. Contacte o gestor."
+)
 _MSG_CAIXA_JA_ABERTA = "Esta caixa já tem uma sessão aberta."
 _MSG_SEM_SESSAO_ABERTA = "Esta caixa não tem nenhuma sessão aberta."
 _MSG_SESSAO_FECHADA_ENTRETANTO = (
@@ -134,6 +137,61 @@ async def _sessao_aberta(db, caixa_id: str) -> Dict:
     if not sessao:
         raise HTTPException(status_code=409, detail=_MSG_SEM_SESSAO_ABERTA)
     return sessao
+
+
+@router.get("/pos/caixa/estado")
+async def estado_caixa(
+    caixa_id: Optional[str] = None, operador: Dict = Depends(operador_atual)
+) -> dict:
+    """O que o ecrã de entrada na "app" precisa para decidir o que mostrar:
+    a lista de caixas activas da loja do operador, qual delas está resolvida
+    (auto-escolhida quando só há uma; a pedido, via `caixa_id`, quando há
+    mais do que uma — a mesma ambiguidade que o PC guarda depois em
+    localStorage, spec §7.1), se tem sessão aberta, e — quando não tem — o
+    resumo do último fecho (quem, quando, com quanto), para o ecrã "Caixa
+    Fechada" (Task 2).
+
+    Só leitura: nunca abre, fecha nem escreve nada. Sem `caixa_id` e com
+    mais do que uma caixa activa, devolve a lista e `caixa: None` — o
+    frontend pergunta qual, nunca escolhe pela funcionária (o mesmo
+    raciocínio do PIN em conflito: escolher a primeira seria escolher
+    errado)."""
+    db = obter_db()
+    loja_id = operador["loja_id"]
+    caixas = (
+        await db[COLECOES["caixas"]]
+        .find({"loja_id": loja_id, "ativa": True}, {"_id": 0})
+        .sort("nome", 1)
+        .to_list(100)
+    )
+    if not caixas:
+        raise HTTPException(status_code=404, detail=_MSG_SEM_CAIXA_CONFIGURADA)
+
+    caixa = None
+    if caixa_id:
+        caixa = next((c for c in caixas if c["id"] == caixa_id), None)
+        if not caixa:
+            raise HTTPException(status_code=404, detail=_MSG_CAIXA_INEXISTENTE)
+    elif len(caixas) == 1:
+        caixa = caixas[0]
+
+    if not caixa:
+        return {"caixas": caixas, "caixa": None, "sessao_aberta": None, "ultimo_fecho": None}
+
+    sessao = await db[COLECOES["sessoes_caixa"]].find_one(
+        {"caixa_id": caixa["id"], "estado": "aberta"}, {"_id": 0}
+    )
+    ultimo_fecho = None
+    if not sessao:
+        anteriores = await (
+            db[COLECOES["sessoes_caixa"]]
+            .find({"caixa_id": caixa["id"], "estado": "fechada"}, {"_id": 0})
+            .sort("fechada_em", -1)
+            .to_list(1)
+        )
+        ultimo_fecho = anteriores[0] if anteriores else None
+
+    return {"caixas": caixas, "caixa": caixa, "sessao_aberta": sessao, "ultimo_fecho": ultimo_fecho}
 
 
 @router.post("/pos/caixa/abrir", status_code=201)

@@ -40,6 +40,7 @@ from faturacao.pos_auth import (
     entrar,
     gerar_codigo_emparelhamento,
     listar_dispositivos,
+    listar_operadores_do_dispositivo,
     operador_atual,
     revogar_dispositivo,
 )
@@ -54,10 +55,18 @@ def _corre(coro):
 
 def _corresponde(item, filtro):
     """Réplica minimalista do casamento de filtro do Mongo: igualdade exacta
-    em cada campo pedido. Suficiente para os filtros usados neste módulo."""
+    em cada campo pedido — com suporte extra a `{"$in": [...]}` (usado por
+    listar_operadores_do_dispositivo para ir buscar só as fotos dos
+    colaboradores ligados). Suficiente para os filtros usados neste módulo."""
     if not filtro:
         return True
-    return all(item.get(chave) == valor for chave, valor in filtro.items())
+    for chave, valor in filtro.items():
+        if isinstance(valor, dict) and "$in" in valor:
+            if item.get(chave) not in valor["$in"]:
+                return False
+        elif item.get(chave) != valor:
+            return False
+    return True
 
 
 class CursorFalso:
@@ -78,7 +87,7 @@ class ColeccaoFalsa:
         self.registo = registo
         self._documentos = documentos if documentos is not None else []
 
-    def find(self, filtro=None):
+    def find(self, filtro=None, projecao=None):
         self.registo.append(("find", filtro))
         return CursorFalso([d for d in self._documentos if _corresponde(d, filtro)])
 
@@ -111,11 +120,12 @@ class DbFalsa:
         return self._coleccoes.setdefault(nome, ColeccaoFalsa([]))
 
 
-def _db(registo, dispositivos=None, utilizadores=None, lojas=None):
+def _db(registo, dispositivos=None, utilizadores=None, lojas=None, employees=None):
     return DbFalsa({
         COLECOES["dispositivos"]: ColeccaoFalsa(registo, dispositivos),
         COLECOES["utilizadores"]: ColeccaoFalsa(registo, utilizadores),
         COLECOES["lojas"]: ColeccaoFalsa(registo, lojas),
+        "employees": ColeccaoFalsa(registo, employees),
     })
 
 
@@ -154,6 +164,25 @@ def test_gerar_codigo_e_emparelhar_devolve_token_de_dispositivo(monkeypatch):
     resultado = _corre(emparelhar(PedidoEmparelhar(codigo=resultado_codigo["codigo"])))
     assert resultado["loja_id"] == "loja-1"
     assert resultado["device_token"]
+    # O ecrã de emparelhamento mostra o nome da loja assim que o código é
+    # aceite (spec §7.1) — sem isto, o PC fica emparelhado sem a funcionária
+    # saber com qual das 5 lojas.
+    assert resultado["loja_nome"] == "Belém"
+
+
+def test_emparelhar_com_loja_entretanto_apagada_devolve_nome_none(monkeypatch):
+    """Não é uma condição de segurança — só o texto que aparece no ecrã. Uma
+    loja apagada depois de o código ter sido gerado não pode impedir o
+    emparelhamento em si."""
+    registo = []
+    db = _db(registo, lojas=[{"id": "loja-1", "nome": "Belém"}])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+    resultado_codigo = _corre(gerar_codigo_emparelhamento(PedidoCodigo(loja_id="loja-1"), _={}))
+
+    db[COLECOES["lojas"]]._documentos.clear()
+
+    resultado = _corre(emparelhar(PedidoEmparelhar(codigo=resultado_codigo["codigo"])))
+    assert resultado["loja_nome"] is None
 
 
 def test_emparelhar_com_codigo_invalido_e_recusado_401(monkeypatch):
@@ -219,6 +248,68 @@ def test_dispositivo_atual_com_token_invalido_e_recusado_401(monkeypatch):
     with pytest.raises(HTTPException) as excinfo:
         _corre(dispositivo_atual(x_device_token="isto-nao-existe"))
     assert excinfo.value.status_code == 401
+
+
+# --- Grelha de operadores do ecrã de entrada ---------------------------------
+
+
+def test_listar_operadores_devolve_activos_da_loja_do_dispositivo(monkeypatch):
+    registo = []
+    ana = _operador(id="op-1", nome="Ana", lojas=["loja-1"])
+    de_outra_loja = _operador(id="op-2", nome="Bia", lojas=["loja-2"])
+    inactiva = _operador(id="op-3", nome="Cátia (saiu)", lojas=["loja-1"], ativo=False)
+    db = _db(registo, utilizadores=[ana, de_outra_loja, inactiva])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    resultado = _corre(listar_operadores_do_dispositivo(dispositivo={"loja_id": "loja-1"}))
+    assert [o["id"] for o in resultado] == ["op-1"]
+
+
+def test_listar_operadores_nunca_devolve_pin_hash(monkeypatch):
+    registo = []
+    db = _db(registo, utilizadores=[_operador()])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    resultado = _corre(listar_operadores_do_dispositivo(dispositivo={"loja_id": "loja-1"}))
+    assert "pin_hash" not in resultado[0]
+    assert set(resultado[0].keys()) == {"id", "nome", "foto"}
+
+
+def test_listar_operadores_com_employee_id_traz_a_foto_do_rh(monkeypatch):
+    registo = []
+    ligada = _operador(id="op-1", nome="Ana", employee_id="emp-1")
+    db = _db(
+        registo, utilizadores=[ligada],
+        employees=[{"id": "emp-1", "photo": "data:image/png;base64,ABC", "name": "Ana Colaboradora"}],
+    )
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    resultado = _corre(listar_operadores_do_dispositivo(dispositivo={"loja_id": "loja-1"}))
+    assert resultado[0]["foto"] == "data:image/png;base64,ABC"
+    # Nenhum outro campo do colaborador (nome, email, etc.) vaza para o POS.
+    assert "name" not in resultado[0]
+
+
+def test_listar_operadores_sem_employee_id_nao_tem_foto(monkeypatch):
+    registo = []
+    sem_ligacao = _operador(id="op-1", nome="Ana", employee_id=None)
+    db = _db(registo, utilizadores=[sem_ligacao])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    resultado = _corre(listar_operadores_do_dispositivo(dispositivo={"loja_id": "loja-1"}))
+    assert resultado[0]["foto"] is None
+
+
+def test_listar_operadores_administrador_sem_lojas_aparece_em_qualquer_loja(monkeypatch):
+    """Mesmo âmbito de `entrar`: lista-se quem PODE entrar ali, e o
+    administrador (lojas=[]) entra em qualquer loja."""
+    registo = []
+    admin = _operador(id="op-0", nome="Matheus", perfil="administrador", lojas=[])
+    db = _db(registo, utilizadores=[admin])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    resultado = _corre(listar_operadores_do_dispositivo(dispositivo={"loja_id": "loja-9"}))
+    assert [o["id"] for o in resultado] == ["op-0"]
 
 
 def test_dispositivo_atual_nunca_aceita_jwt_de_gestao(monkeypatch):
