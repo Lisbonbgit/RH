@@ -13,7 +13,17 @@
 // da sessão do browser ser sempre respeitada no pedido seguinte.
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_BACKEND_URL + '/api';
+// O /faturacao FAZ PARTE do baseURL, e não de cada caminho. O módulo está
+// montado em /api/faturacao (faturacao/__init__.py: APIRouter(prefix=...)),
+// e este baseURL nasceu como '/api' — o que punha TODAS as chamadas do POS
+// em /api/pos/..., um caminho que não existe. O FastAPI respondia 404 com o
+// literal {"detail":"Not Found"}, e era esse "Not Found" cru, em inglês, que
+// aparecia no ecrã do balcão ao emparelhar. Não era só o emparelhamento: as
+// sete chamadas do POS falhavam todas da mesma maneira, e ninguém deu por
+// isso porque os ecrãs desenham-se na mesma sem servidor nenhum. Está no
+// baseURL de propósito, e não repetido em cada função, para não haver forma
+// de acrescentar amanhã uma chamada nova e voltar a esquecê-lo.
+const API_URL = process.env.REACT_APP_BACKEND_URL + '/api/faturacao';
 
 const api = axios.create({ baseURL: API_URL });
 
