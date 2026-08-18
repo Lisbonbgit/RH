@@ -148,7 +148,7 @@ export default function PosEntrar({ onEntrar, onDispositivoInvalido, subtitulo }
     (async () => {
       setEnviando(true);
       try {
-        const { data } = await entrarComPin(pin);
+        const { data } = await entrarComPin(selecionado.id, pin);
         if (cancelado) return;
         onEntrar(data.operator_token, data.operador);
       } catch (error) {
@@ -162,8 +162,10 @@ export default function PosEntrar({ onEntrar, onDispositivoInvalido, subtitulo }
           onDispositivoInvalido();
           return;
         }
-        // 401 "PIN incorrecto." ou 409 "PIN em conflito, contacte o gestor."
-        // — os dois nunca deixam entrar; a mensagem já vem certa do servidor.
+        // 401 "PIN incorrecto." — a mesma resposta quer o PIN esteja errado,
+        // quer a pessoa tenha sido desactivada ou mudada de loja entretanto
+        // (o servidor não os distingue de propósito). Nunca deixa entrar; a
+        // mensagem já vem certa de lá.
         const { mensagem } = detalhesErroPos(error, 'Não foi possível entrar.');
         setErroPin(mensagem);
         setPin('');

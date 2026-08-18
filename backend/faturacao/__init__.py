@@ -63,6 +63,9 @@ router.include_router(_venda)
 from .fiscal import router as _fiscal
 router.include_router(_fiscal)
 
+from .pos_catalogo import router as _pos_catalogo
+router.include_router(_pos_catalogo)
+
 
 async def arrancar():
     """Chamado pelo server.py no arranque.

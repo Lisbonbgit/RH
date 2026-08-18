@@ -1,10 +1,11 @@
 """A conta do balcão — Plano 2B, Task 2 (spec §7.3/§7.4, `fat_vendas`).
 
 A operadora vai tocando em produtos no ecrã; cada toque junta uma linha a
-esta conta. Uma venda nasce `aberta`, acumula linhas, e só o Plano 2B Task 3
-(`fiscal.py`) a passa a `emitida` — depois disso, nenhuma alteração é aceite
-aqui: emitir corta a fatura, e alterar uma conta já faturada é exactamente o
-tipo de coisa que obriga a uma nota de crédito.
+esta conta. Uma venda nasce `aberta` e sai daqui por um de dois caminhos:
+`emitida` (Plano 2B Task 3, `fiscal.py`) — depois disso, nenhuma alteração é
+aceite aqui: emitir corta a fatura, e alterar uma conta já faturada é
+exactamente o tipo de coisa que obriga a uma nota de crédito — ou
+`cancelada`, a conta que o cliente desistiu de levar.
 
 Regras que não se negoceiam (brief da Task 2):
 
@@ -230,6 +231,55 @@ async def abrir_venda(dados: PedidoNovaVenda, operador: Dict = Depends(operador_
     return _venda_publica(venda)
 
 
+# Declarada ANTES de todas as rotas com {venda_id}: o FastAPI serve a
+# PRIMEIRA rota que casa com o caminho, e uma `GET /pos/venda/{venda_id}`
+# acrescentada acima desta engolia "aberta" como se fosse um id de venda — a
+# operadora apanhava um 404 e voltava a picar a conta toda. Hoje nenhuma rota
+# de {venda_id} tem só três segmentos (nem aqui nem em fiscal.py), por isso o
+# conflito ainda não existe; esta ordem é a defesa contra a rota que vier a
+# seguir. Provado em test_venda.py, no router montado de verdade.
+@router.get("/pos/venda/aberta")
+async def venda_aberta(
+    caixa_id: str, operador: Dict = Depends(operador_atual)
+) -> Optional[dict]:
+    """A conta em curso desta caixa — ou `null`, se não houver nenhuma.
+
+    Sem isto, `POST /pos/venda` era a única entrada e criava SEMPRE uma conta
+    nova: a tela de descanso ao fim de 5 minutos, um F5 no PC da loja ou um
+    browser que vai abaixo faziam a operadora perder o que já tinha picado
+    (com o cliente à frente) e deixavam para trás uma venda `aberta` órfã em
+    fat_vendas por cada recarregamento, para sempre.
+
+    O âmbito é a SESSÃO aberta da caixa, e NÃO o operador — decisão, não
+    esquecimento: ao balcão a conta é da caixa, não da pessoa. Se a Rafaela
+    picar três artigos e a Ana entrar a seguir com o PIN dela (a tela de
+    descanso caiu, é o cliente que está à espera), a conta tem de continuar
+    lá. Quem fez a venda continua registado em `operador_id`.
+
+    Sem sessão aberta, o 409 de `_sessao_aberta` está certo: sem caixa aberta
+    não há conta nenhuma para recuperar. Sem venda aberta, 200 com `null` —
+    é o estado normal do início do dia, não um erro.
+    """
+    db = obter_db()
+    await _obter_caixa_da_loja(db, caixa_id, operador["loja_id"])
+    sessao = await _sessao_aberta(db, caixa_id)
+
+    # A MAIS RECENTE. Uma sessão pode ter várias contas abertas ao mesmo
+    # tempo (o `POST /pos/venda` cria sempre uma nova, e as órfãs de antes
+    # desta rota continuam lá); a que a operadora tem à frente é sempre a
+    # última que abriu, nunca a primeira que o Mongo calhar devolver.
+    abertas = await (
+        db[COLECOES["vendas"]]
+        .find({"sessao_id": sessao["id"], "estado": "aberta"})
+        .sort("criada_em", -1)
+        .to_list(1)
+    )
+    # Mesmo formato de `_venda_publica` (com `totais`) das outras rotas: o
+    # ecrã não pode ter dois formatos diferentes da mesma conta, um para
+    # quando a abre e outro para quando a recupera.
+    return _venda_publica(abertas[0]) if abertas else None
+
+
 @router.post("/pos/venda/{venda_id}/linhas", status_code=201)
 async def juntar_linha(
     venda_id: str, dados: PedidoJuntarLinha, operador: Dict = Depends(operador_atual)
@@ -326,4 +376,44 @@ async def aplicar_desconto_global(
     }
     venda.update(atualizacao)
     await db[COLECOES["vendas"]].update_one({"id": venda_id}, {"$set": atualizacao})
+    return _venda_publica(venda)
+
+
+@router.post("/pos/venda/{venda_id}/cancelar")
+async def cancelar_venda(venda_id: str, operador: Dict = Depends(operador_atual)) -> dict:
+    """Deita fora uma conta aberta: o cliente desistiu, ou a operadora
+    começou a picar na caixa errada.
+
+    Passa-a a `cancelada`, e é isso que a tira da frente — deixa de ser
+    devolvida por `GET /pos/venda/aberta` e nenhuma rota deste módulo volta a
+    aceitar alterações nela (`_garante_aberta`).
+
+    Só se cancela o que está ABERTO. Uma venda `emitida` tem uma Fatura
+    Simplificada REAL entregue à AT: mudar-lhe o estado à socapa apagava do
+    nosso sistema um documento que continua a existir lá fora — isso
+    corrige-se com uma nota de crédito, nunca aqui. Cancelar uma já
+    cancelada cai no mesmo 409 de propósito: a idempotência não interessa a
+    ninguém ao balcão, mas dizer à operadora que aquela conta já estava
+    cancelada interessa.
+    """
+    db = obter_db()
+    venda = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
+    _garante_aberta(venda)
+
+    # A escrita é CONDICIONADA a {"estado": "aberta"} — a mesma técnica de I2
+    # em caixa.py, e aqui pela pior das razões: entre o `_garante_aberta`
+    # acima e esta linha, o `finalizar` (fiscal.py) pode ter emitido esta
+    # mesma venda. Um $set incondicional carimbava "cancelada" por cima de
+    # uma venda que ACABOU de receber uma Fatura Simplificada real, e ela
+    # sumia-se do fecho de caixa (`caixa_math.soma_vendas_dinheiro` só soma
+    # as `emitida`): o dinheiro ficava na gaveta sem nada que o explicasse.
+    # É o `matched_count`, não a leitura de cima, que decide esta corrida.
+    atualizacao = {"estado": "cancelada", "cancelada_em": _agora()}
+    resultado = await db[COLECOES["vendas"]].update_one(
+        {"id": venda_id, "estado": "aberta"}, {"$set": atualizacao}
+    )
+    if resultado.matched_count == 0:
+        raise HTTPException(status_code=409, detail=_MSG_VENDA_NAO_ABERTA)
+
+    venda.update(atualizacao)
     return _venda_publica(venda)

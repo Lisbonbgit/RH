@@ -336,7 +336,7 @@ def test_entrar_pin_certo_devolve_token_de_operador(monkeypatch):
     db = _db(registo, utilizadores=[_operador()])
     monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
 
-    resultado = _corre(entrar(PedidoEntrar(pin="1234"), dispositivo={"loja_id": "loja-1"}))
+    resultado = _corre(entrar(PedidoEntrar(operador_id="op-1", pin="1234"), dispositivo={"loja_id": "loja-1"}))
     assert resultado["operador"]["id"] == "op-1"
     assert resultado["operator_token"]
 
@@ -354,33 +354,40 @@ def test_entrar_pin_errado_e_recusado_401_sem_dizer_se_existe(monkeypatch):
     db_com_gente = _db(registo, utilizadores=[_operador()])
     monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db_com_gente)
     with pytest.raises(HTTPException) as excinfo_errado:
-        _corre(entrar(PedidoEntrar(pin="0000"), dispositivo={"loja_id": "loja-1"}))
+        _corre(entrar(PedidoEntrar(operador_id="op-1", pin="0000"), dispositivo={"loja_id": "loja-1"}))
     assert excinfo_errado.value.status_code == 401
 
     db_vazia = _db([], utilizadores=[])
     monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db_vazia)
     with pytest.raises(HTTPException) as excinfo_vazio:
-        _corre(entrar(PedidoEntrar(pin="0000"), dispositivo={"loja_id": "loja-1"}))
+        _corre(entrar(PedidoEntrar(operador_id="op-1", pin="0000"), dispositivo={"loja_id": "loja-1"}))
     assert excinfo_vazio.value.status_code == 401
 
     assert excinfo_errado.value.detail == excinfo_vazio.value.detail
 
 
-def test_entrar_duas_correspondencias_e_recusado_409(monkeypatch):
-    """Regra 2 (spec §7.1): a unicidade do PIN não é garantida por índice —
-    se a verificação no servidor falhar (ex.: alguém movido de loja sem lhe
-    mudar o PIN), a entrada tem de tratar isso como conflito explícito e
-    NUNCA escolher a primeira correspondência."""
+def test_entrar_com_pin_repetido_cada_uma_entra_como_ela_propria(monkeypatch):
+    """Duas pessoas com o mesmo PIN deixaram de ser um conflito.
+
+    Antes, a entrada era só pelo PIN: com "1234" a pertencer a duas pessoas
+    não havia como saber qual delas era, e a rota recusava com 409 ("PIN em
+    conflito, contacte o gestor") — o que estava certo para a informação que
+    tinha. Agora que o pedido diz em que CARA se tocou, a pergunta deixa de
+    ser ambígua: compara-se o PIN com aquela pessoa e mais nenhuma, e cada
+    uma entra como ela própria. A unicidade do PIN continua a ser exigida na
+    CRIAÇÃO (utilizadores.py), que é onde ela evita confusão a quem usa."""
     registo = []
     ana = _operador(id="op-1", nome="Ana", pin_hash=hash_pin("1234"))
     bia = _operador(id="op-2", nome="Bia", pin_hash=hash_pin("1234"))
     db = _db(registo, utilizadores=[ana, bia])
     monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
 
-    with pytest.raises(HTTPException) as excinfo:
-        _corre(entrar(PedidoEntrar(pin="1234"), dispositivo={"loja_id": "loja-1"}))
-    assert excinfo.value.status_code == 409
-    assert "gestor" in excinfo.value.detail.lower()
+    for id_esperado in ("op-1", "op-2"):
+        resultado = _corre(
+            entrar(PedidoEntrar(operador_id=id_esperado, pin="1234"),
+                   dispositivo={"loja_id": "loja-1"})
+        )
+        assert resultado["operador"]["id"] == id_esperado
 
 
 def test_entrar_operador_inactivo_nao_entra(monkeypatch):
@@ -390,9 +397,11 @@ def test_entrar_operador_inactivo_nao_entra(monkeypatch):
     monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
 
     with pytest.raises(HTTPException) as excinfo:
-        _corre(entrar(PedidoEntrar(pin="1234"), dispositivo={"loja_id": "loja-1"}))
+        _corre(entrar(PedidoEntrar(operador_id="op-1", pin="1234"), dispositivo={"loja_id": "loja-1"}))
     assert excinfo.value.status_code == 401
-    assert any(chamada == ("find", {"ativo": True}) for chamada in registo)
+    assert any(
+        chamada == ("find_one", {"id": "op-1", "ativo": True}) for chamada in registo
+    )
 
 
 def test_entrar_operador_de_outra_loja_nao_entra(monkeypatch):
@@ -402,7 +411,7 @@ def test_entrar_operador_de_outra_loja_nao_entra(monkeypatch):
     monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
 
     with pytest.raises(HTTPException) as excinfo:
-        _corre(entrar(PedidoEntrar(pin="1234"), dispositivo={"loja_id": "loja-1"}))
+        _corre(entrar(PedidoEntrar(operador_id="op-1", pin="1234"), dispositivo={"loja_id": "loja-1"}))
     assert excinfo.value.status_code == 401
 
 
@@ -415,7 +424,7 @@ def test_entrar_administrador_sem_lojas_entra_em_qualquer_loja(monkeypatch):
     db = _db(registo, utilizadores=[admin])
     monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
 
-    resultado = _corre(entrar(PedidoEntrar(pin="9999"), dispositivo={"loja_id": "loja-7"}))
+    resultado = _corre(entrar(PedidoEntrar(operador_id="op-0", pin="9999"), dispositivo={"loja_id": "loja-7"}))
     assert resultado["operador"]["id"] == "op-0"
 
 
@@ -436,25 +445,65 @@ def test_entrar_verifica_pin_fora_do_event_loop(monkeypatch):
 
     monkeypatch.setattr(pos_auth_mod, "to_thread", to_thread_espiao)
 
-    _corre(entrar(PedidoEntrar(pin="1234"), dispositivo={"loja_id": "loja-1"}))
+    _corre(entrar(PedidoEntrar(operador_id="op-1", pin="1234"), dispositivo={"loja_id": "loja-1"}))
     assert len(chamadas) == 1
     assert chamadas[0][0] is pos_auth_mod.pin_valido
 
 
-def test_entrar_mutante_escolhe_a_primeira_correspondencia_fica_vermelho(monkeypatch):
-    """Documenta a mutação pedida no brief: se `entrar` escolhesse sempre a
-    primeira correspondência em vez de tratar 2+ como conflito, este teste
-    (idêntico ao do conflito) apanhava-o. Corrido manualmente com a guarda
-    comentada, confirma-se o vermelho — ver relatório da tarefa."""
+def test_entrar_com_o_pin_de_OUTRA_pessoa_e_recusado(monkeypatch):
+    """O defeito que o dono apanhou a usar o ecrã, em produção.
+
+    Ele tocou na cara de uma pessoa, escreveu o PIN de OUTRA, e entrou —
+    como a outra. A grelha de caras prometia uma identidade que o servidor
+    deitava fora: `entrar` recebia só o PIN e percorria todos os
+    utilizadores activos da loja até algum casar.
+
+    Não é cosmético, e é por isso que este teste existe: é o `operador_id`
+    deste token que assina cada venda, cada movimento de dinheiro e o Z do
+    fecho. Quem tocasse na sua própria cara e enganasse um dígito, calhando
+    num PIN válido de outra pessoa, passava o turno a vender em nome dela.
+
+    Com o defeito reposto (comparar o PIN contra todos em vez de contra o
+    escolhido), este teste fica VERMELHO: a chamada devolve o token da Bia
+    em vez de levantar 401."""
     registo = []
     ana = _operador(id="op-1", nome="Ana", pin_hash=hash_pin("1234"))
-    bia = _operador(id="op-2", nome="Bia", pin_hash=hash_pin("1234"))
+    bia = _operador(id="op-2", nome="Bia", pin_hash=hash_pin("5678"))
     db = _db(registo, utilizadores=[ana, bia])
     monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
 
+    # Toca-se na Ana, escreve-se o PIN da Bia.
     with pytest.raises(HTTPException) as excinfo:
-        _corre(entrar(PedidoEntrar(pin="1234"), dispositivo={"loja_id": "loja-1"}))
-    assert excinfo.value.status_code == 409
+        _corre(
+            entrar(PedidoEntrar(operador_id="op-1", pin="5678"),
+                   dispositivo={"loja_id": "loja-1"})
+        )
+    assert excinfo.value.status_code == 401
+
+    # E o inverso, para o teste não passar por acaso: o PIN da própria entra.
+    resultado = _corre(
+        entrar(PedidoEntrar(operador_id="op-1", pin="1234"),
+               dispositivo={"loja_id": "loja-1"})
+    )
+    assert resultado["operador"]["id"] == "op-1"
+
+
+def test_entrar_com_id_de_operador_inexistente_e_recusado_com_a_mesma_mensagem(monkeypatch):
+    """Um id que não existe dá o MESMO 401 de um PIN errado — distinguir os
+    dois dizia a quem estivesse a tentar quais os ids que valem a pena."""
+    registo = []
+    db = _db(registo, utilizadores=[_operador()])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as inexistente:
+        _corre(entrar(PedidoEntrar(operador_id="nao-existe", pin="1234"),
+                      dispositivo={"loja_id": "loja-1"}))
+    with pytest.raises(HTTPException) as pin_errado:
+        _corre(entrar(PedidoEntrar(operador_id="op-1", pin="0000"),
+                      dispositivo={"loja_id": "loja-1"}))
+
+    assert inexistente.value.status_code == pin_errado.value.status_code == 401
+    assert inexistente.value.detail == pin_errado.value.detail
 
 
 # --- Token de operador ---------------------------------------------------------
@@ -464,7 +513,7 @@ def test_operador_atual_com_token_valido(monkeypatch):
     registo = []
     db = _db(registo, utilizadores=[_operador()])
     monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
-    resultado = _corre(entrar(PedidoEntrar(pin="1234"), dispositivo={"loja_id": "loja-1"}))
+    resultado = _corre(entrar(PedidoEntrar(operador_id="op-1", pin="1234"), dispositivo={"loja_id": "loja-1"}))
 
     payload = _corre(operador_atual(x_operator_token=resultado["operator_token"]))
     assert payload["operador_id"] == "op-1"
@@ -527,7 +576,7 @@ def test_entrar_recusa_quando_pos_jwt_secret_nao_esta_configurado(monkeypatch):
     monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
 
     with pytest.raises(HTTPException) as excinfo:
-        _corre(entrar(PedidoEntrar(pin="1234"), dispositivo={"loja_id": "loja-1"}))
+        _corre(entrar(PedidoEntrar(operador_id="op-1", pin="1234"), dispositivo={"loja_id": "loja-1"}))
     assert excinfo.value.status_code == 503
     assert "POS_JWT_SECRET" in excinfo.value.detail
 

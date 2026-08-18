@@ -77,7 +77,6 @@ _TTL_OPERADOR_HORAS = 12
 _TTL_CODIGO_MINUTOS = 15
 
 _MSG_PIN_INCORRECTO = "PIN incorrecto."
-_MSG_PIN_EM_CONFLITO = "PIN em conflito, contacte o gestor."
 _MSG_CODIGO_INVALIDO = "Código de emparelhamento inválido ou expirado."
 _MSG_DISPOSITIVO_INVALIDO = "Dispositivo não emparelhado."
 _MSG_SESSAO_OPERADOR_INVALIDA = "Sessão de operador inválida ou expirada."
@@ -124,6 +123,9 @@ class PedidoEmparelhar(BaseModel):
 
 
 class PedidoEntrar(BaseModel):
+    # A cara em que se tocou na grelha (spec §7.1). OBRIGATÓRIO — ver a
+    # docstring de `entrar`: sem este campo, a entrada era só pelo PIN.
+    operador_id: str = Field(min_length=1)
     pin: str
 
 
@@ -320,22 +322,40 @@ async def entrar(dados: PedidoEntrar, dispositivo: Dict = Depends(dispositivo_at
     db = obter_db()
     loja_id = dispositivo["loja_id"]
 
-    activos = await db[COLECOES["utilizadores"]].find({"ativo": True}).to_list(1000)
-    candidatos = [u for u in activos if _ambito_bate_com_loja(u.get("lojas") or [], loja_id)]
-
-    correspondencias = []
-    for u in candidatos:
-        # Fora do event loop: ver docstring do módulo — 20 candidatos a
-        # ~166ms cada, em série no loop, travariam o portal inteiro.
-        if await to_thread(pin_valido, dados.pin, u.get("pin_hash")):
-            correspondencias.append(u)
-
-    if not correspondencias:
+    # O PIN é verificado contra o utilizador em cuja CARA se tocou, e contra
+    # mais nenhum.
+    #
+    # Antes, esta rota recebia só o PIN e percorria TODOS os utilizadores
+    # activos da loja, entrando como aquele a quem o PIN calhasse pertencer.
+    # A cara escolhida na grelha nem sequer chegava ao servidor. Tocar na
+    # cara da Rafaela e escrever o PIN da Ana entrava como a ANA, sem um
+    # aviso — a grelha prometia uma identidade que o servidor deitava fora.
+    #
+    # Não era cosmético: é o `operador_id` deste token que assina cada venda,
+    # cada entrada e saída de dinheiro e o Z do fecho. Quem tocasse na sua
+    # própria cara e enganasse um dígito, calhando num PIN válido de outra
+    # pessoa, passava o turno a vender em nome dela e a gaveta fechava com o
+    # dono errado. Com PINs de 4 dígitos e ~16 pessoas por loja, essa colisão
+    # não é hipótese remota — é uma questão de tempo.
+    #
+    # De caminho, isto arruma duas coisas: já não há "PIN em conflito" para
+    # tratar (um pedido compara um hash, nunca vinte, por isso não pode haver
+    # duas correspondências), e um PIN adivinhado à sorte deixa de ter ~16
+    # hipóteses de casar com ALGUÉM — tem de casar com aquela pessoa.
+    operador = await db[COLECOES["utilizadores"]].find_one(
+        {"id": dados.operador_id, "ativo": True}
+    )
+    # Mesma resposta para "não existe", "está inactivo", "é de outra loja" e
+    # "PIN errado": um 401 igual em todos os casos. Distingui-los dizia a
+    # quem estivesse a tentar exactamente onde continuar a tentar.
+    if not operador or not _ambito_bate_com_loja(operador.get("lojas") or [], loja_id):
         raise HTTPException(status_code=401, detail=_MSG_PIN_INCORRECTO)
-    if len(correspondencias) > 1:
-        raise HTTPException(status_code=409, detail=_MSG_PIN_EM_CONFLITO)
 
-    operador = correspondencias[0]
+    # Fora do event loop: ver docstring do módulo — o bcrypt leva ~166ms e,
+    # corrido no loop, trava o portal inteiro (RH e Financeiro incluídos).
+    if not await to_thread(pin_valido, dados.pin, operador.get("pin_hash")):
+        raise HTTPException(status_code=401, detail=_MSG_PIN_INCORRECTO)
+
     agora = _agora()
     payload = {
         "operador_id": operador["id"],

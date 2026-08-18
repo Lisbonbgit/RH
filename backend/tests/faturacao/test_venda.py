@@ -11,15 +11,25 @@ devolveria para cada linha. Se o endpoint alguma vez calculasse um total por
 fora dessa função, o que a operadora vê no ecrã e o que sai no papel podiam
 divergir ao cêntimo — e é exactamente isso que os testes de "totais
 conferidos" vão apanhar.
+
+Três testes montam o router REAL numa app FastAPI e falam com ela pelo
+TestClient (mesmo padrão de test_saude.py): é a única forma honesta de provar
+resolução de rotas — o conflito de caminhos, a existir, é entre venda.py e
+fiscal.py, e essas duas só se encontram no router de faturacao/__init__.py.
+Continua tudo dentro do processo: nenhuma ligação sai daqui.
 """
 import asyncio
+from datetime import datetime
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from faturacao import router as router_do_modulo
 from faturacao import venda as venda_mod
 from faturacao.db import COLECOES
+from faturacao.pos_auth import operador_atual
 from faturacao.precos import linha_de_venda
 from faturacao.venda import (
     PedidoDescontoGlobal,
@@ -28,9 +38,11 @@ from faturacao.venda import (
     PedidoNovaVenda,
     abrir_venda,
     aplicar_desconto_global,
+    cancelar_venda,
     editar_linha,
     juntar_linha,
     remover_linha,
+    venda_aberta,
 )
 
 
@@ -47,14 +59,46 @@ def _corresponde(item, filtro):
     return all(item.get(chave) == valor for chave, valor in filtro.items())
 
 
+class CursorFalso:
+    """Cursor de mentira que ORDENA e LIMITA a sério.
+
+    Ao contrário do cursor de test_caixa_endpoints.py, cujo `sort()` só se
+    devolve a si próprio: aqui isso não servia. O teste da "conta mais
+    recente" passaria na mesma se `venda_aberta` se esquecesse do
+    `.sort("criada_em", -1)`, porque a ordem certa vinha por acaso da ordem
+    de inserção — um teste que continua verde com o código de produção
+    partido não defende nada (já aconteceu 3× neste módulo)."""
+
+    def __init__(self, itens):
+        self._itens = list(itens)
+
+    def sort(self, campo, direccao=1):
+        self._itens.sort(key=lambda d: d.get(campo), reverse=(direccao == -1))
+        return self
+
+    async def to_list(self, n=None):
+        return self._itens if n is None else self._itens[:n]
+
+
+class ResultadoUpdateFalso:
+    """Réplica minimalista do UpdateResult do pymongo/motor (mesmo duplo de
+    test_caixa_endpoints.py) — só o `matched_count`, que é o que decide se a
+    escrita CONDICIONAL do cancelamento encontrou mesmo a venda ainda
+    aberta, em vez de aplicar o $set às cegas."""
+
+    def __init__(self, matched_count):
+        self.matched_count = matched_count
+        self.modified_count = matched_count
+
+
 class ColeccaoFalsa:
     def __init__(self, registo, documentos=None):
         self.registo = registo
         self._documentos = documentos if documentos is not None else []
 
-    def find(self, filtro=None):
+    def find(self, filtro=None, projecao=None):
         self.registo.append(("find", filtro))
-        return [d for d in self._documentos if _corresponde(d, filtro)]
+        return CursorFalso([d for d in self._documentos if _corresponde(d, filtro)])
 
     async def find_one(self, filtro, projecao=None):
         self.registo.append(("find_one", filtro))
@@ -71,7 +115,7 @@ class ColeccaoFalsa:
         alvos = [d for d in self._documentos if _corresponde(d, filtro)]
         if alvos:
             alvos[0].update(atualizacao.get("$set", {}))
-        return None
+        return ResultadoUpdateFalso(matched_count=len(alvos))
 
 
 class DbFalsa:
@@ -621,3 +665,331 @@ def test_totais_conferidos_ao_centimo_contra_linha_de_venda(monkeypatch):
     assert resultado["totais"]["desconto_linhas"] == desconto_linhas_esperado
     assert resultado["totais"]["desconto_global"] == 1.5
     assert resultado["totais"]["total"] == total_esperado
+
+
+# --- Recuperar a conta em curso (GET /pos/venda/aberta) ----------------------
+#
+# Porque é que esta rota existe: sem ela, `POST /pos/venda` era a única
+# entrada e criava SEMPRE uma conta nova. A tela de descanso ao fim de 5
+# minutos, um F5 no PC da loja ou um browser que vai abaixo faziam a operadora
+# perder o que já tinha picado — com o cliente à frente — e deixavam uma venda
+# `aberta` órfã em fat_vendas por cada recarregamento, para sempre.
+
+
+def test_venda_aberta_devolve_a_conta_em_curso_da_sessao(monkeypatch):
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(linhas=[_linha(quantidade=2)])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(venda_aberta(caixa_id="caixa-1", operador=_operador()))
+    assert resultado["id"] == "venda-1"
+    assert resultado["estado"] == "aberta"
+    assert [li["id"] for li in resultado["linhas"]] == ["linha-1"]
+
+    # Mesmo formato das outras rotas, totais incluídos (senão o ecrã tinha
+    # dois formatos da mesma conta) — e conferidos contra o `linha_de_venda`,
+    # nunca contra um número escrito à mão aqui.
+    li_vendus = linha_de_venda({"nome": "Açaí Regular", "preco": 8.99, "tax_id": "INT"}, 2)
+    assert resultado["totais"]["subtotal"] == round(li_vendus["qty"] * li_vendus["gross_price"], 2)
+    assert resultado["totais"]["total"] == resultado["totais"]["subtotal"]
+
+
+def test_venda_aberta_sem_nenhuma_conta_devolve_null_e_nao_404(monkeypatch):
+    """O estado normal do início do dia: caixa aberta, nada picado ainda. Um
+    404 aqui obrigava o ecrã a tratar "ainda não há conta" como um erro."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()], vendas=[])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    assert _corre(venda_aberta(caixa_id="caixa-1", operador=_operador())) is None
+
+
+def test_venda_aberta_ignora_as_vendas_de_outra_sessao_caixa_ou_loja(monkeypatch):
+    """Só a sessão ABERTA desta caixa conta. A conta da sessão de ontem na
+    mesma caixa, a da caixa do lado e a da loja ao lado vivem todas na mesma
+    colecção ao mesmo tempo — devolver qualquer uma delas punha a operadora a
+    facturar a conta de outra pessoa."""
+    registo = []
+    db = _db(
+        registo,
+        caixas=[_caixa()],
+        sessoes=[_sessao()],
+        vendas=[
+            _venda(id="v-sessao-de-ontem", sessao_id="sessao-0"),
+            _venda(id="v-outra-caixa", caixa_id="caixa-2", sessao_id="sessao-2"),
+            _venda(id="v-outra-loja", loja_id="loja-2", caixa_id="caixa-9",
+                   sessao_id="sessao-9"),
+        ],
+    )
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    assert _corre(venda_aberta(caixa_id="caixa-1", operador=_operador())) is None
+
+
+def test_venda_aberta_ignora_as_ja_emitidas_e_as_canceladas(monkeypatch):
+    """Uma conta já facturada (ou deitada fora) não é uma conta em curso —
+    devolvê-la punha a operadora a acrescentar artigos a uma venda que já
+    tem Fatura Simplificada na AT."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()], vendas=[
+        _venda(id="v-emitida", estado="emitida"),
+        _venda(id="v-cancelada", estado="cancelada"),
+    ])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    assert _corre(venda_aberta(caixa_id="caixa-1", operador=_operador())) is None
+
+
+def test_venda_aberta_com_varias_devolve_a_mais_recente(monkeypatch):
+    """Ordem de inserção deliberadamente baralhada (nem a primeira nem a
+    última da lista é a certa): se a rota deixar cair o
+    `.sort("criada_em", -1)`, ou o ordenar ao contrário, sai a conta errada e
+    a operadora continua a picar por cima de uma conta antiga."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()], vendas=[
+        _venda(id="v-meio", criada_em="2026-08-15T10:00:00+00:00"),
+        _venda(id="v-antiga", criada_em="2026-08-15T09:00:00+00:00"),
+        _venda(id="v-recente", criada_em="2026-08-15T11:00:00+00:00"),
+    ])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(venda_aberta(caixa_id="caixa-1", operador=_operador()))
+    assert resultado["id"] == "v-recente"
+
+
+def test_venda_aberta_nao_se_limita_ao_operador_que_a_abriu(monkeypatch):
+    """A decisão que está escrita na docstring da rota: ao balcão a conta é
+    da CAIXA, não da pessoa. A Rafaela picou três artigos, a tela de descanso
+    caiu e a Ana entrou com o PIN dela — a conta tem de continuar lá, é o
+    cliente que está à espera. Quem picou continua registado em
+    `operador_id`."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(operador_id="op-1", linhas=[_linha()])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    ana = _operador(operador_id="op-2", nome="Ana")
+    resultado = _corre(venda_aberta(caixa_id="caixa-1", operador=ana))
+    assert resultado is not None, "a conta da Rafaela perdeu-se ao entrar a Ana"
+    assert resultado["id"] == "venda-1"
+    assert resultado["operador_id"] == "op-1"
+
+
+def test_venda_aberta_sem_sessao_aberta_e_recusado_409(monkeypatch):
+    """Sem caixa aberta não há conta nenhuma para recuperar — o 409 de
+    `_sessao_aberta` é a resposta certa, e não um `null` que faria o ecrã
+    parecer pronto a vender com a caixa fechada."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[], vendas=[_venda()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(venda_aberta(caixa_id="caixa-1", operador=_operador()))
+    assert excinfo.value.status_code == 409
+
+
+def test_venda_aberta_em_caixa_de_outra_loja_e_recusado_404(monkeypatch):
+    registo = []
+    db = _db(registo, caixas=[_caixa(loja_id="loja-2")], sessoes=[_sessao()],
+             vendas=[_venda()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(venda_aberta(caixa_id="caixa-1", operador=_operador()))
+    assert excinfo.value.status_code == 404
+
+
+# --- O caminho /pos/venda/aberta contra as rotas de {venda_id} ----------------
+
+
+def _app_do_modulo():
+    """App mínima com o router REAL do módulo (mesmo padrão de
+    test_saude.py). Sem base de dados e sem rede: o TestClient corre a app
+    dentro do próprio processo."""
+    app = FastAPI()
+    app.include_router(router_do_modulo)
+    return app
+
+
+def test_get_pos_venda_aberta_chega_mesmo_a_esta_funcao(monkeypatch):
+    """`/pos/venda/aberta` não pode ser engolida por nenhuma rota de
+    `{venda_id}`: o FastAPI serve a PRIMEIRA rota que casa com o caminho, e
+    no dia em que alguém declarar um `GET /pos/venda/{venda_id}` por cima
+    desta, o "aberta" passava a ser lido como um id de venda — 404 à
+    operadora, com o cliente à frente. Este teste percorre o caminho todo
+    (URL → router montado → esta função) e é ele que fica vermelho nesse
+    dia."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()], vendas=[_venda()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    app = _app_do_modulo()
+    app.dependency_overrides[operador_atual] = lambda: _operador()
+    resposta = TestClient(app).get(
+        "/api/faturacao/pos/venda/aberta", params={"caixa_id": "caixa-1"}
+    )
+
+    assert resposta.status_code == 200
+    corpo = resposta.json()
+    # A prova de que foi ESTA função a responder — e não um 404/405 de outra
+    # rota, nem uma de {venda_id} a tratar "aberta" como um id de venda.
+    assert corpo["id"] == "venda-1"
+    assert corpo["estado"] == "aberta"
+    assert "totais" in corpo
+
+
+def test_as_duas_rotas_novas_recusam_sem_token_de_operador():
+    """Ambas dependem de `operador_atual`: 401 ANTES de tocar na base de
+    dados — repare-se que `obter_db` nem sequer está trocado neste teste, por
+    isso se alguma delas chegasse a ler, isto rebentava com 500 em vez de
+    401. (test_protecao_rotas.py garante o mesmo para todas as rotas do POS,
+    sem lista para actualizar; isto prova-o pelo HTTP, de fora.)"""
+    cliente = TestClient(_app_do_modulo())
+
+    sem_token = cliente.get(
+        "/api/faturacao/pos/venda/aberta", params={"caixa_id": "caixa-1"}
+    )
+    assert sem_token.status_code == 401
+
+    cancelar = cliente.post("/api/faturacao/pos/venda/venda-1/cancelar")
+    assert cancelar.status_code == 401
+
+
+# --- Cancelar a conta (POST /pos/venda/{venda_id}/cancelar) -------------------
+
+
+class ColeccaoComCorrida(ColeccaoFalsa):
+    """Deixa outro pedido mexer no documento ENTRE a leitura e a escrita —
+    é o único sítio onde a escrita condicional do cancelamento se prova. O
+    gancho corre uma única vez, no primeiro update_one."""
+
+    def __init__(self, registo, documentos=None, ao_escrever=None):
+        super().__init__(registo, documentos)
+        self._ao_escrever = ao_escrever
+
+    async def update_one(self, filtro, atualizacao):
+        if self._ao_escrever is not None:
+            gancho, self._ao_escrever = self._ao_escrever, None
+            gancho(self._documentos)
+        return await super().update_one(filtro, atualizacao)
+
+
+def test_cancelar_venda_aberta_grava_o_estado_e_o_momento(monkeypatch):
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[_linha()])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(cancelar_venda("venda-1", operador=_operador()))
+    assert resultado["estado"] == "cancelada"
+
+    gravada = db._coleccoes[COLECOES["vendas"]]._documentos[0]
+    assert gravada["estado"] == "cancelada"
+    # ISO em UTC, como o `_agora()` do módulo — nunca um datetime cru (que o
+    # JSON não leva) nem uma hora local sem fuso (que ninguém consegue
+    # comparar com o resto dos carimbos do módulo).
+    assert gravada["cancelada_em"].endswith("+00:00")
+    assert datetime.fromisoformat(gravada["cancelada_em"]).tzinfo is not None
+
+
+def test_cancelar_venda_emitida_e_recusado_409_sem_escrever_nada(monkeypatch):
+    """Uma venda emitida tem uma Fatura Simplificada REAL na AT: passá-la a
+    cancelada apagava do nosso lado um documento que continua a existir lá
+    fora. Corrige-se com uma nota de crédito, nunca com um estado mudado à
+    socapa — e a recusa é ANTES de qualquer escrita: nem um update_one sai
+    daqui."""
+    registo = []
+    db = _db(registo, vendas=[_venda(estado="emitida")])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(cancelar_venda("venda-1", operador=_operador()))
+    assert excinfo.value.status_code == 409
+    assert not any(chamada[0] == "update_one" for chamada in registo)
+    assert db._coleccoes[COLECOES["vendas"]]._documentos[0]["estado"] == "emitida"
+
+
+def test_cancelar_venda_ja_cancelada_e_recusado_409(monkeypatch):
+    """Idempotência não é o objectivo: é melhor a operadora ouvir que aquela
+    conta já estava cancelada do que carregar no botão e ficar sem saber se
+    fez alguma coisa. E o carimbo original não se perde."""
+    registo = []
+    db = _db(registo, vendas=[
+        _venda(estado="cancelada", cancelada_em="2026-08-15T09:30:00+00:00"),
+    ])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(cancelar_venda("venda-1", operador=_operador()))
+    assert excinfo.value.status_code == 409
+    gravada = db._coleccoes[COLECOES["vendas"]]._documentos[0]
+    assert gravada["cancelada_em"] == "2026-08-15T09:30:00+00:00"
+
+
+def test_cancelar_venda_de_outra_loja_e_recusado_404(monkeypatch):
+    registo = []
+    db = _db(registo, vendas=[_venda(loja_id="loja-2")])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(cancelar_venda("venda-1", operador=_operador()))
+    assert excinfo.value.status_code == 404
+    assert db._coleccoes[COLECOES["vendas"]]._documentos[0]["estado"] == "aberta"
+
+
+def test_cancelar_venda_emitida_entre_a_leitura_e_a_escrita_e_recusado_409(monkeypatch):
+    """A corrida a sério: o `finalizar` (fiscal.py) emitiu esta mesma venda
+    DEPOIS do `_garante_aberta` e ANTES do $set. Sem a condição
+    {"estado": "aberta"} na escrita, o cancelamento carimbava-se por cima de
+    uma venda com Fatura Simplificada real e ela desaparecia do fecho de
+    caixa (`caixa_math.soma_vendas_dinheiro` só soma as emitidas) — o
+    dinheiro ficava na gaveta sem nada que o explicasse."""
+    registo = []
+    venda = _venda()
+
+    def emite_entretanto(documentos):
+        documentos[0]["estado"] = "emitida"
+        documentos[0]["documento_id"] = "doc-1"
+
+    db = DbFalsa({
+        COLECOES["vendas"]: ColeccaoComCorrida(registo, [venda], emite_entretanto),
+    })
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(cancelar_venda("venda-1", operador=_operador()))
+    assert excinfo.value.status_code == 409
+    assert venda["estado"] == "emitida"
+    assert "cancelada_em" not in venda
+
+
+def test_venda_cancelada_deixa_de_aceitar_alteracoes(monkeypatch):
+    """`cancelada` não é só um rótulo para o ecrã: as rotas que escrevem
+    recusam-na pelo mesmo caminho das emitidas (`_garante_aberta`)."""
+    registo = []
+    db = _db(registo, vendas=[_venda(estado="cancelada", linhas=[_linha()])],
+             produtos=[_produto()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(juntar_linha(
+            "venda-1", PedidoJuntarLinha(produto_id="prod-1"), operador=_operador()
+        ))
+    assert excinfo.value.status_code == 409
+
+
+def test_depois_de_cancelar_a_conta_deixa_de_ser_a_conta_em_curso(monkeypatch):
+    """As duas rotas juntas, que é como o ecrã as usa: a operadora deita a
+    conta fora e o cliente seguinte encontra a caixa limpa — não a conta do
+    anterior à espera de ser facturada."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(linhas=[_linha()])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    antes = _corre(venda_aberta(caixa_id="caixa-1", operador=_operador()))
+    assert antes["id"] == "venda-1"
+
+    _corre(cancelar_venda("venda-1", operador=_operador()))
+
+    assert _corre(venda_aberta(caixa_id="caixa-1", operador=_operador())) is None

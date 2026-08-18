@@ -156,7 +156,14 @@ export const getOperadoresDoDispositivo = () => api.get('/pos/operadores');
 // X-Device-Token (dispositivo_atual). O PIN viaja sempre como string — nunca
 // convertido para número, senão "0007" perdia os zeros à esquerda e podia
 // colidir com o PIN de outra pessoa.
-export const entrarComPin = (pin) => api.post('/pos/entrar', { pin });
+//
+// O `operadorId` (a cara em que se tocou) é OBRIGATÓRIO e vai junto: o
+// servidor compara o PIN só com essa pessoa. Sem ele, esta chamada mandava
+// apenas o PIN e o servidor entrava como o dono do PIN, fosse ele quem
+// fosse — tocar numa cara e escrever o PIN de outra pessoa entrava como a
+// outra, e era o nome dela que assinava as vendas e o fecho de caixa.
+export const entrarComPin = (operadorId, pin) =>
+  api.post('/pos/entrar', { operador_id: operadorId, pin });
 
 // A partir daqui, X-Operator-Token (operador_atual) — nunca precisam do
 // device token (a loja já vem embutida no JWT do operador).
@@ -166,3 +173,52 @@ export const getEstadoCaixa = (caixaId) =>
 export const abrirCaixa = (dados) => api.post('/pos/caixa/abrir', dados);
 export const registarMovimento = (dados) => api.post('/pos/caixa/movimento', dados);
 export const fecharCaixa = (dados) => api.post('/pos/caixa/fechar', dados);
+
+// --- Catálogo e tipos de pagamento -------------------------------------------
+//
+// Rotas PRÓPRIAS do POS (faturacao/pos_catalogo.py), não as do backoffice: as
+// do backoffice (/produtos, /categorias, /tipos-pagamento) dependem todas do
+// JWT de gestão, que este ecrã por desenho nunca tem.
+//
+// Um pedido só, e não três, porque isto é o arranque do ecrã com fila à
+// frente. Traz `categorias`, `produtos` e `grupos_personalizacao`.
+export const getCatalogoPos = () => api.get('/pos/catalogo');
+
+// Cada tipo traz `da_troco` (se o ecrã mostra o recebido e o troco) e
+// `pronto` (se está mesmo mapeado ao Vendus). Um tipo com `pronto: false`
+// aparece na mesma, inutilizável: o finalizar recusa-o com 422, e é melhor
+// vê-lo morto e explicado do que descobri-lo ao carregar em EMITIR com o
+// cliente à frente.
+export const getTiposPagamentoPos = () => api.get('/pos/tipos-pagamento');
+
+// --- A conta do balcão -------------------------------------------------------
+
+// A conta em curso desta caixa, ou `null` (200, não 404 — é o estado normal
+// do início do dia). É o que devolve a venda depois da tela de descanso, de
+// um F5 ou de o browser ir abaixo, em vez de a operadora repicar tudo.
+export const getVendaAberta = (caixaId) =>
+  api.get('/pos/venda/aberta', { params: { caixa_id: caixaId } });
+
+export const abrirVenda = (caixaId) => api.post('/pos/venda', { caixa_id: caixaId });
+
+export const juntarLinha = (vendaId, dados) =>
+  api.post(`/pos/venda/${vendaId}/linhas`, dados);
+
+export const editarLinha = (vendaId, linhaId, dados) =>
+  api.put(`/pos/venda/${vendaId}/linhas/${linhaId}`, dados);
+
+export const removerLinha = (vendaId, linhaId) =>
+  api.delete(`/pos/venda/${vendaId}/linhas/${linhaId}`);
+
+export const aplicarDescontoGlobal = (vendaId, dados) =>
+  api.put(`/pos/venda/${vendaId}/desconto`, dados);
+
+export const cancelarVenda = (vendaId) => api.post(`/pos/venda/${vendaId}/cancelar`);
+
+// A emissão da Fatura Simplificada real. `dados` = { pagamentos: [{
+// tipo_pagamento_id, valor }], nif }. Os erros deste pedido NÃO são todos
+// iguais e o ecrã tem de os distinguir (ver PosFinalizar): 503 quer dizer
+// que o servidor NÃO SABE se a fatura saiu — nunca convidar a repetir às
+// cegas.
+export const finalizarVenda = (vendaId, dados) =>
+  api.post(`/pos/venda/${vendaId}/finalizar`, dados);
