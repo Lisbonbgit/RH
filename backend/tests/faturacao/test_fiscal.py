@@ -1713,18 +1713,50 @@ def test_verificar_sem_conta_configurada_diz_nao_verificado(monkeypatch):
     assert "nao_verificado" in resultado
 
 
+def _fabrica_com_um_documento_hoje(**over):
+    """Duplo de ClienteEmissaoVendus para a verificação de leitura: devolve
+    UM documento (o da venda de hoje), e SÓ na data pedida — nunca em
+    qualquer data, ao contrário do que este duplo fazia antes.
+
+    Causa raiz do teste instável (`test_verificar_feliz_bate_certo_nao_diz_nada`):
+    `_sessao_fake()["aberta_em"]` está fixo em "2026-08-15", mas
+    `_datas_da_janela` (propositadamente — ver o comentário em fiscal.py)
+    percorre TODOS os dias entre a abertura da sessão e HOJE. O duplo antigo
+    ignorava por completo o parâmetro `data` e devolvia sempre o mesmo
+    documento de 8,99€ — por isso o "total do Vendus" calculado crescia
+    8,99€ por cada dia que passasse desde 15/08, sem nenhuma venda nova
+    nenhures: 1 dia (no próprio 15/08) somava 8,99€ e o teste passava; 4 dias
+    depois (18/08, quando isto foi apanhado) já somava 4×8,99=35,96€ e o
+    teste falhava. Não havia estado a vazar de OUTRO teste — o duplo em si é
+    que não respeitava o contrato da API real (um documento só aparece na
+    consulta do dia em que foi emitido), e o "estado partilhado" aparente
+    era só o relógio do sistema a avançar entre corridas.
+
+    A correcção não é repor um duplo entre testes (não há nada para repor:
+    cada teste já cria a sua própria instância) — é fazer o duplo responder
+    por dia, como o Vendus real, para o resultado deixar de depender de que
+    dia é hoje."""
+
+    from datetime import datetime
+
+    def fabrica(chave):
+        cliente = ClienteEmissaoVendusFalso(chave)
+        hoje = datetime.now(fiscal_mod._LISBOA).date().isoformat()
+        cliente.listar_documentos_por_dia = (
+            lambda data, register_id: [_doc_vendus(**over)] if data == hoje else []
+        )
+        return cliente
+
+    return fabrica
+
+
 def test_verificar_feliz_bate_certo_nao_diz_nada(monkeypatch):
     _configura_vendus_env(monkeypatch)
     db = _db(tipos_pagamento=[_tipo_pagamento()])
     monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", ClienteEmissaoVendusFalso)
     ClienteEmissaoVendusFalso.instancias.clear()
 
-    def fabrica(chave):
-        cliente = ClienteEmissaoVendusFalso(chave)
-        cliente.listar_documentos_por_dia = lambda data, register_id: [_doc_vendus()]
-        return cliente
-
-    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", fabrica)
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", _fabrica_com_um_documento_hoje())
 
     resultado = _corre(verificar_vendas_dinheiro_no_vendus(db, _sessao_fake(), 8.99))
     assert resultado is None
@@ -1734,12 +1766,7 @@ def test_verificar_feliz_nao_bate_avisa(monkeypatch):
     _configura_vendus_env(monkeypatch)
     db = _db(tipos_pagamento=[_tipo_pagamento()])
 
-    def fabrica(chave):
-        cliente = ClienteEmissaoVendusFalso(chave)
-        cliente.listar_documentos_por_dia = lambda data, register_id: [_doc_vendus()]
-        return cliente
-
-    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", fabrica)
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", _fabrica_com_um_documento_hoje())
 
     resultado = _corre(verificar_vendas_dinheiro_no_vendus(db, _sessao_fake(), 20.0))
     assert resultado is not None
