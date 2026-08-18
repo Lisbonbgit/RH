@@ -17,6 +17,7 @@ from faturacao.caixa import (
     PedidoFecharCaixa,
     PedidoMovimento,
     abrir_caixa,
+    estado_caixa,
     fechar_caixa,
     registar_movimento,
 )
@@ -67,7 +68,7 @@ class ColeccaoFalsa:
         self.registo = registo
         self._documentos = documentos if documentos is not None else []
 
-    def find(self, filtro=None):
+    def find(self, filtro=None, projecao=None):
         self.registo.append(("find", filtro))
         return CursorFalso([d for d in self._documentos if _corresponde(d, filtro)])
 
@@ -132,7 +133,7 @@ def _operador(**over):
 
 
 def _caixa(**over):
-    c = {"id": "caixa-1", "loja_id": "loja-1", "nome": "Balcão"}
+    c = {"id": "caixa-1", "loja_id": "loja-1", "nome": "Balcão", "ativa": True}
     c.update(over)
     return c
 
@@ -146,6 +147,113 @@ def _sessao(**over):
     }
     s.update(over)
     return s
+
+
+# --- Estado da caixa (o que o ecrã de entrada na app precisa) ------------------
+
+
+def test_estado_caixa_sem_nenhuma_caixa_configurada_e_recusado_404(monkeypatch):
+    registo = []
+    db = _db(registo, caixas=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(estado_caixa(caixa_id=None, operador=_operador()))
+    assert excinfo.value.status_code == 404
+
+
+def test_estado_caixa_ignora_caixas_inactivas_de_outras_lojas(monkeypatch):
+    registo = []
+    db = _db(registo, caixas=[
+        _caixa(id="caixa-inactiva", ativa=False),
+        _caixa(id="caixa-outra-loja", loja_id="loja-2"),
+    ])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(estado_caixa(caixa_id=None, operador=_operador()))
+    assert excinfo.value.status_code == 404
+
+
+def test_estado_caixa_com_uma_so_caixa_activa_resolve_sozinho_sem_sessao(monkeypatch):
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(estado_caixa(caixa_id=None, operador=_operador()))
+    assert resultado["caixa"]["id"] == "caixa-1"
+    assert resultado["sessao_aberta"] is None
+    assert resultado["ultimo_fecho"] is None
+
+
+def test_estado_caixa_com_uma_so_caixa_activa_traz_a_sessao_aberta(monkeypatch):
+    registo = []
+    sessao = _sessao()
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(estado_caixa(caixa_id=None, operador=_operador()))
+    assert resultado["caixa"]["id"] == "caixa-1"
+    assert resultado["sessao_aberta"]["id"] == "sessao-1"
+    assert resultado["ultimo_fecho"] is None
+
+
+def test_estado_caixa_sem_sessao_aberta_traz_o_resumo_do_ultimo_fecho(monkeypatch):
+    """É o que preenche "Em 12/08 às 18:56 · Por Rafaela · Montante: € 87,58"
+    no ecrã "Caixa Fechada" (Task 2)."""
+    registo = []
+    fechada = _sessao(
+        estado="fechada",
+        fechada_por={"id": "op-1", "nome": "Rafaela Prates"},
+        fechada_em="2026-08-12T18:56:00+00:00",
+        contado=87.58,
+    )
+    db = _db(registo, caixas=[_caixa()], sessoes=[fechada])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(estado_caixa(caixa_id=None, operador=_operador()))
+    assert resultado["sessao_aberta"] is None
+    assert resultado["ultimo_fecho"]["fechada_por"] == {"id": "op-1", "nome": "Rafaela Prates"}
+    assert resultado["ultimo_fecho"]["contado"] == 87.58
+
+
+def test_estado_caixa_com_mais_do_que_uma_ativa_devolve_a_lista_sem_escolher(monkeypatch):
+    """Nunca escolhe pela funcionária — o mesmo raciocínio do PIN em
+    conflito (409 em /pos/entrar): mais do que uma correspondência é
+    ambiguidade explícita, nunca a primeira ao acaso."""
+    registo = []
+    db = _db(registo, caixas=[
+        _caixa(id="caixa-1", nome="Balcão"),
+        _caixa(id="caixa-2", nome="Drive-Thru"),
+    ])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(estado_caixa(caixa_id=None, operador=_operador()))
+    assert resultado["caixa"] is None
+    assert {c["id"] for c in resultado["caixas"]} == {"caixa-1", "caixa-2"}
+
+
+def test_estado_caixa_com_caixa_id_explicito_resolve_essa(monkeypatch):
+    registo = []
+    db = _db(registo, caixas=[
+        _caixa(id="caixa-1", nome="Balcão"),
+        _caixa(id="caixa-2", nome="Drive-Thru"),
+    ], sessoes=[_sessao(caixa_id="caixa-2")])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(estado_caixa(caixa_id="caixa-2", operador=_operador()))
+    assert resultado["caixa"]["id"] == "caixa-2"
+    assert resultado["sessao_aberta"]["caixa_id"] == "caixa-2"
+
+
+def test_estado_caixa_com_caixa_id_de_outra_loja_e_recusado_404(monkeypatch):
+    registo = []
+    db = _db(registo, caixas=[_caixa(id="caixa-2", loja_id="loja-2")])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(estado_caixa(caixa_id="caixa-2", operador=_operador()))
+    assert excinfo.value.status_code == 404
 
 
 # --- Abrir caixa -----------------------------------------------------------------

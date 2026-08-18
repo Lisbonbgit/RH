@@ -48,7 +48,7 @@ import FatLojas from './pages/admin/faturacao/FatLojas';
 import FatPagamentos from './pages/admin/faturacao/FatPagamentos';
 import FatUtilizadores from './pages/admin/faturacao/FatUtilizadores';
 import FatMotivos from './pages/admin/faturacao/FatMotivos';
-import PosStandalone from './pages/pos/PosStandalone';
+import PosApp from './pages/pos/PosApp';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeProfile from './pages/employee/EmployeeProfile';
 import EmployeeTimeRecord from './pages/employee/EmployeeTimeRecord';
@@ -148,10 +148,13 @@ function AppRoutes() {
       <Route path="/privacidade" element={<PrivacyPolicy />} />
 
       {/* Ponto de Venda: rota de topo, fora do /admin e sem sessão de
-          backoffice — as lojas vão usar só este link, com PIN de loja (por
-          construir), nunca o login do portal. Ver AdminLayout: o botão
-          "Iniciar Ponto de Venda" abre este caminho num separador novo. */}
-      <Route path="/faturacao/pos" element={<PosStandalone />} />
+          backoffice — as lojas usam só este link, com entrada por PIN,
+          nunca o login do portal. Ver AdminLayout: o botão "Iniciar Ponto
+          de Venda" abre este caminho num separador novo. PosApp é o shell
+          (emparelhamento -> entrada -> caixa -> venda); os dois tokens do
+          POS vivem em localStorage (lib/pos.js), nunca no Authorization do
+          backoffice. */}
+      <Route path="/faturacao/pos" element={<PosApp />} />
       <Route path="/alterar-senha" element={
         <ChangePasswordRoute>
           <ChangePasswordPage />
