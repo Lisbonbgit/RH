@@ -10,6 +10,18 @@ rh.lisbonb.com {
     reverse_proxy frontend:80
 }
 
+# ===== Portal Gestão Grupo Lisbonb — domínio principal =====
+# O rh.lisbonb.com fica PARA SEMPRE como sinónimo: as apps instaladas nos
+# telemóveis têm esse endereço cozido no bundle e deixariam de funcionar.
+lisbonb.com {
+    encode gzip
+    reverse_proxy frontend:80
+}
+
+www.lisbonb.com {
+    redir https://lisbonb.com{uri} permanent
+}
+
 # ===== L'Açaí — API (app iOS/Android) =====
 api.olacai.com {
     encode gzip
