@@ -33,6 +33,15 @@ COLECOES = {
     # maneio, acumula movimentos, fecha com a contagem e o Z (faturacao/caixa.py).
     "sessoes_caixa": "fat_sessoes_caixa",
     # Entradas e saídas de dinheiro ao longo da sessão (faturacao/caixa.py).
+    #
+    # ATENÇÃO a quem vier somar isto: a linha existir NÃO quer dizer que o
+    # dinheiro saiu da gaveta. Ela é inserida ANTES da escrita que a confirma
+    # (é essa ordem que impede um movimento de aparecer depois de um Z já
+    # assinado, ver `caixa.py::registar_movimento`), e quem manda é a lista
+    # `movimentos_confirmados` da SESSÃO — lá entra o `id` na mesma escrita
+    # que verifica que a sessão ainda está aberta. Uma linha marcada
+    # `por_confirmar: True` e fora dessa lista é uma tentativa que ficou a
+    # meio: não entra em Z nenhum, e não se soma em lado nenhum.
     "movimentos_caixa": "fat_movimentos_caixa",
     # A conta do balcão (Plano 2B, Task 2, faturacao/venda.py): nasce
     # 'aberta', acumula linhas, e só a Task 3 (emissão) a passa a 'emitida'.

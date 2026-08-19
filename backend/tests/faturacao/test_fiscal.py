@@ -2129,7 +2129,8 @@ def test_gravar_documento_marca_a_reserva_com_o_documento_e_so_depois_da_venda()
     colecao_refs.update_one = refs_rastreado
 
     documento = _corre(_gravar_documento(
-        db, "pos-loja-1-sessao-1-venda-1", _venda(linhas=[_linha()]), _bruto()
+        db, "pos-loja-1-sessao-1-venda-1", _venda(linhas=[_linha()]), _bruto(),
+        reserva_id="r1",
     ))
 
     assert _refs_de(db)[0]["documento_id"] == documento["id"]
@@ -2164,7 +2165,8 @@ def test_falhar_a_marcar_a_reserva_nao_estraga_uma_emissao_que_correu_bem():
     })
 
     documento = _corre(_gravar_documento(
-        db, "pos-loja-1-sessao-1-venda-1", _venda(linhas=[_linha()]), _bruto()
+        db, "pos-loja-1-sessao-1-venda-1", _venda(linhas=[_linha()]), _bruto(),
+        reserva_id="r1",
     ))
     assert documento["atcud"] == "ATCUD-1"
     assert _vendas_de(db)[0]["estado"] == "emitida"
@@ -3316,6 +3318,43 @@ def test_reconciliar_religa_a_venda_que_ficou_para_tras_com_o_documento_gravado(
     assert ClienteEmissaoVendusFalso.instancias == []
 
 
+def test_a_religacao_carimba_a_reserva_que_esta_rota_leu_com_o_documento(monkeypatch):
+    """A outra metade da religação, e a que não tinha rede nenhuma: a reserva
+    fica marcada com o documento que a resolveu.
+
+    O carimbo é o que torna POSSÍVEL perguntar pelas reservas PRESAS sem
+    varrer a colecção inteira — `listar_reservas_presas` faz a primeira
+    triagem por `{"documento_id": None}` antes sequer de olhar para a venda.
+    E é o campo que um gestor lê, semanas depois, para perceber que documento
+    saiu de que tentativa. Sem o `reserva.id` a viajar daqui até
+    `_ligar_venda_ao_documento`, o filtro `{"ext_ref": ..., "id": None}` não
+    casa com nada e o carimbo vira um no-op silencioso: a reserva
+    reconciliada fica para sempre por marcar.
+
+    O que este teste NÃO afirma, de propósito: que a reserva sai (ou entra) na
+    listagem por causa disto. Medido, com e sem o carimbo, a listagem responde
+    o mesmo — vazia — porque a MESMA operação põe a venda `emitida` e a junção
+    descarta as emitidas. Quem defende a listagem é o estado da venda; o que
+    o carimbo defende é a triagem e o que o gestor lê."""
+    documento = {
+        "id": "doc-1", "vendus_document_id": 501, "atcud": "ATCUD-1",
+        "numero": "FS 2026/1", "total": 8.99, "ext_ref": "pos-loja-1-sessao-1-venda-1",
+        "venda_id": "venda-1", "loja_id": "loja-1",
+    }
+    db = _db_reconciliacao(documentos=[documento])
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    _vendus_que_tem(monkeypatch, None)  # se perguntasse, não encontrava nada
+
+    _corre(reconciliar_reserva_presa("venda-1", None, gestor={"email": "x"}))
+
+    reserva = _refs_de(db)[0]
+    assert reserva["id"] == "r1", "é a reserva que a rota leu à entrada"
+    assert reserva.get("documento_id") == "doc-1", (
+        "a reserva reconciliada tem de ficar carimbada com o documento que a "
+        "resolveu — sem isso não há triagem de presas nem rasto para o gestor"
+    )
+
+
 def test_reconciliar_durante_uma_retoma_a_decorrer_e_recusado(monkeypatch):
     """A mesma pergunta de `libertar`: o POS pode estar a emitir esta venda
     neste instante, e essa emissão grava o documento sozinha."""
@@ -4152,8 +4191,9 @@ def test_depois_de_um_desfecho_desconhecido_a_tentativa_seguinte_verifica_em_vez
 # ============================================================================
 
 
-def _grava(db, bruto, ext_ref="pos-loja-1-sessao-1-venda-1"):
-    return _corre(_gravar_documento(db, ext_ref, _venda(linhas=[_linha()]), bruto))
+def _grava(db, bruto, ext_ref="pos-loja-1-sessao-1-venda-1", reserva_id=None):
+    return _corre(_gravar_documento(
+        db, ext_ref, _venda(linhas=[_linha()]), bruto, reserva_id=reserva_id))
 
 
 def test_documento_gravado_traz_os_campos_que_o_dashboard_soma():
@@ -4663,7 +4703,7 @@ def test_garante_venda_ainda_aberta_distingue_o_fecho_a_decorrer_do_fecho_feito(
     )
 
     with pytest.raises(SessaoEmFechoAgora) as excinfo:
-        _corre(fiscal_mod._garante_venda_ainda_aberta(db, ref, "venda-1"))
+        _corre(fiscal_mod._garante_venda_ainda_aberta(db, ref, "venda-1", "r1"))
 
     assert isinstance(excinfo.value, fiscal_mod.SessaoJaNaoAberta)
     assert "a meio de um fecho" in str(excinfo.value)
@@ -4921,3 +4961,187 @@ def test_reconciliar_com_uma_resposta_ilegivel_do_vendus_da_502_e_nao_500(monkey
     # A reserva mantém-se incerta: continua a obrigar quem vier a seguir a
     # verificar antes de emitir seja o que for.
     assert _refs_de(db)[0]["incerta"] is True
+
+
+# ============================================================================
+# A `ext_ref` repete-se: as escritas do NÚCLEO também prendem a identidade
+# ============================================================================
+#
+# A sexta revisão fechou os dois últimos sítios do núcleo em que uma escrita
+# prendia a FORMA (`{"ext_ref": ...}` e mais nada) e não a IDENTIDADE da
+# reserva: `_libertar_reserva` e `_marcar_reserva_incerta`. Mais um terceiro,
+# que nem sequer se via: o carimbo do `documento_id` em
+# `_ligar_venda_ao_documento`.
+#
+# A `ext_ref` é determinística (`pos-{loja}-{sessão}-{venda}`) — é isso que a
+# torna útil para a idempotência e é exactamente isso que a impede de ser
+# única NO TEMPO: apagada uma reserva, a tentativa seguinte cria outra
+# rigorosamente igual. Entre GANHAR a reserva e chegar a estas escritas podem
+# ter passado ~300 s de rede.
+#
+# Reproduzido em processo, sobre as rotas reais: reserva `incerta` das 20h;
+# FINALIZAR nº1 reclama a retoma e fica pendurado no Vendus; o gestor liberta
+# (a reserva CERTA — era mesmo aquela que ele viu); FINALIZAR nº2 ganha uma
+# reserva NOVA e está a EMITIR; a retoma nº1 acorda com o timeout e liberta
+# «a reserva da ext_ref», que já é a NOVA; FINALIZAR nº3 emite outra vez →
+# «EMISSÕES REAIS pedidas ao Vendus -> 2 ['FS 2026/901', 'FS 2026/902']».
+# Na variante irmã, em vez de apagar marca-a `incerta` — e o FINALIZAR
+# seguinte sente-se autorizado a retomá-la: também duas FS reais.
+
+from faturacao.fiscal import (  # noqa: E402
+    _libertar_reserva,
+    _ligar_venda_ao_documento,
+    _marcar_reserva_incerta,
+)
+
+_REF_ID = "pos-loja-1-sessao-1-venda-1"
+
+
+def _reserva_nova_de_outra_tentativa(**over):
+    """A reserva que a tentativa SEGUINTE criou: mesma `ext_ref`, mesma
+    venda, sem marca nenhuma — e com uma emissão real a caminho do Vendus."""
+    r = {"id": "r-nova", "ext_ref": _REF_ID, "venda_id": "venda-1",
+         "criado_em": _agora_iso(1)}
+    r.update(over)
+    return r
+
+
+def test_libertar_reserva_nao_apaga_a_de_outra_tentativa():
+    """A reserva que está na `ext_ref` já não é a de quem chama: não se apaga
+    NADA. Apagá-la era destrancar a conta debaixo de uma emissão em voo — e a
+    tentativa seguinte reservava e emitia a SEGUNDA Fatura Simplificada."""
+    db = _db(vendas=[_venda(linhas=[_linha()])],
+             refs=[_reserva_nova_de_outra_tentativa()])
+
+    assert _corre(_libertar_reserva(db, _REF_ID, "r-velha")) is False
+    assert [r["id"] for r in _refs_de(db)] == ["r-nova"]
+
+
+def test_libertar_reserva_apaga_a_sua():
+    """O outro lado, para o `id` no filtro não virar uma reserva que nunca
+    mais se liberta: com a sua reserva lá, apaga-a e diz que a apagou."""
+    db = _db(vendas=[_venda(linhas=[_linha()])],
+             refs=[_reserva_nova_de_outra_tentativa(id="r-minha")])
+
+    assert _corre(_libertar_reserva(db, _REF_ID, "r-minha")) is True
+    assert _refs_de(db) == []
+
+
+def test_marcar_incerta_nao_marca_a_de_outra_tentativa():
+    """O simétrico do apagar, e o mais insidioso dos dois: `incerta` é um
+    convite escrito à tentativa seguinte para RETOMAR a reserva — marcá-la
+    numa reserva alheia é autorizar uma emissão por cima de uma FS que pode
+    estar a nascer neste instante."""
+    db = _db(vendas=[_venda(linhas=[_linha()])],
+             refs=[_reserva_nova_de_outra_tentativa()])
+
+    assert _corre(_marcar_reserva_incerta(db, _REF_ID, "r-velha")) is False
+    assert "incerta" not in _refs_de(db)[0]
+
+
+def test_marcar_incerta_marca_a_sua():
+    db = _db(vendas=[_venda(linhas=[_linha()])],
+             refs=[_reserva_nova_de_outra_tentativa(id="r-minha")])
+
+    assert _corre(_marcar_reserva_incerta(db, _REF_ID, "r-minha")) is True
+    assert _refs_de(db)[0]["incerta"] is True
+
+
+def test_carimbo_do_documento_nao_cai_na_reserva_de_outra_tentativa():
+    """O terceiro sítio, o que não dá erro nenhum: o campo `documento_id`
+    diz "o documento que saiu DESTA reserva". Carimbado na reserva de outra
+    tentativa (que pode estar a falar com o Vendus neste instante) passa a
+    dizer uma mentira — e é por ele que `listar_reservas_presas` faz a
+    primeira triagem, e é ele que um gestor lê quando vai perceber, semanas
+    depois, que documento é que saiu de que tentativa.
+
+    A venda fica `emitida` à mesma: essa escrita é incondicional de propósito
+    (ver `_gravar_documento`) e é o estado verdadeiro de quem tem um
+    documento fiscal em mãos."""
+    db = _db(vendas=[_venda(linhas=[_linha()])],
+             refs=[_reserva_nova_de_outra_tentativa()])
+
+    _corre(_ligar_venda_ao_documento(
+        db, _REF_ID, "venda-1", {"id": "doc-desta"}, reserva_id="r-velha"))
+
+    assert "documento_id" not in _refs_de(db)[0]
+    assert _vendas_de(db)[0]["estado"] == "emitida"
+
+
+def test_carimbo_do_documento_marca_a_sua_reserva():
+    """O outro lado, para o `id` no filtro não deixar a marca de fora sempre:
+    com a sua reserva lá, o carimbo é escrito — e é ele que a tira da
+    listagem de presas."""
+    db = _db(vendas=[_venda(linhas=[_linha()])],
+             refs=[_reserva_nova_de_outra_tentativa(id="r-minha")])
+
+    _corre(_ligar_venda_ao_documento(
+        db, _REF_ID, "venda-1", {"id": "doc-desta"}, reserva_id="r-minha"))
+
+    assert _refs_de(db)[0]["documento_id"] == "doc-desta"
+
+
+def test_emissao_que_falha_com_a_reserva_ja_substituida_nao_apaga_a_da_outra():
+    """A coreografia inteira, pelo caminho real (`finalizar_venda`): esta
+    tentativa ganha a reserva, e enquanto fala com o Vendus a reserva dela
+    desaparece (o gestor libertou-a) e é substituída por outra, de uma
+    tentativa NOVA que está a emitir. O Vendus recusa ESTA com um 400 — prova
+    de que nada saiu, o caminho que liberta a reserva. O que não pode
+    acontecer é a reserva da OUTRA ir com ela."""
+    db = _db(vendas=[_venda(linhas=[_linha()])])
+
+    async def emitir(_ref):
+        # O que acontece durante os segundos de rede: a reserva desta
+        # tentativa é libertada e a seguinte cria a sua, com a MESMA ext_ref.
+        refs = _refs_de(db)
+        del refs[:]
+        refs.append(_reserva_nova_de_outra_tentativa())
+        raise VendusHTTPErro(400, "dados inválidos")
+
+    async def verificar(_ref):
+        raise AssertionError("um 400 não é timeout — não se verifica")
+
+    with pytest.raises(VendusHTTPErro):
+        _corre(finalizar_venda(
+            db, _venda(linhas=[_linha()]), emitir, verificar, esperar=_instantaneo))
+
+    assert [r["id"] for r in _refs_de(db)] == ["r-nova"], (
+        "a emissão em voo ficou sem reserva — a próxima tentativa emitia a 2.ª FS"
+    )
+
+
+def test_retoma_que_perde_a_sua_reserva_a_meio_nao_emite_nada():
+    """A retoma reclama (e ganha), e a reserva que ela reclamou desaparece
+    antes de ela conseguir saber QUAL era. Sem identidade não se emite às
+    cegas por cima de uma `ext_ref` cujo dono já não se sabe qual é: cai-se no
+    caminho de quem não tem reserva. Zero chamadas ao Vendus."""
+
+    class RefsQueSomemDepoisDeReclamadas(ColeccaoFalsa):
+        async def update_one(self, filtro, atualizacao):
+            resultado = await super().update_one(filtro, atualizacao)
+            if atualizacao.get("$set", {}).get("em_retoma") is True:
+                del self._documentos[:]
+            return resultado
+
+    db = DbFalsa({
+        COLECOES["vendas"]: ColeccaoFalsa([_venda(linhas=[_linha()])]),
+        COLECOES["documentos"]: ColeccaoFalsa(
+            None, indices_unicos=_unicos_de("fat_documentos")),
+        COLECOES["refs_fiscais"]: RefsQueSomemDepoisDeReclamadas(
+            [_reserva_incerta_antiga()],
+            indices_unicos=_unicos_de("fat_refs_fiscais")),
+        COLECOES["sessoes_caixa"]: ColeccaoFalsa([_sessao_aberta_doc()]),
+    })
+
+    async def emitir(_ref):
+        raise AssertionError("não se emite sem se saber qual é a reserva")
+
+    async def verificar(_ref):
+        raise AssertionError("nem se verifica: a retoma nem chegou a começar")
+
+    with pytest.raises(EmissaoEmCurso):
+        _corre(finalizar_venda(
+            db, _venda(linhas=[_linha()]), emitir, verificar,
+            esperar=_instantaneo, tentativas_espera=1))
+
+    assert db._coleccoes[COLECOES["documentos"]]._documentos == []

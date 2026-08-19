@@ -2078,3 +2078,430 @@ def test_a_rota_nova_responde_mesmo_pelo_router_montado(monkeypatch):
     assert corpo["id"] == "venda-1"
     assert corpo["estado"] == "emitida"
     assert corpo["documento"]["atcud"] == "JFT7-1"
+
+
+# --- Duas alterações à MESMA conta: nenhuma apaga a outra ----------------------
+#
+# As três rotas de linha liam o array `linhas` inteiro, mexiam-lhe em memória
+# e gravavam-no INTEIRO por cima. `_escrever_se_ainda_aberta` prendia a
+# identidade e o ESTADO da venda, e nada prendia a VERSÃO do que foi lido:
+# duas escritas sobrepostas e a última apagava a primeira, com as duas
+# respostas HTTP a dizer sucesso.
+#
+# Medido, sobre as rotas reais: A junta a água (lê [açaí], pára), B remove o
+# açaí, A grava o que leu → «o que ficou MESMO no Mongo -> ['Açaí Regular',
+# 'Água 33cl']»: o açaí que a operadora removeu volta à conta e vai numa
+# Fatura Simplificada REAL de 9,99 € em vez de 1,00 €. Pela ordem inversa é a
+# água que desaparece do Mongo depois de o ecrã a mostrar na conta, e o
+# cliente leva-a sem a pagar.
+#
+# A defesa existia — uma fila em `PosVenda.js` — mas vive toda no cliente e é
+# POR INSTÂNCIA: um F5 a meio de um pedido lento, ou dois separadores do POS
+# no mesmo PC (partilham o `dispositivo_id`, logo recuperam a MESMA conta),
+# passam-lhe ao lado.
+
+
+class VendasQueMudamAntesDeGravar(ColeccaoFalsa):
+    """Deixa correr uma alteração INTEIRA de outro sítio no instante exacto
+    em que a rota vai gravar as linhas que leu — a janela do defeito.
+
+    `repetir=True` fá-lo em TODAS as tentativas (a conta martelada dos dois
+    lados); por omissão só na primeira, que é o cenário medido. O `_dentro`
+    existe para a alteração do outro sítio não se disparar a si própria."""
+
+    def __init__(self, registo, documentos=None):
+        super().__init__(registo, documentos)
+        self.o_outro_sitio = None
+        self.repetir = False
+        self._dentro = False
+
+    async def update_one(self, filtro, atualizacao):
+        outro = self.o_outro_sitio
+        if (outro is not None and not self._dentro
+                and "linhas" in (atualizacao.get("$set") or {})):
+            if not self.repetir:
+                self.o_outro_sitio = None
+            self._dentro = True
+            try:
+                await outro()
+            finally:
+                self._dentro = False
+        return await super().update_one(filtro, atualizacao)
+
+
+def _db_de_duas_maos(registo, linhas, produtos=None):
+    vendas = VendasQueMudamAntesDeGravar(registo, [_venda(linhas=linhas)])
+    db = DbFalsa({
+        COLECOES["caixas"]: ColeccaoFalsa(registo, [_caixa()]),
+        COLECOES["sessoes_caixa"]: ColeccaoFalsa(registo, [_sessao()]),
+        COLECOES["vendas"]: vendas,
+        COLECOES["produtos"]: ColeccaoFalsa(
+            registo, produtos if produtos is not None else [_produto()]),
+        COLECOES["refs_fiscais"]: ColeccaoFalsa(registo, []),
+        COLECOES["documentos"]: ColeccaoFalsa(registo, []),
+    })
+    return db, vendas
+
+
+def _linhas_guardadas(db):
+    return [li["produto_nome"] for li in db._coleccoes[COLECOES["vendas"]]._documentos[0]["linhas"]]
+
+
+def test_juntar_linha_nao_ressuscita_a_linha_que_o_outro_sitio_removeu(monkeypatch):
+    """A variante que custa dinheiro ao CLIENTE: o juntar leu a conta com o
+    açaí, o outro sítio removeu-o, e o juntar gravava o que tinha lido — o
+    açaí voltava à conta e ia faturado. Agora a versão não casa, a conta
+    relê-se, e a água junta-se à conta como ela está."""
+    registo = []
+    db, vendas = _db_de_duas_maos(
+        registo, [_linha()],
+        produtos=[_produto(), _produto(id="prod-agua", nome="Água 33cl", preco=1.0)])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    async def o_outro_sitio_remove_o_acai():
+        await remover_linha("venda-1", "linha-1", operador=_operador())
+
+    vendas.o_outro_sitio = o_outro_sitio_remove_o_acai
+    resposta = _corre(juntar_linha(
+        "venda-1", PedidoJuntarLinha(produto_id="prod-agua"), operador=_operador()))
+
+    assert _linhas_guardadas(db) == ["Água 33cl"]
+    assert [li["produto_nome"] for li in resposta["linhas"]] == ["Água 33cl"], (
+        "a resposta tem de descrever a conta que ficou gravada, nunca outra"
+    )
+    assert resposta["totais"]["total"] == 1.0
+
+
+def test_remover_linha_nao_apaga_a_linha_que_o_outro_sitio_juntou(monkeypatch):
+    """A variante que custa dinheiro à LOJA: a remoção leu a conta antes de a
+    água existir e gravava a lista lida — a água desaparecia do Mongo depois
+    de o ecrã a mostrar na conta, e o cliente levava-a sem a pagar."""
+    registo = []
+    db, vendas = _db_de_duas_maos(
+        registo, [_linha()],
+        produtos=[_produto(), _produto(id="prod-agua", nome="Água 33cl", preco=1.0)])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    async def o_outro_sitio_junta_a_agua():
+        await juntar_linha(
+            "venda-1", PedidoJuntarLinha(produto_id="prod-agua"), operador=_operador())
+
+    vendas.o_outro_sitio = o_outro_sitio_junta_a_agua
+    resposta = _corre(remover_linha("venda-1", "linha-1", operador=_operador()))
+
+    assert _linhas_guardadas(db) == ["Água 33cl"]
+    assert [li["produto_nome"] for li in resposta["linhas"]] == ["Água 33cl"]
+
+
+def test_editar_linha_aplica_se_a_conta_como_ela_esta_e_nao_a_que_leu(monkeypatch):
+    """A edição é um DELTA ("põe quantidade 2 nesta linha") e tem de cair na
+    conta como ela está: gravar a lista lida desfazia a linha que o outro
+    sítio juntou pelo meio."""
+    registo = []
+    db, vendas = _db_de_duas_maos(
+        registo, [_linha()],
+        produtos=[_produto(), _produto(id="prod-agua", nome="Água 33cl", preco=1.0)])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    async def o_outro_sitio_junta_a_agua():
+        await juntar_linha(
+            "venda-1", PedidoJuntarLinha(produto_id="prod-agua"), operador=_operador())
+
+    vendas.o_outro_sitio = o_outro_sitio_junta_a_agua
+    resposta = _corre(editar_linha(
+        "venda-1", "linha-1", PedidoEditarLinha(quantidade=2), operador=_operador()))
+
+    guardadas = db._coleccoes[COLECOES["vendas"]]._documentos[0]["linhas"]
+    assert [li["produto_nome"] for li in guardadas] == ["Açaí Regular", "Água 33cl"]
+    assert guardadas[0]["quantidade"] == 2
+    assert resposta["totais"]["total"] == round(8.99 * 2 + 1.0, 2)
+
+
+def test_editar_uma_linha_que_o_outro_sitio_removeu_e_404(monkeypatch):
+    """O que NÃO se repete às cegas: se a linha a editar desapareceu, ninguém
+    a ressuscita — 404, e a conta fica como o outro sítio a deixou."""
+    registo = []
+    db, vendas = _db_de_duas_maos(registo, [_linha()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    async def o_outro_sitio_remove_o_acai():
+        await remover_linha("venda-1", "linha-1", operador=_operador())
+
+    vendas.o_outro_sitio = o_outro_sitio_remove_o_acai
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(editar_linha(
+            "venda-1", "linha-1", PedidoEditarLinha(quantidade=2), operador=_operador()))
+
+    assert excinfo.value.status_code == 404
+    assert _linhas_guardadas(db) == []
+
+
+def test_conta_martelada_de_dois_sitios_acaba_em_409_e_nunca_num_200_falso(monkeypatch):
+    """Esgotadas as tentativas, o que a operadora ouve é a verdade — nunca um
+    200 sobre uma escrita que não aconteceu."""
+    registo = []
+    db, vendas = _db_de_duas_maos(
+        registo, [_linha()],
+        produtos=[_produto(), _produto(id="prod-agua", nome="Água 33cl", preco=1.0)])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    async def o_outro_sitio_nunca_para():
+        await juntar_linha(
+            "venda-1", PedidoJuntarLinha(produto_id="prod-agua"), operador=_operador())
+
+    vendas.repetir = True
+    vendas.o_outro_sitio = o_outro_sitio_nunca_para
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(remover_linha("venda-1", "linha-1", operador=_operador()))
+
+    assert excinfo.value.status_code == 409
+    assert "ao mesmo tempo" in excinfo.value.detail
+    assert "Açaí Regular" in _linhas_guardadas(db), (
+        "a remoção que respondeu 409 não pode ter apagado nada"
+    )
+
+
+def test_venda_emitida_a_meio_de_uma_alteracao_e_409_e_nao_uma_repeticao(monkeypatch):
+    """A outra razão para o filtro não casar: a conta deixou de estar
+    `aberta`. Aí não há nada a repetir — a mensagem é a de sempre."""
+    registo = []
+    db, vendas = _db_de_duas_maos(registo, [_linha()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    async def a_conta_e_emitida():
+        db._coleccoes[COLECOES["vendas"]]._documentos[0]["estado"] = "emitida"
+
+    vendas.o_outro_sitio = a_conta_e_emitida
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(remover_linha("venda-1", "linha-1", operador=_operador()))
+
+    assert excinfo.value.status_code == 409
+    assert "já foi emitida" in excinfo.value.detail
+
+
+def test_dois_toques_no_mesmo_produto_ficam_as_duas_linhas(monkeypatch):
+    """O que a operadora pediu foram DOIS açaís, e é isso que tem de ficar na
+    conta. Antes desta correcção, dois toques que se cruzassem gravavam cada
+    um a sua lista de uma linha e ficava UMA — o cliente levava dois e pagava
+    um."""
+    registo = []
+    db, vendas = _db_de_duas_maos(registo, [])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    async def o_outro_toque():
+        await juntar_linha(
+            "venda-1", PedidoJuntarLinha(produto_id="prod-1"), operador=_operador())
+
+    vendas.o_outro_sitio = o_outro_toque
+    _corre(juntar_linha("venda-1", PedidoJuntarLinha(produto_id="prod-1"),
+                        operador=_operador()))
+
+    assert _linhas_guardadas(db) == ["Açaí Regular", "Açaí Regular"]
+
+
+# --- A guarda que a REPETIÇÃO refaz, e o tecto das tentativas ------------------
+#
+# O ciclo de `_aplicar_as_linhas` é o único caminho deste módulo que escreve na
+# conta DEPOIS de uma releitura. A licença dessa escrita é a guarda que ele
+# refaz no topo (`_garante_sem_emissao`): entre a primeira tentativa e a
+# segunda pode ter nascido uma reserva fiscal, e uma conta com emissão em curso
+# está CONGELADA. Sem essa linha, a repetição escreve numa conta que está a
+# virar uma Fatura Simplificada real — pela única porta que o resto do módulo
+# não cobre, porque só existe desde que o ciclo existe.
+
+
+def test_reserva_nascida_entre_duas_tentativas_congela_a_conta(monkeypatch):
+    """A ordem exacta: a operadora toca na água; nesse instante, no outro PC, a
+    colega carrega em FINALIZAR — a conta muda de versão E nasce a reserva
+    fiscal (o Vendus já está a ser contactado). A escrita da água não casa, o
+    ciclo relê... e é aqui que se decide.
+
+    Com a guarda refeita: 409 e nada se escreve. Sem ela, a água entrava numa
+    conta cuja emissão em voo já a validou como ['Açaí Regular'] (8,99 €) e a
+    vai gravar assim — ficava no Mongo uma venda de 9,99 € contra uma Fatura
+    Simplificada REAL de 8,99 €, que é exactamente o estrago que a docstring de
+    `_garante_sem_emissao` descreve."""
+    registo = []
+    db, vendas = _db_de_duas_maos(
+        registo, [_linha()],
+        produtos=[_produto(), _produto(id="prod-agua", nome="Água 33cl", preco=1.0)])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    async def a_colega_carrega_em_finalizar():
+        # As duas coisas ao mesmo tempo, e é isso que faz o cenário: a versão
+        # muda (a escrita da água não vai casar e o ciclo vai repetir) E nasce
+        # a reserva (a conta passa a estar congelada). Uma sem a outra não
+        # prova nada — a versão sozinha só faz o ciclo repetir, e a reserva
+        # sozinha já é apanhada pela guarda de ENTRADA da rota.
+        db._coleccoes[COLECOES["vendas"]]._documentos[0]["linhas_versao"] = 7
+        await db[COLECOES["refs_fiscais"]].insert_one(_reserva())
+
+    vendas.o_outro_sitio = a_colega_carrega_em_finalizar
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(juntar_linha("venda-1", PedidoJuntarLinha(produto_id="prod-agua"),
+                            operador=_operador()))
+
+    assert excinfo.value.status_code == 409
+    assert "emissão de fatura em curso" in excinfo.value.detail, (
+        "a repetição tem de recusar pela EMISSÃO (a conta está congelada), e "
+        "não pelo 409 genérico de conta alterada"
+    )
+    assert _linhas_guardadas(db) == ["Açaí Regular"], (
+        "a repetição não pode escrever numa conta que está a virar uma Fatura "
+        "Simplificada real"
+    )
+
+
+def test_o_desconto_global_nao_apaga_a_linha_que_o_outro_sitio_juntou(monkeypatch):
+    """A QUINTA rota de escrita — a única que ficou em
+    `_escrever_se_ainda_aberta` — e a razão por que pode lá ficar: escreve dois
+    campos escalares e mais nada.
+
+    Duas escritas de desconto sobrepostas dão o valor de uma delas, nunca um
+    valor que ninguém pediu, e não apagam linha nenhuma. É essa promessa que
+    este teste prende: basta acrescentar o array `linhas` lido no princípio do
+    pedido ao `$set` do desconto — o gesto mais natural de quem queira que a
+    resposta traga a conta toda — para a água que a operadora acabou de juntar
+    desaparecer do Mongo (e é o Mongo que a Fatura Simplificada lê, não a
+    resposta do ecrã)."""
+
+    class VendasQueDeixamOutroPedidoPassarNoDesconto(ColeccaoFalsa):
+        """Deixa correr uma alteração INTEIRA de outro sítio no instante exacto
+        em que a rota do DESCONTO vai gravar. Precisa de ser um duplo à parte,
+        e não o `VendasQueMudamAntesDeGravar`: esse dispara-se por ver
+        `linhas` no `$set`, que é precisamente o que o desconto NÃO escreve —
+        e um gatilho que só arma com a mutação aplicada não mede nada."""
+
+        def __init__(self, registo, documentos=None):
+            super().__init__(registo, documentos)
+            self.o_outro_sitio = None
+
+        async def update_one(self, filtro, atualizacao):
+            outro = self.o_outro_sitio
+            if outro is not None and "desconto_global_pct" in (atualizacao.get("$set") or {}):
+                self.o_outro_sitio = None  # só na primeira, como no outro duplo
+                await outro()
+            return await super().update_one(filtro, atualizacao)
+
+    registo = []
+    vendas = VendasQueDeixamOutroPedidoPassarNoDesconto(registo, [_venda(linhas=[_linha()])])
+    db = DbFalsa({
+        COLECOES["caixas"]: ColeccaoFalsa(registo, [_caixa()]),
+        COLECOES["sessoes_caixa"]: ColeccaoFalsa(registo, [_sessao()]),
+        COLECOES["vendas"]: vendas,
+        COLECOES["produtos"]: ColeccaoFalsa(
+            registo, [_produto(), _produto(id="prod-agua", nome="Água 33cl", preco=1.0)]),
+        COLECOES["refs_fiscais"]: ColeccaoFalsa(registo, []),
+        COLECOES["documentos"]: ColeccaoFalsa(registo, []),
+    })
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    async def o_outro_sitio_junta_a_agua():
+        await juntar_linha(
+            "venda-1", PedidoJuntarLinha(produto_id="prod-agua"), operador=_operador())
+
+    vendas.o_outro_sitio = o_outro_sitio_junta_a_agua
+    _corre(aplicar_desconto_global(
+        "venda-1", PedidoDescontoGlobal(desconto_pct=10.0), operador=_operador()))
+
+    assert _linhas_guardadas(db) == ["Açaí Regular", "Água 33cl"], (
+        "o desconto global não pode gravar o array `linhas` que leu à entrada"
+    )
+    # E o desconto ficou mesmo escrito: o teste não passa por a rota não ter
+    # feito nada.
+    assert vendas._documentos[0]["desconto_global_pct"] == 10.0
+
+
+# --- O TECTO das tentativas, medido -------------------------------------------
+#
+# `_TENTATIVAS_DE_ESCRITA_DAS_LINHAS` não é folga: é o número de escritores
+# simultâneos que a MESMA conta aguenta. Sob contenção em lock-step cada ronda
+# deixa passar exactamente um, por isso N escritores precisam de N rondas — com
+# quatro tentativas, o 5.º toque simultâneo esgota-as e leva o 409.
+#
+# Os testes de cima (as "duas mãos") forçam a ordem à mão e provam a CORRECÇÃO.
+# Estes provam o TECTO, e para isso precisam de concorrência a sério: o duplo
+# normal não tem um único `await` real lá dentro, e um `asyncio.gather` sobre
+# ele corre as rotas uma a seguir à outra — cada uma acertava à primeira
+# tentativa e o ciclo nunca era exercitado.
+
+
+class ColeccaoQueCede(ColeccaoFalsa):
+    """A mesma colecção, mas cede o controlo ao event loop em CADA operação.
+
+    É o que torna um `gather` uma corrida e não uma fila disfarçada: cada
+    leitura e cada escrita passa a ser um ponto de paragem, e as rotas
+    entrelaçam-se como se entrelaçam contra o Mongo a sério."""
+
+    async def find_one(self, filtro, projecao=None):
+        await asyncio.sleep(0)
+        return await super().find_one(filtro, projecao)
+
+    async def update_one(self, filtro, atualizacao):
+        await asyncio.sleep(0)
+        return await super().update_one(filtro, atualizacao)
+
+
+def _db_que_cede(registo):
+    return DbFalsa({
+        COLECOES["caixas"]: ColeccaoQueCede(registo, [_caixa()]),
+        COLECOES["sessoes_caixa"]: ColeccaoQueCede(registo, [_sessao()]),
+        COLECOES["vendas"]: ColeccaoQueCede(registo, [_venda(linhas=[])]),
+        COLECOES["produtos"]: ColeccaoQueCede(registo, [_produto()]),
+        COLECOES["refs_fiscais"]: ColeccaoQueCede(registo, []),
+        COLECOES["documentos"]: ColeccaoQueCede(registo, []),
+    })
+
+
+def _toques_ao_mesmo_tempo(db, quantos):
+    return _corre(asyncio.gather(*[
+        juntar_linha("venda-1", PedidoJuntarLinha(produto_id="prod-1"),
+                     operador=_operador())
+        for _ in range(quantos)
+    ], return_exceptions=True))
+
+
+def test_quatro_toques_ao_mesmo_tempo_entram_todos_na_conta(monkeypatch):
+    """Quatro tentativas dão para quatro escritores simultâneos: cada ronda
+    deixa passar um, e o último acerta à quarta. Os quatro açaís que a
+    operadora picou ficam os quatro na conta — e vão os quatro na Fatura
+    Simplificada."""
+    registo = []
+    db = _db_que_cede(registo)
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    saidas = _toques_ao_mesmo_tempo(db, 4)
+
+    assert [s for s in saidas if isinstance(s, Exception)] == []
+    guardadas = db._coleccoes[COLECOES["vendas"]]._documentos[0]
+    assert len(guardadas["linhas"]) == 4
+    assert guardadas["linhas_versao"] == 4, "quatro escritas, quatro versões"
+    assert len({li["id"] for li in guardadas["linhas"]}) == 4, "nenhuma linha a dobrar"
+
+
+def test_o_quinto_toque_ao_mesmo_tempo_leva_409_e_nunca_se_perde_em_silencio(monkeypatch):
+    """O tecto, dito à letra: ao 5.º escritor simultâneo as tentativas
+    esgotam-se. O que interessa não é o número — é o que acontece quando ele
+    chega ao fim: quatro toques gravados, UM recusado com 409, e a operadora
+    informada. Nunca um 200 sobre uma escrita que não aconteceu, nem uma linha
+    a desaparecer em silêncio.
+
+    Para lá chegar são precisos cinco separadores do POS a picar a MESMA conta
+    ao mesmo tempo — a fila do `PosVenda.js` mantém uma escrita em voo por
+    instância, por isso cada separador só contribui com uma."""
+    registo = []
+    db = _db_que_cede(registo)
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    saidas = _toques_ao_mesmo_tempo(db, 5)
+
+    recusados = [s for s in saidas if isinstance(s, HTTPException)]
+    assert [s for s in saidas if isinstance(s, Exception) and s not in recusados] == []
+    assert len(recusados) == 1
+    assert recusados[0].status_code == 409
+    assert "ao mesmo tempo" in recusados[0].detail
+    guardadas = db._coleccoes[COLECOES["vendas"]]._documentos[0]
+    assert len(guardadas["linhas"]) == 4, (
+        "os quatro que passaram ficam gravados; o que foi recusado não escreveu nada"
+    )
+    assert len(saidas) - len(recusados) == 4, "os outros quatro receberam 201"

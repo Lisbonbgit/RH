@@ -33,7 +33,7 @@ Regras que não se negoceiam (brief da Task 2):
 """
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
@@ -59,6 +59,14 @@ _MSG_VENDA_COM_EMISSAO = (
     "travada e não aceita alterações nem cancelamento. Chame o gestor: só "
     "depois de se confirmar no Vendus se a Fatura Simplificada chegou a sair "
     "é que se sabe o que fazer a esta conta."
+)
+# O choque de duas alterações à MESMA conta (ver `_aplicar_as_linhas`). Não é
+# um erro para chamar o gestor — é uma conta que mudou por baixo e que se relê.
+_MSG_CONTA_MUDOU_DEBAIXO = (
+    "Esta conta foi alterada noutro sítio ao mesmo tempo (outro separador do "
+    "POS, ou o ecrã recarregado a meio) e esta alteração não foi gravada, "
+    "para não apagar a outra. Olhe para a conta como ela está agora e repita "
+    "só o que faltar."
 )
 # As duas mensagens do cancelamento COMPENSADO (ver `_porque_nao_foi_cancelada`):
 # o 409 tem de descrever a conta como ela está no instante em que a operadora
@@ -229,9 +237,17 @@ async def _porque_nao_foi_cancelada(db, venda_id: str) -> str:
 
 
 async def _escrever_se_ainda_aberta(db, venda_id: str, atualizacao: Dict) -> None:
-    """A escrita das QUATRO rotas de alteração (juntar/editar/remover linha e
-    desconto global), sempre CONDICIONADA a `{"estado": "aberta"}` — e é o
-    `matched_count`, não o `_garante_aberta` lá de cima, que decide.
+    """A escrita do DESCONTO GLOBAL, sempre CONDICIONADA a
+    `{"estado": "aberta"}` — e é o `matched_count`, não o `_garante_aberta`
+    lá de cima, que decide.
+
+    Era também a das três rotas de LINHA, e deixou de o ser: essas escrevem o
+    array `linhas` inteiro, lido no princípio do pedido, e para isso a
+    condição do estado não chega — ver `_aplicar_as_linhas`, que prende
+    também a VERSÃO do que foi lido. O desconto global fica aqui porque
+    escreve dois campos escalares e mais nada: duas escritas sobrepostas dão
+    o valor de uma delas (a última), nunca um valor que ninguém pediu, e não
+    apagam linha nenhuma.
 
     As cinco rotas de escrita já tinham todas a PERGUNTA
     (`_garante_sem_emissao`); só o `cancelar_venda` é que tinha também a
@@ -252,6 +268,132 @@ async def _escrever_se_ainda_aberta(db, venda_id: str, atualizacao: Dict) -> Non
     )
     if resultado.matched_count == 0:
         raise HTTPException(status_code=409, detail=_MSG_VENDA_NAO_ABERTA)
+
+
+# Quantas vezes se volta a ler a conta e a repetir a alteração sobre ela antes
+# de desistir e mandar reler o ecrã.
+#
+# **Não é folga — é um TECTO, e sabe-se qual.** Sob contenção em lock-step
+# (todos a lerem antes de qualquer um gravar) cada ronda deixa passar
+# exactamente UM escritor — o que tinha a versão certa —, por isso N escritores
+# simultâneos precisam de N rondas e o (N+1)-ésimo esgota as tentativas.
+# Medido, sobre a rota real, com um duplo que cede o controlo em cada operação:
+# quatro toques ao mesmo tempo na mesma conta entram os quatro; ao quinto, um
+# deles leva 409 (`_MSG_CONTA_MUDOU_DEBAIXO`). Os dois casos estão presos por
+# teste (`test_venda.py`, secção "O TECTO das tentativas"), por isso mexer no
+# número põe um deles vermelho — que é o que se quer.
+#
+# Chegar lá exige cinco separadores do POS a picar a MESMA conta ao mesmo
+# tempo: a fila do `PosVenda.js` mantém uma escrita em voo por instância, logo
+# cada separador só contribui com uma.
+#
+# E o que está no fim do tecto não é perda: o toque que esgota as tentativas é
+# RECUSADO com um 409 que diz à operadora o que aconteceu, sem ter escrito
+# nada. Não há aqui dinheiro a proteger com um número maior — há só a escolha
+# entre repetir mais vezes (mais releituras e mais escritas falhadas contra uma
+# conta já em contenção) e dizer a verdade mais cedo.
+_TENTATIVAS_DE_ESCRITA_DAS_LINHAS = 4
+
+
+async def _aplicar_as_linhas(
+    db,
+    venda_id: str,
+    loja_id: str,
+    aplicar: Callable[[Dict], List[Dict]],
+    venda: Optional[Dict] = None,
+) -> Dict:
+    """A escrita das TRÊS rotas de linha (juntar/editar/remover), condicionada
+    ao estado da conta **e à versão das linhas que foram lidas**.
+    `aplicar(conta)` recebe a conta acabada de ler e devolve a lista de linhas
+    nova (ou levanta 404/422, como as rotas já faziam).
+
+    **O defeito que isto fecha.** As três rotas liam o array `linhas` inteiro,
+    mexiam-lhe em memória e gravavam-no INTEIRO por cima com
+    `_escrever_se_ainda_aberta` — que prende a identidade e o ESTADO da venda,
+    mas não a versão do que foi lido. Duas escritas sobrepostas e a última
+    apagava a primeira, com as duas respostas HTTP a dizer 200. Medido, sobre
+    as rotas reais: A junta a água (lê [açaí], pára), B remove o açaí inteiro,
+    A grava o que leu → «o que ficou MESMO no Mongo -> ['Açaí Regular',
+    'Água 33cl']»: o açaí que a operadora removeu volta à conta e vai numa
+    Fatura Simplificada REAL de 9,99 € em vez de 1,00 €. Pela ordem inversa é
+    a água que desaparece do Mongo depois de o ecrã a mostrar na conta — e o
+    cliente leva-a sem a pagar.
+
+    Isto não é novo e a defesa existia: uma fila em `PosVenda.js` que
+    serializa as escritas. Só que essa fila vive toda no CLIENTE e é POR
+    INSTÂNCIA — um F5 a meio de um pedido lento, ou dois separadores do POS no
+    mesmo PC (partilham o `dispositivo_id`, logo recuperam a MESMA conta pela
+    `GET /pos/venda/aberta`), passam-lhe ao lado. Uma defesa que o cliente
+    pode contornar sem dar por isso não defende a conta: tem de estar aqui.
+
+    **O contador, e porque não os operadores atómicos do Mongo.** A versão é
+    um `linhas_versao` na própria venda, exigido no filtro e incrementado na
+    mesma escrita: quem gravar sobre uma leitura já ultrapassada não casa com
+    nada e não escreve NADA. A alternativa era não ter contador nenhum e usar
+    `$push` para juntar e `$pull` para remover — o Mongo aplica-os sobre o
+    array como ele está, e as duas alterações sobreviviam sem se pisarem, sem
+    releituras. Não se escolheu por três razões, e a terceira é a que decide:
+    (1) `editar_linha` não se exprime assim (mudar campos de UM elemento de um
+    array exige `arrayFilters`, que é outra história e não cobre a validação
+    que a rota faz à linha inteira antes de gravar); (2) as três rotas
+    respondem com a conta e os totais recalculados, e um operador atómico
+    devolve a lista de ANTES — a resposta e o que ficou gravado divergiam;
+    (3) um só mecanismo para as três rotas é o que faz com que a próxima
+    alteração ao ficheiro não tenha de acertar qual delas está protegida —
+    "quatro em cinco" foi exactamente o estado que `_garante_sem_emissao` veio
+    corrigir.
+
+    **E porque é que se RELÊ e se repete em vez de responder logo 409.** A
+    alteração que a operadora pediu é um DELTA sobre a conta ("junta uma
+    água", "tira esta linha", "põe quantidade 2 nesta"), e um delta aplica-se
+    tal e qual à conta como ela está agora — que é precisamente o que a fila
+    do cliente faz, e o que a operadora esperava que acontecesse. Mandá-la
+    repetir um toque que o sistema sabe repetir sozinho é fazer-lhe perder
+    tempo com o cliente à frente. O que NÃO se repete às cegas é o que deixou
+    de fazer sentido: se a linha a editar ou a remover desapareceu, o
+    `aplicar` levanta 404 e ninguém inventa nada.
+
+    Esgotadas as tentativas (uma conta a ser martelada de dois sítios ao mesmo
+    tempo), o 409 diz à operadora o que se passou — nunca um 200 sobre uma
+    escrita que não aconteceu."""
+    for _ in range(_TENTATIVAS_DE_ESCRITA_DAS_LINHAS):
+        if venda is None:
+            # A releitura traz as MESMAS guardas de entrada da rota, e não só
+            # a conta: entre duas tentativas pode ter nascido uma reserva
+            # fiscal, e uma conta com emissão em curso está congelada
+            # (`_garante_sem_emissao`) — repetir por cima dela era escrever
+            # numa venda que pode estar a virar Fatura Simplificada.
+            venda = await _obter_venda_da_loja(db, venda_id, loja_id)
+            _garante_aberta(venda)
+            await _garante_sem_emissao(db, venda_id)
+
+        linhas = aplicar(venda)
+        versao = venda.get("linhas_versao")
+        resultado = await db[COLECOES["vendas"]].update_one(
+            # `linhas_versao` ausente (uma conta aberta antes desta correcção)
+            # casa com `None`, tal como no Mongo: não é preciso migração
+            # nenhuma, e a primeira escrita põe-lhe a versão 1.
+            {"id": venda_id, "estado": "aberta", "linhas_versao": versao},
+            {"$set": {"linhas": linhas, "linhas_versao": (versao or 0) + 1}},
+        )
+        if resultado.matched_count == 1:
+            venda["linhas"] = linhas
+            venda["linhas_versao"] = (versao or 0) + 1
+            return venda
+
+        # Não casou por uma de duas razões: ou a conta deixou de estar
+        # `aberta` (emitida ou cancelada por quem chegou primeiro), ou mudou
+        # de versão por baixo. Não se decide aqui qual foi — relê-se, e são as
+        # guardas de entrada, refeitas no topo do ciclo, que respondem: uma
+        # conta que já não está aberta apanha o 409 de `_garante_aberta`
+        # (`_MSG_VENDA_NAO_ABERTA`) e não chega a repetir nada; uma que só
+        # mudou de linhas repete a alteração sobre o que se leu agora. Ter
+        # aqui uma segunda leitura só para distinguir os dois casos era
+        # escrever um ramo que responde exactamente o mesmo que o ciclo já
+        # responde — e que nenhum teste consegue separar do ciclo.
+        venda = None
+
+    raise HTTPException(status_code=409, detail=_MSG_CONTA_MUDOU_DEBAIXO)
 
 
 async def _emissao_por_confirmar(db, venda: Dict) -> bool:
@@ -419,6 +561,11 @@ async def abrir_venda(dados: PedidoNovaVenda, operador: Dict = Depends(operador_
         # `dispositivo_id` no token do operador.
         "dispositivo_id": operador.get("dispositivo_id"),
         "linhas": [],
+        # A versão do array `linhas`: sobe a cada alteração e é exigida no
+        # filtro de quem escreve (ver `_aplicar_as_linhas`). Sempre presente,
+        # como os outros campos deste documento — uma conta anterior a este
+        # campo casa com `None` e a primeira alteração põe-lhe a 1.
+        "linhas_versao": 0,
         "desconto_global_pct": None,
         "desconto_global_eur": None,
         "estado": "aberta",
@@ -547,10 +694,18 @@ async def juntar_linha(
     }
     _linha_vendus(linha)  # valida (levanta 422 antes de gravar, se algo bater mal)
 
-    linhas = venda.get("linhas", [])
-    linhas.append(linha)
-    await _escrever_se_ainda_aberta(db, venda_id, {"linhas": linhas})
-    return _venda_publica(venda)
+    # A linha (com o `id` dela) constrói-se UMA vez, fora do ciclo: uma
+    # repetição por conta alterada volta a juntá-la à conta relida, nunca cria
+    # uma linha nova. E se dois toques no mesmo produto se cruzarem, ficam as
+    # DUAS linhas — que é o que a operadora pediu, e o que já acontecia quando
+    # os pedidos chegavam em fila; antes desta correcção uma delas era
+    # silenciosamente apagada pela outra.
+    def juntar(conta):
+        return list(conta.get("linhas") or []) + [linha]
+
+    return _venda_publica(
+        await _aplicar_as_linhas(db, venda_id, operador["loja_id"], juntar, venda)
+    )
 
 
 @router.put("/pos/venda/{venda_id}/linhas/{linha_id}")
@@ -562,19 +717,26 @@ async def editar_linha(
     _garante_aberta(venda)
     await _garante_sem_emissao(db, venda_id)
 
-    linhas = venda.get("linhas", [])
-    alvo = next((li for li in linhas if li["id"] == linha_id), None)
-    if alvo is None:
-        raise HTTPException(status_code=404, detail=_MSG_LINHA_INEXISTENTE)
-
     alteracoes = dados.model_dump(exclude_unset=True)
-    candidata = dict(alvo)
-    candidata.update(alteracoes)
-    _linha_vendus(candidata)  # valida a versão editada ANTES de gravar
 
-    alvo.update(alteracoes)
-    await _escrever_se_ainda_aberta(db, venda_id, {"linhas": linhas})
-    return _venda_publica(venda)
+    # A edição é um DELTA (só os campos presentes no pedido) e aplica-se à
+    # linha como ela está na conta relida — nunca à cópia que a rota leu à
+    # entrada. Se a linha desapareceu entretanto (outro sítio removeu-a), é
+    # 404 e não se ressuscita nada.
+    def editar(conta):
+        linhas = list(conta.get("linhas") or [])
+        alvo = next((li for li in linhas if li["id"] == linha_id), None)
+        if alvo is None:
+            raise HTTPException(status_code=404, detail=_MSG_LINHA_INEXISTENTE)
+        candidata = dict(alvo)
+        candidata.update(alteracoes)
+        _linha_vendus(candidata)  # valida a versão editada ANTES de gravar
+        alvo.update(alteracoes)
+        return linhas
+
+    return _venda_publica(
+        await _aplicar_as_linhas(db, venda_id, operador["loja_id"], editar, venda)
+    )
 
 
 @router.delete("/pos/venda/{venda_id}/linhas/{linha_id}")
@@ -586,14 +748,16 @@ async def remover_linha(
     _garante_aberta(venda)
     await _garante_sem_emissao(db, venda_id)
 
-    linhas = venda.get("linhas", [])
-    restantes = [li for li in linhas if li["id"] != linha_id]
-    if len(restantes) == len(linhas):
-        raise HTTPException(status_code=404, detail=_MSG_LINHA_INEXISTENTE)
+    def remover(conta):
+        linhas = list(conta.get("linhas") or [])
+        restantes = [li for li in linhas if li["id"] != linha_id]
+        if len(restantes) == len(linhas):
+            raise HTTPException(status_code=404, detail=_MSG_LINHA_INEXISTENTE)
+        return restantes
 
-    venda["linhas"] = restantes
-    await _escrever_se_ainda_aberta(db, venda_id, {"linhas": restantes})
-    return _venda_publica(venda)
+    return _venda_publica(
+        await _aplicar_as_linhas(db, venda_id, operador["loja_id"], remover, venda)
+    )
 
 
 @router.put("/pos/venda/{venda_id}/desconto")

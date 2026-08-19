@@ -664,7 +664,7 @@ def _documento_como_o_pos_o_grava(total_bruto=8.99, total_liquido=7.96):
     }
     _corre(fiscal_mod._gravar_documento(
         db, "pos-loja-1-sessao-1-venda-1",
-        {"id": "venda-1", "loja_id": "l1"}, bruto,
+        {"id": "venda-1", "loja_id": "l1"}, bruto, reserva_id=None,
     ))
     return db[COLECOES["documentos"]].documentos[0]
 

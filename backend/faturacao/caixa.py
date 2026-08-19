@@ -67,9 +67,37 @@ _MSG_FECHO_JA_EM_CURSO = (
     "Outro pedido está a fechar esta sessão neste preciso momento — o Z é um "
     "só. Espere alguns segundos e veja o resultado no ecrã da caixa."
 )
+# AS QUATRO SAÍDAS DA RECUSA DE UM MOVIMENTO (ver
+# `_porque_o_movimento_nao_entrou`). A confirmação exige
+# `{"estado": "aberta"}` e a MESMA falha (`matched_count == 0`) cobre
+# situações que pedem à operadora coisas diferentes — e uma delas pode ainda
+# ser desfeita. O 409 descreve a caixa como ela está no instante em que a
+# operadora o lê, nunca o pior caso.
 _MSG_SESSAO_FECHADA_ENTRETANTO = (
     "Esta sessão foi fechada por outro pedido entretanto — não é possível "
-    "registar o movimento."
+    "registar o movimento. Ele NÃO entrou em nenhum Z: reponha o dinheiro na "
+    "gaveta ou registe o movimento outra vez, já na sessão nova."
+)
+_MSG_MOVIMENTO_COM_FECHO_A_DECORRER = (
+    "A caixa está a FECHAR o turno neste momento — enquanto o Z está a ser "
+    "calculado não entra nem sai dinheiro da gaveta. O movimento NÃO ficou "
+    "registado e NÃO entrou em nenhum Z; nada mudou no sistema. Espere "
+    "alguns segundos e registe-o outra vez: um fecho demora um instante, e "
+    "um que apanhe uma emissão a meio nesta caixa é recusado e desfeito por "
+    "ele próprio. Se o turno fechar mesmo, o ecrã da caixa dir-lho-á com "
+    "outras palavras."
+)
+_MSG_MOVIMENTO_NA_MESMA_SESSAO_OUTRA_VEZ = (
+    "Um fecho de turno apanhou este movimento a meio e recusou-o — e esse "
+    "fecho foi ele próprio desfeito: a caixa continua ABERTA, na MESMA "
+    "sessão, e nenhum Z foi assinado. O movimento NÃO ficou registado e NÃO "
+    "entrou em nenhum Z — registe-o outra vez, aqui mesmo."
+)
+_MSG_MOVIMENTO_NAO_REGISTADO = (
+    "Não foi possível registar este movimento: a sessão de caixa mudou de "
+    "estado no instante exacto em que ele ia entrar. Ele NÃO entrou em "
+    "nenhum Z e nada ficou registado — veja o ecrã da caixa e registe-o "
+    "outra vez na sessão que lá estiver."
 )
 _MSG_FECHO_EM_CONFLITO = (
     "Esta sessão já foi fechada por outro pedido — o Z já foi emitido, "
@@ -87,6 +115,31 @@ _MSG_FECHO_COM_EMISSAO_EM_CURSO = (
 
 def _agora() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _sessao_publica(sessao: Optional[Dict]) -> Optional[Dict]:
+    """A sessão como o ecrã da caixa a vê — sem `movimentos_confirmados`, que
+    é escrituração interna do fecho (ver `registar_movimento`) e não diz nada
+    à funcionária.
+
+    Cópia, nunca um `pop` no dicionário recebido — e a razão certa, porque a
+    que aqui estava era falsa: dizia que "nos duplos dos testes [o find_one]
+    pode ser o próprio documento guardado", e os duplos deste repo devolvem
+    cópia funda, como o Motor. Nem em produção nem nos testes um `pop` chega à
+    colecção.
+
+    O que se defende é o contrato desta função: é uma PROJECÇÃO e não pode
+    mutilar o que lhe dão. Hoje os dois chamadores (`estado_caixa`) passam-lhe
+    leituras acabadas de fazer e descartáveis, por isso um `pop` ainda não
+    estragava nada; o próximo que lhe passe uma sessão que ainda vai usar
+    perde-lhe a lista `movimentos_confirmados` — e é dessa lista que sai o Z
+    (`fechar_caixa`), ou seja, dinheiro a cair fora do fecho por causa de uma
+    função de LEITURA. `test_sessao_publica_nao_mexe_no_dicionario_que_recebe`
+    mede isto na função, e não pela rota, precisamente porque pela rota o
+    `pop` é invisível."""
+    if sessao is None:
+        return None
+    return {c: v for c, v in sessao.items() if c != "movimentos_confirmados"}
 
 
 def _recusa_mais_de_2_casas(v):
@@ -288,7 +341,11 @@ async def estado_caixa(
         )
         ultimo_fecho = anteriores[0] if anteriores else None
 
-    return {"caixas": caixas, "caixa": caixa, "sessao_aberta": sessao, "ultimo_fecho": ultimo_fecho}
+    return {
+        "caixas": caixas, "caixa": caixa,
+        "sessao_aberta": _sessao_publica(sessao),
+        "ultimo_fecho": _sessao_publica(ultimo_fecho),
+    }
 
 
 @router.post("/pos/caixa/abrir", status_code=201)
@@ -331,6 +388,52 @@ async def abrir_caixa(dados: PedidoAbrirCaixa, operador: Dict = Depends(operador
     return sessao
 
 
+async def _porque_o_movimento_nao_entrou(db, sessao_id: str) -> str:
+    """A mensagem do 409 de `registar_movimento` — escolhida pelo estado que a
+    SESSÃO tem NO MOMENTO EM QUE A MENSAGEM É ENVIADA, e não pelo pior caso.
+
+    A confirmação do movimento exige `{"estado": "aberta"}`, e uma das razões
+    por que isso falha é a marca `a_fechar` — que pode ainda ser DESFEITA: o
+    fecho põe a marca ANTES de perguntar pela emissão viva e volta a `aberta`
+    quando encontra uma (ver `fechar_caixa`). Nessa janela, a mensagem única
+    de antes dizia à operadora três coisas falsas ao mesmo tempo — que a
+    sessão "foi fechada", que há uma "sessão nova", e implicitamente que um Z
+    foi assinado — e mandava-a fazer a única coisa errada: ir registar o
+    movimento noutro lado. A caixa acaba a noite `aberta`, na mesma sessão,
+    sem Z nenhum.
+
+    É a mesma invariante das duas mensagens do cancelamento
+    (`venda.py::_porque_nao_foi_cancelada`) e das duas da emissão
+    (`fiscal.py::SessaoEmFechoAgora`), e o mesmo padrão: dizer à operadora que
+    o turno acabou só pode acontecer se o turno tiver MESMO acabado.
+
+    As três saídas, todas verdadeiras no instante em que se lêem:
+    1. `fechada` — o Z está assinado e esta sessão acabou: o movimento
+       repete-se na sessão nova (`_MSG_SESSAO_FECHADA_ENTRETANTO`);
+    2. `a_fechar` — o Z está a ser calculado NESTE momento; é uma espera de
+       segundos e o fecho ainda pode ser recusado e desfeito
+       (`_MSG_MOVIMENTO_COM_FECHO_A_DECORRER`);
+    3. `aberta` — o fecho que recusou este movimento foi ele próprio desfeito:
+       a caixa é a MESMA e continua aberta
+       (`_MSG_MOVIMENTO_NA_MESMA_SESSAO_OUTRA_VEZ`).
+
+    Estado inesperado (a sessão desapareceu, ou está num estado que este
+    módulo não escreve): não se inventa um diagnóstico — vale a mensagem que
+    não afirma nada sobre a caixa e manda olhar para o ecrã.
+
+    Uma leitura a mais, e só no caminho do erro: o caminho normal do
+    movimento não passa por aqui."""
+    sessao = await db[COLECOES["sessoes_caixa"]].find_one({"id": sessao_id})
+    estado = (sessao or {}).get("estado")
+    if estado == "fechada":
+        return _MSG_SESSAO_FECHADA_ENTRETANTO
+    if estado == "a_fechar":
+        return _MSG_MOVIMENTO_COM_FECHO_A_DECORRER
+    if estado == "aberta":
+        return _MSG_MOVIMENTO_NA_MESMA_SESSAO_OUTRA_VEZ
+    return _MSG_MOVIMENTO_NAO_REGISTADO
+
+
 @router.post("/pos/caixa/movimento", status_code=201)
 async def registar_movimento(
     dados: PedidoMovimento, operador: Dict = Depends(operador_atual)
@@ -338,20 +441,6 @@ async def registar_movimento(
     db = obter_db()
     await _obter_caixa_da_loja(db, dados.caixa_id, operador["loja_id"])
     sessao = await _sessao_aberta(db, dados.caixa_id)
-
-    # I2 ("o mesmo raciocínio para um movimento a cruzar-se com o fecho"):
-    # entre a leitura acima (_sessao_aberta) e este ponto, um fecho
-    # concorrente pode ter fechado a sessão — o Z desse fecho já foi
-    # calculado sem este movimento. Uma escrita CONDICIONAL a
-    # {"estado": "aberta"}, mesmo sem alterar nada de essencial, é o mais
-    # perto que se chega de uma confirmação atómica sem transacções
-    # multi-documento: se não encontrar a sessão ainda aberta, recusa — o
-    # dinheiro deste movimento nunca fica sem fecho nenhum que o explique.
-    confirmacao = await db[COLECOES["sessoes_caixa"]].update_one(
-        {"id": sessao["id"], "estado": "aberta"}, {"$set": {"estado": "aberta"}}
-    )
-    if confirmacao.matched_count == 0:
-        raise HTTPException(status_code=409, detail=_MSG_SESSAO_FECHADA_ENTRETANTO)
 
     movimento = {
         "id": str(uuid.uuid4()),
@@ -362,7 +451,80 @@ async def registar_movimento(
         "por": _quem(operador),
         "em": _agora(),
     }
-    await db[COLECOES["movimentos_caixa"]].insert_one(dict(movimento))
+
+    # A ORDEM DESTAS DUAS ESCRITAS É O PONTO TODO (o defeito da sexta
+    # revisão). Antes era: confirmar a sessão (escrita condicional, o
+    # `matched_count` a decidir — a defesa I2) e SÓ DEPOIS inserir o
+    # movimento. A confirmação é uma FOTOGRAFIA: prova que a sessão estava
+    # aberta naquele instante. O dinheiro, porém, só entra no sistema no
+    # `insert_one` seguinte — noutra colecção, e sem condição nenhuma — e
+    # entre as duas cabia um fecho inteiro, porque o fecho lê
+    # `fat_movimentos_caixa` DEPOIS da marca `a_fechar` e escreve o Z a
+    # seguir. A marca congela as VENDAS (o núcleo fiscal recusa emitir com a
+    # sessão em `a_fechar`) e não congelava os movimentos. Medido, sobre as
+    # rotas reais: a Rafaela tira 20,00 € para o fornecedor do gelo e regista
+    # a saída; a Ana conta a gaveta e fecha — «Z assinado: fundo=50.00
+    # saidas=0.00 esperado=50.00 contado=30.00 diferenca=-20.00» — e só
+    # depois «o movimento gravou-se AGORA: 201», numa sessão já `fechada`. A
+    # funcionária assina um Z que acusa uma falta de 20,00 € numa gaveta que
+    # está certa, e os 20 € não entram em Z nenhum: nem neste (assinado) nem
+    # no seguinte (que filtra pelo sessao_id da sessão nova).
+    #
+    # A correcção: o movimento entra PRIMEIRO, marcado `por_confirmar`, e a
+    # escrita que o torna dinheiro é a MESMA que confirma a sessão — um só
+    # `update_one` condicionado a `{"estado": "aberta"}` que empurra o `id`
+    # deste movimento para a lista da sessão. Uma escrita só, num documento
+    # só, é o que se pode ter sem transacções multi-documento; e é o MESMO
+    # documento em que o fecho põe a marca `a_fechar`, por isso as duas
+    # serializam e uma delas vê sempre a outra:
+    #   - se esta chegar primeiro, o `id` está na lista antes da marca, e o
+    #     fecho lê a lista DEPOIS da marca -> o movimento entra no Z;
+    #   - se a marca chegar primeiro, esta condição falha -> o movimento é
+    #     RECUSADO e a linha que se inseriu acima é apagada. Nada fica.
+    # Não há terceira ordem. O `insert_one` deixa de ser a escrita que decide
+    # (é só o registo), e por isso já não importa que não seja condicional.
+    await db[COLECOES["movimentos_caixa"]].insert_one(
+        dict(movimento, por_confirmar=True)
+    )
+
+    confirmacao = await db[COLECOES["sessoes_caixa"]].update_one(
+        {"id": sessao["id"], "estado": "aberta"},
+        {
+            "$set": {"estado": "aberta"},
+            "$push": {"movimentos_confirmados": movimento["id"]},
+        },
+    )
+    if confirmacao.matched_count == 0:
+        # A linha inserida acima nunca chegou a ser dinheiro (o `id` não
+        # entrou na lista de nenhuma sessão, logo nenhum Z a conta). Apaga-se
+        # para não ficar lixo na colecção; e mesmo que este apagar falhe, ela
+        # continua marcada `por_confirmar` e fora de qualquer soma.
+        await db[COLECOES["movimentos_caixa"]].delete_one({"id": movimento["id"]})
+        # A mensagem escolhe-se AGORA, com a sessão relida — depois da
+        # limpeza e o mais perto possível do instante em que a operadora a
+        # lê. Ver `_porque_o_movimento_nao_entrou`.
+        raise HTTPException(
+            status_code=409,
+            detail=await _porque_o_movimento_nao_entrou(db, sessao["id"]),
+        )
+
+    # A marca sai da linha AGORA que ela já está na lista da sessão. É uma
+    # conveniência (quem olhar para a colecção sozinha distingue uma linha
+    # boa de uma que ficou a meio), nunca a garantia — a garantia é a lista.
+    # Por isso vai em try/except, pelo mesmo motivo do carimbo da reserva em
+    # `fiscal.py::_ligar_venda_ao_documento`: um movimento que JÁ está
+    # confirmado não pode virar um 500 no ecrã do balcão — isso mandava a
+    # funcionária registá-lo outra vez e o Z contava-o a dobrar.
+    try:
+        await db[COLECOES["movimentos_caixa"]].update_one(
+            {"id": movimento["id"]}, {"$set": {"por_confirmar": False}}
+        )
+    except Exception as e:  # noqa: BLE001 — marca de conveniência, nunca a garantia
+        logger.warning(
+            "[faturacao] movimento %s confirmado na sessão %s mas a marca "
+            "`por_confirmar` não saiu: %s (o Z conta-o à mesma — quem manda "
+            "é a lista da sessão).", movimento["id"], sessao["id"], e,
+        )
     return movimento
 
 
@@ -480,13 +642,36 @@ async def fechar_caixa(
         )
 
     # As somas, DEPOIS da marca: a partir daqui nenhuma venda desta sessão
-    # pode passar a `emitida` (o núcleo fiscal recusa), por isso o que se lê
-    # aqui é definitivo. Lidas de fresco em cada tentativa de fecho — uma
-    # retoma de um fecho interrompido recalcula tudo do zero, nunca reaproveita
-    # números de uma tentativa anterior.
+    # pode passar a `emitida` (o núcleo fiscal recusa) e nenhum movimento novo
+    # se pode confirmar (a confirmação exige `estado: "aberta"`, ver
+    # `registar_movimento`), por isso o que se lê aqui é definitivo. Lidas de
+    # fresco em cada tentativa de fecho — uma retoma de um fecho interrompido
+    # recalcula tudo do zero, nunca reaproveita números de uma tentativa
+    # anterior.
+    #
+    # A SESSÃO RELÊ-SE, e é depois da marca de propósito: `movimentos_
+    # confirmados` é a lista que a confirmação de cada movimento empurra na
+    # MESMA escrita em que verifica que a sessão está aberta. Lida do
+    # documento que já leva a marca `a_fechar`, ela é a fronteira exacta do
+    # turno: tudo o que entrou antes está lá, e nada mais pode entrar.
+    # Ler a lista do `sessao` de cima (lido ANTES da marca) perdia um
+    # movimento confirmado nesse intervalo.
+    sessao_marcada = await db[COLECOES["sessoes_caixa"]].find_one({"id": sessao["id"]})
+    confirmados = set((sessao_marcada or sessao).get("movimentos_confirmados") or [])
     movimentos = await db[COLECOES["movimentos_caixa"]].find(
         {"sessao_id": sessao["id"]}
     ).to_list(10000)
+    # Conta o movimento que está na lista da sessão OU o que foi escrito
+    # ANTES desta correcção existir (esses não têm `por_confirmar` nenhum e
+    # nunca entraram em lista nenhuma — uma sessão aberta no turno do deploy
+    # não pode ver os seus movimentos desaparecer do Z). Fica de fora só o
+    # que ficou a meio: inserido, `por_confirmar: True`, e nunca confirmado
+    # em sessão nenhuma — dinheiro que ninguém tirou da gaveta, porque quem o
+    # pediu levou 409 ou nem chegou a receber resposta.
+    movimentos = [
+        m for m in movimentos
+        if m.get("id") in confirmados or m.get("por_confirmar") is not True
+    ]
     vendas = await db[COLECOES["vendas"]].find(
         {"sessao_id": sessao["id"], "estado": "emitida"}
     ).to_list(10000)

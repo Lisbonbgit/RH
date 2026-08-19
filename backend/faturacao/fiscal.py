@@ -478,39 +478,103 @@ def _agora() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def _reservar(db, ext_ref: str, venda_id: str) -> bool:
-    """A reserva atómica (passo 2). `True` se esta chamada ganhou a corrida;
-    `False` se perdeu (já existe uma reserva para esta `ext_ref`) — é o
-    índice único em `ext_ref` (db.py) que decide, não uma leitura antes de
-    inserir."""
+async def _reservar(db, ext_ref: str, venda_id: str) -> Optional[str]:
+    """A reserva atómica (passo 2). Devolve o `id` DA RESERVA que esta
+    chamada criou, se ganhou a corrida; `None` se perdeu (já existe uma
+    reserva para esta `ext_ref`) — é o índice único em `ext_ref` (db.py) que
+    decide, não uma leitura antes de inserir.
+
+    **Devolve a identidade e já não um `True`**, e é daqui que sai a
+    correcção da sexta revisão. A `ext_ref` é determinística — é isso que a
+    torna útil para a idempotência, e é exactamente isso que a impede de ser
+    única NO TEMPO: apagada uma reserva, a tentativa seguinte cria outra
+    rigorosamente igual. Um filtro que só diga `{"ext_ref": ...}` prende a
+    FORMA, e quem escreve por ele actua sobre a reserva que lá estiver, não
+    sobre a sua. Quem ganha aqui sai com um uuid4 que nenhuma reserva futura
+    da mesma venda pode partilhar, e é por ele — nunca pela `ext_ref`
+    sozinha — que `_libertar_reserva`, `_marcar_reserva_incerta` e
+    `_ligar_venda_ao_documento` dizem "a MINHA"."""
+    reserva_id = str(uuid.uuid4())
     try:
         await db[COLECOES["refs_fiscais"]].insert_one({
-            "id": str(uuid.uuid4()),
+            "id": reserva_id,
             "ext_ref": ext_ref,
             "venda_id": venda_id,
             "criado_em": _agora(),
         })
-        return True
+        return reserva_id
     except DuplicateKeyError:
-        return False
+        return None
 
 
-async def _libertar_reserva(db, ext_ref: str) -> None:
-    """Remove a reserva desta `ext_ref` — chamado quando algo falha DEPOIS
-    de reservar (nunca depois de o Vendus confirmar que emitiu, ver
-    ConflitoDocumentoFiscal), para a próxima tentativa poder reservar de
-    novo em vez de ficar presa atrás de uma reserva órfã.
+async def _libertar_reserva(db, ext_ref: str, reserva_id: Optional[str]) -> bool:
+    """Remove A RESERVA DE QUEM CHAMA (a que tem este `id`) — chamado quando
+    algo falha DEPOIS de reservar (nunca depois de o Vendus confirmar que
+    emitiu, ver ConflitoDocumentoFiscal), para a próxima tentativa poder
+    reservar de novo em vez de ficar presa atrás de uma reserva órfã. `True`
+    se apagou; `False` se a reserva que estava na `ext_ref` já não era a de
+    quem chama — e nesse caso NADA foi apagado.
 
-    **Porque é que ESTE apagar continua incondicional**, quando o da rota de
-    gestão teve de passar a prender a identidade da reserva
-    (`_libertar_reserva_se_intacta`): quem chama isto ACABOU de ganhar a
-    reserva e é dono dela — não está a aplicar uma decisão tomada sobre uma
-    leitura antiga. Para apagar a reserva ERRADA, a sua teria de ter
-    desaparecido primeiro, e ninguém lha pode tirar: o índice único garante
-    que não há segunda reserva desta `ext_ref` enquanto a dela existir, e a
-    rota do gestor recusa-se a apagar tanto uma reserva recente (é uma
-    emissão a decorrer) como uma cuja retoma esteja reclamada."""
-    await db[COLECOES["refs_fiscais"]].delete_one({"ext_ref": ext_ref})
+    **Porque é que este apagar deixou de ser incondicional.** Apagava por
+    `{"ext_ref": ...}` e mais nada, com esta justificação: «quem chama isto
+    ACABOU de ganhar a reserva e é dono dela; para apagar a reserva ERRADA, a
+    sua teria de ter desaparecido primeiro, e ninguém lha pode tirar — o
+    índice único garante que não há segunda reserva desta ext_ref enquanto a
+    dela existir, e a rota do gestor recusa-se a apagar tanto uma reserva
+    recente (é uma emissão a decorrer) como uma cuja retoma esteja
+    reclamada». A primeira metade é verdade. A SEGUNDA é falsa nas duas
+    pontas, e é-o precisamente para uma RETOMA:
+
+    - «uma reserva recente» — a guarda da idade mede o `criado_em` da reserva
+      ORIGINAL. Numa `incerta` das 20h retomada à meia-noite isso são HORAS:
+      os `_SEGUNDOS_DE_EMISSAO_NORMAL` passam sem sequer se aproximarem do
+      limite. É o mesmo relógio trocado que obrigou `em_retoma_desde` a
+      existir.
+    - «uma cuja retoma esteja reclamada» — a rota NÃO recusa uma retoma
+      reclamada: recusa uma reclamada há MENOS de
+      `_SEGUNDOS_DE_RETOMA_NORMAL`. Passados esses, o gestor pode libertá-la,
+      e é para isso que essa saída existe (um processo morto num deploy). Só
+      que esse limite é a SOMA EXACTA do pior caso da retoma, sem margem
+      nenhuma: uma retoma que lá chegue ainda está viva, e a próxima coisa
+      que faz — se o Vendus não tiver o documento — é chamar isto.
+
+    Um comentário que justifica uma segurança que não existe é pior do que
+    não haver comentário nenhum; daí este parágrafo, e daí o `id`.
+
+    O cenário, medido sobre as rotas reais: reserva `incerta` das 20h;
+    FINALIZAR nº1 reclama a retoma e fica pendurado no Vendus; o gestor abre
+    a lista de presas, confirma no Vendus que não existe documento e LIBERTA
+    (e apaga a reserva CERTA — era mesmo aquela que ele viu); FINALIZAR nº2
+    ganha uma reserva NOVA e está a EMITIR; só então a retoma nº1 recebe o
+    timeout, verifica (nada) e chama isto — que apagava a reserva NOVA;
+    FINALIZAR nº3 encontra a `ext_ref` livre e emite outra vez →
+    «EMISSÕES REAIS pedidas ao Vendus -> 2 ['FS 2026/901', 'FS 2026/902']»,
+    duas Faturas Simplificadas REAIS da mesma venda.
+
+    **`id`, e é a mesma correcção de `_libertar_reserva_se_intacta`** (a
+    função ao lado, que tinha o defeito à vista): o `id` é o uuid4 que
+    `_reservar` escreve no próprio insert — o único campo que uma reserva
+    NOVA da mesma venda não pode partilhar com a que quem chama ganhou. O que
+    NÃO se prende aqui são os campos de FORMA (`em_retoma`, `documento_id`)
+    que essa função prende, e é deliberado: a pergunta dela é «ninguém lhe
+    mexeu desde que a li?», a daqui é só «é a minha?» — e quem chama isto
+    pode ter sido o próprio a marcá-la (a retoma reclama primeiro e só depois
+    liberta).
+
+    É o `deleted_count` que decide, nunca a leitura de cima."""
+    resultado = await db[COLECOES["refs_fiscais"]].delete_one({
+        "ext_ref": ext_ref,
+        "id": reserva_id,
+    })
+    if resultado.deleted_count == 1:
+        return True
+    logger.warning(
+        "[faturacao] a reserva de %s já não era a desta tentativa (id=%r) — "
+        "não se apagou nada. Quem está na ext_ref é outra emissão, e "
+        "apagar-lhe a reserva era autorizar-lhe uma segunda Fatura "
+        "Simplificada da mesma venda.", ext_ref, reserva_id,
+    )
+    return False
 
 
 async def _libertar_reserva_se_intacta(db, ext_ref: str, reserva: Dict) -> bool:
@@ -588,15 +652,39 @@ async def _libertar_reserva_se_intacta(db, ext_ref: str, reserva: Dict) -> bool:
     return resultado.deleted_count == 1
 
 
-async def _marcar_reserva_incerta(db, ext_ref: str) -> None:
-    """Marca a reserva como incerta em vez de a libertar — ver
+async def _marcar_reserva_incerta(db, ext_ref: str, reserva_id: Optional[str]) -> bool:
+    """Marca A RESERVA DE QUEM CHAMA como incerta em vez de a libertar — ver
     VerificacaoFiscalIncerta. A diferença para `_libertar_reserva` é
     exactamente o ponto desta defesa: libertar convidava a tentativa
     seguinte a reservar de novo e emitir sem mais nenhuma pergunta; marcar
-    incerta obriga-a a verificar primeiro (`_retomar_reserva_incerta`)."""
-    await db[COLECOES["refs_fiscais"]].update_one(
-        {"ext_ref": ext_ref}, {"$set": {"incerta": True}}
+    incerta obriga-a a verificar primeiro (`_retomar_reserva_incerta`).
+    `True` se marcou; `False` se a reserva que lá estava já não era a sua.
+
+    **`id` pela mesma razão de `_libertar_reserva`**, e era o OUTRO dos dois
+    últimos sítios do núcleo onde uma escrita prendia a forma (`ext_ref`) e
+    não a identidade. O estrago é o simétrico do de lá, e sai da mesma
+    coreografia (a retoma que se arrasta e acorda depois de a reserva ter
+    sido substituída): em vez de APAGAR a reserva de uma emissão em voo,
+    marcava-a `incerta` — e uma reserva incerta é um convite escrito à
+    tentativa seguinte para a RETOMAR. Medido: «reservas no Mongo depois de a
+    retoma acabar: [(reserva nova, 'incerta')] / FINALIZAR nº3 -> emitida nº
+    FS 2026/902» com a FS 2026/901 já em voo — duas Faturas Simplificadas
+    REAIS da mesma venda.
+
+    É o `matched_count` que decide, nunca a leitura de cima."""
+    resultado = await db[COLECOES["refs_fiscais"]].update_one(
+        {"ext_ref": ext_ref, "id": reserva_id}, {"$set": {"incerta": True}}
     )
+    if resultado.matched_count == 1:
+        return True
+    logger.warning(
+        "[faturacao] a reserva de %s já não era a desta tentativa (id=%r) — "
+        "não se marcou nada como incerta. Marcar a reserva de outra emissão "
+        "era convidar a tentativa seguinte a retomá-la e a emitir por cima "
+        "de uma FS que pode estar a nascer neste instante.",
+        ext_ref, reserva_id,
+    )
+    return False
 
 
 async def _reclamar_retoma(db, ext_ref: str, carimbo: Optional[str] = None) -> bool:
@@ -779,7 +867,7 @@ def _conta_a_faturar(venda: Dict) -> Dict:
 
 
 async def _garante_conta_inalterada(
-    db, ext_ref: str, retrato: Dict, actual: Dict
+    db, ext_ref: str, retrato: Dict, actual: Dict, reserva_id: Optional[str]
 ) -> None:
     """Depois de GANHAR a reserva e de confirmar que venda e sessão continuam
     abertas: se a CONTA mudou entre o retrato e a reserva, liberta a reserva
@@ -796,8 +884,9 @@ async def _garante_conta_inalterada(
         # Ainda não se falou com o Vendus: libertar é seguro E necessário,
         # pelo mesmo motivo de `_garante_venda_ainda_aberta` — sem isto
         # ficava uma reserva órfã a trancar uma conta que a operadora tem
-        # precisamente de voltar a finalizar a seguir.
-        await _libertar_reserva(db, ext_ref)
+        # precisamente de voltar a finalizar a seguir. `reserva_id`: liberta-se
+        # A NOSSA, nunca "a que estiver na ext_ref" (ver `_libertar_reserva`).
+        await _libertar_reserva(db, ext_ref, reserva_id)
         # Diz-se QUE campos mudaram, e não só que "a conta mudou": quem for
         # ver ao log porque é que aquela conta deu 409 precisa de saber se
         # foram as linhas ou o desconto (das linhas dá-se a contagem, que é
@@ -816,7 +905,9 @@ async def _garante_conta_inalterada(
         )
 
 
-async def _garante_venda_ainda_aberta(db, ext_ref: str, venda_id: str) -> Dict:
+async def _garante_venda_ainda_aberta(
+    db, ext_ref: str, venda_id: str, reserva_id: Optional[str]
+) -> Dict:
     """Depois de GANHAR a reserva e ANTES de chamar `emitir`: relê a venda E
     a sessão de caixa dela e, se alguma das duas já não estiver `aberta`,
     liberta a reserva e aborta — sem emitir.
@@ -893,7 +984,7 @@ async def _garante_venda_ainda_aberta(db, ext_ref: str, venda_id: str) -> Dict:
         # Ainda não se falou com o Vendus, por isso libertar é seguro E
         # necessário: sem isto ficava uma reserva órfã a trancar para sempre
         # uma conta que já ninguém pode emitir nem cancelar.
-        await _libertar_reserva(db, ext_ref)
+        await _libertar_reserva(db, ext_ref, reserva_id)
         raise VendaJaNaoAberta(
             "A venda %s já não está aberta (estado=%r) — o cancelamento entrou "
             "entre a validação e a reserva. A reserva %s foi libertada e NADA foi "
@@ -916,7 +1007,7 @@ async def _garante_venda_ainda_aberta(db, ext_ref: str, venda_id: str) -> Dict:
         # `SessaoEmFechoAgora`. A reserva liberta-se também por uma razão do
         # outro lado: enquanto ela existir, o fecho recusa-se a si próprio
         # (`caixa.py::_venda_com_emissao_viva`) e a caixa não fecha.
-        await _libertar_reserva(db, ext_ref)
+        await _libertar_reserva(db, ext_ref, reserva_id)
         raise SessaoEmFechoAgora(
             "A sessão de caixa %r da venda %s está a meio de um fecho "
             "(estado=%r) — o Z está a ser calculado neste instante. A reserva "
@@ -927,7 +1018,7 @@ async def _garante_venda_ainda_aberta(db, ext_ref: str, venda_id: str) -> Dict:
             )
         )
     if sessao is None or sessao.get("estado") != "aberta":
-        await _libertar_reserva(db, ext_ref)
+        await _libertar_reserva(db, ext_ref, reserva_id)
         raise SessaoJaNaoAberta(
             "A sessão de caixa %r da venda %s já não está aberta (estado=%r) — "
             "o fecho entrou entre a validação e a reserva. A reserva %s foi "
@@ -1036,7 +1127,9 @@ def _mesmo_documento(gravado: Dict, bruto: Dict) -> bool:
     )
 
 
-async def _gravar_documento(db, ext_ref: str, venda: Dict, bruto: Dict) -> Dict:
+async def _gravar_documento(
+    db, ext_ref: str, venda: Dict, bruto: Dict, *, reserva_id: Optional[str]
+) -> Dict:
     """Grava `bruto` (o que o Vendus devolveu — criado agora OU encontrado
     por uma verificação) em `fat_documentos` e marca a venda emitida —
     passo 3 da sequência (ver a docstring do módulo). Partilhado por todos
@@ -1154,12 +1247,13 @@ async def _gravar_documento(db, ext_ref: str, venda: Dict, bruto: Dict) -> Dict:
                 )
             )
 
-    await _ligar_venda_ao_documento(db, ext_ref, venda["id"], documento)
+    await _ligar_venda_ao_documento(
+        db, ext_ref, venda["id"], documento, reserva_id=reserva_id)
     return documento
 
 
 async def _ligar_venda_ao_documento(
-    db, ext_ref: str, venda_id: str, documento: Dict
+    db, ext_ref: str, venda_id: str, documento: Dict, *, reserva_id: Optional[str]
 ) -> None:
     """A segunda metade de `_gravar_documento`: marca a venda `emitida` e
     ligada a este documento, e carimba a reserva com ele.
@@ -1200,9 +1294,24 @@ async def _ligar_venda_ao_documento(
     # existir, e as que este `except` deixar por marcar, continuam a aparecer
     # na listagem e a ser filtradas pela junção: não é preciso migração
     # nenhuma.
+    #
+    # `id` — o TERCEIRO sítio com a porta de `_libertar_reserva`, e o mais
+    # surdo dos três porque não dá erro nenhum: sem ele, este `$set` carimbava
+    # com o documento DESTA emissão a reserva de OUTRA — a `ext_ref` é
+    # determinística, logo repete-se, e a reserva desta tentativa pode ter
+    # sido libertada e substituída enquanto se falava com o Vendus. O campo
+    # diz "o documento que saiu DESTA reserva", e passava a dizer uma mentira
+    # sobre a reserva de uma emissão que ainda está em voo: é por ele que
+    # `listar_reservas_presas` faz a primeira triagem (`{"documento_id":
+    # None}`, antes sequer da junção com a venda), e é ele que um gestor lê
+    # quando vai perceber, semanas depois, que documento é que saiu de que
+    # tentativa. `reserva_id` a `None` (a reconciliação de uma venda que já
+    # não tem reserva nenhuma) não casa com nada: não há o que carimbar, e é
+    # isso mesmo que acontece.
     try:
         await db[COLECOES["refs_fiscais"]].update_one(
-            {"ext_ref": ext_ref}, {"$set": {"documento_id": documento["id"]}}
+            {"ext_ref": ext_ref, "id": reserva_id},
+            {"$set": {"documento_id": documento["id"]}},
         )
     except Exception as e:  # noqa: BLE001 — marca de conveniência, nunca uma garantia
         logger.warning(
@@ -1218,6 +1327,8 @@ async def _emitir_e_gravar(
     emitir: Callable[[str], Awaitable[Dict]],
     verificar: Callable[[str], Awaitable[Optional[Dict]]],
     dados_pagamento: Optional[Dict] = None,
+    *,
+    reserva_id: Optional[str],
 ) -> Dict:
     """Chama `emitir`, com o único fallback permitido (ver a docstring do
     módulo): um timeout/indisponibilidade tenta UMA verificação exacta.
@@ -1264,7 +1375,7 @@ async def _emitir_e_gravar(
         try:
             encontrado = await verificar(ext_ref)
         except Exception as erro_verificacao:
-            await _marcar_reserva_incerta(db, ext_ref)
+            await _marcar_reserva_incerta(db, ext_ref, reserva_id)
             raise VerificacaoFiscalIncerta(
                 "Timeout na emissão (ext_ref=%s) e a própria verificação por "
                 "referência externa também falhou (%s) — não é seguro "
@@ -1273,7 +1384,7 @@ async def _emitir_e_gravar(
                 "antes de repetir." % (ext_ref, erro_verificacao)
             ) from erro_emissao
         if encontrado is None:
-            await _libertar_reserva(db, ext_ref)
+            await _libertar_reserva(db, ext_ref, reserva_id)
             raise erro_emissao
         bruto = encontrado
     except _ERROS_COM_PROVA_DE_QUE_NADA_SAIU:
@@ -1282,7 +1393,7 @@ async def _emitir_e_gravar(
         # liberta-se, para a próxima tentativa (correcção de dados, nova
         # tentativa manual) poder reservar de novo, e o erro original sobe
         # tal e qual.
-        await _libertar_reserva(db, ext_ref)
+        await _libertar_reserva(db, ext_ref, reserva_id)
         raise
     except Exception as erro_desconhecido:
         # E tudo o resto — que é o defeito que esta lista fecha. O `except
@@ -1300,7 +1411,7 @@ async def _emitir_e_gravar(
         # reserva `incerta`, que é literalmente o que ela significa ("não se
         # sabe se a fatura saiu"), e obriga a tentativa seguinte a verificar
         # no Vendus antes de poder emitir (`_retomar_reserva_incerta`).
-        await _marcar_reserva_incerta(db, ext_ref)
+        await _marcar_reserva_incerta(db, ext_ref, reserva_id)
         raise DesfechoDaEmissaoIncerto(
             "A emissão desta venda (ext_ref=%s) falhou de uma forma que não "
             "permite concluir nada sobre o Vendus: %s: %s. Se a resposta "
@@ -1310,7 +1421,7 @@ async def _emitir_e_gravar(
             )
         ) from erro_desconhecido
 
-    return await _gravar_documento(db, ext_ref, venda, bruto)
+    return await _gravar_documento(db, ext_ref, venda, bruto, reserva_id=reserva_id)
 
 
 async def _retomar_reserva_incerta(
@@ -1358,6 +1469,30 @@ async def _retomar_reserva_incerta(
             db, ext_ref, esperar_efectivo, tentativas_espera, venda["id"]
         )
 
+    # QUAL é a reserva que esta reclamação carimbou. `_reclamar_retoma` decide
+    # a corrida (e não precisa da identidade para isso, ver a docstring dela),
+    # mas as escritas que se seguem — libertar, marcar incerta, carimbar o
+    # documento — precisam: a `ext_ref` é determinística e a reserva pode ser
+    # substituída por outra enquanto esta retoma fala com o Vendus (segundos
+    # de rede, até 300 s no pior caso). Esta leitura troca a identidade da
+    # RECLAMAÇÃO (o `carimbo`, que é o que `_limpar_incerta_resolvida` já usa
+    # como tal) pela identidade da RESERVA, que é a que aquelas três escritas
+    # têm de prender — um uuid4 que nenhuma reserva futura pode repetir.
+    #
+    # Não encontrar nada significa que a reserva que acabámos de reclamar
+    # desapareceu debaixo de nós: não se emite às cegas por cima de uma
+    # ext_ref cujo dono já não sabemos qual é — cai-se no caminho de sempre de
+    # quem não tem reserva, que lê o desfecho de quem lá está agora. Nada foi
+    # enviado ao Vendus.
+    reclamada = await db[COLECOES["refs_fiscais"]].find_one(
+        {"ext_ref": ext_ref, "em_retoma": True, "em_retoma_desde": carimbo}
+    )
+    if reclamada is None:
+        return await _esperar_documento_do_vencedor(
+            db, ext_ref, esperar_efectivo, tentativas_espera, venda["id"]
+        )
+    reserva_id = reclamada.get("id")
+
     resolvida = False
     try:
         try:
@@ -1369,7 +1504,8 @@ async def _retomar_reserva_incerta(
                 "se emite às cegas; confirme no Vendus." % (ext_ref, erro_verificacao)
             ) from erro_verificacao
         if encontrado is not None:
-            documento = await _gravar_documento(db, ext_ref, venda, encontrado)
+            documento = await _gravar_documento(
+                db, ext_ref, venda, encontrado, reserva_id=reserva_id)
         else:
             # A verificação correu bem e não encontrou nada: só agora é
             # seguro tentar emitir — com a MESMA rede de segurança de
@@ -1377,7 +1513,9 @@ async def _retomar_reserva_incerta(
             # ficar incerta, ver _emitir_e_gravar/_marcar_reserva_incerta),
             # e É esta tentativa que vai emitir de facto, por isso É o seu
             # dados_pagamento que deve gravar-se.
-            documento = await _emitir_e_gravar(db, ext_ref, venda, emitir, verificar, dados_pagamento)
+            documento = await _emitir_e_gravar(
+                db, ext_ref, venda, emitir, verificar, dados_pagamento,
+                reserva_id=reserva_id)
         resolvida = True
         return documento
     finally:
@@ -1427,8 +1565,12 @@ async def finalizar_venda(
     esperar = esperar if esperar is not None else asyncio.sleep
     ext_ref = ext_ref_determinista(venda["loja_id"], venda["sessao_id"], venda["id"])
 
-    ganhou = await _reservar(db, ext_ref, venda["id"])
-    if ganhou:
+    # A IDENTIDADE da reserva que esta tentativa ganhou (`None` = perdeu a
+    # corrida). É ela que acompanha todas as escritas seguintes: sem ela,
+    # cada uma actuava sobre "a reserva que estiver nesta ext_ref", que pode
+    # já ser a de outra tentativa (ver `_reservar`).
+    reserva_id = await _reservar(db, ext_ref, venda["id"])
+    if reserva_id is not None:
         # Ganhar a reserva não chega: a venda que temos em mãos é o retrato de
         # ANTES da validação toda, e nessa janela pode ter mudado de duas
         # maneiras diferentes — o ESTADO (cancelada, ou a caixa fechada: ver
@@ -1436,9 +1578,12 @@ async def finalizar_venda(
         # a uma) e a CONTA em si (linhas e descontos: ver
         # `ContaAlteradaDepoisDeConfirmada`). As duas perguntas, sobre a mesma
         # releitura, ANTES de qualquer chamada ao Vendus.
-        actual = await _garante_venda_ainda_aberta(db, ext_ref, venda["id"])
-        await _garante_conta_inalterada(db, ext_ref, venda, actual)
-        return await _emitir_e_gravar(db, ext_ref, venda, emitir, verificar, dados_pagamento)
+        actual = await _garante_venda_ainda_aberta(
+            db, ext_ref, venda["id"], reserva_id)
+        await _garante_conta_inalterada(db, ext_ref, venda, actual, reserva_id)
+        return await _emitir_e_gravar(
+            db, ext_ref, venda, emitir, verificar, dados_pagamento,
+            reserva_id=reserva_id)
 
     # Perdeu a reserva: OU alguém está mesmo a meio da emissão (espera pelo
     # documento, comportamento de sempre — NUNCA grava dados_pagamento,
@@ -2892,7 +3037,31 @@ async def reconciliar_reserva_presa(
         # e a venda ficou para trás em `aberta` com uma FS real gravada — e
         # aí a religação é exactamente o que falta.
         if venda.get("estado") != "emitida" or venda.get("documento_id") != documento["id"]:
-            await _ligar_venda_ao_documento(db, ext_ref, venda_id, documento)
+            # `reserva.id`: carimba-se a reserva que ESTA rota leu no
+            # princípio, nunca "a que estiver na ext_ref". Sem isto, o `$set`
+            # de `_ligar_venda_ao_documento` acertava numa reserva NOVA — a
+            # operadora carregou outra vez em FINALIZAR entretanto, e a
+            # `ext_ref` é determinística, logo repete-se — e escrevia-lhe um
+            # `documento_id` que não saiu dela. O campo quer dizer "o
+            # documento que saiu DESTA reserva", e passava a dizer uma
+            # mentira sobre uma emissão que ainda está EM VOO: é por ele que
+            # `listar_reservas_presas` faz a primeira triagem, e é ele que o
+            # gestor lê quando vai perceber, semanas depois, que documento
+            # saiu de que tentativa. Ver `_ligar_venda_ao_documento`.
+            #
+            # O que NÃO muda, medido nas duas variantes: a listagem de presas
+            # responde o mesmo (vazia) e a conta fica igualmente trancada — a
+            # MESMA escrita põe a venda `emitida`, e é o estado da venda que
+            # a junção da listagem descarta e que as rotas de escrita
+            # recusam. Este comentário chegou a prometer aqui "a conta ficava
+            # trancada E invisível ao gestor", que é a descrição do OUTRO
+            # sítio e é falsa neste: foi um comentário falso — o do
+            # `_libertar_reserva` — que escondeu um bloqueador durante duas
+            # rondas, e a lição é não repetir uma frase para outro sítio sem
+            # a voltar a medir lá.
+            await _ligar_venda_ao_documento(
+                db, ext_ref, venda_id, documento,
+                reserva_id=(reserva or {}).get("id"))
         veio_do_vendus_agora = False
     else:
         conta = obter_conta(_nif_configurado())
@@ -2947,7 +3116,9 @@ async def reconciliar_reserva_presa(
         _recusa_se_a_caixa_esta_a_fechar(sessao_antes, venda_id)
 
         try:
-            documento = await _gravar_documento(db, ext_ref, venda, encontrado)
+            documento = await _gravar_documento(
+                db, ext_ref, venda, encontrado,
+                reserva_id=(reserva or {}).get("id"))
         except ConflitoDocumentoFiscal as e:
             raise HTTPException(status_code=500, detail=str(e))
         veio_do_vendus_agora = True

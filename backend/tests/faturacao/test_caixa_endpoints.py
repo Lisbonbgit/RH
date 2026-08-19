@@ -17,6 +17,8 @@ from faturacao.caixa import (
     PedidoAbrirCaixa,
     PedidoFecharCaixa,
     PedidoMovimento,
+    _porque_o_movimento_nao_entrou,
+    _sessao_publica,
     abrir_caixa,
     estado_caixa,
     fechar_caixa,
@@ -119,6 +121,14 @@ class ColeccaoFalsa:
         alvos = [d for d in self._documentos if _corresponde(d, filtro)]
         if alvos:
             alvos[0].update(atualizacao.get("$set", {}))
+            # `$push` — a confirmação de um movimento empurra o `id` dele para
+            # `movimentos_confirmados` da sessão NA MESMA escrita em que exige
+            # `estado: "aberta"`. Tem de ser $push e não um $set de uma lista
+            # relida: duas confirmações ao mesmo tempo perdiam uma delas, e uma
+            # confirmação perdida é dinheiro fora do Z (ver
+            # `caixa.py::registar_movimento`).
+            for campo, valor in (atualizacao.get("$push") or {}).items():
+                alvos[0].setdefault(campo, []).append(deepcopy(valor))
         return ResultadoUpdateFalso(matched_count=len(alvos))
 
     async def delete_one(self, filtro):
@@ -644,7 +654,14 @@ def test_movimento_com_sessao_fechada_entre_a_leitura_e_a_confirmacao_e_recusado
             PedidoMovimento(caixa_id="caixa-1", tipo="entrada", valor=20.0), operador=_operador()
         ))
     assert excinfo.value.status_code == 409
-    assert not any(chamada[0] == "insert_one" for chamada in registo)
+    # A linha do movimento passou a entrar na colecção ANTES da confirmação
+    # (é essa ordem que impede que ela apareça DEPOIS de um Z já assinado —
+    # ver `caixa.py::registar_movimento`), por isso o que se exige aqui já não
+    # é "não houve insert": é que este movimento não tenha chegado a ser
+    # dinheiro — nem linha na colecção, nem `id` na lista da sessão, que é a
+    # única coisa que o fecho conta.
+    assert db[COLECOES["movimentos_caixa"]]._documentos == []
+    assert sessao.get("movimentos_confirmados", []) == []
 
 
 def test_fechar_caixa_sem_sessao_aberta_e_recusado_409(monkeypatch):
@@ -1114,7 +1131,7 @@ def test_a_marca_a_fechar_faz_o_nucleo_fiscal_recusar_emitir(monkeypatch):
 
     with pytest.raises(fiscal_mod.SessaoJaNaoAberta):
         _corre(fiscal_mod._garante_venda_ainda_aberta(
-            db, "pos-loja-1-sessao-1-venda-1", "venda-1"
+            db, "pos-loja-1-sessao-1-venda-1", "venda-1", "ref-1"
         ))
 
     assert db._coleccoes[COLECOES["refs_fiscais"]]._documentos == [], (
@@ -1349,3 +1366,542 @@ def test_fecho_que_rebenta_a_meio_deixa_a_caixa_fechavel_e_nao_num_beco(monkeypa
     assert z["vendas_dinheiro"] == 8.99
     assert z["diferenca"] == 0.0
     assert sessao["estado"] == "fechada"
+
+
+# --- O movimento e o Z: a confirmação e o dinheiro na MESMA escrita ------------
+#
+# `registar_movimento` confirmava que a sessão estava aberta com uma escrita
+# condicional (o `matched_count` a decidir — a defesa I2) e só DEPOIS gravava
+# o movimento: noutra colecção, e sem condição nenhuma. A confirmação é uma
+# fotografia, e entre ela e o `insert_one` cabia um fecho inteiro — o fecho lê
+# `fat_movimentos_caixa` DEPOIS da marca `a_fechar` e escreve o Z a seguir. A
+# marca congela as VENDAS (o núcleo fiscal recusa emitir) e não congelava os
+# movimentos.
+#
+# Medido, sobre as rotas reais: a Rafaela tira 20,00 € para pagar o fornecedor
+# do gelo e regista a saída; a Ana conta a gaveta e fecha — «Z assinado:
+# fundo=50.00 saidas=0.00 esperado=50.00 contado=30.00 diferenca=-20.00» — e
+# só depois «o movimento gravou-se AGORA: 201», numa sessão já `fechada`. A
+# funcionária assina um Z que acusa uma falta de 20,00 € numa gaveta que está
+# certa, e os 20 € não entram em Z nenhum: nem neste (assinado) nem no
+# seguinte (que filtra pelo sessao_id da sessão nova).
+#
+# A correcção: o movimento entra primeiro (marcado `por_confirmar`) e o que o
+# torna dinheiro é a MESMA escrita que confirma a sessão — o `$push` do `id`
+# para `movimentos_confirmados`, condicionado a `{"estado": "aberta"}`. Uma
+# escrita só, no MESMO documento em que o fecho põe a marca: ou o `id` entra
+# antes da marca (e o Z conta-o), ou a marca chega primeiro (e o movimento é
+# recusado). Não há terceira ordem.
+
+
+def test_movimento_confirmado_antes_da_marca_entra_no_z(monkeypatch):
+    """O caminho normal, com o Z a prová-lo: uma saída de 20,00 € registada
+    antes de o fecho começar tem de aparecer no Z como saída — é a leitura
+    pela lista da sessão que o garante, e não a colecção lida às cegas."""
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[], vendas=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    _corre(registar_movimento(
+        PedidoMovimento(caixa_id="caixa-1", tipo="saida", valor=20.0,
+                        motivo="pagar o fornecedor do gelo"),
+        operador=_operador(),
+    ))
+    z = _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=30.0),
+                            operador=_operador()))
+
+    assert z["saidas"] == 20.0
+    assert z["esperado"] == 30.0
+    assert z["diferenca"] == 0.0, "a gaveta está certa e o Z tem de o dizer"
+
+
+def test_movimento_que_so_se_grava_depois_do_z_e_recusado_e_nao_deixa_rasto(monkeypatch):
+    """O cenário medido, do princípio ao fim: o fecho INTEIRO corre entre o
+    início do movimento e a escrita que o confirmaria. O movimento leva 409,
+    o Z fica com a gaveta certa, e não fica lixo na colecção."""
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[], vendas=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    fecho = {}
+    colecao_movimentos = db[COLECOES["movimentos_caixa"]]
+    insert_original = colecao_movimentos.insert_one
+
+    async def a_ana_fecha_a_caixa_no_outro_pc(doc):
+        if not fecho:
+            # A Ana conta a gaveta (30,00 €) e fecha, ANTES de este movimento
+            # chegar a ser confirmado.
+            fecho["z"] = await fechar_caixa(
+                PedidoFecharCaixa(caixa_id="caixa-1", contado=30.0),
+                operador=_operador(nome="Ana"),
+            )
+        return await insert_original(doc)
+
+    colecao_movimentos.insert_one = a_ana_fecha_a_caixa_no_outro_pc
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(registar_movimento(
+            PedidoMovimento(caixa_id="caixa-1", tipo="saida", valor=20.0,
+                            motivo="pagar o fornecedor do gelo"),
+            operador=_operador(),
+        ))
+
+    assert excinfo.value.status_code == 409
+    assert "NÃO entrou em nenhum Z" in excinfo.value.detail
+    # A sessão ACABOU MESMO (Z assinado, `fechada`), e é o único caso em que a
+    # recusa pode mandar a operadora repetir noutra sessão — ver
+    # `_porque_o_movimento_nao_entrou`. Sem esta asserção, as três saídas
+    # podiam colapsar numa só sem nenhum teste dar por isso.
+    assert sessao["estado"] == "fechada" and fecho["z"]["esperado"] == 50.0
+    assert "já na sessão nova" in excinfo.value.detail
+    assert colecao_movimentos._documentos == []
+    assert sessao.get("movimentos_confirmados", []) == []
+
+
+def test_movimento_que_ficou_a_meio_nunca_entra_num_z(monkeypatch):
+    """Um processo que morre entre o `insert_one` e a confirmação deixa a
+    linha `por_confirmar` na colecção. Esse dinheiro NUNCA saiu da gaveta —
+    ninguém recebeu 201 — e o fecho não o pode contar: contá-lo era acusar
+    uma falta que não existe, exactamente o estrago que isto veio corrigir,
+    só que pelo outro lado."""
+    registo = []
+    a_meio = {"id": "m-a-meio", "sessao_id": "sessao-1", "tipo": "saida",
+              "valor": 20.0, "motivo": "processo morto a meio",
+              "por": {"id": "op-1", "nome": "Rafaela"},
+              "em": "2026-08-15T09:30:00+00:00", "por_confirmar": True}
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao(fundo=50.0)],
+             movimentos=[a_meio], vendas=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    z = _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0),
+                            operador=_operador()))
+
+    assert z["saidas"] == 0.0
+    assert z["esperado"] == 50.0
+    assert z["diferenca"] == 0.0
+
+
+def test_movimentos_anteriores_a_esta_correccao_continuam_a_entrar_no_z(monkeypatch):
+    """A migração, que aqui não existe de propósito: uma sessão aberta ANTES
+    do deploy não tem `movimentos_confirmados` nenhum, e os movimentos dela
+    não têm `por_confirmar`. Esses contam sempre — uma sessão que atravesse o
+    deploy não pode ver o dinheiro dela desaparecer do Z."""
+    registo = []
+    antigo = {"id": "m-antigo", "sessao_id": "sessao-1", "tipo": "saida",
+              "valor": 20.0, "motivo": "sangria de ontem",
+              "por": {"id": "op-1", "nome": "Rafaela"},
+              "em": "2026-08-15T09:30:00+00:00"}
+    sessao = _sessao(fundo=50.0)
+    assert "movimentos_confirmados" not in sessao
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao],
+             movimentos=[antigo], vendas=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    z = _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=30.0),
+                            operador=_operador()))
+
+    assert z["saidas"] == 20.0
+    assert z["esperado"] == 30.0
+
+
+def test_a_lista_de_confirmados_nao_vai_no_estado_da_caixa(monkeypatch):
+    """`movimentos_confirmados` é escrituração interna do fecho e cresce com
+    cada movimento: não tem nada que fazer na resposta que o ecrã da caixa lê.
+
+    Só isso — a outra metade ("a rota de leitura não apagou o campo do
+    documento guardado") mede-se na função, não aqui: por esta rota, um
+    `pop` destrutivo em `_sessao_publica` é INVISÍVEL, porque o duplo devolve
+    cópia funda como o Motor e o que ele apagaria era só a cópia. É
+    `test_sessao_publica_nao_mexe_no_dicionario_que_recebe` que a defende."""
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[], vendas=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    _corre(registar_movimento(
+        PedidoMovimento(caixa_id="caixa-1", tipo="entrada", valor=20.0),
+        operador=_operador(),
+    ))
+    estado = _corre(estado_caixa(caixa_id="caixa-1", operador=_operador()))
+
+    assert "movimentos_confirmados" not in estado["sessao_aberta"]
+    # E a lista continua a ser escrita na sessão — a rota não tem de a
+    # devolver, mas o fecho conta com ela.
+    assert len(sessao["movimentos_confirmados"]) == 1
+
+
+def test_sessao_publica_nao_mexe_no_dicionario_que_recebe():
+    """`_sessao_publica` é uma PROJECÇÃO: devolve uma cópia sem o campo, e
+    deixa intacto o dicionário que lhe deram.
+
+    A asserção que aqui estava passava pela rota e era impossível de pôr
+    vermelha: trocava-se o dicionário por compreensão por um
+    `sessao.pop(...); return sessao` — a rota de leitura a apagar mesmo o
+    campo — e ela continuava verde, porque o `find_one` do duplo devolve cópia
+    funda (como o Motor) e o `pop` só mordia essa cópia. Um teste que não
+    consegue ficar vermelho não defende nada; este mede a função directamente
+    e apanha o `pop`.
+
+    E o que se defende não é hipotético só por o Motor copiar: os dois
+    chamadores de hoje passam-lhe leituras descartáveis, mas a próxima
+    chamada que lhe passe uma sessão que ainda vai ser usada (o fecho relê a
+    sessão marcada e é dessa lista que sai o Z) perdia
+    `movimentos_confirmados` do dicionário em mãos — dinheiro fora do Z, a
+    partir de uma função de leitura."""
+    sessao = {"id": "sessao-1", "estado": "aberta",
+              "movimentos_confirmados": ["m-1", "m-2"]}
+
+    publica = _sessao_publica(sessao)
+
+    assert "movimentos_confirmados" not in publica
+    # `.get`, e não `[...]`: com o campo apagado o que se quer ler é a
+    # mensagem, não um KeyError.
+    assert sessao.get("movimentos_confirmados") == ["m-1", "m-2"], (
+        "`_sessao_publica` apagou o campo do dicionário que recebeu"
+    )
+    assert publica["id"] == "sessao-1" and publica["estado"] == "aberta"
+    assert _sessao_publica(None) is None
+
+
+def test_movimento_confirmado_mesmo_antes_da_marca_ainda_entra_no_z(monkeypatch):
+    """A janela mais estreita de todas, e a razão de a sessão se RELER depois
+    da marca: o movimento confirma-se entre a leitura de entrada do fecho e a
+    marca `a_fechar`. A sessão está aberta quando ele passa, logo o Z tem de o
+    contar — e tem de o contar mesmo no pior caso, com a marca
+    `por_confirmar` da linha ainda por limpar (é uma escrita à parte, e o
+    fecho pode cair no intervalo). Lida do documento de entrada, a lista de
+    confirmados vinha vazia e os 20,00 € ficavam fora do Z assinado."""
+
+    class MovimentosQueNaoChegamALimparAMarca(ColeccaoFalsa):
+        async def update_one(self, filtro, atualizacao):
+            if "por_confirmar" in (atualizacao.get("$set") or {}):
+                raise RuntimeError("o fecho entrou antes de a marca sair")
+            return await super().update_one(filtro, atualizacao)
+
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[], vendas=[])
+    db._coleccoes[COLECOES["movimentos_caixa"]] = MovimentosQueNaoChegamALimparAMarca(
+        registo, [])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    colecao_sessoes = _sessoes_de(db)
+    update_original = colecao_sessoes.update_one
+
+    async def a_rafaela_regista_a_saida_antes_da_marca(filtro, atualizacao):
+        if atualizacao.get("$set", {}).get("estado") == "a_fechar":
+            colecao_sessoes.update_one = update_original  # só uma vez
+            await registar_movimento(
+                PedidoMovimento(caixa_id="caixa-1", tipo="saida", valor=20.0,
+                                motivo="pagar o fornecedor do gelo"),
+                operador=_operador(),
+            )
+        return await update_original(filtro, atualizacao)
+
+    colecao_sessoes.update_one = a_rafaela_regista_a_saida_antes_da_marca
+
+    z = _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=30.0),
+                            operador=_operador(nome="Ana")))
+
+    assert z["saidas"] == 20.0
+    assert z["esperado"] == 30.0
+    assert z["diferenca"] == 0.0
+
+
+def test_movimento_confirmado_conta_no_z_mesmo_com_a_marca_por_limpar(monkeypatch):
+    """Quem manda é a LISTA da sessão, nunca a marca `por_confirmar` da linha.
+    A marca sai numa escrita à parte, a seguir à confirmação, e é uma
+    conveniência: se ela não sair (um soluço do Mongo, ou o fecho a ler no
+    intervalo entre as duas escritas), o movimento está confirmado à mesma e
+    o Z TEM de o contar. É essa janela que obriga a lista a ser lida do
+    documento marcado `a_fechar`, e não do que o fecho leu à entrada."""
+
+    class MovimentosQueNaoLimpamAMarca(ColeccaoFalsa):
+        async def update_one(self, filtro, atualizacao):
+            if "por_confirmar" in (atualizacao.get("$set") or {}):
+                raise RuntimeError("Mongo com soluços a limpar a marca")
+            return await super().update_one(filtro, atualizacao)
+
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[], vendas=[])
+    db._coleccoes[COLECOES["movimentos_caixa"]] = MovimentosQueNaoLimpamAMarca(registo, [])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    movimento = _corre(registar_movimento(
+        PedidoMovimento(caixa_id="caixa-1", tipo="saida", valor=20.0,
+                        motivo="pagar o fornecedor do gelo"),
+        operador=_operador(),
+    ))
+    # A operadora recebeu 201: o dinheiro saiu mesmo da gaveta.
+    assert movimento["valor"] == 20.0
+    guardado = db._coleccoes[COLECOES["movimentos_caixa"]]._documentos[0]
+    assert guardado["por_confirmar"] is True, "a marca ficou mesmo por limpar"
+
+    z = _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=30.0),
+                            operador=_operador(nome="Ana")))
+
+    assert z["saidas"] == 20.0
+    assert z["esperado"] == 30.0
+    assert z["diferenca"] == 0.0
+
+
+def test_dois_movimentos_confirmados_contam_os_dois_no_z(monkeypatch):
+    """A lista da sessão CRESCE — é um `$push`, nunca um `$set` de uma lista
+    montada por quem escreve.
+
+    O teste de cima tem UM movimento, e com um só um `$set` de `[o meu id]`
+    dá exactamente o mesmo que um `$push`: a garantia inteira do módulo (quem
+    manda é a lista da sessão) fica sem rede. Aqui são DOIS, e a limpeza da
+    marca falha no PRIMEIRO — o mesmo "Mongo com soluços" que o teste de cima
+    modela. Com `$push`, os dois `id`s estão na lista e o Z conta os 25,00 €.
+    Com um `$set`, o segundo movimento apaga o primeiro da lista; e como esse
+    ficou com a marca `por_confirmar` por limpar, o fecho descarta-o: o Z
+    conta 5,00 € de saídas e acusa uma falta de 20,00 € numa gaveta que está
+    certa — a funcionária assina um Z que a acusa de dinheiro que ela não
+    tirou."""
+
+    class MarcaQueFalhaNoPrimeiro(ColeccaoFalsa):
+        def __init__(self, registo, documentos=None):
+            super().__init__(registo, documentos)
+            self.limpezas = 0
+
+        async def update_one(self, filtro, atualizacao):
+            if "por_confirmar" in (atualizacao.get("$set") or {}):
+                self.limpezas += 1
+                if self.limpezas == 1:
+                    raise RuntimeError("Mongo com soluços a limpar a marca")
+            return await super().update_one(filtro, atualizacao)
+
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[], vendas=[])
+    db._coleccoes[COLECOES["movimentos_caixa"]] = MarcaQueFalhaNoPrimeiro(registo, [])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    primeiro = _corre(registar_movimento(
+        PedidoMovimento(caixa_id="caixa-1", tipo="saida", valor=20.0,
+                        motivo="pagar o fornecedor do gelo"),
+        operador=_operador(),
+    ))
+    segundo = _corre(registar_movimento(
+        PedidoMovimento(caixa_id="caixa-1", tipo="saida", valor=5.0,
+                        motivo="pilhas para a balança"),
+        operador=_operador(),
+    ))
+    # As duas saídas foram aceites (201) — o dinheiro saiu mesmo da gaveta.
+    linhas = db._coleccoes[COLECOES["movimentos_caixa"]]._documentos
+    assert [li["valor"] for li in linhas] == [20.0, 5.0]
+    assert linhas[0]["por_confirmar"] is True, (
+        "o cenário só vale se a marca do PRIMEIRO tiver mesmo ficado por limpar"
+    )
+
+    # A gaveta: 50,00 € de fundo, menos 20,00 €, menos 5,00 € = 25,00 €, e é
+    # isso que lá está mesmo.
+    z = _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=25.0),
+                            operador=_operador(nome="Ana")))
+
+    assert z["saidas"] == 25.0, "o Z tem de contar as DUAS saídas, não só a última"
+    assert z["esperado"] == 25.0
+    assert z["diferenca"] == 0.0, "a gaveta está certa e o Z tem de o dizer"
+    # E o mecanismo que o garante, dito à letra: a lista tem os DOIS `id`s.
+    assert sessao["movimentos_confirmados"] == [primeiro["id"], segundo["id"]], (
+        "a confirmação empurra para a lista, nunca a substitui pela sua"
+    )
+
+
+# --- A recusa de um movimento diz o que se sabe NO INSTANTE em que é enviada ---
+#
+# A confirmação exige `{"estado": "aberta"}` e falhava sempre com a mesma
+# frase: "esta sessão foi fechada por outro pedido — registe o movimento outra
+# vez, já na sessão nova". Mas o fecho marca `a_fechar` ANTES de perguntar pela
+# emissão viva e DESFAZ a marca quando encontra uma. Um movimento que caia
+# nessa janela ouvia três afirmações falsas ao mesmo tempo — não houve Z, a
+# sessão é a mesma, e a "sessão nova" pode nunca vir a existir — e a única
+# acção que a mensagem sugeria era a errada.
+#
+# É a mesma invariante que `venda.py::_porque_nao_foi_cancelada` e
+# `fiscal.py::SessaoEmFechoAgora` já fixam para as mensagens da venda e da
+# emissão: dizer à operadora que o turno acabou só pode acontecer se o turno
+# tiver MESMO acabado.
+
+
+class MovimentosComPausa(ColeccaoFalsa):
+    """Pára o movimento no `insert_one` — depois de ele já ter lido a sessão
+    ABERTA e antes de a confirmação correr. `ao_apagar` corre no `delete_one`
+    da limpeza, que é o último passo antes de a mensagem ser composta: é por
+    aí que se controla o que a operadora encontra quando a lê."""
+
+    def __init__(self, registo, documentos=None):
+        super().__init__(registo, documentos)
+        self.chegou = asyncio.Event()
+        self.segue = asyncio.Event()
+        self.armado = False
+        self.ao_apagar = None
+
+    async def insert_one(self, doc):
+        if self.armado:
+            self.armado = False
+            self.chegou.set()
+            await self.segue.wait()
+        return await super().insert_one(doc)
+
+    async def delete_one(self, filtro):
+        accao, self.ao_apagar = self.ao_apagar, None
+        if accao is not None:
+            await accao()
+        return await super().delete_one(filtro)
+
+
+class SessoesComPausa(ColeccaoFalsa):
+    """Pára o fecho logo a seguir a escrever a marca `a_fechar` — a janela em
+    que a caixa não está aberta e ainda não fechou nada."""
+
+    def __init__(self, registo, documentos=None):
+        super().__init__(registo, documentos)
+        self.marcou = asyncio.Event()
+        self.segue = asyncio.Event()
+        self.armado = False
+
+    async def update_one(self, filtro, atualizacao):
+        resultado = await super().update_one(filtro, atualizacao)
+        if (self.armado and resultado.matched_count == 1
+                and (atualizacao.get("$set") or {}).get("estado") == "a_fechar"):
+            self.armado = False
+            self.marcou.set()
+            await self.segue.wait()
+        return resultado
+
+
+def _db_do_fecho_recusado(registo):
+    """Uma caixa com uma conta ABERTA e uma reserva fiscal viva nela: é o que
+    faz o fecho ser recusado do outro lado da marca — e desfazer-se."""
+    sessao = _sessao(fundo=50.0)
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[],
+             vendas=[{"id": "venda-1", "sessao_id": "sessao-1", "loja_id": "loja-1",
+                      "estado": "aberta", "linhas": [], "pagamentos": []}])
+    db._coleccoes[COLECOES["sessoes_caixa"]] = SessoesComPausa(registo, [sessao])
+    db._coleccoes[COLECOES["movimentos_caixa"]] = MovimentosComPausa(registo, [])
+    db._coleccoes[COLECOES["refs_fiscais"]] = ColeccaoFalsa(registo, [])
+    return db, sessao
+
+
+async def _a_rafaela_apanhada_pelo_fecho_da_ana(db, desfazer_antes_da_mensagem):
+    """A ordem forçada, sobre as rotas reais:
+    1. a Rafaela tira 20,00 € e regista a saída — lê a sessão ABERTA e pára;
+    2. a Ana carrega em FECHAR CAIXA e a marca `a_fechar` fica escrita;
+    3. uma emissão ganha a reserva DENTRO da janela da marca (é o que vai
+       fazer o fecho ser recusado e desfeito);
+    4. o movimento segue e a confirmação já não casa -> 409.
+
+    `desfazer_antes_da_mensagem` decide o que a Rafaela encontra quando lê a
+    recusa: com `False`, a marca ainda lá está (a caixa está mesmo a fechar
+    naquele instante); com `True`, o fecho já foi recusado e desfeito e a
+    caixa está outra vez ABERTA."""
+    sessoes = db._coleccoes[COLECOES["sessoes_caixa"]]
+    movimentos = db._coleccoes[COLECOES["movimentos_caixa"]]
+
+    movimentos.armado = True
+    mov = asyncio.ensure_future(registar_movimento(
+        PedidoMovimento(caixa_id="caixa-1", tipo="saida", valor=20.0,
+                        motivo="pagar o fornecedor do gelo"),
+        operador=_operador(),
+    ))
+    await movimentos.chegou.wait()
+
+    sessoes.armado = True
+    fecho = asyncio.ensure_future(fechar_caixa(
+        PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0),
+        operador=_operador(nome="Ana"),
+    ))
+    await sessoes.marcou.wait()
+
+    await db[COLECOES["refs_fiscais"]].insert_one(
+        {"id": "ref-1", "ext_ref": "pos-loja-1-sessao-1-venda-1", "venda_id": "venda-1"})
+
+    async def deixar_o_fecho_acabar():
+        sessoes.segue.set()
+        await asyncio.gather(fecho, return_exceptions=True)
+
+    if desfazer_antes_da_mensagem:
+        movimentos.ao_apagar = deixar_o_fecho_acabar
+    movimentos.segue.set()
+    recusa = (await asyncio.gather(mov, return_exceptions=True))[0]
+    if not desfazer_antes_da_mensagem:
+        await deixar_o_fecho_acabar()
+    resultado_do_fecho = (await asyncio.gather(fecho, return_exceptions=True))[0]
+    return recusa, resultado_do_fecho
+
+
+def _nao_houve_z(sessao, db):
+    return (sessao["estado"] == "aberta" and sessao["fechada_em"] is None
+            and sessao["contado"] is None
+            and db._coleccoes[COLECOES["movimentos_caixa"]]._documentos == [])
+
+
+def test_movimento_recusado_a_meio_de_um_fecho_nao_diz_que_o_turno_acabou(monkeypatch):
+    """A janela medida: a marca `a_fechar` está posta e o fecho ainda vai ser
+    recusado por uma emissão viva. A caixa acaba a noite ABERTA, na mesma
+    sessão, sem Z nenhum — e a recusa não pode mandar a Rafaela repor o
+    dinheiro numa "sessão nova" que não existe. O que ela precisa de ouvir é
+    que espere alguns segundos."""
+    registo = []
+    db, sessao = _db_do_fecho_recusado(registo)
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    recusa, fecho = _corre(_a_rafaela_apanhada_pelo_fecho_da_ana(
+        db, desfazer_antes_da_mensagem=False))
+
+    assert isinstance(recusa, HTTPException) and recusa.status_code == 409
+    assert "está a FECHAR o turno neste momento" in recusa.detail
+    assert "NÃO entrou em nenhum Z" in recusa.detail
+    assert "sessão nova" not in recusa.detail, (
+        "nenhum Z foi assinado e não há sessão nenhuma para onde a mandar"
+    )
+    # E o mundo é mesmo como a mensagem o descreve: o fecho foi recusado, a
+    # sessão voltou a `aberta` e não ficou lixo na colecção.
+    assert isinstance(fecho, HTTPException) and fecho.status_code == 409
+    assert _nao_houve_z(sessao, db)
+
+
+def test_movimento_recusado_por_um_fecho_ja_desfeito_manda_repetir_aqui_mesmo(monkeypatch):
+    """A mesma corrida, um instante mais tarde: quando a Rafaela lê a recusa,
+    o fecho já foi recusado e desfeito e a caixa está outra vez ABERTA — na
+    MESMA sessão. A acção certa é registar o movimento outra vez aqui, e é
+    isso que a mensagem tem de dizer."""
+    registo = []
+    db, sessao = _db_do_fecho_recusado(registo)
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    recusa, fecho = _corre(_a_rafaela_apanhada_pelo_fecho_da_ana(
+        db, desfazer_antes_da_mensagem=True))
+
+    assert isinstance(recusa, HTTPException) and recusa.status_code == 409
+    assert "MESMA sessão" in recusa.detail
+    assert "registe-o outra vez, aqui mesmo" in recusa.detail
+    assert "sessão nova" not in recusa.detail
+    assert isinstance(fecho, HTTPException) and fecho.status_code == 409
+    assert _nao_houve_z(sessao, db)
+
+
+def test_a_recusa_de_um_movimento_nao_inventa_diagnostico_em_estado_inesperado():
+    """A quarta saída, e a razão de ela existir: a sessão desapareceu, ou está
+    num estado que este módulo não escreve. Aí não se escolhe a mais provável —
+    escolhe-se a que não afirma nada sobre a caixa e manda olhar para o ecrã.
+    Dizer "foi fechada, registe na sessão nova" sem o saber é o defeito que
+    esta ronda veio fechar, e um estado inesperado não é prova de fecho
+    nenhum."""
+    registo = []
+    vazia = _db(registo, caixas=[_caixa()], sessoes=[], movimentos=[], vendas=[])
+    estranha = _db(registo, caixas=[_caixa()], movimentos=[], vendas=[],
+                   sessoes=[_sessao(estado="estado-que-nao-existe")])
+
+    for db in (vazia, estranha):
+        mensagem = _corre(_porque_o_movimento_nao_entrou(db, "sessao-1"))
+        assert "veja o ecrã da caixa" in mensagem
+        assert "NÃO entrou em nenhum Z" in mensagem, (
+            "isto sabe-se sempre: a confirmação não casou, logo nenhum Z o conta"
+        )
+        assert "foi fechada" not in mensagem and "sessão nova" not in mensagem
