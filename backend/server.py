@@ -6081,6 +6081,43 @@ async def estoque_transferencia(body: EstoqueTransfIn, current_user: dict = Depe
     )
 
 
+async def _estoque_put(path: str, body: dict):
+    headers = _estoque_headers()
+    try:
+        async with httpx.AsyncClient(timeout=15) as http_client:
+            r = await http_client.put(f"{ESTOQUE_API_URL}{path}", json=body, headers=headers)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Sem ligação ao Estoque: {e}")
+    if r.status_code >= 400:
+        raise _estoque_erro(r)
+    return r.json()
+
+
+@api_router.get("/estoque/produtos")
+async def estoque_produtos(marca: str = Query(...), current_user: dict = Depends(admin_required)):
+    """Catálogo de uma marca (para o editor de fichas técnicas)."""
+    return await _estoque_get("/integ/produtos", {"marca": marca})
+
+
+@api_router.get("/estoque/produtos/{produto_id}/receita")
+async def estoque_receita_get(produto_id: str, current_user: dict = Depends(admin_required)):
+    return await _estoque_get(f"/integ/produtos/{produto_id}/receita", {})
+
+
+class EstoqueReceitaIn(BaseModel):
+    rendimento: float
+    ingredientes: list = []
+    tamanhos_balde: list = []
+
+
+@api_router.put("/estoque/produtos/{produto_id}/receita")
+async def estoque_receita_put(produto_id: str, body: EstoqueReceitaIn, current_user: dict = Depends(admin_required)):
+    return await _estoque_put(
+        f"/integ/produtos/{produto_id}/receita",
+        {"rendimento": body.rendimento, "ingredientes": body.ingredientes, "tamanhos_balde": body.tamanhos_balde},
+    )
+
+
 # ===== SECÇÃO ESTOQUE — faturas inseridas pela app do Estoque =====
 # Vista dedicada (todas as faturas com source="estoque", por confirmar E já
 # tratadas), com quem inseriu e em que loja. Base da futura secção "Estoque"

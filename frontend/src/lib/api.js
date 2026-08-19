@@ -143,6 +143,11 @@ export const getEstoqueHistorico = (unidadeId, dias) =>
 export const estoqueMovimento = (data) => axios.post(`${API_URL}/estoque/movimento`, data);
 // { unidade_id, destino_unidade_id, produto_id, quantidade }
 export const estoqueTransferencia = (data) => axios.post(`${API_URL}/estoque/transferencia`, data);
+// Fichas técnicas / receitas
+export const getEstoqueProdutos = (marca) => axios.get(`${API_URL}/estoque/produtos`, { params: { marca } });
+export const getEstoqueReceita = (produtoId) => axios.get(`${API_URL}/estoque/produtos/${produtoId}/receita`);
+// data: { rendimento, ingredientes:[{produto_id, quantidade}], tamanhos_balde:[kg] }
+export const setEstoqueReceita = (produtoId, data) => axios.put(`${API_URL}/estoque/produtos/${produtoId}/receita`, data);
 
 // Secção Estoque — faturas inseridas pela app do Estoque (todos os estados)
 // params: { company_id, month?, origin_user?, origin_store? }
