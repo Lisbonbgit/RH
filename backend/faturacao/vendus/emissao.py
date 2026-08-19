@@ -81,9 +81,12 @@ exactamente no código que mais precisa de comportamento previsível. Fica
 registado para quem tiver a chave confirmar em `mode=tests` antes de ligar.
 """
 import base64
+import logging
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -95,6 +98,13 @@ from .cliente import (
     _corpo_como_lista,
     _paginas_totais,
 )
+
+logger = logging.getLogger(__name__)
+
+# O Vendus é um sistema português e as datas dos documentos vêm sem fuso
+# (`date`, `local_time`). Lêem-se como hora de Lisboa e guardam-se em UTC —
+# ver `_instante_do_vendus`.
+_LISBOA = ZoneInfo("Europe/Lisbon")
 
 # Máximo de páginas na leitura por dia (Task 4). Generoso de propósito (mesmo
 # espírito de MAX_PAGINAS em vendus/cliente.py): as 5 lojas juntas fazem
@@ -140,6 +150,27 @@ class VendusModoInvalido(VendusErro):
 class VendusRateLimitado(VendusErro):
     """429 (créditos esgotados) mesmo depois de esperar `Rate-Limit-Reset` e
     repetir o número de vezes permitido."""
+
+
+class VendusRespostaIlegivel(VendusErro):
+    """O Vendus respondeu **2xx** — ou seja, CRIOU o documento fiscal — mas o
+    corpo dessa resposta não se consegue ler, e por isso não sabemos QUAL
+    documento criou (nem o id, nem o número, nem o ATCUD).
+
+    Reproduzido em processo: um proxy à frente do Vendus devolve 200 com o
+    HTML de uma página de manutenção; o `resposta.json()` a seguir ao POST
+    bem-sucedido levanta `JSONDecodeError`, que não é `VendusErro` nenhum —
+    escapava CRU pela pilha, o `except Exception` de `fiscal.
+    _emitir_e_gravar` libertava a reserva ("sabemos que o Vendus não criou
+    nada" — não sabíamos), o ecrã relia a venda, via `emissao_por_confirmar:
+    False` e convidava a operadora a emitir outra vez: **duas Faturas
+    Simplificadas REAIS da mesma venda**.
+
+    Existe para isto ser um erro TIPADO desta família ("criou, não consigo
+    ler qual") e não um `ValueError` cru: quem chama tem de o poder
+    distinguir de um 4xx (onde o documento não existe) e tratá-lo como
+    incerto — reserva mantida e 503, nunca um 500 que o ecrã lê como "nada
+    saiu"."""
 
 
 def _ler_rate_limit_reset(resposta: httpx.Response) -> float:
@@ -226,17 +257,50 @@ class ClienteEmissaoVendus:
             corpo["client"] = cliente
 
         resposta = self._pedir_com_retentativas("documents/", corpo)
-        dados = resposta.json() if resposta.content else {}
-
-        output_b64 = dados.get("output")
-        talao = base64.b64decode(output_b64) if output_b64 else b""
+        # A PARTIR DAQUI o documento fiscal JÁ EXISTE do lado da AT: a
+        # resposta foi 2xx. Tudo o que falhar a seguir é "criou, mas não
+        # consigo ler" e tem de sair TIPADO (`VendusRespostaIlegivel`) —
+        # nunca um `ValueError`/`binascii.Error` cru, que quem chama
+        # confundiria com "o Vendus recusou e não criou nada" (ver a
+        # docstring dessa excepção: era assim que saíam duas FS reais).
+        try:
+            dados = resposta.json() if resposta.content else {}
+        except ValueError as e:
+            raise VendusRespostaIlegivel(
+                "O Vendus respondeu %d (documento CRIADO) mas o corpo não é "
+                "JSON legível (%s) — não é possível saber que documento saiu. "
+                "external_reference=%s" % (resposta.status_code, e, external_reference)
+            ) from e
+        if not isinstance(dados, dict) or (dados.get("id") is None and not dados.get("atcud")):
+            # Um 2xx sem identidade nenhuma do documento (nem id nem ATCUD)
+            # é o mesmo caso: gravá-lo assim escrevia uma linha em
+            # `fat_documentos` com `vendus_document_id=None` e `atcud=None`,
+            # que colide com a PRÓXIMA igual (os índices únicos tratam o
+            # nulo como valor) e esconde a fatura real atrás de um conflito.
+            raise VendusRespostaIlegivel(
+                "O Vendus respondeu %d (documento CRIADO) mas a resposta não "
+                "traz nem `id` nem `atcud` — não é possível saber que "
+                "documento saiu. external_reference=%s"
+                % (resposta.status_code, external_reference)
+            )
 
         return {
             "id": dados.get("id"),
             "numero": dados.get("number"),
             "atcud": dados.get("atcud"),
             "total": round(float(dados.get("amount_gross") or 0), 2),
-            "talao_escpos": talao,
+            # O talão é uma CONVENIÊNCIA (reimprimir), não a identidade do
+            # documento: um `output` estragado não pode transformar uma
+            # emissão bem sucedida num erro — perde-se o papel, nunca o
+            # registo da fatura. Ver `_talao_de`.
+            "talao_escpos": _talao_de(dados, external_reference),
+            # O Dashboard soma por estes dois campos (`dashboard.py::
+            # _campo_valor`: `total_bruto` com IVA, `total_liquido` sem) —
+            # `total` sozinho deixava a receita das 5 lojas a 0,00 €. Nunca
+            # se deriva um do outro por uma taxa assumida: sem o campo do
+            # Vendus, fica `None` (ver `_valor_monetario`).
+            "total_bruto": _valor_monetario(dados.get("amount_gross")),
+            "total_liquido": _valor_monetario(dados.get("amount_net")),
             # O ecrã tem de poder avisar em que modo o documento saiu — um
             # documento em modo 'tests' não tem valor fiscal nenhum.
             "modo": modo,
@@ -381,20 +445,113 @@ class ClienteEmissaoVendus:
             return resposta
 
 
+def _valor_monetario(valor) -> Optional[float]:
+    """Um valor em euros vindo do Vendus, ou `None` quando o campo não vem
+    (ou não é legível) — NUNCA 0,00 €.
+
+    A diferença importa nos relatórios: um zero inventado soma-se em
+    silêncio e faz um dia de vendas parecer um dia sem IVA; um `None` não
+    finge número nenhum. É a mesma regra de ouro de `precos.py` — sem o
+    campo certo, não se inventa nada (e muito menos se deriva o líquido do
+    bruto por uma taxa assumida: as lojas vendem a 13 % e a 23 %)."""
+    if valor is None or valor == "":
+        return None
+    try:
+        return round(float(valor), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _talao_de(doc: Dict, referencia: str) -> bytes:
+    """Os bytes ESC/POS do talão, ou `b""` se o `output` não for base64
+    legível — com aviso no log.
+
+    Ao contrário do corpo da resposta (ver `VendusRespostaIlegivel`), um
+    talão estragado NÃO põe em causa a identidade do documento: o id, o
+    número e o ATCUD já vieram. Deixar um `binascii.Error` subir daqui
+    transformava uma emissão bem sucedida numa falha — e uma falha de
+    emissão é exactamente o que faz emitir outra vez."""
+    output_b64 = doc.get("output")
+    if not output_b64:
+        return b""
+    try:
+        return base64.b64decode(output_b64)
+    except Exception as e:  # noqa: BLE001 — ver a docstring: o papel, nunca o registo
+        logger.warning(
+            "[faturacao] talão ESC/POS ilegível no documento %s (%s): %s — o "
+            "documento fiscal fica gravado à mesma, só não se consegue "
+            "reimprimir o papel.", referencia, doc.get("id"), e,
+        )
+        return b""
+
+
+def _instante_do_vendus(doc: Dict) -> Optional[str]:
+    """O instante em que o documento existe do lado da AT, em ISO/UTC — ou
+    `None` se o Vendus não o disser de forma legível.
+
+    **Porquê e o que se estragava sem isto.** Um documento trazido por
+    verificação ou por reconciliação ficava carimbado com o instante em que
+    NÓS o descobrimos: a fatura das 23h de ontem, reconciliada às 9h de hoje,
+    entrava no cartão de HOJE do Dashboard e a receita de ontem ficava a
+    faltar. O relógio certo é o do documento.
+
+    `local_time` primeiro: é o campo cuja semântica é inequívoca (hora local
+    da loja) — o código de produção do mesmo dono usa-o exactamente assim
+    (`~/dev/pizzaria/backend/vendus/client.py::list_creditable`, `lt[:10]` /
+    `lt[11:16]`). Só depois `date`, que a mesma API usa para filtrar por dia.
+    Um valor JÁ com fuso é respeitado tal e qual; um valor SEM fuso lê-se
+    como hora de Lisboa (é uma conta portuguesa, e a alternativa — assumir
+    UTC — atirava as vendas depois das 23h para o dia seguinte no Verão).
+
+    Não legível é `None`, nunca uma data inventada: quem chama cai no
+    instante actual (e este aviso fica no log a dizer que caiu)."""
+    for campo in ("local_time", "date"):
+        valor = doc.get(campo)
+        if not valor:
+            continue
+        texto = str(valor).strip().replace("Z", "+00:00")
+        try:
+            momento = datetime.fromisoformat(texto)
+        except ValueError:
+            logger.warning(
+                "[faturacao] data %r do Vendus (campo %s, documento %s) não é "
+                "legível — o documento vai ficar com o instante actual.",
+                valor, campo, doc.get("id"),
+            )
+            continue
+        if momento.tzinfo is None:
+            momento = momento.replace(tzinfo=_LISBOA)
+        return momento.astimezone(timezone.utc).isoformat()
+    return None
+
+
 def _normaliza_documento(doc: Dict) -> Dict:
     """O mesmo formato devolvido por `criar_fatura_simplificada`, a partir de
     um documento lido (não criado agora) — usado pela verificação por
     referência externa, para quem chama não ter de saber a diferença entre
-    'acabei de criar' e 'já existia'."""
-    output_b64 = doc.get("output")
-    talao = base64.b64decode(output_b64) if output_b64 else b""
+    'acabei de criar' e 'já existia'.
+
+    `modo` e `emitido_em` vinham a faltar, e as duas ausências tinham
+    consequência medida: sem `mode`, uma fatura recuperada nunca trazia o
+    aviso "documento em modo tests, sem valor fiscal" que o ecrã mostra a
+    partir desse campo; sem a data, ficava com o instante em que a
+    descobrimos em vez daquele em que a AT a recebeu (ver
+    `_instante_do_vendus`)."""
     return {
         "id": doc.get("id"),
         "numero": doc.get("number"),
         "atcud": doc.get("atcud"),
         "total": round(float(doc.get("amount_gross") or 0), 2),
-        "talao_escpos": talao,
+        "talao_escpos": _talao_de(doc, str(doc.get("external_reference") or "")),
         "external_reference": doc.get("external_reference"),
+        # O contrato com o Dashboard (ver `criar_fatura_simplificada`).
+        "total_bruto": _valor_monetario(doc.get("amount_gross")),
+        "total_liquido": _valor_monetario(doc.get("amount_net")),
+        # O modo VEM DO DOCUMENTO, não da configuração de agora: uma fatura
+        # emitida ontem em `tests` continua a não ter valor fiscal, mesmo
+        # que o VENDUS_MODE de hoje já seja `normal`.
+        "modo": doc.get("mode"),
+        "emitido_em": _instante_do_vendus(doc),
     }
 
 

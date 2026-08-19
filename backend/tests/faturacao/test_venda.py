@@ -32,6 +32,11 @@ from pydantic import ValidationError
 from faturacao import router as router_do_modulo
 from faturacao import venda as venda_mod
 from faturacao.db import COLECOES
+# A MESMA função que a rota usa para escolher os campos do documento — o
+# teste compara com ela, e não com um dicionário escrito à mão aqui: uma
+# cópia local ficava verde no dia em que as duas divergissem, que é
+# precisamente o defeito que se quer impedir.
+from faturacao.fiscal import _resposta_documento
 from faturacao.pos_auth import operador_atual
 from faturacao.precos import linha_de_venda
 from faturacao.venda import (
@@ -44,6 +49,7 @@ from faturacao.venda import (
     cancelar_venda,
     editar_linha,
     juntar_linha,
+    obter_venda,
     remover_linha,
     venda_aberta,
 )
@@ -150,7 +156,8 @@ class DbFalsa:
         return self._coleccoes.setdefault(nome, ColeccaoFalsa([]))
 
 
-def _db(registo, caixas=None, sessoes=None, vendas=None, produtos=None, refs=None):
+def _db(registo, caixas=None, sessoes=None, vendas=None, produtos=None, refs=None,
+        documentos=None):
     return DbFalsa({
         COLECOES["caixas"]: ColeccaoFalsa(registo, caixas),
         COLECOES["sessoes_caixa"]: ColeccaoFalsa(registo, sessoes),
@@ -159,6 +166,10 @@ def _db(registo, caixas=None, sessoes=None, vendas=None, produtos=None, refs=Non
         # A reserva de emissão do fiscal.py — o cancelamento pergunta por
         # ela antes de deitar uma conta fora.
         COLECOES["refs_fiscais"]: ColeccaoFalsa(registo, refs),
+        # O documento fiscal gravado por `fiscal.py::_gravar_documento`: é o
+        # que `GET /pos/venda/{venda_id}` devolve a quem perdeu a resposta do
+        # EMITIR e ficou sem número nem ATCUD no ecrã.
+        COLECOES["documentos"]: ColeccaoFalsa(registo, documentos),
     })
 
 
@@ -218,6 +229,21 @@ def _reserva(**over):
     }
     r.update(over)
     return r
+
+
+def _documento(**over):
+    """Um documento fiscal como `fiscal.py::_gravar_documento` o grava —
+    incluindo os campos que NÃO são para sair na resposta (`ext_ref`,
+    `loja_id`, `emitido_em`), para que a comparação com
+    `_resposta_documento` tenha alguma coisa que possa apanhar."""
+    d = {
+        "id": "doc-1", "vendus_document_id": 8801, "atcud": "JFT7-1",
+        "numero": "FS 2026PDV/1", "total": 8.99, "modo": "normal",
+        "ext_ref": "pos-loja-1-sessao-1-venda-1", "venda_id": "venda-1",
+        "loja_id": "loja-1", "emitido_em": "2026-08-15T09:07:00+00:00",
+    }
+    d.update(over)
+    return d
 
 
 def _linha(**over):
@@ -855,10 +881,11 @@ def _app_do_modulo():
 
 
 def test_get_pos_venda_aberta_chega_mesmo_a_esta_funcao(monkeypatch):
-    """`/pos/venda/aberta` não pode ser engolida por nenhuma rota de
-    `{venda_id}`: o FastAPI serve a PRIMEIRA rota que casa com o caminho, e
-    no dia em que alguém declarar um `GET /pos/venda/{venda_id}` por cima
-    desta, o "aberta" passava a ser lido como um id de venda — 404 à
+    """`/pos/venda/aberta` não pode ser engolida pela rota de `{venda_id}`: o
+    FastAPI serve a PRIMEIRA rota que casa com o caminho. O dia hipotético
+    chegou — `GET /pos/venda/{venda_id}` existe (venda.py::obter_venda), casa
+    com "aberta" tão bem como com um uuid, e só a ORDEM de declaração as
+    separa. Trocá-las fazia o "aberta" ser lido como um id de venda: 404 à
     operadora, com o cliente à frente. Este teste percorre o caminho todo
     (URL → router montado → esta função) e é ele que fica vermelho nesse
     dia."""
@@ -879,6 +906,10 @@ def test_get_pos_venda_aberta_chega_mesmo_a_esta_funcao(monkeypatch):
     assert corpo["id"] == "venda-1"
     assert corpo["estado"] == "aberta"
     assert "totais" in corpo
+    # E que foi a função CERTA das duas: `obter_venda` põe sempre uma chave
+    # `documento` na resposta (mesmo a `None`) e a `venda_aberta` nunca a põe
+    # — é o que distingue as duas com o mesmo 200 e a mesma venda.
+    assert "documento" not in corpo
 
 
 def test_as_duas_rotas_novas_recusam_sem_token_de_operador():
@@ -1828,3 +1859,222 @@ def test_cancelamento_com_a_emissao_ainda_viva_continua_a_mandar_chamar_o_gestor
     assert excinfo.value.status_code == 409
     assert "gestor" in excinfo.value.detail
     assert venda["estado"] == "aberta"
+
+
+# --- Reler uma venda pelo id (GET /pos/venda/{venda_id}) ----------------------
+#
+# O pior defeito do ecrã do POS, e a metade que lhe faltava: a operadora
+# carrega em EMITIR, a Fatura Simplificada SAI mesmo, e a resposta perde-se (o
+# Wi-Fi do balcão pisca, ou o proxy corta aos 30 s porque o Vendus demorou).
+# Ela carrega outra vez → 409 "esta venda já foi emitida" → o ecrã esvazia a
+# conta com um aviso que passa e NUNCA lhe mostra o número nem o ATCUD. Sem
+# talão (o agente de impressão ainda não existe), sem documento no ecrã e com
+# a conta vazia, o gesto natural é picar tudo outra vez — e sai uma SEGUNDA
+# Fatura Simplificada real, que a idempotência do servidor não apanha, porque
+# é uma venda nova com uma referência nova.
+#
+# `GET /pos/venda/aberta` não servia: filtra `estado: "aberta"` e devolve
+# `null` assim que a venda passa a `emitida`, que é exactamente o caso.
+
+
+def test_obter_venda_aberta_devolve_a_conta_e_documento_a_none(monkeypatch):
+    """Sem documento não é erro — é o estado normal de uma conta por
+    facturar. Um 404 (ou um 500) aqui obrigava o ecrã a tratar "ainda não há
+    fatura" como uma avaria."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[_linha(quantidade=2)])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(obter_venda("venda-1", operador=_operador()))
+    assert resultado["id"] == "venda-1"
+    assert resultado["estado"] == "aberta"
+    assert resultado["documento"] is None
+    assert [li["id"] for li in resultado["linhas"]] == ["linha-1"]
+
+    # Mesmo formato das outras rotas, totais incluídos — e conferidos contra o
+    # `linha_de_venda`, nunca contra um número escrito à mão aqui.
+    li_vendus = linha_de_venda({"nome": "Açaí Regular", "preco": 8.99, "tax_id": "INT"}, 2)
+    assert resultado["totais"]["subtotal"] == round(
+        li_vendus["qty"] * li_vendus["gross_price"], 2)
+    assert resultado["totais"]["total"] == resultado["totais"]["subtotal"]
+
+
+def test_obter_venda_emitida_devolve_o_numero_e_o_atcud(monkeypatch):
+    """O caso que justifica a rota inteira: a venda já não é "aberta" (por
+    isso `GET /pos/venda/aberta` responderia `null`) e o que a operadora
+    precisa de ver é o documento que saiu."""
+    registo = []
+    db = _db(registo, vendas=[_venda(estado="emitida", linhas=[_linha()])],
+             documentos=[_documento()], refs=[_reserva()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(obter_venda("venda-1", operador=_operador()))
+    assert resultado["estado"] == "emitida"
+    documento = resultado["documento"]
+    assert documento["numero"] == "FS 2026PDV/1"
+    assert documento["atcud"] == "JFT7-1"
+    assert documento["total"] == 8.99
+    assert documento["modo"] == "normal"
+
+    # A MESMA selecção de campos do `finalizar` — comparada com a função de
+    # verdade e não com uma lista escrita aqui: se alguém escrever uma segunda
+    # selecção neste módulo, as duas divergem no dia em que uma delas mudar, e
+    # o ecrã passa a mostrar coisas diferentes conforme o caminho por onde
+    # chegou ao documento.
+    assert documento == _resposta_documento(_documento())
+
+
+def test_obter_venda_emitida_em_modo_tests_diz_o_modo(monkeypatch):
+    """Um documento emitido em `tests` NÃO tem valor fiscal — o ecrã avisa-o
+    em destaque, e só o consegue se o `modo` vier na resposta. Perder este
+    campo pelo caminho deixava a loja convencida de que tinha facturado."""
+    registo = []
+    db = _db(registo, vendas=[_venda(estado="emitida")],
+             documentos=[_documento(modo="tests")])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    assert _corre(obter_venda("venda-1", operador=_operador()))["documento"]["modo"] == "tests"
+
+
+def test_obter_venda_cancelada_devolve_a_conta_e_quem_a_cancelou(monkeypatch):
+    """A outra pergunta da operadora quando a resposta se perde: "a conta foi
+    mesmo deitada fora?". Uma conta cancelada não tem documento nenhum."""
+    registo = []
+    db = _db(registo, vendas=[_venda(
+        estado="cancelada", cancelada_em="2026-08-15T09:30:00+00:00",
+        cancelada_por={"id": "op-2", "nome": "Ana"},
+    )])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(obter_venda("venda-1", operador=_operador()))
+    assert resultado["estado"] == "cancelada"
+    assert resultado["cancelada_por"] == {"id": "op-2", "nome": "Ana"}
+    assert resultado["documento"] is None
+
+
+def test_obter_venda_nao_devolve_o_documento_de_outra_venda(monkeypatch):
+    """A colecção de documentos tem TODAS as faturas de TODAS as lojas. Uma
+    leitura sem filtro (ou filtrada pela chave errada) devolvia o número e o
+    ATCUD de outra venda qualquer — a operadora lia à cliente o documento de
+    outra pessoa, e ficava convencida de que esta conta já estava facturada
+    quando não está."""
+    registo = []
+    db = _db(registo, vendas=[_venda()],
+             documentos=[_documento(id="doc-9", venda_id="venda-9",
+                                    numero="FS 2026PDV/9", atcud="JFT7-9",
+                                    vendus_document_id=8809)])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    assert _corre(obter_venda("venda-1", operador=_operador()))["documento"] is None
+
+
+def test_obter_venda_traz_o_travao_da_emissao_por_confirmar(monkeypatch):
+    """O mesmo travão de `GET /pos/venda/aberta`: esta rota é o outro caminho
+    por onde o ecrã recupera uma conta, e uma conta congelada tem de o dizer
+    aqui também — senão bastava recuperá-la por este lado para o travão
+    desaparecer."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[_linha()])], refs=[_reserva(incerta=True)])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(obter_venda("venda-1", operador=_operador()))
+    assert resultado["emissao_por_confirmar"] is True
+    assert resultado["documento"] is None
+
+
+def test_obter_venda_emitida_nao_marca_travao_nenhum(monkeypatch):
+    """A reserva de uma venda emitida NÃO desaparece (é ela que sustenta a
+    idempotência) — sem a condição do `_emissao_por_confirmar`, toda a conta
+    que correu bem aparecia aqui marcada como "por confirmar", ao lado do
+    documento que prova que correu bem."""
+    registo = []
+    db = _db(registo, vendas=[_venda(estado="emitida")],
+             documentos=[_documento()], refs=[_reserva()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(obter_venda("venda-1", operador=_operador()))
+    assert resultado["emissao_por_confirmar"] is False
+    assert resultado["documento"]["numero"] == "FS 2026PDV/1"
+
+
+def test_obter_venda_de_outra_loja_e_recusado_404(monkeypatch):
+    """O âmbito é o de sempre (`_obter_venda_da_loja`): o id vem do browser, e
+    reler não é uma permissão mais fraca do que escrever — o número e o ATCUD
+    de uma loja não se lêem com o token de outra."""
+    registo = []
+    db = _db(registo, vendas=[_venda(loja_id="loja-2", estado="emitida")],
+             documentos=[_documento(loja_id="loja-2")])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(obter_venda("venda-1", operador=_operador()))
+    assert excinfo.value.status_code == 404
+
+
+def test_obter_venda_inexistente_e_recusado_404(monkeypatch):
+    registo = []
+    db = _db(registo, vendas=[])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(obter_venda("venda-que-nao-existe", operador=_operador()))
+    assert excinfo.value.status_code == 404
+
+
+def test_obter_venda_sem_token_de_operador_e_recusado_401():
+    """401 ANTES de tocar na base de dados — `obter_db` nem sequer está
+    trocado neste teste, por isso se a rota chegasse a ler rebentava com 500
+    em vez de 401."""
+    resposta = TestClient(_app_do_modulo()).get("/api/faturacao/pos/venda/venda-1")
+    assert resposta.status_code == 401
+
+
+def test_a_rota_nova_nao_engole_o_caminho_da_conta_em_curso(monkeypatch):
+    """A armadilha, montada de propósito: uma venda cujo id é LITERALMENTE
+    "aberta", e numa sessão que já não é a de hoje — portanto não é a conta em
+    curso deste PC.
+
+    - servida por `venda_aberta` (o que tem de acontecer): 200 com `null`,
+      porque este PC não tem conta nenhuma em curso;
+    - servida por `obter_venda` (a rota de `{venda_id}` a engolir o caminho):
+      200 com essa venda lá dentro.
+
+    Duas respostas 200 distinguíveis — um teste que só olhasse para o código
+    de estado não separava as duas funções, e é essa a separação que aqui
+    interessa."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(id="aberta", sessao_id="sessao-de-ontem")])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    app = _app_do_modulo()
+    app.dependency_overrides[operador_atual] = lambda: _operador()
+    resposta = TestClient(app).get(
+        "/api/faturacao/pos/venda/aberta", params={"caixa_id": "caixa-1"}
+    )
+
+    assert resposta.status_code == 200
+    assert resposta.json() is None, (
+        "`GET /pos/venda/aberta` foi servida pela rota de {venda_id} — o "
+        "'aberta' foi lido como um id de venda, e a operadora perdia a conta "
+        "em curso."
+    )
+
+
+def test_a_rota_nova_responde_mesmo_pelo_router_montado(monkeypatch):
+    """O outro lado da armadilha acima: com um id a sério, é `obter_venda` que
+    responde — se a rota estivesse mal declarada (ou não estivesse declarada
+    de todo), isto era um 404/405 do FastAPI e não uma venda."""
+    registo = []
+    db = _db(registo, vendas=[_venda(estado="emitida")], documentos=[_documento()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    app = _app_do_modulo()
+    app.dependency_overrides[operador_atual] = lambda: _operador()
+    resposta = TestClient(app).get("/api/faturacao/pos/venda/venda-1")
+
+    assert resposta.status_code == 200
+    corpo = resposta.json()
+    assert corpo["id"] == "venda-1"
+    assert corpo["estado"] == "emitida"
+    assert corpo["documento"]["atcud"] == "JFT7-1"

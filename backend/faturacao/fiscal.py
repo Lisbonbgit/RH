@@ -57,6 +57,7 @@ from .auth import gestor_atual
 from .db import COLECOES, indice_idempotencia_confirmado, obter_db
 from .importacao import _nif_configurado
 from .pos_auth import operador_atual
+from .caixa_math import soma_vendas_dinheiro
 from .precos import _tem_mais_de_2_casas_decimais
 from .venda import (
     _bruto_da_linha,
@@ -68,8 +69,19 @@ from .venda import (
     _totais,
     _venda_publica,
 )
-from .vendus.cliente import VendusErro, VendusIndisponivel, obter_conta
-from .vendus.emissao import ClienteEmissaoVendus, _register_id_configurado
+from .vendus.cliente import (
+    VendusErro,
+    VendusHTTPErro,
+    VendusIndisponivel,
+    obter_conta,
+)
+from .vendus.emissao import (
+    ClienteEmissaoVendus,
+    RegisterIdInvalido,
+    VendusModoInvalido,
+    VendusRateLimitado,
+    _register_id_configurado,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +123,46 @@ _MSG_SESSAO_FECHADA_ENTRETANTO = (
     "faturada: o Z desse turno já foi assinado sem ela. Pique a conta de "
     "novo na sessão de caixa nova."
 )
+# Não manda chamar ninguém, de propósito: não há nada de errado com esta
+# conta nem com este sistema — alguém mexeu na conta no outro PC enquanto
+# esta fatura era preparada, e o que ela pagou deixou de ser o que a conta
+# diz. Basta olhar para a conta como está agora e repetir.
+_MSG_CONTA_ALTERADA_ENTRETANTO = (
+    "A conta MUDOU enquanto a fatura estava a ser preparada — alguém "
+    "acrescentou, tirou ou alterou alguma coisa. NÃO saiu nenhuma Fatura "
+    "Simplificada e nada foi enviado ao Vendus. Confirme a conta como ela "
+    "está agora, receba o que faltar (ou devolva o que sobrar) e finalize "
+    "outra vez."
+)
+# A LISTA CURTA do que sabemos ser seguro libertar (`_emitir_e_gravar`).
+#
+# Libertar a reserva é dizer "não saiu fatura nenhuma, podem emitir de novo".
+# Só entra aqui o que É PROVA disso, e cada entrada tem de dizer porquê:
+#
+# - `RegisterIdInvalido` e `VendusModoInvalido` — levantados por
+#   `vendus/emissao.py` ANTES de qualquer pedido sair para a rede. Nada
+#   chegou ao Vendus, e a prova é essa: o pedido não existiu.
+# - `VendusRateLimitado` — o Vendus respondeu 429 ("créditos esgotados") a
+#   TODAS as tentativas. Um 429 é uma recusa a processar, não um documento
+#   criado com uma resposta infeliz.
+# - `VendusHTTPErro` — um 4xx que não é 429 (os 5xx e os erros de rede
+#   viram `VendusIndisponivel`, tratado acima com a verificação por
+#   referência externa). O Vendus, ou o que estiver à frente dele, recusou o
+#   pedido: um tax_id errado, uma chave inválida, um método de pagamento
+#   inexistente. É o caso COMUM ao balcão e é preciso que a conta destranque
+#   — a operadora corrige e volta a finalizar.
+#
+# O que NÃO entra, de propósito: tudo o que possa acontecer DEPOIS de uma
+# resposta 2xx. `VendusRespostaIlegivel` (o corpo que não se lê num 200) é
+# `VendusErro` mas NÃO é `VendusHTTPErro`, e por isso cai — como tem de
+# cair — no ramo do desfecho desconhecido.
+_ERROS_COM_PROVA_DE_QUE_NADA_SAIU = (
+    RegisterIdInvalido,
+    VendusModoInvalido,
+    VendusRateLimitado,
+    VendusHTTPErro,
+)
+
 _MSG_INDICE_IDEMPOTENCIA_EM_FALTA = (
     "O índice de idempotência (fat_refs_fiscais.ext_ref) não está "
     "confirmado no arranque — o POS recusa emitir faturas até isto ser "
@@ -172,6 +224,36 @@ class SessaoJaNaoAberta(FiscalErro):
     fiscal viva numa venda daquela sessão."""
 
 
+class ContaAlteradaDepoisDeConfirmada(FiscalErro):
+    """A CONTA mudou entre o retrato que a rota `finalizar` leu e o momento
+    em que esta tentativa ganhou a reserva: uma linha a mais, uma linha a
+    menos, uma quantidade ou um desconto diferentes.
+
+    É a terceira forma da mesma família de `VendaJaNaoAberta` e
+    `SessaoJaNaoAberta` — a validação toda corre sobre um retrato tirado
+    antes dela — e a que faltava. Nesta janela a venda ainda está `aberta` e
+    ainda não tem reserva, por isso `venda.py::juntar_linha` (e as outras
+    três rotas de escrita) passam o `_garante_sem_emissao` E a escrita
+    condicional a `{"estado": "aberta"}`: a linha entra na conta e NÃO entra
+    na fatura, porque a `emitir` fechou sobre os `itens` do retrato velho.
+    Reproduzido em processo, sobre as rotas reais: um segundo açaí picado
+    dentro da janela e uma Fatura Simplificada REAL de 8,99 € numa conta de
+    17,98 €.
+
+    **E a saída não é recompor os itens com as linhas novas** — essa é a
+    correcção óbvia e é a errada. A soma dos pagamentos foi validada contra
+    os `_totais` do retrato VELHO (a rota recusa com 422 quando não bate):
+    emitir as linhas novas produzia uma fatura cujo total já não é o que a
+    operadora recebeu do cliente, e trocava um erro por outro pior — uma FS
+    real de 17,98 € contra 8,99 € que entraram mesmo na gaveta. O que a
+    operadora confirmou deixou de ser verdade, e o que ela tem de ver é a
+    conta nova: por isso não se emite, e diz-se-lhe que confirme e finalize
+    outra vez.
+
+    Como em `VendaJaNaoAberta`: nada foi ao Vendus, a reserva liberta-se, e
+    não se emite."""
+
+
 class VerificacaoFiscalIncerta(FiscalErro):
     """Depois de um timeout na emissão, a PRÓPRIA verificação por
     `external_reference` também falhou — a falha CORRELACIONADA e mais
@@ -188,6 +270,28 @@ class VerificacaoFiscalIncerta(FiscalErro):
     isto ao POS como "não foi possível confirmar, veja o Vendus" — nunca
     como um "tente outra vez" genérico que convidaria a operadora a repetir
     às cegas."""
+
+
+class DesfechoDaEmissaoIncerto(FiscalErro):
+    """A emissão rebentou de uma forma que NÃO prova que o Vendus deixou de
+    criar o documento — tudo o que não está em
+    `_ERROS_COM_PROVA_DE_QUE_NADA_SAIU`.
+
+    O caso concreto que lhe deu origem: `criar_fatura_simplificada` recebe
+    uma resposta **2xx** (o documento fiscal já existe do lado da AT) e
+    rebenta a seguir, a ler o corpo — um proxy à frente do Vendus a devolver
+    200 com o HTML de uma página de manutenção. Nenhum desses erros é
+    `VendusErro`, por isso não caía no ramo da verificação por referência
+    externa; caía no `except Exception` que LIBERTAVA a reserva. Medido:
+    «FS 2026/900 criada → JSONDecodeError → venda='aberta' | reservas=0 |
+    fat_documentos=0», o ecrã a dizer "não saiu nenhum documento, pode
+    emitir outra vez", e uma SEGUNDA Fatura Simplificada real.
+
+    Como em `VerificacaoFiscalIncerta`, e pela mesma razão: a reserva NÃO se
+    liberta — fica `incerta`, o que obriga a tentativa seguinte a verificar
+    no Vendus antes de emitir seja o que for. A rota traduz isto no MESMO
+    503 de "não sabemos se saiu", nunca num 500 (que o ecrã lê, pela venda
+    relida, como "nada saiu — pode repetir")."""
 
 
 def _distribuir_centimos(total_eur: float, pesos: List[float]) -> List[float]:
@@ -353,6 +457,51 @@ async def _libertar_reserva(db, ext_ref: str) -> None:
     await db[COLECOES["refs_fiscais"]].delete_one({"ext_ref": ext_ref})
 
 
+async def _libertar_reserva_se_intacta(db, ext_ref: str, reserva: Dict) -> bool:
+    """Apaga a reserva SÓ SE ela continuar exactamente como estava quando a
+    decisão de a apagar foi tomada. `True` se apagou; `False` se alguém lhe
+    mexeu entretanto — e nesse caso NADA foi apagado.
+
+    **Porquê condicional, e não `_libertar_reserva`.** A rota de gestão
+    (`libertar_reserva_presa`) decide sobre a reserva que leu no PRIMEIRO
+    passo e só depois de mais três `await`s (o documento, a venda, a sessão)
+    é que apagava — incondicionalmente. Uma retoma que reclamasse dentro
+    dessa janela levava com a reserva apagada por baixo de uma emissão que
+    estava, nesse instante, a falar com o Vendus. Reproduzido em processo,
+    com a saída medida: «1. gestor: libertar LEU a reserva → em_retoma=None
+    / 3. retoma: EMISSÃO REAL nº1 a caminho do Vendus / 4. estado real da
+    reserva AGORA: em_retoma=True / 5. gestor: libertar APAGA a reserva /
+    7. operadora: 2.º FINALIZAR → emitida nº FS 2026/902» — duas Faturas
+    Simplificadas REAIS da mesma venda.
+
+    É o `deleted_count` que decide esta corrida, nunca a leitura de cima —
+    exactamente como o `matched_count` decide a de `cancelar_venda`
+    (`venda.py`) e a de `_reclamar_retoma`. Uma decisão tomada sobre uma
+    fotografia tem de ser aplicada com uma escrita que exija que a
+    fotografia ainda seja verdade.
+
+    **Os três campos do filtro, um a um:**
+
+    - `em_retoma` e `em_retoma_desde` — o par que `_reclamar_retoma` escreve
+      de uma vez. Passa-se o valor LIDO (não `None` à força): uma retoma
+      ABANDONADA há muito, que a rota já decidiu tratar como morta
+      (`_retoma_em_curso` devolveu `False`), continua a poder ser libertada,
+      que é a única saída dessa conta; o que o filtro proíbe é que a marca
+      MUDE entre a decisão e a escrita.
+    - `documento_id` — se uma retoma reclamou, emitiu e ACABOU dentro da
+      janela, a marca de retoma volta a `None` (`_limpar_incerta_resolvida`)
+      e o par acima já não a apanhava; o que fica é o documento carimbado na
+      reserva. Apagar a reserva de uma venda que passou a `emitida` era
+      deitar fora a própria peça que sustenta a idempotência."""
+    resultado = await db[COLECOES["refs_fiscais"]].delete_one({
+        "ext_ref": ext_ref,
+        "em_retoma": reserva.get("em_retoma"),
+        "em_retoma_desde": reserva.get("em_retoma_desde"),
+        "documento_id": None,
+    })
+    return resultado.deleted_count == 1
+
+
 async def _marcar_reserva_incerta(db, ext_ref: str) -> None:
     """Marca a reserva como incerta em vez de a libertar — ver
     VerificacaoFiscalIncerta. A diferença para `_libertar_reserva` é
@@ -404,6 +553,42 @@ async def _reclamar_retoma(db, ext_ref: str) -> bool:
     return resultado.matched_count == 1
 
 
+async def _limpar_incerta_se_intacta(db, ext_ref: str, reserva: Dict) -> bool:
+    """O mesmo que `_limpar_incerta_resolvida`, mas SÓ se a marca de retoma
+    continuar a ser a que quem chama viu. `True` se limpou.
+
+    É a mesma forma de defeito de `_libertar_reserva_se_intacta`, na outra
+    rota de gestão: `reconciliar_reserva_presa` pergunta `_retoma_em_curso`
+    sobre a reserva lida no primeiro passo e só escreve MUITO depois — pelo
+    meio faz uma chamada HTTP ao Vendus, que são SEGUNDOS e não
+    milissegundos. Uma retoma que reclame nessa janela está a falar com o
+    Vendus neste instante, e a limpeza incondicional apagava-lhe a marca da
+    reclamação por baixo — precisamente a marca que impede `libertar` (e a
+    própria reconciliação) de mexer numa emissão em voo.
+
+    Quem NÃO limpa não faz nada e diz-o no log: a reserva fica ao cuidado de
+    quem a reclamou, que a resolve no seu `finally`
+    (`_retomar_reserva_incerta`). A venda já está `emitida` e a reserva já
+    leva o `documento_id` — não fica presa nem aparece na listagem de
+    presas."""
+    resultado = await db[COLECOES["refs_fiscais"]].update_one(
+        {
+            "ext_ref": ext_ref,
+            "em_retoma": reserva.get("em_retoma"),
+            "em_retoma_desde": reserva.get("em_retoma_desde"),
+        },
+        {"$set": {"incerta": False, "em_retoma": None, "em_retoma_desde": None}},
+    )
+    if resultado.matched_count == 1:
+        return True
+    logger.warning(
+        "[faturacao] reconciliação de %s: a marca de retoma da reserva mudou "
+        "entre a leitura e a limpeza — não se lhe tocou (a emissão que a "
+        "reclamou é que a resolve).", ext_ref,
+    )
+    return False
+
+
 async def _limpar_incerta_resolvida(db, ext_ref: str) -> None:
     """'Um problema associado' da mesma revisão: hoje a marca `incerta`
     fica PARA SEMPRE, mesmo depois de a venda ficar emitida — a reserva
@@ -423,7 +608,89 @@ async def _limpar_incerta_resolvida(db, ext_ref: str) -> None:
     )
 
 
-async def _garante_venda_ainda_aberta(db, ext_ref: str, venda_id: str) -> None:
+def _conta_a_faturar(venda: Dict) -> Dict:
+    """O que, nesta venda, DEFINE a fatura: as linhas e os dois descontos
+    globais — e mais nada. É o critério de comparação de
+    `_garante_conta_inalterada`, e a escolha do critério é o ponto todo.
+
+    **Porquê estes três campos.** São exactamente os que `_itens_vendus` e
+    `_totais` lêem da venda, e nenhum outro: as linhas produzem os itens que
+    vão para o Vendus, e as linhas mais os descontos globais produzem o total
+    contra o qual a soma dos pagamentos foi validada. Mudar um deles muda a
+    fatura, o total, ou os dois; mudar qualquer coisa fora deles não muda
+    nem uma coisa nem outra.
+
+    **As duas comparações erradas, uma para cada lado.**
+
+    - *O documento inteiro* recusaria emissões perfeitamente boas, com o
+      cliente à frente. A compensação de `venda.py::cancelar_venda` repõe
+      `cancelada_em: None` e `cancelada_por: None` numa venda que acabou por
+      NÃO ser cancelada (ordem 3 em `_garante_venda_ainda_aberta`): o
+      retrato não trazia esses campos, a releitura traz-nos a `None`, e a
+      fatura é rigorosamente a mesma. O mesmo vale para `pagamentos` e
+      `cliente_nif`, que uma tentativa anterior pode ter gravado.
+    - *Só o total* deixaria passar uma troca de linhas com a mesma soma:
+      dois açaís de 8,99 € trocados por um artigo de 17,98 €, ou — pior,
+      porque nem no total se vê — uma linha de 13 % (INT) trocada por outra
+      de 23 % (NOR) ao mesmo preço. Saía uma Fatura Simplificada REAL com
+      artigos e IVA que ninguém confirmou, entregue à AT.
+
+    Comparam-se os campos CRUS e não os itens derivados (`_itens_vendus`):
+    derivá-los aqui obrigava a chamar `_linha_vendus`, que levanta um
+    HTTPException 422 numa linha com dados impossíveis — e esse 422, atirado
+    de dentro do núcleo depois de a reserva já estar ganha, saltava por cima
+    de todos os `except` de `finalizar` e deixava a reserva órfã a trancar a
+    conta. Os campos crus não fazem contas nenhumas e não levantam nada.
+
+    `or []` / `.get(...)`: uma venda sem `linhas` e outra com `linhas: []`
+    faturam as duas exactamente o mesmo (nada), e uma venda a que falte o
+    campo do desconto nunca pode cair num KeyError aqui."""
+    return {
+        "linhas": venda.get("linhas") or [],
+        "desconto_global_pct": venda.get("desconto_global_pct"),
+        "desconto_global_eur": venda.get("desconto_global_eur"),
+    }
+
+
+async def _garante_conta_inalterada(
+    db, ext_ref: str, retrato: Dict, actual: Dict
+) -> None:
+    """Depois de GANHAR a reserva e de confirmar que venda e sessão continuam
+    abertas: se a CONTA mudou entre o retrato e a reserva, liberta a reserva
+    e aborta — sem emitir. Ver `ContaAlteradaDepoisDeConfirmada`, onde estão
+    o cenário e a razão de não se recomporem os itens.
+
+    `actual` é a releitura que `_garante_venda_ainda_aberta` já fez, passada
+    para aqui em vez de se ler a venda outra vez: duas leituras eram duas
+    fotografias de dois instantes, e as perguntas "ainda está aberta?" e "é a
+    mesma conta?" têm de ser respondidas sobre a MESMA."""
+    antes = _conta_a_faturar(retrato)
+    depois = _conta_a_faturar(actual)
+    if antes != depois:
+        # Ainda não se falou com o Vendus: libertar é seguro E necessário,
+        # pelo mesmo motivo de `_garante_venda_ainda_aberta` — sem isto
+        # ficava uma reserva órfã a trancar uma conta que a operadora tem
+        # precisamente de voltar a finalizar a seguir.
+        await _libertar_reserva(db, ext_ref)
+        # Diz-se QUE campos mudaram, e não só que "a conta mudou": quem for
+        # ver ao log porque é que aquela conta deu 409 precisa de saber se
+        # foram as linhas ou o desconto (das linhas dá-se a contagem, que é
+        # a única parte que cabe numa linha de log).
+        mudou = ", ".join(
+            "%s (%d → %d)" % (campo, len(antes[campo]), len(depois[campo]))
+            if campo == "linhas" else
+            "%s (%r → %r)" % (campo, antes[campo], depois[campo])
+            for campo in antes if antes[campo] != depois[campo]
+        )
+        raise ContaAlteradaDepoisDeConfirmada(
+            "A conta da venda %s mudou entre o retrato que a rota leu e a "
+            "reserva — mudou: %s. A fatura ia sair com os itens e o total "
+            "antigos; a reserva %s foi libertada e NADA foi enviado ao "
+            "Vendus." % (retrato.get("id"), mudou, ext_ref)
+        )
+
+
+async def _garante_venda_ainda_aberta(db, ext_ref: str, venda_id: str) -> Dict:
     """Depois de GANHAR a reserva e ANTES de chamar `emitir`: relê a venda E
     a sessão de caixa dela e, se alguma das duas já não estiver `aberta`,
     liberta a reserva e aborta — sem emitir.
@@ -489,7 +756,12 @@ async def _garante_venda_ainda_aberta(db, ext_ref: str, venda_id: str) -> None:
 
     Não se lê aqui o estado que veio no `venda` recebido: esse é o retrato de
     antes da validação toda, e é precisamente ele que está velho — e a sessão
-    lê-se pelo `sessao_id` DA RELEITURA, pela mesma razão."""
+    lê-se pelo `sessao_id` DA RELEITURA, pela mesma razão.
+
+    Devolve a releitura da venda para `_garante_conta_inalterada` a comparar
+    com o retrato: a pergunta que se segue ("é a mesma conta?") tem de ser
+    respondida sobre a MESMA fotografia que esta, não sobre uma segunda
+    leitura de outro instante."""
     actual = await db[COLECOES["vendas"]].find_one({"id": venda_id})
     if actual is None or actual.get("estado") != "aberta":
         # Ainda não se falou com o Vendus, por isso libertar é seguro E
@@ -521,6 +793,8 @@ async def _garante_venda_ainda_aberta(db, ext_ref: str, venda_id: str) -> None:
                 (sessao or {}).get("estado"), ext_ref,
             )
         )
+
+    return actual
 
 
 async def _desfecho_de_quem_esperou_em_vao(db, ext_ref: str, venda_id: str) -> FiscalErro:
@@ -599,6 +873,26 @@ async def _esperar_documento_do_vencedor(
     )
 
 
+def _mesmo_documento(gravado: Dict, bruto: Dict) -> bool:
+    """O documento já gravado e o que o Vendus acaba de devolver são o MESMO
+    documento fiscal? Compara-se a identidade que a AT reconhece — o id do
+    Vendus e o ATCUD — nunca o total nem o número (dois documentos
+    diferentes da mesma conta têm o mesmo total, e é precisamente esse o
+    caso que isto tem de apanhar).
+
+    Compara em texto: o id do Vendus vem como inteiro na criação e pode vir
+    como string numa leitura, e `501 != "501"` diria "documentos
+    diferentes" sobre o mesmo documento — um alarme falso na retoma normal,
+    que é o caminho de recuperação mais usado."""
+    def _texto(valor):
+        return "" if valor is None else str(valor).strip()
+
+    return (
+        _texto(gravado.get("vendus_document_id")) == _texto(bruto.get("id"))
+        and _texto(gravado.get("atcud")) == _texto(bruto.get("atcud"))
+    )
+
+
 async def _gravar_documento(db, ext_ref: str, venda: Dict, bruto: Dict) -> Dict:
     """Grava `bruto` (o que o Vendus devolveu — criado agora OU encontrado
     por uma verificação) em `fat_documentos` e marca a venda emitida —
@@ -633,27 +927,75 @@ async def _gravar_documento(db, ext_ref: str, venda: Dict, bruto: Dict) -> Dict:
 
     Conclusão: nenhum dos dois caminhos precisa de condição, e pô-la seria
     trocar um estrago improvável por outro pior."""
+    # `emitido_em` é o instante em que a AT recebeu o documento QUANDO O
+    # VENDUS O DISSER (`vendus/emissao._instante_do_vendus`, nos documentos
+    # trazidos por verificação ou reconciliação); para um documento criado
+    # agora mesmo, o instante actual É esse instante. Nunca uma data
+    # inventada a partir de um campo ilegível: nesse caso o Vendus não manda
+    # `emitido_em` nenhum, cai-se aqui, e o aviso já ficou no log de lá.
+    emitido_em = bruto.get("emitido_em") or _agora()
     documento = {
         "id": str(uuid.uuid4()),
         "vendus_document_id": bruto.get("id"),
         "atcud": bruto.get("atcud"),
         "numero": bruto.get("numero"),
         "total": bruto.get("total"),
+        # O CONTRATO COM O DASHBOARD: `dashboard.py::_campo_valor` soma
+        # `total_bruto` (com IVA) ou `total_liquido` (sem) — nenhum dos dois
+        # era gravado aqui, e por isso toda a receita das 5 lojas valia
+        # 0,00 €. `total` mantém-se tal e qual: é o que o ecrã do POS lê.
+        "total_bruto": bruto.get("total_bruto"),
+        "total_liquido": bruto.get("total_liquido"),
+        # O outro campo que `dashboard.py::_valor_documento` lê de CADA
+        # documento: o tipo (uma nota de crédito conta com sinal negativo).
+        # Escreve-se com todas as letras em vez de se ficar pelo valor que o
+        # campo ausente dá por omissão — este POS só emite Faturas
+        # Simplificadas hoje, mas uma linha de documento fiscal que não diz o
+        # que é obriga quem a soma a adivinhar, e no dia em que houver notas
+        # de crédito a adivinha muda de sinal.
+        #
+        # `anulado` NÃO se grava, e é deliberado: o ausente já significa "não
+        # anulado" nos dois lados do Dashboard (`_valor_documento` e o
+        # `$ne: True` de `_existe_venda`), e lá está um teste a guardar essa
+        # ausência — gravá-lo a `False` não acrescentava nada e obrigava a
+        # rever aquela consulta.
+        "tipo": "FS",
         "modo": bruto.get("modo"),
         "ext_ref": ext_ref,
         "venda_id": venda["id"],
         "loja_id": venda["loja_id"],
-        "emitido_em": _agora(),
+        "emitido_em": emitido_em,
     }
     try:
         await db[COLECOES["documentos"]].insert_one(dict(documento))
     except DuplicateKeyError:
         existente = await db[COLECOES["documentos"]].find_one({"ext_ref": ext_ref})
-        if existente is not None:
-            # Uma tentativa anterior desta MESMA venda já gravou o
+        if existente is not None and _mesmo_documento(existente, bruto):
+            # Uma tentativa anterior desta MESMA venda já gravou o MESMO
             # documento (ex.: um retry depois de a resposta se ter
             # perdido) — reutiliza-o, sem inventar um segundo.
             documento = existente
+        elif existente is not None:
+            # Existe já um documento para esta `ext_ref` mas é OUTRO
+            # documento fiscal (id/ATCUD diferentes) — ou seja, a mesma
+            # venda tem DUAS faturas reais entregues à AT. Antes de o
+            # índice único de `ext_ref` existir isto passava em silêncio
+            # (duas linhas em `fat_documentos`, a venda a apontar para uma,
+            # o ecrã a mostrar a que o Mongo calhasse); reutilizar "o que já
+            # lá estava" seria a mesma coisa, com o segundo ATCUD a
+            # desaparecer sem ninguém saber. É alto, e é para investigação
+            # manual — a reserva NÃO se liberta.
+            raise ConflitoDocumentoFiscal(
+                "A referência externa %s já tem gravado o documento nº %r "
+                "(id=%r, ATCUD=%r) e o Vendus devolveu agora um DIFERENTE "
+                "(id=%r, ATCUD=%r) — são duas Faturas Simplificadas reais da "
+                "MESMA venda. Nada foi sobreposto; isto precisa de uma nota "
+                "de crédito e de investigação manual." % (
+                    ext_ref, existente.get("numero"),
+                    existente.get("vendus_document_id"), existente.get("atcud"),
+                    bruto.get("id"), bruto.get("atcud"),
+                )
+            )
         else:
             # O Vendus DEVOLVEU um documento (`bruto`) mas gravá-lo colide
             # com outro já gravado para uma ext_ref DIFERENTE (mesmo
@@ -751,6 +1093,15 @@ async def _emitir_e_gravar(
     3. A PRÓPRIA verificação falha → não se sabe nada; a reserva NÃO se
        liberta, fica marcada incerta (ver VerificacaoFiscalIncerta).
 
+    E, fora do timeout, a pergunta que decide tudo o resto: **sabemos que o
+    Vendus não criou nada?** Só a lista curta de
+    `_ERROS_COM_PROVA_DE_QUE_NADA_SAIU` é prova disso e liberta a reserva.
+    Tudo o resto — em particular o que rebenta DEPOIS de uma resposta 2xx, a
+    ler o corpo — marca a reserva incerta e sai como
+    `DesfechoDaEmissaoIncerto`. Era aqui que estava o segundo defeito desta
+    ronda: um `except Exception` largo que libertava a reserva de uma fatura
+    que JÁ existia.
+
     `dados_pagamento` (C2, achado na mesma revisão): `pagamentos`/
     `cliente_nif`, se vierem, só se gravam AQUI — depois de esta chamada já
     ter GANHO a reserva e estar mesmo prestes a tentar emitir. É essa a
@@ -782,14 +1133,39 @@ async def _emitir_e_gravar(
             await _libertar_reserva(db, ext_ref)
             raise erro_emissao
         bruto = encontrado
-    except Exception:
-        # Qualquer outra falha (4xx, validação nossa, RegisterIdInvalido,
-        # VendusModoInvalido, VendusRateLimitado...) significa que sabemos
-        # que o Vendus NÃO criou nada — a reserva liberta-se, para a
-        # próxima tentativa (correcção de dados, nova tentativa manual)
-        # poder reservar de novo.
+    except _ERROS_COM_PROVA_DE_QUE_NADA_SAIU:
+        # SÓ estes: cada um deles é uma PROVA de que o documento fiscal não
+        # existe (ver `_ERROS_COM_PROVA_DE_QUE_NADA_SAIU`). Aqui a reserva
+        # liberta-se, para a próxima tentativa (correcção de dados, nova
+        # tentativa manual) poder reservar de novo, e o erro original sobe
+        # tal e qual.
         await _libertar_reserva(db, ext_ref)
         raise
+    except Exception as erro_desconhecido:
+        # E tudo o resto — que é o defeito que esta lista fecha. O `except
+        # Exception` que estava aqui libertava a reserva a dizer que
+        # "sabemos que o Vendus NÃO criou nada": não sabemos. Ele apanhava
+        # também o que rebenta DEPOIS de uma resposta 2xx, com o documento
+        # fiscal já criado (`vendus/emissao.py`: o corpo que não se lê, o
+        # `output` que não é base64, o `amount_gross` que não é número).
+        # Medido: «documento fiscal REAL criado: FS 2026/900 →
+        # JSONDecodeError → venda='aberta' | reservas=0 | fat_documentos=0»,
+        # o ecrã a reler a venda, a receber `emissao_por_confirmar: False` e
+        # a convidar a emitir outra vez — duas FS reais da mesma venda.
+        #
+        # Um erro que não sabemos classificar não liberta nada: marca a
+        # reserva `incerta`, que é literalmente o que ela significa ("não se
+        # sabe se a fatura saiu"), e obriga a tentativa seguinte a verificar
+        # no Vendus antes de poder emitir (`_retomar_reserva_incerta`).
+        await _marcar_reserva_incerta(db, ext_ref)
+        raise DesfechoDaEmissaoIncerto(
+            "A emissão desta venda (ext_ref=%s) falhou de uma forma que não "
+            "permite concluir nada sobre o Vendus: %s: %s. Se a resposta "
+            "chegou a sair de lá, o documento fiscal EXISTE. A reserva foi "
+            "mantida, marcada incerta — confirme no Vendus antes de repetir." % (
+                ext_ref, type(erro_desconhecido).__name__, erro_desconhecido,
+            )
+        ) from erro_desconhecido
 
     return await _gravar_documento(db, ext_ref, venda, bruto)
 
@@ -896,10 +1272,15 @@ async def finalizar_venda(
 
     ganhou = await _reservar(db, ext_ref, venda["id"])
     if ganhou:
-        # Ganhar a reserva não chega: o estado da venda que temos em mãos é o
-        # de ANTES da validação toda (ver `_garante_venda_ainda_aberta`, que
-        # percorre as ordens possíveis uma a uma).
-        await _garante_venda_ainda_aberta(db, ext_ref, venda["id"])
+        # Ganhar a reserva não chega: a venda que temos em mãos é o retrato de
+        # ANTES da validação toda, e nessa janela pode ter mudado de duas
+        # maneiras diferentes — o ESTADO (cancelada, ou a caixa fechada: ver
+        # `_garante_venda_ainda_aberta`, que percorre as ordens possíveis uma
+        # a uma) e a CONTA em si (linhas e descontos: ver
+        # `ContaAlteradaDepoisDeConfirmada`). As duas perguntas, sobre a mesma
+        # releitura, ANTES de qualquer chamada ao Vendus.
+        actual = await _garante_venda_ainda_aberta(db, ext_ref, venda["id"])
+        await _garante_conta_inalterada(db, ext_ref, venda, actual)
         return await _emitir_e_gravar(db, ext_ref, venda, emitir, verificar, dados_pagamento)
 
     # Perdeu a reserva: OU alguém está mesmo a meio da emissão (espera pelo
@@ -1223,14 +1604,33 @@ async def finalizar(
                 "foi fechada durante a emissão", venda_id,
             )
             raise HTTPException(status_code=409, detail=_MSG_SESSAO_FECHADA_ENTRETANTO)
+        except ContaAlteradaDepoisDeConfirmada as e:
+            # A conta mudou dentro da janela de validação (ver
+            # `ContaAlteradaDepoisDeConfirmada`). Também aqui nada saiu para o
+            # Vendus — e não há nada de errado a resolver: a operadora vê a
+            # conta como ela está agora e finaliza outra vez. O detalhe
+            # técnico fica no log, não no ecrã do balcão — e vai INTEIRO, com
+            # os campos que mudaram: sem ele, quem for ao log perceber porque
+            # é que aquela conta deu 409 fica a saber só que "mudou".
+            logger.warning("[faturacao] finalizar abortado: %s", e)
+            raise HTTPException(status_code=409, detail=_MSG_CONTA_ALTERADA_ENTRETANTO)
         except EmissaoEmCurso as e:
             raise HTTPException(status_code=409, detail=str(e))
         except ConflitoDocumentoFiscal as e:
             raise HTTPException(status_code=500, detail=str(e))
-        except VerificacaoFiscalIncerta as e:
-            # Não se sabe se o Vendus emitiu (timeout + verificação também
-            # falhou) — nunca um "tente outra vez" genérico, que convidaria
-            # a operadora a repetir às cegas (ver a docstring da excepção).
+        except (VerificacaoFiscalIncerta, DesfechoDaEmissaoIncerto) as e:
+            # Não se sabe se o Vendus emitiu — ou porque o timeout foi
+            # seguido de uma verificação que também falhou
+            # (`VerificacaoFiscalIncerta`), ou porque a emissão rebentou de
+            # uma forma que não prova nada, tipicamente DEPOIS de uma
+            # resposta 2xx (`DesfechoDaEmissaoIncerto`). As duas são o mesmo
+            # facto para quem está ao balcão, e por isso o mesmo 503: nunca
+            # um "tente outra vez" genérico, que convidaria a operadora a
+            # repetir às cegas, e MUITO menos um 500 — o ecrã lê um 500 com
+            # a venda ainda `aberta` como "nada saiu, pode repetir", que é
+            # exactamente a segunda Fatura Simplificada (ver a docstring de
+            # `DesfechoDaEmissaoIncerto`).
+            logger.error("[faturacao] finalizar sem desfecho conhecido: %s", e)
             raise HTTPException(status_code=503, detail=str(e))
         except VendusErro as e:
             raise HTTPException(status_code=502, detail="Vendus indisponível: %s" % e)
@@ -1350,6 +1750,14 @@ _MSG_LIBERTAR_EM_RETOMA = (
     "libertar a reserva de uma emissão em voo é autorizar uma SEGUNDA Fatura "
     "Simplificada da mesma venda."
 )
+_MSG_LIBERTAR_ULTRAPASSADA = (
+    "A reserva desta venda (%s) MUDOU entre o momento em que esta página a "
+    "leu e o momento de a apagar — NÃO foi apagada, e nada mudou no sistema. "
+    "Foi de propósito: apagá-la sem confirmar que continuava igual era o que "
+    "deixava a reserva de uma emissão em voo desaparecer por baixo dela, e "
+    "sair uma SEGUNDA Fatura Simplificada da mesma venda. Volte a abrir a "
+    "lista de reservas presas e veja como esta conta está agora."
+)
 _MSG_LIBERTAR_O_QUE_CONFIRMOU = (
     "Ao libertar esta reserva declarou ter aberto o Vendus, procurado a "
     "referência externa %s e visto que NÃO existe lá nenhum documento desta "
@@ -1418,13 +1826,42 @@ _MSG_RECONCILIAR_O_QUE_ACONTECEU = (
     "AT. A reserva desta venda fica onde está — é ela que impede uma segunda "
     "emissão da mesma conta."
 )
+# O aviso do Z, com a repartição REAL do pagamento — nunca o total bruto do
+# documento.
+#
+# A versão anterior mandava acertar a gaveta pelo total da fatura ("se foram
+# recebidos em dinheiro, é esse o valor que estava a mais"). Num pagamento
+# MISTO isso é falso e cria a diferença ao contrário: 8,99 € de fatura com
+# 4,50 € em dinheiro e 4,49 € em multibanco mandava acertar 8,99 € e ficava
+# uma diferença de 4,49 € do outro lado — numa gaveta que já tinha sido
+# contada e assinada. A repartição está gravada na PRÓPRIA venda
+# (`pagamentos`, com o `tipo_fiscal` em retrato) e é exactamente a mesma que
+# o Z usa (`caixa_math.soma_vendas_dinheiro`): usa-se essa.
 _MSG_RECONCILIAR_Z_POR_ACERTAR = (
     "ATENÇÃO ÀS CONTAS DO TURNO: esta venda pertence à sessão de caixa %s, "
     "que já está fechada — o relatório Z desse turno foi calculado e "
     "assinado SEM ela, e esta operação não o recalcula (um Z fechado não se "
-    "reescreve por trás de quem o assinou). Os %s desta fatura têm de ser "
-    "acertados à mão nas contas desse turno; se foram recebidos em dinheiro, "
-    "é esse o valor que estava a mais na gaveta desse fecho."
+    "reescreve por trás de quem o assinou). A fatura é de %s, dos quais %s "
+    "em DINHEIRO e %s por outros meios (multibanco, etc.). Na GAVETA desse "
+    "fecho só faltam contar os %s em dinheiro — o resto nunca lá passou. "
+    "Fica registado na própria sessão de caixa, para se poder encontrar "
+    "depois."
+)
+# A MESMA situação quando a venda não tem a repartição gravada: a reserva
+# ficou presa ANTES de a emissão chegar a registar os pagamentos escolhidos
+# (`fiscal._emitir_e_gravar` só os grava depois de ganhar a reserva). Aqui
+# não se sabe quanto foi em dinheiro — e não se inventa um número que o
+# gestor vá usar para mexer numa gaveta já contada.
+_MSG_RECONCILIAR_Z_POR_ACERTAR_SEM_REPARTICAO = (
+    "ATENÇÃO ÀS CONTAS DO TURNO: esta venda pertence à sessão de caixa %s, "
+    "que já está fechada — o relatório Z desse turno foi calculado e "
+    "assinado SEM ela, e esta operação não o recalcula (um Z fechado não se "
+    "reescreve por trás de quem o assinou). A fatura é de %s, mas esta venda "
+    "NÃO tem gravado como foi paga (a emissão ficou-se antes disso), por "
+    "isso não é possível dizer quanto entrou na gaveta e quanto foi por "
+    "outros meios: veja o talão ou o documento no Vendus antes de acertar "
+    "seja o que for. Fica registado na própria sessão de caixa, para se "
+    "poder encontrar depois."
 )
 
 
@@ -1654,6 +2091,53 @@ class PedidoLibertarReserva(BaseModel):
     nota: Optional[str] = None
 
 
+async def _recusa_de_libertacao_ultrapassada(
+    db, ext_ref: str, venda_id: str
+) -> HTTPException:
+    """A recusa a devolver quando o `delete_one` condicional NÃO apagou nada
+    (ver `_libertar_reserva_se_intacta`): alguém mexeu na reserva entre a
+    leitura da rota e a escrita.
+
+    **A decisão já está tomada** — foi o `deleted_count` que a tomou, e nada
+    foi apagado. Esta releitura serve só para escolher as PALAVRAS a mostrar
+    ao gestor, e por isso pode ser feita sobre uma fotografia sem risco
+    nenhum: no pior caso diz-lhe a razão errada de uma recusa certa.
+
+    As três razões possíveis são as mesmas de sempre, e por isso o texto é o
+    mesmo: uma retoma em voo, um documento fiscal que apareceu entretanto,
+    ou — se nem uma nem outro — a reserva mudou de forma que já não é a que
+    ele viu."""
+    agora = datetime.now(timezone.utc)
+    reserva = await db[COLECOES["refs_fiscais"]].find_one({"ext_ref": ext_ref})
+    if reserva is not None and _retoma_em_curso(reserva, agora):
+        return HTTPException(
+            status_code=409,
+            detail=_MSG_LIBERTAR_EM_RETOMA % (
+                _retoma_reclamada_ha(reserva, agora),
+                int(_SEGUNDOS_DE_RETOMA_NORMAL),
+            ),
+        )
+    documento = await db[COLECOES["documentos"]].find_one({"ext_ref": ext_ref})
+    if documento is not None:
+        return HTTPException(
+            status_code=409,
+            detail=_MSG_LIBERTAR_COM_DOCUMENTO % (
+                documento.get("numero"), documento.get("atcud"),
+            ),
+        )
+    if reserva is None:
+        # Outro gestor (ou a própria emissão, ao abortar) libertou-a nesta
+        # janela: o resultado é o que ele queria, mas quem o fez foi outro —
+        # e a rota não pode responder "libertada por si" a quem não a apagou.
+        logger.warning(
+            "[faturacao] libertar %s (venda %s): a reserva desapareceu entre a "
+            "leitura e a libertação — não foi esta chamada que a apagou.",
+            ext_ref, venda_id,
+        )
+        return HTTPException(status_code=404, detail=_MSG_LIBERTAR_SEM_RESERVA)
+    return HTTPException(status_code=409, detail=_MSG_LIBERTAR_ULTRAPASSADA % ext_ref)
+
+
 @router.post("/fiscal/reservas/{venda_id}/libertar")
 async def libertar_reserva_presa(
     venda_id: str, dados: PedidoLibertarReserva, gestor: Dict = Depends(gestor_atual)
@@ -1692,6 +2176,16 @@ async def libertar_reserva_presa(
        certeza uma emissão a decorrer neste instante, e nenhum gestor
        consegue ter confirmado o Vendus dentro dessa janela.
     4. Não existe reserva nenhuma para esta venda (404) — nada para libertar.
+    5. **A reserva mudou entre a leitura e o apagar** — as quatro guardas
+       acima são respondidas sobre a reserva lida no primeiro passo, e a
+       seguir a rota faz mais três `await`s (o documento, a venda, a
+       sessão) antes de apagar. Uma retoma que reclame dentro dessa janela
+       está a falar com o Vendus NESTE instante, e apagar-lhe a reserva por
+       baixo é autorizar a segunda fatura — reproduzido, duas FS reais. Por
+       isso o apagar é CONDICIONAL e é o `deleted_count` que decide (ver
+       `_libertar_reserva_se_intacta`), do mesmo modo que é o
+       `matched_count` que decide a corrida em `cancelar_venda` e em
+       `_reclamar_retoma`.
 
     A venda NÃO se toca: fica como estava (`aberta`), que é precisamente o que
     devolve o balcão ao serviço. O que se apaga é só a reserva — e o que a
@@ -1769,7 +2263,13 @@ async def libertar_reserva_presa(
     # de apagar a reserva, que é quando a venda ainda está toda no sítio.
     sessao = await _sessao_da_venda(db, venda)
     sessao_aberta = sessao is not None and sessao.get("estado") == "aberta"
-    await _libertar_reserva(db, ext_ref)
+    # CONDICIONAL, e é o `deleted_count` que decide: todas as guardas acima
+    # foram respondidas sobre a reserva lida no primeiro passo desta rota, e
+    # entre essa leitura e esta linha correram três `await`s em que uma
+    # retoma pode ter reclamado a emissão (ver
+    # `_libertar_reserva_se_intacta`).
+    if not await _libertar_reserva_se_intacta(db, ext_ref, reserva):
+        raise await _recusa_de_libertacao_ultrapassada(db, ext_ref, venda_id)
 
     # Apagar uma reserva fiscal à mão é um acto sério e a reserva desaparece
     # com ele — sem este registo não ficava rasto nenhum de quem a libertou
@@ -1837,6 +2337,135 @@ class PedidoReconciliarReserva(BaseModel):
     # Só para o registo (log), como em `PedidoLibertarReserva`: o que o gestor
     # viu no Vendus. Nunca muda nenhuma decisão.
     nota: Optional[str] = None
+
+
+def _reparticao_do_pagamento(venda: Dict) -> Optional[Dict]:
+    """Como é que esta venda foi PAGA: quanto entrou na gaveta (dinheiro) e
+    quanto veio por outros meios. `None` quando a venda não tem os
+    `pagamentos` gravados — e aí não se inventa uma repartição.
+
+    A parte em dinheiro calcula-se com `caixa_math.soma_vendas_dinheiro`, a
+    MESMA função que o Z usa: se o aviso ao gestor usasse outra conta, era
+    outra conta que ele ia acertar. Essa função só soma vendas `emitida` e,
+    dentro delas, só os pagamentos com `tipo_fiscal == "NU"` (o retrato
+    gravado no momento da emissão, nunca a configuração de hoje).
+
+    O estado força-se a `emitida` de propósito: quando isto é chamado, a
+    venda ACABOU de ser ligada ao documento fiscal — é isso que ela é. Sem o
+    forçar, uma releitura que apanhasse o instante errado dava 0,00 € em
+    dinheiro numa venda paga inteirinha em dinheiro, que é o número mais
+    perigoso desta função."""
+    pagamentos = venda.get("pagamentos") or []
+    if not pagamentos:
+        return None
+    dinheiro = soma_vendas_dinheiro([dict(venda, estado="emitida")])
+    total_pago = round(sum(float(p.get("valor") or 0) for p in pagamentos), 2)
+    return {
+        "dinheiro": dinheiro,
+        "outros": round(total_pago - dinheiro, 2),
+        "total_pago": total_pago,
+    }
+
+
+async def _marcar_venda_ligada_depois_do_fecho(
+    db, sessao: Dict, venda_id: str, ext_ref: str, documento: Dict,
+    reparticao: Optional[Dict], gestor: Dict,
+) -> Optional[Dict]:
+    """Deixa na PRÓPRIA sessão de caixa o rasto de que esta venda lhe foi
+    ligada DEPOIS do fecho — e devolve a marca escrita (ou `None` se não foi
+    possível escrevê-la).
+
+    **Não recalcula o Z, e não é para recalcular.** Aquele talão foi
+    assinado por uma funcionária com a gaveta contada à frente dela;
+    reescrevê-lo por trás era mentir sobre o que foi contado. O que fica é
+    um registo à parte (`vendas_ligadas_depois_do_fecho`), com o valor, a
+    parte em dinheiro, o documento e a data — a informação que o gestor
+    precisa para acertar as contas desse turno à mão, e que até aqui só
+    existia no corpo de UMA resposta HTTP e num `logger.warning`: passada
+    uma semana não havia sítio nenhum onde se visse que aqueles euros
+    existiram.
+
+    `$push` e não um `$set` de uma lista relida: duas reconciliações da
+    mesma sessão (duas contas presas da mesma noite, o caso normal quando um
+    deploy apanha o serviço a meio) perdiam uma das marcas.
+
+    Nunca rebenta a rota: a reconciliação em si JÁ correu bem — o documento
+    fiscal está gravado e a venda está `emitida`. Falhar a marca é perder um
+    registo de apoio, e transformar isso num 500 mandava o gestor repetir
+    uma operação que já estava feita (mesmo raciocínio de
+    `_ligar_venda_ao_documento`)."""
+    marca = {
+        "venda_id": venda_id,
+        "ext_ref": ext_ref,
+        "documento_id": documento.get("id"),
+        "numero": documento.get("numero"),
+        "atcud": documento.get("atcud"),
+        "total": documento.get("total"),
+        # `None` (e não 0,00 €) quando não se sabe como foi paga — ver
+        # `_reparticao_do_pagamento`.
+        "dinheiro": (reparticao or {}).get("dinheiro"),
+        "outros_meios": (reparticao or {}).get("outros"),
+        "ligada_em": _agora(),
+        "por": gestor.get("email") or gestor.get("user_id"),
+    }
+    try:
+        # O `$ne` sobre o `venda_id` das marcas já lá gravadas é o que torna
+        # isto IDEMPOTENTE: reconciliar duas vezes a mesma conta (um duplo
+        # clique, ou o gestor a repetir para ver a resposta) é um pedido que
+        # esta rota promete responder na mesma sem escrever nada de novo —
+        # duas marcas dos MESMOS 8,99 € convidavam a acertar a gaveta duas
+        # vezes, que é o estrago que este registo existe para evitar.
+        resultado = await db[COLECOES["sessoes_caixa"]].update_one(
+            {
+                "id": sessao.get("id"),
+                "vendas_ligadas_depois_do_fecho.venda_id": {"$ne": venda_id},
+            },
+            {"$push": {"vendas_ligadas_depois_do_fecho": marca}},
+        )
+    except Exception as e:  # noqa: BLE001 — ver a docstring: registo de apoio
+        logger.error(
+            "[faturacao] não foi possível registar na sessão %r que a venda %s "
+            "lhe foi ligada depois do fecho (%s) — o documento fiscal ficou "
+            "gravado à mesma: %r", sessao.get("id"), venda_id, e, marca,
+        )
+        return None
+    if resultado.matched_count == 1:
+        return marca
+    # Não escreveu: ou a marca desta venda já lá estava (pedido repetido), ou
+    # a sessão desapareceu. Só a releitura distingue as duas — e a diferença
+    # importa, porque a primeira é um sucesso e a segunda é uma falha.
+    sessao_agora = await db[COLECOES["sessoes_caixa"]].find_one({"id": sessao.get("id")})
+    ja_marcada = next(
+        (m for m in ((sessao_agora or {}).get("vendas_ligadas_depois_do_fecho") or [])
+         if m.get("venda_id") == venda_id),
+        None,
+    )
+    if ja_marcada is not None:
+        return ja_marcada
+    logger.error(
+        "[faturacao] a sessão %r não aceitou o registo da venda %s ligada "
+        "depois do fecho — o documento fiscal ficou gravado à mesma: %r",
+        sessao.get("id"), venda_id, marca,
+    )
+    return None
+
+
+def _aviso_do_z(sessao_id, documento: Dict, reparticao: Optional[Dict]) -> str:
+    """A frase que o gestor lê quando a sessão desta venda já está fechada.
+    Com a repartição gravada, diz-lhe exactamente o que falta na GAVETA (só
+    a parte em dinheiro); sem ela, diz que não sabe — nunca manda acertar
+    pelo total (ver `_MSG_RECONCILIAR_Z_POR_ACERTAR`)."""
+    if reparticao is None:
+        return _MSG_RECONCILIAR_Z_POR_ACERTAR_SEM_REPARTICAO % (
+            sessao_id, _euros(documento.get("total")),
+        )
+    return _MSG_RECONCILIAR_Z_POR_ACERTAR % (
+        sessao_id,
+        _euros(documento.get("total")),
+        _euros(reparticao["dinheiro"]),
+        _euros(reparticao["outros"]),
+        _euros(reparticao["dinheiro"]),
+    )
 
 
 def _euros(valor) -> str:
@@ -1980,8 +2609,10 @@ async def reconciliar_reserva_presa(
     # A reserva (se existir) deixa de estar `incerta`: já se sabe o que
     # aconteceu — saiu mesmo, e o documento está gravado. `_gravar_documento`
     # já lhe pôs o `documento_id`, que é o que a tira da listagem de presas.
+    # CONDICIONAL: a decisão de lhe mexer foi tomada lá em cima, antes da
+    # chamada ao Vendus (ver `_limpar_incerta_se_intacta`).
     if reserva is not None:
-        await _limpar_incerta_resolvida(db, ext_ref)
+        await _limpar_incerta_se_intacta(db, ext_ref, reserva)
 
     sessao = await _sessao_da_venda(db, venda)
     sessao_estado = sessao.get("estado") if sessao else None
@@ -1989,13 +2620,27 @@ async def reconciliar_reserva_presa(
     # ficou tudo bem: diz-se ao gestor o que tem de acertar à mão nesse turno.
     z_por_acertar = sessao_estado != "aberta"
 
+    # A repartição lê-se da venda COMO ELA ESTÁ AGORA (já `emitida`, já com
+    # os pagamentos gravados por quem tentou emitir), nunca do retrato lido à
+    # entrada desta rota.
+    actual = await db[COLECOES["vendas"]].find_one({"id": venda_id})
+    reparticao = _reparticao_do_pagamento(actual or venda)
+
+    marca = None
+    if z_por_acertar and sessao is not None:
+        marca = await _marcar_venda_ligada_depois_do_fecho(
+            db, sessao, venda_id, ext_ref, documento, reparticao, gestor,
+        )
+
     logger.warning(
         "[faturacao] venda reconciliada com o documento do Vendus: ext_ref=%s "
         "venda=%s documento=%s numero=%r atcud=%r do_vendus_agora=%s "
-        "sessao=%r sessao_estado=%r por=%s nota=%r",
+        "sessao=%r sessao_estado=%r dinheiro=%r outros=%r por=%s nota=%r",
         ext_ref, venda_id, documento.get("id"), documento.get("numero"),
         documento.get("atcud"), veio_do_vendus_agora, venda.get("sessao_id"),
-        sessao_estado, gestor.get("email") or gestor.get("user_id"),
+        sessao_estado, (reparticao or {}).get("dinheiro"),
+        (reparticao or {}).get("outros"),
+        gestor.get("email") or gestor.get("user_id"),
         (dados.nota if dados else None),
     )
 
@@ -2012,11 +2657,16 @@ async def reconciliar_reserva_presa(
         "sessao_id": venda.get("sessao_id"),
         "sessao_estado": sessao_estado,
         "z_por_acertar": z_por_acertar,
-        "aviso_do_z": (
-            _MSG_RECONCILIAR_Z_POR_ACERTAR % (
-                venda.get("sessao_id"), _euros(documento.get("total")),
-            )
-            if z_por_acertar else None
-        ),
+        # Os números da repartição, à parte da frase: quem mostra isto no
+        # ecrã não tem de os voltar a extrair do texto. `None` quando a venda
+        # não tem os pagamentos gravados — nunca um zero, que se leria como
+        # "não entrou dinheiro nenhum" (ver `_reparticao_do_pagamento`).
+        "dinheiro_por_acertar": (reparticao or {}).get("dinheiro"),
+        "outros_meios": (reparticao or {}).get("outros"),
+        "aviso_do_z": _aviso_do_z(venda.get("sessao_id"), documento, reparticao) if z_por_acertar else None,
+        # Se a marca ficou mesmo escrita na sessão de caixa. Enquanto era só
+        # o corpo desta resposta e um `logger.warning`, passada uma semana
+        # não havia UM ÚNICO sítio onde se visse que aqueles euros existiram.
+        "registada_na_sessao": marca is not None,
         "o_que_aconteceu": _MSG_RECONCILIAR_O_QUE_ACONTECEU % ext_ref,
     }

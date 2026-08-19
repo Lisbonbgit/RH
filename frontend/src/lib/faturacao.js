@@ -87,6 +87,33 @@ export const mudarEstadoProduto = (id, ativo) => axios.put(`${API_URL}/faturacao
 // Importação do catálogo Vendus
 export const importarVendus = () => axios.post(`${API_URL}/faturacao/importacao/vendus`);
 
+// Reservas fiscais presas — a gestão de uma emissão que ficou a meio
+// (backend/faturacao/fiscal.py). Estas três são de GESTOR (token do
+// backoffice), nunca do balcão: o POS não tem, nem pode ter, forma de
+// libertar a sua própria reserva.
+export const getReservasPresas = () => axios.get(`${API_URL}/faturacao/fiscal/reservas-presas`);
+
+// Pergunta ao Vendus se a Fatura Simplificada desta venda saiu e, se saiu,
+// grava-a. Não emite nada — por isso é que o pedido não tem (nem pode ter)
+// campo nenhum para o número ou o ATCUD: esses vêm do Vendus ou não vêm de
+// lado nenhum (ver PedidoReconciliarReserva). `nota` é só para o registo.
+export const reconciliarReserva = (vendaId, nota) =>
+  axios.post(`${API_URL}/faturacao/fiscal/reservas/${vendaId}/reconciliar`, {
+    nota: nota || null,
+  });
+
+// Apaga a reserva e destranca a conta. `confirmadoNoVendus` é a declaração do
+// gestor de que abriu o Vendus e viu que NÃO existe lá documento desta venda:
+// sem ela o servidor recusa com um 422, e é de propósito que ela viaja como
+// argumento obrigatório desta função em vez de um `true` fixo aqui dentro —
+// libertar a reserva de uma fatura que saiu autoriza uma SEGUNDA Fatura
+// Simplificada da mesma venda, entregue à AT.
+export const libertarReserva = (vendaId, confirmadoNoVendus, nota) =>
+  axios.post(`${API_URL}/faturacao/fiscal/reservas/${vendaId}/libertar`, {
+    confirmado_no_vendus: confirmadoNoVendus,
+    nota: nota || null,
+  });
+
 // Mesmo crivo do backend (precos.py:_tem_mais_de_2_casas_decimais), para o
 // campo dizer "não pode ter mais de 2 casas decimais" ANTES de ir ao
 // servidor. Number.prototype.toString() em JS, tal como repr() em Python,

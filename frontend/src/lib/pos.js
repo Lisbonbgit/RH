@@ -289,6 +289,68 @@ export const aplicarDescontoGlobal = (vendaId, dados) =>
 
 export const cancelarVenda = (vendaId) => api.post(`/pos/venda/${vendaId}/cancelar`);
 
+// A venda pelo ID, em QUALQUER estado — e com o `documento` fiscal lá
+// dentro quando já existe (venda.py::obter_venda). É a única pergunta
+// honesta que o ecrã pode fazer depois de uma emissão que não devolveu 200:
+// em vez de adivinhar pelo status do erro o que aconteceu à Fatura
+// Simplificada, vai perguntar ao servidor pelo id que já tem em mãos.
+//
+// `getVendaAberta` não serve para isto, e é por desenho: filtra
+// `estado: "aberta"` e devolve `null` assim que a venda passa a `emitida` —
+// que é exactamente o caso a tratar, o da fatura que SAIU e cuja resposta se
+// perdeu pelo caminho.
+export const obterVenda = (vendaId) => api.get(`/pos/venda/${vendaId}`);
+
+// --- O travão da conta -------------------------------------------------------
+//
+// `emissao_por_confirmar` é calculado pelo SERVIDOR
+// (venda.py::_emissao_por_confirmar: existe reserva fiscal em
+// fat_refs_fiscais E a venda ainda não está `emitida`) e vem em TODAS as
+// respostas de venda. É exactamente o estado em que as cinco rotas de
+// escrita recusam qualquer alteração com 409 (`_garante_sem_emissao`): a
+// conta está congelada porque pode haver uma Fatura Simplificada real a
+// nascer, ou já nascida e por confirmar.
+//
+// Vive aqui, e não dentro de um ecrã, para haver UMA definição só. Antes o
+// travão era o `erroEmissao` do React — a memória do 503 que tinha acabado
+// de chegar — e a seta de voltar limpava-o, tal como o F5, a tela de
+// descanso e o outro PC: a conta voltava a parecer normal, editável e com o
+// EMITIR aceso, por cima de uma fatura que podia ter saído. Derivado do
+// servidor, sobrevive a tudo isso.
+//
+// `=== true` de propósito, e não a verdade genérica do JavaScript: uma
+// resposta sem o campo (uma versão do servidor anterior a ele) não pode
+// ler-se como "travada" — trancava o balcão inteiro sem razão nenhuma — e
+// escrever a comparação à vista é o que torna essa decisão legível.
+export const contaTravada = (venda) => venda?.emissao_por_confirmar === true;
+
+// --- A dúvida que ainda não foi apurada --------------------------------------
+//
+// O outro travão, e o que ele tem de diferente do de cima: `contaTravada` é o
+// que o SERVIDOR sabe; isto é o que o ECRÃ não conseguiu confirmar. Quando a
+// emissão falha, o PosVenda vai reler a venda para saber o que aconteceu —
+// e há dois desfechos em que essa releitura não resolve a dúvida:
+//
+//   'incerto'          — o servidor disse que não sabe se a fatura saiu
+//                        (503 do `VerificacaoFiscalIncerta`), ou não disse
+//                        nada de todo (sem resposta, 504, 500).
+//   'recusado-incerto' — o servidor recusou com 409 e explicou porquê, mas a
+//                        releitura falhou (ou trouxe a conta ainda travada):
+//                        não se conseguiu ver se aquela venda foi emitida ou
+//                        cancelada.
+//
+// Nos dois, a única coisa honesta é a mesma: **não se afirma nada e não se
+// emite**. Vive aqui, e não dentro de um ecrã, porque são DOIS ecrãs a ter de
+// concordar sobre a mesma lista — o PosVenda, que decide o balde e congela a
+// conta, e o PosFinalizar, que desliga o EMITIR e desenha o painel. Com a
+// lista escrita duas vezes, bastava acrescentar um balde novo num dos lados
+// para o outro voltar a deixar emitir por cima de uma Fatura Simplificada que
+// pode ter saído.
+export const DUVIDAS_POR_APURAR = ['incerto', 'recusado-incerto'];
+
+export const duvidaPorApurar = (erroEmissao) =>
+  !!erroEmissao && DUVIDAS_POR_APURAR.includes(erroEmissao.tipo);
+
 // A emissão da Fatura Simplificada real. `dados` = { pagamentos: [{
 // tipo_pagamento_id, valor }], nif }. Os erros deste pedido NÃO são todos
 // iguais e o ecrã tem de os distinguir (ver PosFinalizar): 503 quer dizer

@@ -609,3 +609,133 @@ def test_endpoint_exige_gestor_atual():
 
     assinatura = inspect.signature(obter_dashboard)
     assert "gestor_atual" in repr(assinatura.parameters["_"].default)
+
+
+# --- O CONTRATO com quem grava os documentos ---------------------------------
+#
+# Os testes de cima provam que `com_iva` troca de campo. Nenhum deles provava a
+# única coisa que interessa ao dono: que o número que ele vê é o número da
+# fatura que saiu. Este ecrã somava `total_bruto`/`total_liquido` e o único
+# escritor de `fat_documentos` em todo o backend gravava só `total` — os dois
+# campos do contrato não existiam em documento nenhum, `float(None or 0)` dá
+# 0,00 € sem levantar nada, e o dono via HOJE 0,00 €, MÊS 0,00 €, ANO 0,00 €
+# todos os dias, com as Faturas Simplificadas reais a entrarem na AT ao lado.
+#
+# Por isso o teste que faltava não é sobre campos: é sobre o DOCUMENTO REAL. O
+# primeiro chama `fiscal.py::_gravar_documento` — o escritor a sério — e soma o
+# que ele gravar. Se um dia alguém lá mudar o nome de um campo, é aqui que
+# aparece, e não numa reunião em que o dono pergunta porque é que vendeu zero.
+
+
+class ColeccaoParaGravar:
+    """Colecção mínima para deixar correr o escritor real de documentos."""
+
+    def __init__(self):
+        self.documentos = []
+
+    async def insert_one(self, doc):
+        self.documentos.append(deepcopy(doc))
+
+    async def find_one(self, filtro=None, projecao=None):
+        return None
+
+    async def update_one(self, filtro, atualizacao):
+        return None
+
+
+class DbParaGravar:
+    def __init__(self):
+        self._coleccoes = {}
+
+    def __getitem__(self, nome):
+        return self._coleccoes.setdefault(nome, ColeccaoParaGravar())
+
+
+def _documento_como_o_pos_o_grava(total_bruto=8.99, total_liquido=7.96):
+    """O documento tal como ele fica em `fat_documentos` depois de uma venda
+    real — gravado pelo escritor de `fiscal.py`, não escrito à mão aqui."""
+    from faturacao import fiscal as fiscal_mod
+
+    db = DbParaGravar()
+    bruto = {
+        "id": 998877, "numero": "FS 2026/1234", "atcud": "JFT7X4K9-1234",
+        "total": total_bruto, "total_bruto": total_bruto,
+        "total_liquido": total_liquido, "modo": "normal", "talao_escpos": b"",
+    }
+    _corre(fiscal_mod._gravar_documento(
+        db, "pos-loja-1-sessao-1-venda-1",
+        {"id": "venda-1", "loja_id": "l1"}, bruto,
+    ))
+    return db[COLECOES["documentos"]].documentos[0]
+
+
+def test_o_documento_que_o_pos_grava_conta_mesmo_no_dashboard():
+    """O caminho feliz inteiro, do lado do dinheiro: um açaí de 8,99 € com
+    IVA (7,96 € sem), a FS gravada pelo escritor real, e o cartão HOJE a
+    mostrar 8,99 € — não 0,00 €."""
+    doc = _documento_como_o_pos_o_grava()
+    doc["emitido_em"] = _agora(2026, 8, 13, 10, 0).astimezone(timezone.utc).isoformat()
+
+    com_iva = calcula_dashboard([doc], [], AGORA, com_iva=True)
+    sem_iva = calcula_dashboard([doc], [], AGORA, com_iva=False)
+    assert com_iva["cartoes"]["hoje"]["valor"] == 8.99
+    assert sem_iva["cartoes"]["hoje"]["valor"] == 7.96
+
+
+def test_documento_antigo_so_com_total_continua_a_contar_com_iva():
+    """`total` e `total_bruto` são o MESMO número do Vendus (`amount_gross`)
+    com dois nomes. Os documentos gravados antes de o contrato existir só têm
+    o nome antigo e ficam em `fat_documentos` para sempre: um dashboard que
+    os ignorasse mostrava a receita a começar do zero no dia do deploy — o
+    mesmo defeito, com outra data."""
+    doc = {
+        "loja_id": "l1",
+        "emitido_em": _agora(2026, 8, 13, 10, 0).astimezone(timezone.utc).isoformat(),
+        "total": 8.99, "tipo": "FS",
+    }
+    resultado = calcula_dashboard([doc], [], AGORA, com_iva=True)
+    assert resultado["cartoes"]["hoje"]["valor"] == 8.99
+
+
+def test_documento_antigo_so_com_total_nao_finge_um_valor_sem_iva():
+    """A metade que NÃO tem alternativa, e é uma decisão: nenhum campo antigo
+    guarda o líquido, e derivá-lo do bruto obrigava a assumir uma taxa — as
+    lojas vendem a 13 % (comida) e a 23 % (refrigerantes), muitas vezes na
+    mesma venda. Zero é uma falta visível; um número inventado ninguém o
+    consegue contestar. Mesma regra de precos.py e de _valor_monetario."""
+    doc = {
+        "loja_id": "l1",
+        "emitido_em": _agora(2026, 8, 13, 10, 0).astimezone(timezone.utc).isoformat(),
+        "total": 8.99, "tipo": "FS",
+    }
+    resultado = calcula_dashboard([doc], [], AGORA, com_iva=False)
+    assert resultado["cartoes"]["hoje"]["valor"] == 0.0
+
+
+def test_uma_fatura_de_zero_euros_nao_cai_para_o_campo_antigo():
+    """`is None`, e não `or`: um `total_bruto` de 0,00 € é um valor legítimo
+    e tem de ser respeitado. Com `or`, um documento assim ia buscar o `total`
+    antigo e o dashboard somava um valor que o contrato diz que é zero."""
+    doc = {
+        "loja_id": "l1",
+        "emitido_em": _agora(2026, 8, 13, 10, 0).astimezone(timezone.utc).isoformat(),
+        "total_bruto": 0.0, "total": 999.00, "tipo": "FS",
+    }
+    resultado = calcula_dashboard([doc], [], AGORA, com_iva=True)
+    assert resultado["cartoes"]["hoje"]["valor"] == 0.0
+
+
+def test_ha_vendas_e_o_valor_dizem_a_mesma_coisa_sobre_um_documento_do_pos(monkeypatch):
+    """Os dois lados do ecrã têm de concordar. O POS nunca grava `anulado`
+    (por isso `_existe_venda` pergunta por `$ne: True`, que no Mongo casa com
+    o campo ausente) — e enquanto o valor vinha a zero, o ecrã afirmava que
+    havia vendas e mostrava 0,00 € em tudo: a pior das combinações, porque
+    nem sequer aparecia a faixa a explicar porquê."""
+    doc = _documento_como_o_pos_o_grava()
+    assert "anulado" not in doc, "o POS passou a gravar `anulado` — rever _existe_venda"
+    doc["emitido_em"] = datetime.now(timezone.utc).isoformat()
+
+    monkeypatch.setattr(dashboard_mod, "obter_db", lambda: DbFalsa(documentos=[doc]))
+    resposta = _corre(obter_dashboard(com_iva=True, _={}))
+    assert resposta["ha_vendas"] is True
+    assert resposta["cartoes"]["hoje"]["valor"] == 8.99

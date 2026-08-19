@@ -87,9 +87,29 @@ INDICES = [
     ("fat_documentos", [("vendus_document_id", 1)], {"unique": True}),
     ("fat_documentos", [("atcud", 1)], {"unique": True}),
     # A verificação por timeout (Task 3, passo 4) e a reconciliação do fecho
-    # (Task 4) procuram por `ext_ref` — não é único aqui (o único de verdade
-    # é o de fat_refs_fiscais), só um índice de leitura.
-    ("fat_documentos", [("ext_ref", 1)], {}),
+    # (Task 4) procuram por `ext_ref` — e é ÚNICO.
+    #
+    # Era um índice de leitura simples, com o argumento de que "o único de
+    # verdade é o de fat_refs_fiscais". Só que a reserva garante uma
+    # tentativa de EMISSÃO por venda, e isto garante outra coisa: um
+    # DOCUMENTO por venda. Sem ele, quando alguma coisa duplicasse a fatura
+    # ficavam duas linhas com a mesma `ext_ref` e ATCUDs diferentes e nada o
+    # assinalava — a venda apontava para uma, o ecrã mostrava a que o Mongo
+    # calhasse, e a listagem de reservas presas deixava de a mostrar. Com o
+    # único, a segunda gravação rebenta no instante em que acontece e
+    # `fiscal._gravar_documento` transforma-a num
+    # `ConflitoDocumentoFiscal` alto (a reserva NÃO se liberta) em vez de
+    # uma duplicação silenciosa.
+    #
+    # PARCIAL (só onde `ext_ref` é mesmo uma string): dois documentos sem
+    # `ext_ref` — dados estragados ou de uma migração — colidiriam entre si
+    # num único simples, e recusar a gravação de um documento fiscal REAL
+    # por causa disso era o estrago ao contrário.
+    (
+        "fat_documentos",
+        [("ext_ref", 1)],
+        {"unique": True, "partialFilterExpression": {"ext_ref": {"$type": "string"}}},
+    ),
     # Entrada no POS: busca o dispositivo pelo hash do código (emparelhar) ou
     # do token (dispositivo_atual, em cada pedido).
     ("fat_dispositivos", [("codigo_hash", 1)], {"sparse": True}),

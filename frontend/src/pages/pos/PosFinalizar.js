@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible';
 import PosCampoValor from './PosCampoValor';
-import { detalhesErroPos, temMaisDe2CasasDecimaisPos } from '@/lib/pos';
+import { contaTravada, duvidaPorApurar, detalhesErroPos, temMaisDe2CasasDecimaisPos } from '@/lib/pos';
 
 // O ecrã de finalizar (Plano 2C, Task 4): três cartões — Total, Cliente e
 // Pagamento — depois Mais Opções recolhido, e em baixo o valor recebido, o
@@ -398,7 +398,7 @@ function BotaoTipo({ tipo, escolhido, onEscolher, desativado }) {
 
 // --- Erros da emissão --------------------------------------------------------
 //
-// Os três sabores NÃO se tratam da mesma maneira, e a diferença entre eles é a
+// Os sabores NÃO se tratam da mesma maneira, e a diferença entre eles é a
 // diferença entre repetir de graça e emitir uma segunda Fatura Simplificada
 // real à AT:
 //
@@ -406,6 +406,33 @@ function BotaoTipo({ tipo, escolhido, onEscolher, desativado }) {
 //                     Corrige-se e emite-se; repetir é seguro.
 //   'vendus'  (502) — o Vendus recusou ou está em baixo, mas o servidor SABE
 //                     que não saiu documento nenhum. Repetir é seguro.
+//   'recusado' (409) — o servidor respondeu e disse o que aconteceu: a conta
+//                     foi cancelada a meio, a caixa fechou no outro PC, a
+//                     conta MUDOU debaixo da emissão, ou há outra emissão a
+//                     decorrer. Cada uma dessas frases já diz por si se saiu
+//                     ou não saiu fatura e o que fazer, por isso o painel
+//                     mostra-a e não lhe acrescenta nada por cima. Isto caía
+//                     no 'incerto', e a moldura dizia o CONTRÁRIO do texto que
+//                     estava lá dentro — com o EMITIR desligado, ou seja,
+//                     impedindo-a de fazer o que a frase lhe mandava fazer.
+//                     **Só chega aqui com a releitura da venda a confirmar
+//                     que a conta continua aberta e sem emissão nenhuma por
+//                     confirmar** (`PosVenda::contaLimpaNoServidor`) — é essa
+//                     prova que dá o direito ao título em letras grandes.
+//   'recusado-incerto' — o mesmo 409, mas SEM essa prova: a releitura falhou,
+//                     ou trouxe a conta ainda travada. O título de cima
+//                     ("Esta emissão não foi feita.") seria uma afirmação
+//                     nossa, e para o 409 de uma venda já emitida é
+//                     simplesmente falsa — a Fatura Simplificada saiu mesmo.
+//                     Medido, com a releitura a falhar: título a dizer que não
+//                     foi feita, nenhum número de fatura no ecrã, EMITIR vivo,
+//                     e o toque seguinte a pedir mesmo uma segunda emissão.
+//                     Aqui diz-se que não se sabe, e não se emite.
+//   'nada-saiu'      — o ecrã ficou sem resposta (rede, tecto de espera, um
+//                     proxy a cortar), mas a releitura da venda mostrou-a
+//                     ainda aberta e SEM emissão por confirmar: é o servidor a
+//                     dizer que não saiu fatura nenhuma (ver
+//                     `PosVenda::tipoDoErroDeEmissao`). Repetir é seguro.
 //   'incerto' (503) — o servidor NÃO SABE se a fatura saiu: a emissão deu
 //                     timeout e a verificação por referência externa também
 //                     falhou (fiscal.py::VerificacaoFiscalIncerta). Repetir às
@@ -437,8 +464,79 @@ function AvisoErro({ erro }) {
               lista de emissões por confirmar do backoffice — é por lá que se resolve, com o
               documento à vista no Vendus.
             </p>
+            <p className="text-sm">
+              Não fique presa a este ecrã: volte à conta (a seta em cima) e ponha-a de lado para
+              servir o cliente seguinte. O ecrã continua a perguntar ao servidor e mostra o que
+              aconteceu a esta venda assim que o gestor a resolver.
+            </p>
             {erro.mensagem && <p className="text-xs text-muted-foreground break-words">{erro.mensagem}</p>}
           </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (erro.tipo === 'recusado-incerto') {
+    return (
+      <section className="rounded-2xl border-2 border-destructive bg-destructive/10 p-5 animate-fade-in">
+        <div className="flex items-start gap-3">
+          <ShieldAlert className="h-7 w-7 text-destructive shrink-0" />
+          <div className="space-y-2 min-w-0">
+            <p className="font-heading font-bold text-xl">Não sabemos se esta emissão foi feita.</p>
+            {/* A frase do servidor, outra vez como mensagem principal: é ela
+                que descreve o que aconteceu. O que não se pode é escrever por
+                cima dela que não saiu fatura nenhuma — não foi possível
+                voltar a ler esta venda para o confirmar. */}
+            <p className="text-sm break-words">{erro.mensagem}</p>
+            <p className="text-sm">
+              O servidor recusou este pedido, mas não foi possível voltar a ler esta venda para
+              confirmar se a Fatura Simplificada chegou a sair.{' '}
+              <strong>Não volte a emitir esta venda.</strong> Se a fatura tiver saído, uma segunda
+              tentativa emite outra Fatura Simplificada real à Autoridade Tributária, que só se
+              corrige com uma nota de crédito.
+            </p>
+            <p className="text-sm">
+              Este ecrã está a perguntar ao servidor de poucos em poucos segundos e diz o que
+              aconteceu a esta venda assim que houver resposta. <strong>Se ficar assim, chame o
+              gestor</strong> — é ele que confirma no Vendus o que saiu desta venda. Entretanto,
+              volte à conta (a seta em cima): pode pôr esta conta de lado e servir o cliente
+              seguinte.
+            </p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (erro.tipo === 'recusado') {
+    return (
+      <section className="rounded-2xl border-2 border-warning bg-warning/10 p-5 flex items-start gap-3 animate-fade-in">
+        <AlertTriangle className="h-7 w-7 text-warning shrink-0" />
+        <div className="space-y-2 min-w-0">
+          <p className="font-heading font-bold text-xl">Esta emissão não foi feita.</p>
+          {/* A frase do SERVIDOR é a mensagem principal, e não uma nota de
+              rodapé em letra pequena como nos outros painéis: é ela que diz
+              se saiu ou não saiu fatura e o que fazer a seguir, e é diferente
+              em cada um dos seis 409 que a rota pode dar. Qualquer coisa que
+              este painel escrevesse por cima dela seria uma afirmação nossa
+              sobre uma Fatura Simplificada real que só o servidor sabe. */}
+          <p className="text-sm break-words">{erro.mensagem}</p>
+        </div>
+      </section>
+    );
+  }
+
+  if (erro.tipo === 'nada-saiu') {
+    return (
+      <section className="rounded-2xl border bg-warning/10 p-4 flex items-start gap-3 animate-fade-in">
+        <AlertTriangle className="h-5 w-5 text-warning shrink-0 mt-0.5" />
+        <div className="min-w-0">
+          <p className="font-medium">Ficámos sem resposta — mas não saiu nenhum documento.</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            A conta foi confirmada no servidor a seguir à falha: continua aberta e sem nenhuma
+            emissão por confirmar. Pode carregar em EMITIR DOCUMENTO outra vez.
+          </p>
+          {erro.mensagem && <p className="text-xs text-muted-foreground mt-1 break-words">{erro.mensagem}</p>}
         </div>
       </section>
     );
@@ -481,13 +579,33 @@ function AvisoErro({ erro }) {
 // 17,35 € paga com 20 €, ela lia "Troco € 2,65", carregava em EMITIR e o 2,65
 // desaparecia. Ficava a tirar o troco de memória, com fila à frente — que é
 // onde os enganos acontecem, e a diferença só aparece no fecho de caixa.
-function DocumentoEmitido({ documento, troco, onVoltar }) {
+function DocumentoEmitido({ documento, troco, recuperado, onVoltar }) {
   const emTestes = documento?.modo === 'tests';
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col">
       <div className="flex-1 overflow-y-auto p-4 sm:p-6">
         <div className="mx-auto w-full max-w-lg space-y-4 animate-fade-in">
+          {/* O documento não veio da resposta ao toque em EMITIR: veio de uma
+              releitura da venda, depois de a emissão ter falhado à frente
+              dela (PosVenda::apurarAEmissao). Sem esta frase, a operadora
+              acabava de ver um erro e via a seguir o ecrã normal de sucesso,
+              sem saber se o que está à frente é desta venda — e a dúvida
+              acaba sempre da mesma maneira, a picar tudo outra vez. */}
+          {recuperado && (
+            <section className="rounded-2xl border-2 border-warning bg-warning/10 p-5 flex items-start gap-3">
+              <ShieldAlert className="h-7 w-7 text-warning shrink-0" />
+              <div>
+                <p className="font-heading font-bold text-lg">Esta fatura já tinha saído.</p>
+                <p className="text-sm mt-1">
+                  A resposta da emissão perdeu-se pelo caminho e o ecrã foi buscá-la ao servidor. O
+                  documento aqui em baixo é o desta conta e é o único que existe —{' '}
+                  <strong>não emita outra vez.</strong>
+                </p>
+              </div>
+            </section>
+          )}
+
           {/* O modo 'tests' do Vendus produz um documento que PARECE uma
               fatura e não é nenhuma — não conta para a AT, não conta para o Z.
               Se isto passasse despercebido, uma loja podia faturar um dia
@@ -505,11 +623,30 @@ function DocumentoEmitido({ documento, troco, onVoltar }) {
             </section>
           )}
 
+          {/* Havia dinheiro na conta e o valor recebido não chegou a ser
+              escrito, e este documento apareceu por recuperação: o ecrã
+              DIZ que não sabe o troco em vez de simplesmente não mostrar o
+              cartão. O recebido nunca viaja para o servidor (é uma conta para
+              a operadora, não um dado da fatura), por isso não há de onde o ir
+              buscar depois — e no caminho normal ela acabou de ver a caixa do
+              Troco a dizer "—" e seguiu em frente à mesma; aqui pode nem ter
+              chegado a ver ecrã nenhum. */}
+          {recuperado && troco?.porEscrever && (
+            <section className="rounded-2xl border bg-muted/60 p-4 flex items-start gap-3">
+              <Coins className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
+              <p className="text-sm min-w-0">
+                <span className="font-medium">Não sabemos o troco desta venda.</span> Havia
+                pagamento em dinheiro, mas o valor recebido não chegou a ser escrito neste ecrã e
+                não fica guardado em lado nenhum. Confirme o dinheiro com o cliente.
+              </p>
+            </section>
+          )}
+
           {/* Fica ANTES do número e do ATCUD de propósito: o número já está no
               Vendus e não se perde, o troco existe só na cabeça dela e é a
               próxima coisa que as mãos têm de fazer. Em primeiro lugar, nunca
               atrás de um scroll. */}
-          {troco && (
+          {troco?.recebidoCentimos != null && (
             <section className="rounded-2xl border-2 border-primary bg-primary/10 p-5 flex items-start gap-3">
               <Coins className="h-7 w-7 text-primary shrink-0 mt-0.5" />
               <div className="min-w-0 flex-1">
@@ -584,10 +721,16 @@ export default function PosFinalizar({
   venda,
   tiposPagamento = [],
   aEmitir = false,
+  // A emissão já respondeu (mal) e o ecrã está agora a PERGUNTAR ao servidor
+  // o que aconteceu àquela venda. Continua tudo desligado — é a mesma espera
+  // para as mãos dela — mas o botão deixa de dizer que está a emitir, porque
+  // não está (ver o rótulo, lá em baixo).
+  aConfirmar = false,
   onVoltar,
   onAplicarDesconto,
   onEmitir,
   documento = null,
+  documentoRecuperado = false,
   erroEmissao = null,
 }) {
   // [{ tipo_pagamento_id, valor: string, auto: boolean }] — `valor` é sempre
@@ -668,7 +811,27 @@ export default function PosFinalizar({
   const digitosNif = soDigitos(nifTexto);
   const nifValido = digitosNif.length === 0 || digitosNif.length === 9;
 
-  const incerto = erroEmissao?.tipo === 'incerto';
+  // As DUAS razões para congelar este ecrã — e são duas porque uma delas não
+  // sobrevive a nada:
+  //
+  // · a DÚVIDA POR APURAR é a do erro que acabou de chegar: o servidor disse
+  //   que não sabe se a fatura saiu ('incerto'), ou recusou sem que a
+  //   releitura da venda conseguisse confirmar o que lhe aconteceu
+  //   ('recusado-incerto'). A lista dos dois baldes vive no `lib/pos.js`
+  //   porque são dois ecrãs a ter de concordar sobre ela.
+  // · `travada` é o travão a sério: vem do SERVIDOR
+  //   (`venda.emissao_por_confirmar` — existe reserva fiscal e a venda ainda
+  //   não está emitida) e chega a este ecrã em todas as respostas de venda,
+  //   por isso sobrevive à seta de voltar, ao F5, à tela de descanso e ao
+  //   outro PC. É também exactamente o estado em que o servidor recusa
+  //   qualquer escrita nesta conta com 409.
+  //
+  // As duas continuam a fazer falta: a segunda não acende se a releitura da
+  // venda também falhar (rede em baixo), e nesse caso é a primeira que segura
+  // o ecrã.
+  const duvida = duvidaPorApurar(erroEmissao);
+  const travada = contaTravada(venda);
+  const congelada = duvida || travada;
   const temLinhas = (venda?.linhas || []).length > 0;
 
   const nomeDoTipo = (id) => tipoPorId.get(id)?.nome || 'este pagamento';
@@ -773,7 +936,7 @@ export default function PosFinalizar({
     return null;
   })();
 
-  const podeEmitir = !aEmitir && !incerto && !motivoBloqueio;
+  const podeEmitir = !aEmitir && !congelada && !motivoBloqueio;
 
   // O troco só faz sentido sobre o que é pago EM DINHEIRO: numa venda de 20 €
   // paga com 10 € em Multibanco e 10 € em dinheiro, quem entrega uma nota de
@@ -791,13 +954,32 @@ export default function PosFinalizar({
     if (!podeEmitir) return;
     // Retrato do recebido e do troco ANTES de a resposta chegar: é o número
     // que ela tem de tirar da gaveta a seguir, e o ecrã do documento emitido
-    // substitui este por inteiro. A regra de quando faz sentido é a mesma de
-    // cima (só com um pagamento que dá troco e com o recebido escrito) — sem
-    // isso não há troco nenhum a mostrar, e um "Troco € 0,00" inventado só
-    // punha dúvidas onde não havia.
+    // substitui este por inteiro. São TRÊS estados, e nenhum deles é uma conta
+    // refeita mais tarde (refazê-la sobre a venda já finalizada arriscava
+    // mostrar outro número — justamente o que ela vai tirar da gaveta):
+    // números, quando houve dinheiro e o recebido foi escrito; `porEscrever`,
+    // quando houve dinheiro e o recebido não foi escrito — é este que deixa o
+    // ecrã DIZER que não sabe o troco em vez de apenas não o mostrar; e `null`
+    // quando não houve dinheiro nenhum, onde não há troco de que falar e um
+    // "Troco € 0,00" inventado só punha dúvidas onde não havia.
+    //
+    // **Fica na memória do ecrã, e não em localStorage. Foi decidido, não
+    // esquecido.** Guardá-lo atado ao id da venda só serviria para sobreviver
+    // a um F5 — e um F5 leva com ele o próprio id: assim que a venda fica
+    // `emitida`, `GET /pos/venda/aberta` devolve `null` e o ecrã fica sem por
+    // onde perguntar por ela. Para o retrato guardado valer alguma coisa, o
+    // arranque teria de RESSUSCITAR um documento a partir do que estivesse no
+    // browser, e é isso que não pode acontecer: a última fatura de ontem à
+    // frente do cliente de hoje. Os dois caminhos que mostram um documento (a
+    // resposta do EMITIR e a recuperação do `PosVenda::apurarAEmissao`) correm
+    // dentro desta mesma montagem do ecrã, que é a que acabou de tirar o
+    // retrato — quem acrescentar um terceiro tem de trazer o retrato com ele,
+    // ou o ecrã cala-se sobre o troco.
     setTrocoEntregue(
-      mostrarTroco && recebido !== ''
-        ? { recebidoCentimos: centimos(recebido), trocoCentimos }
+      mostrarTroco
+        ? (recebido !== ''
+            ? { recebidoCentimos: centimos(recebido), trocoCentimos }
+            : { porEscrever: true })
         : null,
     );
     // O VALOR RECEBIDO NUNCA VIAJA PARA O SERVIDOR. O que se manda é sempre o
@@ -814,7 +996,16 @@ export default function PosFinalizar({
     });
   };
 
-  if (documento) return <DocumentoEmitido documento={documento} troco={trocoEntregue} onVoltar={onVoltar} />;
+  if (documento) {
+    return (
+      <DocumentoEmitido
+        documento={documento}
+        troco={trocoEntregue}
+        recuperado={documentoRecuperado}
+        onVoltar={onVoltar}
+      />
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col">
@@ -829,7 +1020,7 @@ export default function PosFinalizar({
         <div className="mx-auto w-full max-w-2xl space-y-4">
           <AvisoErro erro={erroEmissao} />
 
-          <CartaoTotal venda={venda} desativado={aEmitir || incerto} onAplicarDesconto={onAplicarDesconto} />
+          <CartaoTotal venda={venda} desativado={aEmitir || congelada} onAplicarDesconto={onAplicarDesconto} />
 
           {total <= 0 && temLinhas && (
             <p className="text-sm text-destructive px-1">
@@ -842,7 +1033,7 @@ export default function PosFinalizar({
             </p>
           )}
 
-          <CartaoCliente nifTexto={nifTexto} onNifTexto={setNifTexto} desativado={aEmitir || incerto} />
+          <CartaoCliente nifTexto={nifTexto} onNifTexto={setNifTexto} desativado={aEmitir || congelada} />
 
           <Cartao titulo="Pagamento" icone={CreditCard}>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 mt-2">
@@ -852,7 +1043,7 @@ export default function PosFinalizar({
                   tipo={t}
                   escolhido={pagamentos.some((p) => p.tipo_pagamento_id === t.id)}
                   onEscolher={alternarTipo}
-                  desativado={aEmitir || incerto}
+                  desativado={aEmitir || congelada}
                 />
               ))}
               {tipos.length === 0 && (
@@ -878,7 +1069,7 @@ export default function PosFinalizar({
                         valor={p.valor}
                         onChange={(v) => escreverValor(p.tipo_pagamento_id, v)}
                         autoFocus={p.tipo_pagamento_id === focoPagamentoId}
-                        disabled={aEmitir || incerto}
+                        disabled={aEmitir || congelada}
                       />
                     </div>
                     <Button
@@ -887,7 +1078,7 @@ export default function PosFinalizar({
                       size="icon"
                       className="h-16 w-12 shrink-0"
                       onClick={() => alternarTipo(tipoPorId.get(p.tipo_pagamento_id) || { id: p.tipo_pagamento_id })}
-                      disabled={aEmitir || incerto}
+                      disabled={aEmitir || congelada}
                       aria-label={`Retirar ${tipoPorId.get(p.tipo_pagamento_id)?.nome || 'pagamento'}`}
                     >
                       <X className="h-5 w-5" />
@@ -965,16 +1156,33 @@ export default function PosFinalizar({
 
       <div className="shrink-0 border-t bg-card p-4">
         <div className="mx-auto w-full max-w-2xl">
-          {incerto ? (
+          {congelada ? (
             // Nesta situação não há botão nenhum aqui de propósito: qualquer
             // coisa carregável neste sítio, mesmo com outro nome, seria lida
             // como "tentar outra vez" — e é exactamente isso que não se pode
             // fazer sem saber se a fatura saiu. A saída é a seta de voltar, em
             // cima, depois de falar com o gestor.
+            //
+            // Vale para as duas razões de congelar (ver `congelada`), e é a
+            // segunda que fecha o defeito: com o travão preso só ao erro do
+            // momento, a seta de voltar limpava-o e dois toques punham o
+            // EMITIR aceso outra vez, sobre uma conta totalmente editável.
             <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-sm">
               <p className="font-semibold">Emissão bloqueada neste posto.</p>
               <p className="text-muted-foreground mt-1">
                 Só o gestor pode confirmar se esta fatura saiu. Não repita a emissão.
+              </p>
+              {/* A saída, escrita onde ela está a olhar. Sem isto, o ecrã
+                  dizia-lhe o que NÃO podia fazer e mais nada — e a conta
+                  travada prendia o posto inteiro, com o cliente seguinte à
+                  espera. A seta de voltar leva à conta, e é lá que estão os
+                  dois botões: perguntar outra vez ao servidor, e pôr esta
+                  conta de lado para servir o cliente seguinte numa conta
+                  nova. */}
+              <p className="text-muted-foreground mt-1">
+                Volte à conta (a seta em cima, à esquerda): pode pôr esta conta de lado e servir o
+                cliente seguinte numa conta nova enquanto o gestor a resolve. Este ecrã continua a
+                perguntar ao servidor e destranca-se sozinho assim que houver resposta.
               </p>
             </div>
           ) : (
@@ -1034,9 +1242,17 @@ export default function PosFinalizar({
                     por ext_ref determinística), mas o ecrã não pode CONVIDAR ao
                     duplo toque — a defesa de baixo existe para o caso de tudo o
                     resto falhar, não para ser gasta todos os dias. */}
+                {/* E, dentro da espera, DUAS coisas diferentes com nomes
+                    diferentes: emitir é o pedido que pode estar 90 s a falar
+                    com o Vendus (lib/pos.js::TIMEOUT_COM_VENDUS_MS);
+                    confirmar é a pergunta de 15 s que corre A SEGUIR, quando
+                    a emissão falhou, para saber o que aconteceu àquela venda.
+                    O botão dizia "A emitir…" durante as duas — até 105
+                    segundos, e nos últimos 15 não estava a emitir nada. */}
                 {aEmitir ? (
                   <>
-                    <Loader2 className="h-5 w-5 animate-spin mr-2" /> A emitir…
+                    <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                    {aConfirmar ? 'A confirmar no servidor…' : 'A emitir…'}
                   </>
                 ) : (
                   'EMITIR DOCUMENTO'

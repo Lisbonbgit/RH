@@ -83,6 +83,14 @@ class ResultadoUpdateFalso:
         self.modified_count = matched_count
 
 
+class ResultadoDeleteFalso:
+    """O DeleteResult do pymongo/motor, reduzido ao que é preciso aqui: o
+    `deleted_count` que `fiscal.py::_libertar_reserva_se_intacta` lê."""
+
+    def __init__(self, deleted_count):
+        self.deleted_count = deleted_count
+
+
 class ColeccaoFalsa:
     """Duplo de uma colecção Mongo: find()/find_one() filtram de facto."""
 
@@ -112,6 +120,18 @@ class ColeccaoFalsa:
         if alvos:
             alvos[0].update(atualizacao.get("$set", {}))
         return ResultadoUpdateFalso(matched_count=len(alvos))
+
+    async def delete_one(self, filtro):
+        """Só o primeiro que casa, como o Mongo — e devolve `deleted_count`,
+        que é por onde `fiscal.py` decide se ganhou a corrida da libertação
+        da reserva. Existe aqui porque a secção da janela do fecho confirma,
+        contra o núcleo fiscal a sério, que uma sessão `a_fechar` faz a
+        emissão libertar a reserva e abortar."""
+        self.registo.append(("delete_one", filtro))
+        alvos = [d for d in self._documentos if _corresponde(d, filtro)]
+        if alvos:
+            self._documentos.remove(alvos[0])
+        return ResultadoDeleteFalso(deleted_count=1 if alvos else 0)
 
 
 class DbFalsa:
@@ -959,3 +979,322 @@ def test_fechar_caixa_com_conta_aberta_sem_reserva_nenhuma_fecha_na_mesma(monkey
     resultado = _corre(fechar_caixa(
         PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador()))
     assert resultado["estado"] == "fechada"
+
+
+# --- A JANELA do fecho: marcar primeiro, perguntar depois -----------------------
+#
+# A secção anterior prova que o fecho recusa quando encontra uma emissão viva.
+# Esta prova a outra metade — que ele não pode ser ULTRAPASSADO por uma emissão
+# que comece depois dessa pergunta. O fecho perguntava pela emissão e lia as
+# vendas logo no princípio, mas só escrevia `fechada` no FIM, e no meio corria a
+# verificação contra o Vendus, que é rede (um GET por dia da janela, 30 s de
+# tempo limite, até 3 tentativas). Um FINALIZAR que caísse nessa janela relia a
+# sessão, via-a AINDA ABERTA — porque estava mesmo — e emitia. Medido, com as
+# rotas reais: `vendas_dinheiro=0.00 esperado=50.00 contado=58.99
+# diferenca=+8.99`, 1 emissão real ao Vendus, e a venda `emitida` numa sessão
+# `fechada`.
+#
+# A correcção não é mais uma verificação (essa deixa sempre a mesma janela, só
+# mais estreita): é ORDEM. O fecho marca a sessão `a_fechar` ANTES de perguntar,
+# e a partir daí é o próprio núcleo fiscal que recusa emitir. Ou o fecho vê a
+# reserva, ou a emissão vê a marca — nunca nenhum dos dois.
+
+
+def _sessoes_de(db):
+    return db._coleccoes[COLECOES["sessoes_caixa"]]
+
+
+def test_fecho_marca_a_sessao_a_fechar_antes_de_ler_as_vendas(monkeypatch):
+    """A ordem, medida no instante exacto: quando o fecho lê as vendas para
+    somar o Z, a sessão JÁ tem de estar marcada `a_fechar`. Ler primeiro e
+    marcar depois é literalmente o defeito — entre as duas coisas cabia uma
+    emissão inteira."""
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[], vendas=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    estados_ao_ler = []
+    colecao_vendas = db[COLECOES["vendas"]]
+    find_original = colecao_vendas.find
+
+    def espia_a_leitura_das_vendas(filtro=None, projecao=None):
+        # Só a leitura QUE ALIMENTA O Z (as `emitida`) — as outras duas
+        # leituras de vendas desta rota são as perguntas pela emissão viva,
+        # que percorrem as contas ainda `aberta`, uma de cada lado da marca.
+        if (filtro or {}).get("estado") == "emitida":
+            estados_ao_ler.append(sessao["estado"])
+        return find_original(filtro, projecao)
+
+    colecao_vendas.find = espia_a_leitura_das_vendas
+
+    _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0),
+                        operador=_operador()))
+    assert estados_ao_ler == ["a_fechar"], (
+        "as vendas do Z foram lidas com a sessão ainda aberta — é a janela"
+    )
+    assert sessao["estado"] == "fechada"
+
+
+def test_verificacao_contra_o_vendus_so_corre_depois_do_z_estar_escrito(monkeypatch):
+    """A verificação contra o Vendus é I/O de REDE (30 s de tempo limite, até
+    3 tentativas com esperas) e é uma segunda opinião de leitura: nada no Z
+    depende dela. Estava no MEIO do fecho, e era ela que dava à janela os seus
+    30 a 90 segundos de largura — tempo mais do que suficiente para um
+    FINALIZAR inteiro caber lá dentro. Correndo depois da escrita, a marca
+    `a_fechar` dura o que duram três escritas locais."""
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[], vendas=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    estados_na_verificacao = []
+
+    async def espia_a_verificacao(_db, _sessao, _valor):
+        estados_na_verificacao.append(sessao["estado"])
+        return {"nao_verificado": "desligado no teste"}
+
+    monkeypatch.setattr(caixa_mod, "_verificar_vendas_dinheiro", espia_a_verificacao)
+
+    resultado = _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0),
+                                    operador=_operador()))
+    assert estados_na_verificacao == ["fechada"], (
+        "a rede corre com a sessão em suspenso — é a janela outra vez"
+    )
+    assert resultado["verificacao_vendus"] == {"nao_verificado": "desligado no teste"}
+
+
+def test_reserva_que_nasce_entre_a_pergunta_e_a_marca_e_apanhada_e_o_fecho_desfaz_se(monkeypatch):
+    """A corrida mesmo: a reserva fiscal nasce DEPOIS de o fecho já ter
+    perguntado pela emissão viva (não havia nenhuma) e antes de ele marcar a
+    sessão. É a segunda pergunta — a que vem do outro lado da marca — que a
+    apanha. O fecho tem de se desfazer por inteiro: a sessão volta a `aberta`,
+    sem `fecho_iniciado_em`, e nenhum Z sai."""
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db_com_reservas(registo, [_venda_aberta()], [], sessoes=[sessao])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    colecao_sessoes = _sessoes_de(db)
+    update_original = colecao_sessoes.update_one
+
+    async def reserva_nasce_mesmo_antes_da_marca(filtro, atualizacao):
+        if atualizacao.get("$set", {}).get("estado") == "a_fechar":
+            # A Rafaela carregou em FINALIZAR no outro PC neste instante: a
+            # reserva atómica já existe, o Vendus ainda não respondeu.
+            db._coleccoes[COLECOES["refs_fiscais"]]._documentos.append(_reserva_fiscal())
+        return await update_original(filtro, atualizacao)
+
+    colecao_sessoes.update_one = reserva_nasce_mesmo_antes_da_marca
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=58.99),
+                            operador=_operador()))
+
+    assert excinfo.value.status_code == 409
+    assert "emissão de fatura em curso" in excinfo.value.detail
+    assert sessao["estado"] == "aberta", "a caixa ficou presa a meio de um fecho"
+    assert sessao["fecho_iniciado_em"] is None
+    assert sessao["fechada_em"] is None
+    assert sessao["contado"] is None, "escreveu um Z para uma sessão que não fechou"
+
+
+def test_a_marca_a_fechar_faz_o_nucleo_fiscal_recusar_emitir(monkeypatch):
+    """O outro lado do par, confirmado contra o núcleo fiscal A SÉRIO (não
+    contra a nossa ideia dele): com a sessão em `a_fechar`, a releitura que a
+    emissão faz depois de ganhar a reserva recusa, LIBERTA a reserva e aborta
+    sem falar com o Vendus. É disto que depende a correcção — se um dia o
+    `fiscal.py` passar a aceitar outro estado que não `aberta`, é aqui que se
+    vê, e não numa noite de sexta-feira."""
+    from faturacao import fiscal as fiscal_mod
+
+    registo = []
+    sessao = _sessao(estado="a_fechar")
+    db = _db_com_reservas(registo, [_venda_aberta()], [_reserva_fiscal()], sessoes=[sessao])
+
+    with pytest.raises(fiscal_mod.SessaoJaNaoAberta):
+        _corre(fiscal_mod._garante_venda_ainda_aberta(
+            db, "pos-loja-1-sessao-1-venda-1", "venda-1"
+        ))
+
+    assert db._coleccoes[COLECOES["refs_fiscais"]]._documentos == [], (
+        "a reserva ficou órfã a trancar a conta"
+    )
+
+
+def test_dois_fechos_ao_mesmo_tempo_so_um_passa_da_marca(monkeypatch):
+    """A marca é o ponto de decisão único: escrita condicionada ao estado que
+    foi lido, e é o `matched_count` que decide — como em todo o resto do
+    módulo. O segundo pedido nem chega a somar nada."""
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[], vendas=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    colecao_sessoes = _sessoes_de(db)
+    update_original = colecao_sessoes.update_one
+
+    async def o_outro_pc_marca_primeiro(filtro, atualizacao):
+        # O fecho do outro PC ganhou a marca um instante antes deste.
+        sessao["estado"] = "a_fechar"
+        return await update_original(filtro, atualizacao)
+
+    colecao_sessoes.update_one = o_outro_pc_marca_primeiro
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0),
+                            operador=_operador()))
+    assert excinfo.value.status_code == 409
+    assert "a fechar esta sessão" in excinfo.value.detail
+    assert sessao["contado"] is None
+
+
+def test_fecho_com_a_sessao_fechada_por_outro_antes_da_escrita_final_nao_pisa_o_z(monkeypatch):
+    """I2, agora contra a escrita final: quem tem a marca é o único que pode
+    escrever o Z, mas se alguém tiver conseguido fechar a sessão à mesma
+    (retoma concorrente de um fecho interrompido), a escrita condicionada a
+    `a_fechar` não a pisa. Uma respondeu 50 €, a outra 30 €: não podem sair
+    dois Z diferentes da mesma sessão."""
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[], vendas=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    colecao_sessoes = _sessoes_de(db)
+    update_original = colecao_sessoes.update_one
+
+    async def fecha_por_fora_mesmo_antes_da_escrita_final(filtro, atualizacao):
+        if atualizacao.get("$set", {}).get("estado") == "fechada":
+            sessao["estado"] = "fechada"
+            sessao["contado"] = 30.0
+        return await update_original(filtro, atualizacao)
+
+    colecao_sessoes.update_one = fecha_por_fora_mesmo_antes_da_escrita_final
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0),
+                            operador=_operador()))
+    assert excinfo.value.status_code == 409
+    assert sessao["contado"] == 30.0
+
+
+# --- Um fecho que morre a meio TEM de ter saída ---------------------------------
+#
+# O estado intermédio só é aceitável se uma falha lá dentro (o processo morto
+# entre a marca e a escrita final) não deixar a caixa num beco. A sessão fica em
+# `a_fechar`; o que se segue é o que a funcionária vê e o que a tira de lá.
+
+
+def test_estado_caixa_mostra_a_sessao_que_ficou_a_meio_de_um_fecho(monkeypatch):
+    """Se ela desaparecesse daqui, o ecrã mostrava "Caixa Fechada" com o
+    resumo do fecho ANTERIOR e só oferecia o botão de ABRIR — que é recusado,
+    e bem. A funcionária ficava sem forma nenhuma de chegar ao único botão que
+    resolve isto, que é o FECHAR."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao(estado="a_fechar")])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resposta = _corre(estado_caixa(operador=_operador()))
+    assert resposta["sessao_aberta"] is not None
+    assert resposta["sessao_aberta"]["estado"] == "a_fechar"
+    assert resposta["ultimo_fecho"] is None
+
+
+def test_fechar_outra_vez_retoma_o_fecho_interrompido_e_emite_o_z(monkeypatch):
+    """A saída do beco: carregar outra vez em FECHAR CAIXA. As somas são todas
+    recalculadas do zero — nada é reaproveitado da tentativa que morreu."""
+    registo = []
+    sessao = _sessao(fundo=50.0, estado="a_fechar",
+                     fecho_iniciado_em="2026-08-18T23:58:00+00:00")
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[],
+             vendas=[_venda_emitida()])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=58.99),
+                                    operador=_operador()))
+    assert resultado["estado"] == "fechada"
+    assert resultado["vendas_dinheiro"] == 8.99
+    assert resultado["esperado"] == 58.99
+    assert resultado["diferenca"] == 0.0
+    assert sessao["estado"] == "fechada"
+
+
+def test_abrir_caixa_com_uma_sessao_a_meio_de_um_fecho_e_recusado(monkeypatch):
+    """O índice único parcial de db.py só cobre `estado: "aberta"` — uma
+    sessão em `a_fechar` não colide com nada e deixava abrir uma sessão nova
+    POR CIMA dela. Ficavam duas sessões vivas na mesma caixa: a nova a receber
+    as vendas e a velha para sempre sem Z, com as vendas dela fora de qualquer
+    fecho. A mensagem tem de dizer o que fazer."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao(estado="a_fechar")])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(abrir_caixa(PedidoAbrirCaixa(caixa_id="caixa-1", fundo=50.0),
+                           operador=_operador()))
+    assert excinfo.value.status_code == 409
+    assert "FECHAR CAIXA" in excinfo.value.detail
+    assert not any(chamada[0] == "insert_one" for chamada in registo), (
+        "abriu uma segunda sessão por cima de uma que ainda espera um Z"
+    )
+
+
+def test_movimento_com_a_sessao_a_meio_de_um_fecho_diz_o_que_fazer(monkeypatch):
+    """Recusado — o Z está a ser calculado, dinheiro a entrar agora na gaveta
+    não pertence a fecho nenhum. Mas a mensagem não pode ser "esta caixa não
+    tem nenhuma sessão aberta": é verdade à letra e é uma pista errada, que
+    manda a funcionária ABRIR a caixa (recusado) em vez de FECHAR."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao(estado="a_fechar")])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(registar_movimento(
+            PedidoMovimento(caixa_id="caixa-1", tipo="entrada", valor=20.0),
+            operador=_operador(),
+        ))
+    assert excinfo.value.status_code == 409
+    assert "FECHAR CAIXA" in excinfo.value.detail
+    assert not any(chamada[0] == "insert_one" for chamada in registo)
+
+
+def test_movimento_que_chega_a_meio_do_fecho_e_recusado_e_nao_fica_fora_do_z(monkeypatch):
+    """A mesma janela, com dinheiro em vez de faturas: os movimentos do Z
+    eram lidos no princípio do fecho e a sessão só fechava no fim, com rede
+    pelo meio. Uma sangria ou um reforço registados nesse intervalo passavam
+    a confirmação (a sessão estava mesmo `aberta`) e ficavam fora do Z que a
+    funcionária assinou — dinheiro na gaveta sem fecho nenhum que o
+    explique, exactamente como a FS. A marca fecha as duas coisas de uma
+    vez: a partir dela, o movimento é RECUSADO."""
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[], vendas=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    tentativa = {}
+    colecao_sessoes = _sessoes_de(db)
+    update_original = colecao_sessoes.update_one
+
+    async def a_rafaela_tira_troco_no_outro_pc(filtro, atualizacao):
+        resultado = await update_original(filtro, atualizacao)
+        if atualizacao.get("$set", {}).get("estado") == "a_fechar" and not tentativa:
+            try:
+                await registar_movimento(
+                    PedidoMovimento(caixa_id="caixa-1", tipo="saida", valor=20.0,
+                                    motivo="troco para o outro PC"),
+                    operador=_operador(),
+                )
+                tentativa["resultado"] = "aceite"
+            except HTTPException as e:
+                tentativa["resultado"] = e.status_code
+                tentativa["detalhe"] = e.detail
+        return resultado
+
+    colecao_sessoes.update_one = a_rafaela_tira_troco_no_outro_pc
+
+    z = _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0),
+                            operador=_operador()))
+    assert tentativa["resultado"] == 409
+    assert "FECHAR CAIXA" in tentativa["detalhe"]
+    assert z["saidas"] == 0.0
+    assert z["esperado"] == 50.0, "um movimento aceite ficou fora do Z"

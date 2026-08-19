@@ -52,7 +52,8 @@ import {
   Percent,
   Monitor,
   Banknote,
-  LayoutGrid
+  LayoutGrid,
+  ShieldAlert
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -146,6 +147,11 @@ const sections = [
       { group: 'Gestão', path: '/admin/faturacao/produtos/categorias', label: 'Categorias', pai: '/admin/faturacao/produtos' },
       { group: 'Gestão', path: '/admin/faturacao/produtos/personalizacoes', label: 'Personalizações', pai: '/admin/faturacao/produtos' },
       { group: 'Gestão', path: '/admin/faturacao/documentos', label: 'Documentos', icon: FileText },
+      // Logo a seguir aos Documentos, que é onde estão as faturas que saíram:
+      // esta é a lista das que ficaram a meio. Fica na Gestão (o grupo que
+      // abre por omissão) de propósito — quem chega aqui tem a loja ao
+      // telefone a dizer que a caixa não fecha, e não pode ter de procurar.
+      { group: 'Gestão', path: '/admin/faturacao/reservas-presas', label: 'Reservas Fiscais Presas', icon: ShieldAlert },
       { group: 'Gestão', path: '/admin/faturacao/taloes-desconto', label: 'Talões de Desconto', icon: Percent },
       { group: 'Gestão', path: '/admin/faturacao/clientes', label: 'Clientes', icon: Users },
       { group: 'Gestão', path: '/admin/faturacao/relatorios', label: 'Relatórios', icon: BarChart3 },

@@ -49,6 +49,7 @@ import FatPagamentos from './pages/admin/faturacao/FatPagamentos';
 import FatUtilizadores from './pages/admin/faturacao/FatUtilizadores';
 import FatMotivos from './pages/admin/faturacao/FatMotivos';
 import FatDispositivos from './pages/admin/faturacao/FatDispositivos';
+import FatReservasPresas from './pages/admin/faturacao/FatReservasPresas';
 import PosApp from './pages/pos/PosApp';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeProfile from './pages/employee/EmployeeProfile';
@@ -215,6 +216,11 @@ function AppRoutes() {
         <Route path="faturacao/produtos/categorias" element={<FatCategorias />} />
         <Route path="faturacao/produtos/personalizacoes" element={<FatPersonalizacoes />} />
         <Route path="faturacao/documentos" element={<ComingSoon icon={FileText} title="Documentos" subtitle="Faturação · Gestão" note="Pesquisar faturas e notas de crédito, reimprimir e anular." />} />
+        {/* A lista que as mensagens do POS já mandavam o gestor consultar
+            ("chame o gestor, que resolve na lista de reservas fiscais presas")
+            e que não existia — sem ela, uma emissão que fica a meio tranca a
+            conta e impede a loja de fechar a caixa. */}
+        <Route path="faturacao/reservas-presas" element={<FatReservasPresas />} />
         <Route path="faturacao/taloes-desconto" element={<ComingSoon icon={Percent} title="Talões de Desconto" subtitle="Faturação · Gestão" />} />
         <Route path="faturacao/clientes" element={<ComingSoon icon={Users} title="Clientes" subtitle="Faturação · Gestão" note="Fichas de cliente e NIF para as faturas." />} />
         <Route path="faturacao/relatorios" element={<ComingSoon icon={BarChart3} title="Relatórios" subtitle="Faturação · Gestão" note="Movimentos de caixa, produtos, categorias, lojas, utilizadores, diário, por hora, dias da semana e mensal." />} />

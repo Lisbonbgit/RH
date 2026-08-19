@@ -14,12 +14,13 @@ import json
 import httpx
 import pytest
 
-from faturacao.vendus.cliente import VendusHTTPErro, VendusIndisponivel
+from faturacao.vendus.cliente import VendusErro, VendusHTTPErro, VendusIndisponivel
 from faturacao.vendus.emissao import (
     ClienteEmissaoVendus,
     RegisterIdInvalido,
     VendusModoInvalido,
     VendusRateLimitado,
+    VendusRespostaIlegivel,
 )
 
 
@@ -485,3 +486,226 @@ def test_listar_documentos_por_dia_recusa_register_id_errado_antes_da_rede(monke
     with pytest.raises(RegisterIdInvalido):
         _cliente(handler).listar_documentos_por_dia("2026-08-15", register_id=999)
     assert chamou_rede == []
+
+
+# --- O 2xx cujo corpo NÃO se lê: "criou, não consigo ler qual" ---------------
+#
+# Tudo o que corre em `criar_fatura_simplificada` DEPOIS de
+# `_pedir_com_retentativas` corre sobre um documento fiscal que JÁ EXISTE do
+# lado da AT. Enquanto essas falhas saíam como `ValueError`/`binascii.Error`
+# crus, `fiscal._emitir_e_gravar` apanhava-as no seu `except Exception`,
+# LIBERTAVA a reserva a dizer que "o Vendus não criou nada", e o ecrã convidava
+# a operadora a emitir outra vez: duas Faturas Simplificadas REAIS da mesma
+# venda (reproduzido: «FS 2026/900 criada → JSONDecodeError → venda='aberta' |
+# reservas=0 | fat_documentos=0»). Agora é um erro TIPADO desta família.
+
+
+def test_2xx_com_corpo_ilegivel_levanta_erro_tipado_e_nao_um_valueerror_cru(monkeypatch):
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+    monkeypatch.setenv("VENDUS_MODE", "normal")
+
+    def handler(request: httpx.Request):
+        # O 200 de uma página de manutenção de um proxy à frente do Vendus —
+        # o POST chegou lá e o documento nasceu; a resposta é que não se lê.
+        return httpx.Response(200, text="<html>manutenção</html>")
+
+    with pytest.raises(VendusRespostaIlegivel) as e:
+        _cliente(handler).criar_fatura_simplificada(
+            linhas=_linhas(), pagamentos=_pagamentos(), cliente=None,
+            external_reference="pos-loja1-sessao1-venda1", register_id=7,
+        )
+    # É `VendusErro` (a família que quem chama sabe tratar) mas NÃO é
+    # `VendusHTTPErro` — se fosse, entrava na lista de "prova de que nada
+    # saiu" de fiscal.py e a reserva era libertada à mesma.
+    assert isinstance(e.value, VendusErro)
+    assert not isinstance(e.value, VendusHTTPErro)
+    assert "pos-loja1-sessao1-venda1" in str(e.value)
+
+
+def test_2xx_sem_id_nem_atcud_levanta_o_mesmo_erro_tipado(monkeypatch):
+    """Um 200 com JSON válido mas sem identidade nenhuma do documento é o
+    mesmo caso: gravá-lo escrevia uma linha com `vendus_document_id=None` e
+    `atcud=None`, que colide com a próxima igual (os índices únicos tratam o
+    nulo como valor) e esconde a fatura real atrás de um conflito."""
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+    monkeypatch.setenv("VENDUS_MODE", "normal")
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json={"status": "ok"})
+
+    with pytest.raises(VendusRespostaIlegivel):
+        _cliente(handler).criar_fatura_simplificada(
+            linhas=_linhas(), pagamentos=_pagamentos(), cliente=None,
+            external_reference="pos-loja1-sessao1-venda1", register_id=7,
+        )
+
+
+def test_2xx_so_com_atcud_e_aceite(monkeypatch):
+    """O contrário do teste acima, para a guarda não ser larga de mais: um
+    documento com ATCUD mas sem `id` tem identidade — o ATCUD é o código com
+    que a AT o identifica. Recusá-lo era perder uma fatura real."""
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+    monkeypatch.setenv("VENDUS_MODE", "normal")
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json={"atcud": "ABCD1234-45", "amount_gross": 8.99})
+
+    resultado = _cliente(handler).criar_fatura_simplificada(
+        linhas=_linhas(), pagamentos=_pagamentos(), cliente=None,
+        external_reference="pos-loja1-sessao1-venda1", register_id=7,
+    )
+    assert resultado["atcud"] == "ABCD1234-45"
+
+
+def test_talao_ilegivel_nao_transforma_uma_emissao_boa_num_erro(monkeypatch):
+    """O talão é o PAPEL, não o registo: um `output` que não é base64 faz
+    perder a reimpressão, nunca a fatura. Se isto rebentasse, uma emissão bem
+    sucedida virava uma falha — e uma falha de emissão é o que faz emitir
+    outra vez."""
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+    monkeypatch.setenv("VENDUS_MODE", "normal")
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json={
+            "id": 123, "number": "FS 2026/45", "atcud": "ABCD-45",
+            "amount_gross": 8.99, "output": "isto não é base64!!!",
+        })
+
+    resultado = _cliente(handler).criar_fatura_simplificada(
+        linhas=_linhas(), pagamentos=_pagamentos(), cliente=None,
+        external_reference="pos-loja1-sessao1-venda1", register_id=7,
+    )
+    assert resultado["id"] == 123
+    assert resultado["atcud"] == "ABCD-45"
+    assert resultado["talao_escpos"] == b""
+
+
+# --- O contrato com o Dashboard: total_bruto / total_liquido -----------------
+
+
+def test_emissao_devolve_total_bruto_e_total_liquido_do_vendus(monkeypatch):
+    """`dashboard.py::_campo_valor` soma `total_bruto` (com IVA) ou
+    `total_liquido` (sem) — e nenhum dos dois era sequer lido do Vendus, por
+    isso toda a receita das 5 lojas valia 0,00 €."""
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+    monkeypatch.setenv("VENDUS_MODE", "normal")
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json={
+            "id": 123, "number": "FS 2026/45", "atcud": "ABCD-45",
+            "amount_gross": 8.99, "amount_net": 7.96,
+        })
+
+    resultado = _cliente(handler).criar_fatura_simplificada(
+        linhas=_linhas(), pagamentos=_pagamentos(), cliente=None,
+        external_reference="pos-loja1-sessao1-venda1", register_id=7,
+    )
+    assert resultado["total_bruto"] == 8.99
+    assert resultado["total_liquido"] == 7.96
+    # `total` continua a ser o bruto — é o que o ecrã do POS já lê.
+    assert resultado["total"] == 8.99
+
+
+def test_liquido_em_falta_fica_none_e_nunca_zero(monkeypatch):
+    """Sem `amount_net` não se inventa um líquido — nem 0,00 € (que se soma
+    em silêncio e faz um dia de vendas parecer um dia sem IVA), nem uma
+    derivação por uma taxa assumida (as lojas vendem a 13 % e a 23 %)."""
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+    monkeypatch.setenv("VENDUS_MODE", "normal")
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json={
+            "id": 123, "number": "FS 2026/45", "atcud": "ABCD-45", "amount_gross": 8.99,
+        })
+
+    resultado = _cliente(handler).criar_fatura_simplificada(
+        linhas=_linhas(), pagamentos=_pagamentos(), cliente=None,
+        external_reference="pos-loja1-sessao1-venda1", register_id=7,
+    )
+    assert resultado["total_liquido"] is None
+
+
+# --- O documento LIDO: data e modo do Vendus, não os nossos -----------------
+
+
+def test_documento_lido_traz_a_data_o_modo_e_os_dois_totais(monkeypatch):
+    """`_normaliza_documento` deitava fora o `date` e o `mode`. Sem a data, a
+    fatura das 23h de ontem trazida por uma reconciliação das 9h de hoje caía
+    no cartão de HOJE do Dashboard; sem o modo, uma fatura recuperada nunca
+    trazia o aviso "documento em modo tests, sem valor fiscal"."""
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+    monkeypatch.setenv("VENDUS_MODE", "normal")
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json=[{
+            "id": 55, "number": "FS 2026/9", "atcud": "ABCD-9",
+            "amount_gross": 17.98, "amount_net": 15.91,
+            "external_reference": "pos-loja1-sessao1-venda1",
+            "date": "2026-08-18 23:30:00", "mode": "tests", "status": "N",
+        }])
+
+    doc = _cliente(handler).procurar_por_referencia_externa(
+        "pos-loja1-sessao1-venda1", 7
+    )
+    assert doc["modo"] == "tests"
+    assert doc["total_bruto"] == 17.98
+    assert doc["total_liquido"] == 15.91
+    # 23:30 em Lisboa (Verão, UTC+1) são 22:30 UTC do MESMO dia — e é por
+    # isso que o dia de ontem não escorrega para hoje.
+    assert doc["emitido_em"] == "2026-08-18T22:30:00+00:00"
+
+
+def test_documento_lido_prefere_o_local_time_ao_date(monkeypatch):
+    """`local_time` é o campo cuja semântica é inequívoca (hora local da
+    loja) — é o que o código de produção do mesmo dono usa para datar os
+    documentos do Vendus."""
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+    monkeypatch.setenv("VENDUS_MODE", "normal")
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json=[{
+            "id": 55, "atcud": "ABCD-9", "amount_gross": 1.0,
+            "external_reference": "pos-loja1-sessao1-venda1",
+            "local_time": "2026-08-18 23:30:00", "date": "2026-08-19 00:30:00",
+        }])
+
+    doc = _cliente(handler).procurar_por_referencia_externa(
+        "pos-loja1-sessao1-venda1", 7
+    )
+    assert doc["emitido_em"] == "2026-08-18T22:30:00+00:00"
+
+
+def test_data_do_vendus_com_fuso_e_respeitada_tal_e_qual(monkeypatch):
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+    monkeypatch.setenv("VENDUS_MODE", "normal")
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json=[{
+            "id": 55, "atcud": "ABCD-9", "amount_gross": 1.0,
+            "external_reference": "pos-loja1-sessao1-venda1",
+            "date": "2026-08-18T23:30:00+01:00",
+        }])
+
+    doc = _cliente(handler).procurar_por_referencia_externa(
+        "pos-loja1-sessao1-venda1", 7
+    )
+    assert doc["emitido_em"] == "2026-08-18T22:30:00+00:00"
+
+
+def test_data_ilegivel_do_vendus_nao_inventa_nenhuma(monkeypatch):
+    """Sem data legível devolve-se `None` — quem grava cai no instante actual
+    (e o aviso fica no log). Nunca uma data inventada em silêncio."""
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+    monkeypatch.setenv("VENDUS_MODE", "normal")
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json=[{
+            "id": 55, "atcud": "ABCD-9", "amount_gross": 1.0,
+            "external_reference": "pos-loja1-sessao1-venda1",
+            "date": "ontem à noite",
+        }])
+
+    doc = _cliente(handler).procurar_por_referencia_externa(
+        "pos-loja1-sessao1-venda1", 7
+    )
+    assert doc["emitido_em"] is None

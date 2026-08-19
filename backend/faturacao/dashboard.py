@@ -2,11 +2,16 @@
 módulo.
 
 Decisão do dono (2026-08-14): este ecrã lê as NOSSAS vendas (fat_documentos),
-nunca o Vendus. O POS próprio (Plano 2) ainda não vende nada — por isso a
-colecção existe mas está vazia, os cartões mostram zero e `ha_vendas` é False.
-No dia em que a primeira loja faturar, o dashboard acende sozinho: não há
-aqui nenhuma chave de API, nenhum pedido de rede, nada que dependa de um
-serviço de terceiros.
+nunca o Vendus. Enquanto o POS próprio (Plano 2) não vendeu nada, a colecção
+esteve vazia, os cartões a zero e `ha_vendas` a False; a partir da primeira
+fatura o dashboard acende sozinho — não há aqui nenhuma chave de API, nenhum
+pedido de rede, nada que dependa de um serviço de terceiros.
+
+Acender sozinho, porém, depende de uma coisa que não se vê daqui: os NOMES
+dos campos de valor que `fiscal.py::_gravar_documento` grava. Foi
+precisamente aí que este ecrã esteve partido — somava dois campos que
+ninguém escrevia e mostrava 0,00 € de toda a receita, todos os dias, sem um
+único erro. Ver `_campo_valor` e `_valor_documento`.
 
 O defeito do Vendus que este ecrã corrige (ver periodos.py para o porquê): ele
 comparava períodos desiguais (13 dias de agosto contra julho inteiro). Aqui a
@@ -47,8 +52,28 @@ LIMITE_LOJAS = 500
 
 def _campo_valor(com_iva: bool) -> str:
     """com_iva troca de CAMPO — nunca faz contas com uma taxa assumida. Mesma
-    regra de ouro de precos.py: sem o campo certo, não se inventa nada."""
+    regra de ouro de precos.py: sem o campo certo, não se inventa nada.
+
+    Estes dois nomes são o CONTRATO com quem grava os documentos
+    (`fiscal.py::_gravar_documento`, alimentado por `vendus/emissao.py` a
+    partir de `amount_gross`/`amount_net`). Durante um tempo este ecrã leu
+    dois campos que ninguém escrevia — ver `_valor_documento`."""
     return "total_bruto" if com_iva else "total_liquido"
+
+
+# O campo a ler quando o do contrato não está no documento — e SÓ para o
+# bruto. `total` é rigorosamente o mesmo número que `total_bruto`: os dois
+# saem do `amount_gross` do Vendus (`vendus/emissao.py`), um com o nome
+# antigo e outro com o do contrato. Ler o antigo não é inventar nada, é
+# reconhecer o mesmo valor com outro nome.
+#
+# O líquido NÃO tem alternativa nenhuma, de propósito: nenhum campo antigo o
+# contém, e derivá-lo do bruto obrigava a assumir uma taxa de IVA — as lojas
+# vendem a 13 % (comida) e a 23 % (refrigerantes), muitas vezes na mesma
+# venda. Um documento sem `total_liquido` conta 0 do lado "sem IVA", que é
+# uma falta visível, em vez de um número inventado que ninguém consegue
+# contestar. É a mesma regra de `vendus/emissao.py::_valor_monetario`.
+_CAMPO_ALTERNATIVO = {"total_bruto": "total"}
 
 
 def _parse_utc(valor) -> Optional[datetime]:
@@ -70,10 +95,30 @@ def _valor_documento(doc: Dict, campo: str) -> float:
     """Uma nota de crédito (NC) conta com sinal negativo; um documento
     anulado não conta nada. O abs() só se aplica à NC — defende contra uma NC
     que já viesse guardada negativa (sem duplicar o sinal); um FS não é
-    tocado, para não mascarar silenciosamente um valor errado na origem."""
+    tocado, para não mascarar silenciosamente um valor errado na origem.
+
+    **O defeito que o `_CAMPO_ALTERNATIVO` fecha.** Este ecrã somava
+    `total_bruto`/`total_liquido`, mas o único escritor de `fat_documentos`
+    em todo o backend gravava só `total` — nenhum dos dois campos do
+    contrato existia em documento nenhum. `float(None or 0)` dá 0.0 sem
+    levantar nada: o dono via HOJE 0,00 €, MÊS 0,00 €, ANO 0,00 €, todos os
+    dias, com as faturas reais a entrarem na AT ao lado. Medido no caminho
+    feliz: um açaí de 8,99 € em dinheiro, FS real emitida, Z com
+    `vendas_dinheiro=8,99` — e o dashboard a 0,00 €.
+
+    O contrato passou a ser cumprido na origem (`fiscal.py::
+    _gravar_documento` grava agora os dois), mas a alternativa fica: os
+    documentos gravados ANTES disso continuam em `fat_documentos` para
+    sempre, e um ecrã que mostrasse a receita a começar do zero no dia do
+    deploy seria o mesmo defeito com outra data. `is None`, e não `or`: um
+    documento com `total_bruto: 0.0` (uma fatura de 0 €) é um valor
+    legítimo e não pode cair para o campo alternativo."""
     if doc.get("anulado"):
         return 0.0
-    valor = float(doc.get(campo) or 0)
+    bruto = doc.get(campo)
+    if bruto is None:
+        bruto = doc.get(_CAMPO_ALTERNATIVO.get(campo))
+    valor = float(bruto or 0)
     if doc.get("tipo") == "NC":
         return -abs(valor)
     return valor
@@ -248,7 +293,21 @@ async def _existe_venda(db) -> bool:
     que a consulta principal usa (essa está limitada ao ano anterior para
     trás, só para alimentar os cartões/gráficos). Um negócio pode ter
     vendido antes dessa janela; a faixa "ainda não há vendas" não pode
-    ignorar isso só porque a janela dos gráficos não chega lá."""
+    ignorar isso só porque a janela dos gráficos não chega lá.
+
+    **`$ne: True` e não `False`, e isto é uma decisão.** No Mongo, `$ne`
+    casa também com o documento a que o campo FALTA — e é isso que se quer:
+    o POS nunca grava `anulado` (`fiscal.py::_gravar_documento`), e uma
+    fatura sem esse campo é uma venda como todas as outras. Trocar por
+    `{"anulado": False}` exigia o campo presente e respondia "ainda não há
+    vendas" a um dia inteiro de faturas reais.
+
+    Esta pergunta e os valores dos cartões têm de CONCORDAR: enquanto o
+    valor vinha a 0,00 € (ver `_valor_documento`), o ecrã afirmava que havia
+    vendas — pela pergunta certa — e mostrava zero em tudo, que é a pior das
+    combinações: parece que o negócio não vendeu nada, e nem sequer há a
+    faixa a explicar porquê. Corrigido o valor, os dois voltam a dizer a
+    mesma coisa, e é isso que o teste de ponta a ponta prende."""
     doc = await db[COLECOES["documentos"]].find_one({"anulado": {"$ne": True}}, {"_id": 1})
     return doc is not None
 

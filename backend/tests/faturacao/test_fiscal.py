@@ -67,10 +67,39 @@ def _arranque_saudavel_por_omissao():
 # --- Duplo de base de dados, com uniqueness REAL ------------------------------
 
 
+def _valores_no_caminho(item, chave):
+    """Os valores que o Mongo compara para uma chave que pode ser um CAMINHO
+    com pontos (`lista.campo`). Num array de subdocumentos, o Mongo casa o
+    filtro contra CADA elemento — daí uma lista de valores e não um só."""
+    if "." not in chave:
+        return [item.get(chave)]
+    primeiro, resto = chave.split(".", 1)
+    valor = item.get(primeiro)
+    if isinstance(valor, list):
+        return [v for elemento in valor
+                for v in _valores_no_caminho(elemento if isinstance(elemento, dict) else {}, resto)]
+    if isinstance(valor, dict):
+        return _valores_no_caminho(valor, resto)
+    return [None]
+
+
 def _corresponde(item, filtro):
+    """Só o que o código de produção usa: igualdade, `$ne`, e caminhos com
+    ponto. O `$ne` sobre um array de subdocumentos
+    (`vendas_ligadas_depois_do_fecho.venda_id`) é o que torna idempotente a
+    marca que a reconciliação deixa na sessão de caixa — sem o duplo o
+    reproduzir, esse `$ne` ficava por testar e duas reconciliações da mesma
+    conta gravavam os mesmos euros duas vezes."""
     if not filtro:
         return True
-    return all(item.get(chave) == valor for chave, valor in filtro.items())
+    for chave, valor in filtro.items():
+        valores = _valores_no_caminho(item, chave)
+        if isinstance(valor, dict) and "$ne" in valor:
+            if valor["$ne"] in valores:
+                return False
+        elif valor not in valores:
+            return False
+    return True
 
 
 class ResultadoUpdateFalso:
@@ -84,6 +113,17 @@ class ResultadoUpdateFalso:
     def __init__(self, matched_count):
         self.matched_count = matched_count
         self.modified_count = matched_count
+
+
+class ResultadoDeleteFalso:
+    """O mesmo, para o `delete_one` — `deleted_count` é o que decide a
+    corrida em `_libertar_reserva_se_intacta` (a rota de gestão apaga a
+    reserva CONDICIONALMENTE, e não pela leitura que fez quatro `await`s
+    antes). Um duplo que devolvesse `None` deixava esse `deleted_count`
+    impossível de testar — e era em cima dele que a defesa toda assentava."""
+
+    def __init__(self, deleted_count):
+        self.deleted_count = deleted_count
 
 
 def _como_o_motor(documento):
@@ -166,13 +206,19 @@ class ColeccaoFalsa:
         alvo = next((d for d in self._documentos if _corresponde(d, filtro)), None)
         if alvo is not None:
             self._documentos.remove(alvo)
-        return None
+        return ResultadoDeleteFalso(deleted_count=0 if alvo is None else 1)
 
     async def update_one(self, filtro, atualizacao):
         await asyncio.sleep(0)
         alvos = [d for d in self._documentos if _corresponde(d, filtro)]
         if alvos:
             alvos[0].update(atualizacao.get("$set", {}))
+            # `$push` — usado pela reconciliação para deixar na sessão de
+            # caixa já fechada a marca de que uma venda lhe foi ligada
+            # DEPOIS do Z. Tem de ser $push e não $set de uma lista relida:
+            # duas reconciliações da mesma sessão perdiam uma das marcas.
+            for campo, valor in (atualizacao.get("$push") or {}).items():
+                alvos[0].setdefault(campo, []).append(deepcopy(valor))
         return ResultadoUpdateFalso(matched_count=len(alvos))
 
 
@@ -184,6 +230,23 @@ class DbFalsa:
         return self._coleccoes[nome]
 
 
+def _unicos_de(coleccao):
+    """Os campos com índice ÚNICO declarados em `db.INDICES` para esta
+    colecção — LIDOS de lá, nunca copiados à mão.
+
+    É o que liga este duplo à garantia real: se um `unique` desaparecer de
+    `db.py`, os testes que dependem dele têm de ficar vermelhos. Uma lista
+    escrita à mão aqui deixava-os verdes sobre uma garantia que em produção
+    já não existia — exactamente o género de oráculo cego que este ficheiro
+    passa a vida a evitar."""
+    return [
+        chave
+        for (col, chaves, opcoes) in db_mod.INDICES
+        if col == coleccao and opcoes.get("unique")
+        for chave, _direccao in chaves
+    ]
+
+
 def _db(vendas=None, documentos=None, refs=None, tipos_pagamento=None, sessoes=None):
     # Por omissão, uma sessão ABERTA "sessao-1" — o sessao_id da _venda()
     # por omissão — para os testes que não são sobre a sessão de caixa (a
@@ -193,8 +256,15 @@ def _db(vendas=None, documentos=None, refs=None, tipos_pagamento=None, sessoes=N
         sessoes = [{"id": "sessao-1", "loja_id": "loja-1", "caixa_id": "caixa-1", "estado": "aberta"}]
     return DbFalsa({
         COLECOES["vendas"]: ColeccaoFalsa(vendas),
-        COLECOES["documentos"]: ColeccaoFalsa(documentos, indices_unicos=["vendus_document_id", "atcud"]),
-        COLECOES["refs_fiscais"]: ColeccaoFalsa(refs, indices_unicos=["ext_ref"]),
+        # `ext_ref` é único em `fat_documentos` desde esta ronda (db.py): um
+        # documento por venda. Sem o duplo o reproduzir, os testes da
+        # duplicação silenciosa (duas linhas com a mesma ext_ref e ATCUDs
+        # diferentes) passavam verdes sobre uma garantia que só existe em
+        # produção — daí `_unicos_de`, que os lê de `db.INDICES`.
+        COLECOES["documentos"]: ColeccaoFalsa(
+            documentos, indices_unicos=_unicos_de("fat_documentos")),
+        COLECOES["refs_fiscais"]: ColeccaoFalsa(
+            refs, indices_unicos=_unicos_de("fat_refs_fiscais")),
         COLECOES["tipos_pagamento"]: ColeccaoFalsa(tipos_pagamento),
         COLECOES["sessoes_caixa"]: ColeccaoFalsa(sessoes),
     })
@@ -3115,7 +3185,11 @@ def test_reconciliar_traz_a_fatura_do_vendus_com_a_caixa_ja_fechada(monkeypatch)
 def test_reconciliar_avisa_que_o_z_daquele_turno_fica_por_acertar(monkeypatch):
     """O Z de uma sessão já fechada não se reescreve por trás de quem o
     assinou — e não se finge que ficou tudo bem: diz-se ao gestor o que tem
-    de acertar à mão."""
+    de acertar nesse turno.
+
+    Sem os `pagamentos` gravados (a reserva ficou presa ANTES de a emissão
+    os registar) não se sabe quanto foi em dinheiro — e não se inventa: o
+    aviso diz o total da fatura e manda ver o documento."""
     db = _db_reconciliacao(sessao_estado="fechada")
     monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
     _vendus_que_tem(monkeypatch, _bruto(total=8.99))
@@ -3127,7 +3201,11 @@ def test_reconciliar_avisa_que_o_z_daquele_turno_fica_por_acertar(monkeypatch):
     # O valor vem do DOCUMENTO (o que a AT tem), não dos totais da venda.
     assert "8.99 €" in resposta["aviso_do_z"]
     assert "sessao-1" in resposta["aviso_do_z"]
-    assert "à mão" in resposta["aviso_do_z"]
+    # Sem repartição gravada não se anuncia nenhum valor "em dinheiro" — nem
+    # sequer 0,00 €, que se leria como "não entrou dinheiro nenhum".
+    assert resposta["dinheiro_por_acertar"] is None
+    assert resposta["outros_meios"] is None
+    assert "NÃO tem gravado como foi paga" in resposta["aviso_do_z"]
 
 
 def test_reconciliar_com_a_caixa_ainda_aberta_nao_inventa_aviso_nenhum(monkeypatch):
@@ -3404,3 +3482,958 @@ def test_reconciliar_uma_venda_que_tinha_sido_cancelada_repoe_a_receita(monkeypa
     # Os carimbos do cancelamento ficam à VISTA (`_venda_publica` mostra-os):
     # não se apaga o rasto de quem cancelou, corrige-se o estado.
     assert venda["cancelada_por"] == {"id": "op-1", "nome": "Rafaela"}
+
+
+# ============================================================================
+# A CONTA que muda debaixo da emissão: recusar, nunca recompor
+# ============================================================================
+#
+# A rota `finalizar` monta `itens = _itens_vendus(venda)` a partir do retrato
+# que leu no princípio — antes da validação, antes do `_reservar` — e a função
+# `emitir` fecha sobre esses itens. Nessa janela a venda ainda está `aberta` e
+# ainda não tem reserva: `juntar_linha` (e as outras três rotas de escrita)
+# passam o `_garante_sem_emissao` E a escrita condicional a
+# `{"estado": "aberta"}`. A linha entra na conta e NÃO entra na fatura.
+#
+# A correcção NÃO é recompor os itens com as linhas novas: a soma dos
+# pagamentos foi validada contra os `_totais` do retrato velho, por isso
+# emitir a conta nova produzia uma FS real cujo total não é o dinheiro que
+# entrou na gaveta. Recusa-se, liberta-se a reserva, e a operadora confirma a
+# conta nova e finaliza outra vez. Guião: `verif_E_conta_muda_debaixo_da_
+# emissao.py` (as rotas reais, a alteração injectada na janela).
+
+from faturacao.fiscal import ContaAlteradaDepoisDeConfirmada  # noqa: E402
+from faturacao.venda import (  # noqa: E402
+    PedidoJuntarLinha,
+    juntar_linha,
+)
+
+
+def _nunca_emite(ref):
+    raise AssertionError(
+        "saiu uma Fatura Simplificada REAL de uma conta que já não é a que a "
+        "operadora confirmou"
+    )
+
+
+def _recusa_a_conta_mudada(db, retrato):
+    """Corre o núcleo com um retrato que já não bate com a base de dados e
+    devolve a excepção — as três asserções que interessam (não emitiu, a
+    reserva não ficou a trancar a conta, a conta não foi tocada) ficam em cada
+    teste, porque são elas que descrevem o estrago."""
+
+    async def emitir(ref):
+        _nunca_emite(ref)
+
+    async def verificar(ref):
+        raise AssertionError("não devia sequer verificar — nada foi ao Vendus")
+
+    with pytest.raises(ContaAlteradaDepoisDeConfirmada) as excinfo:
+        _corre(finalizar_venda(db, retrato, emitir, verificar, esperar=_instantaneo))
+    return excinfo.value
+
+
+def test_linha_acrescentada_na_janela_nao_emite_e_liberta_a_reserva():
+    """O cenário do defeito: a Rafaela carrega em FINALIZAR com um açaí de
+    8,99 € no ecrã e recebe 8,99 €; a Ana pica um segundo açaí no outro PC
+    dentro da janela de validação. Emitir os itens do retrato dava uma FS real
+    de 8,99 € numa conta de 17,98 € — o segundo açaí saía porta fora sem
+    fatura nenhuma."""
+    db = _db(vendas=[_venda(linhas=[_linha(), _linha(id="linha-2")])])
+
+    _recusa_a_conta_mudada(db, _venda(linhas=[_linha()]))
+
+    assert _refs_de(db) == [], (
+        "a reserva ficou para trás — a conta fica trancada, e é justamente "
+        "nela que a operadora tem de voltar a carregar em FINALIZAR"
+    )
+    venda = _vendas_de(db)[0]
+    assert venda["estado"] == "aberta", "a conta tem de ficar utilizável"
+    assert len(venda["linhas"]) == 2, "a linha nova foi pisada"
+
+
+def test_desconto_global_alterado_na_janela_nao_emite_e_liberta_a_reserva():
+    """O mesmo pela outra metade da conta: o desconto global entra na janela.
+    A fatura sairia sem ele (8,99 € entregues à AT) numa conta que passou a
+    valer 3,99 € — e a operadora, que ia devolver 5 €, ficava com um talão
+    que diz outra coisa."""
+    db = _db(vendas=[_venda(linhas=[_linha()], desconto_global_eur=5.0)])
+
+    _recusa_a_conta_mudada(db, _venda(linhas=[_linha()]))
+
+    assert _refs_de(db) == []
+    assert _vendas_de(db)[0]["desconto_global_eur"] == 5.0
+
+
+def test_linha_removida_na_janela_nao_emite():
+    """A direcção contrária, que é a cara: a fatura sairia com um açaí que já
+    não está na conta — o cliente pagava 8,99 € a mais, com uma FS real
+    entregue à AT a dizer que sim."""
+    db = _db(vendas=[_venda(linhas=[_linha()])])
+
+    _recusa_a_conta_mudada(db, _venda(linhas=[_linha(), _linha(id="linha-2")]))
+
+    assert _refs_de(db) == []
+
+
+def test_troca_de_iva_na_janela_com_o_mesmo_total_nao_emite():
+    """A prova de que o critério NÃO é o total: 8,99 € antes e 8,99 € depois,
+    mas a linha passou de 13 % (INT) para 23 % (NOR) — o mesmo dinheiro com
+    outro imposto. Uma comparação pelo total deixava sair uma Fatura
+    Simplificada REAL com o IVA que ninguém confirmou; e o IVA é o que a AT
+    cobra."""
+    db = _db(vendas=[_venda(linhas=[_linha(tax_override="NOR")])])
+    retrato = _venda(linhas=[_linha()])
+
+    assert _totais(db._coleccoes[COLECOES["vendas"]]._documentos[0])["total"] == \
+        _totais(retrato)["total"], "o cenário só prova alguma coisa se o total for o mesmo"
+
+    _recusa_a_conta_mudada(db, retrato)
+    assert _refs_de(db) == []
+
+
+def test_troca_de_linhas_com_o_mesmo_total_nao_emite():
+    """A mesma prova pelo lado dos artigos: dois açaís de 8,99 € trocados por
+    um artigo de 17,98 €. O total bate ao cêntimo e a fatura é outra — outros
+    artigos, outra descrição no talão do cliente."""
+    db = _db(vendas=[_venda(linhas=[
+        _linha(id="linha-x", produto_nome="Taça Família", produto_preco=17.98)
+    ])])
+    retrato = _venda(linhas=[_linha(), _linha(id="linha-2")])
+
+    assert _totais(db._coleccoes[COLECOES["vendas"]]._documentos[0])["total"] == \
+        _totais(retrato)["total"] == 17.98
+
+    _recusa_a_conta_mudada(db, retrato)
+    assert _refs_de(db) == []
+
+
+def test_conta_igual_na_janela_emite_normalmente():
+    """O caminho feliz, e o teste que prova que esta defesa não recusa de
+    mais: a conta não mexeu (linhas E desconto), por isso emite-se como
+    sempre. Uma guarda que recusasse sempre passava os testes de cima e
+    parava as cinco lojas — é este que fica vermelho nesse caso."""
+    db = _db(vendas=[_venda(linhas=[_linha()], desconto_global_pct=10)])
+    emitiu = []
+
+    async def emitir(ref):
+        emitiu.append(ref)
+        return _bruto()
+
+    async def verificar(ref):
+        raise AssertionError("não é um timeout")
+
+    documento = _corre(finalizar_venda(
+        db, _venda(linhas=[_linha()], desconto_global_pct=10),
+        emitir, verificar, esperar=_instantaneo,
+    ))
+
+    assert emitiu == ["pos-loja-1-sessao-1-venda-1"]
+    assert documento["numero"] == "FS 2026/1"
+    assert _vendas_de(db)[0]["estado"] == "emitida"
+
+
+def test_campos_que_nao_afectam_a_fatura_nao_travam_a_emissao():
+    """A outra maneira de recusar de mais, e a razão de não se comparar o
+    documento inteiro: a compensação de `cancelar_venda` repõe
+    `cancelada_em`/`cancelada_por` a `None` numa venda que NÃO foi cancelada,
+    e uma tentativa anterior pode ter gravado `pagamentos`/`cliente_nif`.
+    Nenhum desses campos vai à fatura — as linhas e os descontos são os
+    mesmos, e esta emissão é boa. Recusá-la era deixar a operadora a carregar
+    em FINALIZAR sem nunca perceber porquê, com o cliente à frente."""
+    db = _db(vendas=[_venda(
+        linhas=[_linha()],
+        cancelada_em=None, cancelada_por=None,
+        pagamentos=[{"tipo_pagamento_id": "tipo-dinheiro", "valor": 8.99}],
+        cliente_nif="517542510",
+    )])
+    emitiu = []
+
+    async def emitir(ref):
+        emitiu.append(ref)
+        return _bruto()
+
+    async def verificar(ref):
+        raise AssertionError("não é um timeout")
+
+    _corre(finalizar_venda(
+        db, _venda(linhas=[_linha()]), emitir, verificar, esperar=_instantaneo
+    ))
+    assert emitiu == ["pos-loja-1-sessao-1-venda-1"]
+    assert _vendas_de(db)[0]["estado"] == "emitida"
+
+
+class TiposComLinhaNovaAMeio(ColeccaoFalsa):
+    """A janela real, na rota real: a colecção dos tipos de pagamento — que a
+    rota `finalizar` consulta DEPOIS de ler a venda e ANTES de reservar —
+    corre a alteração da conta no meio da validação. Mesma técnica de
+    `TiposComCancelamentoAMeio`/`TiposComFechoDeCaixaAMeio`: uma ordem
+    determinística, sem duas tarefas à sorte."""
+
+    def __init__(self, documentos, alterar):
+        super().__init__(documentos)
+        self._alterar = alterar
+
+    async def find_one(self, filtro, projecao=None):
+        if self._alterar is not None:
+            alterar, self._alterar = self._alterar, None
+            await alterar()
+        return await super().find_one(filtro, projecao)
+
+
+def test_juntar_linha_dentro_da_janela_de_validacao_nao_deixa_sair_fatura(monkeypatch):
+    """O cenário inteiro, ponta a ponta e com as duas rotas REAIS: a Ana pica
+    um segundo açaí (201 — nesse instante a conta está aberta e sem reserva,
+    por isso a linha entra mesmo) enquanto o FINALIZAR da Rafaela valida os
+    tipos de pagamento. Zero chamadas ao Vendus, reserva libertada, conta
+    intacta com as duas linhas — e a operadora ouve o que aconteceu e o que
+    fazer, sem chamar ninguém: não há nada de errado, basta confirmar a conta
+    nova e repetir."""
+    _configura_vendus_env(monkeypatch)
+    juntadas = []
+
+    async def juntar():
+        resposta = await juntar_linha(
+            "venda-1",
+            PedidoJuntarLinha(produto_id="prod-1", quantidade=1),
+            operador=_operador(operador_id="op-ana", nome="Ana"),
+        )
+        juntadas.append(len(resposta["linhas"]))
+
+    db = DbFalsa({
+        COLECOES["vendas"]: ColeccaoFalsa([_venda(linhas=[_linha()])]),
+        COLECOES["documentos"]: ColeccaoFalsa(
+            None, indices_unicos=["vendus_document_id", "atcud"]),
+        COLECOES["refs_fiscais"]: ColeccaoFalsa(None, indices_unicos=["ext_ref"]),
+        COLECOES["tipos_pagamento"]: TiposComLinhaNovaAMeio([_tipo_pagamento()], juntar),
+        COLECOES["sessoes_caixa"]: ColeccaoFalsa([_sessao_aberta_doc()]),
+        COLECOES["produtos"]: ColeccaoFalsa([{
+            "id": "prod-1", "nome": "Açaí Regular", "preco": 8.99, "tax_id": "INT",
+        }]),
+    })
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", ClienteEmissaoVendusFalso)
+    ClienteEmissaoVendusFalso.instancias.clear()
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(finalizar(
+            "venda-1",
+            PedidoFinalizarVenda(pagamentos=[
+                PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)]),
+            operador=_operador(),
+        ))
+
+    assert juntadas == [2], "a linha nova não chegou a entrar — não houve corrida nenhuma"
+    assert excinfo.value.status_code == 409
+    detalhe = excinfo.value.detail
+    assert "mudou" in detalhe.lower()
+    assert "não saiu" in detalhe.lower()
+    assert "finalize outra vez" in detalhe.lower(), (
+        "a operadora tem de ficar a saber o que fazer a seguir"
+    )
+    assert "gestor" not in detalhe.lower(), (
+        "não há nada de errado nesta conta — mandar chamar o gestor a uma loja "
+        "cheia por causa de uma conta que só precisa de ser confirmada outra "
+        "vez é o mesmo erro que dizer 'tente novamente' onde não se pode tentar"
+    )
+    cliente = ClienteEmissaoVendusFalso.instancias[0]
+    assert cliente.chamadas_criar == [], (
+        "saiu uma Fatura Simplificada REAL com os itens do retrato velho"
+    )
+    assert len(_vendas_de(db)[0]["linhas"]) == 2
+    assert _vendas_de(db)[0]["estado"] == "aberta"
+    assert _refs_de(db) == [], "a reserva abortada ficou a trancar a conta"
+
+
+def test_conta_alterada_nao_grava_os_pagamentos_da_tentativa_recusada():
+    """Recusar tem de deixar a conta EXACTAMENTE como estava — os pagamentos
+    e o NIF que a operadora escolheu não se gravam numa venda que não foi
+    faturada. `_emitir_e_gravar` é o único sítio que os grava (C2) e esta
+    recusa acontece antes dele; se algum dia deixasse de acontecer, ficava no
+    Mongo uma venda `aberta` com 8,99 € de pagamentos que nunca entraram em
+    fatura nenhuma — e o Z, que soma os `pagamentos`, contava dinheiro que a
+    gaveta não tem."""
+    db = _db(vendas=[_venda(linhas=[_linha(), _linha(id="linha-2")])])
+
+    async def emitir(ref):
+        _nunca_emite(ref)
+
+    async def verificar(ref):
+        raise AssertionError("não devia sequer verificar")
+
+    with pytest.raises(ContaAlteradaDepoisDeConfirmada):
+        _corre(finalizar_venda(
+            db, _venda(linhas=[_linha()]), emitir, verificar, esperar=_instantaneo,
+            dados_pagamento={
+                "pagamentos": [{"tipo_pagamento_id": "tipo-dinheiro", "valor": 8.99}],
+                "cliente_nif": "517542510",
+            },
+        ))
+
+    venda = _vendas_de(db)[0]
+    assert venda.get("pagamentos") is None, (
+        "ficaram pagamentos gravados numa venda que NÃO foi faturada"
+    )
+    assert venda.get("cliente_nif") is None
+
+
+def test_venda_cancelada_E_alterada_diz_que_foi_cancelada():
+    """Quando as duas coisas acontecem na mesma janela, a que a operadora
+    tem de ouvir é o CANCELAMENTO: "a conta mudou, confirme e finalize outra
+    vez" mandava-a repetir numa conta cancelada, onde finalizar nunca mais
+    vai passar — o mesmo tipo de conselho impossível de seguir que o resto do
+    módulo evita. É a ordem das duas perguntas em `finalizar_venda` que
+    decide isto, e é por isso que ela tem um teste."""
+    db = _db(vendas=[_venda(
+        linhas=[_linha(), _linha(id="linha-2")], estado="cancelada",
+    )])
+
+    async def emitir(ref):
+        _nunca_emite(ref)
+
+    async def verificar(ref):
+        raise AssertionError("não devia sequer verificar")
+
+    with pytest.raises(VendaJaNaoAberta):
+        _corre(finalizar_venda(
+            db, _venda(linhas=[_linha()]), emitir, verificar, esperar=_instantaneo
+        ))
+    assert _refs_de(db) == []
+
+
+# ============================================================================
+# A decisão tomada sobre uma FOTOGRAFIA tem de ser aplicada com uma escrita
+# que exija que a fotografia ainda seja verdade
+# ============================================================================
+#
+# `libertar_reserva_presa` respondia às quatro guardas sobre a reserva lida no
+# PRIMEIRO passo e só depois de mais três `await`s (o documento, a venda, a
+# sessão) é que a apagava — incondicionalmente. Reproduzido em processo, com
+# a saída medida: «1. gestor: libertar LEU a reserva → em_retoma=None / 3.
+# retoma: EMISSÃO REAL nº1 a caminho do Vendus / 4. estado real da reserva
+# AGORA: em_retoma=True / 5. gestor: libertar APAGA a reserva / 6. respondeu
+# 200 libertada=True / 7. operadora: 2.º FINALIZAR → emitida nº FS 2026/902»
+# → EMISSÕES REAIS pedidas ao Vendus = 2.
+#
+# É o `deleted_count` que decide esta corrida, como é o `matched_count` que
+# decide a de `cancelar_venda` e a de `_reclamar_retoma`.
+
+from faturacao.fiscal import (  # noqa: E402
+    DesfechoDaEmissaoIncerto,
+    PedidoReconciliarReserva,
+    _emitir_e_gravar,
+    _reparticao_do_pagamento,
+    reconciliar_reserva_presa,
+)
+from faturacao.vendus.emissao import (  # noqa: E402
+    RegisterIdInvalido,
+    VendusModoInvalido,
+    VendusRateLimitado,
+    VendusRespostaIlegivel,
+)
+
+
+class ColeccaoQueMudaDepoisDaLeitura(ColeccaoFalsa):
+    """Duplo que faz acontecer, DENTRO da janela da rota, o que em produção
+    acontece noutro pedido: a leitura devolve a fotografia antiga e, logo a
+    seguir, o mundo muda (uma retoma reclama a reserva, ou a emissão dela
+    acaba e grava o documento).
+
+    A rota fica exactamente com o que teria em produção — um retrato já
+    velho — sem ser preciso orquestrar duas tarefas asyncio para o provar.
+
+    O ponto onde se dispara importa, e é por isso que é escolhido caso a
+    caso: a rota de libertar faz QUATRO leituras antes de apagar (a reserva,
+    o documento, a venda e a sessão) e cada guarda só protege do que já
+    aconteceu quando ela corre. Uma mudança disparada na PRIMEIRA leitura é
+    apanhada pelas guardas seguintes; só a que se dá DEPOIS da última é que
+    prova o `delete_one` condicional."""
+
+    def __init__(self, documentos, mudanca, indices_unicos=None):
+        super().__init__(documentos, indices_unicos=indices_unicos)
+        self._mudanca = mudanca
+        self.armado = True
+
+    async def find_one(self, filtro, projecao=None):
+        lido = await super().find_one(filtro, projecao)
+        if self.armado:
+            self.armado = False
+            self._mudanca()
+        return lido
+
+
+# O nome antigo, mantido: é o que os cenários existentes usam para disparar
+# na leitura da reserva.
+class RefsQueMudamDepoisDaLeitura(ColeccaoQueMudaDepoisDaLeitura):
+    async def find_one(self, filtro, projecao=None):
+        lido = await ColeccaoFalsa.find_one(self, filtro, projecao)
+        if self.armado and "venda_id" in (filtro or {}):
+            self.armado = False
+            self._mudanca()
+        return lido
+
+
+def _db_libertar(mudanca=None, mudanca_na_sessao=None, documentos=None, vendas=None):
+    """A base de dados dos cenários de libertação. `mudanca` dispara na
+    leitura da RESERVA (o primeiro passo da rota); `mudanca_na_sessao`
+    dispara na leitura da SESSÃO, que é a última coisa que a rota faz antes
+    de apagar — a janela onde nenhuma guarda anterior pode ajudar."""
+    coleccoes = {}
+
+    def refs_mudam():
+        if mudanca is not None:
+            mudanca(coleccoes)
+
+    def sessao_muda():
+        if mudanca_na_sessao is not None:
+            mudanca_na_sessao(coleccoes)
+
+    coleccoes.update({
+        COLECOES["vendas"]: ColeccaoFalsa(
+            vendas if vendas is not None else [_venda(linhas=[_linha()])]),
+        COLECOES["documentos"]: ColeccaoFalsa(
+            documentos, indices_unicos=_unicos_de("fat_documentos")),
+        COLECOES["refs_fiscais"]: RefsQueMudamDepoisDaLeitura(
+            [_reserva_incerta_antiga()], refs_mudam,
+            indices_unicos=_unicos_de("fat_refs_fiscais")),
+        COLECOES["tipos_pagamento"]: ColeccaoFalsa([_tipo_pagamento()]),
+        COLECOES["sessoes_caixa"]: ColeccaoQueMudaDepoisDaLeitura(
+            [_sessao_aberta_doc()], sessao_muda),
+    })
+    return DbFalsa(coleccoes)
+
+
+def _reservas_em(coleccoes):
+    return coleccoes[COLECOES["refs_fiscais"]]._documentos
+
+
+def test_libertar_nao_apaga_a_reserva_que_uma_retoma_reclamou_dentro_da_janela(monkeypatch):
+    """O cenário reproduzido: o gestor confirmou no Vendus que não há nada
+    (e não havia — a fatura ia a caminho) e carrega em Libertar; entre a
+    leitura e o apagar, a operadora carrega em FINALIZAR e a retoma reclama a
+    reserva. Apagá-la era autorizar a segunda Fatura Simplificada."""
+    def reclama_a_retoma(coleccoes):
+        _reservas_em(coleccoes)[0].update({
+            "em_retoma": True, "em_retoma_desde": _agora_iso(1)})
+
+    db = _db_libertar(reclama_a_retoma)
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(libertar_reserva_presa("venda-1", _confirmado(), gestor={"email": "x"}))
+
+    assert excinfo.value.status_code == 409
+    assert "RECLAMADA" in excinfo.value.detail
+    # E o essencial: a reserva CONTINUA lá, a impedir a segunda emissão.
+    assert len(_refs_de(db)) == 1
+
+
+def test_libertar_nao_apaga_a_reserva_de_uma_venda_que_ficou_emitida_na_janela(monkeypatch):
+    """A retoma não só reclamou como ACABOU dentro da janela: a marca de
+    retoma volta a `None` (é o que `_limpar_incerta_resolvida` faz) e o par
+    `em_retoma`/`em_retoma_desde` do filtro já não a apanhava. O que a
+    apanha é o `documento_id` carimbado na reserva — apagá-la era deitar
+    fora a peça que sustenta a idempotência de uma venda JÁ emitida."""
+    def a_retoma_acaba(coleccoes):
+        # Dispara na leitura da SESSÃO — a última antes de apagar. Disparada
+        # mais cedo, era a guarda do documento (que corre no segundo passo)
+        # a apanhar isto, e o `delete_one` condicional ficava por provar.
+        _reservas_em(coleccoes)[0].update({
+            "incerta": False, "em_retoma": None, "em_retoma_desde": None,
+            "documento_id": "doc-901",
+        })
+        coleccoes[COLECOES["documentos"]]._documentos.append({
+            "id": "doc-901", "ext_ref": "pos-loja-1-sessao-1-venda-1",
+            "numero": "FS 2026/901", "atcud": "ATCUD-901", "venda_id": "venda-1",
+        })
+
+    db = _db_libertar(mudanca_na_sessao=a_retoma_acaba)
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(libertar_reserva_presa("venda-1", _confirmado(), gestor={"email": "x"}))
+
+    assert excinfo.value.status_code == 409
+    assert "FS 2026/901" in excinfo.value.detail
+    assert len(_refs_de(db)) == 1
+
+
+def test_libertar_responde_404_quando_outro_gestor_a_libertou_na_janela(monkeypatch):
+    """Dois separadores do backoffice na mesma conta. Quem chega tarde não
+    pode responder "libertada por si" a uma reserva que não foi ele que
+    apagou — nem repetir a escrita às cegas."""
+    def outro_liberta(coleccoes):
+        del _reservas_em(coleccoes)[:]
+
+    db = _db_libertar(outro_liberta)
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(libertar_reserva_presa("venda-1", _confirmado(), gestor={"email": "x"}))
+
+    assert excinfo.value.status_code == 404
+
+
+def test_libertar_continua_a_apagar_quando_nada_muda_debaixo_dele(monkeypatch):
+    """O outro lado da guarda: sem ninguém a mexer na reserva, a libertação
+    faz exactamente o que sempre fez — senão a única saída destas contas
+    passava a ser um 409 permanente, que é o estrago ao contrário."""
+    db = _db_libertar()
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+
+    resposta = _corre(libertar_reserva_presa("venda-1", _confirmado(), gestor={"email": "x"}))
+
+    assert resposta["libertada"] is True
+    assert _refs_de(db) == []
+
+
+def test_libertar_apaga_uma_retoma_ABANDONADA_ha_muito(monkeypatch):
+    """O filtro condicional usa o valor LIDO da marca de retoma, e não
+    `None` à força — senão uma reserva com uma retoma morta (o processo que
+    a reclamou morreu num deploy) ficava trancada para sempre, e essa é
+    precisamente a conta que esta rota existe para desentalar."""
+    db = _db_libertar()
+    db._coleccoes[COLECOES["refs_fiscais"]]._documentos[0].update({
+        "em_retoma": True, "em_retoma_desde": _agora_iso(3600),  # há uma hora
+    })
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+
+    resposta = _corre(libertar_reserva_presa("venda-1", _confirmado(), gestor={"email": "x"}))
+
+    assert resposta["libertada"] is True
+    assert resposta["motivo"] == "em_retoma"
+    assert _refs_de(db) == []
+
+
+# ============================================================================
+# O `except Exception` que libertava a reserva de uma fatura que JÁ existe
+# ============================================================================
+#
+# Ele apanhava também o que rebenta DEPOIS de uma resposta 2xx, com o
+# documento fiscal já criado (`vendus/emissao.py`: o corpo que não é JSON, o
+# `output` que não é base64, o `amount_gross` que não é número). Reproduzido:
+# «[VENDUS] documento fiscal REAL criado: FS 2026/900 → JSONDecodeError →
+# estado no sistema: venda='aberta' | reservas=0 | fat_documentos=0» — e o
+# ecrã, que relê a venda, recebia `emissao_por_confirmar: False` e convidava a
+# emitir outra vez: 2 FS reais.
+
+
+async def _nunca_verifica(_ref):
+    raise AssertionError("não devia chegar a verificar")
+
+
+def _emitir_que_levanta(erro):
+    async def emitir(_ref):
+        raise erro
+    return emitir
+
+
+def test_erro_desconhecido_na_emissao_marca_incerta_e_NAO_liberta_a_reserva():
+    db = _db(vendas=[_venda(linhas=[_linha()])])
+
+    with pytest.raises(DesfechoDaEmissaoIncerto):
+        _corre(finalizar_venda(
+            db, _venda(linhas=[_linha()]),
+            _emitir_que_levanta(ValueError("Expecting value: line 1 column 1")),
+            _nunca_verifica,
+        ))
+
+    reservas = _refs_de(db)
+    assert len(reservas) == 1, "a reserva de uma fatura que pode existir NUNCA se liberta"
+    assert reservas[0]["incerta"] is True
+
+
+def test_resposta_ilegivel_do_vendus_e_tratada_como_incerta():
+    """`VendusRespostaIlegivel` é `VendusErro` mas NÃO é `VendusHTTPErro` —
+    e é essa a diferença que a mantém fora da lista de "prova de que nada
+    saiu"."""
+    db = _db(vendas=[_venda(linhas=[_linha()])])
+
+    with pytest.raises(DesfechoDaEmissaoIncerto):
+        _corre(finalizar_venda(
+            db, _venda(linhas=[_linha()]),
+            _emitir_que_levanta(VendusRespostaIlegivel("200 com HTML de manutenção")),
+            _nunca_verifica,
+        ))
+
+    assert _refs_de(db)[0]["incerta"] is True
+
+
+@pytest.mark.parametrize("erro", [
+    RegisterIdInvalido("register_id 9 não bate com o configurado"),
+    VendusModoInvalido("VENDUS_MODE não está definido"),
+    VendusRateLimitado("429 mesmo após 3 tentativas"),
+    VendusHTTPErro(400, "tax_id inválido"),
+])
+def test_os_erros_com_prova_de_que_nada_saiu_continuam_a_libertar_a_reserva(erro):
+    """A lista curta do que É seguro libertar: os dois primeiros são
+    recusados ANTES de qualquer pedido sair para a rede; o 429 é uma recusa a
+    processar; um 4xx é o Vendus (ou o que estiver à frente dele) a rejeitar
+    o pedido — o caso comum ao balcão, em que a conta TEM de destrancar para
+    a operadora corrigir e voltar a finalizar."""
+    db = _db(vendas=[_venda(linhas=[_linha()])])
+
+    with pytest.raises(type(erro)):
+        _corre(finalizar_venda(
+            db, _venda(linhas=[_linha()]), _emitir_que_levanta(erro), _nunca_verifica,
+        ))
+
+    assert _refs_de(db) == []
+
+
+def test_a_rota_traduz_o_desfecho_desconhecido_para_503_e_nunca_500(monkeypatch):
+    """O ecrã lê um 500 com a venda ainda `aberta` como "nada saiu, pode
+    repetir" (`PosVenda.js::tipoDoErroDeEmissao`) — que é exactamente a
+    segunda fatura. 503 é o balde do "não sabemos se saiu"."""
+    db = _db(vendas=[_venda(linhas=[_linha()])], tipos_pagamento=[_tipo_pagamento()])
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    _configura_vendus_env(monkeypatch)
+
+    class ClienteQueRebentaDepoisDo2xx(ClienteEmissaoVendusFalso):
+        def criar_fatura_simplificada(self, **kwargs):
+            self.chamadas_criar.append(kwargs)
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", ClienteQueRebentaDepoisDo2xx)
+    ClienteEmissaoVendusFalso.instancias.clear()
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(finalizar(
+            "venda-1",
+            PedidoFinalizarVenda(pagamentos=[
+                PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)]),
+            operador=_operador(),
+        ))
+
+    assert excinfo.value.status_code == 503
+    assert "confirme no vendus" in excinfo.value.detail.lower()
+    # E a venda continua trancada pela reserva incerta: é isso que o ecrã lê
+    # como `emissao_por_confirmar` e o impede de convidar a emitir de novo.
+    assert _refs_de(db)[0]["incerta"] is True
+
+
+def test_depois_de_um_desfecho_desconhecido_a_tentativa_seguinte_verifica_em_vez_de_emitir():
+    """O fecho do ciclo: a operadora carrega outra vez em FINALIZAR e a
+    retoma é OBRIGADA a verificar primeiro — encontra a FS que já tinha
+    saído e grava-a, sem uma segunda emissão."""
+    db = _db(vendas=[_venda(linhas=[_linha()])])
+    emissoes = []
+
+    async def emitir_que_cria_e_rebenta(_ref):
+        emissoes.append("criada no Vendus")
+        raise ValueError("corpo ilegível de um 200")
+
+    async def verificar_que_encontra(_ref):
+        return _bruto(id=900, numero="FS 2026/900", atcud="ATCUD-900")
+
+    with pytest.raises(DesfechoDaEmissaoIncerto):
+        _corre(finalizar_venda(
+            db, _venda(linhas=[_linha()]), emitir_que_cria_e_rebenta, _nunca_verifica,
+        ))
+
+    documento = _corre(finalizar_venda(
+        db, _venda(linhas=[_linha()]), emitir_que_cria_e_rebenta,
+        verificar_que_encontra, esperar=_instantaneo,
+    ))
+
+    assert documento["numero"] == "FS 2026/900"
+    assert len(emissoes) == 1, "a segunda tentativa NÃO pode voltar a emitir"
+    assert _vendas_de(db)[0]["estado"] == "emitida"
+
+
+# ============================================================================
+# O documento gravado: o que o resto do sistema precisa de lá encontrar
+# ============================================================================
+
+
+def _grava(db, bruto, ext_ref="pos-loja-1-sessao-1-venda-1"):
+    return _corre(_gravar_documento(db, ext_ref, _venda(linhas=[_linha()]), bruto))
+
+
+def test_documento_gravado_traz_os_campos_que_o_dashboard_soma():
+    """`dashboard.py::_campo_valor` lê `total_bruto` (com IVA) ou
+    `total_liquido` (sem) e nenhum dos dois era gravado: toda a receita das 5
+    lojas valia 0,00 €. `total` mantém-se — é o que o ecrã do POS lê."""
+    db = _db(vendas=[_venda(linhas=[_linha()])])
+
+    documento = _grava(db, _bruto(total=8.99, total_bruto=8.99, total_liquido=7.96))
+
+    assert documento["total_bruto"] == 8.99
+    assert documento["total_liquido"] == 7.96
+    assert documento["total"] == 8.99
+
+
+def test_documento_trazido_por_verificacao_fica_com_o_instante_do_vendus():
+    """A receita de ontem à noite não pode cair no cartão de HOJE só porque
+    foi hoje que a fomos buscar."""
+    db = _db(vendas=[_venda(linhas=[_linha()])])
+
+    documento = _grava(db, _bruto(emitido_em="2026-08-18T22:30:00+00:00"))
+
+    assert documento["emitido_em"] == "2026-08-18T22:30:00+00:00"
+
+
+def test_documento_sem_instante_do_vendus_cai_no_actual_e_nao_inventa_data():
+    """Sem data legível do Vendus (ou num documento criado agora mesmo) o
+    instante é o actual — nunca uma data inventada a partir de um campo que
+    não se soube ler."""
+    db = _db(vendas=[_venda(linhas=[_linha()])])
+
+    documento = _grava(db, _bruto())
+
+    assert documento["emitido_em"] is not None
+    assert documento["emitido_em"].startswith(str(datetime.now(timezone.utc).year))
+
+
+def test_documento_guarda_o_modo_em_que_saiu():
+    db = _db(vendas=[_venda(linhas=[_linha()])])
+    assert _grava(db, _bruto(modo="tests"))["modo"] == "tests"
+
+
+def test_gravar_o_MESMO_documento_outra_vez_reutiliza_o_que_ja_la_esta():
+    """O caminho normal de recuperação (um retry depois de a resposta se ter
+    perdido): a mesma `ext_ref` e o mesmo documento fiscal — reutiliza-se,
+    sem inventar um segundo e sem alarme nenhum."""
+    db = _db(vendas=[_venda(linhas=[_linha()])])
+    primeiro = _grava(db, _bruto(id=501, atcud="ATCUD-1"))
+
+    # O id vem como string na leitura e como inteiro na criação — o mesmo
+    # documento à mesma.
+    segundo = _grava(db, _bruto(id="501", atcud="ATCUD-1"))
+
+    assert segundo["id"] == primeiro["id"]
+    assert len(db._coleccoes[COLECOES["documentos"]]._documentos) == 1
+
+
+def test_um_SEGUNDO_documento_diferente_na_mesma_ext_ref_e_um_erro_ALTO():
+    """A duplicação silenciosa que o índice único de `ext_ref` transforma em
+    erro: duas linhas com a mesma referência e ATCUDs diferentes, a venda a
+    apontar para uma, o ecrã a mostrar a que o Mongo calhasse e a listagem de
+    presas a não a mostrar. Agora rebenta no instante em que acontece — e a
+    reserva NÃO se liberta, porque os dois documentos fiscais existem."""
+    db = _db(vendas=[_venda(linhas=[_linha()])])
+    _grava(db, _bruto(id=901, atcud="ATCUD-901", numero="FS 2026/901"))
+
+    with pytest.raises(ConflitoDocumentoFiscal) as excinfo:
+        _grava(db, _bruto(id=902, atcud="ATCUD-902", numero="FS 2026/902"))
+
+    assert "FS 2026/901" in str(excinfo.value)
+    assert "ATCUD-902" in str(excinfo.value)
+    assert len(db._coleccoes[COLECOES["documentos"]]._documentos) == 1
+
+
+# ============================================================================
+# Reconciliar: o que se diz ao gestor sobre o Z, e onde é que isso fica
+# ============================================================================
+
+
+def _pagamento(tipo_fiscal="NU", valor=8.99, nome="Dinheiro"):
+    return {
+        "tipo_pagamento_id": "tipo-%s" % tipo_fiscal.lower(), "nome": nome,
+        "tipo_fiscal": tipo_fiscal, "valor": valor,
+    }
+
+
+def _venda_paga_misto():
+    return _venda(
+        id="venda-1", linhas=[_linha()],
+        pagamentos=[_pagamento("NU", 4.50), _pagamento("CD", 4.49, "Multibanco")],
+    )
+
+
+def test_reconciliar_com_pagamento_misto_manda_acertar_SO_a_parte_em_dinheiro(monkeypatch):
+    """O aviso mandava acertar a gaveta pelo total BRUTO da fatura. Num
+    pagamento misto isso é falso e cria a diferença ao contrário: 8,99 € de
+    fatura com 4,50 € em dinheiro e 4,49 € em multibanco mandava acertar
+    8,99 € numa gaveta que já tinha sido contada e assinada."""
+    db = _db_reconciliacao(sessao_estado="fechada", venda=_venda_paga_misto())
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    _vendus_que_tem(monkeypatch, _bruto(total=8.99))
+
+    resposta = _corre(reconciliar_reserva_presa("venda-1", None, gestor={"email": "x"}))
+
+    assert resposta["dinheiro_por_acertar"] == 4.50
+    assert resposta["outros_meios"] == 4.49
+    assert "4.50 €" in resposta["aviso_do_z"]
+    assert "4.49 €" in resposta["aviso_do_z"]
+    # O total da fatura continua a aparecer (é o que se procura no Vendus),
+    # mas já não é o valor que ele é mandado acertar na gaveta.
+    assert "8.99 €" in resposta["aviso_do_z"]
+    assert "DINHEIRO" in resposta["aviso_do_z"]
+
+
+def test_reconciliar_de_uma_venda_toda_em_dinheiro_acerta_pelo_total(monkeypatch):
+    """O outro lado: quando tudo foi mesmo em dinheiro, o valor a acertar é o
+    total — a correcção não pode ter partido o caso simples."""
+    db = _db_reconciliacao(
+        sessao_estado="fechada",
+        venda=_venda(id="venda-1", linhas=[_linha()], pagamentos=[_pagamento("NU", 8.99)]),
+    )
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    _vendus_que_tem(monkeypatch, _bruto(total=8.99))
+
+    resposta = _corre(reconciliar_reserva_presa("venda-1", None, gestor={"email": "x"}))
+
+    assert resposta["dinheiro_por_acertar"] == 8.99
+    assert resposta["outros_meios"] == 0.0
+
+
+def test_reconciliar_deixa_a_marca_na_PROPRIA_sessao_de_caixa(monkeypatch):
+    """O aviso vivia só no corpo daquela resposta e num `logger.warning`:
+    passada uma semana não havia um único sítio onde se visse que aqueles
+    euros existiram. O Z não se recalcula — REGISTA-SE que uma venda lhe foi
+    ligada depois do fecho."""
+    db = _db_reconciliacao(sessao_estado="fechada", venda=_venda_paga_misto())
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    _vendus_que_tem(monkeypatch, _bruto(total=8.99, numero="FS 2026/77", atcud="ATCUD-REAL"))
+
+    resposta = _corre(reconciliar_reserva_presa("venda-1", None, gestor={"email": "dono@lacai.pt"}))
+
+    assert resposta["registada_na_sessao"] is True
+    sessao = db._coleccoes[COLECOES["sessoes_caixa"]]._documentos[0]
+    marcas = sessao["vendas_ligadas_depois_do_fecho"]
+    assert len(marcas) == 1
+    assert marcas[0]["venda_id"] == "venda-1"
+    assert marcas[0]["numero"] == "FS 2026/77"
+    assert marcas[0]["total"] == 8.99
+    assert marcas[0]["dinheiro"] == 4.50
+    assert marcas[0]["por"] == "dono@lacai.pt"
+    assert marcas[0]["ligada_em"]
+    # O Z assinado NÃO se toca: nem `esperado`, nem `contado`, nem
+    # `diferenca` — o talão foi assinado com a gaveta contada à frente de
+    # quem o assinou.
+    assert sessao["estado"] == "fechada"
+    assert "esperado" not in sessao or sessao.get("esperado") is None
+
+
+def test_duas_reconciliacoes_da_mesma_sessao_deixam_as_DUAS_marcas(monkeypatch):
+    """Duas contas presas da mesma noite (o caso normal quando um deploy
+    apanha o serviço a meio). Com um `$set` de uma lista relida, uma das
+    marcas perdia-se."""
+    db = _db_reconciliacao(sessao_estado="fechada", venda=_venda_paga_misto())
+    db._coleccoes[COLECOES["vendas"]]._documentos.append(
+        _venda(id="venda-2", sessao_id="sessao-1", linhas=[_linha()],
+               pagamentos=[_pagamento("NU", 8.99)]))
+    db._coleccoes[COLECOES["refs_fiscais"]]._documentos.append(
+        _reserva_incerta_antiga(id="r2", venda_id="venda-2",
+                                ext_ref="pos-loja-1-sessao-1-venda-2"))
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    _vendus_que_tem(monkeypatch, _bruto(total=8.99))
+
+    _corre(reconciliar_reserva_presa("venda-1", None, gestor={"email": "x"}))
+    _vendus_que_tem(monkeypatch, _bruto(id=502, atcud="ATCUD-2", numero="FS 2026/2", total=8.99))
+    _corre(reconciliar_reserva_presa("venda-2", None, gestor={"email": "x"}))
+
+    marcas = db._coleccoes[COLECOES["sessoes_caixa"]]._documentos[0][
+        "vendas_ligadas_depois_do_fecho"]
+    assert [m["venda_id"] for m in marcas] == ["venda-1", "venda-2"]
+
+
+def test_reconciliar_com_a_caixa_AINDA_ABERTA_nao_marca_nada(monkeypatch):
+    """Com a sessão aberta esta venda entra no Z normalmente — uma marca de
+    "ligada depois do fecho" seria ruído a mandar acertar o que não precisa
+    de acerto nenhum."""
+    db = _db_reconciliacao(sessao_estado="aberta", venda=_venda_paga_misto())
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    _vendus_que_tem(monkeypatch, _bruto())
+
+    resposta = _corre(reconciliar_reserva_presa("venda-1", None, gestor={"email": "x"}))
+
+    assert resposta["registada_na_sessao"] is False
+    assert resposta["aviso_do_z"] is None
+    sessao = db._coleccoes[COLECOES["sessoes_caixa"]]._documentos[0]
+    assert "vendas_ligadas_depois_do_fecho" not in sessao
+
+
+def test_a_marca_que_falha_nao_derruba_uma_reconciliacao_ja_feita(monkeypatch):
+    """A reconciliação em si JÁ correu bem — o documento fiscal está gravado
+    e a venda está `emitida`. Um soluço do Mongo na marca de apoio não pode
+    virar um 500 que manda o gestor repetir uma operação já feita."""
+    db = _db_reconciliacao(sessao_estado="fechada", venda=_venda_paga_misto())
+
+    class SessoesQueRebentamAEscrever(ColeccaoFalsa):
+        async def update_one(self, filtro, atualizacao):
+            raise RuntimeError("Mongo indisponível")
+
+    db._coleccoes[COLECOES["sessoes_caixa"]] = SessoesQueRebentamAEscrever(
+        [_sessao_aberta_doc(estado="fechada")])
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    _vendus_que_tem(monkeypatch, _bruto(total=8.99))
+
+    resposta = _corre(reconciliar_reserva_presa("venda-1", None, gestor={"email": "x"}))
+
+    assert resposta["reconciliada"] is True
+    assert resposta["registada_na_sessao"] is False
+    assert _vendas_de(db)[0]["estado"] == "emitida"
+
+
+def test_reconciliar_nao_apaga_a_marca_de_uma_retoma_que_reclamou_na_janela(monkeypatch):
+    """A mesma forma de defeito do `libertar`, na outra rota de gestão — e
+    aqui a janela é MAIOR, porque inclui uma chamada HTTP ao Vendus. Limpar a
+    marca da reclamação era apagar por baixo de quem está a emitir neste
+    instante a própria marca que impede os dois botões de lhe tocarem."""
+    db = _db_reconciliacao(sessao_estado="aberta", venda=_venda_paga_misto())
+
+    def reclama_a_retoma():
+        db._coleccoes[COLECOES["refs_fiscais"]]._documentos[0].update({
+            "em_retoma": True, "em_retoma_desde": _agora_iso(1)})
+
+    db._coleccoes[COLECOES["refs_fiscais"]] = RefsQueMudamDepoisDaLeitura(
+        [_reserva_incerta_antiga()], reclama_a_retoma,
+        indices_unicos=_unicos_de("fat_refs_fiscais"))
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    _vendus_que_tem(monkeypatch, _bruto())
+
+    resposta = _corre(reconciliar_reserva_presa("venda-1", None, gestor={"email": "x"}))
+
+    # O documento entra na mesma (é um facto do lado da AT que já aconteceu),
+    # mas a marca da retoma fica INTACTA para quem a reclamou.
+    assert resposta["reconciliada"] is True
+    reserva = _refs_de(db)[0]
+    assert reserva["em_retoma"] is True
+
+
+def test_reparticao_do_pagamento_sem_pagamentos_gravados_devolve_none():
+    """Zero não é "não sei": um 0,00 € em dinheiro leria-se como "não entrou
+    dinheiro nenhum" e mandava não mexer numa gaveta que pode estar a menos."""
+    assert _reparticao_do_pagamento(_venda(linhas=[_linha()])) is None
+
+
+def test_reconciliar_a_MESMA_venda_duas_vezes_deixa_UMA_marca(monkeypatch):
+    """A rota promete responder o mesmo a um pedido repetido "sem escrever
+    nada de novo". Duas marcas dos MESMOS 8,99 € convidavam o gestor a
+    acertar a gaveta daquele turno duas vezes — o estrago que este registo
+    existe precisamente para evitar."""
+    db = _db_reconciliacao(sessao_estado="fechada", venda=_venda_paga_misto())
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    _vendus_que_tem(monkeypatch, _bruto(total=8.99))
+
+    primeira = _corre(reconciliar_reserva_presa("venda-1", None, gestor={"email": "x"}))
+    segunda = _corre(reconciliar_reserva_presa("venda-1", None, gestor={"email": "x"}))
+
+    assert primeira["registada_na_sessao"] is True
+    # O pedido repetido continua a dizer que está registada — porque está.
+    assert segunda["registada_na_sessao"] is True
+    assert segunda["veio_do_vendus_agora"] is False
+    marcas = db._coleccoes[COLECOES["sessoes_caixa"]]._documentos[0][
+        "vendas_ligadas_depois_do_fecho"]
+    assert len(marcas) == 1
+
+
+def test_documento_gravado_diz_o_que_e_e_nao_grava_anulado():
+    """O outro campo que o Dashboard lê de cada documento
+    (`dashboard.py::_valor_documento`): uma NC conta com sinal negativo. Uma
+    linha de documento fiscal que não diz o que é obriga quem a soma a
+    adivinhar.
+
+    `anulado` fica por gravar de propósito: o campo ausente já significa "não
+    anulado" nos dois lados do Dashboard, e é isso que a consulta
+    `_existe_venda` (`$ne: True`) assume — ver o teste que guarda essa
+    ausência em test_dashboard.py."""
+    db = _db(vendas=[_venda(linhas=[_linha()])])
+
+    documento = _grava(db, _bruto())
+
+    assert documento["tipo"] == "FS"
+    assert "anulado" not in documento

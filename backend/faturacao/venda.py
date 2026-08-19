@@ -431,10 +431,11 @@ async def abrir_venda(dados: PedidoNovaVenda, operador: Dict = Depends(operador_
 # Declarada ANTES de todas as rotas com {venda_id}: o FastAPI serve a
 # PRIMEIRA rota que casa com o caminho, e uma `GET /pos/venda/{venda_id}`
 # acrescentada acima desta engolia "aberta" como se fosse um id de venda — a
-# operadora apanhava um 404 e voltava a picar a conta toda. Hoje nenhuma rota
-# de {venda_id} tem só três segmentos (nem aqui nem em fiscal.py), por isso o
-# conflito ainda não existe; esta ordem é a defesa contra a rota que vier a
-# seguir. Provado em test_venda.py, no router montado de verdade.
+# operadora apanhava um 404 e voltava a picar a conta toda. Deixou de ser uma
+# precaução hipotética: essa rota existe agora (`obter_venda`, no FIM deste
+# ficheiro), e é só esta ordem que as separa — as duas casam com um caminho de
+# três segmentos, e a de `{venda_id}` casa com QUALQUER um. Provado em
+# test_venda.py, no router montado de verdade.
 @router.get("/pos/venda/aberta")
 async def venda_aberta(
     caixa_id: str, operador: Dict = Depends(operador_atual)
@@ -722,3 +723,94 @@ async def cancelar_venda(venda_id: str, operador: Dict = Depends(operador_atual)
 
     venda.update(atualizacao)
     return _venda_publica(venda)
+
+
+async def _documento_da_venda(db, venda_id: str) -> Optional[Dict]:
+    """O documento fiscal desta venda, como o ecrã o mostra — ou `None`
+    quando ainda não existe nenhum (conta `aberta`, ou `cancelada`), o que
+    não é erro nenhum.
+
+    A selecção de campos é a de `fiscal.py::_resposta_documento`,
+    REUTILIZADA e não copiada: uma segunda cópia divergia no dia em que o
+    documento ganhasse (ou perdesse) um campo, e o ecrã passava a mostrar
+    coisas diferentes conforme tivesse chegado ao documento pela resposta do
+    `finalizar` ou por esta releitura — sendo que a releitura é exactamente o
+    caminho de quem NÃO chegou a ver a resposta do `finalizar`. O `modo` faz
+    parte dessa selecção de propósito: um documento emitido em `tests` não
+    tem valor fiscal nenhum, e o ecrã tem de o avisar.
+
+    **A importação é local a esta função, e não no topo do módulo**, por um
+    ciclo real e não teórico: `fiscal.py` importa oito nomes daqui
+    (`_venda_publica`, `_totais`, `_obter_venda_da_loja`, ...). Um
+    `from .fiscal import _resposta_documento` lá em cima rebentava o arranque
+    do módulo com ImportError, seja qual for o dos dois que entre primeiro —
+    quem começa fica meio construído em sys.modules, e o outro vai lá buscar
+    nomes que ainda não existem. Adiada para dentro da função, corre com os
+    dois módulos já inteiros. É a mesma razão pela qual `_tem_reserva_fiscal`
+    pergunta pelo `venda_id` em vez de importar a `ext_ref_determinista`.
+
+    A pergunta é pelo `venda_id` — o campo que `fiscal.py::_gravar_documento`
+    grava em todo o documento — e não pelo `documento_id` que a venda passa a
+    ter: são duas escritas separadas (`_ligar_venda_ao_documento`), e a conta
+    que fica pelo meio delas (documento fiscal gravado, venda ainda `aberta`
+    e sem `documento_id`, porque o processo morreu entre as duas) é
+    precisamente uma das que alguém vai querer reler aqui.
+    """
+    from .fiscal import _resposta_documento
+
+    documento = await db[COLECOES["documentos"]].find_one({"venda_id": venda_id})
+    if documento is None:
+        return None
+    return _resposta_documento(documento)
+
+
+# Declarada no FIM do ficheiro, DEPOIS de `GET /pos/venda/aberta` — ver o
+# comentário dessa rota. Esta casa com qualquer caminho de três segmentos,
+# "aberta" incluído; acima dela, a operadora perdia a conta em curso e
+# apanhava um 404.
+@router.get("/pos/venda/{venda_id}")
+async def obter_venda(venda_id: str, operador: Dict = Depends(operador_atual)) -> dict:
+    """Relê uma venda pelo id, em QUALQUER estado — e com o documento fiscal,
+    quando já existe.
+
+    É a metade que falta ao pior defeito do ecrã do POS. A operadora carrega
+    em EMITIR; o pedido chega ao servidor, a Fatura Simplificada SAI mesmo, e
+    a resposta perde-se (o Wi-Fi do balcão pisca, ou o proxy corta aos 30 s
+    porque o Vendus demorou). Ela carrega outra vez, apanha o 409 de "esta
+    venda já foi emitida" — e fica sem nada: sem talão (o agente de impressão
+    ainda não existe), sem número nem ATCUD no ecrã, e com a conta esvaziada
+    por um aviso que passa. O gesto natural a seguir é picar tudo outra vez, e
+    sai uma SEGUNDA Fatura Simplificada REAL, que a idempotência do servidor
+    não apanha — é uma venda nova, com uma referência nova. Com esta rota, o
+    ecrã vai buscar a venda pelo id que já tem em mãos e mostra o documento
+    que saiu.
+
+    `GET /pos/venda/aberta` não serve para isto, e é por desenho: filtra
+    `estado: "aberta"` e devolve `null` assim que a venda passa a `emitida` —
+    que é exactamente o caso a tratar. Daí o "em qualquer estado": `emitida` é
+    o caso central, `cancelada` responde à outra pergunta da operadora ("a
+    conta foi mesmo deitada fora?"), e `aberta` é a conta que ela tinha à
+    frente.
+
+    O âmbito é o de sempre, `_obter_venda_da_loja`: a venda tem de ser da loja
+    do token, e a de outra loja é 404 como em todo o módulo — reler não é uma
+    permissão mais fraca do que escrever, e este id vem do browser.
+
+    Não escreve nada, por isso não há aqui travão nenhum a fazer cumprir: o
+    `emissao_por_confirmar` vem na resposta porque é ele que diz ao ecrã que
+    esta conta está congelada, mas quem o impõe continuam a ser as cinco rotas
+    de escrita (`_garante_sem_emissao`).
+    """
+    db = obter_db()
+    venda = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
+    resposta = _venda_publica(
+        venda, emissao_por_confirmar=await _emissao_por_confirmar(db, venda)
+    )
+    # A chave está SEMPRE presente, mesmo a `None` — mesma regra do
+    # `emissao_por_confirmar` e do `cancelada_em`: o ecrã não pode ter de
+    # adivinhar se a ausência quer dizer "esta venda não tem documento" ou
+    # "esta versão da API não sabe responder a isso". E a diferença aqui não é
+    # cosmética: é entre mostrar o número da fatura que saiu e mandar a
+    # operadora picar tudo outra vez.
+    resposta["documento"] = await _documento_da_venda(db, venda_id)
+    return resposta
