@@ -149,7 +149,13 @@ function AppInterna({ operador, lojaNome, onSair, onOperadorInvalido }) {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-app-grid">
+    // `h-screen` e não `min-h-screen`: com um MÍNIMO, esta casca cresce com o
+    // conteúdo e as zonas de scroll interno do PosVenda (a grelha e a conta,
+    // ambas `flex-1 min-h-0 overflow-y-auto`) nunca chegam a apertar — quem
+    // rolava era a página inteira, levando o painel da conta atrás. Com a
+    // altura FIXA do ecrã, cada uma rola dentro do seu espaço e o painel da
+    // direita fica quieto, que é como um balcão se usa.
+    <div className="h-screen overflow-hidden flex flex-col bg-app-grid">
       <PosMenuCaixa
         operador={operador}
         lojaNome={lojaNome}

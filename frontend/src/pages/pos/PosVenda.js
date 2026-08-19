@@ -40,7 +40,6 @@ import {
 //      `pos_catalogo.py`: um produto mal configurado aparece morto e com a
 //      razão à vista, e um botão que ainda não faz nada diz porquê.
 
-const POR_PAGINA = 20; // 5 por linha × 4 linhas, a grelha do print
 
 // Os segundos do tecto de espera do lib/pos.js, para as mensagens poderem
 // dizer o número em vez de um "demorou" vago. Vem de lá e não escrito à mão
@@ -277,13 +276,16 @@ function CartaoProduto({ produto, onTocar, travada }) {
       title={travada ? MSG_CONTA_TRAVADA_CURTA : (vendavel ? produto.nome : (produto.erros || []).join(' · '))}
       className={`text-left rounded-2xl border bg-card overflow-hidden flex flex-col transition-all ${aparencia}`}
     >
-      <div className="aspect-square w-full overflow-hidden">
+      {/* 4:3 e não quadrada: a foto quadrada fazia cada mosaico crescer com a
+          largura da coluna e o ecrã inteiro parecia esticado. Menos alta, cabe
+          mais artigo sem obrigar a rolar — que é o que a operadora faz mais. */}
+      <div className="aspect-[4/3] w-full overflow-hidden">
         <Foto url={produto.foto_url} alt={produto.nome} />
       </div>
-      <div className="p-2.5 flex-1 flex flex-col gap-1">
+      <div className="p-2 flex-1 flex flex-col gap-0.5">
         <span className="text-sm font-medium leading-tight line-clamp-2">{produto.nome}</span>
         {vendavel ? (
-          <span className="font-heading font-bold text-lg tabular-nums mt-auto">
+          <span className="font-heading font-bold text-base tabular-nums mt-auto">
             {euros(produto.preco)}
           </span>
         ) : (
@@ -297,48 +299,6 @@ function CartaoProduto({ produto, onTocar, travada }) {
   );
 }
 
-function Paginacao({ pagina, total, onMudar }) {
-  // Só aparece quando há mesmo mais do que uma página: duas setas
-  // permanentemente desligadas eram o "botão morto sem dizer porquê" que o
-  // resto deste ecrã evita.
-  if (total <= 1) return null;
-  return (
-    <div className="shrink-0 border-t bg-card flex items-center justify-center gap-5 py-2">
-      <button
-        type="button"
-        onClick={() => onMudar(pagina - 1)}
-        disabled={pagina <= 0}
-        aria-label="Página anterior"
-        className="h-12 w-12 rounded-full border bg-card flex items-center justify-center hover:bg-accent active:scale-95 transition-transform disabled:opacity-40"
-      >
-        <ChevronLeft className="h-6 w-6" />
-      </button>
-      <span className="text-sm text-muted-foreground tabular-nums select-none">
-        {pagina + 1} de {total}
-      </span>
-      <button
-        type="button"
-        onClick={() => onMudar(pagina + 1)}
-        disabled={pagina >= total - 1}
-        aria-label="Página seguinte"
-        className="h-12 w-12 rounded-full border bg-card flex items-center justify-center hover:bg-accent active:scale-95 transition-transform disabled:opacity-40"
-      >
-        <ChevronRight className="h-6 w-6" />
-      </button>
-    </div>
-  );
-}
-
-// O aviso dos artigos que o servidor não mandou. Aparece em dois tamanhos, e
-// os dois são precisos: a linha discreta é para ela saber que a grelha não
-// está completa mesmo sem estar a dar por falta de nada; o bloco é para o
-// momento em que ESTÁ mesmo a dar pela falta — escreveu "uber", não veio
-// nada, e é essa a única altura em que a pergunta "onde está o artigo?" já
-// está feita e merece resposta à vista, não uma nota de rodapé.
-//
-// Diz sempre as três coisas: quantos são, porque não estão lá, e quem os põe
-// de volta. Sem a terceira, a operadora fica a saber que falta alguma coisa
-// e continua sem ter o que dizer ao gestor — que era metade do defeito.
 function AvisoEscondidos({ quantos, destaque }) {
   if (!quantos) return null;
   const contagem = quantos === 1 ? '1 artigo escondido' : `${quantos} artigos escondidos`;
@@ -742,7 +702,8 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
 
   const [aba, setAba] = useState('todos');
   const [pesquisa, setPesquisa] = useState('');
-  const [pagina, setPagina] = useState(0);
+  // A zona que rola, para a poder pôr no topo quando a lista por baixo muda.
+  const grelhaRef = useRef(null);
 
   // 'conta' | 'produto' | 'finalizar'. O diálogo do produto substitui o
   // PAINEL DIREITO (é o que o print manda); o finalizar toma o ecrã inteiro —
@@ -973,7 +934,9 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
 
   // Mudar de separador ou escrever na pesquisa recomeça na primeira página —
   // senão ficava-se na página 3 de uma lista que agora tem uma.
-  useEffect(() => { setPagina(0); }, [aba, pesquisa]);
+  useEffect(() => {
+    if (grelhaRef.current) grelhaRef.current.scrollTop = 0;
+  }, [aba, pesquisa]);
 
   const produtos = catalogo.produtos;
   const gruposPorId = useMemo(
@@ -1021,10 +984,12 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
     return produtos.filter((p) => p.categoria_id === aba);
   }, [produtos, aba, termo]);
 
-  const totalPaginas = Math.max(1, Math.ceil(visiveis.length / POR_PAGINA));
-  const paginaSegura = Math.min(pagina, totalPaginas - 1);
-  const daPagina = visiveis.slice(paginaSegura * POR_PAGINA, (paginaSegura + 1) * POR_PAGINA);
-  const grelhaVazia = daPagina.length === 0;
+  // A grelha ROLA, não pagina — foi o que o dono pediu ao ver o ecrã pela
+  // primeira vez, e é o gesto que ele já faz no telemóvel. A paginação (que o
+  // print do Vendus tem) obrigava a contar páginas de cabeça para achar um
+  // artigo; a rolar, procura-se com o polegar e a pesquisa faz o resto. Quem
+  // rola é só esta zona: o painel da conta, à direita, fica quieto.
+  const grelhaVazia = visiveis.length === 0;
 
   // --- As escritas ------------------------------------------------------------
 
@@ -1579,7 +1544,11 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
   }
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col lg:flex-row">
+    // Área de trabalho CONTIDA (`max-w`), como no POS do Vendus: num monitor
+    // grande a grelha esticada até à borda dá cartões enormes e obriga a
+    // percorrer o ecrã todo com os olhos entre o artigo e a conta. A barra de
+    // cima fica à largura toda de propósito — é o que ancora o ecrã.
+    <div className="flex-1 min-h-0 w-full max-w-[1600px] mx-auto flex flex-col lg:flex-row">
       <section className="flex-1 min-w-0 min-h-0 flex flex-col">
         <div className="shrink-0 border-b bg-card px-3 py-2.5 space-y-2.5">
           <div className="relative">
@@ -1639,7 +1608,7 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
           {!grelhaVazia && <AvisoEscondidos quantos={catalogo.ocultos} />}
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto p-3">
+        <div ref={grelhaRef} className="flex-1 min-h-0 overflow-y-auto p-3">
           {grelhaVazia ? (
             <div className="py-16 px-4 flex flex-col items-center gap-4">
               <p className="text-center text-muted-foreground">
@@ -1652,8 +1621,8 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
               <AvisoEscondidos quantos={catalogo.ocultos} destaque />
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-              {daPagina.map((produto) => (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-2.5">
+              {visiveis.map((produto) => (
                 <CartaoProduto
                   key={produto.id}
                   produto={produto}
@@ -1665,10 +1634,9 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
           )}
         </div>
 
-        <Paginacao pagina={paginaSegura} total={totalPaginas} onMudar={setPagina} />
       </section>
 
-      <aside className="w-full lg:w-[26rem] xl:w-[30rem] shrink-0 min-h-0 border-t lg:border-t-0 lg:border-l bg-card flex flex-col">
+      <aside className="w-full lg:w-[23rem] xl:w-[26rem] shrink-0 min-h-0 border-t lg:border-t-0 lg:border-l bg-card flex flex-col">
         {emEdicao && produtoEmEdicao ? (
           <PosDialogoProduto
             produto={produtoEmEdicao}
