@@ -35,6 +35,7 @@ import EstoqueListaCompras from './pages/admin/estoque/EstoqueListaCompras';
 import EstoqueTransferencias from './pages/admin/estoque/EstoqueTransferencias';
 import EstoqueHistorico from './pages/admin/estoque/EstoqueHistorico';
 import EstoqueFichas from './pages/admin/estoque/EstoqueFichas';
+import EstoqueProducao from './pages/admin/estoque/EstoqueProducao';
 import EstoqueEmBreve from './pages/admin/estoque/EstoqueEmBreve';
 import ComingSoon from './components/ComingSoon';
 import {
@@ -212,6 +213,7 @@ function AppRoutes() {
         <Route path="estoque/lista-compras" element={<EstoqueListaCompras />} />
         <Route path="estoque/transferencias" element={<EstoqueTransferencias />} />
         <Route path="estoque/fichas" element={<EstoqueFichas />} />
+        <Route path="estoque/producao" element={<EstoqueProducao />} />
         <Route path="estoque/faturas" element={<EstoqueFaturas />} />
         <Route path="estoque/historico" element={<EstoqueHistorico />} />
 

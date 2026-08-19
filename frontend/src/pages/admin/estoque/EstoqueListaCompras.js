@@ -79,6 +79,7 @@ export default function EstoqueListaCompras() {
                     <p className="text-sm font-medium truncate">{i.nome}</p>
                     <p className="text-xs text-muted-foreground">
                       tem {fmt(i.quantidade_atual)} · mín. {fmt(i.minimo)} {i.unidade_medida}
+                      {i.falta_maximo ? ' (mínimo antigo — falta o máximo)' : ''}
                       {i.fornecedor ? ` · ${i.fornecedor}` : ''}
                     </p>
                   </div>

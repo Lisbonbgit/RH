@@ -57,7 +57,8 @@ import {
   ShoppingCart,
   ArrowLeftRight,
   History,
-  ClipboardList
+  ClipboardList,
+  Factory
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -115,6 +116,7 @@ const sections = [
       { path: '/admin/estoque/lista-compras', label: 'Lista de compras', icon: ShoppingCart },
       { path: '/admin/estoque/transferencias', label: 'Transferências', icon: ArrowLeftRight },
       { path: '/admin/estoque/fichas', label: 'Fichas técnicas', icon: ClipboardList },
+      { path: '/admin/estoque/producao', label: 'Produção', icon: Factory },
       { path: '/admin/estoque/faturas', label: 'Faturas', icon: Receipt },
       { path: '/admin/estoque/historico', label: 'Histórico', icon: History },
     ],

@@ -16,6 +16,22 @@ const fmt = (n) => {
   return s.replace('.', ',');
 };
 
+// Limites do produto nesta loja. O mínimo já não se escreve à mão no Estoque: é
+// uma percentagem do máximo, definida por marca. Enquanto uma loja não preencher
+// o máximo vale o mínimo antigo — e isso tem de se ver também aqui.
+const limitesLabel = (i) => {
+  const medida = i.unidade_medida || '';
+  // `maximo` nulo conta como falta de máximo: os dois deploys (estoque e RH)
+  // não aterram ao mesmo tempo e, com o payload antigo, o ramo de baixo
+  // anunciava "máx. 0" e uma regra de 30% que ainda não estava a correr.
+  if (i.falta_maximo || i.maximo == null) {
+    const mn = Number(i.minimo) || 0;
+    return mn > 0 ? `mín. ${fmt(mn)} ${medida} · falta o máximo` : 'falta o máximo';
+  }
+  const pct = Math.round((i.minimo_pct ?? 0.3) * 100);
+  return `máx. ${fmt(i.maximo)} ${medida} · avisa a ${fmt(i.minimo)} (${pct}%)`;
+};
+
 // Estoque · Stock — stock por loja, puxado do sistema de Estoque (BD separada)
 // através do proxy do backend RH (/api/estoque/*). Só leitura (Fase 1).
 export default function EstoqueStock() {
@@ -148,8 +164,7 @@ export default function EstoqueStock() {
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium truncate">{i.nome}</p>
                     <p className="text-xs text-muted-foreground">
-                      mín. {fmt(i.minimo)} {i.unidade_medida}
-                      {i.maximo != null ? ` · máx. ${fmt(i.maximo)}` : ''}
+                      {limitesLabel(i)}
                       {i.fornecedor ? ` · ${i.fornecedor}` : ''}
                     </p>
                   </div>

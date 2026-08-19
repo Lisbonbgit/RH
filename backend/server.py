@@ -6118,6 +6118,26 @@ async def estoque_receita_put(produto_id: str, body: EstoqueReceitaIn, current_u
     )
 
 
+class EstoqueProducaoIn(BaseModel):
+    produto_id: str
+    quantidade_kg: float
+
+
+@api_router.post("/estoque/producao")
+async def estoque_producao(body: EstoqueProducaoIn, unidade_id: str = Query(...), current_user: dict = Depends(admin_required)):
+    """Produz na fábrica (via portal RH), atribuída ao admin do RH."""
+    from urllib.parse import quote
+    ator = current_user.get("name") or current_user.get("email") or "RH"
+    path = f"/integ/producao?unidade_id={quote(unidade_id)}&actor={quote(str(ator))}"
+    return await _estoque_post(path, {"produto_id": body.produto_id, "quantidade_kg": body.quantidade_kg})
+
+
+@api_router.get("/estoque/producao")
+async def estoque_producao_relatorio(unidade_id: str = Query(...), dias: int = Query(30), current_user: dict = Depends(admin_required)):
+    """Relatório de produção de uma fábrica."""
+    return await _estoque_get("/integ/producao", {"unidade_id": unidade_id, "dias": dias})
+
+
 # ===== SECÇÃO ESTOQUE — faturas inseridas pela app do Estoque =====
 # Vista dedicada (todas as faturas com source="estoque", por confirmar E já
 # tratadas), com quem inseriu e em que loja. Base da futura secção "Estoque"
