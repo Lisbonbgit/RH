@@ -52,7 +52,11 @@ import {
   Percent,
   Monitor,
   Banknote,
-  LayoutGrid
+  LayoutGrid,
+  ScanLine,
+  ShoppingCart,
+  ArrowLeftRight,
+  History
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -106,7 +110,11 @@ const sections = [
     match: (p) => p.startsWith('/admin/estoque'),
     items: [
       { path: '/admin/estoque/stock', label: 'Stock', icon: Package },
+      { path: '/admin/estoque/escanear', label: 'Escanear', icon: ScanLine },
+      { path: '/admin/estoque/lista-compras', label: 'Lista de compras', icon: ShoppingCart },
+      { path: '/admin/estoque/transferencias', label: 'Transferências', icon: ArrowLeftRight },
       { path: '/admin/estoque/faturas', label: 'Faturas', icon: Receipt },
+      { path: '/admin/estoque/historico', label: 'Histórico', icon: History },
     ],
   },
   {

@@ -31,6 +31,7 @@ import FinRelatorios from './pages/admin/financeiro/FinRelatorios';
 import PainelGlobal from './pages/admin/financeiro/PainelGlobal';
 import EstoqueFaturas from './pages/admin/estoque/EstoqueFaturas';
 import EstoqueStock from './pages/admin/estoque/EstoqueStock';
+import EstoqueEmBreve from './pages/admin/estoque/EstoqueEmBreve';
 import ComingSoon from './components/ComingSoon';
 import {
   FileText,
@@ -203,7 +204,11 @@ function AppRoutes() {
         {/* ===== Estoque ===== */}
         <Route path="estoque" element={<Navigate to="/admin/estoque/stock" replace />} />
         <Route path="estoque/stock" element={<EstoqueStock />} />
+        <Route path="estoque/escanear" element={<EstoqueEmBreve />} />
+        <Route path="estoque/lista-compras" element={<EstoqueEmBreve />} />
+        <Route path="estoque/transferencias" element={<EstoqueEmBreve />} />
         <Route path="estoque/faturas" element={<EstoqueFaturas />} />
+        <Route path="estoque/historico" element={<EstoqueEmBreve />} />
 
         {/* ===== Faturação ===== */}
         <Route path="faturacao" element={<Navigate to="/admin/faturacao/dashboard" replace />} />
