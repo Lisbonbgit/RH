@@ -25,9 +25,9 @@ export default function EstoqueEmBreve() {
           <div className="h-12 w-12 rounded-2xl bg-primary/10 text-primary flex items-center justify-center">
             <Clock className="h-6 w-6" />
           </div>
-          <p className="text-base font-medium">“{nome}” está a chegar</p>
+          <p className="text-base font-medium">“{nome}” faz-se no telemóvel</p>
           <p className="text-sm text-muted-foreground max-w-sm">
-            Esta secção entra numa próxima fase da integração com o Estoque. O Stock e as Faturas já funcionam.
+            A leitura por câmara é feita no telemóvel, na loja. No portal, dá entradas pelo <b>Stock</b> (toca no produto) e vê o que falta na <b>Lista de compras</b>.
           </p>
         </CardContent>
       </Card>

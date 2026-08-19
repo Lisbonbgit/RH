@@ -135,6 +135,14 @@ export const getFinInvoicePdf = (id) => axios.get(`${API_URL}/fin/invoices/${id}
 export const getEstoqueLojas = () => axios.get(`${API_URL}/estoque/lojas`);
 export const getEstoqueStock = (unidadeId) =>
   axios.get(`${API_URL}/estoque/stock`, { params: { unidade_id: unidadeId } });
+export const getEstoqueListaCompras = (unidadeId) =>
+  axios.get(`${API_URL}/estoque/lista-compras`, { params: { unidade_id: unidadeId } });
+export const getEstoqueHistorico = (unidadeId, dias) =>
+  axios.get(`${API_URL}/estoque/historico`, { params: { unidade_id: unidadeId, dias } });
+// { tipo: entrada|saida|contagem, unidade_id, produto_id, quantidade }
+export const estoqueMovimento = (data) => axios.post(`${API_URL}/estoque/movimento`, data);
+// { unidade_id, destino_unidade_id, produto_id, quantidade }
+export const estoqueTransferencia = (data) => axios.post(`${API_URL}/estoque/transferencia`, data);
 
 // Secção Estoque — faturas inseridas pela app do Estoque (todos os estados)
 // params: { company_id, month?, origin_user?, origin_store? }

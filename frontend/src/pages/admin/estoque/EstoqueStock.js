@@ -6,6 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Boxes, Store, AlertTriangle, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
+import MovimentoDialog from './MovimentoDialog';
 
 // Número curto e localizado (5.0 -> "5", 2.5 -> "2,5").
 const fmt = (n) => {
@@ -24,6 +25,7 @@ export default function EstoqueStock() {
   const [busca, setBusca] = useState('');
   const [loading, setLoading] = useState(false);
   const [loadingLojas, setLoadingLojas] = useState(true);
+  const [sel, setSel] = useState(null); // produto selecionado -> painel de movimento
 
   useEffect(() => {
     getEstoqueLojas()
@@ -130,7 +132,10 @@ export default function EstoqueStock() {
               {filtrados.map((i) => (
                 <div
                   key={i.produto_id}
-                  className="p-4 flex items-center gap-3"
+                  className="p-4 flex items-center gap-3 cursor-pointer hover:bg-muted/50 transition-colors"
+                  onClick={() => setSel(i)}
+                  role="button"
+                  tabIndex={0}
                   data-testid={`estoque-stock-${i.produto_id}`}
                 >
                   <div className="h-9 w-9 rounded-lg bg-muted flex items-center justify-center shrink-0 overflow-hidden">
@@ -160,6 +165,17 @@ export default function EstoqueStock() {
           )}
         </CardContent>
       </Card>
+
+      {sel && (
+        <MovimentoDialog
+          item={sel}
+          lojaId={lojaId}
+          lojaNome={lojaNome}
+          lojas={lojas}
+          onClose={() => setSel(null)}
+          onDone={load}
+        />
+      )}
     </div>
   );
 }

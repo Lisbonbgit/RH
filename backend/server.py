@@ -6000,6 +6000,80 @@ async def estoque_stock(unidade_id: str = Query(...), current_user: dict = Depen
     return await _estoque_get("/integ/stock", {"unidade_id": unidade_id})
 
 
+async def _estoque_post(path: str, body: dict):
+    key = os.environ.get("ESTOQUE_SERVICE_KEY")
+    if not key:
+        raise HTTPException(status_code=503, detail="Integração de estoque não configurada.")
+    try:
+        async with httpx.AsyncClient(timeout=15) as http_client:
+            r = await http_client.post(f"{ESTOQUE_API_URL}{path}", params={"key": key}, json=body)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Sem ligação ao Estoque: {e}")
+    if r.status_code >= 400:
+        detalhe = None
+        try:
+            detalhe = r.json().get("detail")
+        except Exception:
+            detalhe = None
+        # Propaga o erro do Estoque (ex.: 422 stock insuficiente); 5xx -> 502.
+        code = r.status_code if 400 <= r.status_code < 500 else 502
+        raise HTTPException(status_code=code, detail=detalhe or f"O Estoque respondeu {r.status_code}.")
+    return r.json()
+
+
+@api_router.get("/estoque/lista-compras")
+async def estoque_lista_compras(unidade_id: str = Query(...), current_user: dict = Depends(admin_required)):
+    """Itens abaixo do mínimo de uma loja (via app do Estoque)."""
+    return await _estoque_get("/integ/lista-compras", {"unidade_id": unidade_id})
+
+
+@api_router.get("/estoque/historico")
+async def estoque_historico(
+    unidade_id: str = Query(...),
+    dias: int = Query(30),
+    limit: int = Query(100),
+    current_user: dict = Depends(admin_required),
+):
+    """Movimentos recentes de uma loja (via app do Estoque)."""
+    return await _estoque_get("/integ/historico", {"unidade_id": unidade_id, "dias": dias, "limit": limit})
+
+
+class EstoqueMovIn(BaseModel):
+    tipo: str
+    unidade_id: str
+    produto_id: str
+    quantidade: float
+
+
+class EstoqueTransfIn(BaseModel):
+    unidade_id: str
+    destino_unidade_id: str
+    produto_id: str
+    quantidade: float
+
+
+@api_router.post("/estoque/movimento")
+async def estoque_movimento(body: EstoqueMovIn, current_user: dict = Depends(admin_required)):
+    """Entrada/Saída/Contagem numa loja (atribuída ao admin do RH)."""
+    ator = current_user.get("name") or current_user.get("email")
+    return await _estoque_post(
+        "/integ/movimento",
+        {"tipo": body.tipo, "unidade_id": body.unidade_id, "produto_id": body.produto_id,
+         "quantidade": body.quantidade, "actor": ator},
+    )
+
+
+@api_router.post("/estoque/transferencia")
+async def estoque_transferencia(body: EstoqueTransfIn, current_user: dict = Depends(admin_required)):
+    """Transferência direta entre lojas (atribuída ao admin do RH)."""
+    ator = current_user.get("name") or current_user.get("email")
+    return await _estoque_post(
+        "/integ/transferencia",
+        {"unidade_id": body.unidade_id, "destino_unidade_id": body.destino_unidade_id,
+         "produto_id": body.produto_id, "quantidade": body.quantidade, "actor": ator},
+    )
+
+
 # ===== SECÇÃO ESTOQUE — faturas inseridas pela app do Estoque =====
 # Vista dedicada (todas as faturas com source="estoque", por confirmar E já
 # tratadas), com quem inseriu e em que loja. Base da futura secção "Estoque"
