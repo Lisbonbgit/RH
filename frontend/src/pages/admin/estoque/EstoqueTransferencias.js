@@ -47,6 +47,7 @@ export default function EstoqueTransferencias() {
       setStock([]);
     }
     setProdutoId('');
+    setDestino(''); // origem mudou → destino da marca antiga deixa de valer
   }, [origem]);
 
   useEffect(() => {

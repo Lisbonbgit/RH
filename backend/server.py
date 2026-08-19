@@ -5974,17 +5974,32 @@ async def fin_ingest_estoque(
 ESTOQUE_API_URL = os.environ.get("ESTOQUE_API_URL", "https://estoque.lisbonb.com/api")
 
 
-async def _estoque_get(path: str, params: dict):
+def _estoque_headers():
     key = os.environ.get("ESTOQUE_SERVICE_KEY")
     if not key:
         raise HTTPException(status_code=503, detail="Integração de estoque não configurada.")
+    return {"X-Service-Key": key}  # no HEADER, não no URL (evita a chave nos logs)
+
+
+def _estoque_erro(r):
+    detalhe = None
+    try:
+        detalhe = r.json().get("detail")
+    except Exception:
+        detalhe = None
+    code = r.status_code if 400 <= r.status_code < 500 else 502
+    return HTTPException(status_code=code, detail=detalhe or f"O Estoque respondeu {r.status_code}.")
+
+
+async def _estoque_get(path: str, params: dict):
+    headers = _estoque_headers()
     try:
         async with httpx.AsyncClient(timeout=12) as http_client:
-            r = await http_client.get(f"{ESTOQUE_API_URL}{path}", params={**params, "key": key})
+            r = await http_client.get(f"{ESTOQUE_API_URL}{path}", params=params, headers=headers)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Sem ligação ao Estoque: {e}")
     if r.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"O Estoque respondeu {r.status_code}.")
+        raise _estoque_erro(r)
     return r.json()
 
 
@@ -6001,23 +6016,15 @@ async def estoque_stock(unidade_id: str = Query(...), current_user: dict = Depen
 
 
 async def _estoque_post(path: str, body: dict):
-    key = os.environ.get("ESTOQUE_SERVICE_KEY")
-    if not key:
-        raise HTTPException(status_code=503, detail="Integração de estoque não configurada.")
+    headers = _estoque_headers()
     try:
         async with httpx.AsyncClient(timeout=15) as http_client:
-            r = await http_client.post(f"{ESTOQUE_API_URL}{path}", params={"key": key}, json=body)
+            r = await http_client.post(f"{ESTOQUE_API_URL}{path}", json=body, headers=headers)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Sem ligação ao Estoque: {e}")
     if r.status_code >= 400:
-        detalhe = None
-        try:
-            detalhe = r.json().get("detail")
-        except Exception:
-            detalhe = None
         # Propaga o erro do Estoque (ex.: 422 stock insuficiente); 5xx -> 502.
-        code = r.status_code if 400 <= r.status_code < 500 else 502
-        raise HTTPException(status_code=code, detail=detalhe or f"O Estoque respondeu {r.status_code}.")
+        raise _estoque_erro(r)
     return r.json()
 
 
