@@ -16,6 +16,7 @@ from faturacao.vendus.cliente import (
     ClienteVendus,
     ContaVendus,
     VendusHTTPErro,
+    VendusIndisponivel,
     obter_conta,
 )
 
@@ -161,3 +162,61 @@ def test_obter_conta_usa_fat_nif_do_ambiente_por_omissao(monkeypatch):
 def test_obter_conta_entrada_sem_key_e_ignorada(monkeypatch):
     monkeypatch.setenv("VENDUS_ACCOUNTS", '[{"company_nif":"517542510"}]')
     assert obter_conta("517542510") is None
+
+
+# --- Métodos de pagamento ----------------------------------------------------
+#
+# A armadilha DESTA leitura não é a paginação, é o CAMINHO: `payment-methods/`
+# (com hífen) responde 404 com o código A001, que neste API quer dizer "sem
+# resultados" e não "esse caminho não existe" — e o cliente traduz A001 em
+# lista vazia, com toda a razão. Um caminho errado devolveria portanto `[]`
+# com ar de sucesso e o ecrã diria "esta conta não tem métodos de pagamento",
+# que é falso e não tem sinal nenhum de avaria. Por isso o caminho é afirmado
+# à letra aqui.
+
+METODOS_DA_CONTA = [
+    {"id": 360335513, "title": "App-Online", "type": "TB"},
+    {"id": 145234375, "title": "Dinheiro", "type": "NU"},
+    {"id": 145234376, "title": "Multibanco", "type": "CD"},
+]
+
+
+def test_metodos_pagamento_pedem_o_caminho_documents_paymentmethods():
+    """O caminho, à letra. Ver o comentário acima para o porquê de este teste
+    existir em vez de se confiar no 404 do Vendus."""
+    caminhos = []
+
+    def handler(request: httpx.Request):
+        caminhos.append(request.url.path)
+        return httpx.Response(200, json=METODOS_DA_CONTA, headers={"X-Paginator-Pages": "1"})
+
+    metodos = _cliente(handler).listar_metodos_pagamento()
+
+    assert caminhos == ["/ws/v1.1/documents/paymentmethods/"]
+    assert metodos == METODOS_DA_CONTA  # devolve o que veio, sem interpretar
+
+
+def test_metodos_pagamento_leitura_e_sempre_um_get():
+    """SÓ LEITURA, e provado: nunca se cria, altera ou desactiva um método de
+    pagamento no Vendus (spec §5.1) — os métodos são da conta que a app
+    L'Açaí usa em produção."""
+    verbos = []
+
+    def handler(request: httpx.Request):
+        verbos.append(request.method)
+        return httpx.Response(200, json=[], headers={"X-Paginator-Pages": "1"})
+
+    _cliente(handler).listar_metodos_pagamento()
+    assert verbos == ["GET"]
+
+
+def test_metodos_pagamento_5xx_e_indisponibilidade_nao_lista_vazia():
+    """Um Vendus em baixo tem de LEVANTAR. Se isto devolvesse [], o ecrã
+    dizia ao dono "esta conta não tem métodos de pagamento" — uma afirmação
+    diferente e falsa."""
+
+    def handler(request: httpx.Request):
+        return httpx.Response(503, text="indisponível")
+
+    with pytest.raises(VendusIndisponivel):
+        _cliente(handler).listar_metodos_pagamento()

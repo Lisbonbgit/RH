@@ -45,6 +45,17 @@ export const criarTipoPagamento = (data) => axios.post(`${API_URL}/faturacao/tip
 export const editarTipoPagamento = (id, data) => axios.put(`${API_URL}/faturacao/tipos-pagamento/${id}`, data);
 export const apagarTipoPagamento = (id) => axios.delete(`${API_URL}/faturacao/tipos-pagamento/${id}`);
 
+// Os métodos de pagamento da conta Vendus, lidos ao vivo (nunca escrevemos
+// lá — ver o cabeçalho de faturacao/pagamentos.py). É desta lista que sai o
+// `vendus_payment_method_id` de cada tipo, e é por isso que ela existe: sem
+// esse id, `fiscal.py::finalizar` recusa a emissão com 422 no momento exacto
+// em que a operadora carrega em EMITIR, com o cliente à frente.
+//
+// Vai numa chamada à parte do resto do ecrã de propósito: é rede, para uma
+// conta que pode nem estar configurada, e o ecrã tem de continuar a gravar os
+// outros campos quando ela falha.
+export const getMetodosVendus = () => axios.get(`${API_URL}/faturacao/tipos-pagamento/metodos-vendus`);
+
 // Utilizadores
 export const getUtilizadores = () => axios.get(`${API_URL}/faturacao/utilizadores`);
 export const criarUtilizador = (data) => axios.post(`${API_URL}/faturacao/utilizadores`, data);

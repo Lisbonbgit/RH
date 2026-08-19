@@ -102,3 +102,27 @@ def test_saude_e_o_bootstrap_do_pos_sao_as_unicas_rotas_sem_guarda():
         and not any(_exige(route, mecanismo) for mecanismo in _MECANISMOS_POS)
     }
     assert sem_nenhuma_guarda == ROTAS_PUBLICAS | ROTAS_BOOTSTRAP_POS
+
+
+# A rota que lê os métodos de pagamento da conta Vendus é nomeada à parte, e
+# não deixada só ao varrimento genérico acima, por uma razão: o varrimento
+# prova "não ficou sem guarda nenhuma", mas quem um dia a mudasse de sítio
+# para debaixo de `/api/faturacao/pos/` continuaria a passar nele — passava a
+# ser lida como rota do POS, e o varrimento pedir-lhe-ia o mecanismo do POS em
+# vez de gestor_atual, sem nenhum teste a queixar-se. É configuração do
+# backoffice: escolher a que método do Vendus corresponde cada tipo de
+# pagamento é uma decisão do dono, não da operadora ao balcão — que nem sequer
+# chega a ver o `vendus_payment_method_id` (ver pos_catalogo.py, que só lhe
+# deixa sair o booleano `pronto`).
+CAMINHO_METODOS_VENDUS = "/api/faturacao/tipos-pagamento/metodos-vendus"
+
+
+def test_metodos_vendus_e_rota_de_gestao_e_nunca_do_pos():
+    rotas = [route for route in router.routes if route.path == CAMINHO_METODOS_VENDUS]
+    assert len(rotas) == 1, "esperava exactamente uma rota em %s" % CAMINHO_METODOS_VENDUS
+    rota = rotas[0]
+
+    assert not rota.path.startswith(PREFIXO_POS)
+    assert sorted(rota.methods) == ["GET"]  # lê, nunca escreve
+    assert _exige(rota, gestor_atual)
+    assert not any(_exige(rota, mecanismo) for mecanismo in _MECANISMOS_POS)
