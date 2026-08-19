@@ -134,3 +134,67 @@ def test_o_guarda_apanha_um_prefixo_errado(caminho_partido):
         "Com o prefixo '%s' estas chamadas ainda casavam com rotas reais (%s) "
         "— o guarda não distingue o prefixo certo do errado." % (caminho_partido, casam)
     )
+
+
+# --- O backoffice, pela mesma razão -------------------------------------------
+#
+# A guarda acima nasceu do POS, mas o defeito que a motivou não tem nada de
+# especificamente-POS: um caminho escrito num sítio, servido noutro, e nada a
+# olhar para os dois ao mesmo tempo. O `lib/faturacao.js` tem 45 wrappers e
+# estava sem rede nenhuma — incluindo o ecrã das reservas fiscais presas, que
+# é a única forma de destrancar uma venda cuja fatura ficou por confirmar. Um
+# caminho errado ali significa o gestor a olhar para um ecrã que responde 404
+# enquanto a loja não consegue fechar a caixa.
+#
+# A forma é outra (`axios.get(`${API_URL}/faturacao/lojas`)`, com o prefixo
+# dentro do template literal em vez de num baseURL), por isso a extracção é
+# própria — mas a pergunta que se faz é exactamente a mesma.
+_FATURACAO_JS = _RAIZ / "frontend" / "src" / "lib" / "faturacao.js"
+
+_RE_CHAMADA_BACKOFFICE = re.compile(
+    r"\baxios\.(get|post|put|delete|patch)\(\s*`\$\{API_URL\}([^`]*)`"
+)
+
+
+def _ler_faturacao_js() -> str:
+    assert _FATURACAO_JS.exists(), (
+        "Não encontrei %s — este guarda precisa dos dois lados." % _FATURACAO_JS
+    )
+    return _FATURACAO_JS.read_text(encoding="utf-8")
+
+
+def _sem_query(caminho: str) -> str:
+    """`/faturacao/dashboard?ano=${ano}` -> `/faturacao/dashboard`. O que se
+    compara com o router é o CAMINHO; os parâmetros de consulta não fazem
+    parte dele (o FastAPI declara-os na assinatura da função)."""
+    return caminho.split("?", 1)[0]
+
+
+def test_o_backoffice_faz_chamadas_que_este_guarda_reconhece():
+    """Mesma rede de segurança do `test_o_pos_faz_pelo_menos_uma_chamada`: se a
+    expressão regular deixar de casar, o teste seguinte percorria uma lista
+    vazia e dava verde sem verificar nada."""
+    achadas = _RE_CHAMADA_BACKOFFICE.findall(_ler_faturacao_js())
+    assert len(achadas) >= 40, (
+        "Só reconheci %d chamadas em lib/faturacao.js — o ficheiro tem dezenas. "
+        "A expressão regular deste guarda deixou de servir e tem de ser "
+        "actualizada." % len(achadas)
+    )
+
+
+def test_todas_as_chamadas_do_backoffice_apontam_para_rotas_que_existem():
+    existentes = _caminhos_do_backend()
+    orfas = []
+    for verbo, caminho in _RE_CHAMADA_BACKOFFICE.findall(_ler_faturacao_js()):
+        # O API_URL do backoffice é `REACT_APP_BACKEND_URL + '/api'` e o
+        # `/faturacao` vem escrito em cada caminho — ao contrário do POS, onde
+        # vive no baseURL. Duas convenções diferentes no mesmo repositório, o
+        # que é precisamente o tipo de coisa que produz o defeito original.
+        completo = _normaliza("/api" + _sem_query(caminho))
+        if completo not in existentes:
+            orfas.append("%s %s" % (verbo.upper(), completo))
+
+    assert orfas == [], (
+        "Estas chamadas do backoffice apontam para caminhos que o servidor não "
+        "serve: %s" % ", ".join(sorted(orfas))
+    )
