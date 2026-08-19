@@ -2571,10 +2571,15 @@ def test_reclamar_retoma_carimba_o_relogio_da_propria_reclamacao():
 
 def test_retoma_resolvida_limpa_o_relogio_junto_com_a_marca():
     """Uma reserva sem `em_retoma` mas com o relógio de uma retoma antiga é
-    um dado que só pode enganar quem o leia a seguir."""
+    um dado que só pode enganar quem o leia a seguir.
+
+    O `carimbo` passa-se às duas: é ele que liga a limpeza à reclamação que
+    esta chamada fez, e não "à marca de retoma que houver nesta ext_ref" —
+    ver `_limpar_incerta_resolvida` e o teste da reserva substituída."""
     db = _db(vendas=[_venda()], refs=[_reserva_incerta_antiga()])
-    _corre(_reclamar_retoma(db, "pos-loja-1-sessao-1-venda-1"))
-    _corre(_limpar_incerta_resolvida(db, "pos-loja-1-sessao-1-venda-1"))
+    carimbo = fiscal_mod._agora()
+    _corre(_reclamar_retoma(db, "pos-loja-1-sessao-1-venda-1", carimbo))
+    _corre(_limpar_incerta_resolvida(db, "pos-loja-1-sessao-1-venda-1", carimbo))
 
     reserva = _refs_de(db)[0]
     assert reserva["em_retoma"] is None
@@ -4437,3 +4442,482 @@ def test_documento_gravado_diz_o_que_e_e_nao_grava_anulado():
 
     assert documento["tipo"] == "FS"
     assert "anulado" not in documento
+
+
+# ============================================================================
+# A FORMA de uma reserva não é a IDENTIDADE de uma reserva
+# ============================================================================
+#
+# A ronda anterior tornou o apagar CONDICIONAL: só apaga se a reserva
+# continuar "como estava" (`em_retoma`, `em_retoma_desde`, `documento_id`).
+# Fechou o defeito que tinha à frente e abriu uma versão mais estreita de si
+# próprio: esses três campos descrevem a FORMA de uma reserva intacta, e uma
+# reserva NOVA — criada dois passos depois, com a MESMA `ext_ref`, porque a
+# referência é determinística — tem exactamente essa forma.
+#
+# Reproduzido em processo, nas duas variantes (o Vendus recusa com 4xx, e o
+# timeout com verificação vazia): «7. APAGOU 1 reserva(s) com o filtro {...}
+# (estavam lá: ['75c14dbb-...'])» — o id da reserva NOVA, com uma emissão
+# real em voo — «10. FINALIZAR nº3 → emitida nº FS 2026/902 / 11. a emissão
+# que estava em voo acabou: 500 ConflitoDocumentoFiscal» → EMISSÕES REAIS
+# pedidas ao Vendus = 2.
+#
+# A correcção é prender a IDENTIDADE (o `id`, o uuid4 que `_reservar` escreve)
+# e não só a forma. Os testes abaixo são o par: um por cada sítio que decide
+# sobre uma reserva lida antes.
+
+from faturacao.fiscal import (  # noqa: E402
+    SessaoEmFechoAgora,
+    _limpar_incerta_se_intacta,
+    _libertar_reserva_se_intacta,
+)
+
+
+def test_libertar_nao_apaga_a_reserva_NOVA_que_substituiu_a_que_o_gestor_leu(monkeypatch):
+    """O cenário medido: a reserva que o gestor viu foi libertada (o Vendus
+    recusou aquela tentativa com um 4xx — o caso COMUM ao balcão) e a
+    operadora carregou outra vez em FINALIZAR. O que está no Mongo quando o
+    `delete_one` corre é uma reserva NOVA, sem marca nenhuma, com uma emissão
+    REAL a caminho do Vendus — e passa, campo a campo, no filtro desenhado
+    para a velha."""
+    def a_reserva_e_substituida(coleccoes):
+        # Dispara na leitura da SESSÃO, a última antes de apagar: nenhuma
+        # das guardas anteriores pode ajudar aqui.
+        refs = _reservas_em(coleccoes)
+        del refs[:]
+        refs.append({
+            "id": "r-nova", "ext_ref": "pos-loja-1-sessao-1-venda-1",
+            "venda_id": "venda-1", "criado_em": _agora_iso(2),
+        })
+
+    db = _db_libertar(mudanca_na_sessao=a_reserva_e_substituida)
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(libertar_reserva_presa("venda-1", _confirmado(), gestor={"email": "x"}))
+
+    assert excinfo.value.status_code == 409
+    # E a mensagem diz-lhe o que realmente aconteceu: não "a reserva mudou",
+    # mas "há uma tentativa NOVA a emitir esta conta" — o que confirmou no
+    # Vendus era sobre a tentativa anterior.
+    assert "reserva NOVA" in excinfo.value.detail
+    assert "segundos" in excinfo.value.detail
+    # O essencial: a reserva da emissão em voo CONTINUA lá.
+    assert [r["id"] for r in _refs_de(db)] == ["r-nova"]
+
+
+def test_libertar_apaga_a_reserva_certa_quando_e_mesmo_a_que_o_gestor_leu(monkeypatch):
+    """O outro lado da guarda, para o `id` no filtro não poder ser um 409
+    permanente: sem ninguém a mexer, a libertação faz o que sempre fez.
+    (O caso geral já está coberto; este fixa que é o `id` LIDO que casa, e
+    não um acaso.)"""
+    db = _db_libertar()
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+
+    resposta = _corre(libertar_reserva_presa("venda-1", _confirmado(), gestor={"email": "x"}))
+
+    assert resposta["libertada"] is True
+    assert _refs_de(db) == []
+
+
+def test_libertar_se_intacta_recusa_uma_reserva_com_outro_id_e_a_mesma_forma():
+    """O mesmo, isolado da rota: a reserva lida e a que está lá agora têm a
+    forma toda igual (sem retoma, sem documento) e só diferem no `id` — que é
+    precisamente o caso de uma reserva substituída."""
+    ref = "pos-loja-1-sessao-1-venda-1"
+    lida = {"id": "r-velha", "ext_ref": ref, "venda_id": "venda-1", "incerta": True}
+    db = _db(refs=[{"id": "r-nova", "ext_ref": ref, "venda_id": "venda-1",
+                    "criado_em": _agora_iso(1)}])
+
+    assert _corre(_libertar_reserva_se_intacta(db, ref, lida)) is False
+    assert [r["id"] for r in _refs_de(db)] == ["r-nova"]
+
+
+def test_limpar_incerta_nao_desmarca_a_reserva_NOVA_que_substituiu_a_lida():
+    """A MESMA forma de defeito na outra rota de gestão. A reconciliação lê a
+    reserva, vai ao Vendus (SEGUNDOS de rede) e só depois limpa a marca
+    `incerta`. Se nessa janela a reserva foi libertada e outra nasceu no
+    lugar — igual em tudo menos no `id`, porque a `ext_ref` é determinística
+    — a limpeza sem identidade apagava o `incerta` DELA: a marca que obriga a
+    tentativa seguinte a verificar no Vendus antes de emitir seja o que for.
+    Tirá-la é autorizar uma emissão às cegas sobre uma venda que pode já ter
+    Fatura Simplificada real."""
+    ref = "pos-loja-1-sessao-1-venda-1"
+    lida = {"id": "r-velha", "ext_ref": ref, "venda_id": "venda-1", "incerta": True}
+    db = _db(refs=[{"id": "r-nova", "ext_ref": ref, "venda_id": "venda-1",
+                    "criado_em": _agora_iso(1), "incerta": True}])
+
+    assert _corre(_limpar_incerta_se_intacta(db, ref, lida)) is False
+    nova = _refs_de(db)[0]
+    assert nova["incerta"] is True, (
+        "desmarcou a reserva de outra tentativa — a seguinte emite sem verificar"
+    )
+
+
+def test_limpar_incerta_resolvida_so_desfaz_a_reclamacao_com_o_seu_carimbo():
+    """O terceiro sítio com a mesma forma: o `finally` da retoma. Ele desfaz
+    a marca de retoma — e tem de desfazer A SUA, identificada pelo carimbo
+    que ele próprio escreveu, nunca "a marca que houver nesta ext_ref". Uma
+    reserva substituída e já reclamada por OUTRA tentativa ficava sem a marca
+    da reclamação, que é exactamente a peça que impede `libertar` (e a
+    reconciliação) de mexer numa emissão em voo."""
+    ref = "pos-loja-1-sessao-1-venda-1"
+    db = _db(refs=[{
+        "id": "r-nova", "ext_ref": ref, "venda_id": "venda-1", "incerta": True,
+        "em_retoma": True, "em_retoma_desde": _agora_iso(1),
+    }])
+
+    _corre(_limpar_incerta_resolvida(db, ref, "o-carimbo-da-retoma-que-acabou"))
+
+    nova = _refs_de(db)[0]
+    assert nova["em_retoma"] is True, "desarmou a defesa de uma emissão em voo"
+    assert nova["incerta"] is True
+
+
+def test_retoma_que_falha_nao_desfaz_a_reclamacao_de_uma_reserva_substituida():
+    """O mesmo `finally`, agora pelo caminho real e no desfecho oposto (a
+    retoma continua incerta). A reserva desta retoma desaparece e outra nasce
+    no lugar, já reclamada por uma tentativa nova que está a falar com o
+    Vendus neste instante."""
+    ref = "pos-loja-1-sessao-1-venda-1"
+    db = _db(vendas=[_venda(linhas=[_linha()])], refs=[_reserva_incerta_antiga()])
+
+    async def emitir(_ref):
+        raise AssertionError("não devia chegar a emitir")
+
+    async def verificar(_ref):
+        refs = _refs_de(db)
+        del refs[:]
+        refs.append({
+            "id": "r-nova", "ext_ref": ref, "venda_id": "venda-1", "incerta": True,
+            "em_retoma": True, "em_retoma_desde": _agora_iso(1),
+        })
+        raise VendusIndisponivel("o GET de verificação falhou")
+
+    with pytest.raises(fiscal_mod.VerificacaoFiscalIncerta):
+        _corre(_retomar_reserva_incerta(
+            db, ref, _venda(linhas=[_linha()]), emitir, verificar, esperar=_instantaneo))
+
+    nova = _refs_de(db)[0]
+    assert nova["em_retoma"] is True, "desarmou a defesa de uma emissão em voo"
+
+
+# ============================================================================
+# Um fecho A DECORRER não é um fecho FEITO
+# ============================================================================
+#
+# O estado intermédio `a_fechar` (caixa.py) fechou o buraco do Z e deixou a
+# emissão a dizer à operadora uma coisa que podia não ter acontecido: o
+# núcleo só sabia perguntar "a sessão está `aberta`?" e tratava tudo o resto
+# como turno acabado. Varridas 300 interposições do FINALIZAR contra o
+# FECHAR, 18 delas diziam-lhe «A caixa desta venda foi FECHADA [...] o Z
+# desse turno já foi assinado sem ela. Pique a conta de novo na sessão de
+# caixa nova» — e o estado real no fim era: sessão `aberta`, nenhum Z
+# escrito, conta `aberta`, zero reservas, zero emissões ao Vendus. Quatro
+# afirmações, as quatro falsas, com o cliente à frente.
+
+_PEDACOS_DE_TURNO_ACABADO = ("foi FECHADA", "já não está aberta", "sessão de caixa nova")
+
+
+def test_finalizar_com_a_caixa_a_meio_de_um_fecho_manda_esperar(monkeypatch):
+    """A entrada da rota. A conta continua ali, faturável — o fecho ainda
+    pode ser recusado e desfeito (é o que acontece sempre que ele encontra
+    uma emissão viva nesta caixa)."""
+    _configura_vendus_env(monkeypatch)
+    db = _db(
+        vendas=[_venda(linhas=[_linha()])],
+        tipos_pagamento=[_tipo_pagamento()],
+        sessoes=[_sessao_aberta_doc(estado="a_fechar")],
+    )
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", ClienteEmissaoVendusFalso)
+    ClienteEmissaoVendusFalso.instancias.clear()
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(finalizar(
+            "venda-1",
+            PedidoFinalizarVenda(pagamentos=[PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)]),
+            operador=_operador(),
+        ))
+
+    assert excinfo.value.status_code == 409
+    assert "está a FECHAR" in excinfo.value.detail
+    assert "carregue outra vez em FINALIZAR" in excinfo.value.detail
+    for pedaco in _PEDACOS_DE_TURNO_ACABADO:
+        assert pedaco not in excinfo.value.detail, (
+            "disse à operadora que o turno acabou com a caixa ainda por fechar"
+        )
+    assert ClienteEmissaoVendusFalso.instancias == []
+
+
+def test_garante_venda_ainda_aberta_distingue_o_fecho_a_decorrer_do_fecho_feito():
+    """A releitura do núcleo, isolada. A decisão é a mesma de sempre (não se
+    emite, a reserva liberta-se, nada vai ao Vendus) — o TIPO é que passa a
+    dizer qual dos dois casos é, e é uma subclasse de propósito, para quem só
+    quer saber "deixou de estar aberta?" continuar a apanhar os dois."""
+    ref = "pos-loja-1-sessao-1-venda-1"
+    db = _db(
+        vendas=[_venda(linhas=[_linha()])],
+        refs=[{"id": "r1", "ext_ref": ref, "venda_id": "venda-1"}],
+        sessoes=[_sessao_aberta_doc(estado="a_fechar")],
+    )
+
+    with pytest.raises(SessaoEmFechoAgora) as excinfo:
+        _corre(fiscal_mod._garante_venda_ainda_aberta(db, ref, "venda-1"))
+
+    assert isinstance(excinfo.value, fiscal_mod.SessaoJaNaoAberta)
+    assert "a meio de um fecho" in str(excinfo.value)
+    # A reserva liberta-se: enquanto ela existir, o fecho recusa-se a si
+    # próprio (`caixa.py::_venda_com_emissao_viva`) e a caixa não fecha.
+    assert _refs_de(db) == []
+
+
+def test_fecho_que_comeca_depois_da_entrada_da_rota_ainda_manda_esperar(monkeypatch):
+    """A corrida a sério, pela rota inteira: a sessão está `aberta` quando a
+    rota a valida e passa a `a_fechar` antes de a emissão a reler (é a janela
+    que as 300 interposições varreram). A operadora tem de ler a MESMA coisa
+    dos dois lados — uma espera, não um fim."""
+    _configura_vendus_env(monkeypatch)
+    sessoes = ColeccaoQueMudaDepoisDaLeitura([_sessao_aberta_doc()], lambda: None)
+
+    def o_outro_pc_comeca_a_fechar():
+        sessoes._documentos[0]["estado"] = "a_fechar"
+
+    sessoes._mudanca = o_outro_pc_comeca_a_fechar
+    db = DbFalsa({
+        COLECOES["vendas"]: ColeccaoFalsa([_venda(linhas=[_linha()])]),
+        COLECOES["documentos"]: ColeccaoFalsa(None, indices_unicos=_unicos_de("fat_documentos")),
+        COLECOES["refs_fiscais"]: ColeccaoFalsa(None, indices_unicos=_unicos_de("fat_refs_fiscais")),
+        COLECOES["tipos_pagamento"]: ColeccaoFalsa([_tipo_pagamento()]),
+        COLECOES["sessoes_caixa"]: sessoes,
+    })
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", ClienteEmissaoVendusFalso)
+    ClienteEmissaoVendusFalso.instancias.clear()
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(finalizar(
+            "venda-1",
+            PedidoFinalizarVenda(pagamentos=[PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)]),
+            operador=_operador(),
+        ))
+
+    assert excinfo.value.status_code == 409
+    assert "está a FECHAR" in excinfo.value.detail
+    for pedaco in _PEDACOS_DE_TURNO_ACABADO:
+        assert pedaco not in excinfo.value.detail
+    # Nada foi ao Vendus e a reserva não ficou órfã a trancar a conta.
+    assert all(c.chamadas_criar == [] for c in ClienteEmissaoVendusFalso.instancias)
+    assert _refs_de(db) == []
+    assert _vendas_de(db)[0]["estado"] == "aberta"
+
+
+def test_com_a_caixa_mesmo_FECHADA_a_mensagem_continua_a_ser_a_do_turno_acabado(monkeypatch):
+    """O outro lado: distinguir os dois casos não pode ter suavizado o que se
+    diz a quem chega DEPOIS de um Z assinado. Aí a conta não se fatura mesmo
+    mais neste turno, e a saída é picá-la na sessão nova."""
+    _configura_vendus_env(monkeypatch)
+    sessoes = ColeccaoQueMudaDepoisDaLeitura([_sessao_aberta_doc()], lambda: None)
+    sessoes._mudanca = lambda: sessoes._documentos[0].update({"estado": "fechada"})
+    db = DbFalsa({
+        COLECOES["vendas"]: ColeccaoFalsa([_venda(linhas=[_linha()])]),
+        COLECOES["documentos"]: ColeccaoFalsa(None, indices_unicos=_unicos_de("fat_documentos")),
+        COLECOES["refs_fiscais"]: ColeccaoFalsa(None, indices_unicos=_unicos_de("fat_refs_fiscais")),
+        COLECOES["tipos_pagamento"]: ColeccaoFalsa([_tipo_pagamento()]),
+        COLECOES["sessoes_caixa"]: sessoes,
+    })
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", ClienteEmissaoVendusFalso)
+    ClienteEmissaoVendusFalso.instancias.clear()
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(finalizar(
+            "venda-1",
+            PedidoFinalizarVenda(pagamentos=[PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)]),
+            operador=_operador(),
+        ))
+
+    assert excinfo.value.status_code == 409
+    assert "foi FECHADA" in excinfo.value.detail
+    assert "sessão de caixa nova" in excinfo.value.detail
+    assert _refs_de(db) == []
+
+
+# ============================================================================
+# RECONCILIAR dentro da marca `a_fechar`: os mesmos euros contados duas vezes
+# ============================================================================
+#
+# `reconciliar` decide o aviso do Z por "a sessão está aberta?" — e `a_fechar`
+# não é "aberta". Só que essa marca é posta ANTES de o fecho ler as vendas:
+# uma venda que passe a `emitida` dentro dela ENTRA no Z que sai a seguir E
+# leva o aviso a dizer que o Z foi assinado sem ela. Reproduzido: «3. gestor:
+# RECONCILIAR → venda emitida, z_por_acertar=True, dinheiro_por_acertar=8.99»
+# e a seguir «4. fecho: Z escrito → vendas_dinheiro=8.99». O gestor lê "na
+# GAVETA desse fecho faltam contar 8,99 €", acrescenta-os a uma gaveta que já
+# os tinha, e fabrica uma diferença de +8,99 € num turno que estava certo — e
+# fica registado na sessão a dizer o mesmo, para quem lá for daqui a um mês.
+
+
+class SessoesQueMudamNaLeitura(ColeccaoFalsa):
+    """Sessões de caixa que mudam de estado logo A SEGUIR à n-ésima leitura —
+    o fecho do outro PC a acontecer no instante exacto que interessa a cada
+    cenário. Contar as leituras (em vez de disparar sempre na primeira) é o
+    que permite pôr a mudança de um lado ou do outro da escrita."""
+
+    def __init__(self, documentos, na_leitura, novo_estado):
+        super().__init__(documentos)
+        self._na_leitura = na_leitura
+        self._novo_estado = novo_estado
+        self.leituras = 0
+
+    async def find_one(self, filtro, projecao=None):
+        lido = await super().find_one(filtro, projecao)
+        self.leituras += 1
+        if self.leituras == self._na_leitura:
+            self._documentos[0]["estado"] = self._novo_estado
+        return lido
+
+
+def _db_reconciliacao_com_sessoes(sessoes, venda=None, refs=None):
+    return DbFalsa({
+        COLECOES["vendas"]: ColeccaoFalsa(
+            [venda if venda is not None else _venda(id="venda-1", linhas=[_linha()])]),
+        COLECOES["documentos"]: ColeccaoFalsa(None, indices_unicos=_unicos_de("fat_documentos")),
+        COLECOES["refs_fiscais"]: ColeccaoFalsa(
+            refs if refs is not None else [_reserva_incerta_antiga()],
+            indices_unicos=_unicos_de("fat_refs_fiscais")),
+        COLECOES["tipos_pagamento"]: ColeccaoFalsa([_tipo_pagamento()]),
+        COLECOES["sessoes_caixa"]: sessoes,
+    })
+
+
+def test_reconciliar_com_a_caixa_a_meio_de_um_fecho_e_recusado(monkeypatch):
+    """A recusa, e a razão dela: enquanto a marca lá está não se sabe de que
+    lado do Z esta venda vai cair, e escrever à mesma põe os mesmos euros nos
+    dois sítios. Esperar resolve tudo — um fecho dura três escritas locais."""
+    db = _db_reconciliacao(sessao_estado="a_fechar", venda=_venda_paga_misto())
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    _vendus_que_tem(monkeypatch, _bruto(total=8.99))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(reconciliar_reserva_presa("venda-1", None, gestor={"email": "x"}))
+
+    assert excinfo.value.status_code == 409
+    assert "está a FECHAR o turno" in excinfo.value.detail
+    # NADA foi escrito: nem documento, nem venda `emitida`, nem marca na
+    # sessão — e nem sequer se foi ao Vendus (a recusa é à entrada).
+    assert db._coleccoes[COLECOES["documentos"]]._documentos == []
+    assert _vendas_de(db)[0]["estado"] == "aberta"
+    assert "vendas_ligadas_depois_do_fecho" not in db._coleccoes[COLECOES["sessoes_caixa"]]._documentos[0]
+    assert all(c.chamadas_procurar == [] for c in ClienteEmissaoVendusFalso.instancias)
+
+
+def test_reconciliar_recusa_quando_o_fecho_comeca_DURANTE_a_chamada_ao_vendus(monkeypatch):
+    """A pergunta à entrada não chega, e é esta a janela que interessa: entre
+    ela e a escrita está uma chamada HTTP ao Vendus — SEGUNDOS — e um fecho
+    inteiro cabe lá dentro à vontade. É a releitura imediatamente antes de
+    escrever que fecha isto."""
+    sessao = _sessao_aberta_doc()
+    db = _db_reconciliacao_com_sessoes(ColeccaoFalsa([sessao]), venda=_venda_paga_misto())
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    _configura_vendus_env(monkeypatch)
+
+    class VendusQueDemoraEOFechoComeca(ClienteEmissaoVendusFalso):
+        def procurar_por_referencia_externa(self, external_reference, register_id):
+            # A Ana carrega em FECHAR CAIXA enquanto este GET está a caminho.
+            sessao["estado"] = "a_fechar"
+            return _bruto(total=8.99, numero="FS 2026/77", atcud="ATCUD-REAL")
+
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", VendusQueDemoraEOFechoComeca)
+    ClienteEmissaoVendusFalso.instancias.clear()
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(reconciliar_reserva_presa("venda-1", None, gestor={"email": "x"}))
+
+    assert excinfo.value.status_code == 409
+    assert "está a FECHAR o turno" in excinfo.value.detail
+    assert db._coleccoes[COLECOES["documentos"]]._documentos == [], (
+        "gravou o documento e passou a venda a `emitida` dentro da marca do fecho"
+    )
+    assert _vendas_de(db)[0]["estado"] == "aberta"
+
+
+def test_reconciliar_com_o_fecho_a_atravessar_a_escrita_diz_que_nao_sabe(monkeypatch):
+    """O resto da corrida, o que já não se pode recusar: a caixa não estava a
+    fechar quando se escreveu e estava fechada logo a seguir. O fecho lê as
+    vendas `emitida` entre a marca e o Z — esta venda tanto pode ter chegado
+    a tempo dessa leitura como não, e daqui não há forma de saber.
+
+    As duas respostas fáceis custam dinheiro, uma em cada sentido: dizer que
+    o Z não a conta manda acertar euros que já lá estão; dizer que a conta
+    esconde euros que faltam. Diz-se que não se sabe e manda-se confirmar no
+    próprio Z, que é o único sítio onde a resposta existe."""
+    sessoes = SessoesQueMudamNaLeitura([_sessao_aberta_doc()], na_leitura=2,
+                                       novo_estado="fechada")
+    db = _db_reconciliacao_com_sessoes(sessoes, venda=_venda_paga_misto())
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    _vendus_que_tem(monkeypatch, _bruto(total=8.99, numero="FS 2026/77"))
+
+    resposta = _corre(reconciliar_reserva_presa("venda-1", None, gestor={"email": "x"}))
+
+    assert resposta["z_por_acertar"] is True
+    assert "ao MESMO TEMPO" in resposta["aviso_do_z"]
+    assert "ABRA O Z" in resposta["aviso_do_z"]
+    assert "assinado SEM ela" not in resposta["aviso_do_z"], (
+        "afirmou que o Z não conta a venda sem ter como saber"
+    )
+    # E fica GRAVADO que esta marca é para confirmar, não para acertar às
+    # cegas — quem a ler daqui a um mês tem de saber a diferença.
+    marca = sessoes._documentos[0]["vendas_ligadas_depois_do_fecho"][0]
+    assert marca["fecho_ao_mesmo_tempo"] is True
+
+
+def test_reconciliar_sem_fecho_nenhum_pelo_meio_continua_a_dar_a_resposta_exacta(monkeypatch):
+    """O outro lado: sem corrida nenhuma, a resposta é a de sempre — exacta,
+    com o valor que falta na gaveta. O aviso do "não sei" é para a corrida, e
+    só para ela."""
+    db = _db_reconciliacao(sessao_estado="fechada", venda=_venda_paga_misto())
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    _vendus_que_tem(monkeypatch, _bruto(total=8.99, numero="FS 2026/77"))
+
+    resposta = _corre(reconciliar_reserva_presa("venda-1", None, gestor={"email": "x"}))
+
+    assert resposta["z_por_acertar"] is True
+    assert "assinado SEM ela" in resposta["aviso_do_z"]
+    assert "ao MESMO TEMPO" not in resposta["aviso_do_z"]
+    assert resposta["dinheiro_por_acertar"] == 4.50
+    marca = db._coleccoes[COLECOES["sessoes_caixa"]]._documentos[0][
+        "vendas_ligadas_depois_do_fecho"][0]
+    assert marca["fecho_ao_mesmo_tempo"] is False
+
+
+def test_reconciliar_com_uma_resposta_ilegivel_do_vendus_da_502_e_nao_500(monkeypatch):
+    """O outro lado do erro tipado, visto da rota: uma leitura que não se
+    consegue ler NÃO é um "não existe" nem um 500. Um `ValueError` cru
+    (`amount_gross='8,99'`) saltava o `except VendusErro` desta rota inteira
+    e o FastAPI devolvia 500, deixando a venda `aberta`, sem documento e com
+    a reserva ainda incerta — o ecrã lê isso como "nada saiu, pode repetir"."""
+    db = _db_reconciliacao(sessao_estado="fechada", venda=_venda_paga_misto())
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    _configura_vendus_env(monkeypatch)
+
+    class VendusComTotalIlegivel(ClienteEmissaoVendusFalso):
+        def procurar_por_referencia_externa(self, external_reference, register_id):
+            raise VendusRespostaIlegivel(
+                "O Vendus devolveu um total (`amount_gross`) que não é um "
+                "número legível: '8,99'"
+            )
+
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", VendusComTotalIlegivel)
+    ClienteEmissaoVendusFalso.instancias.clear()
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(reconciliar_reserva_presa("venda-1", None, gestor={"email": "x"}))
+
+    assert excinfo.value.status_code == 502
+    assert "volte a tentar" in excinfo.value.detail
+    assert db._coleccoes[COLECOES["documentos"]]._documentos == []
+    assert _vendas_de(db)[0]["estado"] == "aberta"
+    # A reserva mantém-se incerta: continua a obrigar quem vier a seguir a
+    # verificar antes de emitir seja o que for.
+    assert _refs_de(db)[0]["incerta"] is True

@@ -1298,3 +1298,54 @@ def test_movimento_que_chega_a_meio_do_fecho_e_recusado_e_nao_fica_fora_do_z(mon
     assert "FECHAR CAIXA" in tentativa["detalhe"]
     assert z["saidas"] == 0.0
     assert z["esperado"] == 50.0, "um movimento aceite ficou fora do Z"
+
+
+def test_fecho_que_rebenta_a_meio_deixa_a_caixa_fechavel_e_nao_num_beco(monkeypatch):
+    """A outra metade da marca `a_fechar`, e a que a torna aceitável: se o
+    fecho abortar DEPOIS de a pôr — um soluço do Mongo a ler as vendas, um
+    restart, um deploy — a sessão fica marcada e a loja NÃO pode ficar sem
+    saída. Fica: `_sessao_por_fechar` aceita `a_fechar`, e o gesto óbvio
+    (carregar outra vez em FECHAR CAIXA) conclui o turno, com as somas todas
+    recalculadas do zero.
+
+    O que a marca NUNCA pode ser é uma sessão que não fecha nem abre — nesse
+    caso a loja passava a noite sem POS."""
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db(registo, caixas=[_caixa()], sessoes=[sessao], movimentos=[],
+             vendas=[_venda_emitida()])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    async def verificacao(_db, _sessao, _valor):
+        return {"nao_verificado": "duplo"}
+    monkeypatch.setattr(caixa_mod, "_verificar_vendas_dinheiro", verificacao)
+
+    vendas = db._coleccoes[COLECOES["vendas"]]
+    find_original = vendas.find
+    # A TERCEIRA leitura das vendas é a das somas do Z — já do outro lado da
+    # marca (as duas primeiras são as perguntas pela emissão viva, uma de cada
+    # lado dela). É aí que o fecho tem de morrer para este cenário ser o que
+    # diz ser.
+    leituras = {"n": 0}
+
+    def find_que_rebenta_nas_somas(filtro=None, projecao=None):
+        leituras["n"] += 1
+        if leituras["n"] == 3:
+            raise RuntimeError("o Mongo engasgou-se a ler as vendas da sessão")
+        return find_original(filtro, projecao)
+
+    vendas.find = find_que_rebenta_nas_somas
+
+    with pytest.raises(RuntimeError):
+        _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=58.99),
+                            operador=_operador()))
+    assert sessao["estado"] == "a_fechar"
+    assert sessao["contado"] is None, "escreveu um Z de um fecho que abortou"
+
+    # E a segunda tentativa fecha, com tudo recalculado.
+    z = _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=58.99),
+                            operador=_operador()))
+    assert z["estado"] == "fechada"
+    assert z["vendas_dinheiro"] == 8.99
+    assert z["diferenca"] == 0.0
+    assert sessao["estado"] == "fechada"

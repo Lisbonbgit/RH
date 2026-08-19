@@ -170,7 +170,18 @@ class VendusRespostaIlegivel(VendusErro):
     ler qual") e não um `ValueError` cru: quem chama tem de o poder
     distinguir de um 4xx (onde o documento não existe) e tratá-lo como
     incerto — reserva mantida e 503, nunca um 500 que o ecrã lê como "nada
-    saiu"."""
+    saiu".
+
+    **Também a LEITURA, e não só a criação.** A mesma incapacidade de ler um
+    2xx acontece nos GET deste módulo (`procurar_por_referencia_externa`,
+    `listar_documentos_por_dia`), e o estrago é o simétrico: quem lê tem de
+    poder distinguir "o Vendus disse que não existe" de "o Vendus respondeu e
+    eu não consigo ler o que disse". Um erro cru na leitura sobe pela rota de
+    RECONCILIAR (que só apanha `VendusErro`) e sai 500 do FastAPI, com a venda
+    ainda `aberta`, sem documento e com a reserva incerta — o ecrã lê isso
+    como "não há nada, pode repetir". Medido nesta ronda com um
+    `amount_gross='8,99'` (vírgula decimal, plausível numa API portuguesa):
+    «ValueError CRU — a rota não o apanha, o FastAPI devolve 500»."""
 
 
 def _ler_rate_limit_reset(resposta: httpx.Response) -> float:
@@ -263,48 +274,26 @@ class ClienteEmissaoVendus:
         # nunca um `ValueError`/`binascii.Error` cru, que quem chama
         # confundiria com "o Vendus recusou e não criou nada" (ver a
         # docstring dessa excepção: era assim que saíam duas FS reais).
+        #
+        # E é o BLOCO INTEIRO que está debaixo dessa promessa, não uma linha
+        # escolhida a dedo. A ronda anterior tipificou o `resposta.json()` e
+        # deixou o `round(float(amount_gross))` do dicionário de saída FORA do
+        # try — com um `amount_gross='8,99'` (vírgula decimal, plausível numa
+        # API portuguesa) saía um `ValueError` cru, medido: «é VendusErro?
+        # False». Tipificar linha a linha é uma lista que fica desactualizada
+        # à primeira linha nova; o que vale é a fronteira — depois do 2xx,
+        # NADA sai daqui por tipificar (ver `_documento_da_criacao`).
         try:
-            dados = resposta.json() if resposta.content else {}
-        except ValueError as e:
-            raise VendusRespostaIlegivel(
-                "O Vendus respondeu %d (documento CRIADO) mas o corpo não é "
-                "JSON legível (%s) — não é possível saber que documento saiu. "
-                "external_reference=%s" % (resposta.status_code, e, external_reference)
+            return _documento_da_criacao(resposta, external_reference, modo)
+        except VendusErro:
+            # Já é da família certa (o `json()` ilegível, o 2xx sem
+            # identidade, o total que não se lê) — sobe tal e qual, com a
+            # mensagem própria que cada um traz.
+            raise
+        except Exception as e:  # noqa: BLE001 — ver o comentário acima: a fronteira
+            raise _resposta_ilegivel(
+                resposta, external_reference, "ao ler o documento criado", e
             ) from e
-        if not isinstance(dados, dict) or (dados.get("id") is None and not dados.get("atcud")):
-            # Um 2xx sem identidade nenhuma do documento (nem id nem ATCUD)
-            # é o mesmo caso: gravá-lo assim escrevia uma linha em
-            # `fat_documentos` com `vendus_document_id=None` e `atcud=None`,
-            # que colide com a PRÓXIMA igual (os índices únicos tratam o
-            # nulo como valor) e esconde a fatura real atrás de um conflito.
-            raise VendusRespostaIlegivel(
-                "O Vendus respondeu %d (documento CRIADO) mas a resposta não "
-                "traz nem `id` nem `atcud` — não é possível saber que "
-                "documento saiu. external_reference=%s"
-                % (resposta.status_code, external_reference)
-            )
-
-        return {
-            "id": dados.get("id"),
-            "numero": dados.get("number"),
-            "atcud": dados.get("atcud"),
-            "total": round(float(dados.get("amount_gross") or 0), 2),
-            # O talão é uma CONVENIÊNCIA (reimprimir), não a identidade do
-            # documento: um `output` estragado não pode transformar uma
-            # emissão bem sucedida num erro — perde-se o papel, nunca o
-            # registo da fatura. Ver `_talao_de`.
-            "talao_escpos": _talao_de(dados, external_reference),
-            # O Dashboard soma por estes dois campos (`dashboard.py::
-            # _campo_valor`: `total_bruto` com IVA, `total_liquido` sem) —
-            # `total` sozinho deixava a receita das 5 lojas a 0,00 €. Nunca
-            # se deriva um do outro por uma taxa assumida: sem o campo do
-            # Vendus, fica `None` (ver `_valor_monetario`).
-            "total_bruto": _valor_monetario(dados.get("amount_gross")),
-            "total_liquido": _valor_monetario(dados.get("amount_net")),
-            # O ecrã tem de poder avisar em que modo o documento saiu — um
-            # documento em modo 'tests' não tem valor fiscal nenhum.
-            "modo": modo,
-        }
 
     def procurar_por_referencia_externa(self, external_reference: str, register_id: int) -> Optional[Dict]:
         """Confirma se uma emissão que falhou por TIMEOUT chegou a ser
@@ -335,13 +324,26 @@ class ClienteEmissaoVendus:
         )
         if resposta is None:
             return None
-        for doc in _corpo_como_lista(resposta):
-            if (
-                str(doc.get("external_reference") or "") == external_reference
-                and doc.get("status") != "A"
-            ):
-                return _normaliza_documento(doc)
-        return None
+        # A MESMA fronteira da criação, do lado da LEITURA: o GET respondeu
+        # 2xx e a partir daqui tudo o que rebente é "respondeu e não consigo
+        # ler", nunca "não existe". Quem chama trata as duas de forma
+        # OPOSTA — `None` autoriza emitir, um erro tipado obriga a manter a
+        # reserva incerta — e um `ValueError` cru pelo meio saltava a rota
+        # de RECONCILIAR inteira (`except VendusErro`) e saía 500.
+        try:
+            for doc in _corpo_como_lista(resposta):
+                if (
+                    str(doc.get("external_reference") or "") == external_reference
+                    and doc.get("status") != "A"
+                ):
+                    return _normaliza_documento(doc)
+            return None
+        except VendusErro:
+            raise
+        except Exception as e:  # noqa: BLE001 — ver o comentário acima: a fronteira
+            raise _resposta_ilegivel(
+                resposta, external_reference, "à procura por referência externa", e
+            ) from e
 
     def listar_documentos_por_dia(self, data: str, register_id: int) -> List[Dict]:
         """`GET documents/` de UM dia (formato `YYYY-MM-DD`), PAGINADO até
@@ -382,7 +384,20 @@ class ClienteEmissaoVendus:
             )
             if resposta is None:
                 break  # 404/A001 — sem documentos nesse dia, não é avaria
-            pagina_dados = _corpo_como_lista(resposta)
+            # A mesma fronteira das outras duas: um 2xx cujo corpo não se lê
+            # é `VendusRespostaIlegivel`, nunca um erro cru. Quem chama (a
+            # verificação do fecho de caixa) traduz isso em "não consegui
+            # verificar" — e NUNCA em "o Vendus não tem nada nesse dia", que
+            # é o número que a operadora usaria para justificar dinheiro.
+            try:
+                pagina_dados = _corpo_como_lista(resposta)
+            except VendusErro:
+                raise
+            except Exception as e:  # noqa: BLE001 — ver o comentário acima
+                raise _resposta_ilegivel(
+                    resposta, "documentos de %s (página %d)" % (data, pagina),
+                    "a listar os documentos do dia", e,
+                ) from e
             resultado.extend(pagina_dados)
             if total_paginas is None:
                 total_paginas = _paginas_totais(resposta)
@@ -445,6 +460,103 @@ class ClienteEmissaoVendus:
             return resposta
 
 
+def _resposta_ilegivel(
+    resposta: httpx.Response, referencia: str, momento: str, erro: Exception
+) -> VendusRespostaIlegivel:
+    """A excepção TIPADA para "o Vendus respondeu 2xx e não consigo ler o que
+    disse" — a única forma de erro que pode sair deste módulo depois de uma
+    resposta bem sucedida (ver `VendusRespostaIlegivel`).
+
+    Uma função, e não a mensagem escrita duas vezes: a criação e a leitura
+    têm de dizer o MESMO a quem as apanha, senão a próxima ronda tipifica uma
+    e esquece a outra — que é exactamente o que aconteceu com o
+    `round(float(amount_gross))`."""
+    return VendusRespostaIlegivel(
+        "O Vendus respondeu %d mas não foi possível ler a resposta %s "
+        "(%s: %s) — não é possível saber o que ele disse. "
+        "external_reference=%s" % (
+            resposta.status_code, momento, type(erro).__name__, erro, referencia,
+        )
+    )
+
+
+def _total_do_documento(valor, referencia: str) -> float:
+    """O `amount_gross` do Vendus como número — ou um erro TIPADO desta
+    família se vier um valor que não se sabe ler.
+
+    **Não se "conserta" a vírgula.** Um `'8,99'` interpretado à mão como 8,99
+    parece inofensivo até ao dia em que o separador de milhares aparecer
+    (`'1.234,56'` lido como 1,23 €) ou em que o campo trocar de significado.
+    Um número que não sabemos ler é um facto a assinalar, não um valor a
+    adivinhar: sai `VendusRespostaIlegivel`, quem chama trata a emissão como
+    INCERTA (reserva mantida, 503) e alguém vai ver o que o Vendus mandou.
+
+    Ausente, vazio ou zero continua a ser 0,00 €, como sempre foi — é o
+    campo a faltar, não um campo ilegível, e o valor com que o Dashboard
+    conta (`total_bruto`) tem regra própria e mais exigente: `None`, nunca
+    um zero inventado (ver `_valor_monetario`)."""
+    if not valor:
+        return 0.0
+    try:
+        return round(float(valor), 2)
+    except (TypeError, ValueError) as e:
+        raise VendusRespostaIlegivel(
+            "O Vendus devolveu um total (`amount_gross`) que não é um número "
+            "legível: %r — não se adivinha o valor de uma fatura. "
+            "external_reference=%s" % (valor, referencia)
+        ) from e
+
+
+def _documento_da_criacao(
+    resposta: httpx.Response, external_reference: str, modo: str
+) -> Dict:
+    """O documento (formato interno) a partir da resposta 2xx do `POST
+    documents/`. Chamada de dentro da fronteira de `criar_fatura_simplificada`
+    — tudo o que aqui rebentar sai tipado, seja qual for a linha."""
+    try:
+        dados = resposta.json() if resposta.content else {}
+    except ValueError as e:
+        raise VendusRespostaIlegivel(
+            "O Vendus respondeu %d (documento CRIADO) mas o corpo não é "
+            "JSON legível (%s) — não é possível saber que documento saiu. "
+            "external_reference=%s" % (resposta.status_code, e, external_reference)
+        ) from e
+    if not isinstance(dados, dict) or (dados.get("id") is None and not dados.get("atcud")):
+        # Um 2xx sem identidade nenhuma do documento (nem id nem ATCUD)
+        # é o mesmo caso: gravá-lo assim escrevia uma linha em
+        # `fat_documentos` com `vendus_document_id=None` e `atcud=None`,
+        # que colide com a PRÓXIMA igual (os índices únicos tratam o
+        # nulo como valor) e esconde a fatura real atrás de um conflito.
+        raise VendusRespostaIlegivel(
+            "O Vendus respondeu %d (documento CRIADO) mas a resposta não "
+            "traz nem `id` nem `atcud` — não é possível saber que "
+            "documento saiu. external_reference=%s"
+            % (resposta.status_code, external_reference)
+        )
+
+    return {
+        "id": dados.get("id"),
+        "numero": dados.get("number"),
+        "atcud": dados.get("atcud"),
+        "total": _total_do_documento(dados.get("amount_gross"), external_reference),
+        # O talão é uma CONVENIÊNCIA (reimprimir), não a identidade do
+        # documento: um `output` estragado não pode transformar uma
+        # emissão bem sucedida num erro — perde-se o papel, nunca o
+        # registo da fatura. Ver `_talao_de`.
+        "talao_escpos": _talao_de(dados, external_reference),
+        # O Dashboard soma por estes dois campos (`dashboard.py::
+        # _campo_valor`: `total_bruto` com IVA, `total_liquido` sem) —
+        # `total` sozinho deixava a receita das 5 lojas a 0,00 €. Nunca
+        # se deriva um do outro por uma taxa assumida: sem o campo do
+        # Vendus, fica `None` (ver `_valor_monetario`).
+        "total_bruto": _valor_monetario(dados.get("amount_gross")),
+        "total_liquido": _valor_monetario(dados.get("amount_net")),
+        # O ecrã tem de poder avisar em que modo o documento saiu — um
+        # documento em modo 'tests' não tem valor fiscal nenhum.
+        "modo": modo,
+    }
+
+
 def _valor_monetario(valor) -> Optional[float]:
     """Um valor em euros vindo do Vendus, ou `None` quando o campo não vem
     (ou não é legível) — NUNCA 0,00 €.
@@ -453,12 +565,21 @@ def _valor_monetario(valor) -> Optional[float]:
     silêncio e faz um dia de vendas parecer um dia sem IVA; um `None` não
     finge número nenhum. É a mesma regra de ouro de `precos.py` — sem o
     campo certo, não se inventa nada (e muito menos se deriva o líquido do
-    bruto por uma taxa assumida: as lojas vendem a 13 % e a 23 %)."""
+    bruto por uma taxa assumida: as lojas vendem a 13 % e a 23 %).
+
+    Um campo PRESENTE mas ilegível deixa aviso no log: continua a valer
+    `None` (não se inventa nada), mas silenciar isto era o Dashboard perder
+    documentos sem ninguém saber porquê. O `total` do documento, esse, nem
+    `None` aceita — é um erro tipado, ver `_total_do_documento`."""
     if valor is None or valor == "":
         return None
     try:
         return round(float(valor), 2)
     except (TypeError, ValueError):
+        logger.warning(
+            "[faturacao] valor monetário ilegível vindo do Vendus: %r — fica "
+            "`None` (nunca 0,00 €), e o Dashboard não o soma.", valor,
+        )
         return None
 
 
@@ -537,12 +658,17 @@ def _normaliza_documento(doc: Dict) -> Dict:
     partir desse campo; sem a data, ficava com o instante em que a
     descobrimos em vez daquele em que a AT a recebeu (ver
     `_instante_do_vendus`)."""
+    referencia = str(doc.get("external_reference") or "")
     return {
         "id": doc.get("id"),
         "numero": doc.get("number"),
         "atcud": doc.get("atcud"),
-        "total": round(float(doc.get("amount_gross") or 0), 2),
-        "talao_escpos": _talao_de(doc, str(doc.get("external_reference") or "")),
+        # A MESMA linha que rebentava crua na criação, e aqui pela rota de
+        # RECONCILIAR — que só apanha `VendusErro` e por isso dava 500 do
+        # FastAPI, deixando a venda `aberta`, sem documento e com a reserva
+        # ainda incerta. Ver `_total_do_documento`.
+        "total": _total_do_documento(doc.get("amount_gross"), referencia),
+        "talao_escpos": _talao_de(doc, referencia),
         "external_reference": doc.get("external_reference"),
         # O contrato com o Dashboard (ver `criar_fatura_simplificada`).
         "total_bruto": _valor_monetario(doc.get("amount_gross")),

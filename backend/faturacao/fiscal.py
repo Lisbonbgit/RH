@@ -111,6 +111,25 @@ _MSG_SESSAO_NAO_ABERTA = (
     "A sessão de caixa desta venda já não está aberta — não é possível "
     "emitir fatura para uma venda de um turno já fechado."
 )
+# A caixa está a MEIO de um fecho (`caixa.py`: o estado intermédio
+# `a_fechar`, posto ANTES de o fecho somar seja o que for). É uma ESPERA, e
+# não um fim: enquanto a marca lá está não se emite, mas o fecho ainda pode
+# ser recusado e desfeito — é o que acontece sempre que ele encontra uma
+# emissão viva nesta caixa. Dizer a esta operadora o mesmo que se diz a quem
+# chega depois de um Z assinado (`_MSG_SESSAO_FECHADA_ENTRETANTO`) era
+# mandá-la ir picar a conta a uma sessão nova que pode nunca vir a existir —
+# com o cliente à frente e a conta ainda ali, aberta e faturável. Medido
+# nesta ronda: 18 em 300 interposições diziam "o turno acabou" com a caixa a
+# terminar `aberta`, sem Z nenhum escrito e sem uma única emissão ao Vendus.
+_MSG_SESSAO_A_FECHAR_AGORA = (
+    "A caixa desta venda está a FECHAR o turno neste momento — o Z está a "
+    "ser calculado e, enquanto isso, esta sessão não emite faturas. NÃO saiu "
+    "nenhuma Fatura Simplificada e nada foi enviado ao Vendus: a conta "
+    "continua aqui, tal como está. Espere alguns segundos e carregue outra "
+    "vez em FINALIZAR — um fecho demora um instante, e um que apanhe uma "
+    "emissão a meio nesta caixa é recusado e desfeito por ela própria. Se o "
+    "turno fechar mesmo, o ecrã dir-lho-á com outras palavras."
+)
 _MSG_VENDA_CANCELADA_ENTRETANTO = (
     "Esta conta foi cancelada enquanto a fatura estava a ser preparada — NÃO "
     "saiu nenhuma Fatura Simplificada e nada foi enviado ao Vendus. Se o "
@@ -222,6 +241,33 @@ class SessaoJaNaoAberta(FiscalErro):
     não se emite. A outra metade desta defesa está em
     `caixa.py::fechar_caixa`, que recusa fechar enquanto houver uma reserva
     fiscal viva numa venda daquela sessão."""
+
+
+class SessaoEmFechoAgora(SessaoJaNaoAberta):
+    """O caso PARTICULAR de `SessaoJaNaoAberta` em que a sessão está em
+    `a_fechar` — um fecho a DECORRER, não um fecho FEITO.
+
+    Para o núcleo é a mesma decisão de sempre (não se emite, a reserva
+    liberta-se, nada vai ao Vendus) e por isso é uma subclasse: quem só
+    quiser saber "a sessão deixou de estar aberta?" continua a apanhá-la sem
+    mudar uma linha. O que muda é o que se DIZ a quem está ao balcão, e a
+    diferença não é de estilo — é de facto:
+
+    - fecho FEITO → o Z daquele turno está assinado, esta conta não se
+      fatura mais aqui, e a saída é picá-la na sessão nova
+      (`_MSG_SESSAO_FECHADA_ENTRETANTO`);
+    - fecho A DECORRER → não há Z nenhum, a caixa pode acabar a noite
+      `aberta` (o fecho é recusado e desfeito assim que encontra uma emissão
+      viva nesta caixa, ver `caixa.py::fechar_caixa`), e a conta continua
+      exactamente onde está. É uma espera de segundos
+      (`_MSG_SESSAO_A_FECHAR_AGORA`).
+
+    Reproduzido em processo, varrendo 300 interposições do FINALIZAR contra o
+    FECHAR: em 18 delas a operadora lia "a caixa foi FECHADA [...] o Z desse
+    turno já foi assinado sem ela" e o estado real no fim era sessão
+    `aberta`, nenhum Z escrito, conta `aberta`, zero emissões. Três
+    afirmações, as três falsas — e a única acção que a mensagem sugeria
+    (picar tudo de novo noutra sessão) era a única que estava errada."""
 
 
 class ContaAlteradaDepoisDeConfirmada(FiscalErro):
@@ -453,7 +499,17 @@ async def _libertar_reserva(db, ext_ref: str) -> None:
     """Remove a reserva desta `ext_ref` — chamado quando algo falha DEPOIS
     de reservar (nunca depois de o Vendus confirmar que emitiu, ver
     ConflitoDocumentoFiscal), para a próxima tentativa poder reservar de
-    novo em vez de ficar presa atrás de uma reserva órfã."""
+    novo em vez de ficar presa atrás de uma reserva órfã.
+
+    **Porque é que ESTE apagar continua incondicional**, quando o da rota de
+    gestão teve de passar a prender a identidade da reserva
+    (`_libertar_reserva_se_intacta`): quem chama isto ACABOU de ganhar a
+    reserva e é dono dela — não está a aplicar uma decisão tomada sobre uma
+    leitura antiga. Para apagar a reserva ERRADA, a sua teria de ter
+    desaparecido primeiro, e ninguém lha pode tirar: o índice único garante
+    que não há segunda reserva desta `ext_ref` enquanto a dela existir, e a
+    rota do gestor recusa-se a apagar tanto uma reserva recente (é uma
+    emissão a decorrer) como uma cuja retoma esteja reclamada."""
     await db[COLECOES["refs_fiscais"]].delete_one({"ext_ref": ext_ref})
 
 
@@ -480,7 +536,36 @@ async def _libertar_reserva_se_intacta(db, ext_ref: str, reserva: Dict) -> bool:
     fotografia tem de ser aplicada com uma escrita que exija que a
     fotografia ainda seja verdade.
 
-    **Os três campos do filtro, um a um:**
+    **`id`: a IDENTIDADE daquela reserva, e porque é que faltava.** A versão
+    anterior desta função descrevia só a FORMA de uma reserva intacta
+    (`em_retoma`/`em_retoma_desde`/`documento_id`) — e uma reserva NOVA tem
+    exactamente essa forma. A `ext_ref` é determinística (`pos-{loja}-
+    {sessão}-{venda}`), por isso NÃO é única no tempo: libertada a reserva
+    velha, a tentativa seguinte cria outra com a MESMA `ext_ref` e sem marca
+    nenhuma, porque `_reservar` insere só id/ext_ref/venda_id/criado_em.
+    Reproduzido em processo, com a saída medida: «2. libertar leu a reserva
+    r-velha / 3. FINALIZAR nº1 → o Vendus recusa com 4xx → a reserva velha é
+    libertada / 5. FINALIZAR nº2 → reserva NOVA, emissão a caminho do Vendus
+    / 7. APAGOU 1 reserva(s) [a NOVA] / 10. FINALIZAR nº3 → emitida nº FS
+    2026/902» → **duas Faturas Simplificadas REAIS da mesma venda**. O filtro
+    fechava o defeito que tinha à frente e abria uma versão mais estreita de
+    si próprio.
+
+    **Porquê o `id` e não o `criado_em`** (as duas hipóteses reais): o `id` é
+    um uuid4 escrito por `_reservar` no próprio insert — é a identidade do
+    documento, e é o ÚNICO campo que uma reserva nova, criada para a mesma
+    venda, não pode partilhar com a que o gestor viu. O `criado_em` é um
+    relógio: mede *quando*, não *qual*. Duas reservas da mesma venda criadas
+    no mesmo instante ISO seriam indistinguíveis por ele, e uma retoma
+    mantém-no o da reserva ORIGINAL (é por isso que `em_retoma_desde` teve de
+    existir) — usar um relógio como identidade foi exactamente o erro que a
+    guarda da idade cometeu, e que custou duas faturas reais. Uma reserva sem
+    `id` (dados anteriores a este campo) casa com `{"id": None}`, mas uma
+    reserva NOVA nunca, porque `_reservar` põe-lhe sempre um uuid — a única
+    coisa que pode apagar é outra igualmente sem identidade.
+
+    **E os três campos de forma continuam lá**, porque respondem a outra
+    pergunta — "ninguém lhe mexeu?" — e a identidade sozinha não a responde:
 
     - `em_retoma` e `em_retoma_desde` — o par que `_reclamar_retoma` escreve
       de uma vez. Passa-se o valor LIDO (não `None` à força): uma retoma
@@ -495,6 +580,7 @@ async def _libertar_reserva_se_intacta(db, ext_ref: str, reserva: Dict) -> bool:
       deitar fora a própria peça que sustenta a idempotência."""
     resultado = await db[COLECOES["refs_fiscais"]].delete_one({
         "ext_ref": ext_ref,
+        "id": reserva.get("id"),
         "em_retoma": reserva.get("em_retoma"),
         "em_retoma_desde": reserva.get("em_retoma_desde"),
         "documento_id": None,
@@ -513,7 +599,7 @@ async def _marcar_reserva_incerta(db, ext_ref: str) -> None:
     )
 
 
-async def _reclamar_retoma(db, ext_ref: str) -> bool:
+async def _reclamar_retoma(db, ext_ref: str, carimbo: Optional[str] = None) -> bool:
     """B1 (a re-revisão do núcleo fiscal): `_retomar_reserva_incerta` nunca
     RECLAMAVA a retoma — como a reserva já existe (não é um `insert_one`
     novo), `_reservar` deixava de decidir qualquer corrida. Duas ou mais
@@ -545,10 +631,29 @@ async def _reclamar_retoma(db, ext_ref: str) -> bool:
     reserva de uma emissão em voo e sair uma SEGUNDA Fatura Simplificada
     real da mesma venda (reproduzido em processo, sobre as rotas reais:
     `FS 2026/901` e `FS 2026/902`, o cliente com o talão de uma e a venda a
-    apontar para a outra)."""
+    apontar para a outra).
+
+    **`carimbo`**: quem chama pode escolher o valor de `em_retoma_desde` para
+    o guardar e, no fim, desfazer só a reclamação que fez — ver o `finally`
+    de `_retomar_reserva_incerta`. Sem ele o carimbo é o de agora, como
+    sempre foi.
+
+    **Porque é que este filtro NÃO precisa de prender a identidade da
+    reserva** (ao contrário de `_libertar_reserva_se_intacta` e
+    `_limpar_incerta_se_intacta`): esta escrita não aplica uma decisão tomada
+    sobre uma reserva LIDA antes — a condição `incerta: True, em_retoma: None`
+    é ela própria toda a licença para agir, e é verdadeira ou falsa no
+    instante da escrita. Se a reserva lida em `finalizar_venda` tiver sido
+    entretanto substituída por outra, o que acontece é o correcto: ou a nova
+    também está incerta e por reclamar (e reclamá-la é exactamente o que a
+    retoma serve para fazer — verificar no Vendus antes de emitir seja o que
+    for), ou não está, e então não se reclama nada."""
     resultado = await db[COLECOES["refs_fiscais"]].update_one(
         {"ext_ref": ext_ref, "incerta": True, "em_retoma": None},
-        {"$set": {"em_retoma": True, "em_retoma_desde": _agora()}},
+        {"$set": {
+            "em_retoma": True,
+            "em_retoma_desde": carimbo if carimbo is not None else _agora(),
+        }},
     )
     return resultado.matched_count == 1
 
@@ -570,10 +675,20 @@ async def _limpar_incerta_se_intacta(db, ext_ref: str, reserva: Dict) -> bool:
     quem a reclamou, que a resolve no seu `finally`
     (`_retomar_reserva_incerta`). A venda já está `emitida` e a reserva já
     leva o `documento_id` — não fica presa nem aparece na listagem de
-    presas."""
+    presas.
+
+    **`id` pela mesma razão de `_libertar_reserva_se_intacta`**, e é a mesma
+    janela: a reserva lida à entrada da rota pode ter sido libertada e
+    SUBSTITUÍDA por outra durante a chamada HTTP ao Vendus (a `ext_ref` é
+    determinística, logo repete-se). Aqui o estrago é mais surdo do que o do
+    `delete` — limpar `em_retoma`/`em_retoma_desde` numa reserva ALHEIA
+    apaga-lhe a marca da reclamação, e é essa marca que impede `libertar` (e
+    esta própria rota) de mexer numa emissão em voo: em vez de matar a
+    emissão, abria-lhe a porta a quem a matasse a seguir."""
     resultado = await db[COLECOES["refs_fiscais"]].update_one(
         {
             "ext_ref": ext_ref,
+            "id": reserva.get("id"),
             "em_retoma": reserva.get("em_retoma"),
             "em_retoma_desde": reserva.get("em_retoma_desde"),
         },
@@ -589,7 +704,7 @@ async def _limpar_incerta_se_intacta(db, ext_ref: str, reserva: Dict) -> bool:
     return False
 
 
-async def _limpar_incerta_resolvida(db, ext_ref: str) -> None:
+async def _limpar_incerta_resolvida(db, ext_ref: str, carimbo: str) -> None:
     """'Um problema associado' da mesma revisão: hoje a marca `incerta`
     fica PARA SEMPRE, mesmo depois de a venda ficar emitida — a reserva
     nunca deixa de aparecer como 'presa' na listagem de gestão (ver a rota
@@ -601,9 +716,20 @@ async def _limpar_incerta_resolvida(db, ext_ref: str) -> None:
 
     O carimbo `em_retoma_desde` limpa-se JUNTO com a marca que ele data: uma
     reserva sem `em_retoma` mas com o relógio de uma retoma antiga é um dado
-    que só pode induzir em erro quem o leia a seguir (`_retoma_em_curso`)."""
+    que só pode induzir em erro quem o leia a seguir (`_retoma_em_curso`).
+
+    **`carimbo` é obrigatório, e é a identidade da RECLAMAÇÃO** — o valor que
+    esta mesma retoma escreveu em `em_retoma_desde` ao reclamar. A escrita é
+    condicionada a ele pela mesma razão que o `delete` de
+    `_libertar_reserva_se_intacta`: entre reclamar e chegar aqui pode ter
+    passado uma chamada ao Vendus, e a `ext_ref` é determinística — uma
+    reserva NOVA da mesma venda casaria com um filtro que só diga
+    `{"ext_ref": ...}`, e limpar-lhe as marcas era apagar a reclamação de
+    quem estivesse a emitir nesse instante. Um valor obrigatório (e não um
+    `None` que significasse "limpa o que lá estiver") é o que impede a
+    próxima chamada de reintroduzir o defeito sem dar por isso."""
     await db[COLECOES["refs_fiscais"]].update_one(
-        {"ext_ref": ext_ref},
+        {"ext_ref": ext_ref, "em_retoma": True, "em_retoma_desde": carimbo},
         {"$set": {"incerta": False, "em_retoma": None, "em_retoma_desde": None}},
     )
 
@@ -783,6 +909,23 @@ async def _garante_venda_ainda_aberta(db, ext_ref: str, venda_id: str) -> Dict:
     # `.get(...)`, não `[...]`: uma venda sem `sessao_id` cai no mesmo
     # aborto, nunca num KeyError.
     sessao = await db[COLECOES["sessoes_caixa"]].find_one({"id": actual.get("sessao_id")})
+    if sessao is not None and sessao.get("estado") == "a_fechar":
+        # Um fecho A DECORRER, e não um fecho FEITO: a decisão é a mesma
+        # (não se emite, a reserva liberta-se, nada vai ao Vendus) mas o
+        # facto é outro, e é a operadora que o vai ler — ver
+        # `SessaoEmFechoAgora`. A reserva liberta-se também por uma razão do
+        # outro lado: enquanto ela existir, o fecho recusa-se a si próprio
+        # (`caixa.py::_venda_com_emissao_viva`) e a caixa não fecha.
+        await _libertar_reserva(db, ext_ref)
+        raise SessaoEmFechoAgora(
+            "A sessão de caixa %r da venda %s está a meio de um fecho "
+            "(estado=%r) — o Z está a ser calculado neste instante. A reserva "
+            "%s foi libertada e NADA foi enviado ao Vendus; a conta continua "
+            "aberta e faturável se o fecho não for por diante." % (
+                actual.get("sessao_id"), venda_id,
+                sessao.get("estado"), ext_ref,
+            )
+        )
     if sessao is None or sessao.get("estado") != "aberta":
         await _libertar_reserva(db, ext_ref)
         raise SessaoJaNaoAberta(
@@ -1206,7 +1349,11 @@ async def _retomar_reserva_incerta(
     mantém-se True, tal como já estava, para a tentativa seguinte também
     ser obrigada a verificar primeiro."""
     esperar_efectivo = esperar if esperar is not None else asyncio.sleep
-    if not await _reclamar_retoma(db, ext_ref):
+    # O carimbo desta reclamação, guardado ANTES de a escrever: é ele que
+    # identifica a marca que este `finally` (e só ele) pode desfazer. Ver
+    # `_limpar_incerta_resolvida`.
+    carimbo = _agora()
+    if not await _reclamar_retoma(db, ext_ref, carimbo):
         return await _esperar_documento_do_vencedor(
             db, ext_ref, esperar_efectivo, tentativas_espera, venda["id"]
         )
@@ -1239,11 +1386,21 @@ async def _retomar_reserva_incerta(
         # já tenha tratado à sua maneira) — sem isto, esta reclamação
         # ficava presa para sempre e nenhuma tentativa futura conseguia
         # voltar a reclamar: um impasse pior do que o defeito original.
+        #
+        # E limpa A RECLAMAÇÃO DESTA CHAMADA, identificada pelo `carimbo`
+        # que ela própria escreveu — nunca "a marca de retoma que houver
+        # nesta ext_ref". Entre reclamar e chegar aqui a reserva pode ter
+        # sido libertada (`_emitir_e_gravar` liberta-a nos caminhos que
+        # provam que nada saiu) e SUBSTITUÍDA por outra, porque a `ext_ref`
+        # é determinística e a tentativa seguinte cria uma igual: limpar a
+        # marca de retoma dessa era desarmar a defesa de uma emissão em voo
+        # — a mesma forma de defeito que apagava a reserva errada em
+        # `_libertar_reserva_se_intacta`, aqui a escrever em vez de apagar.
         if resolvida:
-            await _limpar_incerta_resolvida(db, ext_ref)
+            await _limpar_incerta_resolvida(db, ext_ref, carimbo)
         else:
             await db[COLECOES["refs_fiscais"]].update_one(
-                {"ext_ref": ext_ref},
+                {"ext_ref": ext_ref, "em_retoma": True, "em_retoma_desde": carimbo},
                 {"$set": {"em_retoma": None, "em_retoma_desde": None}},
             )
 
@@ -1468,8 +1625,17 @@ async def _garante_sessao_da_venda_aberta(db, venda: Dict) -> None:
     `venda[...]` — uma venda sem `sessao_id` (dados corrompidos, uma
     migração incompleta) tem de cair no MESMO 409 de "sessão não aberta",
     nunca num KeyError/500: `find_one({"id": None})` simplesmente não
-    encontra nenhuma sessão, e o `if not sessao` já trata isso."""
+    encontra nenhuma sessão, e o `if not sessao` já trata isso.
+
+    A entrada da rota distingue os MESMOS dois casos que a releitura do
+    núcleo (`_garante_venda_ainda_aberta`): um fecho A DECORRER (`a_fechar`)
+    é uma espera de segundos e a conta continua faturável onde está; um fecho
+    FEITO é o fim desta conta neste turno. A pergunta é a mesma; a resposta
+    que a operadora lê é que não podia continuar a ser (ver
+    `SessaoEmFechoAgora`)."""
     sessao = await db[COLECOES["sessoes_caixa"]].find_one({"id": venda.get("sessao_id")})
+    if sessao and sessao.get("estado") == "a_fechar":
+        raise HTTPException(status_code=409, detail=_MSG_SESSAO_A_FECHAR_AGORA)
     if not sessao or sessao.get("estado") != "aberta":
         raise HTTPException(status_code=409, detail=_MSG_SESSAO_NAO_ABERTA)
 
@@ -1594,6 +1760,17 @@ async def finalizar(
             # no ecrã do balcão.
             logger.warning("[faturacao] finalizar abortado: venda %s já não está aberta", venda_id)
             raise HTTPException(status_code=409, detail=_MSG_VENDA_CANCELADA_ENTRETANTO)
+        except SessaoEmFechoAgora:
+            # ANTES do `except SessaoJaNaoAberta` de propósito — é uma
+            # subclasse dele, e o Python entrega ao primeiro que casar. O
+            # fecho está a DECORRER: não há Z nenhum e a conta continua ali.
+            # Trocar a ordem destes dois `except` volta a pôr a operadora a
+            # ler que o turno acabou com a caixa aberta.
+            logger.warning(
+                "[faturacao] finalizar adiado: a caixa da venda %s está a "
+                "meio de um fecho — a conta fica como está", venda_id,
+            )
+            raise HTTPException(status_code=409, detail=_MSG_SESSAO_A_FECHAR_AGORA)
         except SessaoJaNaoAberta:
             # A caixa foi fechada dentro da janela de validação, no outro PC
             # (ver `SessaoJaNaoAberta`). Também aqui o que a operadora precisa
@@ -1750,6 +1927,16 @@ _MSG_LIBERTAR_EM_RETOMA = (
     "libertar a reserva de uma emissão em voo é autorizar uma SEGUNDA Fatura "
     "Simplificada da mesma venda."
 )
+_MSG_LIBERTAR_RESERVA_SUBSTITUIDA = (
+    "A reserva que esta página lhe mostrou já não existe: entretanto alguém "
+    "voltou a carregar em FINALIZAR nesta conta e o que está lá agora é uma "
+    "reserva NOVA, criada há %s. NÃO foi apagada nada — apagá-la era apagar "
+    "a reserva de uma emissão que pode estar a falar com o Vendus neste "
+    "instante, e sair uma SEGUNDA Fatura Simplificada da mesma venda. O que "
+    "confirmou no Vendus era sobre a tentativa ANTERIOR: espere, volte a "
+    "abrir a lista de reservas presas e, se esta conta ainda lá estiver, "
+    "confirme outra vez antes de decidir."
+)
 _MSG_LIBERTAR_ULTRAPASSADA = (
     "A reserva desta venda (%s) MUDOU entre o momento em que esta página a "
     "leu e o momento de a apagar — NÃO foi apagada, e nada mudou no sistema. "
@@ -1813,6 +2000,36 @@ _MSG_RECONCILIAR_EM_RETOMA = (
     "até aos %d segundos e volte a tentar: se a fatura sair, a própria "
     "emissão grava o documento e não é preciso reconciliar nada."
 )
+# A caixa está a MEIO de um fecho (`caixa.py`: o estado `a_fechar`, posto
+# ANTES de o fecho ler as vendas). Recusa-se e manda-se esperar, e a escolha
+# é deliberada:
+#
+# - o que o `reconciliar` faz é passar a venda a `emitida` — e é EXACTAMENTE
+#   isso que o fecho vai ler a seguir para calcular o Z. Feito dentro da
+#   marca, os mesmos euros entram no Z E na lista do que falta acertar à mão.
+#   Reproduzido: «RECONCILIAR → z_por_acertar=True, dinheiro_por_acertar=8.99»
+#   e a seguir «Z escrito → vendas_dinheiro=8.99» — quem seguisse o aviso
+#   fabricava uma diferença de +8,99 € num turno que estava certo, e ficava
+#   registado na sessão a dizer o mesmo para quem lá fosse ver daí a um mês.
+# - esperar não custa nada e resolve tudo: um fecho dura o que duram três
+#   escritas locais. Do outro lado da marca a resposta é sempre exacta — com
+#   o Z já escrito, sabe-se que ele não conta esta venda e o aviso diz
+#   quanto falta na gaveta; se o fecho for recusado e desfeito, a caixa volta
+#   a `aberta` e a venda entra no Z normalmente, sem aviso nenhum.
+# - as alternativas eram piores: recalcular um Z que está a ser calculado, ou
+#   adivinhar de que lado a venda vai cair — e este módulo não adivinha
+#   números que alguém vai usar para mexer numa gaveta.
+_MSG_RECONCILIAR_FECHO_A_DECORRER = (
+    "A caixa desta venda (sessão %s) está a FECHAR o turno neste momento — o "
+    "Z está a ser calculado. Reconciliar agora era arriscar contar os mesmos "
+    "euros duas vezes: esta venda entrava no Z que está a sair E levava o "
+    "aviso de que tinha ficado de fora dele, e quem seguisse o aviso criava "
+    "uma diferença numa gaveta que estava certa. NÃO se gravou nada — o "
+    "documento continua no Vendus, onde estava. Espere alguns segundos (um "
+    "fecho demora um instante) e carregue outra vez em Reconciliar: aí a "
+    "resposta já lhe diz com exactidão o que falta acertar, ou que não falta "
+    "nada."
+)
 _MSG_RECONCILIAR_SEM_DOCUMENTO_NO_VENDUS = (
     "O Vendus não tem nenhum documento para a referência externa %s — não "
     "há nenhuma fatura para trazer para o sistema. Se a conta está trancada "
@@ -1862,6 +2079,28 @@ _MSG_RECONCILIAR_Z_POR_ACERTAR_SEM_REPARTICAO = (
     "outros meios: veja o talão ou o documento no Vendus antes de acertar "
     "seja o que for. Fica registado na própria sessão de caixa, para se "
     "poder encontrar depois."
+)
+# O caso em que o fecho ATRAVESSOU esta operação: a caixa não estava a fechar
+# quando se escreveu (senão a rota tinha recusado, ver
+# `_MSG_RECONCILIAR_FECHO_A_DECORRER`) e estava noutro estado logo a seguir.
+# O fecho lê as vendas `emitida` entre a marca e o Z, por isso esta venda tanto
+# pode ter entrado no Z como não — e isso NÃO se adivinha a partir daqui.
+# Dizer "o Z foi assinado sem ela" seria afirmar uma coisa que não sabemos,
+# exactamente o defeito que este aviso passou a ronda toda a fechar; dizer
+# "está tudo bem" seria a mesma aposta ao contrário, e essa perde dinheiro em
+# silêncio. Diz-se o que se sabe e manda-se confirmar no próprio Z, que é o
+# único sítio onde a resposta existe.
+_MSG_RECONCILIAR_Z_AO_MESMO_TEMPO = (
+    "ATENÇÃO ÀS CONTAS DO TURNO: o fecho da sessão de caixa %s correu ao "
+    "MESMO TEMPO que esta operação — a caixa estava '%s' quando esta venda "
+    "foi ligada ao documento fiscal e estava '%s' logo a seguir. Por isso "
+    "não é possível dizer daqui se o relatório Z desse turno já conta esta "
+    "venda: ou conta (e não há nada a acertar), ou foi calculado sem ela (e "
+    "então faltam %s na gaveta desse fecho). A fatura é de %s. ABRA O Z desse "
+    "turno e compare as vendas em dinheiro ANTES de mexer seja no que for — "
+    "esta é a única situação em que este aviso não consegue responder "
+    "sozinho. Fica registado na própria sessão de caixa, para se poder "
+    "encontrar depois."
 )
 
 
@@ -2092,7 +2331,7 @@ class PedidoLibertarReserva(BaseModel):
 
 
 async def _recusa_de_libertacao_ultrapassada(
-    db, ext_ref: str, venda_id: str
+    db, ext_ref: str, venda_id: str, lida: Dict
 ) -> HTTPException:
     """A recusa a devolver quando o `delete_one` condicional NÃO apagou nada
     (ver `_libertar_reserva_se_intacta`): alguém mexeu na reserva entre a
@@ -2103,10 +2342,18 @@ async def _recusa_de_libertacao_ultrapassada(
     ao gestor, e por isso pode ser feita sobre uma fotografia sem risco
     nenhum: no pior caso diz-lhe a razão errada de uma recusa certa.
 
-    As três razões possíveis são as mesmas de sempre, e por isso o texto é o
-    mesmo: uma retoma em voo, um documento fiscal que apareceu entretanto,
-    ou — se nem uma nem outro — a reserva mudou de forma que já não é a que
-    ele viu."""
+    As razões possíveis são as de sempre, e por isso o texto é o mesmo: uma
+    retoma em voo, um documento fiscal que apareceu entretanto, ou — se nem
+    uma nem outro — a reserva mudou de forma que já não é a que ele viu.
+
+    A ESSA lista juntou-se uma quarta nesta ronda, e é a mais importante das
+    quatro: a reserva que ele viu foi libertada e SUBSTITUÍDA por outra
+    (`lida["id"]` != o id de agora). Para o sistema é "a reserva mudou", mas
+    para quem está a decidir é outra coisa completamente — houve uma TENTATIVA
+    NOVA de emitir esta conta, que pode estar a falar com o Vendus neste
+    instante, e a confirmação que ele foi fazer ao Vendus era sobre a
+    tentativa anterior. Dizer-lhe só "mudou" convidava-o a repetir o gesto
+    com a mesma confiança de há um minuto."""
     agora = datetime.now(timezone.utc)
     reserva = await db[COLECOES["refs_fiscais"]].find_one({"ext_ref": ext_ref})
     if reserva is not None and _retoma_em_curso(reserva, agora):
@@ -2135,6 +2382,23 @@ async def _recusa_de_libertacao_ultrapassada(
             ext_ref, venda_id,
         )
         return HTTPException(status_code=404, detail=_MSG_LIBERTAR_SEM_RESERVA)
+    if reserva.get("id") != lida.get("id"):
+        # A reserva foi libertada e outra nasceu no lugar dela (a `ext_ref` é
+        # determinística, por isso repete-se). É o cenário que o `id` no
+        # filtro do `delete_one` passou a apanhar — sem ele, era esta reserva
+        # NOVA, com uma emissão real em voo, que ia abaixo.
+        idade = _segundos_desde(reserva.get("criado_em"), agora)
+        logger.warning(
+            "[faturacao] libertar %s (venda %s): a reserva lida (%r) foi "
+            "substituída por outra (%r, criada há %ss) — não se lhe tocou.",
+            ext_ref, venda_id, lida.get("id"), reserva.get("id"), idade,
+        )
+        return HTTPException(
+            status_code=409,
+            detail=_MSG_LIBERTAR_RESERVA_SUBSTITUIDA % (
+                "%.0f segundos" % idade if idade is not None else "instantes"
+            ),
+        )
     return HTTPException(status_code=409, detail=_MSG_LIBERTAR_ULTRAPASSADA % ext_ref)
 
 
@@ -2269,7 +2533,7 @@ async def libertar_reserva_presa(
     # retoma pode ter reclamado a emissão (ver
     # `_libertar_reserva_se_intacta`).
     if not await _libertar_reserva_se_intacta(db, ext_ref, reserva):
-        raise await _recusa_de_libertacao_ultrapassada(db, ext_ref, venda_id)
+        raise await _recusa_de_libertacao_ultrapassada(db, ext_ref, venda_id, reserva)
 
     # Apagar uma reserva fiscal à mão é um acto sério e a reserva desaparece
     # com ele — sem este registo não ficava rasto nenhum de quem a libertou
@@ -2370,6 +2634,7 @@ def _reparticao_do_pagamento(venda: Dict) -> Optional[Dict]:
 async def _marcar_venda_ligada_depois_do_fecho(
     db, sessao: Dict, venda_id: str, ext_ref: str, documento: Dict,
     reparticao: Optional[Dict], gestor: Dict,
+    fecho_ao_mesmo_tempo: bool = False,
 ) -> Optional[Dict]:
     """Deixa na PRÓPRIA sessão de caixa o rasto de que esta venda lhe foi
     ligada DEPOIS do fecho — e devolve a marca escrita (ou `None` se não foi
@@ -2407,6 +2672,14 @@ async def _marcar_venda_ligada_depois_do_fecho(
         "outros_meios": (reparticao or {}).get("outros"),
         "ligada_em": _agora(),
         "por": gestor.get("email") or gestor.get("user_id"),
+        # `True` quando o fecho desta sessão correu ao MESMO TEMPO que a
+        # ligação e não se sabe de que lado do Z a venda caiu (ver
+        # `_MSG_RECONCILIAR_Z_AO_MESMO_TEMPO`). Fica GRAVADO, e não só dito
+        # na resposta: quem for ver esta marca daqui a um mês tem de poder
+        # distinguir "faltam mesmo estes euros na gaveta" de "isto é para
+        # confirmar no Z antes de mexer" — a diferença entre as duas é uma
+        # diferença de caixa inventada.
+        "fecho_ao_mesmo_tempo": fecho_ao_mesmo_tempo,
     }
     try:
         # O `$ne` sobre o `venda_id` das marcas já lá gravadas é o que torna
@@ -2450,11 +2723,69 @@ async def _marcar_venda_ligada_depois_do_fecho(
     return None
 
 
-def _aviso_do_z(sessao_id, documento: Dict, reparticao: Optional[Dict]) -> str:
+def _recusa_se_a_caixa_esta_a_fechar(sessao: Optional[Dict], venda_id: str) -> None:
+    """Recusa a reconciliação enquanto a caixa desta venda estiver a MEIO de
+    um fecho (`a_fechar`) — ver `_MSG_RECONCILIAR_FECHO_A_DECORRER`, onde
+    está a escolha por extenso.
+
+    Chamada DUAS vezes na rota, e as duas são precisas: à entrada (para não
+    gastar uma ida ao Vendus numa operação que vai ser recusada) e outra vez
+    imediatamente antes de escrever — porque entre as duas está uma chamada
+    HTTP ao Vendus, que são SEGUNDOS, e um fecho inteiro cabe lá dentro à
+    vontade. É a segunda que fecha a janela; a primeira é só cortesia. Mesma
+    forma da lição desta ronda: quem decide sobre uma leitura antiga tem de
+    voltar a perguntar imediatamente antes de escrever."""
+    if sessao is not None and sessao.get("estado") == "a_fechar":
+        logger.warning(
+            "[faturacao] reconciliação da venda %s adiada: a sessão %r está a "
+            "meio de um fecho — nada foi gravado.",
+            venda_id, sessao.get("id"),
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=_MSG_RECONCILIAR_FECHO_A_DECORRER % sessao.get("id"),
+        )
+
+
+def _dinheiro_por_acertar_em_texto(reparticao: Optional[Dict]) -> str:
+    """A parte da frase que diz quanto falta na gaveta — ou que não se sabe.
+    Sem a repartição gravada não se manda acertar pelo total do documento
+    (ver `_MSG_RECONCILIAR_Z_POR_ACERTAR_SEM_REPARTICAO`): num pagamento
+    misto isso cria a diferença ao contrário."""
+    if reparticao is None:
+        return (
+            "o que desta fatura tiver entrado em dinheiro (esta venda não tem "
+            "gravado como foi paga, por isso não é possível dizer quanto)"
+        )
+    return "%s em dinheiro" % _euros(reparticao["dinheiro"])
+
+
+def _aviso_do_z(
+    sessao_id,
+    documento: Dict,
+    reparticao: Optional[Dict],
+    transicao: Optional[List[Optional[str]]] = None,
+) -> str:
     """A frase que o gestor lê quando a sessão desta venda já está fechada.
     Com a repartição gravada, diz-lhe exactamente o que falta na GAVETA (só
     a parte em dinheiro); sem ela, diz que não sabe — nunca manda acertar
-    pelo total (ver `_MSG_RECONCILIAR_Z_POR_ACERTAR`)."""
+    pelo total (ver `_MSG_RECONCILIAR_Z_POR_ACERTAR`).
+
+    `transicao` (o estado da caixa antes e depois da escrita) só vem
+    preenchida quando o fecho ATRAVESSOU esta operação — e aí a frase é
+    outra, porque o facto é outro: não se sabe de que lado do Z esta venda
+    caiu, e diz-se isso (ver `_MSG_RECONCILIAR_Z_AO_MESMO_TEMPO`)."""
+    if transicao is not None:
+        return _MSG_RECONCILIAR_Z_AO_MESMO_TEMPO % (
+            sessao_id,
+            # A sessão pode ter DESAPARECIDO pelo meio (o caso extremo). Aí
+            # o estado não é `None` na frase — é "sem sessão nenhuma", que é
+            # o que o gestor tem de ir ver.
+            transicao[0] or "sem sessão nenhuma",
+            transicao[1] or "sem sessão nenhuma",
+            _dinheiro_por_acertar_em_texto(reparticao),
+            _euros(documento.get("total")),
+        )
     if reparticao is None:
         return _MSG_RECONCILIAR_Z_POR_ACERTAR_SEM_REPARTICAO % (
             sessao_id, _euros(documento.get("total")),
@@ -2543,6 +2874,15 @@ async def reconciliar_reserva_presa(
             ),
         )
 
+    # A caixa desta venda ANTES de qualquer escrita. Duas coisas de uma vez:
+    # recusa se o fecho estiver a decorrer (ver
+    # `_recusa_se_a_caixa_esta_a_fechar`) e fica a ser o estado contra o qual
+    # se compara, no fim, o de depois da escrita — é a passagem da venda a
+    # `emitida` que decide se ela entra ou não no Z, por isso é do estado da
+    # caixa NESSE instante que o aviso depende.
+    sessao_antes = await _sessao_da_venda(db, venda)
+    _recusa_se_a_caixa_esta_a_fechar(sessao_antes, venda_id)
+
     documento = await db[COLECOES["documentos"]].find_one({"ext_ref": ext_ref})
     if documento is not None:
         # O documento já cá estava. Duas hipóteses, e as duas acabam bem sem
@@ -2600,6 +2940,12 @@ async def reconciliar_reserva_presa(
                 detail=_MSG_RECONCILIAR_SEM_DOCUMENTO_NO_VENDUS % ext_ref,
             )
 
+        # A caixa OUTRA VEZ, agora que a chamada ao Vendus (segundos de rede)
+        # já passou: é esta releitura, imediatamente antes da escrita, que
+        # fecha a janela — um fecho inteiro cabe dentro de uma chamada HTTP.
+        sessao_antes = await _sessao_da_venda(db, venda)
+        _recusa_se_a_caixa_esta_a_fechar(sessao_antes, venda_id)
+
         try:
             documento = await _gravar_documento(db, ext_ref, venda, encontrado)
         except ConflitoDocumentoFiscal as e:
@@ -2616,9 +2962,18 @@ async def reconciliar_reserva_presa(
 
     sessao = await _sessao_da_venda(db, venda)
     sessao_estado = sessao.get("estado") if sessao else None
+    estado_antes = sessao_antes.get("estado") if sessao_antes else None
+    # O fecho ATRAVESSOU esta operação? A caixa não estava a fechar antes da
+    # escrita (a rota tinha recusado) e mudou de estado durante ela: entre a
+    # marca `a_fechar` e o Z, o fecho lê as vendas `emitida`, e esta venda
+    # tanto pode ter chegado a tempo dessa leitura como não. É a única
+    # situação em que este aviso não sabe responder, e é por isso que o diz
+    # com todas as letras em vez de escolher a resposta mais provável — as
+    # duas escolhas erradas custam dinheiro, uma em cada sentido.
+    fecho_ao_mesmo_tempo = estado_antes != sessao_estado
     # O Z de uma sessão já fechada NÃO se recalcula aqui — e não se finge que
     # ficou tudo bem: diz-se ao gestor o que tem de acertar à mão nesse turno.
-    z_por_acertar = sessao_estado != "aberta"
+    z_por_acertar = sessao_estado != "aberta" or fecho_ao_mesmo_tempo
 
     # A repartição lê-se da venda COMO ELA ESTÁ AGORA (já `emitida`, já com
     # os pagamentos gravados por quem tentou emitir), nunca do retrato lido à
@@ -2630,15 +2985,17 @@ async def reconciliar_reserva_presa(
     if z_por_acertar and sessao is not None:
         marca = await _marcar_venda_ligada_depois_do_fecho(
             db, sessao, venda_id, ext_ref, documento, reparticao, gestor,
+            fecho_ao_mesmo_tempo,
         )
 
     logger.warning(
         "[faturacao] venda reconciliada com o documento do Vendus: ext_ref=%s "
         "venda=%s documento=%s numero=%r atcud=%r do_vendus_agora=%s "
-        "sessao=%r sessao_estado=%r dinheiro=%r outros=%r por=%s nota=%r",
+        "sessao=%r sessao_estado=%r (antes da escrita: %r) dinheiro=%r "
+        "outros=%r por=%s nota=%r",
         ext_ref, venda_id, documento.get("id"), documento.get("numero"),
         documento.get("atcud"), veio_do_vendus_agora, venda.get("sessao_id"),
-        sessao_estado, (reparticao or {}).get("dinheiro"),
+        sessao_estado, estado_antes, (reparticao or {}).get("dinheiro"),
         (reparticao or {}).get("outros"),
         gestor.get("email") or gestor.get("user_id"),
         (dados.nota if dados else None),
@@ -2663,7 +3020,10 @@ async def reconciliar_reserva_presa(
         # "não entrou dinheiro nenhum" (ver `_reparticao_do_pagamento`).
         "dinheiro_por_acertar": (reparticao or {}).get("dinheiro"),
         "outros_meios": (reparticao or {}).get("outros"),
-        "aviso_do_z": _aviso_do_z(venda.get("sessao_id"), documento, reparticao) if z_por_acertar else None,
+        "aviso_do_z": _aviso_do_z(
+            venda.get("sessao_id"), documento, reparticao,
+            [estado_antes, sessao_estado] if fecho_ao_mesmo_tempo else None,
+        ) if z_por_acertar else None,
         # Se a marca ficou mesmo escrita na sessão de caixa. Enquanto era só
         # o corpo desta resposta e um `logger.warning`, passada uma semana
         # não havia UM ÚNICO sítio onde se visse que aqueles euros existiram.

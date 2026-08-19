@@ -709,3 +709,122 @@ def test_data_ilegivel_do_vendus_nao_inventa_nenhuma(monkeypatch):
         "pos-loja1-sessao1-venda1", 7
     )
     assert doc["emitido_em"] is None
+
+
+# ============================================================================
+# Depois de um 2xx, NADA sai daqui por tipificar
+# ============================================================================
+#
+# A ronda anterior tipificou o `resposta.json()` e deixou de fora a linha
+# seguinte — o `round(float(amount_gross))` do dicionário de saída. Com um
+# `amount_gross='8,99'` (vírgula decimal, plausível numa API portuguesa) saía
+# um `ValueError` CRU, medido: «ValueError: could not convert string to float:
+# '8,99' | é VendusErro? False». E a MESMA linha existia em
+# `_normaliza_documento`, no caminho da LEITURA, onde a rota de RECONCILIAR
+# só apanha `VendusErro` e o FastAPI devolvia 500 — com a venda `aberta`, sem
+# documento e com a reserva ainda incerta, que o ecrã lê como "nada saiu,
+# pode repetir".
+#
+# Tipificar linha a linha é uma lista que fica desactualizada à primeira linha
+# nova. O que passa a valer é a FRONTEIRA: depois do 2xx, seja qual for a
+# linha, sai `VendusRespostaIlegivel`.
+
+
+def test_total_com_virgula_decimal_na_criacao_sai_tipado(monkeypatch):
+    """O caso medido. E é `VendusErro` sem ser `VendusHTTPErro` — se fosse
+    HTTP entrava na lista de "prova de que nada saiu" de fiscal.py e a
+    reserva era libertada, que é como saem duas FS reais da mesma venda."""
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+    monkeypatch.setenv("VENDUS_MODE", "normal")
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json={
+            "id": 900, "number": "FS 2026/900", "atcud": "ATCUD-900",
+            "amount_gross": "8,99",
+        })
+
+    with pytest.raises(VendusRespostaIlegivel) as e:
+        _cliente(handler).criar_fatura_simplificada(
+            linhas=_linhas(), pagamentos=_pagamentos(), cliente=None,
+            external_reference="pos-loja1-sessao1-venda1", register_id=7,
+        )
+    assert isinstance(e.value, VendusErro)
+    assert not isinstance(e.value, VendusHTTPErro)
+    # E não se "conserta" a vírgula em silêncio: a mensagem nomeia a CAUSA
+    # concreta e o valor, para alguém ir ver o que o Vendus mandou. A
+    # fronteira genérica (o try/except que embrulha tudo o que corre depois
+    # do 2xx) também apanharia isto, mas com um texto que não diz qual é o
+    # campo — e uma mensagem vaga num erro fiscal é meia hora de alguém.
+    assert "não se adivinha o valor de uma fatura" in str(e.value)
+    assert "8,99" in str(e.value)
+
+
+def test_total_ilegivel_na_LEITURA_sai_tipado_e_nao_um_erro_cru(monkeypatch):
+    """A mesma linha, pelo caminho da leitura (`_normaliza_documento`) — o que
+    a rota de RECONCILIAR usa. Um erro cru aqui saltava o `except VendusErro`
+    dessa rota inteira."""
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json=[{
+            "id": 55, "number": "FS 2026/9", "atcud": "ABCD-9",
+            "amount_gross": "1.234,56", "external_reference": "pos-loja1-sessao1-venda1",
+            "status": "N",
+        }])
+
+    with pytest.raises(VendusRespostaIlegivel) as e:
+        _cliente(handler).procurar_por_referencia_externa(
+            "pos-loja1-sessao1-venda1", register_id=7
+        )
+    assert "não se adivinha o valor de uma fatura" in str(e.value)
+    assert "1.234,56" in str(e.value)
+
+
+def test_procura_com_corpo_ilegivel_nao_e_um_nao_existe(monkeypatch):
+    """A distinção que decide se se emite outra vez: `None` significa "o
+    Vendus não tem nada para esta referência" e autoriza emitir; um corpo que
+    não se lê não significa nada disso. Antes, o `json()` de dentro do
+    `_corpo_como_lista` levantava um erro cru que a rota de reconciliar não
+    apanhava."""
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, text="<html>manutenção</html>")
+
+    with pytest.raises(VendusRespostaIlegivel):
+        _cliente(handler).procurar_por_referencia_externa(
+            "pos-loja1-sessao1-venda1", register_id=7
+        )
+
+
+def test_listagem_do_dia_com_corpo_ilegivel_sai_tipada(monkeypatch):
+    """O terceiro GET do módulo (a verificação do fecho de caixa). Quem chama
+    tem de o poder traduzir em "não consegui verificar" — nunca em "o Vendus
+    não tem nada nesse dia", que é o número que a operadora usaria para
+    justificar dinheiro."""
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, text="nem sequer é JSON")
+
+    with pytest.raises(VendusRespostaIlegivel):
+        _cliente(handler).listar_documentos_por_dia("2026-08-19", register_id=7)
+
+
+def test_amount_gross_ausente_continua_a_valer_zero(monkeypatch):
+    """A guarda não pode ter ficado larga de mais: o campo A FALTAR não é o
+    campo ILEGÍVEL. Ausente continua a ser 0,00 € no `total` (como sempre
+    foi) e `None` no `total_bruto`, que é o que o Dashboard soma — e esse
+    nunca inventa um zero."""
+    monkeypatch.setenv("VENDUS_REGISTER_ID", "7")
+    monkeypatch.setenv("VENDUS_MODE", "normal")
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json={"id": 900, "atcud": "ATCUD-900"})
+
+    resultado = _cliente(handler).criar_fatura_simplificada(
+        linhas=_linhas(), pagamentos=_pagamentos(), cliente=None,
+        external_reference="pos-loja1-sessao1-venda1", register_id=7,
+    )
+    assert resultado["total"] == 0.0
+    assert resultado["total_bruto"] is None
