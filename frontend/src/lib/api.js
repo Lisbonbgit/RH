@@ -131,6 +131,11 @@ export const getFinInvoices = (companyId) =>
 // Ficha de detalhe: fatura completa + linked_movement (movimento do extrato ligado, ou null)
 export const getFinInvoice = (id) => axios.get(`${API_URL}/fin/invoices/${id}`);
 export const getFinInvoicePdf = (id) => axios.get(`${API_URL}/fin/invoices/${id}/pdf`, { responseType: 'blob' });
+// Secção Estoque — stock por loja (via app do Estoque, por proxy no backend RH)
+export const getEstoqueLojas = () => axios.get(`${API_URL}/estoque/lojas`);
+export const getEstoqueStock = (unidadeId) =>
+  axios.get(`${API_URL}/estoque/stock`, { params: { unidade_id: unidadeId } });
+
 // Secção Estoque — faturas inseridas pela app do Estoque (todos os estados)
 // params: { company_id, month?, origin_user?, origin_store? }
 export const getFinEstoqueInvoices = (params) =>

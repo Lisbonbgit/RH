@@ -30,6 +30,7 @@ import FinExtrato from './pages/admin/financeiro/FinExtrato';
 import FinRelatorios from './pages/admin/financeiro/FinRelatorios';
 import PainelGlobal from './pages/admin/financeiro/PainelGlobal';
 import EstoqueFaturas from './pages/admin/estoque/EstoqueFaturas';
+import EstoqueStock from './pages/admin/estoque/EstoqueStock';
 import ComingSoon from './components/ComingSoon';
 import {
   FileText,
@@ -200,7 +201,8 @@ function AppRoutes() {
         <Route path="financeiro/extrato" element={<FinExtrato />} />
 
         {/* ===== Estoque ===== */}
-        <Route path="estoque" element={<Navigate to="/admin/estoque/faturas" replace />} />
+        <Route path="estoque" element={<Navigate to="/admin/estoque/stock" replace />} />
+        <Route path="estoque/stock" element={<EstoqueStock />} />
         <Route path="estoque/faturas" element={<EstoqueFaturas />} />
 
         {/* ===== Faturação ===== */}

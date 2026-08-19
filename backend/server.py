@@ -5967,6 +5967,39 @@ async def fin_ingest_estoque(
     }
 
 
+# ===== SECÇÃO ESTOQUE — proxy para a app do Estoque (stock por loja) =====
+# O stock/loja vive no sistema de Estoque (BD separada). O portal RH chama a API
+# do Estoque do lado do SERVIDOR, com a chave de serviço partilhada (a mesma das
+# faturas; nunca vai ao browser); o acesso é protegido pelo login de admin do RH.
+ESTOQUE_API_URL = os.environ.get("ESTOQUE_API_URL", "https://estoque.lisbonb.com/api")
+
+
+async def _estoque_get(path: str, params: dict):
+    key = os.environ.get("ESTOQUE_SERVICE_KEY")
+    if not key:
+        raise HTTPException(status_code=503, detail="Integração de estoque não configurada.")
+    try:
+        async with httpx.AsyncClient(timeout=12) as http_client:
+            r = await http_client.get(f"{ESTOQUE_API_URL}{path}", params={**params, "key": key})
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Sem ligação ao Estoque: {e}")
+    if r.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"O Estoque respondeu {r.status_code}.")
+    return r.json()
+
+
+@api_router.get("/estoque/lojas")
+async def estoque_lojas(current_user: dict = Depends(admin_required)):
+    """Lojas do sistema de Estoque, para o seletor da secção Estoque do RH."""
+    return await _estoque_get("/integ/lojas", {})
+
+
+@api_router.get("/estoque/stock")
+async def estoque_stock(unidade_id: str = Query(...), current_user: dict = Depends(admin_required)):
+    """Stock de uma loja (via app do Estoque)."""
+    return await _estoque_get("/integ/stock", {"unidade_id": unidade_id})
+
+
 # ===== SECÇÃO ESTOQUE — faturas inseridas pela app do Estoque =====
 # Vista dedicada (todas as faturas com source="estoque", por confirmar E já
 # tratadas), com quem inseriu e em que loja. Base da futura secção "Estoque"

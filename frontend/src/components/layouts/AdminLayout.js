@@ -102,9 +102,10 @@ const sections = [
   {
     key: 'estoque',
     label: 'Estoque',
-    home: '/admin/estoque/faturas',
+    home: '/admin/estoque/stock',
     match: (p) => p.startsWith('/admin/estoque'),
     items: [
+      { path: '/admin/estoque/stock', label: 'Stock', icon: Package },
       { path: '/admin/estoque/faturas', label: 'Faturas', icon: Receipt },
     ],
   },
