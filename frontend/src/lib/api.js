@@ -131,6 +131,27 @@ export const getFinInvoices = (companyId) =>
 // Ficha de detalhe: fatura completa + linked_movement (movimento do extrato ligado, ou null)
 export const getFinInvoice = (id) => axios.get(`${API_URL}/fin/invoices/${id}`);
 export const getFinInvoicePdf = (id) => axios.get(`${API_URL}/fin/invoices/${id}/pdf`, { responseType: 'blob' });
+// Secção Estoque — stock por loja (via app do Estoque, por proxy no backend RH)
+export const getEstoqueLojas = () => axios.get(`${API_URL}/estoque/lojas`);
+export const getEstoqueStock = (unidadeId) =>
+  axios.get(`${API_URL}/estoque/stock`, { params: { unidade_id: unidadeId } });
+export const getEstoqueListaCompras = (unidadeId) =>
+  axios.get(`${API_URL}/estoque/lista-compras`, { params: { unidade_id: unidadeId } });
+export const getEstoqueHistorico = (unidadeId, dias) =>
+  axios.get(`${API_URL}/estoque/historico`, { params: { unidade_id: unidadeId, dias } });
+// { tipo: entrada|saida|contagem, unidade_id, produto_id, quantidade }
+export const estoqueMovimento = (data) => axios.post(`${API_URL}/estoque/movimento`, data);
+// { unidade_id, destino_unidade_id, produto_id, quantidade }
+export const estoqueTransferencia = (data) => axios.post(`${API_URL}/estoque/transferencia`, data);
+// Fichas técnicas / receitas
+export const getEstoqueProdutos = (marca) => axios.get(`${API_URL}/estoque/produtos`, { params: { marca } });
+export const getEstoqueReceita = (produtoId) => axios.get(`${API_URL}/estoque/produtos/${produtoId}/receita`);
+// data: { rendimento, ingredientes:[{produto_id, quantidade}], tamanhos_balde:[kg] }
+export const setEstoqueReceita = (produtoId, data) => axios.put(`${API_URL}/estoque/produtos/${produtoId}/receita`, data);
+// Produção na fábrica
+export const estoqueProduzir = (unidadeId, data) => axios.post(`${API_URL}/estoque/producao?unidade_id=${unidadeId}`, data);
+export const getEstoqueProducao = (unidadeId, dias) => axios.get(`${API_URL}/estoque/producao`, { params: { unidade_id: unidadeId, dias } });
+
 // Secção Estoque — faturas inseridas pela app do Estoque (todos os estados)
 // params: { company_id, month?, origin_user?, origin_store? }
 export const getFinEstoqueInvoices = (params) =>
