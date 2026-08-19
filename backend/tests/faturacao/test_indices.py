@@ -191,3 +191,40 @@ def test_marcar_e_ler_o_estado_confirmado():
     # confirmado" — nunca um "assumido OK" por omissão.
     marcar_indice_idempotencia(None)
     assert indice_idempotencia_confirmado() is False
+
+
+def test_existe_indice_de_venda_id_em_fat_refs_fiscais():
+    """"Esta venda tem uma reserva de emissão?" é hoje a pergunta mais
+    repetida do POS: as CINCO rotas de escrita da conta a fazem (o cancelar
+    duas vezes, antes e depois de escrever) e ainda o `emissao_por_confirmar`
+    de `GET /pos/venda/aberta`. Sem índice era um varrimento completo por
+    cada uma — e esta colecção nunca encolhe, porque a reserva de uma venda
+    emitida fica lá para sempre a sustentar a idempotência: 5 lojas × ~200
+    vendas/dia ≈ 365 mil documentos ao fim de um ano.
+
+    Índice normal, NÃO único: a garantia de "uma emissão por venda" é o único
+    de `ext_ref` (a chave determinística); pôr um segundo único aqui era uma
+    cópia mais fraca da mesma regra, a decidir corridas fiscais por um campo
+    que não é a chave da idempotência."""
+    de_refs = [
+        (chaves, opcoes)
+        for (coleccao, chaves, opcoes) in INDICES
+        if coleccao == "fat_refs_fiscais" and chaves == [("venda_id", 1)]
+    ]
+    assert len(de_refs) == 1
+    assert de_refs[0][1].get("unique") is not True
+
+
+def test_existe_indice_de_documento_id_em_fat_refs_fiscais_e_nao_e_esparso():
+    """A listagem das reservas PRESAS (`fiscal.py::listar_reservas_presas`)
+    pergunta por `{"documento_id": None}` — o campo ausente ou a null. Um
+    índice ESPARSO indexava só as reservas que JÁ têm documento (as 365 mil
+    resolvidas de um ano) e deixava de fora exactamente as que a listagem
+    procura: as presas."""
+    de_refs = [
+        opcoes
+        for (coleccao, chaves, opcoes) in INDICES
+        if coleccao == "fat_refs_fiscais" and chaves == [("documento_id", 1)]
+    ]
+    assert len(de_refs) == 1
+    assert de_refs[0].get("sparse") is not True

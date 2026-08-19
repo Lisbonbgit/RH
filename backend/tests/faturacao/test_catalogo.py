@@ -11,6 +11,7 @@ casas decimais — o mesmo cêntimo que `round()` sobre binário come em
 precos.py (`_tem_mais_de_2_casas_decimais`, reutilizado aqui e não reescrito).
 """
 import asyncio
+from copy import deepcopy
 
 import pytest
 from fastapi import HTTPException
@@ -48,6 +49,25 @@ def _corre(coro):
 # --- Duplo de base de dados ---------------------------------------------------
 # Mesmo padrão de test_lojas.py: regista as chamadas e devolve resultados à
 # escolha do teste.
+
+
+def _como_o_motor(documento):
+    """A cópia que o Motor devolve — e que este duplo tem de devolver também.
+
+    O `find`/`find_one` reais descodificam BSON de fresco a cada chamada: o
+    resultado NUNCA está ligado ao que está no Mongo, e duas leituras nunca
+    devolvem o MESMO objecto. Um duplo enlatado que devolve sempre o
+    dicionário do teste deixa passar por ALIASING uma asserção sobre a fixture
+    que o código de produção mutou sem ter escrito nada. Já apanhou um caso
+    real neste módulo (`cancelar_venda`, em faturacao/venda.py).
+
+    Cópia FUNDA, não `dict(d)`: aqui é obrigatório e não por precaução — os
+    grupos de personalização trazem `opcoes` (uma lista de dicionários por
+    onde passa `_opcoes_com_id`) e os produtos trazem `grupos_personalizacao`.
+    Uma cópia rasa partilhava essas listas com a fixture e o aliasing voltava
+    uma camada abaixo, onde é ainda mais difícil de ver.
+    """
+    return deepcopy(documento)
 
 
 class ResultadoUpdate:
@@ -105,11 +125,11 @@ class ColeccaoFalsa:
 
     def find(self, filtro, projecao=None):
         self.registo.append(("find", filtro))
-        return CursorFalso(self._find_devolve)
+        return CursorFalso([_como_o_motor(d) for d in self._find_devolve])
 
     async def find_one(self, filtro, projecao=None):
         self.registo.append(("find_one", filtro))
-        return self._find_one_devolve
+        return _como_o_motor(self._find_one_devolve)
 
     async def insert_one(self, doc):
         self.registo.append(("insert_one", dict(doc)))

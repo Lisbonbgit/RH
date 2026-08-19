@@ -121,6 +121,26 @@ INDICES = [
     # que decide a corrida real (mesmo raciocínio do índice de sessão aberta
     # acima).
     ("fat_refs_fiscais", [("ext_ref", 1)], {"unique": True}),
+    # A pergunta "esta venda tem uma reserva de emissão?" — feita por TODAS as
+    # rotas de escrita da conta do balcão (venda.py: juntar/editar/remover
+    # linha, desconto global, cancelar — e o cancelar pergunta DUAS vezes,
+    # antes e depois de escrever) e ainda pelo `emissao_por_confirmar` de
+    # `GET /pos/venda/aberta`. Sem este índice era um VARRIMENTO COMPLETO da
+    # colecção por cada uma dessas perguntas, e esta colecção nunca encolhe:
+    # a reserva de uma venda já emitida fica lá para sempre, porque é ela que
+    # sustenta a idempotência (ver a docstring de `refs_fiscais` acima). A
+    # 5 lojas × ~200 vendas/dia são ~365 mil documentos ao fim de um ano —
+    # cada toque num produto no ecrã pagava o varrimento inteiro.
+    ("fat_refs_fiscais", [("venda_id", 1)], {}),
+    # A listagem de gestão das reservas PRESAS (`fiscal.py::
+    # listar_reservas_presas`) pergunta pelas que ainda não têm documento
+    # gravado — `{"documento_id": None}`, que no Mongo casa com o campo
+    # AUSENTE e com o campo a `null`. Índice NORMAL (não esparso) de
+    # propósito: é precisamente a parte `null` da chave que interessa
+    # percorrer, e é ela que fica minúscula (as presas são um punhado), ao
+    # passo que um índice esparso indexava só as resolvidas — as 365 mil que
+    # a listagem NÃO quer ver.
+    ("fat_refs_fiscais", [("documento_id", 1)], {}),
 ]
 
 

@@ -11,6 +11,12 @@ opções não é "corrigido" a caminho do balcão. Filtrar qualquer um deles
 passaria os testes de "só o que está activo" à mesma — é por isso que cada
 um tem aqui um teste próprio a exigir a PRESENÇA dele.
 
+A única saída deliberada da grelha — o produto cuja categoria foi
+desactivada, que não tem separador nenhum onde aparecer — tem, pela mesma
+razão, um teste a exigir a CONTAGEM
+(`produtos_ocultos_categoria_inativa`): filtrar sem contar era o mesmo
+desaparecimento em silêncio, só que do lado do servidor.
+
 A protecção das duas rotas está também coberta, de fora, por
 test_protecao_rotas.py: esse ficheiro varre `faturacao.router` inteiro e não
 tem lista de rotas para actualizar à mão — as duas rotas novas caem lá
@@ -159,6 +165,63 @@ def test_catalogo_devolve_so_o_que_esta_activo(monkeypatch):
     assert [c["id"] for c in resposta["categorias"]] == ["cat-1"]
     assert [p["id"] for p in resposta["produtos"]] == ["prod-1"]
     assert [g["id"] for g in resposta["grupos_personalizacao"]] == ["grupo-1"]
+    # O outro lado do filtro dos órfãos: aqui há uma categoria desactivada,
+    # mas nenhum produto pendurado nela — o artigo da categoria ACTIVA fica
+    # na grelha e não há nada para esconder nem para contar.
+    assert resposta["produtos_ocultos_categoria_inativa"] == 0
+
+
+def test_produto_de_categoria_desactivada_sai_da_grelha_mas_vem_contado(monkeypatch):
+    """A única coisa que sai da grelha de propósito — e mesmo essa sai contada.
+
+    O gestor desactiva "Vendas Aplicações" e não mexe nos artigos dela. Como
+    os separadores do topo se constroem a partir de `categorias`, esses
+    artigos não têm separador nenhum onde aparecer: vinham na resposta com
+    `vendavel: true` e `erros: []` e sumiam da grelha sem marca e sem razão
+    escrita. Saem daqui deliberadamente (a escolha do gestor respeita-se),
+    mas a contagem é o que permite ao ecrã dizer "2 artigos escondidos: a
+    categoria está desactivada".
+    """
+    _monta(
+        monkeypatch,
+        categorias=[
+            _categoria(),
+            _categoria(id="cat-2", nome="Vendas Aplicações", ativa=False),
+        ],
+        produtos=[
+            _produto(),
+            _produto(id="prod-2", nome="Açaí Regular App", categoria_id="cat-2"),
+            _produto(id="prod-3", nome="Zumo App", categoria_id="cat-2"),
+        ],
+    )
+
+    resposta = _corre(catalogo_do_pos(_={}))
+
+    assert [p["id"] for p in resposta["produtos"]] == ["prod-1"]
+    assert resposta["produtos_ocultos_categoria_inativa"] == 2
+
+
+def test_produto_escondido_nao_e_escrito_nos_erros_de_ninguem(monkeypatch):
+    """A regra da categoria desactivada vive na contagem, NUNCA em `erros`.
+
+    `erros`/`vendavel` são `precos.erros_do_produto` e mais nada — a mesma
+    função que `venda.py::juntar_linha` usa para recusar a linha com 422 e
+    que alimenta o ecrã "Produtos sem IVA" do backoffice. Uma segunda regra
+    de "vendável" escrita em pos_catalogo.py era o princípio da divergência
+    que o módulo existe para evitar: o artigo que sobra na grelha continua
+    `vendavel: true`, e o escondido não deixa recado nenhum na lista.
+    """
+    _monta(
+        monkeypatch,
+        categorias=[_categoria(), _categoria(id="cat-2", ativa=False)],
+        produtos=[_produto(), _produto(id="prod-2", categoria_id="cat-2")],
+    )
+
+    resposta = _corre(catalogo_do_pos(_={}))
+
+    assert resposta["produtos"][0]["vendavel"] is True
+    assert resposta["produtos"][0]["erros"] == []
+    assert "cat-2" not in str(resposta["produtos"])
 
 
 def test_catalogo_ordena_categorias_por_ordem_e_produtos_por_nome(monkeypatch):
@@ -181,6 +244,11 @@ def test_catalogo_ordena_categorias_por_ordem_e_produtos_por_nome(monkeypatch):
 
     assert [c["id"] for c in resposta["categorias"]] == ["cat-1", "cat-2"]
     assert [p["nome"] for p in resposta["produtos"]] == ["Açaí Regular", "Zumo de Laranja"]
+    # O VALOR de `ordem`, não só a sequência: comparar ids deixava passar um
+    # `get()` mal copiado a devolver 0 para tudo — e no dia em que o ecrã
+    # reordenar por este campo, os separadores saíam por ordem arbitrária em
+    # vez da que o gestor definiu.
+    assert [c["ordem"] for c in resposta["categorias"]] == [1, 2]
 
 
 def test_produto_sem_iva_vem_marcado_e_continua_na_grelha(monkeypatch):
@@ -192,6 +260,10 @@ def test_produto_sem_iva_vem_marcado_e_continua_na_grelha(monkeypatch):
     sem ninguém saber que existia e estava mal."""
     _monta(
         monkeypatch,
+        # Com a categoria: um produto pertence sempre a uma que existe
+        # (`catalogo.py::_valida_referencias` recusa o contrário), e sem ela
+        # o que este teste mediria era o filtro dos órfãos, não os `erros`.
+        categorias=[_categoria()],
         produtos=[
             _produto(),
             _produto(id="prod-2", nome="Água 50cl", tax_id=None),
@@ -213,7 +285,7 @@ def test_produto_sem_iva_vem_marcado_e_continua_na_grelha(monkeypatch):
 def test_produto_com_iva_desconhecido_tambem_vem_marcado(monkeypatch):
     """Um `tax_id` escrito à mão ('XPTO') não é IVA nenhum — a regra é a de
     `erros_do_produto`, não um "tem tax_id, logo vende-se"."""
-    _monta(monkeypatch, produtos=[_produto(tax_id="XPTO")])
+    _monta(monkeypatch, categorias=[_categoria()], produtos=[_produto(tax_id="XPTO")])
 
     produto = _corre(catalogo_do_pos(_={}))["produtos"][0]
 
@@ -228,7 +300,10 @@ def test_catalogo_devolve_os_campos_do_produto_e_nenhum_id_do_mongo(monkeypatch)
     campo a campo, não a projecção do find."""
     _monta(
         monkeypatch,
-        categorias=[_categoria()],
+        # `ordem=3` e não o 0 das fixtures: com 0 em todo o lado, fixar
+        # `"ordem": 0` em `_categoria_publica` deixava este ficheiro inteiro
+        # verde.
+        categorias=[_categoria(ordem=3)],
         produtos=[_produto(foto_url="/fotos/acai.jpg", grupos_personalizacao=["grupo-1"])],
         grupos=[_grupo()],
     )
@@ -236,7 +311,7 @@ def test_catalogo_devolve_os_campos_do_produto_e_nenhum_id_do_mongo(monkeypatch)
     resposta = _corre(catalogo_do_pos(_={}))
 
     assert resposta["categorias"][0] == {
-        "id": "cat-1", "nome": "Venda ao Público", "ordem": 0,
+        "id": "cat-1", "nome": "Venda ao Público", "ordem": 3,
     }
     assert resposta["produtos"][0] == {
         "id": "prod-1", "nome": "Açaí Regular", "categoria_id": "cat-1", "preco": 8.99,
@@ -273,25 +348,36 @@ def test_opcoes_inactivas_nao_vem_mas_o_minimo_do_grupo_fica_como_esta(monkeypat
     assert [o["id"] for o in grupos["grupo-2"]["opcoes"]] == ["op-nutella"]
 
 
-def test_catalogo_vazio_devolve_as_tres_listas(monkeypatch):
+def test_catalogo_vazio_devolve_as_tres_listas_e_a_contagem(monkeypatch):
     """Uma loja com o catálogo ainda por importar não rebenta o ecrã: as
-    três chaves vêm sempre, vazias."""
+    três chaves vêm sempre, vazias — e a contagem de escondidos a zero, para
+    o ecrã não ter de a tratar como opcional."""
     _monta(monkeypatch)
 
     assert _corre(catalogo_do_pos(_={})) == {
         "categorias": [], "produtos": [], "grupos_personalizacao": [],
+        "produtos_ocultos_categoria_inativa": 0,
     }
 
 
 def test_limites_de_leitura_sao_os_mesmos_do_backoffice(monkeypatch):
-    """2000 produtos e 200 categorias são os limites que catalogo.py já usa
-    — números novos aqui davam um balcão a ver um catálogo diferente do que
-    se gere no backoffice."""
+    """2000 produtos, 200 categorias, 200 grupos e 100 tipos de pagamento são
+    os limites que catalogo.py e pagamentos.py já usam — números novos aqui
+    davam um balcão a ver um catálogo diferente do que se gere no backoffice.
+
+    As DUAS rotas, não só a do catálogo: enquanto o tecto dos tipos de
+    pagamento não era lido por teste nenhum, baixá-lo de 100 para 5 deixava a
+    suite verde e uma loja com 6+ tipos activos perdia botões no ecrã de
+    finalizar sem nada a avisar — o mesmo desaparecimento em silêncio que
+    este módulo existe para evitar. O nome deste teste já prometia guardar os
+    limites todos; agora guarda-os mesmo.
+    """
     registo = _monta(monkeypatch)
     _corre(catalogo_do_pos(_={}))
+    _corre(tipos_pagamento_do_pos(_={}))
 
     limites = [chamada[1] for chamada in registo if chamada[0] == "to_list"]
-    assert limites == [200, 2000, 200]
+    assert limites == [200, 2000, 200, 100]
 
 
 # --- GET /pos/tipos-pagamento --------------------------------------------------
@@ -312,6 +398,10 @@ def test_tipos_pagamento_devolve_so_activos_por_ordem(monkeypatch):
     assert [t["id"] for t in tipos] == ["tipo-dinheiro", "tipo-mb"]
     assert [t["da_troco"] for t in tipos] == [True, False]
     assert [t["tipo_fiscal"] for t in tipos] == ["NU", "CD"]
+    # O VALOR de `ordem` e não só a sequência — mesma razão da rota do
+    # catálogo: um `get()` a devolver 0 para todos passava despercebido até o
+    # ecrã de finalizar reordenar os botões por este campo.
+    assert [t["ordem"] for t in tipos] == [1, 2]
 
 
 def test_pronto_diz_se_o_tipo_esta_mapeado_ao_vendus(monkeypatch):
@@ -355,13 +445,16 @@ def test_vendus_payment_method_id_nunca_sai_na_resposta(monkeypatch):
     é configuração interna da ligação e o ecrã do balcão não tem nada que a
     ver. Só o booleano `pronto` sai daqui — e nenhum outro campo do
     documento, `_id` e `protegido` incluídos."""
-    _monta(monkeypatch, tipos_pagamento=[_tipo(vendus_payment_method_id="316430468")])
+    # `ordem=7` e não o 0 da fixture: é aqui que se compara a resposta
+    # INTEIRA, por isso é aqui que um `"ordem": 0` fixo no dicionário tem de
+    # ficar vermelho.
+    _monta(monkeypatch, tipos_pagamento=[_tipo(ordem=7, vendus_payment_method_id="316430468")])
 
     tipos = _corre(tipos_pagamento_do_pos(_={}))
 
     assert tipos == [{
         "id": "tipo-dinheiro", "nome": "Dinheiro", "tipo_fiscal": "NU",
-        "da_troco": True, "ordem": 0, "pronto": True,
+        "da_troco": True, "ordem": 7, "pronto": True,
     }]
     assert "316430468" not in str(tipos)
 

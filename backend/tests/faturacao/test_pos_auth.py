@@ -15,6 +15,7 @@ Nenhum teste liga a uma base de dados nem à rede — tudo por duplos.
 import asyncio
 import importlib
 import os
+from copy import deepcopy
 
 import jwt
 import pytest
@@ -81,7 +82,19 @@ class CursorFalso:
 
 
 class ColeccaoFalsa:
-    """Duplo de uma colecção Mongo: find() filtra de facto (ver docstring)."""
+    """Duplo de uma colecção Mongo: find() filtra de facto (ver docstring do
+    módulo), e as leituras devolvem CÓPIAS, como o Motor.
+
+    Devolver o próprio documento guardado criava um aliasing que o Motor real
+    não tem: uma leitura e a escrita seguinte mexiam no MESMO objecto, e o
+    dicionário que o código de produção tinha em mãos actualizava-se sozinho
+    — um teste podia ficar verde a defender uma linha de produção que já
+    tinha sido apagada. (Foi assim que um teste do cancelamento, em
+    test_venda.py, passou a defender um defeito.)
+
+    Cópia FUNDA, não `dict(d)`: o aliasing de uma cópia rasa volta uma camada
+    abaixo, nos campos aninhados, onde é ainda mais difícil de ver.
+    """
 
     def __init__(self, registo, documentos=None):
         self.registo = registo
@@ -89,16 +102,18 @@ class ColeccaoFalsa:
 
     def find(self, filtro=None, projecao=None):
         self.registo.append(("find", filtro))
-        return CursorFalso([d for d in self._documentos if _corresponde(d, filtro)])
+        return CursorFalso(
+            [deepcopy(d) for d in self._documentos if _corresponde(d, filtro)]
+        )
 
     async def find_one(self, filtro, projecao=None):
         self.registo.append(("find_one", filtro))
         encontrados = [d for d in self._documentos if _corresponde(d, filtro)]
-        return encontrados[0] if encontrados else None
+        return deepcopy(encontrados[0]) if encontrados else None
 
     async def insert_one(self, doc):
         self.registo.append(("insert_one", dict(doc)))
-        self._documentos.append(doc)
+        self._documentos.append(deepcopy(doc))
         return None
 
     async def update_one(self, filtro, atualizacao):
@@ -801,3 +816,89 @@ def test_revogar_um_dispositivo_nao_afecta_os_outros_da_mesma_loja(monkeypatch):
     # O drive-thru continua vivo.
     disp_drive = _corre(dispositivo_atual(x_device_token=par_drive["device_token"]))
     assert disp_drive["loja_id"] == "loja-1"
+
+
+# --- Qual PC (Task: a conta é do posto, não da caixa toda) ---------------------
+#
+# O token do operador é a única coisa que o POS envia em cada pedido, por isso
+# é nele que o dispositivo tem de viajar. Sem isto, `GET /pos/venda/aberta`
+# (venda.py) só sabia da sessão de caixa — e numa loja com UMA caixa e dois
+# PCs emparelhados os dois recuperavam a MESMA conta, com um cliente a pagar
+# o açaí do outro. Ver os testes do lado da venda em test_venda.py.
+
+
+def _dispositivo(**over):
+    d = {"id": "disp-1", "loja_id": "loja-1", "nome": "PC Balcão", "estado": "activo"}
+    d.update(over)
+    return d
+
+
+def _payload_do_token(token):
+    return jwt.decode(token, pos_auth_mod.POS_JWT_SECRET, algorithms=["HS256"])
+
+
+def test_entrar_poe_o_dispositivo_no_token_do_operador(monkeypatch):
+    registo = []
+    db = _db(registo, utilizadores=[_operador()])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    resultado = _corre(entrar(
+        PedidoEntrar(operador_id="op-1", pin="1234"), dispositivo=_dispositivo()
+    ))
+    assert _payload_do_token(resultado["operator_token"])["dispositivo_id"] == "disp-1"
+
+
+def test_o_dispositivo_chega_intacto_a_quem_depende_de_operador_atual(monkeypatch):
+    """O caminho todo, que é o que interessa: PIN → token → `operador_atual`
+    → o dicionário que as rotas do POS recebem. É de lá que `abrir_venda` e
+    `venda_aberta` tiram o `dispositivo_id`; se ele se perdesse a meio, as
+    contas voltavam todas ao mesmo saco sem nada ficar vermelho do lado da
+    venda."""
+    registo = []
+    db = _db(registo, utilizadores=[_operador()])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    resultado = _corre(entrar(
+        PedidoEntrar(operador_id="op-1", pin="1234"), dispositivo=_dispositivo()
+    ))
+    payload = _corre(operador_atual(x_operator_token=resultado["operator_token"]))
+    assert payload["dispositivo_id"] == "disp-1"
+    assert payload["loja_id"] == "loja-1"
+
+
+def test_dois_pcs_da_mesma_loja_dao_tokens_com_dispositivos_diferentes(monkeypatch):
+    """A MESMA pessoa, na MESMA loja, a entrar nos dois postos: é a situação
+    exacta da loja de uma só caixa com "PC Balcão" e "PC Drive-Thru". Se os
+    dois tokens trouxessem o mesmo âmbito, o filtro por dispositivo do lado
+    da venda não separava coisa nenhuma."""
+    registo = []
+    db = _db(registo, utilizadores=[_operador()])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    balcao = _corre(entrar(
+        PedidoEntrar(operador_id="op-1", pin="1234"),
+        dispositivo=_dispositivo(id="disp-balcao", nome="PC Balcão"),
+    ))
+    drive = _corre(entrar(
+        PedidoEntrar(operador_id="op-1", pin="1234"),
+        dispositivo=_dispositivo(id="disp-drive", nome="PC Drive-Thru"),
+    ))
+
+    assert _payload_do_token(balcao["operator_token"])["dispositivo_id"] == "disp-balcao"
+    assert _payload_do_token(drive["operator_token"])["dispositivo_id"] == "disp-drive"
+
+
+def test_dispositivo_sem_id_nao_impede_a_entrada(monkeypatch):
+    """`.get("id")`, não `["id"]`: um documento de dispositivo sem `id`
+    (dados corrompidos, uma migração a meio) não pode fechar a loja à
+    funcionária com um 500 no ecrã de entrada. Fica sem âmbito de posto — o
+    mesmo dos tokens emitidos antes desta alteração — e é isso que o filtro
+    do lado da venda já trata (ver test_venda.py)."""
+    registo = []
+    db = _db(registo, utilizadores=[_operador()])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+
+    resultado = _corre(entrar(
+        PedidoEntrar(operador_id="op-1", pin="1234"), dispositivo={"loja_id": "loja-1"}
+    ))
+    assert _payload_do_token(resultado["operator_token"])["dispositivo_id"] is None

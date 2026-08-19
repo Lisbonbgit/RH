@@ -6,6 +6,7 @@ sessão aberta" provem comportamento real, e não apenas confiem que o Mongo
 filtraria por nós. Nenhum teste liga a uma base de dados nem à rede.
 """
 import asyncio
+from copy import deepcopy
 
 import pytest
 from fastapi import HTTPException
@@ -39,6 +40,27 @@ def _corresponde(item, filtro):
     return all(item.get(chave) == valor for chave, valor in filtro.items())
 
 
+def _como_o_motor(documento):
+    """A cópia que o Motor devolve — e que este duplo tem de devolver também.
+
+    O `find_one` real descodifica BSON de fresco a cada chamada: o resultado
+    NUNCA está ligado ao que está no Mongo. Um duplo que devolvesse o próprio
+    objecto guardado deixa um teste passar por ALIASING — o código de produção
+    muta o que "leu", o Mongo falso muda sozinho, e a asserção fica verde sem
+    que nenhuma escrita tenha acontecido. Já apanhou um caso real neste
+    módulo: apagar o `venda.update(atualizacao)` de `cancelar_venda`
+    (faturacao/venda.py) não punha um único teste vermelho, apesar de a rota
+    passar a responder `estado: "aberta"` depois de cancelar.
+
+    Cópia FUNDA, não `dict(d)`: aqui as vendas trazem `pagamentos` (que o
+    fecho soma em `caixa_math.soma_vendas_dinheiro`) e as sessões trazem
+    `aberta_por` — uma cópia rasa partilhava essas listas e dicionários com o
+    documento guardado, e o aliasing voltava uma camada abaixo, onde é ainda
+    mais difícil de ver.
+    """
+    return deepcopy(documento)
+
+
 class CursorFalso:
     def __init__(self, itens):
         self._itens = itens
@@ -70,16 +92,18 @@ class ColeccaoFalsa:
 
     def find(self, filtro=None, projecao=None):
         self.registo.append(("find", filtro))
-        return CursorFalso([d for d in self._documentos if _corresponde(d, filtro)])
+        return CursorFalso(
+            [_como_o_motor(d) for d in self._documentos if _corresponde(d, filtro)]
+        )
 
     async def find_one(self, filtro, projecao=None):
         self.registo.append(("find_one", filtro))
         encontrados = [d for d in self._documentos if _corresponde(d, filtro)]
-        return encontrados[0] if encontrados else None
+        return _como_o_motor(encontrados[0]) if encontrados else None
 
     async def insert_one(self, doc):
         self.registo.append(("insert_one", dict(doc)))
-        self._documentos.append(doc)
+        self._documentos.append(deepcopy(doc))
         return None
 
     async def update_one(self, filtro, atualizacao):
@@ -822,3 +846,116 @@ def test_fecho_com_verificacao_vendus_a_rebentar_no_meio_nao_bloqueia_o_fecho(mo
     )
     assert resultado["estado"] == "fechada"
     assert "nao_verificado" in resultado["verificacao_vendus"]
+
+
+# --- O fecho recusa-se a fechar A MEIO DE UMA EMISSÃO --------------------------
+#
+# O fecho lia as vendas `emitida`, calculava o Z e fechava, sem perguntar mais
+# nada. Dois PCs na mesma caixa (o "PC Balcão" e o "PC Drive-Thru", a
+# configuração que `venda.venda_aberta` documenta como estado estável)
+# chegavam a isto: às 23:58 a Rafaela carrega em FINALIZAR e o Vendus demora;
+# a Ana, no outro PC, conta a gaveta e fecha. Medido:
+# `FECHAR CAIXA -> 200; Z: vendas_dinheiro=0.00 esperado=50.00 contado=58.99
+# diferenca=+8.99`, e logo a seguir a FS REAL de 8,99 € a sair para uma sessão
+# já fechada. O Z assinado não tinha essa venda, os 8,99 € ficavam na gaveta
+# como sobra por justificar, e a venda `emitida` não entrava em Z nenhum — nem
+# neste nem no seguinte (que filtra pelo `sessao_id` da sessão nova).
+
+
+def _venda_aberta(**over):
+    v = {
+        "id": "venda-1", "loja_id": "loja-1", "caixa_id": "caixa-1",
+        "sessao_id": "sessao-1", "estado": "aberta", "linhas": [],
+        "criada_em": "2026-08-18T23:50:00+00:00",
+    }
+    v.update(over)
+    return v
+
+
+def _reserva_fiscal(**over):
+    r = {
+        "id": "ref-1", "ext_ref": "pos-loja-1-sessao-1-venda-1",
+        "venda_id": "venda-1", "criado_em": "2026-08-18T23:58:00+00:00",
+    }
+    r.update(over)
+    return r
+
+
+def _db_com_reservas(registo, vendas, refs, **over):
+    argumentos = {"caixas": [_caixa()], "sessoes": [_sessao(fundo=50.0)],
+                  "movimentos": [], "vendas": vendas}
+    argumentos.update(over)
+    db = _db(registo, **argumentos)
+    db._coleccoes[COLECOES["refs_fiscais"]] = ColeccaoFalsa(registo, refs)
+    return db
+
+
+def test_fechar_caixa_com_emissao_em_curso_numa_venda_da_sessao_e_recusado(monkeypatch):
+    """Fechar a caixa a meio de uma emissão é fechar as contas antes de o
+    dinheiro estar contado. A sessão fica aberta e nenhum Z sai."""
+    registo = []
+    sessao = _sessao(fundo=50.0)
+    db = _db_com_reservas(registo, [_venda_aberta()], [_reserva_fiscal()], sessoes=[sessao])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(fechar_caixa(PedidoFecharCaixa(caixa_id="caixa-1", contado=58.99),
+                            operador=_operador()))
+
+    assert excinfo.value.status_code == 409
+    assert "emissão de fatura em curso" in excinfo.value.detail
+    # A mensagem tem de dizer o que fazer: esperar, e — se ficar presa — quem
+    # a resolve e onde.
+    assert "Espere" in excinfo.value.detail
+    assert "reservas fiscais presas" in excinfo.value.detail
+    assert sessao["estado"] == "aberta", "a caixa fechou a meio de uma emissão"
+    assert sessao["fechada_em"] is None
+    assert not any(
+        chamada[0] == "update_one" for chamada in registo
+    ), "escreveu no meio de uma recusa"
+
+
+def test_fechar_caixa_ignora_a_reserva_de_uma_venda_ja_emitida(monkeypatch):
+    """A reserva de uma venda `emitida` fica lá PARA SEMPRE de propósito (é
+    ela que sustenta a idempotência) — se contasse, a caixa não fechava
+    nenhuma noite."""
+    registo = []
+    db = _db_com_reservas(
+        registo,
+        [_venda_aberta(estado="emitida", pagamentos=[_pagamento()])],
+        [_reserva_fiscal()],
+    )
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(fechar_caixa(
+        PedidoFecharCaixa(caixa_id="caixa-1", contado=58.99), operador=_operador()))
+    assert resultado["estado"] == "fechada"
+    assert resultado["vendas_dinheiro"] == 8.99
+
+
+def test_fechar_caixa_ignora_a_reserva_de_uma_venda_de_outra_sessao(monkeypatch):
+    """A pergunta é pelas contas DESTA sessão: uma emissão a decorrer na
+    caixa do lado não pode impedir esta de fechar."""
+    registo = []
+    db = _db_com_reservas(
+        registo,
+        [_venda_aberta(id="venda-9", sessao_id="sessao-outra")],
+        [_reserva_fiscal(venda_id="venda-9")],
+    )
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(fechar_caixa(
+        PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador()))
+    assert resultado["estado"] == "fechada"
+
+
+def test_fechar_caixa_com_conta_aberta_sem_reserva_nenhuma_fecha_na_mesma(monkeypatch):
+    """Uma conta esquecida em aberto (sem emissão nenhuma) não trava o fecho —
+    isso seria prender a funcionária na loja por causa de um ecrã aberto."""
+    registo = []
+    db = _db_com_reservas(registo, [_venda_aberta()], [])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+
+    resultado = _corre(fechar_caixa(
+        PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador()))
+    assert resultado["estado"] == "fechada"

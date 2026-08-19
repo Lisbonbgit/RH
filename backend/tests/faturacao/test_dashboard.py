@@ -11,6 +11,7 @@ test_pagamentos_endpoints.py e test_indices.py) para verificar a ligação:
 o filtro da consulta, o parâmetro com_iva e a exigência de gestor_atual.
 """
 import asyncio
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -409,12 +410,31 @@ def test_ultimos_6_meses_tem_6_entradas_e_o_ultimo_bate_com_o_cartao_mensal():
 
 # --- endpoint (com duplos de base de dados) ---------------------------------
 
+def _como_o_motor(documento):
+    """A cópia que o Motor devolve — e que este duplo tem de devolver também.
+
+    O `find`/`find_one` reais descodificam BSON de fresco a cada chamada: o
+    resultado NUNCA está ligado ao que está no Mongo. Um duplo que devolvesse
+    o próprio objecto guardado deixa um teste passar por ALIASING — o código
+    de produção muta o que "leu" e o Mongo falso muda sozinho, sem nenhuma
+    escrita. Já apanhou um caso real neste módulo (`cancelar_venda`, em
+    faturacao/venda.py).
+
+    Cópia FUNDA por regra da casa, ainda que os documentos DESTE ficheiro
+    (`fat_documentos`, `fat_lojas`) sejam hoje todos planos: uma cópia rasa
+    passaria a estar errada no dia em que um documento ganhasse `linhas` —
+    exactamente o que o Plano 2 promete guardar aqui para os "mais vendidos"
+    — e o aliasing voltava sem ninguém dar por ele.
+    """
+    return deepcopy(documento)
+
+
 class CursorFalso:
     def __init__(self, dados):
         self._dados = dados
 
     async def to_list(self, limite):
-        return list(self._dados)
+        return [_como_o_motor(d) for d in self._dados]
 
 
 class ColeccaoFalsa:
@@ -439,7 +459,7 @@ class ColeccaoFalsa:
             return {"_id": "fixture"} if self._existe_documento else None
         for doc in self._dados:
             if not doc.get("anulado"):
-                return doc
+                return _como_o_motor(doc)
         return None
 
 

@@ -8,6 +8,7 @@ import PosBloqueado from './PosBloqueado';
 import PosCaixaFechada from './PosCaixaFechada';
 import PosMenuCaixa from './PosMenuCaixa';
 import PosFecharCaixa from './PosFecharCaixa';
+import PosVenda from './PosVenda';
 import {
   getDeviceToken, getLojaId, getLojaNome, getOperatorToken, getOperadorGuardado,
   guardarOperador, esquecerOperador, esquecerDispositivo,
@@ -73,9 +74,14 @@ function TopoSimples({ lojaNome, caixa, operador, onSair }) {
 }
 
 // Resolve a caixa (uma, várias por escolher, ou nenhuma configurada) e
-// mostra o ecrã certo (Task 2). A venda propriamente dita (Tasks 3/4 do
-// plano) ainda não existe — fica um espaço honesto em vez de fingir um
-// ecrã que ainda não foi construído.
+// mostra o ecrã certo (Task 2); com a caixa aberta, o ecrã de venda
+// (PosVenda, Tasks 3/4). O PosVenda não leva `key` nenhuma e este
+// componente não volta a montá-lo por cada render — é o que faz com que a
+// tela de descanso (PosBloqueado, uma sobreposição que não desmonta nada)
+// devolva a conta exactamente como estava. A sessão e o operador não lhe
+// vão como props: o servidor tira-os do token, e o PosVenda só existe
+// enquanto há sessão aberta (fechar a caixa devolve o ecrã ao
+// PosCaixaFechada).
 function AppInterna({ operador, lojaNome, onSair, onOperadorInvalido }) {
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState(null);
@@ -153,12 +159,7 @@ function AppInterna({ operador, lojaNome, onSair, onOperadorInvalido }) {
         onFecharCaixa={() => setFecharAberto(true)}
         onMovimentoRegistado={() => {}}
       />
-      <div className="flex-1 flex items-center justify-center p-8">
-        <p className="text-muted-foreground text-center max-w-sm">
-          A venda (grelha de produtos, conta e finalizar) é a fase seguinte deste ecrã —
-          ainda por construir. Abrir e fechar a caixa já funcionam a sério.
-        </p>
-      </div>
+      <PosVenda caixa={caixa} onOperadorInvalido={onOperadorInvalido} />
       <PosFecharCaixa
         aberto={fecharAberto}
         onFechar={() => setFecharAberto(false)}

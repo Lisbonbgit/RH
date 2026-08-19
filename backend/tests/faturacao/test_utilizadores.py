@@ -10,6 +10,7 @@ provam que um PIN de alguém inactivo pode ser reutilizado não seriam capazes
 de falhar por engano.
 """
 import asyncio
+from copy import deepcopy
 
 import pytest
 from fastapi import HTTPException
@@ -47,6 +48,23 @@ def _corresponde(item, filtro):
     return all(item.get(chave) == valor for chave, valor in filtro.items())
 
 
+def _como_o_motor(documento):
+    """A cópia que o Motor devolve — e que este duplo tem de devolver também.
+
+    O `find`/`find_one` reais descodificam BSON de fresco a cada chamada: o
+    resultado NUNCA está ligado ao que está no Mongo. Um duplo que devolvesse
+    o próprio objecto guardado deixa um teste passar por ALIASING — o código
+    de produção muta o que "leu", o Mongo falso muda sozinho, e a asserção
+    fica verde sem que nenhuma escrita tenha acontecido. Já apanhou um caso
+    real neste módulo (`cancelar_venda`, em faturacao/venda.py).
+
+    Cópia FUNDA, não `dict(d)`: o utilizador traz `lojas`, e é justamente essa
+    lista que `mudar_pin` lê do documento e passa a `_pin_em_uso` para decidir
+    a Regra 2 — uma cópia rasa deixava-a partilhada com o documento guardado.
+    """
+    return deepcopy(documento)
+
+
 class CursorFalso:
     """Duplo do cursor devolvido por .find() do Motor: só sort()/to_list()."""
 
@@ -78,16 +96,18 @@ class ColeccaoFalsa:
 
     def find(self, filtro=None):
         self.registo.append(("find", filtro))
-        return CursorFalso([u for u in self._utilizadores if _corresponde(u, filtro)])
+        return CursorFalso(
+            [_como_o_motor(u) for u in self._utilizadores if _corresponde(u, filtro)]
+        )
 
     async def find_one(self, filtro, projecao=None):
         self.registo.append(("find_one", filtro))
         encontrados = [u for u in self._utilizadores if _corresponde(u, filtro)]
-        return encontrados[0] if encontrados else None
+        return _como_o_motor(encontrados[0]) if encontrados else None
 
     async def insert_one(self, doc):
         self.registo.append(("insert_one", dict(doc)))
-        self._utilizadores.append(doc)
+        self._utilizadores.append(deepcopy(doc))
         return None
 
     async def update_one(self, filtro, atualizacao):

@@ -5,6 +5,7 @@ dados que regista as chamadas e devolve resultados à escolha do teste — o mes
 de test_indices.py.
 """
 import asyncio
+from copy import deepcopy
 
 import pytest
 from fastapi import HTTPException
@@ -16,6 +17,23 @@ from faturacao.lojas import CaixaEntrada, LojaEntrada, apagar_caixa, apagar_loja
 
 def _corre(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
+
+
+def _como_o_motor(documento):
+    """A cópia que o Motor devolve — e que este duplo tem de devolver também.
+
+    O `find` real descodifica BSON de fresco a cada chamada: o resultado NUNCA
+    está ligado ao que está no Mongo, e duas leituras nunca devolvem o MESMO
+    objecto. Um duplo enlatado que devolve sempre o dicionário do teste deixa
+    passar por ALIASING uma asserção sobre a fixture que o código de produção
+    mutou sem ter escrito nada. Já apanhou um caso real neste módulo
+    (`cancelar_venda`, em faturacao/venda.py).
+
+    Cópia FUNDA por regra da casa: lojas e caixas são hoje planas, mas é a
+    mesma função em todos os duplos do módulo — uma que fosse rasa "porque ali
+    dá" era a que ficava errada quando a fixture crescesse.
+    """
+    return deepcopy(documento)
 
 
 class ResultadoDelete:
@@ -58,7 +76,7 @@ class ColeccaoFalsa:
 
     def find(self, filtro, projecao=None):
         self.registo.append(("find", filtro))
-        return CursorFalso(self._find_devolve)
+        return CursorFalso([_como_o_motor(d) for d in self._find_devolve])
 
     async def count_documents(self, filtro):
         self.registo.append(("count_documents", filtro))

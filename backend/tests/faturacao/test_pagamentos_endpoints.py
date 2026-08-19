@@ -6,6 +6,7 @@ cobrar no Stripe sem emitir factura, em silêncio. Mesmo padrão de duplo de
 base de dados que test_lojas.py e test_indices.py.
 """
 import asyncio
+from copy import deepcopy
 
 import pytest
 from fastapi import HTTPException
@@ -16,6 +17,24 @@ from faturacao.pagamentos import TipoPagamentoEntrada, apagar, editar
 
 def _corre(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
+
+
+def _como_o_motor(documento):
+    """A cópia que o Motor devolve — e que este duplo tem de devolver também.
+
+    O `find_one` real descodifica BSON de fresco a cada chamada: o resultado
+    NUNCA está ligado ao que está no Mongo, e duas leituras nunca devolvem o
+    MESMO objecto. Um duplo enlatado que devolve sempre o dicionário do teste
+    deixa passar por ALIASING tanto uma asserção sobre a fixture (que o código
+    de produção mutou sem escrever nada) como um `editar` que respondesse com
+    o objecto que leu em vez de reler o que ficou gravado. Já apanhou um caso
+    real neste módulo (`cancelar_venda`, em faturacao/venda.py).
+
+    Cópia FUNDA por regra da casa: os tipos de pagamento são hoje planos, mas
+    é a mesma função em todos os duplos do módulo — uma que fosse rasa "porque
+    ali dá" era a que ficava errada quando a fixture crescesse.
+    """
+    return deepcopy(documento)
 
 
 class ResultadoDelete:
@@ -35,7 +54,7 @@ class ColeccaoFalsa:
 
     async def find_one(self, filtro, projecao=None):
         self.registo.append(("find_one", filtro))
-        return self._find_one_devolve
+        return _como_o_motor(self._find_one_devolve)
 
     async def update_one(self, filtro, atualizacao):
         self.registo.append(("update_one", filtro, atualizacao))

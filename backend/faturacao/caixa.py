@@ -54,6 +54,14 @@ _MSG_FECHO_EM_CONFLITO = (
     "Esta sessão já foi fechada por outro pedido — o Z já foi emitido, "
     "não se fecha duas vezes."
 )
+_MSG_FECHO_COM_EMISSAO_EM_CURSO = (
+    "A conta %s desta caixa tem uma emissão de fatura em curso ou por "
+    "confirmar — o turno não se fecha a meio de uma emissão: o Z sairia sem "
+    "essa venda e o dinheiro dela ficava na gaveta como sobra por "
+    "justificar. Espere alguns segundos e feche outra vez. Se a conta ficar "
+    "assim presa, é o gestor que a resolve primeiro, na lista de reservas "
+    "fiscais presas do backoffice."
+)
 
 
 def _agora() -> str:
@@ -270,10 +278,24 @@ async def fechar_caixa(
     sempre das NOSSAS vendas (regra 1), nunca do Vendus — a verificação
     contra o Vendus (Plano 2B, Task 4) é só uma segunda opinião de leitura,
     nunca a fonte de verdade, e nunca pode bloquear o fecho.
+
+    A ÚNICA coisa que bloqueia o fecho é uma emissão fiscal viva numa venda
+    desta sessão (ver `_venda_com_emissao_viva`) — e isso não contradiz a
+    regra 3: a regra 3 é sobre a contagem não bater, e aqui o problema é
+    outro, é fechar as contas antes de o dinheiro estar contado.
     """
     db = obter_db()
     await _obter_caixa_da_loja(db, dados.caixa_id, operador["loja_id"])
     sessao = await _sessao_aberta(db, dados.caixa_id)
+
+    # ANTES de somar seja o que for: uma emissão a decorrer numa conta desta
+    # sessão ainda vai mudar o que o Z tem de dizer.
+    em_emissao = await _venda_com_emissao_viva(db, sessao["id"])
+    if em_emissao is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=_MSG_FECHO_COM_EMISSAO_EM_CURSO % em_emissao.get("id"),
+        )
 
     movimentos = await db[COLECOES["movimentos_caixa"]].find(
         {"sessao_id": sessao["id"]}
@@ -342,6 +364,48 @@ async def fechar_caixa(
         "diferenca": diferenca_valor,
         "verificacao_vendus": verificacao_vendus,
     }
+
+
+async def _venda_com_emissao_viva(db, sessao_id: str) -> Optional[Dict]:
+    """A primeira conta AINDA ABERTA desta sessão que tenha uma reserva
+    fiscal — ou `None`, o caso normal.
+
+    **Porque é que isto trava o fecho.** O fecho lia as vendas `emitida`,
+    calculava o Z e fechava, sem perguntar mais nada. Dois PCs na mesma
+    caixa (a configuração que `venda.venda_aberta` documenta como estado
+    estável) chegavam a isto: às 23:58 a Rafaela carrega em FINALIZAR e o
+    Vendus demora; a Ana, no outro PC, conta a gaveta e fecha. Medido:
+    `vendas_dinheiro=0,00  esperado=50,00  contado=58,99  diferenca=+8,99`,
+    e a seguir a FS REAL de 8,99 € a sair para uma sessão já fechada. O Z
+    que a funcionária assinou não tinha essa venda, os 8,99 € ficavam na
+    gaveta como sobra por justificar, e a venda `emitida` não entrava em Z
+    nenhum — nem neste, nem no seguinte (que filtra pelo `sessao_id` da
+    sessão nova). Fechar a caixa a meio de uma emissão é fechar as contas
+    antes de o dinheiro estar contado.
+
+    A pergunta é feita às contas ABERTAS: a reserva de uma venda `emitida`
+    fica lá para sempre de propósito (é ela que sustenta a idempotência,
+    `fiscal.py::_gravar_documento`) e travaria o fecho de todas as noites.
+    Uma sessão tem um punhado de contas abertas, por isso a leitura é
+    pequena e a pergunta pela reserva é uma por conta — nunca um varrimento
+    de `fat_refs_fiscais`, que ao fim de um ano tem centenas de milhares de
+    reservas resolvidas.
+
+    A outra metade desta defesa está em `fiscal.py`: depois de ganhar a
+    reserva, a emissão relê a SESSÃO e aborta se ela já não estiver aberta
+    (`SessaoJaNaoAberta`). São as duas necessárias — sem transacções
+    multi-documento, uma pergunta antes e uma releitura depois é o mais
+    perto que se chega de fechar a janela pelos dois lados."""
+    abertas = await db[COLECOES["vendas"]].find(
+        {"sessao_id": sessao_id, "estado": "aberta"}
+    ).to_list(1000)
+    for venda in abertas:
+        reserva = await db[COLECOES["refs_fiscais"]].find_one(
+            {"venda_id": venda.get("id")}
+        )
+        if reserva is not None:
+            return venda
+    return None
 
 
 async def _verificar_vendas_dinheiro(db, sessao: Dict, vendas_dinheiro_local: float) -> Optional[Dict]:

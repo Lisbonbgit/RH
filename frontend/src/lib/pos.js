@@ -25,7 +25,55 @@ import axios from 'axios';
 // de acrescentar amanhã uma chamada nova e voltar a esquecê-lo.
 const API_URL = process.env.REACT_APP_BACKEND_URL + '/api/faturacao';
 
-const api = axios.create({ baseURL: API_URL });
+// --- Tectos de espera --------------------------------------------------------
+//
+// Sem `timeout`, o axios espera PARA SEMPRE. No POS isso não é uma espera: é
+// o ecrã inteiro preso. As escritas da conta correm numa fila estritamente
+// sequencial (PosVenda::executar, que existe para dois toques seguidos não
+// gravarem por cima um do outro), por isso UM pedido pendurado — o Wi-Fi da
+// loja a piscar, o PC do balcão a adormecer a placa de rede — bloqueia todos
+// os que vierem a seguir, com um spinner de 14px ao lado da palavra "Produto"
+// como único sinal. Se o pendurado for o Gravar do diálogo, a seta de voltar
+// fica desligada e não há saída nenhuma a não ser o F5, que ninguém tem razão
+// para adivinhar. O arranque ficava igual: o spinner de `carregando` para
+// sempre.
+//
+// Dois valores, porque os dois casos não têm nada a ver um com o outro.
+//
+// 15 s (padrão) — tudo o que só fala com o Mongo: abrir a conta,
+// juntar/editar/remover uma linha, o desconto, o cancelamento, o catálogo, o
+// estado da caixa, o PIN. São pedidos de dezenas de milissegundos; 15 s é
+// umas centenas de vezes isso — folga de sobra para um pico de rede ou um
+// arranque frio do servidor — e continua curto o bastante para a fila se
+// destravar sozinha com o cliente ainda à frente.
+//
+// 90 s (o que espera pelo VENDUS) — aqui a demora é legítima, não é avaria.
+// Na emissão, o pior caminho NORMAL do servidor é: POST a estourar o timeout
+// do httpx (`vendus/emissao.py`: 30 s) → VendusIndisponivel → verificação por
+// referência externa, outro pedido com os mesmos 30 s → só então o 503 "não
+// sabemos se saiu". São 60 s de trabalho legítimo antes de o servidor
+// concluir seja o que for, mais os backoffs de 5xx (1 s + 2 s), mais o
+// orçamento de espera pelo vencedor da reserva (fiscal.py: 50 × 0,05 s), mais
+// o proxy e a rede. 90 s cobre isso com margem.
+//
+// **Curto de mais na emissão é PERIGOSO**, e é por isso que aqui se erra por
+// excesso: desistir aos 30 s não cancela nada do outro lado — o POST ao
+// Vendus continua a criar uma Fatura Simplificada REAL — só tira o ecrã de
+// cima de uma emissão que está mesmo a acontecer. O fecho de caixa leva o
+// mesmo tecto pela mesma razão: `caixa.py::fechar_caixa` reconcilia contra o
+// Vendus (`fiscal.py::verificar_vendas_dinheiro_no_vendus`, uma leitura
+// paginada por cada dia da sessão) antes de gravar o Z, e desistir a meio
+// deixava a operadora sem o Z de uma caixa que fechou mesmo.
+//
+// Um pedido que estoura por timeout fica SEM `response` (é o que
+// `semRespostaPos` reconhece). Na emissão isso é exactamente o que se quer:
+// o PosVenda manda tudo o que não tem resposta para o balde 'incerto' — não
+// se sabe se a fatura saiu, e a regra da casa é dizê-lo em vez de afirmar o
+// que dá jeito.
+export const TIMEOUT_PADRAO_MS = 15000;
+export const TIMEOUT_COM_VENDUS_MS = 90000;
+
+const api = axios.create({ baseURL: API_URL, timeout: TIMEOUT_PADRAO_MS });
 
 api.interceptors.request.use((config) => {
   const deviceToken = getDeviceToken();
@@ -131,6 +179,24 @@ export const detalhesErroPos = (error, fallback) => {
   return { campo: null, mensagem: fallback };
 };
 
+// Um erro SEM `response`: o pedido nunca chegou ao servidor, a resposta
+// perdeu-se pelo caminho, ou estourou o nosso tecto de espera acima. A
+// diferença para um 4xx/5xx é tudo o que interessa — num erro com resposta o
+// servidor DISSE alguma coisa; aqui não se sabe nada, nem sequer se o pedido
+// chegou a ser executado do outro lado. Quem chama tem de tratar isto como
+// "não sei", nunca como "não aconteceu": foi essa confusão que pôs o ecrã de
+// finalizar a afirmar "há algo por corrigir nesta venda" a um pedido que
+// podia estar, nesse instante, a emitir uma Fatura Simplificada real.
+export const semRespostaPos = (error) => !!error && !error.response;
+
+// ... e, destes, os que foram o NOSSO tecto de espera a disparar (o axios usa
+// ECONNABORTED por omissão, ETIMEDOUT com clarifyTimeoutError ligado). Serve
+// só para a mensagem poder dizer "não respondeu em 15 segundos" em vez de uma
+// "falha de ligação" genérica, que mandava a operadora olhar para o router
+// quando o problema podia ser o servidor a arrastar-se.
+export const ehTimeoutPos = (error) =>
+  semRespostaPos(error) && (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT');
+
 // Mesmo crivo do backend (precos.py / caixa.py: _tem_mais_de_2_casas_decimais),
 // duplicado aqui pela mesma razão que detalhesErroPos acima.
 export const temMaisDe2CasasDecimaisPos = (valor) => {
@@ -172,7 +238,15 @@ export const getEstadoCaixa = (caixaId) =>
 
 export const abrirCaixa = (dados) => api.post('/pos/caixa/abrir', dados);
 export const registarMovimento = (dados) => api.post('/pos/caixa/movimento', dados);
-export const fecharCaixa = (dados) => api.post('/pos/caixa/fechar', dados);
+
+// Tecto próprio: o fecho não é só uma escrita no Mongo — `caixa.py::
+// fechar_caixa` reconcilia as vendas em dinheiro contra o Vendus antes de
+// gravar o Z, e essa leitura é paginada por cada dia da sessão (ver
+// TIMEOUT_COM_VENDUS_MS). Com os 15 s do padrão, uma reconciliação lenta
+// deixava a operadora com um erro de timeout à frente de uma caixa que
+// fechou mesmo — e sem o Z que ela precisa de ver.
+export const fecharCaixa = (dados) =>
+  api.post('/pos/caixa/fechar', dados, { timeout: TIMEOUT_COM_VENDUS_MS });
 
 // --- Catálogo e tipos de pagamento -------------------------------------------
 //
@@ -220,5 +294,12 @@ export const cancelarVenda = (vendaId) => api.post(`/pos/venda/${vendaId}/cancel
 // iguais e o ecrã tem de os distinguir (ver PosFinalizar): 503 quer dizer
 // que o servidor NÃO SABE se a fatura saiu — nunca convidar a repetir às
 // cegas.
+//
+// Tecto próprio, e o mais largo de todos, porque é o único pedido em que
+// desistir cedo de mais custa uma fatura a dobrar: o servidor pode estar
+// legitimamente 60 s a falar com o Vendus (ver TIMEOUT_COM_VENDUS_MS), e o
+// nosso timeout não cancela nada do outro lado — só nos tira o direito de
+// saber o que aconteceu. Quando dispara, o erro fica sem `response` e o
+// PosVenda trata-o como 'incerto', que é a verdade.
 export const finalizarVenda = (vendaId, dados) =>
-  api.post(`/pos/venda/${vendaId}/finalizar`, dados);
+  api.post(`/pos/venda/${vendaId}/finalizar`, dados, { timeout: TIMEOUT_COM_VENDUS_MS });

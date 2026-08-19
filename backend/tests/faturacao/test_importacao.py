@@ -9,6 +9,7 @@ um duplo que só devolve respostas fixas não distingue "não duplicou" de
 "nunca gravou nada".
 """
 import asyncio
+from copy import deepcopy
 
 import pytest
 from fastapi import HTTPException
@@ -29,6 +30,31 @@ def _corre(coro):
 
 
 # --- Duplo de base de dados COM ESTADO ---------------------------------------
+
+
+def _como_o_motor(documento):
+    """A cópia que o Motor devolve — e que este duplo tem de devolver também.
+
+    O `find`/`find_one` reais descodificam BSON de fresco a cada chamada: o
+    resultado NUNCA está ligado ao que está no Mongo. Um duplo que devolvesse
+    o próprio objecto guardado deixa um teste passar por ALIASING — o código
+    de produção muta o que "leu", o Mongo falso muda sozinho, e a asserção
+    fica verde sem que nenhuma escrita tenha acontecido. Já apanhou um caso
+    real neste módulo (`cancelar_venda`, em faturacao/venda.py).
+
+    Aqui isto pesa mais do que noutros ficheiros: `_sincronizar_categorias`
+    lê as categorias existentes uma única vez (`find`) e guarda-as em
+    `por_ref`/`por_nome` durante a importação inteira, escrevendo-lhes
+    `vendus_ref` à mão depois do `update_one`. Com aliasing, esse `update_one`
+    podia desaparecer sem nenhum teste se queixar — a atribuição em memória
+    fazia o trabalho dele.
+
+    Cópia FUNDA, não `dict(d)`: os produtos trazem `grupos_personalizacao`,
+    que a reimportação tem de PRESERVAR — é o campo cuja preservação estes
+    testes existem para provar, e uma cópia rasa deixava-o partilhado com o
+    documento guardado.
+    """
+    return deepcopy(documento)
 
 
 class ResultadoUpdate:
@@ -61,14 +87,14 @@ class ColeccaoMemoria:
         return [d for d in self.documentos if all(d.get(k) == v for k, v in filtro.items())]
 
     def find(self, filtro=None, projecao=None):
-        return CursorMemoria(self._filtrar(filtro))
+        return CursorMemoria([_como_o_motor(d) for d in self._filtrar(filtro)])
 
     async def find_one(self, filtro, projecao=None):
         achados = self._filtrar(filtro)
-        return dict(achados[0]) if achados else None
+        return _como_o_motor(achados[0]) if achados else None
 
     async def insert_one(self, doc):
-        self.documentos.append(dict(doc))
+        self.documentos.append(deepcopy(doc))
         return None
 
     async def update_one(self, filtro, atualizacao):

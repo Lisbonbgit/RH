@@ -4,6 +4,7 @@ Mesmo padrão de duplo de base de dados que test_pagamentos_endpoints.py: o dupl
 imita o Motor (update_one devolve matched_count, delete_one devolve deleted_count).
 """
 import asyncio
+from copy import deepcopy
 
 import pytest
 from fastapi import HTTPException
@@ -14,6 +15,25 @@ from faturacao.motivos import MotivoEntrada, apagar, editar, listar, predefinir
 
 def _corre(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
+
+
+def _como_o_motor(documento):
+    """A cópia que o Motor devolve — e que este duplo tem de devolver também.
+
+    O `find`/`find_one` reais descodificam BSON de fresco a cada chamada: o
+    resultado NUNCA está ligado ao que está no Mongo, e duas leituras nunca
+    devolvem o MESMO objecto. Um duplo enlatado que devolve sempre o
+    dicionário do teste deixa passar por ALIASING uma asserção sobre a fixture
+    que o código de produção mutou sem ter escrito nada — o que aqui importa
+    em `predefinir`, que lê o motivo, chama `update_many`/`update_one` e só
+    devolve o id. Já apanhou um caso real neste módulo (`cancelar_venda`, em
+    faturacao/venda.py).
+
+    Cópia FUNDA por regra da casa: os motivos são hoje planos, mas é a mesma
+    função em todos os duplos do módulo — uma que fosse rasa "porque ali dá"
+    era a que ficava errada quando a fixture crescesse.
+    """
+    return deepcopy(documento)
 
 
 class CursorFalso:
@@ -72,11 +92,11 @@ class ColeccaoFalsa:
     def find(self, filtro, projecao=None):
         """Devolve um cursor falso que suporta sort().to_list()."""
         self.registo.append(("find", filtro))
-        return CursorFalso(self._find_devolve)
+        return CursorFalso([_como_o_motor(d) for d in self._find_devolve])
 
     async def find_one(self, filtro, projecao=None):
         self.registo.append(("find_one", filtro))
-        return self._find_one_devolve
+        return _como_o_motor(self._find_one_devolve)
 
     async def update_one(self, filtro, atualizacao):
         self.registo.append(("update_one", filtro, atualizacao))

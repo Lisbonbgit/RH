@@ -19,8 +19,14 @@ produto sem IVA e um tipo de pagamento ainda por mapear ao Vendus vêm na
 resposta, marcados e com a razão à vista, em vez de serem filtrados fora.
 Um botão que não existe não se explica a si próprio — a operadora ficava a
 olhar para uma grelha onde "falta um artigo" sem ter o que dizer ao gestor.
+
+A única excepção é deliberada, e vem contada: o produto de uma categoria
+desactivada não tem separador nenhum onde aparecer, por isso sai da lista
+`produtos` — mas sai dentro de `produtos_ocultos_categoria_inativa`, que é o
+que permite ao ecrã dizer quantos são e porquê (ver
+`_produtos_com_separador`).
 """
-from typing import Dict, List
+from typing import Dict, List, Set
 
 from fastapi import APIRouter, Depends
 
@@ -118,6 +124,42 @@ def _grupo_publico(grupo: Dict) -> Dict:
     }
 
 
+def _produtos_com_separador(produtos: List[Dict], ids_de_categoria: Set[str]) -> List[Dict]:
+    """Deixa passar só os produtos que têm um separador onde aparecer.
+
+    Os separadores do topo constroem-se a partir de `categorias`, e essa
+    lista traz só as activas — logo, um produto de uma categoria desactivada
+    não tem sítio nenhum na grelha. Antes vinha na resposta com tudo em
+    ordem (`vendavel: true`, `erros: []`) e o ecrã simplesmente não o
+    desenhava: o gestor desligava "Vendas Aplicações" sem tocar nos 12
+    artigos dela e os 12 sumiam do balcão sem marca e sem razão escrita.
+
+    Excluí-los é decisão, não acidente — foi o gestor que desligou a
+    categoria e essa escolha respeita-se. Mas nunca em silêncio: o que sai
+    daqui é contado em `produtos_ocultos_categoria_inativa` para o ecrã poder
+    dizer "3 artigos escondidos: a categoria está desactivada".
+
+    Isto NÃO é escrito nos `erros` do produto, de propósito. Essa lista é a
+    de `precos.erros_do_produto` e de mais ninguém — a mesma função que
+    `venda.py::juntar_linha` usa para recusar a linha com 422 e que alimenta
+    o ecrã "Produtos sem IVA" do backoffice. Uma segunda regra de "vendável"
+    escrita aqui era o princípio da divergência que este módulo existe para
+    evitar (ver `_produto_publico`).
+
+    O critério é "a categoria dele está entre as que ESTA resposta devolve",
+    e não "o documento da categoria tem ativa=False": é a lista dos
+    separadores que decide onde um artigo cabe, e reler as categorias
+    inactivas só para lhes confirmar o estado era uma segunda ida à base de
+    dados para chegar à mesma conclusão. Pela porta do backoffice, a
+    categoria desactivada é o único caminho até aqui
+    (`catalogo.py::_valida_referencias` recusa um produto sem categoria
+    existente, e `apagar_categoria` recusa apagar uma categoria que ainda tem
+    produtos); um órfão que apareça por outra via cai nesta mesma contagem —
+    contado é sempre melhor do que calado.
+    """
+    return [p for p in produtos if p.get("categoria_id") in ids_de_categoria]
+
+
 @router.get("/pos/catalogo")
 async def catalogo_do_pos(_: Dict = Depends(operador_atual)) -> dict:
     """Tudo o que a grelha precisa, num só pedido.
@@ -126,11 +168,13 @@ async def catalogo_do_pos(_: Dict = Depends(operador_atual)) -> dict:
     três idas ao servidor davam uma grelha a montar-se aos bocados (os
     separadores antes dos produtos, os produtos antes das personalizações).
 
-    Só o que está activo. O filtro vai dentro do próprio `find`, e não numa
-    lista por compreensão a seguir, porque o tecto do `to_list` conta
-    documentos LIDOS: com o catálogo cheio de artigos desactivados de anos
-    anteriores, filtrar depois deixava artigos ACTIVOS de fora do limite sem
-    nada a avisar.
+    Só o que está activo. O filtro do `ativo`/`ativa` vai dentro do próprio
+    `find`, e não numa lista por compreensão a seguir, porque o tecto do
+    `to_list` conta documentos LIDOS: com o catálogo cheio de artigos
+    desactivados de anos anteriores, filtrar depois deixava artigos ACTIVOS
+    de fora do limite sem nada a avisar. A única peneira feita depois é a
+    dos produtos sem separador (`_produtos_com_separador`), e só porque
+    depende das categorias que este mesmo pedido acabou de ler.
 
     Cuidado com o género do campo: a categoria tem `ativa` (ver
     `catalogo.py::CategoriaEntrada`), o produto e o grupo têm `ativo`.
@@ -161,10 +205,21 @@ async def catalogo_do_pos(_: Dict = Depends(operador_atual)) -> dict:
         .to_list(LIMITE_GRUPOS)
     )
 
+    categorias_publicas = [_categoria_publica(c) for c in categorias]
+    # Filtrado FORA do `find` (ao contrário do `ativo: True` acima) porque a
+    # categoria de um produto não se sabe sem a lista de categorias já lida —
+    # e porque o que decide é a lista que esta resposta devolve, não uma
+    # segunda consulta.
+    a_mostrar = _produtos_com_separador(produtos, {c["id"] for c in categorias_publicas})
+
     return {
-        "categorias": [_categoria_publica(c) for c in categorias],
-        "produtos": [_produto_publico(p) for p in produtos],
+        "categorias": categorias_publicas,
+        "produtos": [_produto_publico(p) for p in a_mostrar],
         "grupos_personalizacao": [_grupo_publico(g) for g in grupos],
+        # A contagem é o que separa esta regra de um desaparecimento em
+        # silêncio: sem ela, filtrar no servidor era exactamente o defeito
+        # que se está a corrigir, só que do outro lado do fio.
+        "produtos_ocultos_categoria_inativa": len(produtos) - len(a_mostrar),
     }
 
 

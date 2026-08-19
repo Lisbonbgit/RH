@@ -357,11 +357,24 @@ async def entrar(dados: PedidoEntrar, dispositivo: Dict = Depends(dispositivo_at
         raise HTTPException(status_code=401, detail=_MSG_PIN_INCORRECTO)
 
     agora = _agora()
+    # QUAL o PC — não só qual a loja. O token do operador é a única coisa que
+    # o POS envia em cada pedido, por isso é aqui que o dispositivo tem de
+    # viajar: sem ele, `GET /pos/venda/aberta` (venda.py) só sabia da sessão
+    # de caixa, e numa loja com UMA caixa e dois PCs emparelhados os dois
+    # recuperavam a MESMA conta — um cliente pagava o açaí do outro, o dia
+    # inteiro. Vem do `dispositivo_atual`, o documento do PC emparelhado,
+    # nunca de nada que o cliente escreva no corpo.
+    #
+    # `.get("id")`, não `["id"]`: um documento de dispositivo sem `id` (dados
+    # corrompidos, uma migração a meio) tem de deixar entrar na mesma — cair
+    # aqui num 500 fechava a loja à funcionária. Sem id, o token fica no
+    # mesmo âmbito dos tokens antigos (ver o filtro em venda.py::venda_aberta).
     payload = {
         "operador_id": operador["id"],
         "nome": operador.get("nome"),
         "perfil": operador.get("perfil"),
         "loja_id": loja_id,
+        "dispositivo_id": dispositivo.get("id"),
         "tipo": _TIPO_TOKEN_OPERADOR,
         "iat": int(agora.timestamp()),
         "exp": int((agora + timedelta(hours=_TTL_OPERADOR_HORAS)).timestamp()),

@@ -1,8 +1,10 @@
 """A conta do balcão (Plano 2B, Task 2) — fat_vendas.
 
 Mesmo padrão de duplo de base de dados que test_caixa_endpoints.py:
-find()/find_one() filtram de facto pelos campos do filtro. Nenhum teste liga
-a uma base de dados nem à rede.
+find()/find_one() filtram de facto pelos campos do filtro, e as leituras
+devolvem cópias como o Motor (ver `ColeccaoFalsa` — foi um aliasing aqui que
+pôs um teste do cancelamento a defender um defeito). Nenhum teste liga a uma
+base de dados nem à rede.
 
 A regra central deste ficheiro (repetida em vários testes, de propósito): os
 totais NUNCA são inventados aqui — são sempre a soma do que
@@ -19,6 +21,7 @@ fiscal.py, e essas duas só se encontram no router de faturacao/__init__.py.
 Continua tudo dentro do processo: nenhuma ligação sai daqui.
 """
 import asyncio
+from copy import deepcopy
 from datetime import datetime
 
 import pytest
@@ -92,22 +95,43 @@ class ResultadoUpdateFalso:
 
 
 class ColeccaoFalsa:
+    """Duplo de uma colecção Mongo. As leituras devolvem CÓPIAS, como o
+    Motor.
+
+    Devolver o próprio documento guardado (era o que este duplo fazia) cria
+    um aliasing que o Motor real não tem: ler com `find_one` e escrever com
+    `update_one` passavam a mexer no MESMO objecto, e o dicionário que o
+    código de produção tinha em mãos actualizava-se sozinho. Um teste que
+    lesse a resposta da rota ficava verde mesmo com a linha que a constrói
+    apagada — provado: sem o `venda.update(...)` de `cancelar_venda`, a
+    suite inteira continuava verde. Em produção, `find_one` devolve um
+    dicionário NOVO, descodificado do BSON, e essa resposta saía com
+    `estado: "aberta"` para uma conta acabada de cancelar.
+
+    Cópia PROFUNDA, não `dict(d)`: as linhas da venda vivem numa lista
+    aninhada, e uma cópia rasa deixava essa lista partilhada — o mesmo
+    aliasing, só que um nível mais abaixo. O `insert_one` guarda pela mesma
+    razão uma cópia: em produção o que fica gravado é BSON, e nada do que o
+    código de produção faça ao dicionário que inseriu volta a tocar-lhe."""
+
     def __init__(self, registo, documentos=None):
         self.registo = registo
         self._documentos = documentos if documentos is not None else []
 
     def find(self, filtro=None, projecao=None):
         self.registo.append(("find", filtro))
-        return CursorFalso([d for d in self._documentos if _corresponde(d, filtro)])
+        return CursorFalso(
+            [deepcopy(d) for d in self._documentos if _corresponde(d, filtro)]
+        )
 
     async def find_one(self, filtro, projecao=None):
         self.registo.append(("find_one", filtro))
         encontrados = [d for d in self._documentos if _corresponde(d, filtro)]
-        return encontrados[0] if encontrados else None
+        return deepcopy(encontrados[0]) if encontrados else None
 
     async def insert_one(self, doc):
         self.registo.append(("insert_one", dict(doc)))
-        self._documentos.append(doc)
+        self._documentos.append(deepcopy(doc))
         return None
 
     async def update_one(self, filtro, atualizacao):
@@ -126,12 +150,15 @@ class DbFalsa:
         return self._coleccoes.setdefault(nome, ColeccaoFalsa([]))
 
 
-def _db(registo, caixas=None, sessoes=None, vendas=None, produtos=None):
+def _db(registo, caixas=None, sessoes=None, vendas=None, produtos=None, refs=None):
     return DbFalsa({
         COLECOES["caixas"]: ColeccaoFalsa(registo, caixas),
         COLECOES["sessoes_caixa"]: ColeccaoFalsa(registo, sessoes),
         COLECOES["vendas"]: ColeccaoFalsa(registo, vendas),
         COLECOES["produtos"]: ColeccaoFalsa(registo, produtos),
+        # A reserva de emissão do fiscal.py — o cancelamento pergunta por
+        # ela antes de deitar uma conta fora.
+        COLECOES["refs_fiscais"]: ColeccaoFalsa(registo, refs),
     })
 
 
@@ -176,6 +203,21 @@ def _venda(**over):
     }
     v.update(over)
     return v
+
+
+def _reserva(**over):
+    """Uma reserva de emissão como `fiscal.py::_reservar` a insere.
+
+    A `ext_ref` está aqui só porque o documento real a tem: o que este
+    módulo lê é o `venda_id`, e é de propósito — a fórmula da ext_ref é a
+    chave da idempotência e não pode ter uma segunda fonte (nem no código,
+    nem num teste que a copiasse e a deixasse divergir em silêncio)."""
+    r = {
+        "id": "ref-1", "ext_ref": "pos-loja-1-sessao-1-venda-1",
+        "venda_id": "venda-1", "criado_em": "2026-08-15T09:06:00+00:00",
+    }
+    r.update(over)
+    return r
 
 
 def _linha(**over):
@@ -993,3 +1035,796 @@ def test_depois_de_cancelar_a_conta_deixa_de_ser_a_conta_em_curso(monkeypatch):
     _corre(cancelar_venda("venda-1", operador=_operador()))
 
     assert _corre(venda_aberta(caixa_id="caixa-1", operador=_operador())) is None
+
+
+# --- A conta é de UM PC, não da caixa toda -----------------------------------
+#
+# Uma loja com UMA caixa e dois PCs emparelhados (o `nome` do PedidoCodigo —
+# "PC Balcão", "PC Drive-Thru" — existe exactamente para isso, e
+# `caixa.estado_caixa` resolve automaticamente essa única caixa para os dois)
+# tinha `GET /pos/venda/aberta` com âmbito só na SESSÃO: os dois PCs
+# recuperavam a MESMA conta e um cliente pagava o açaí do outro. Não é uma
+# corrida de milissegundos — é o estado estável dessa configuração, o dia
+# inteiro. O `dispositivo_id` vem do token do operador (pos_auth.py::entrar),
+# nunca do corpo nem da query.
+
+
+def test_abrir_venda_carimba_o_dispositivo_que_vem_no_token(monkeypatch):
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    _corre(abrir_venda(
+        PedidoNovaVenda(caixa_id="caixa-1"),
+        operador=_operador(dispositivo_id="pc-balcao"),
+    ))
+    gravada = db._coleccoes[COLECOES["vendas"]]._documentos[0]
+    assert gravada["dispositivo_id"] == "pc-balcao"
+
+
+def test_abrir_venda_ignora_um_dispositivo_vindo_do_corpo():
+    """Mesmo raciocínio do operador e da sessão: `PedidoNovaVenda` não
+    declara `dispositivo_id`, por isso um PC que o mandasse no JSON não
+    conseguia carimbar a conta com o id de OUTRO posto — e ficar depois com
+    as contas dele."""
+    dados = PedidoNovaVenda.model_validate(
+        {"caixa_id": "caixa-1", "dispositivo_id": "pc-do-lado"}
+    )
+    assert not hasattr(dados, "dispositivo_id")
+
+
+def test_venda_aberta_nao_devolve_a_conta_do_outro_pc_da_mesma_caixa(monkeypatch):
+    """O defeito, exactamente como acontece na loja: mesma caixa, mesma
+    sessão, dois postos. A conta do PC do lado é deliberadamente a MAIS
+    RECENTE — sem o filtro por dispositivo é ela que o `.sort("criada_em",
+    -1)` traz primeiro, e o teste ficaria verde por acaso se fosse a mais
+    antiga."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()], vendas=[
+        _venda(id="v-balcao", dispositivo_id="pc-balcao",
+               criada_em="2026-08-15T09:00:00+00:00", linhas=[_linha()]),
+        _venda(id="v-drive", dispositivo_id="pc-drive",
+               criada_em="2026-08-15T11:00:00+00:00", linhas=[_linha()]),
+    ])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    no_balcao = _corre(venda_aberta(
+        caixa_id="caixa-1", operador=_operador(dispositivo_id="pc-balcao")
+    ))
+    assert no_balcao["id"] == "v-balcao", "o balcão apanhou a conta do drive-thru"
+
+    no_drive = _corre(venda_aberta(
+        caixa_id="caixa-1", operador=_operador(dispositivo_id="pc-drive")
+    ))
+    assert no_drive["id"] == "v-drive"
+
+
+def test_venda_aberta_num_pc_sem_conta_nenhuma_devolve_null(monkeypatch):
+    """O outro lado do mesmo filtro: o drive-thru ainda não picou nada, e o
+    que vê é uma caixa limpa — não a conta que o balcão tem a meio."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(id="v-balcao", dispositivo_id="pc-balcao", linhas=[_linha()])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    assert _corre(venda_aberta(
+        caixa_id="caixa-1", operador=_operador(dispositivo_id="pc-drive")
+    )) is None
+
+
+def test_venda_aberta_segue_o_mesmo_pc_quando_a_operadora_muda(monkeypatch):
+    """O caso legítimo que a docstring da rota defende desde sempre, e que o
+    âmbito por dispositivo NÃO pode partir: a Rafaela picou três artigos, a
+    tela de descanso caiu, e a Ana entrou com o PIN dela NO MESMO PC. A conta
+    tem de continuar lá — é o cliente que está à espera."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()], vendas=[
+        _venda(operador_id="op-1", dispositivo_id="pc-balcao", linhas=[_linha()]),
+    ])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    ana = _operador(operador_id="op-2", nome="Ana", dispositivo_id="pc-balcao")
+    resultado = _corre(venda_aberta(caixa_id="caixa-1", operador=ana))
+    assert resultado is not None, "a conta da Rafaela perdeu-se ao entrar a Ana no mesmo PC"
+    assert resultado["id"] == "venda-1"
+    assert resultado["operador_id"] == "op-1"
+
+
+def test_token_antigo_e_conta_antiga_encontram_se_e_nunca_cruzam_com_os_novos(monkeypatch):
+    """Os tokens emitidos ANTES desta alteração não trazem `dispositivo_id`,
+    e as contas abertas com eles não têm o campo. Filtrar por `None` casa, no
+    Mongo, com o campo AUSENTE e com o campo a `null` (é a semântica da
+    igualdade a null) — é isso que dispensa qualquer migração. Este teste
+    percorre os quatro cruzamentos em vez de o assumir; o duplo replica essa
+    semântica (`item.get(chave) == valor`, ver `_corresponde`).
+
+    O que estaria em jogo se fosse ao contrário: um token antigo a apanhar a
+    conta de um PC identificado seria o mesmo defeito de origem — e um token
+    novo a apanhar a conta órfã de antes do deploy punha a operadora a
+    facturar uma conta de outro posto, no dia da actualização."""
+    registo = []
+    # Uma conta SEM o campo (como as que ficaram abertas antes do deploy) e
+    # uma conta do PC identificado, na mesma sessão.
+    db_ausente = _db(registo, caixas=[_caixa()], sessoes=[_sessao()], vendas=[
+        _venda(id="v-antiga", linhas=[_linha()]),
+        _venda(id="v-nova", dispositivo_id="pc-balcao", linhas=[_linha()]),
+    ])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db_ausente)
+
+    # Token antigo → conta antiga (o campo AUSENTE casa com o filtro a None).
+    antigo = _corre(venda_aberta(caixa_id="caixa-1", operador=_operador()))
+    assert antigo is not None, "o token antigo deixou de encontrar a conta que já tinha"
+    assert antigo["id"] == "v-antiga"
+
+    # Token novo → só a conta do SEU PC, nunca a órfã de antes do deploy.
+    novo = _corre(venda_aberta(
+        caixa_id="caixa-1", operador=_operador(dispositivo_id="pc-balcao")
+    ))
+    assert novo["id"] == "v-nova"
+
+    # E um PC identificado que ainda não picou nada não herda as antigas.
+    outro = _corre(venda_aberta(
+        caixa_id="caixa-1", operador=_operador(dispositivo_id="pc-drive")
+    ))
+    assert outro is None
+
+    # A outra metade do "ausente OU nulo": o campo lá, a `null` — é o que
+    # fica gravado quando quem abre a conta traz um token sem dispositivo.
+    db_nulo = _db([], caixas=[_caixa()], sessoes=[_sessao()],
+                  vendas=[_venda(id="v-nula", dispositivo_id=None, linhas=[_linha()])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db_nulo)
+
+    nula = _corre(venda_aberta(caixa_id="caixa-1", operador=_operador()))
+    assert nula is not None, "o campo a null não casou com o filtro a None"
+    assert nula["id"] == "v-nula"
+    assert _corre(venda_aberta(
+        caixa_id="caixa-1", operador=_operador(dispositivo_id="pc-balcao")
+    )) is None
+
+
+# --- Cancelar com uma emissão pelo meio (fat_refs_fiscais) --------------------
+#
+# O `estado` da venda não chega para decidir um cancelamento: `fiscal.py`
+# reserva em `fat_refs_fiscais` ANTES de falar com o Vendus e só marca
+# `emitida` no fim. Entre as duas coisas — segundos à espera do Vendus, ou
+# horas se a reserva ficar `incerta` — a venda diz `aberta` e pode ter uma
+# Fatura Simplificada real a nascer do outro lado. Cancelá-la ali dizia à
+# operadora que a conta tinha sido deitada fora enquanto saía uma FS com
+# ATCUD (e ela voltava a picar tudo: duas faturas ao mesmo cliente), ou —
+# no caso da reserva incerta — apagava a única venda que ainda ligava o
+# dinheiro da gaveta a essa FS.
+
+
+class ColeccaoComCorridaDepoisDaEscrita(ColeccaoFalsa):
+    """A outra metade da corrida: o gancho corre DEPOIS do primeiro
+    `update_one` — é a única janela que a verificação feita ANTES da escrita
+    não fecha, e a razão de o cancelamento voltar a perguntar pela reserva
+    depois de escrever."""
+
+    def __init__(self, registo, documentos=None, depois_de_escrever=None):
+        super().__init__(registo, documentos)
+        self._depois_de_escrever = depois_de_escrever
+
+    async def update_one(self, filtro, atualizacao):
+        resultado = await super().update_one(filtro, atualizacao)
+        if self._depois_de_escrever is not None:
+            gancho, self._depois_de_escrever = self._depois_de_escrever, None
+            gancho(self._documentos)
+        return resultado
+
+
+def test_cancelar_venda_com_emissao_em_curso_e_recusado_409(monkeypatch):
+    """Cenário A: a operadora carregou em FINALIZAR, a emissão está à espera
+    da resposta do Vendus (a reserva já existe, a venda ainda diz `aberta`) e
+    ela carrega em Cancelar. Recusa — e nem uma escrita sai daqui."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[_linha()])], refs=[_reserva()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(cancelar_venda("venda-1", operador=_operador()))
+    assert excinfo.value.status_code == 409
+    # A mensagem tem de dizer o que fazer. Um "tente novamente" aqui era o
+    # pior conselho possível: mandava a operadora carregar outra vez no botão
+    # que não pode funcionar, com o cliente à frente.
+    assert "gestor" in excinfo.value.detail
+    assert "novamente" not in excinfo.value.detail
+    assert not any(chamada[0] == "update_one" for chamada in registo)
+    assert db._coleccoes[COLECOES["vendas"]]._documentos[0]["estado"] == "aberta"
+
+
+def test_cancelar_venda_com_reserva_incerta_e_recusado_409(monkeypatch):
+    """Cenário B, o pior: o Vendus deu timeout E a verificação também falhou
+    — a reserva ficou `incerta` e a venda ficou `aberta` (é o desenho, ver
+    VerificacaoFiscalIncerta em fiscal.py). É essa conta que
+    `GET /pos/venda/aberta` devolve como conta em curso.
+
+    Se a FS chegou mesmo a sair, cancelá-la deixava de existir do nosso lado
+    qualquer venda `emitida` a explicar o dinheiro: o Z fechava curto
+    (`caixa_math.soma_vendas_dinheiro` só soma as emitidas) e a reserva
+    incerta ficava presa para sempre, sem nada por onde a gestão a resolver
+    (a listagem de `/fiscal/reservas-incertas` liga-se às vendas pelo mesmo
+    `venda_id`)."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[_linha()])],
+             refs=[_reserva(incerta=True)])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(cancelar_venda("venda-1", operador=_operador()))
+    assert excinfo.value.status_code == 409
+    # Recusado ANTES de escrever, e não desfeito à posteriori pela
+    # compensação: a compensação é uma rede para a corrida, não o caminho
+    # normal — e no desfecho em que a venda já ficou `emitida` ela não pode
+    # (nem deve) tocar-lhe.
+    assert not any(chamada[0] == "update_one" for chamada in registo)
+    assert db._coleccoes[COLECOES["vendas"]]._documentos[0]["estado"] == "aberta"
+
+
+def test_cancelar_venda_ignora_a_reserva_de_outra_venda(monkeypatch):
+    """A pergunta é pelo `venda_id` desta conta — não "há alguma reserva".
+    Basta uma venda a ser emitida na caixa do lado para, com a pergunta
+    errada, nenhuma conta do dia se conseguir cancelar."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[_linha()])],
+             refs=[_reserva(id="ref-2", venda_id="venda-2",
+                            ext_ref="pos-loja-1-sessao-1-venda-2")])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(cancelar_venda("venda-1", operador=_operador()))
+    assert resultado["estado"] == "cancelada"
+
+
+def test_reserva_que_aparece_depois_da_escrita_desfaz_o_cancelamento(monkeypatch):
+    """A janela que a verificação de cima não fecha: entre ela e o `$set`, o
+    `finalizar` reservou. O cancelamento pergunta OUTRA VEZ depois de
+    escrever e compensa — a conta volta a `aberta`, sem carimbos de
+    cancelamento, e a operadora ouve o mesmo 409 em vez de um "cancelada"
+    que era mentira."""
+    registo = []
+    venda = _venda(linhas=[_linha()])
+    refs = []
+
+    def reserva_entretanto(_documentos):
+        refs.append(_reserva())
+
+    db = DbFalsa({
+        COLECOES["vendas"]: ColeccaoComCorridaDepoisDaEscrita(
+            registo, [venda], reserva_entretanto
+        ),
+        COLECOES["refs_fiscais"]: ColeccaoFalsa(registo, refs),
+    })
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(cancelar_venda("venda-1", operador=_operador()))
+    assert excinfo.value.status_code == 409
+    assert "gestor" in excinfo.value.detail
+    assert venda["estado"] == "aberta", "a conta ficou cancelada com uma emissão a decorrer"
+    assert venda["cancelada_em"] is None
+    assert venda["cancelada_por"] is None
+
+
+def test_a_compensacao_nunca_toca_numa_venda_ja_emitida(monkeypatch):
+    """A mesma corrida, no desfecho mais perigoso: entre o nosso `$set` e a
+    segunda pergunta, o `fiscal.py::_gravar_documento` gravou a FS e pôs a
+    venda `emitida` — e o $set DELE não tem condição de estado nenhuma, por
+    isso cai por cima do nosso "cancelada".
+
+    A compensação é condicionada a {"estado": "cancelada"}: aqui não casa, e
+    não lhe toca. Incondicional, ressuscitava como `aberta` uma venda com
+    Fatura Simplificada real e ATCUD — que desaparecia do Z
+    (`soma_vendas_dinheiro` só soma as emitidas) e ficava a convidar a
+    operadora a facturá-la outra vez."""
+    registo = []
+    venda = _venda(linhas=[_linha()])
+    refs = []
+
+    def emite_e_reserva(documentos):
+        documentos[0]["estado"] = "emitida"
+        documentos[0]["documento_id"] = "doc-1"
+        refs.append(_reserva())
+
+    db = DbFalsa({
+        COLECOES["vendas"]: ColeccaoComCorridaDepoisDaEscrita(
+            registo, [venda], emite_e_reserva
+        ),
+        COLECOES["refs_fiscais"]: ColeccaoFalsa(registo, refs),
+    })
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(cancelar_venda("venda-1", operador=_operador()))
+    assert excinfo.value.status_code == 409
+    assert venda["estado"] == "emitida", "a compensação ressuscitou uma venda com FS real"
+    assert venda["documento_id"] == "doc-1"
+
+
+# --- Quem cancelou -------------------------------------------------------------
+
+
+def test_cancelar_grava_quem_cancelou_e_nao_quem_abriu(monkeypatch):
+    """O único nome na venda era o `operador_id` de quem a ABRIU: a Rafaela
+    abre e pica 24 €, a Ana entra com o PIN dela e cancela, e ficava lá o
+    nome da Rafaela. A atribuição não estava só ausente — estava ERRADA, e no
+    vector de fraude mais banal que há ao balcão (picar, receber o dinheiro,
+    cancelar a conta), num módulo cujo pos_auth.py existe precisamente para
+    nenhuma venda entrar na caixa sem dono.
+
+    O carimbo é o mesmo `_quem` do resto do módulo (caixa.py: `aberta_por`,
+    `fechada_por`, o `por` dos movimentos), reutilizado e não reescrito."""
+    registo = []
+    db = _db(registo, vendas=[_venda(operador_id="op-1", linhas=[_linha()])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    ana = _operador(operador_id="op-2", nome="Ana")
+    resultado = _corre(cancelar_venda("venda-1", operador=ana))
+
+    gravada = db._coleccoes[COLECOES["vendas"]]._documentos[0]
+    assert gravada["cancelada_por"] == {"id": "op-2", "nome": "Ana"}
+    assert gravada["operador_id"] == "op-1", "quem picou a conta não se perde"
+    # E chega mesmo ao ecrã: um `cancelada_em` escrito e nunca lido por
+    # ninguém é um dado cego — é a primeira coisa que se pergunta quando
+    # falta dinheiro na gaveta ao fim do dia.
+    assert resultado["cancelada_por"] == {"id": "op-2", "nome": "Ana"}
+    assert resultado["cancelada_em"] == gravada["cancelada_em"]
+
+
+def test_conta_por_cancelar_mostra_os_dois_campos_a_none(monkeypatch):
+    """Os campos existem SEMPRE na resposta, mesmo na esmagadora maioria das
+    contas que nunca foram canceladas — o ecrã não tem de adivinhar se a
+    ausência da chave quer dizer "não cancelada" ou "versão antiga da API"."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(linhas=[_linha()])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(venda_aberta(caixa_id="caixa-1", operador=_operador()))
+    assert resultado["cancelada_em"] is None
+    assert resultado["cancelada_por"] is None
+
+
+# --- Uma venda com reserva fiscal fica CONGELADA -------------------------------
+#
+# Não era só o cancelamento a decidir por `_garante_aberta`: `juntar_linha`,
+# `editar_linha`, `remover_linha` e `aplicar_desconto_global` decidiam TODAS
+# só por ele — o critério que a docstring de `_tem_reserva_fiscal` declara
+# insuficiente. O estrago, reproduzido em processo antes desta correcção: o
+# Vendus dá timeout, a verificação também falha, a reserva fica `incerta` e a
+# venda fica `aberta` (é o desenho); a FS de 8,99 € até pode ter saído. A
+# conta continua no ecrã, aceita um segundo açaí (201) e um desconto de 10 %
+# (200), e mais tarde a retoma encontra o documento original e liga-lhe a
+# venda: fica no sistema uma venda emitida de 16,18 € contra um documento
+# fiscal de 8,99 €. O Z não apanha (soma os `pagamentos`, não os `_totais`) e
+# a divergência não aparece em lado nenhum.
+
+
+def _db_congelada(registo, **over):
+    """Uma conta com uma linha e uma reserva de emissão a pairar sobre ela."""
+    argumentos = {
+        "caixas": [_caixa()], "sessoes": [_sessao()], "produtos": [_produto()],
+        "vendas": [_venda(linhas=[_linha()])], "refs": [_reserva()],
+    }
+    argumentos.update(over)
+    return _db(registo, **argumentos)
+
+
+def _escritas(registo):
+    return [chamada for chamada in registo if chamada[0] == "update_one"]
+
+
+def test_juntar_linha_com_reserva_fiscal_e_recusado_409(monkeypatch):
+    registo = []
+    db = _db_congelada(registo)
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(juntar_linha("venda-1", PedidoJuntarLinha(produto_id="prod-1"), operador=_operador()))
+    assert excinfo.value.status_code == 409
+    assert "gestor" in excinfo.value.detail
+    assert _escritas(registo) == []
+    assert len(db._coleccoes[COLECOES["vendas"]]._documentos[0]["linhas"]) == 1
+
+
+def test_editar_linha_com_reserva_fiscal_e_recusado_409(monkeypatch):
+    registo = []
+    db = _db_congelada(registo)
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(editar_linha(
+            "venda-1", "linha-1", PedidoEditarLinha(quantidade=5), operador=_operador()
+        ))
+    assert excinfo.value.status_code == 409
+    assert "gestor" in excinfo.value.detail
+    assert _escritas(registo) == []
+    assert db._coleccoes[COLECOES["vendas"]]._documentos[0]["linhas"][0]["quantidade"] == 1
+
+
+def test_remover_linha_com_reserva_fiscal_e_recusado_409(monkeypatch):
+    registo = []
+    db = _db_congelada(registo)
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(remover_linha("venda-1", "linha-1", operador=_operador()))
+    assert excinfo.value.status_code == 409
+    assert "gestor" in excinfo.value.detail
+    assert _escritas(registo) == []
+    assert len(db._coleccoes[COLECOES["vendas"]]._documentos[0]["linhas"]) == 1
+
+
+def test_aplicar_desconto_global_com_reserva_fiscal_e_recusado_409(monkeypatch):
+    """O caso exacto do guião de reprodução: 10 % de desconto sobre uma conta
+    cuja fatura pode já ter saído."""
+    registo = []
+    db = _db_congelada(registo)
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(aplicar_desconto_global(
+            "venda-1", PedidoDescontoGlobal(desconto_pct=10), operador=_operador()
+        ))
+    assert excinfo.value.status_code == 409
+    assert "gestor" in excinfo.value.detail
+    assert _escritas(registo) == []
+    assert db._coleccoes[COLECOES["vendas"]]._documentos[0]["desconto_global_pct"] is None
+
+
+def test_reserva_incerta_congela_as_rotas_de_escrita_tal_como_a_reserva_normal(monkeypatch):
+    """O pior caso (o do guião): a reserva ficou `incerta` — a FS pode ter
+    saído mesmo — e a conta continua `aberta` a ser servida no ecrã."""
+    registo = []
+    db = _db_congelada(registo, refs=[_reserva(incerta=True)])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(juntar_linha("venda-1", PedidoJuntarLinha(produto_id="prod-1"), operador=_operador()))
+    assert excinfo.value.status_code == 409
+
+
+def test_a_reserva_de_outra_venda_nao_congela_esta_conta(monkeypatch):
+    """A pergunta é pelo `venda_id` desta conta — não "há alguma reserva".
+    Com a pergunta errada, bastava uma venda a ser emitida na caixa do lado
+    para nenhuma conta da loja aceitar mais nada: o balcão inteiro parava de
+    cada vez que alguém finalizasse."""
+    registo = []
+    db = _db_congelada(registo, refs=[
+        _reserva(id="ref-2", venda_id="venda-2", ext_ref="pos-loja-1-sessao-1-venda-2")
+    ])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    op = _operador()
+
+    assert len(_corre(juntar_linha(
+        "venda-1", PedidoJuntarLinha(produto_id="prod-1"), operador=op
+    ))["linhas"]) == 2
+    assert _corre(editar_linha(
+        "venda-1", "linha-1", PedidoEditarLinha(quantidade=3), operador=op
+    ))["linhas"][0]["quantidade"] == 3
+    assert _corre(aplicar_desconto_global(
+        "venda-1", PedidoDescontoGlobal(desconto_pct=10), operador=op
+    ))["desconto_global_pct"] == 10
+    assert _corre(remover_linha("venda-1", "linha-1", operador=op))["linhas"] != []
+
+
+# --- O travão, visto pelo ecrã: `emissao_por_confirmar` ------------------------
+#
+# Até aqui o POS só sabia da emissão por confirmar pelo 503 que tinha acabado
+# de receber, e essa memória vivia no browser: um F5, a tela de descanso ou o
+# browser a ir abaixo apagavam-na e a conta voltava a parecer normal. Agora o
+# estado vem do SERVIDOR, em todas as respostas de venda.
+
+
+def test_conta_recuperada_avisa_que_a_emissao_esta_por_confirmar(monkeypatch):
+    """`GET /pos/venda/aberta` é por onde o ecrã recupera a conta depois da
+    tela de descanso — é a resposta que TEM de trazer o travão."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(linhas=[_linha()])], refs=[_reserva(incerta=True)])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(venda_aberta(caixa_id="caixa-1", operador=_operador()))
+    assert resultado["emissao_por_confirmar"] is True
+
+
+def test_conta_recuperada_sem_reserva_nenhuma_nao_mostra_travao(monkeypatch):
+    """A esmagadora maioria das contas. Um travão que aparecesse sempre era
+    igualmente inútil — e pior, ensinava a operadora a ignorá-lo."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(linhas=[_linha()])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(venda_aberta(caixa_id="caixa-1", operador=_operador()))
+    assert resultado["emissao_por_confirmar"] is False
+
+
+def test_travao_ignora_a_reserva_de_outra_venda(monkeypatch):
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(linhas=[_linha()])],
+             refs=[_reserva(id="ref-2", venda_id="venda-2",
+                            ext_ref="pos-loja-1-sessao-1-venda-2")])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    assert _corre(venda_aberta(caixa_id="caixa-1", operador=_operador()))[
+        "emissao_por_confirmar"] is False
+
+
+def test_venda_emitida_nao_conta_como_emissao_por_confirmar(monkeypatch):
+    """A reserva de uma venda emitida NÃO desaparece — é ela que sustenta a
+    idempotência. Sem esta condição, toda a conta que correu bem ficava para
+    sempre marcada como "por confirmar"."""
+    registo = []
+    db = _db(registo, vendas=[_venda(estado="emitida", linhas=[_linha()])], refs=[_reserva()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    emitida = db._coleccoes[COLECOES["vendas"]]._documentos[0]
+    assert _corre(venda_mod._emissao_por_confirmar(db, emitida)) is False
+
+
+def test_o_campo_vem_sempre_na_resposta_das_rotas_de_venda(monkeypatch):
+    """Presente SEMPRE, mesmo a `False` (mesma regra de `cancelada_em`): o
+    ecrã não pode ter de adivinhar se a ausência da chave quer dizer "não há
+    emissão pendente" ou "versão antiga da API"."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(linhas=[_linha()])], produtos=[_produto()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    op = _operador()
+
+    respostas = [
+        _corre(abrir_venda(PedidoNovaVenda(caixa_id="caixa-1"), operador=op)),
+        _corre(juntar_linha("venda-1", PedidoJuntarLinha(produto_id="prod-1"), operador=op)),
+        _corre(editar_linha("venda-1", "linha-1", PedidoEditarLinha(quantidade=2), operador=op)),
+        _corre(aplicar_desconto_global(
+            "venda-1", PedidoDescontoGlobal(desconto_eur=1.0), operador=op)),
+        _corre(remover_linha("venda-1", "linha-1", operador=op)),
+        _corre(cancelar_venda("venda-1", operador=op)),
+    ]
+    for resposta in respostas:
+        assert resposta["emissao_por_confirmar"] is False, resposta["id"]
+
+
+# --- A ESCRITA das quatro rotas também é condicional --------------------------
+#
+# As cinco rotas de escrita tinham todas a PERGUNTA (`_garante_sem_emissao`);
+# só o `cancelar_venda` tinha também a escrita CONDICIONADA a
+# {"estado": "aberta"} + matched_count — "é o matched_count, não a leitura de
+# cima, que decide esta corrida", diz o comentário do próprio ficheiro. As
+# outras quatro escreviam `update_one({"id": venda_id}, ...)` sem condição
+# nenhuma, e entre a pergunta e a escrita ainda há `await`s (o `find_one` do
+# produto, o I/O da própria escrita). Reproduzido em processo, com a emissão
+# a correr INTEIRA nessa janela: `FINALIZAR -> 200 documento FS 2026/1 total
+# 8.99 €` e a seguir `JUNTAR LINHA (a chegar atrasado) -> 201, sem erro
+# nenhum` — ficava no Mongo uma venda `emitida` com 2 linhas e 17,98 € contra
+# um documento fiscal REAL de 8,99 €.
+
+
+class ColeccaoComEmissaoAntesDaEscrita(ColeccaoFalsa):
+    """A emissão cabe entre a pergunta e a escrita: este duplo é a colecção
+    das RESERVAS, e corre o gancho logo depois de responder à pergunta de
+    `_garante_sem_emissao` — que é o último `await` antes da escrita nas
+    quatro rotas."""
+
+    def __init__(self, registo, documentos=None, depois_de_responder=None):
+        super().__init__(registo, documentos)
+        self._depois_de_responder = depois_de_responder
+
+    async def find_one(self, filtro, projecao=None):
+        resposta = await super().find_one(filtro, projecao)
+        if self._depois_de_responder is not None:
+            gancho, self._depois_de_responder = self._depois_de_responder, None
+            gancho()
+        return resposta
+
+
+def _db_com_emissao_a_meio(registo, venda):
+    """A conta ainda `aberta` quando a rota a lê; `emitida`, com uma FS real
+    de 8,99 €, quando a rota vai escrever."""
+
+    def emite_entretanto():
+        venda["estado"] = "emitida"
+        venda["documento_id"] = "doc-1"
+
+    return DbFalsa({
+        COLECOES["caixas"]: ColeccaoFalsa(registo, [_caixa()]),
+        COLECOES["sessoes_caixa"]: ColeccaoFalsa(registo, [_sessao()]),
+        COLECOES["vendas"]: ColeccaoFalsa(registo, [venda]),
+        COLECOES["produtos"]: ColeccaoFalsa(registo, [_produto()]),
+        COLECOES["refs_fiscais"]: ColeccaoComEmissaoAntesDaEscrita(
+            registo, [], emite_entretanto
+        ),
+    })
+
+
+def test_juntar_linha_que_chega_atrasado_a_uma_venda_ja_emitida_e_recusado(monkeypatch):
+    registo = []
+    venda = _venda(linhas=[_linha()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: _db_com_emissao_a_meio(registo, venda))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(juntar_linha("venda-1", PedidoJuntarLinha(produto_id="prod-1"),
+                            operador=_operador()))
+
+    assert excinfo.value.status_code == 409
+    assert len(venda["linhas"]) == 1, (
+        "venda emitida ficou com 2 linhas contra um documento fiscal de 1"
+    )
+    assert venda["estado"] == "emitida"
+
+
+def test_editar_linha_que_chega_atrasado_a_uma_venda_ja_emitida_e_recusado(monkeypatch):
+    registo = []
+    venda = _venda(linhas=[_linha()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: _db_com_emissao_a_meio(registo, venda))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(editar_linha("venda-1", "linha-1", PedidoEditarLinha(quantidade=5),
+                            operador=_operador()))
+
+    assert excinfo.value.status_code == 409
+    assert venda["linhas"][0]["quantidade"] == 1, (
+        "a quantidade da linha mudou por baixo de uma Fatura Simplificada real"
+    )
+
+
+def test_remover_linha_que_chega_atrasado_a_uma_venda_ja_emitida_e_recusado(monkeypatch):
+    registo = []
+    venda = _venda(linhas=[_linha()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: _db_com_emissao_a_meio(registo, venda))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(remover_linha("venda-1", "linha-1", operador=_operador()))
+
+    assert excinfo.value.status_code == 409
+    assert len(venda["linhas"]) == 1, "a linha faturada desapareceu da venda emitida"
+
+
+def test_desconto_global_que_chega_atrasado_a_uma_venda_ja_emitida_e_recusado(monkeypatch):
+    registo = []
+    venda = _venda(linhas=[_linha()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: _db_com_emissao_a_meio(registo, venda))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(aplicar_desconto_global("venda-1", PedidoDescontoGlobal(desconto_pct=10),
+                                       operador=_operador()))
+
+    assert excinfo.value.status_code == 409
+    assert venda["desconto_global_pct"] is None, (
+        "entrou um desconto numa venda com Fatura Simplificada real já emitida"
+    )
+
+
+def test_as_quatro_rotas_continuam_a_escrever_quando_a_venda_esta_mesmo_aberta(monkeypatch):
+    """O contrapeso da condição: sem ele, uma condição errada (ou um
+    matched_count mal lido) trancava o balcão inteiro em silêncio."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()], produtos=[_produto()],
+             vendas=[_venda(linhas=[_linha()])], refs=[])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    guardada = db._coleccoes[COLECOES["vendas"]]._documentos[0]
+
+    _corre(juntar_linha("venda-1", PedidoJuntarLinha(produto_id="prod-1"),
+                        operador=_operador()))
+    assert len(guardada["linhas"]) == 2
+
+    _corre(editar_linha("venda-1", "linha-1", PedidoEditarLinha(quantidade=3),
+                        operador=_operador()))
+    assert guardada["linhas"][0]["quantidade"] == 3
+
+    _corre(aplicar_desconto_global("venda-1", PedidoDescontoGlobal(desconto_pct=10),
+                                   operador=_operador()))
+    assert guardada["desconto_global_pct"] == 10
+
+    _corre(remover_linha("venda-1", "linha-1", operador=_operador()))
+    assert len(guardada["linhas"]) == 1
+
+
+# --- O 409 do cancelamento descreve o estado do MOMENTO -----------------------
+#
+# A3: o cancelar escreve `cancelada`, a releitura do `finalizar` vê-a, liberta
+# a reserva e aborta sem emitir, e a compensação repõe `aberta`. A conta acaba
+# `aberta`, sem reserva e sem emissão nenhuma — e a operadora ouvia "esta conta
+# tem uma emissão de fatura em curso... Chame o gestor". Bastava voltar a
+# carregar em Cancelar.
+
+
+class RefsQueDesaparecemDepoisDaPergunta(ColeccaoFalsa):
+    """A reserva existe quando o cancelamento pergunta por ela (depois de
+    escrever) e já não existe quando a mensagem é composta — que é
+    exactamente o que acontece quando a emissão aborta e a liberta."""
+
+    def __init__(self, registo, documentos=None):
+        super().__init__(registo, documentos)
+        self.perguntas = 0
+
+    async def find_one(self, filtro, projecao=None):
+        resposta = await super().find_one(filtro, projecao)
+        self.perguntas += 1
+        if self.perguntas == 2:  # a segunda pergunta: a de DEPOIS da escrita
+            del self._documentos[:]
+        return resposta
+
+
+def test_cancelamento_abortado_sem_emissao_nao_manda_chamar_o_gestor(monkeypatch):
+    """A conta ficou `aberta`, sem reserva e sem fatura nenhuma: mandar
+    chamar o gestor a uma loja cheia por causa disto é o mesmo erro que dizer
+    "tente novamente" onde não se pode tentar — só que ao contrário."""
+    registo = []
+    venda = _venda(linhas=[_linha()])
+    db = DbFalsa({
+        COLECOES["vendas"]: ColeccaoComCorridaDepoisDaEscrita(
+            registo, [venda], lambda _docs: refs._documentos.append(_reserva())
+        ),
+        COLECOES["refs_fiscais"]: RefsQueDesaparecemDepoisDaPergunta(registo, []),
+    })
+    refs = db._coleccoes[COLECOES["refs_fiscais"]]
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(cancelar_venda("venda-1", operador=_operador()))
+
+    assert excinfo.value.status_code == 409
+    assert "gestor" not in excinfo.value.detail
+    assert "NÃO saiu nenhuma Fatura" in excinfo.value.detail
+    assert "Carregue em Cancelar outra vez" in excinfo.value.detail
+    # E a conta está mesmo como a mensagem diz: aberta, sem carimbos.
+    assert venda["estado"] == "aberta"
+    assert venda["cancelada_em"] is None
+
+
+def test_cancelamento_que_perdeu_para_uma_emissao_diz_que_a_fatura_saiu(monkeypatch):
+    """O desfecho oposto, e a mensagem também: a venda ficou `emitida` com
+    uma FS real. "Chame o gestor" não descreve isto — o que a operadora
+    precisa de saber é que a fatura SAIU e que se corrige com nota de
+    crédito."""
+    registo = []
+    venda = _venda(linhas=[_linha()])
+    refs = []
+
+    def emite_e_reserva(documentos):
+        documentos[0]["estado"] = "emitida"
+        documentos[0]["documento_id"] = "doc-1"
+        refs.append(_reserva())
+
+    db = DbFalsa({
+        COLECOES["vendas"]: ColeccaoComCorridaDepoisDaEscrita(
+            registo, [venda], emite_e_reserva
+        ),
+        COLECOES["refs_fiscais"]: ColeccaoFalsa(registo, refs),
+    })
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(cancelar_venda("venda-1", operador=_operador()))
+
+    assert excinfo.value.status_code == 409
+    assert "nota de crédito" in excinfo.value.detail
+    assert venda["estado"] == "emitida"
+
+
+def test_cancelamento_com_a_emissao_ainda_viva_continua_a_mandar_chamar_o_gestor(monkeypatch):
+    """O caso em que o gestor faz mesmo falta — a reserva continua lá, não se
+    sabe se a FS saiu — tem de continuar a dizer o que sempre disse."""
+    registo = []
+    venda = _venda(linhas=[_linha()])
+    refs = []
+
+    def reserva_entretanto(_documentos):
+        refs.append(_reserva())
+
+    db = DbFalsa({
+        COLECOES["vendas"]: ColeccaoComCorridaDepoisDaEscrita(
+            registo, [venda], reserva_entretanto
+        ),
+        COLECOES["refs_fiscais"]: ColeccaoFalsa(registo, refs),
+    })
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(cancelar_venda("venda-1", operador=_operador()))
+
+    assert excinfo.value.status_code == 409
+    assert "gestor" in excinfo.value.detail
+    assert venda["estado"] == "aberta"
