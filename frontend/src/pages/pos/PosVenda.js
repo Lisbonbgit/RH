@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import PosDialogoProduto from './PosDialogoProduto';
 import PosFinalizar from './PosFinalizar';
-import { errosDeSelecao, resumoDaSelecao } from './PosPersonalizacoes';
+import PosPedidoGuiado, { resumoDoPedido } from './PosPedidoGuiado';
 import {
   getCatalogoPos, getTiposPagamentoPos, getVendaAberta, obterVenda, abrirVenda, juntarLinha,
   editarLinha, removerLinha, aplicarDescontoGlobal, cancelarVenda, finalizarVenda,
@@ -477,10 +477,12 @@ function AvisoContaDeLado({ conta, aPerguntar, onPerguntar }) {
 
 function LinhaDaConta({ linha, onTocar, travada }) {
   const { unitario, total, desconto } = contasDaLinha(linha);
-  // A MESMA ordem e o mesmo separador que `precos.linha_de_venda` usa no
-  // título que sai no talão — o ecrã e o papel nunca lêem a linha por ordens
-  // diferentes.
-  const opcoes = resumoDaSelecao(linha.opcoes);
+  // O pedido em duas frases: o serviço e o nome numa (`Levar · Maria`), as
+  // escolhas com as doses noutra (`Nutella 2× · Leite condensado 1×`). É o que
+  // a operadora confere com o cliente antes de finalizar, e é lido pela MESMA
+  // regra do papel da cozinha (`talao.pedido_da_cozinha`) — o ecrã e o papel
+  // nunca dizem a mesma linha por ordens diferentes.
+  const { servico, escolhas } = resumoDoPedido(linha);
 
   // Travada, a linha continua a LER-SE exactamente como está (é a conta que o
   // gestor vai ter de olhar, e apagá-la não ajudava ninguém) — o que
@@ -498,7 +500,8 @@ function LinhaDaConta({ linha, onTocar, travada }) {
     >
       <div className="min-w-0">
         <p className="font-medium leading-tight">{linha.produto_nome}</p>
-        {opcoes && <p className="text-xs text-muted-foreground leading-snug mt-0.5">{opcoes}</p>}
+        {servico && <p className="text-xs text-muted-foreground leading-snug mt-0.5">{servico}</p>}
+        {escolhas && <p className="text-xs text-muted-foreground leading-snug mt-0.5">{escolhas}</p>}
         <p className="text-xs text-muted-foreground mt-0.5 tabular-nums">
           {euros(unitario)} cada
           {desconto > 0 && ` · desconto ${euros(desconto)}`}
@@ -712,6 +715,11 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
   // linha só.
   const [vista, setVista] = useState('conta');
   const [emEdicao, setEmEdicao] = useState(null); // { produtoId, linhaId | null }
+  // O pedido guiado é um pop-up POR CIMA de tudo, e não uma vista — guarda o
+  // produto e os grupos que lhe deram origem, não ids: os grupos vêm do
+  // catálogo, que é lido uma vez por caixa, e a conversa que já está aberta
+  // não pode mudar de passos a meio se alguma coisa o recarregar.
+  const [pedidoGuiado, setPedidoGuiado] = useState(null); // { produto, grupos, linha | null }
   const [aGravar, setAGravar] = useState(false);
 
   const [aEmitir, setAEmitir] = useState(false);
@@ -1009,6 +1017,11 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
       const { data } = await juntarLinha(alvo.id, { produto_id: produto.id, ...dados });
       aplicarVenda(data);
       setEmEdicao(null);
+      // Só AQUI, depois de o servidor ter aceite a linha: fechar o pedido
+      // guiado ao carregar em Gravar deitava fora tudo o que a operadora tinha
+      // montado se a chamada falhasse, e obrigava-a a repetir a conversa toda
+      // com o cliente à frente.
+      setPedidoGuiado(null);
     } catch (error) {
       falhou(error, 'Não foi possível juntar o produto à conta.');
     }
@@ -1021,15 +1034,11 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
       );
       return;
     }
-    // Com uma escolha obrigatória por fazer, abre-se o diálogo em vez de
-    // juntar logo (é o que o plano manda). O critério é a MESMA função que o
-    // diálogo usa para decidir se abre já no painel dos toppings, e não uma
-    // leitura própria do `min_select` — assim nunca há um produto que este
-    // ecrã junta directamente e que o diálogo recusaria a seguir.
-    if (errosDeSelecao(gruposDoProduto(produto), []).length > 0) {
-      setEmEdicao({ produtoId: produto.id, linhaId: null });
-      return;
-    }
+    // Um produto COM grupos abre o pedido guiado; sem grupos vai direito para a
+    // conta, como sempre foi. É a atribuição dos grupos no backoffice — e nada
+    // no código — que decide quais os artigos que abrem a conversa ao balcão.
+    const grupos = gruposDoProduto(produto);
+    if (grupos.length > 0) { setPedidoGuiado({ produto, grupos, linha: null }); return; }
     juntarProduto(produto, { quantidade: 1, opcoes: [] });
   }, [gruposDoProduto, juntarProduto]);
 
@@ -1042,6 +1051,7 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
           const { data } = await editarLinha(vendaRef.current.id, linha.id, dados);
           aplicarVenda(data);
           setEmEdicao(null);
+          setPedidoGuiado(null);
         } catch (error) {
           falhou(error, 'Não foi possível gravar esta linha.');
         } finally {
@@ -1052,6 +1062,18 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
     }
     juntarProduto(produto, dados).then(terminar, terminar);
   }, [executar, aplicarVenda, falhou, juntarProduto]);
+
+  // O que o pedido guiado devolve são só os dois campos do PEDIDO. Numa linha
+  // que já está na conta é isso e nada mais que viaja: o `PedidoEditarLinha`
+  // lê-se com `exclude_unset`, e mandar-lhe aqui um `quantidade: 1` de cortesia
+  // repunha a 1 uma linha que a operadora tinha posto a 3, sem ninguém pedir.
+  const gravarPedidoGuiado = useCallback(({ opcoes, respostas_texto }) => {
+    if (!pedidoGuiado) return;
+    const { produto, linha } = pedidoGuiado;
+    gravarLinha(produto, linha, linha
+      ? { opcoes, respostas_texto }
+      : { quantidade: 1, opcoes, respostas_texto });
+  }, [pedidoGuiado, gravarLinha]);
 
   const removerDaConta = useCallback((linha) => executar(async () => {
     try {
@@ -1677,6 +1699,28 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
           />
         )}
       </aside>
+
+      {/* Fora do <aside> de propósito: o pedido guiado FLUTUA por cima do ecrã
+          inteiro, com a grelha e a conta à vista por trás — ao contrário do
+          diálogo do produto, que substitui o painel direito.
+
+          A `key` é o que impede o estado de sobreviver a uma troca de produto
+          ou de linha. Hoje o pop-up desmonta-se sempre entre pedidos e o
+          estado morre com ele; mas quem lhe trocar o produto por baixo SEM o
+          fechar — que é o que corrigir uma linha vai fazer — encontrava lá os
+          toppings do pedido anterior. É o mesmo defeito que o
+          PosDialogoProduto teve de resolver à mão com o `arranque`. */}
+      {pedidoGuiado && (
+        <PosPedidoGuiado
+          key={`${pedidoGuiado.produto?.id || ''}|${pedidoGuiado.linha?.id || ''}`}
+          produto={pedidoGuiado.produto}
+          grupos={pedidoGuiado.grupos}
+          linha={pedidoGuiado.linha}
+          aGravar={aGravar}
+          onGravar={gravarPedidoGuiado}
+          onFechar={() => setPedidoGuiado(null)}
+        />
+      )}
 
       <AlertDialog open={aConfirmarCancelar} onOpenChange={setAConfirmarCancelar}>
         <AlertDialogContent>
