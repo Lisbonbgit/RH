@@ -455,7 +455,21 @@ def _itens_vendus(venda: Dict) -> List[Dict]:
     for li, bruto, liquido_apos_propria, parte_global in zip(
         linhas_vendus, brutos, liquidos_apos_linha, partes_globais
     ):
-        item = {chave: li[chave] for chave in ("title", "qty", "gross_price", "tax_id") if chave in li}
+        # Esta lista é branca: o que não estiver nela NÃO sai para o Vendus,
+        # por muito que `precos.linha_de_venda` o produza. O `id` (o id do
+        # produto no Vendus, ver `precos.id_vendus_do_produto`) tem de estar
+        # cá — sem isto ele era construído na linha e deitado fora aqui, em
+        # silêncio, e o Vendus continuava a criar um produto novo por cada
+        # venda como se nada fosse.
+        #
+        # Cuidado ao ler: este `id` é o do PRODUTO no Vendus, não o uuid da
+        # linha da nossa conta — esse nunca chega aqui, porque
+        # `linha_de_venda` não o copia para a linha que constrói.
+        item = {
+            chave: li[chave]
+            for chave in ("id", "title", "qty", "gross_price", "tax_id")
+            if chave in li
+        }
         alvo_liquido = round(liquido_apos_propria - parte_global, 2)
         pct = _percentagem_que_reproduz(bruto, alvo_liquido)
         if pct > 0:

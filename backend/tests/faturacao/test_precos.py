@@ -5,7 +5,12 @@ e tem UM preço e UM IVA — como no Vendus (spec D7).
 """
 import pytest
 
-from faturacao.precos import erros_do_produto, linha_de_venda, tax_id_de_taxa
+from faturacao.precos import (
+    erros_do_produto,
+    id_vendus_do_produto,
+    linha_de_venda,
+    tax_id_de_taxa,
+)
 
 
 def _produto(**over):
@@ -242,3 +247,110 @@ def test_desconto_eur_maior_que_o_bruto_com_opcoes_considera_o_extra():
     opcoes = [{"nome": "Nutella", "preco": 0.95}]
     li = linha_de_venda(_produto(preco=8.99), 1, opcoes=opcoes, desconto_eur=9.94)
     assert li["discount_amount"] == 9.94
+
+
+# --- O `id` do produto no Vendus (o catálogo que se enchia de órfãos) ------
+#
+# A linha saía só com o título. O Vendus não casa por nome: não encontrando
+# referência, CRIA um produto novo e inventa-lhe um código `VACA…`. Medido na
+# conta real: 95 produtos, 7 títulos repetidos, o "Açaí Mini" com 14 — um
+# verdadeiro (id 171258472, com categoria) e 13 órfãos sem categoria nenhuma.
+# A 5 lojas × ~200 vendas/dia isso são milhares de produtos por mês.
+#
+# Provado contra a conta real, em mode=tests: `{"id": 171258472, "qty": 1,
+# "gross_price": 5.85, "tax_id": "INT"}` emitiu a FS T06P2026/17 sem criar
+# produto nenhum; e com o NOSSO título e um preço DIFERENTE do do catálogo
+# o documento saiu a 7,75 € (o nosso preço) e devolveu o nosso título —
+# o `id` liga ao produto e não substitui nem o preço nem o título.
+
+def test_linha_leva_o_id_do_produto_no_vendus():
+    li = linha_de_venda(_produto(vendus_ref="171258472"), 1)
+    assert li["id"] == 171258472
+
+
+def test_id_vai_como_inteiro_e_nao_como_texto():
+    """O corpo do documento vai em JSON e o que está provado contra a conta
+    real é um INTEIRO. O `vendus_ref` guarda-se como texto (importacao.py faz
+    `str(p["id"])`), por isso a conversão tem de acontecer aqui — um
+    `"171258472"` entre aspas no corpo é outra coisa."""
+    li = linha_de_venda(_produto(vendus_ref="171258472"), 1)
+    assert isinstance(li["id"], int)
+    assert li["id"] == 171258472
+
+
+def test_produto_sem_vendus_ref_continua_a_poder_ser_vendido_e_nao_leva_o_campo():
+    """Um artigo criado à mão no backoffice (nunca importado) não tem
+    `vendus_ref`. A linha sai como saía até aqui e o Vendus cria o produto —
+    feio, mas MUITO melhor do que recusar a venda: a operadora ficava com o
+    cliente à frente sem poder cobrar."""
+    li = linha_de_venda(_produto(), 1)
+    assert "id" not in li
+    assert li == {"title": "Açaí Regular", "qty": 1, "gross_price": 8.99, "tax_id": "INT"}
+
+
+def test_vendus_ref_a_none_nao_manda_id_nulo():
+    """Um `id: null` no corpo é pior do que campo nenhum — é um valor
+    ENVIADO, e não um campo omitido."""
+    li = linha_de_venda(_produto(vendus_ref=None), 1)
+    assert "id" not in li
+
+
+def test_vendus_ref_com_lixo_nao_vai_para_um_documento_fiscal():
+    """Um `id` que o Vendus não reconheça arrisca a recusa do documento
+    INTEIRO com o cliente à frente. Vale mais o produto órfão."""
+    # O "\u00b2" está aqui de propósito: passa no `isdigit()` mas faz o `int()`
+    # levantar ValueError — um erro cru a parar a venda ao balcão por causa
+    # de um campo do catálogo. O "0" não é id de produto nenhum no Vendus.
+    for lixo in ("", "   ", "abc", "VACA123", "-1", "8.7", "171258472x", "\u00b2", "0"):
+        li = linha_de_venda(_produto(vendus_ref=lixo), 1)
+        assert "id" not in li, lixo
+
+
+def test_vendus_ref_com_espacos_a_mais_continua_a_ligar():
+    li = linha_de_venda(_produto(vendus_ref="  171258472  "), 1)
+    assert li["id"] == 171258472
+
+
+def test_o_id_nao_mexe_em_nada_do_dinheiro():
+    """A regra desta alteração: o `id` LIGA a linha ao produto e mais nada.
+    Preço, IVA, título e desconto da linha com `vendus_ref` são, campo a
+    campo, os mesmos da linha sem ele."""
+    opcoes = [{"nome": "Nutella", "preco": 0.95}]
+    sem = linha_de_venda(_produto(), 3, opcoes=opcoes, desconto_pct=10)
+    com = linha_de_venda(_produto(vendus_ref="171258472"), 3, opcoes=opcoes, desconto_pct=10)
+    assert com.pop("id") == 171258472
+    assert com == sem
+
+
+def test_o_id_nao_mexe_no_desconto_em_euros_nem_no_tecto():
+    sem = linha_de_venda(_produto(), 1, desconto_eur=8.99)
+    com = linha_de_venda(_produto(vendus_ref="171258472"), 1, desconto_eur=8.99)
+    assert com.pop("id") == 171258472
+    assert com == sem
+
+
+def test_o_id_nao_mexe_nos_overrides_de_preco_e_de_iva():
+    """O caso provado na conta real: o nosso preço (7,75 €) e o nosso título
+    ganham ao do produto do catálogo, mesmo com o `id` presente."""
+    li = linha_de_venda(
+        _produto(vendus_ref="171258472", nome="Açaí Mini", preco=5.85),
+        1,
+        opcoes=[{"nome": "Nutella 2×", "preco": 1.90}],
+        tax_override="NOR",
+    )
+    assert li == {
+        "id": 171258472,
+        "title": "Açaí Mini (Nutella 2×)",
+        "qty": 1,
+        "gross_price": 7.75,
+        "tax_id": "NOR",
+    }
+
+
+def test_id_vendus_do_produto_isolado():
+    """A função sozinha, para o defeito ficar nomeado num sítio só."""
+    assert id_vendus_do_produto({"vendus_ref": "171258472"}) == 171258472
+    assert id_vendus_do_produto({"vendus_ref": 171258472}) == 171258472
+    assert id_vendus_do_produto({"vendus_ref": None}) is None
+    assert id_vendus_do_produto({}) is None
+    assert id_vendus_do_produto({"vendus_ref": "VACA123"}) is None

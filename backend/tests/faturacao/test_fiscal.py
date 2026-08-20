@@ -542,6 +542,54 @@ def test_itens_vendus_venda_sem_linhas_devolve_lista_vazia():
     assert _itens_vendus(_venda(linhas=[])) == []
 
 
+# --- O `id` do produto atravessa a lista branca de `_itens_vendus` ----------
+#
+# `_itens_vendus` escolhe A DEDO as chaves que saem do item — o que não
+# estiver na lista não vai para o Vendus, por muito que
+# `precos.linha_de_venda` o produza. Foi aqui que o `id` do produto quase se
+# perdeu em silêncio: construído na linha, deitado fora antes da rede, e o
+# Vendus a continuar a criar um produto novo por cada venda (95 produtos e 13
+# órfãos do "Açaí Mini" na conta real) como se a correcção não existisse.
+
+
+def test_itens_vendus_leva_o_id_do_produto_no_vendus():
+    venda = _venda(linhas=[_linha(produto_vendus_ref="171258472")])
+    assert _itens_vendus(venda) == [
+        {"id": 171258472, "title": "Açaí Regular", "qty": 1, "gross_price": 8.99,
+         "tax_id": "INT"}
+    ]
+
+
+def test_itens_vendus_de_linha_sem_vendus_ref_nao_leva_o_campo():
+    """Sem `vendus_ref` (artigo criado à mão no backoffice, ou linha gravada
+    antes desta alteração) o item sai como saía — nunca com `id: null`."""
+    itens = _itens_vendus(_venda(linhas=[_linha()]))
+    assert "id" not in itens[0]
+    assert itens[0] == {"title": "Açaí Regular", "qty": 1, "gross_price": 8.99,
+                        "tax_id": "INT"}
+
+
+def test_itens_vendus_com_id_nao_mexe_no_desconto_nem_no_dinheiro():
+    """O `id` acompanha o desconto sem lhe tocar: os mesmos números com e sem
+    ele, e o líquido continua a bater com `venda._totais` ao cêntimo."""
+    def _venda_com(ref):
+        return _venda(
+            linhas=[
+                _linha(id="l1", quantidade=3, produto_vendus_ref=ref),
+                _linha(id="l2", produto_id="prod-2", produto_nome="Sumo",
+                       produto_preco=2.5, produto_tax_id="NOR", quantidade=1,
+                       produto_vendus_ref=ref),
+            ],
+            desconto_global_eur=5.0,
+        )
+
+    sem = _itens_vendus(_venda_com(None))
+    com = _itens_vendus(_venda_com("171258472"))
+    assert [i.pop("id") for i in com] == [171258472, 171258472]
+    assert com == sem
+    assert _liquido_dos_itens(com) == _totais(_venda_com("171258472"))["total"]
+
+
 # --- _percentagem_que_reproduz (núcleo puro de B2) -----------------------------
 
 

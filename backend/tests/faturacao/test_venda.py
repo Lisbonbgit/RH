@@ -2505,3 +2505,100 @@ def test_o_quinto_toque_ao_mesmo_tempo_leva_409_e_nunca_se_perde_em_silencio(mon
         "os quatro que passaram ficam gravados; o que foi recusado não escreveu nada"
     )
     assert len(saidas) - len(recusados) == 4, "os outros quatro receberam 201"
+
+
+# --- O `vendus_ref` no retrato da linha ------------------------------------
+#
+# O produto do catálogo tem `vendus_ref` (o id dele no Vendus, vindo da
+# importação). Sem ele na linha que sai para o Vendus, o Vendus não casa a
+# linha por nome e CRIA um produto novo a cada venda — na conta real já eram
+# 95 produtos e 13 órfãos só do "Açaí Mini".
+#
+# O degrau: `_linha_vendus` não passa o produto do CATÁLOGO a
+# `linha_de_venda`, passa o RETRATO gravado na própria linha (deliberado — o
+# catálogo pode ter mudado ou o artigo ter sido apagado depois de a conta ser
+# aberta). Por isso o `vendus_ref` tem de ser gravado na linha quando ela
+# nasce, como o nome, o preço e o IVA já eram.
+
+def test_juntar_linha_grava_o_vendus_ref_no_retrato(monkeypatch):
+    registo = []
+    db = _db(registo, caixas=[_caixa()], vendas=[_venda()],
+             produtos=[_produto(vendus_ref="171258472")])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(juntar_linha(
+        "venda-1", PedidoJuntarLinha(produto_id="prod-1", quantidade=1), operador=_operador()
+    ))
+    assert resultado["linhas"][0]["produto_vendus_ref"] == "171258472"
+    # E ficou mesmo GRAVADO, não só na resposta: é da conta gravada que a
+    # emissão vai ler o retrato, dias depois de a linha nascer.
+    guardada = db._coleccoes[COLECOES["vendas"]]._documentos[0]
+    assert guardada["linhas"][0]["produto_vendus_ref"] == "171258472"
+
+
+def test_juntar_linha_de_produto_sem_vendus_ref_grava_none_e_vende_na_mesma(monkeypatch):
+    """Um artigo criado à mão no backoffice não tem `vendus_ref`. A venda
+    TEM de passar à mesma — recusá-la deixava a operadora com o cliente à
+    frente sem poder cobrar."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], vendas=[_venda()], produtos=[_produto()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(juntar_linha(
+        "venda-1", PedidoJuntarLinha(produto_id="prod-1", quantidade=1), operador=_operador()
+    ))
+    assert resultado["linhas"][0]["produto_vendus_ref"] is None
+    assert resultado["totais"]["total"] == 8.99
+
+
+def test_o_retrato_da_linha_alimenta_o_id_da_linha_do_vendus(monkeypatch):
+    """O caminho todo, ponta a ponta dentro deste módulo: o que `juntar_linha`
+    grava é o que `_produto_snapshot` devolve, e é o que faz `linha_de_venda`
+    pôr o `id` na linha."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], vendas=[_venda()],
+             produtos=[_produto(vendus_ref="171258472")])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    _corre(juntar_linha(
+        "venda-1", PedidoJuntarLinha(produto_id="prod-1", quantidade=1), operador=_operador()
+    ))
+    guardada = db._coleccoes[COLECOES["vendas"]]._documentos[0]["linhas"][0]
+    assert venda_mod._produto_snapshot(guardada)["vendus_ref"] == "171258472"
+    assert venda_mod._linha_vendus(guardada)["id"] == 171258472
+
+
+def test_uma_linha_gravada_ANTES_desta_alteracao_nao_rebenta():
+    """As contas já abertas têm linhas sem o campo novo. Não podem rebentar:
+    saem sem `id`, exactamente como saíam — e o dinheiro é o mesmo."""
+    antiga = {
+        "id": "linha-velha", "produto_id": "prod-1", "produto_nome": "Açaí Regular",
+        "produto_preco": 8.99, "produto_tax_id": "INT", "quantidade": 2, "opcoes": [],
+        "preco_override": None, "tax_override": None, "desconto_pct": None,
+        "desconto_eur": None,
+    }  # sem "produto_vendus_ref" — de propósito
+    assert venda_mod._produto_snapshot(antiga)["vendus_ref"] is None
+    li = venda_mod._linha_vendus(antiga)
+    assert "id" not in li
+    assert li == {"title": "Açaí Regular", "qty": 2, "gross_price": 8.99, "tax_id": "INT"}
+    assert venda_mod._totais(_venda(linhas=[antiga]))["total"] == 17.98
+
+
+def test_o_id_na_linha_nao_mexe_nos_totais_da_conta():
+    """O mesmo total com e sem `vendus_ref` — se algum destes números mudar,
+    é sinal de que se mexeu em mais do que devia."""
+    def _linha(**over):
+        li = {
+            "id": "linha-1", "produto_id": "prod-1", "produto_nome": "Açaí Regular",
+            "produto_preco": 8.99, "produto_tax_id": "INT", "quantidade": 3, "opcoes": [],
+            "preco_override": None, "tax_override": None, "desconto_pct": 10,
+            "desconto_eur": None,
+        }
+        li.update(over)
+        return li
+
+    sem = venda_mod._totais(_venda(linhas=[_linha()], desconto_global_eur=1.5))
+    com = venda_mod._totais(
+        _venda(linhas=[_linha(produto_vendus_ref="171258472")], desconto_global_eur=1.5)
+    )
+    assert com == sem

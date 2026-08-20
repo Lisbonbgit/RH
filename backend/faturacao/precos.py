@@ -51,6 +51,52 @@ def _tem_mais_de_2_casas_decimais(valor) -> bool:
     return len(casas) > 2
 
 
+def id_vendus_do_produto(produto: Dict) -> Optional[int]:
+    """O id do produto no Vendus (`vendus_ref`) pronto a viajar na linha como
+    `id` — ou `None` quando não há nenhum que se possa enviar.
+
+    **Porque é que este campo tem de ir.** Sem `id`, o Vendus não casa a
+    linha pelo título: não encontrando referência nenhuma, CRIA um produto
+    novo e inventa-lhe um código (`VACA…`). Medido na conta real: 95
+    produtos e 7 títulos repetidos, o pior deles o "Açaí Mini" com 14 — um
+    verdadeiro (id `171258472`, com categoria) e 13 órfãos sem categoria
+    nenhuma. A 5 lojas × ~200 vendas/dia isso são milhares de produtos por
+    mês e o catálogo do Vendus inutilizável em semanas.
+
+    **Inteiro, e não a string tal e qual.** O corpo do documento vai em JSON,
+    e o que está provado contra a conta real é `{"id": 171258472, …}` — um
+    inteiro. O `vendus_ref` guarda-se como texto (`importacao.py` faz
+    `str(p["id"])`), por isso a conversão vive aqui, no único sítio que o
+    envia, e não espalhada por quem chama.
+
+    **O que NÃO é um id positivo não vai.** Um produto criado à mão no nosso
+    backoffice (que nunca veio da importação) não tem `vendus_ref`; um campo
+    escrito à mão pode ter lá qualquer coisa. Nesses casos a linha sai como
+    saía até aqui, só com o título, e o Vendus cria o produto — feio, mas
+    inofensivo. O contrário é que era grave: mandar um `id` que o Vendus não
+    reconheça arrisca a recusa do documento INTEIRO com o cliente à frente,
+    e recusar a venda por causa disto seria muito pior do que um produto
+    órfão no catálogo — a operadora ficava sem poder cobrar."""
+    ref = produto.get("vendus_ref")
+    if ref is None:
+        return None
+    texto = str(ref).strip()
+    # `isdecimal()` e NÃO `isdigit()`: os dois parecem dizer o mesmo ("são
+    # todos dígitos"), mas só o primeiro garante que o `int()` a seguir não
+    # rebenta — `"²".isdigit()` é `True` e `int("²")` levanta `ValueError`.
+    # Um `ValueError` cru vindo daqui parava a venda ao balcão por causa de
+    # um campo do catálogo. De caminho, recusa o vazio, o negativo, o
+    # decimal e o texto, sem nenhum deles entrar num documento fiscal real.
+    if not texto.isdecimal():
+        return None
+    numero = int(texto)
+    # `0` não é id de produto nenhum no Vendus — só lá chegaria escrito à
+    # mão, e enviá-lo era arriscar a recusa do documento INTEIRO.
+    if numero <= 0:
+        return None
+    return numero
+
+
 def erros_do_produto(produto: Dict) -> List[str]:
     """Lista, em português, o que falta a um produto para poder ser vendido.
 
@@ -133,6 +179,22 @@ def linha_de_venda(
         "gross_price": round(float(base) + extra, 2),
         "tax_id": tax_id,
     }
+
+    # O id do produto no Vendus, quando o temos: é o que impede o Vendus de
+    # criar um produto novo a cada venda (ver `id_vendus_do_produto`). Só
+    # entra no dicionário SE existir — um `id: null` no corpo é pior do que
+    # campo nenhum, porque é um valor enviado, e não um campo omitido.
+    #
+    # O `id` LIGA a linha ao produto certo e mais nada: está provado contra a
+    # conta real que não substitui nem o título nem o preço. Emitido com o
+    # nosso título e um preço diferente do do catálogo
+    # (`{"id": 171258472, "title": "Açaí Mini (Nutella 2×)", "gross_price":
+    # 7.75}`), o documento saiu a 7,75 € — o NOSSO preço — e a leitura
+    # devolveu o NOSSO título. Por isso o `gross_price`, o `tax_id`, o título
+    # e os descontos acima ficam exactamente como estavam.
+    id_vendus = id_vendus_do_produto(produto)
+    if id_vendus is not None:
+        linha["id"] = id_vendus
 
     # O Vendus só aceita um dos dois por linha. O € tem precedência.
     if desconto_eur:

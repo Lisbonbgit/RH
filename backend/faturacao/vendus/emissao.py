@@ -239,7 +239,19 @@ class ClienteEmissaoVendus:
         `register_id` é comparado com o único configurado em
         VENDUS_REGISTER_ID ANTES de qualquer pedido — ver a docstring do
         módulo. `linhas` são o formato que `precos.linha_de_venda` já
-        produz (title/qty/gross_price/tax_id/desconto); `pagamentos` no
+        produz: **id** (o produto no Vendus, quando o nosso artigo tem
+        `vendus_ref`), title, qty, gross_price, tax_id e o desconto.
+
+        O `id` não é decorativo e não se pode deixar cair: é ele que faz o
+        Vendus LIGAR a linha ao produto que já lá existe. Sem ele o Vendus
+        não casa por nome e **cria um produto novo a cada venda** — foi
+        assim que a conta real ficou com 14 "Açaí Mini", 13 deles sem
+        categoria nenhuma, com referências VACA…. Medido contra a conta a
+        sério: com `id`, o Vendus respeita o nosso título, o nosso preço e
+        o nosso tax_id (mesmo diferente do do produto), aplica o desconto
+        ao cêntimo, e deixa o produto original intacto.
+
+        `pagamentos` no
         formato do Vendus ([{"id": ..., "amount": ...}]); `cliente` opcional
         (ex.: {"fiscal_id": NIF}) — sem ele o Vendus assume Consumidor
         Final."""

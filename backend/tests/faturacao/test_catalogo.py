@@ -879,3 +879,60 @@ def test_produtos_sem_iva_vazio_quando_todos_completos(monkeypatch):
     monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
 
     assert _corre(produtos_sem_iva(_={})) == []
+
+
+# --- O vendus_ref não se apaga sozinho ----------------------------------------
+#
+# Este campo passou de "ajuda a importação a não duplicar" a "é o que impede o
+# catálogo do Vendus de encher": é o id que a emissão manda em cada linha da
+# fatura (precos.linha_de_venda) para o Vendus LIGAR a linha ao produto que já
+# lá existe. Sem ele, o Vendus não casa por nome e cria um produto novo A CADA
+# VENDA — foi assim que a conta real ficou com 14 "Açaí Mini", 13 deles lixo
+# sem categoria, com referências VACA…
+#
+# O PUT substitui o registo inteiro e `ProdutoEntrada.vendus_ref` tem `= None`
+# por omissão, por isso um pedido que não o repita apagava-o. O backoffice
+# reenvia-o à mão (FatProdutos.js), mas essa defesa vive no browser: um script
+# ou um curl desligava a correcção em silêncio.
+
+
+def _set_do_update(registo):
+    """O que foi mesmo pedido ao Mongo — é aqui que se vê se o campo seguiu."""
+    for op in registo:
+        if op[0] == "update_one":
+            return op[2]["$set"]
+    raise AssertionError("não houve update_one nenhum")
+
+
+def test_editar_produto_sem_falar_do_vendus_ref_nao_lhe_toca(monkeypatch):
+    registo = []
+    db = _db_produtos(registo, produtos_update_one_matched=1,
+                      produtos_find_one_devolve={"id": "p1"})
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    # O corpo NÃO fala do vendus_ref — é o caso do script e do curl.
+    _corre(editar_produto("p1", ProdutoEntrada(
+        nome="Açaí Mini", categoria_id="cat-1", preco=6.20, tax_id="INT"), _={}))
+
+    alteracoes = _set_do_update(registo)
+    assert alteracoes["preco"] == 6.20, "a alteração pedida tem de passar na mesma"
+    assert "vendus_ref" not in alteracoes, (
+        "o PUT ia gravar vendus_ref=None por omissão — a partir daí cada venda "
+        "deste artigo cria um produto novo no Vendus"
+    )
+
+
+def test_editar_produto_ainda_desliga_a_ligacao_quando_lho_pedem(monkeypatch):
+    """A guarda protege o esquecimento, não impede a decisão: quem MANDA o
+    campo, manda mesmo, inclusive a nulo."""
+    registo = []
+    db = _db_produtos(registo, produtos_update_one_matched=1,
+                      produtos_find_one_devolve={"id": "p1"})
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    _corre(editar_produto("p1", ProdutoEntrada(
+        nome="Açaí Mini", categoria_id="cat-1", preco=5.85, tax_id="INT",
+        vendus_ref=None), _={}))
+
+    alteracoes = _set_do_update(registo)
+    assert "vendus_ref" in alteracoes and alteracoes["vendus_ref"] is None

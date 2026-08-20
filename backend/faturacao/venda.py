@@ -416,13 +416,23 @@ async def _emissao_por_confirmar(db, venda: Dict) -> bool:
 
 def _produto_snapshot(linha: Dict) -> Dict:
     """O que `linha_de_venda` precisa de um "produto", tirado do retrato
-    gravado na própria linha (nome/preço/tax_id no momento em que foi
-    adicionada) — não do catálogo ao vivo, que pode ter mudado ou ter sido
-    apagado entretanto."""
+    gravado na própria linha (nome/preço/tax_id/vendus_ref no momento em que
+    foi adicionada) — não do catálogo ao vivo, que pode ter mudado ou ter
+    sido apagado entretanto.
+
+    O `vendus_ref` viaja no retrato como os outros três, e pela mesma razão:
+    é ele que sai na linha do Vendus como `id` e impede que cada venda crie
+    lá um produto novo (ver `precos.id_vendus_do_produto`), e ir buscá-lo ao
+    catálogo aqui era voltar a consultar um artigo que pode já não existir.
+
+    As linhas de contas abertas ANTES desta alteração não têm o campo: o
+    `.get` devolve `None` e a linha sai sem `id`, exactamente como saía —
+    nada rebenta."""
     return {
         "nome": linha.get("produto_nome"),
         "preco": linha.get("produto_preco"),
         "tax_id": linha.get("produto_tax_id"),
+        "vendus_ref": linha.get("produto_vendus_ref"),
     }
 
 
@@ -685,6 +695,15 @@ async def juntar_linha(
         "produto_nome": produto.get("nome"),
         "produto_preco": produto.get("preco"),
         "produto_tax_id": produto.get("tax_id"),
+        # O quarto campo do retrato, gravado no momento em que a linha nasce
+        # como os três de cima: é ele que sai para o Vendus como `id` da
+        # linha e evita que cada venda crie lá um produto novo (ver
+        # `precos.id_vendus_do_produto`). Um produto criado à mão no nosso
+        # backoffice não tem `vendus_ref` — fica `None` aqui e a linha sai
+        # sem `id`, que é o caso normal e não um erro: recusar a venda por
+        # causa disto deixava a operadora com o cliente à frente sem poder
+        # cobrar.
+        "produto_vendus_ref": produto.get("vendus_ref"),
         "quantidade": dados.quantidade,
         "opcoes": dados.opcoes,
         "preco_override": dados.preco_override,

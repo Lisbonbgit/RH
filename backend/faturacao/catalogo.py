@@ -341,7 +341,27 @@ async def editar_produto(
 ) -> dict:
     db = obter_db()
     await _valida_referencias(db, dados.categoria_id, dados.grupos_personalizacao)
-    r = await db[COLECOES["produtos"]].update_one({"id": produto_id}, {"$set": dados.model_dump()})
+
+    alteracoes = dados.model_dump()
+    # O `vendus_ref` NÃO se apaga por omissão. Este PUT substitui o registo
+    # inteiro (`$set` do modelo todo) e o campo tem `= None` por omissão no
+    # ProdutoEntrada — um pedido que não o repita punha-o a nulo.
+    #
+    # Isso deixou de ser um detalhe: é este id que a emissão manda em cada
+    # linha da fatura (precos.linha_de_venda) para o Vendus LIGAR a linha ao
+    # produto que já lá existe. Sem ele, o Vendus não casa por nome e cria um
+    # produto novo A CADA VENDA — foi assim que a conta ficou com 14 "Açaí
+    # Mini", 13 deles lixo sem categoria, com referências VACA…
+    #
+    # O backoffice já reenvia o valor (FatProdutos.js), mas essa defesa vive
+    # no browser: um script, um curl, ou um ecrã novo que reutilize este
+    # endpoint desligava a correcção em silêncio. Quem quiser mesmo desligar
+    # a ligação manda o campo explicitamente; quem não falar dele não lhe
+    # toca.
+    if "vendus_ref" not in dados.model_fields_set:
+        alteracoes.pop("vendus_ref", None)
+
+    r = await db[COLECOES["produtos"]].update_one({"id": produto_id}, {"$set": alteracoes})
     if r.matched_count == 0:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
     return await db[COLECOES["produtos"]].find_one({"id": produto_id}, {"_id": 0})
