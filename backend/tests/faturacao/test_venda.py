@@ -622,6 +622,43 @@ def test_editar_linha_com_override_invalido_nao_grava_nada(monkeypatch):
     assert linha_intacta["preco_override"] is None
 
 
+def test_editar_linha_reenviando_opcoes_mantem_o_carimbo_do_sai_na_fatura(monkeypatch):
+    """Achado da revisão da Task 3: `PosDialogoProduto.js` reenvia SEMPRE as
+    opções inteiras por `editarLinha` (nunca só o delta de uma opção), e
+    `PosPersonalizacoes.js` constrói cada opção escolhida de raiz — sem
+    `sai_na_fatura`. Uma linha que já tinha o carimbo (posto por
+    `juntar_linha`) não pode perdê-lo só por a operadora ter voltado a abrir
+    o diálogo e picado mais um topping: sem isto, o 'Levar' de um grupo
+    escondido (`sai_na_fatura=False`) reaparecia no título e ia para a
+    Fatura Simplificada real, que é o que o interruptor existe para impedir."""
+    registo = []
+    grupo_servico = {
+        "id": "g-serv", "nome": "Consumir na loja", "sai_na_fatura": False,
+        "opcoes": [{"id": "o1", "nome": "Levar", "preco": 0}],
+    }
+    linha_ja_carimbada = _linha(opcoes=[
+        {"id": "o1", "grupo_id": "g-serv", "nome": "Levar", "preco": 0, "sai_na_fatura": False},
+    ])
+    db = _db(registo, vendas=[_venda(linhas=[linha_ja_carimbada])], grupos=[grupo_servico])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    # A app reenvia a opção "Levar" tal como o PosPersonalizacoes.js a
+    # constrói de raiz — SEM `sai_na_fatura` — mais uma Nutella escolhida
+    # agora.
+    resultado = _corre(editar_linha(
+        "venda-1", "linha-1", PedidoEditarLinha(opcoes=[
+            {"id": "o1", "grupo_id": "g-serv", "nome": "Levar", "preco": 0},
+            {"id": "o2", "grupo_id": "g-top", "nome": "Nutella", "preco": 0.5},
+        ]), operador=_operador()
+    ))
+    opcoes = resultado["linhas"][0]["opcoes"]
+    assert next(o for o in opcoes if o["id"] == "o1")["sai_na_fatura"] is False
+    # A opção do grupo que não está em `grupos_da_linha` (sem entrada em
+    # fat_grupos_personalizacao) fica com o valor por omissão — visível,
+    # como manda o brief da Task 1.
+    assert next(o for o in opcoes if o["id"] == "o2")["sai_na_fatura"] is True
+
+
 # --- Remover linha -----------------------------------------------------------
 
 

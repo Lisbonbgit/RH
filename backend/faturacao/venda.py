@@ -681,6 +681,39 @@ async def venda_aberta(
     return _venda_publica(conta, emissao_por_confirmar=await _emissao_por_confirmar(db, conta))
 
 
+async def _carimbar_sai_na_fatura(db, opcoes: List[Dict]) -> List[Dict]:
+    """Tira o retrato do `sai_na_fatura` de cada grupo referenciado em
+    `opcoes`, pela mesma razão que a linha já guarda `produto_preco`: o
+    gestor pode desligar o interruptor amanhã, e o que saiu no papel não
+    muda. Sem isto, o título de uma fatura reimpressa mudava consoante a
+    configuração de hoje.
+
+    Partilhada por `juntar_linha` (a linha nasce) e por `editar_linha`
+    quando o pedido reenvia `opcoes` (a linha é reescrita do zero) — as
+    DUAS escritas que decidem o conteúdo de `opcoes`. Antes desta função
+    existir, só `juntar_linha` carimbava: `editar_linha` aplicava o delta
+    em cru (`alvo.update(alteracoes)`) sem voltar a consultar os grupos, e
+    uma edição que reenviasse as opções de uma linha já gravada — como
+    `PosDialogoProduto.js` faz sempre que reabre uma linha — apagava o
+    carimbo. Um "Levar" de um grupo com `sai_na_fatura=False` reaparecia
+    no título e na Fatura Simplificada real, que é exactamente o que o
+    interruptor existe para impedir."""
+    grupos_da_linha = {}
+    ids = [o.get("grupo_id") for o in opcoes if o.get("grupo_id")]
+    if ids:
+        for g in await db[COLECOES["grupos_personalizacao"]].find(
+            {"id": {"$in": ids}}, {"_id": 0, "id": 1, "sai_na_fatura": 1}
+        ).to_list(len(ids)):
+            grupos_da_linha[g["id"]] = g.get("sai_na_fatura", True)
+
+    carimbadas = []
+    for o in opcoes:
+        o = dict(o)
+        o["sai_na_fatura"] = grupos_da_linha.get(o.get("grupo_id"), True)
+        carimbadas.append(o)
+    return carimbadas
+
+
 @router.post("/pos/venda/{venda_id}/linhas", status_code=201)
 async def juntar_linha(
     venda_id: str, dados: PedidoJuntarLinha, operador: Dict = Depends(operador_atual)
@@ -702,23 +735,7 @@ async def juntar_linha(
     if erros:
         raise HTTPException(status_code=422, detail="; ".join(erros))
 
-    # Retrato do `sai_na_fatura` do grupo no momento da escolha, pela mesma
-    # razão que a linha já guarda `produto_preco`: o gestor pode desligar o
-    # interruptor amanhã, e o que saiu no papel não muda. Sem isto, o título
-    # de uma fatura reimpressa mudava consoante a configuração de hoje.
-    grupos_da_linha = {}
-    ids = [o.get("grupo_id") for o in dados.opcoes if o.get("grupo_id")]
-    if ids:
-        for g in await db[COLECOES["grupos_personalizacao"]].find(
-            {"id": {"$in": ids}}, {"_id": 0, "id": 1, "sai_na_fatura": 1}
-        ).to_list(len(ids)):
-            grupos_da_linha[g["id"]] = g.get("sai_na_fatura", True)
-
-    opcoes = []
-    for o in dados.opcoes:
-        o = dict(o)
-        o["sai_na_fatura"] = grupos_da_linha.get(o.get("grupo_id"), True)
-        opcoes.append(o)
+    opcoes = await _carimbar_sai_na_fatura(db, dados.opcoes)
 
     linha = {
         "id": str(uuid.uuid4()),
@@ -769,6 +786,13 @@ async def editar_linha(
     await _garante_sem_emissao(db, venda_id)
 
     alteracoes = dados.model_dump(exclude_unset=True)
+    if alteracoes.get("opcoes") is not None:
+        # Mesmo carimbo do `juntar_linha` (ver `_carimbar_sai_na_fatura`):
+        # sem isto, reenviar `opcoes` numa edição perdia o `sai_na_fatura`
+        # que a linha já tinha, porque o `alvo.update(alteracoes)` abaixo
+        # grava o delta em cru. `None` explícito (limpar as opções) não
+        # entra aqui — não há grupo nenhum para consultar.
+        alteracoes["opcoes"] = await _carimbar_sai_na_fatura(db, alteracoes["opcoes"])
 
     # A edição é um DELTA (só os campos presentes no pedido) e aplica-se à
     # linha como ela está na conta relida — nunca à cópia que a rota leu à
