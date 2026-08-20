@@ -150,9 +150,14 @@ class GrupoPersonalizacaoEntrada(BaseModel):
     # Se as escolhas deste grupo entram no título da linha da Fatura
     # Simplificada. Liga-se nos toppings (que descrevem o produto e mudam o
     # preço) e desliga-se no Nome e no "Consumir na loja", que são para a
-    # cozinha. Ver `precos.linha_de_venda`: uma opção PAGA sai na fatura de
-    # qualquer maneira — este interruptor esconde o que não custa nada,
-    # nunca um euro.
+    # cozinha. Ver `precos._descricao_das_opcoes`: uma opção COM PREÇO sai
+    # na fatura de qualquer maneira — este interruptor esconde o que não
+    # custa nada, nunca um euro. "Com preço" é preço DIFERENTE de zero, o
+    # negativo incluído: um desconto gravado como opção mexe no dinheiro da
+    # linha tanto como um topping, e escondê-lo tirava o euro da fatura sem
+    # deixar rasto. As duas promessas dizem o mesmo de propósito — é a
+    # mesma regra, escrita no sítio onde o gestor liga o interruptor e no
+    # sítio onde ela se cumpre.
     sai_na_fatura: bool = True
 
     @field_validator("tipo")

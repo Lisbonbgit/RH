@@ -681,7 +681,9 @@ async def venda_aberta(
     return _venda_publica(conta, emissao_por_confirmar=await _emissao_por_confirmar(db, conta))
 
 
-async def _carimbar_sai_na_fatura(db, opcoes: List[Dict]) -> List[Dict]:
+async def _carimbar_sai_na_fatura(
+    db, opcoes: List[Dict], preservar_carimbo: bool = False
+) -> List[Dict]:
     """Tira o retrato do `sai_na_fatura` de cada grupo referenciado em
     `opcoes`, pela mesma razão que a linha já guarda `produto_preco`: o
     gestor pode desligar o interruptor amanhã, e o que saiu no papel não
@@ -697,9 +699,45 @@ async def _carimbar_sai_na_fatura(db, opcoes: List[Dict]) -> List[Dict]:
     `PosDialogoProduto.js` faz sempre que reabre uma linha — apagava o
     carimbo. Um "Levar" de um grupo com `sai_na_fatura=False` reaparecia
     no título e na Fatura Simplificada real, que é exactamente o que o
-    interruptor existe para impedir."""
+    interruptor existe para impedir.
+
+    **`preservar_carimbo` é o que faz do retrato um retrato.** Sem ele, uma
+    edição voltava a LER a configuração de hoje e escrevia por cima do
+    carimbo tirado quando a linha nasceu: bastava o gestor ligar o
+    interruptor do grupo entre a gravação e a correcção da linha para o
+    "Levar" grátis voltar ao título e à Fatura Simplificada — o retrato
+    prometido aqui em cima não era retrato nenhum, era a configuração de
+    hoje outra vez. É o mesmo raciocínio do `produto_preco`: numa edição,
+    uma opção que JÁ TRAZ o carimbo mantém o que trouxe, e só uma opção
+    NOVA (uma que a operadora acabou de escolher) é que o vai buscar à
+    configuração actual.
+
+    Como se distingue uma da outra: os dois diálogos do POS abrem com as
+    opções TAL COMO O SERVIDOR AS DEVOLVEU (`linha.opcoes`, já carimbadas),
+    e só as opções em que a operadora toca é que são construídas de raiz —
+    `{id, grupo_id, nome, preco}`, sem `sai_na_fatura`
+    (`PosPedidoGuiado.juntarDose`, `PosPersonalizacoes.tocar`). A presença
+    da chave é, por isso, exactamente a pergunta "esta opção já vinha da
+    linha?".
+
+    O que isto custa, dito por inteiro: numa EDIÇÃO passamos a aceitar o
+    carimbo que o cliente reenvia. Quem falasse à rota à mão podia esconder
+    do título uma opção GRÁTIS (ou mostrar uma que o gestor escondeu) — o
+    mesmo que o interruptor do gestor faz, e nunca um cêntimo: uma opção com
+    preço sai no título de qualquer maneira (`precos._descricao_das_opcoes`).
+    Ao NASCER a linha não se preserva nada — todas as opções são novas, e o
+    carimbo vem sempre da configuração, que também é o que impede uma linha
+    de nascer com um carimbo inventado pelo cliente."""
+    # `isinstance(..., bool)` e não `"sai_na_fatura" in o`: só um booleano a
+    # sério é um carimbo. Um `None` (ou um `"false"` em texto) vindo de um
+    # cliente distraído não diz nada sobre o grupo, e aceitá-lo como carimbo
+    # era gravar "escondido" — ou "visível" — por engano; sem carimbo válido,
+    # a opção vai à configuração como qualquer outra opção nova.
+    def falta_carimbo(o: Dict) -> bool:
+        return not (preservar_carimbo and isinstance(o.get("sai_na_fatura"), bool))
+
     grupos_da_linha = {}
-    ids = [o.get("grupo_id") for o in opcoes if o.get("grupo_id")]
+    ids = [o.get("grupo_id") for o in opcoes if o.get("grupo_id") and falta_carimbo(o)]
     if ids:
         for g in await db[COLECOES["grupos_personalizacao"]].find(
             {"id": {"$in": ids}}, {"_id": 0, "id": 1, "sai_na_fatura": 1}
@@ -709,7 +747,10 @@ async def _carimbar_sai_na_fatura(db, opcoes: List[Dict]) -> List[Dict]:
     carimbadas = []
     for o in opcoes:
         o = dict(o)
-        o["sai_na_fatura"] = grupos_da_linha.get(o.get("grupo_id"), True)
+        if falta_carimbo(o):
+            o["sai_na_fatura"] = grupos_da_linha.get(o.get("grupo_id"), True)
+        # Senão fica o carimbo que a opção já trazia, tal e qual — é o
+        # retrato do dia em que a linha nasceu.
         carimbadas.append(o)
     return carimbadas
 
@@ -792,7 +833,30 @@ async def editar_linha(
         # que a linha já tinha, porque o `alvo.update(alteracoes)` abaixo
         # grava o delta em cru. `None` explícito (limpar as opções) não
         # entra aqui — não há grupo nenhum para consultar.
-        alteracoes["opcoes"] = await _carimbar_sai_na_fatura(db, alteracoes["opcoes"])
+        #
+        # `preservar_carimbo=True`, e é o que distingue esta escrita da do
+        # `juntar_linha`: aqui a linha JÁ EXISTE, e uma opção que volta com
+        # o carimbo que levou fica com esse — não com o que a configuração
+        # do grupo diz hoje. Só as opções novas (as que a operadora acabou
+        # de escolher, e que chegam sem a chave) é que a vão consultar.
+        alteracoes["opcoes"] = await _carimbar_sai_na_fatura(
+            db, alteracoes["opcoes"], preservar_carimbo=True
+        )
+
+    if alteracoes.get("respostas_texto") is not None:
+        # O `exclude_unset=True` propaga-se aos modelos ANINHADOS: uma
+        # resposta que chegue sem `nome_grupo` sai deste `model_dump` sem a
+        # chave, e a linha ficava com um `respostas_texto` de forma
+        # diferente do que o `juntar_linha` grava (esse faz `r.model_dump()`
+        # por resposta, sempre com os três campos). O mesmo campo com duas
+        # formas conforme a escrita por onde passou — e quem a leia pela
+        # chave (o talão da cozinha há-de fazê-lo, é a promessa da docstring
+        # do `RespostaTexto`) apanha um `KeyError` só nas linhas que passaram
+        # por uma edição, e não nas outras: o tipo de defeito que aparece
+        # numas linhas e não noutras e que ninguém consegue repetir. Um
+        # `model_dump()` sem `exclude_unset` por resposta devolve a MESMA
+        # forma das duas vezes, com o `nome_grupo` a None quando não foi dado.
+        alteracoes["respostas_texto"] = [r.model_dump() for r in dados.respostas_texto]
 
     # A edição é um DELTA (só os campos presentes no pedido) e aplica-se à
     # linha como ela está na conta relida — nunca à cópia que a rota leu à

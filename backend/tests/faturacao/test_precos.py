@@ -97,11 +97,19 @@ def test_opcao_repetida_aparece_com_a_dose_no_titulo():
 
 def test_a_ordem_do_titulo_e_a_da_primeira_escolha():
     """Agregar não pode reordenar: a operadora escolheu por uma ordem e o
-    cliente lê essa ordem no talão."""
-    a = {"nome": "Morango", "preco": 0}
-    b = {"nome": "Nutella", "preco": 0.95}
+    cliente lê essa ordem no talão.
+
+    Os nomes estão AO CONTRÁRIO da ordem alfabética de propósito. Com
+    "Morango" antes de "Nutella" — como este teste nasceu — a ordem da
+    escolha e a ordem alfabética eram a mesma, e o teste ficava verde mesmo
+    com o `for nome in ordem` trocado por `for nome in sorted(ordem)`: não
+    havia mutação nenhuma que o pusesse vermelho, ou seja, não estava a
+    defender coisa nenhuma. Trocados, é a ordem da escolha — e só ela — que
+    o mantém verde."""
+    a = {"nome": "Nutella", "preco": 0.95}
+    b = {"nome": "Morango", "preco": 0}
     linha = linha_de_venda({"nome": "Açaí", "preco": 5.0, "tax_id": "INT"}, 1, [a, b, a])
-    assert linha["title"] == "Açaí (Morango 2×, Nutella)"
+    assert linha["title"] == "Açaí (Nutella 2×, Morango)"
 
 
 def test_opcao_gratuita_de_grupo_escondido_nao_vai_ao_titulo():
@@ -123,6 +131,25 @@ def test_opcao_PAGA_vai_ao_titulo_mesmo_com_o_interruptor_desligado():
     )
     assert linha["title"] == "Açaí (Whey)"
     assert linha["gross_price"] == 5.95
+
+
+def test_opcao_de_preco_NEGATIVO_vai_ao_titulo_mesmo_com_o_interruptor_desligado():
+    """Um euro a menos também é um euro: o interruptor esconde o que não
+    custa nada, e um desconto gravado como opção custa.
+
+    Com o `> 0` de antes, esta opção contava como grátis: o título saía
+    "Açaí" limpinho e o `gross_price` 4,00 € — a linha da Fatura
+    Simplificada mais barata um euro do que o que lá está escrito, sem
+    rasto nenhum de onde ele foi. O catálogo já não deixa gravar preços
+    negativos (`ge=0`), mas as `opcoes` do pedido são `List[Dict]` cru e o
+    `pos_catalogo` devolve o preço gravado sem o revalidar — uma opção
+    negativa gravada antes dessa guarda ainda chega aqui."""
+    linha = linha_de_venda(
+        {"nome": "Açaí", "preco": 5.0, "tax_id": "INT"}, 1,
+        [{"nome": "Desconto fidelidade", "preco": -1.00, "sai_na_fatura": False}],
+    )
+    assert linha["title"] == "Açaí (Desconto fidelidade)"
+    assert linha["gross_price"] == 4.0
 
 
 def test_linha_recusa_produto_sem_iva():

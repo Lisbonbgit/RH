@@ -189,6 +189,31 @@ export function errosDeSelecao(grupos, seleccionadas) {
 }
 
 /**
+ * Se uma opção escolhida é uma INDICAÇÃO DE SERVIÇO — o "Levar", o "Comer
+ * aqui" — e não uma escolha que descreve o produto. É por esta pergunta que os
+ * ecrãs separam o que se diz uma vez e sem dose ("Levar · Maria") do que leva
+ * a dose à frente ("Nutella 2×").
+ *
+ * A regra é a do TÍTULO DA FATURA (`precos._descricao_das_opcoes`), e vive
+ * aqui, numa função só, precisamente para não haver três leituras dela: o
+ * interruptor `sai_na_fatura` esconde o que não custa nada, **nunca um euro**.
+ * Uma opção COM PREÇO é sempre uma escolha, esteja o interruptor como estiver
+ * — o servidor soma-lhe as doses e escreve-as no título ("Extra caramelo 2×"),
+ * e um ecrã que a mostrasse uma vez e sem dose escondia da operadora
+ * exactamente a dose que o cliente vai pagar. É ela que confere a linha pelo
+ * ecrã, e o ecrã não lhe pode dizer menos do que o papel.
+ *
+ * `!== 0` e não `> 0`, pela mesma razão do servidor: um preço NEGATIVO (um
+ * desconto gravado como opção) também mexe no dinheiro da linha.
+ *
+ * `=== false` e não `!o.sai_na_fatura`: uma linha gravada antes deste campo
+ * existir chega sem a chave, e essa vale como "sai na fatura" (é o que o
+ * servidor assume) — tratá-la como serviço tirava-lhe a dose.
+ */
+export const ehIndicacaoDeServico = (opcao) =>
+  opcao?.sai_na_fatura === false && (Number(opcao?.preco) || 0) === 0;
+
+/**
  * As escolhas por vírgulas, com as doses ("Nutella 2×, Morango"). String vazia
  * quando não há nenhuma.
  *

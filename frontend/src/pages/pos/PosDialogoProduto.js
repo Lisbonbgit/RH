@@ -4,7 +4,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import PosCampoValor from './PosCampoValor';
-import PosPersonalizacoes, { errosDeSelecao, resumoDaSelecao } from './PosPersonalizacoes';
+import PosPersonalizacoes, {
+  ehIndicacaoDeServico, errosDeSelecao, resumoDaSelecao,
+} from './PosPersonalizacoes';
 import { temMaisDe2CasasDecimaisPos } from '@/lib/pos';
 
 // Os códigos são os do Vendus (`_TAXAS` em faturacao/precos.py). A operadora vê
@@ -121,20 +123,19 @@ const valoresIniciais = (produto, linha, grupos, base) => {
 // Serviço e Nome são coisas diferentes e ela corrige-as por razões
 // diferentes (ver o "Porquê" do brief).
 //
-// Repetida a leitura das opções, e não importada do `PosPedidoGuiado.js`
-// (que já tem uma versão disto, `resumoDoPedido`): esta tarefa só pode mexer
-// neste ficheiro e no `PosVenda.js`.
+// A DIVISÃO das opções é a mesma do `resumoDoPedido` e vem agora da mesma
+// função que ele usa (`ehIndicacaoDeServico`) — o que é repetido aqui é só a
+// arrumação em três campos. Enquanto cada ecrã tinha a sua leitura, os dois
+// tinham o mesmo defeito escrito duas vezes: uma opção PAGA de um grupo com o
+// interruptor desligado caía em "Serviço", dita uma vez e sem dose, enquanto a
+// Fatura Simplificada lhe somava as duas doses e as escrevia no título.
 const tituloDoPedido = (linha) => {
   const opcoes = (Array.isArray(linha?.opcoes) ? linha.opcoes : []).filter(Boolean);
   const respostas = (Array.isArray(linha?.respostas_texto) ? linha.respostas_texto : []).filter(Boolean);
 
   const servico = [];
   opcoes.forEach((o) => {
-    // `!== false`, e não `!o.sai_na_fatura`: uma linha gravada antes deste
-    // campo existir chega sem a chave, e essa vale como "sai na fatura" (é o
-    // que o servidor assume) — tratá-la como serviço tirava-lhe a dose no
-    // campo de Personalizações a seguir. A mesma leitura do `resumoDoPedido`.
-    if (o.sai_na_fatura !== false || !o.nome) return;
+    if (!ehIndicacaoDeServico(o) || !o.nome) return;
     const nome = String(o.nome);
     if (!servico.includes(nome)) servico.push(nome);
   });
@@ -150,7 +151,7 @@ const tituloDoPedido = (linha) => {
 
   const doses = new Map();
   opcoes.forEach((o) => {
-    if (o.sai_na_fatura === false || !o.nome) return;
+    if (ehIndicacaoDeServico(o) || !o.nome) return;
     const chave = String(o.nome);
     doses.set(chave, (doses.get(chave) || 0) + 1);
   });

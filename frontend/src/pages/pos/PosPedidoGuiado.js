@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
-import { errosDeSelecao } from './PosPersonalizacoes';
+import { ehIndicacaoDeServico, errosDeSelecao } from './PosPersonalizacoes';
 
 // O pedido guiado do POS: o pop-up que se abre ao tocar num açaí e que conduz
 // o pedido do cliente — levar ou comer aqui, os toppings com as doses, o nome
@@ -122,6 +122,15 @@ const regraDoPasso = (grupo, tipo, min, max) => {
  * produto, e essas levam a dose à frente. O ecrã e o papel da cozinha lêem a
  * linha pela mesma regra de propósito — é com esse papel que ela confere.
  *
+ * A pergunta "isto é serviço?" é a do título da fatura, feita numa função só
+ * (`ehIndicacaoDeServico`, no PosPersonalizacoes): uma opção COM PREÇO é
+ * sempre uma escolha, mesmo com o interruptor do grupo desligado. Com a
+ * leitura antiga — só o `sai_na_fatura` —, um "Extra caramelo" pago de um
+ * grupo escondido aparecia aqui UMA vez e SEM dose enquanto o servidor lhe
+ * somava as duas doses e escrevia "(Extra caramelo 2×)" na Fatura
+ * Simplificada. A operadora confere a linha por este resumo, e o resumo não
+ * lhe dizia que foram duas.
+ *
  * A dose aparece SEMPRE, mesmo a `1×`, e é diferente do título da fatura (que
  * omite o `1×`): aqui o número é para se conferir de relance quantas colheres
  * foram pedidas, e uma lista onde só alguns nomes têm número obriga a ler o
@@ -133,10 +142,7 @@ export function resumoDoPedido(linha) {
 
   const servico = [];
   opcoes.forEach((o) => {
-    // `=== false` e não `!o.sai_na_fatura`: uma linha gravada antes destes
-    // campos existirem chega sem a chave, e essa vale como "sai na fatura"
-    // (é o que o servidor assume) — tratá-la como serviço tirava-lhe a dose.
-    if (o.sai_na_fatura !== false || !o.nome) return;
+    if (!ehIndicacaoDeServico(o) || !o.nome) return;
     const nome = String(o.nome);
     if (!servico.includes(nome)) servico.push(nome);
   });
@@ -147,7 +153,7 @@ export function resumoDoPedido(linha) {
 
   const contagem = new Map();
   opcoes.forEach((o) => {
-    if (o.sai_na_fatura === false || !o.nome) return;
+    if (ehIndicacaoDeServico(o) || !o.nome) return;
     const nome = String(o.nome);
     contagem.set(nome, (contagem.get(nome) || 0) + 1);
   });

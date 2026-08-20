@@ -129,11 +129,21 @@ def _descricao_das_opcoes(opcoes: List[Dict]) -> str:
       "Nome" (que é do copo) e do "Consumir na loja" (que é da cozinha):
       não descrevem o produto e não têm valor fiscal.
 
-    A excepção que não se negoceia: **uma opção PAGA aparece sempre**,
+    A excepção que não se negoceia: **uma opção com PREÇO aparece sempre**,
     esteja o interruptor como estiver. O cliente está a ser cobrado por ela
     e a fatura tem de o dizer — o interruptor esconde o que não custa nada,
     nunca um euro. Sem esta linha, desligar o interruptor por engano num
     grupo de toppings escondia da fatura o que lá foi cobrado.
+
+    "Com preço" é `!= 0`, e não `> 0`: uma opção de preço NEGATIVO (um
+    desconto gravado como opção) também mexe no dinheiro da linha, e com o
+    `> 0` contava como grátis — desaparecia do título e levava o euro com
+    ela, deixando a linha da Fatura Simplificada mais barata do que o que lá
+    está escrito, sem rasto nenhum. O catálogo de hoje já não deixa gravar
+    preços negativos (`ge=0` no `OpcaoEntrada`), mas o caminho até aqui
+    continua aberto: as `opcoes` de um pedido são `List[Dict]` cru e o
+    `pos_catalogo` devolve o preço gravado sem o revalidar, por isso uma
+    opção negativa gravada antes dessa guarda ainda chega ao balcão.
     """
     contagem = {}   # nome -> doses
     ordem = []      # os nomes pela ordem da primeira escolha
@@ -141,7 +151,7 @@ def _descricao_das_opcoes(opcoes: List[Dict]) -> str:
         nome = o.get("nome")
         if not nome:
             continue
-        pago = float(o.get("preco", 0) or 0) > 0
+        pago = float(o.get("preco", 0) or 0) != 0
         if not pago and o.get("sai_na_fatura") is False:
             continue
         if nome not in contagem:

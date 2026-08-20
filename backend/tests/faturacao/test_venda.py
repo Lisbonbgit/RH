@@ -659,6 +659,101 @@ def test_editar_linha_reenviando_opcoes_mantem_o_carimbo_do_sai_na_fatura(monkey
     assert next(o for o in opcoes if o["id"] == "o2")["sai_na_fatura"] is True
 
 
+def test_editar_linha_mantem_o_carimbo_mesmo_com_o_interruptor_do_grupo_LIGADO_entretanto(
+    monkeypatch,
+):
+    """O carimbo é um RETRATO, e o teste aqui em cima não o provava.
+
+    Naquele cenário a configuração do grupo não muda entre a gravação e a
+    edição: `sai_na_fatura=False` na linha e `False` no grupo. Preservar o
+    carimbo ou voltar a lê-lo de hoje davam o mesmo resultado, e o teste
+    ficava verde com as duas semânticas — não distinguia nada.
+
+    Este muda a configuração pelo meio, que é o caso que dói: a linha foi
+    gravada com o interruptor DESLIGADO, o gestor ligou-o, e a operadora
+    reabre o diálogo e grava. Com a leitura de hoje, o "Levar" grátis voltava
+    ao título da Fatura Simplificada — o retrato que a docstring do
+    `_carimbar_sai_na_fatura` promete não existia. As duas semânticas ficam
+    aqui separadas: o que a linha já trazia mantém-se, o que a operadora
+    acabou de escolher é que vai buscar o carimbo à configuração actual."""
+    registo = []
+    # A configuração de HOJE diz `True` — o gestor ligou o interruptor depois
+    # de a linha estar gravada.
+    grupo_servico = {
+        "id": "g-serv", "nome": "Consumir na loja", "sai_na_fatura": True,
+        "opcoes": [{"id": "o1", "nome": "Levar", "preco": 0},
+                   {"id": "o2", "nome": "Talheres", "preco": 0}],
+    }
+    linha_ja_carimbada = _linha(opcoes=[
+        {"id": "o1", "grupo_id": "g-serv", "nome": "Levar", "preco": 0, "sai_na_fatura": False},
+    ])
+    db = _db(registo, vendas=[_venda(linhas=[linha_ja_carimbada])], grupos=[grupo_servico])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    # É isto que o diálogo reenvia: as opções TAL COMO O SERVIDOR AS DEVOLVEU
+    # (o "Levar" com o carimbo que levou) mais a que a operadora acabou de
+    # escolher, construída de raiz — `{id, grupo_id, nome, preco}`, sem
+    # carimbo nenhum (`PosPedidoGuiado.juntarDose`, `PosPersonalizacoes.tocar`).
+    resultado = _corre(editar_linha(
+        "venda-1", "linha-1", PedidoEditarLinha(opcoes=[
+            {"id": "o1", "grupo_id": "g-serv", "nome": "Levar", "preco": 0,
+             "sai_na_fatura": False},
+            {"id": "o2", "grupo_id": "g-serv", "nome": "Talheres", "preco": 0},
+        ]), operador=_operador()
+    ))
+    opcoes = resultado["linhas"][0]["opcoes"]
+    # A que já vinha da linha: fica com o retrato, não com o interruptor de hoje.
+    assert next(o for o in opcoes if o["id"] == "o1")["sai_na_fatura"] is False
+    # A NOVA: essa sim, vai buscar o valor à configuração actual.
+    assert next(o for o in opcoes if o["id"] == "o2")["sai_na_fatura"] is True
+
+    # E o que isto vale onde se paga: o título da Fatura Simplificada, pela
+    # MESMA função que constrói as linhas que saem para o Vendus.
+    assert linha_de_venda(
+        {"nome": "Açaí Regular", "preco": 8.99, "tax_id": "INT"}, 1, opcoes
+    )["title"] == "Açaí Regular (Talheres)"
+
+
+def test_as_duas_escritas_gravam_respostas_texto_com_a_MESMA_forma(monkeypatch):
+    """`juntar_linha` faz `r.model_dump()` por resposta; `editar_linha` fazia
+    `dados.model_dump(exclude_unset=True)`, e no Pydantic 2 o `exclude_unset`
+    propaga-se aos modelos ANINHADOS — uma resposta enviada sem `nome_grupo`
+    ficava gravada sem a chave.
+
+    O mesmo campo com duas formas conforme a escrita por onde a linha passou.
+    Quem o venha a ler pela chave — o talão da cozinha há-de fazê-lo, é a
+    promessa da docstring do `RespostaTexto` — apanhava um `KeyError` só nas
+    linhas editadas, e não nas outras. Não havia teste nenhum do
+    `respostas_texto` no caminho da edição."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[_linha()])], produtos=[_produto()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    # Como o ecrã a manda quando o grupo já não existe no catálogo (a resposta
+    # órfã volta com `nome_grupo: null`) ou quando um cliente mais antigo nem
+    # sequer conhece o campo: sem `nome_grupo` posto.
+    resposta = {"grupo_id": "g-nome", "texto": "Maria"}
+
+    nascida = _corre(juntar_linha(
+        "venda-1", PedidoJuntarLinha(produto_id="prod-1", respostas_texto=[resposta]),
+        operador=_operador(),
+    ))
+    editada = _corre(editar_linha(
+        "venda-1", "linha-1", PedidoEditarLinha(respostas_texto=[resposta]),
+        operador=_operador(),
+    ))
+
+    ao_nascer = nascida["linhas"][-1]["respostas_texto"][0]
+    ao_editar = editada["linhas"][0]["respostas_texto"][0]
+    # A forma é a mesma — comparada com a da OUTRA escrita, e não com uma
+    # lista de chaves escrita à mão aqui, que ficaria verde no dia em que as
+    # duas divergissem outra vez.
+    assert set(ao_editar) == set(ao_nascer)
+    assert ao_editar == {"grupo_id": "g-nome", "nome_grupo": None, "texto": "Maria"}
+    # E o campo lê-se pela chave nas duas, que é a promessa que interessa.
+    assert ao_editar["nome_grupo"] == ao_nascer["nome_grupo"]
+
+
 # --- Remover linha -----------------------------------------------------------
 
 
