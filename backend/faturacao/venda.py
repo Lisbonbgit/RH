@@ -83,6 +83,17 @@ _MSG_CONTA_MUDOU_DEBAIXO = (
     "para não apagar a outra. Olhe para a conta como ela está agora e repita "
     "só o que faltar."
 )
+# O mesmo choque, mas na DIVISÃO (ver `_a_mae_como_foi_lida`). Mensagem
+# própria e não a de cima porque a saída é outra: nada foi gravado e não há
+# "só o que faltar" para repetir — a divisão não é um delta sobre a conta, é
+# uma decisão sobre a conta INTEIRA, e essa toma-se outra vez a olhar para ela
+# como ela está agora (podem ter aparecido linhas, ou um desconto que muda o
+# que cada pessoa paga).
+_MSG_CONTA_MUDOU_ANTES_DE_DIVIDIR = (
+    "Esta conta foi alterada noutro sítio ao mesmo tempo (outro separador do "
+    "POS, ou o ecrã recarregado a meio) e a divisão NÃO foi feita — não ficou "
+    "nada gravado. Veja a conta como ela está agora e divida outra vez."
+)
 # As duas mensagens do cancelamento COMPENSADO (ver `_porque_nao_foi_cancelada`):
 # o 409 tem de descrever a conta como ela está no instante em que a operadora
 # o lê, e não como estava quando a compensação começou.
@@ -1249,6 +1260,74 @@ def _confirma_que_as_partes_somam(mae: Dict, filhas: List[Dict]) -> None:
         )
 
 
+def _a_mae_como_foi_lida(mae: Dict) -> Dict:
+    """O filtro da escrita que trava a mãe: não a identidade e o estado, mas
+    TUDO aquilo de que as filhas foram feitas.
+
+    **O defeito que isto fecha.** Prender só `{"estado": "aberta"}` é a
+    decisão-sobre-uma-leitura outra vez, num sítio onde a leitura é a conta
+    inteira: entre o `find_one` da mãe e esta escrita há N+1 `await`s (o
+    `_garante_sem_emissao` e os N inserts das filhas) e a mãe fica ABERTA
+    durante toda essa janela — por isso as outras rotas de escrita entram lá
+    dentro sem esbarrar em nada, e a divisão fechava na mesma sobre um retrato
+    que já não era a conta. É a mesma lição de `_aplicar_as_linhas` ("para quem
+    deriva do array `linhas` a condição do estado não chega"), aplicada a quem
+    deriva a conta toda. Medido em processo, com dois separadores do POS na
+    mesma conta:
+
+    - **linhas** — mãe com 1 Açaí de 8,99 €; a meio da divisão por 2 entra uma
+      Água de 1,00 €. A mãe ficava `separada` com 9,99 € e as filhas saíam
+      [4,50 / 4,49] = 8,99 €: a água não era facturada por ninguém e a conta
+      ficava travada PARA SEMPRE — uma conta `separada` não aceita juntar, nem
+      descontar, nem cancelar, e não há rota nenhuma que desfaça uma divisão.
+    - **desconto global** — mãe de 9,00 €; a meio da divisão por 3 entra um
+      desconto de 3,00 €. As filhas saíam [3,00 / 3,00 / 3,00] = 9,00 € contra
+      uma conta de 6,00 €: três Faturas Simplificadas REAIS à Autoridade
+      Tributária com 3,00 € a mais do que o cliente devia pagar.
+
+    **Por isso são estes três campos, e não um contador.** `linhas_versao`
+    fecha o primeiro vector, mas não o segundo: `aplicar_desconto_global`
+    escreve dois escalares e NÃO sobe versão nenhuma (de propósito — ver
+    `_escrever_se_ainda_aberta`). Prendem-se então os próprios valores lidos.
+    Não sobra nada de fora: `_totais` só depende de `linhas` e destes dois
+    campos, e o resto do que as filhas herdam (`loja_id`, `caixa_id`,
+    `sessao_id`, `operador_id`, `dispositivo_id`) nasce com a venda e nenhuma
+    rota deste backend lhe volta a tocar.
+
+    Prende os valores LIDOS, nunca valores fixos: um `linhas_versao: None`
+    escrito à mão recusava a divisão em toda a conta que já tinha sido alterada
+    uma vez — ou seja, em quase todas. Um campo ausente casa com `None`, tal
+    como no Mongo (uma conta aberta antes do contador não precisa de migração).
+
+    E o `_confirma_que_as_partes_somam` não substitui isto: confere as filhas
+    contra o `mae` em memória — o retrato velho, não o que está gravado."""
+    return {
+        "id": mae["id"],
+        "estado": "aberta",
+        "linhas_versao": mae.get("linhas_versao"),
+        "desconto_global_eur": mae.get("desconto_global_eur"),
+        "desconto_global_pct": mae.get("desconto_global_pct"),
+    }
+
+
+async def _porque_nao_travou_a_mae(db, venda_id: str) -> str:
+    """Qual das duas coisas aconteceu, para o 409 descrever a conta como ela
+    está no instante em que a operadora o lê — a mesma disciplina de
+    `_porque_nao_foi_cancelada`.
+
+    O filtro de `_a_mae_como_foi_lida` falha por duas razões bem diferentes, e
+    a operadora faz coisas diferentes em cada uma: ou a conta já não está
+    aberta (emitida ou cancelada por quem chegou primeiro) e não há divisão
+    nenhuma a fazer, ou está aberta e só mudou por baixo — e aí divide-se outra
+    vez. Dizer-lhe "esta venda já foi emitida ou cancelada" sobre uma conta que
+    ela tem aberta à frente mandava-a procurar no Vendus um documento que não
+    existe."""
+    venda = await db[COLECOES["vendas"]].find_one({"id": venda_id})
+    if (venda or {}).get("estado") == "aberta":
+        return _MSG_CONTA_MUDOU_ANTES_DE_DIVIDIR
+    return _MSG_VENDA_NAO_ABERTA
+
+
 @router.post("/pos/venda/{venda_id}/dividir", status_code=201)
 async def dividir_conta(
     venda_id: str, dados: PedidoDividir, operador: Dict = Depends(operador_atual)
@@ -1267,13 +1346,13 @@ async def dividir_conta(
     **A ordem das escritas, e o que ela custa.** As filhas nascem primeiro e a
     mãe trava a seguir: ao contrário, existia um instante em que a conta estava
     `separada` sem partes nenhumas — a operadora sem conta para cobrar e sem
-    nada para desfazer. O preço desta ordem é a janela entre as duas escritas,
-    e é por isso que a da mãe é CONDICIONADA a `{"estado": "aberta"}` e decide
-    pelo `matched_count` (a mesma técnica do `cancelar_venda`): se a emissão
-    ganhou a corrida, as filhas que acabaram de nascer são apagadas e a
-    operadora leva um 409. Apagá-las é seguro porque ninguém do lado de fora
-    chegou a ver os `id` delas — foram gerados neste pedido e ainda não saíram
-    daqui."""
+    nada para desfazer. O preço desta ordem é a janela entre a leitura da mãe e
+    a escrita que a trava, e é por isso que essa escrita é CONDICIONADA à mãe
+    COMO ELA FOI LIDA — estado, versão das linhas e desconto global
+    (`_a_mae_como_foi_lida`) — e decide pelo `matched_count`, não pelas guardas
+    de cima. Se alguém ganhou a corrida nessa janela (a emissão, ou o outro
+    separador do POS a juntar uma linha), as filhas que acabaram de nascer são
+    apagadas e a operadora leva um 409 que diz qual das duas coisas foi."""
     db = obter_db()
     mae = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
     _garante_aberta(mae)
@@ -1308,16 +1387,20 @@ async def dividir_conta(
 
     atualizacao = {"estado": "separada"}
     resultado = await db[COLECOES["vendas"]].update_one(
-        {"id": venda_id, "estado": "aberta"}, {"$set": atualizacao}
+        _a_mae_como_foi_lida(mae), {"$set": atualizacao}
     )
     if resultado.matched_count == 0:
-        # A mãe deixou de estar aberta entre a leitura e agora (emitida ou
-        # cancelada por quem chegou primeiro). As filhas não podem ficar: eram
-        # N contas órfãs prontas a emitir N Faturas Simplificadas de uma conta
-        # que já tem a sua.
+        # A mãe já não é aquela de que estas filhas foram feitas: ou deixou de
+        # estar aberta (emitida ou cancelada por quem chegou primeiro), ou
+        # ganhou linhas / um desconto entretanto — ver `_a_mae_como_foi_lida`.
+        # Em qualquer dos casos as filhas não podem ficar: eram N contas órfãs
+        # prontas a emitir N Faturas Simplificadas de uma conta que não foi
+        # dividida. Apagá-las é seguro porque ninguém do lado de fora chegou a
+        # ver os `id` delas.
         for filha in filhas:
             await db[COLECOES["vendas"]].delete_one({"id": filha["id"]})
-        raise HTTPException(status_code=409, detail=_MSG_VENDA_NAO_ABERTA)
+        raise HTTPException(
+            status_code=409, detail=await _porque_nao_travou_a_mae(db, venda_id))
 
     mae.update(atualizacao)
     return {

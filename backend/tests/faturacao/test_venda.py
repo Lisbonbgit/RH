@@ -3170,7 +3170,155 @@ def test_se_a_mae_deixar_de_estar_aberta_a_meio_as_filhas_sao_apagadas(monkeypat
         _corre(dividir_conta("venda-1", PedidoDividir(partes=3), operador=_operador()))
 
     assert e.value.status_code == 409
+    assert e.value.detail == venda_mod._MSG_VENDA_NAO_ABERTA, (
+        "aqui a conta JÁ NÃO está aberta — dizer-lhe que a conta 'mudou por "
+        "baixo' mandava-a dividir outra vez uma venda que já tem fatura"
+    )
     assert mae["estado"] == "emitida", "não se toca numa venda que já emitiu"
     assert [d["id"] for d in vendas._documentos] == ["venda-1"], (
         "ficaram filhas órfãs de uma divisão que nunca aconteceu"
     )
+
+
+# --- A mãe que se trava é a MESMA de que as filhas foram feitas ----------------
+#
+# A escrita que passa a mãe a `separada` não pode prender só o `estado`: entre a
+# leitura da mãe e essa escrita há N+1 `await`s (o `_garante_sem_emissao` e os N
+# inserts das filhas), e a mãe continua ABERTA durante toda essa janela — por
+# isso as outras rotas de escrita passam lá dentro sem esbarrar em nada, e as
+# filhas nascem de um retrato que já não é a conta.
+#
+# É a mesma lição de `_aplicar_as_linhas` ("para quem deriva do array `linhas` a
+# condição do estado não chega"), aplicada a quem deriva a conta INTEIRA. Os
+# testes abaixo são a mesma conta picada de DOIS separadores do POS, que é o
+# cenário que este módulo assume desde essa correcção.
+
+
+class VendasQueDeixamOutroPedidoPassarNaDivisao(ColeccaoFalsa):
+    """Deixa correr um pedido INTEIRO de outro sítio na janela da divisão:
+    logo depois da PRIMEIRA filha inserida, que é onde a mãe ainda está
+    `aberta` e o retrato de que as filhas foram feitas já está tirado.
+
+    O gancho está no `insert_one` e não no `update_one` de propósito: o que se
+    quer medir é a janela ANTES da escrita que trava a mãe. Um gancho no
+    próprio `update_one` corria com o filtro já montado e não provava nada."""
+
+    def __init__(self, registo, documentos=None):
+        super().__init__(registo, documentos)
+        self.o_outro_sitio = None
+
+    async def insert_one(self, doc):
+        resposta = await super().insert_one(doc)
+        outro, self.o_outro_sitio = self.o_outro_sitio, None  # só na primeira
+        if outro is not None:
+            await outro()
+        return resposta
+
+
+def _db_de_uma_divisao_interrompida(registo, mae):
+    vendas = VendasQueDeixamOutroPedidoPassarNaDivisao(registo, [mae])
+    db = DbFalsa({
+        COLECOES["caixas"]: ColeccaoFalsa(registo, [_caixa()]),
+        COLECOES["sessoes_caixa"]: ColeccaoFalsa(registo, [_sessao()]),
+        COLECOES["vendas"]: vendas,
+        COLECOES["produtos"]: ColeccaoFalsa(
+            registo, [_produto(), _produto(id="prod-agua", nome="Água 33cl", preco=1.0)]),
+        COLECOES["refs_fiscais"]: ColeccaoFalsa(registo, []),
+        COLECOES["documentos"]: ColeccaoFalsa(registo, []),
+        COLECOES["grupos_personalizacao"]: ColeccaoFalsa(registo, []),
+    })
+    return db, vendas
+
+
+def test_uma_linha_junta_a_meio_da_divisao_nao_se_perde(monkeypatch):
+    """A água que o outro separador junta enquanto este divide.
+
+    Sem prender a VERSÃO das linhas, a divisão fechava na mesma: a mãe ficava
+    `separada` com 2 linhas (9,99 €) e as filhas saíam do retrato com 1
+    (8,99 €). Ninguém facturava a água — e a mãe ficava travada para sempre,
+    porque uma conta `separada` já não aceita juntar, nem descontar, nem
+    cancelar: não há rota nenhuma que desfaça isto."""
+    registo = []
+    mae = _venda(linhas=[
+        _linha(produto_nome="Açaí Regular", produto_preco=8.99, quantidade=1)])
+    db, vendas = _db_de_uma_divisao_interrompida(registo, mae)
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    async def o_outro_sitio_junta_a_agua():
+        await juntar_linha(
+            "venda-1", PedidoJuntarLinha(produto_id="prod-agua"), operador=_operador())
+
+    vendas.o_outro_sitio = o_outro_sitio_junta_a_agua
+
+    with pytest.raises(HTTPException) as e:
+        _corre(dividir_conta("venda-1", PedidoDividir(partes=2), operador=_operador()))
+
+    assert e.value.status_code == 409
+    assert e.value.detail == venda_mod._MSG_CONTA_MUDOU_ANTES_DE_DIVIDIR, (
+        "a conta continua ABERTA — mandar procurar uma fatura no Vendus era mentira"
+    )
+    assert [d["id"] for d in vendas._documentos] == ["venda-1"], (
+        "ficaram filhas de uma divisão que não chegou a fechar"
+    )
+    guardada = vendas._documentos[0]
+    assert guardada["estado"] == "aberta", (
+        "a mãe não pode ficar travada por uma divisão que não aconteceu"
+    )
+    assert [li["produto_nome"] for li in guardada["linhas"]] == [
+        "Açaí Regular", "Água 33cl"], "a água que a operadora juntou tem de ficar na conta"
+
+
+def test_um_desconto_global_dado_a_meio_da_divisao_nao_se_perde(monkeypatch):
+    """O vector que COBRA A MAIS — e o que prender `linhas_versao` sozinho NÃO
+    apanha: `aplicar_desconto_global` escreve dois escalares e não sobe versão
+    nenhuma.
+
+    Uma conta de 9,00 € dividida por três enquanto o gestor lhe dá 3,00 € de
+    desconto dava três partes de 3,00 € contra uma conta de 6,00 €: três
+    Faturas Simplificadas REAIS à Autoridade Tributária com 3,00 € a mais do
+    que o cliente devia pagar. E o `_confirma_que_as_partes_somam` não o
+    apanha, porque confere as filhas contra o retrato em memória — não contra
+    o que está gravado."""
+    registo = []
+    mae = _venda(linhas=[_linha(produto_preco=9.00, quantidade=1)])
+    db, vendas = _db_de_uma_divisao_interrompida(registo, mae)
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    async def o_outro_sitio_desconta():
+        await aplicar_desconto_global(
+            "venda-1", PedidoDescontoGlobal(desconto_eur=3.00), operador=_operador())
+
+    vendas.o_outro_sitio = o_outro_sitio_desconta
+
+    with pytest.raises(HTTPException) as e:
+        _corre(dividir_conta("venda-1", PedidoDividir(partes=3), operador=_operador()))
+
+    assert e.value.status_code == 409
+    assert e.value.detail == venda_mod._MSG_CONTA_MUDOU_ANTES_DE_DIVIDIR
+    assert [d["id"] for d in vendas._documentos] == ["venda-1"], (
+        "ficaram filhas que somavam 9,00 € numa conta de 6,00 €"
+    )
+    guardada = vendas._documentos[0]
+    assert guardada["estado"] == "aberta"
+    assert guardada["desconto_global_eur"] == 3.00, "o desconto que o gestor deu tem de ficar"
+
+
+def test_dividir_uma_conta_ja_alterada_varias_vezes_fecha_na_mesma(monkeypatch):
+    """O outro lado do mesmo filtro: prender o que foi LIDO, não valores
+    fixos.
+
+    Uma conta normal ao balcão já foi tocada várias vezes — tem
+    `linhas_versao` e pode ter desconto global. Um filtro com
+    `linhas_versao: None` escrito à mão recusava a divisão em quase todas as
+    contas reais, com a operadora e o cliente à frente."""
+    registo = []
+    mae = _venda(linhas=[_linha(produto_preco=9.00, quantidade=1)],
+                 linhas_versao=7, desconto_global_eur=3.00)
+    db = _db(registo, vendas=[mae])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    r = _corre(dividir_conta("venda-1", PedidoDividir(partes=3), operador=_operador()))
+
+    assert [p["totais"]["total"] for p in r["partes"]] == [2.00, 2.00, 2.00]
+    assert r["conta_mae"]["estado"] == "separada"
+    assert mae["estado"] == "separada", "a mãe tem de ficar mesmo travada no Mongo"
