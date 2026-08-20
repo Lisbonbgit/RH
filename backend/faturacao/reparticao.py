@@ -23,9 +23,20 @@ def repartir_centimos(total_centimos: int, partes: int) -> List[int]:
     diferença entre duas pessoas nunca passa de um cêntimo, e quem paga
     primeiro é quem leva o cêntimo a mais — o que é mais fácil de explicar ao
     balcão do que a última pessoa levar todos os que sobraram.
+
+    `total_centimos` tem de ser mesmo cêntimos inteiros (899, não 8.99). É
+    uma unidade fácil de confundir com a irmã deste ficheiro em `fiscal.py`
+    (`_distribuir_centimos`, essa sim em EUROS) — e sem esta recusa, um total
+    em euros passado por engano era truncado em silêncio pelo `int()` e a
+    garantia de que "as partes somam sempre o total" deixava de ser verdade.
     """
     if partes < 1:
         raise ValueError("Uma conta reparte-se por pelo menos uma parte.")
+    if total_centimos != int(total_centimos):
+        raise ValueError(
+            "repartir_centimos espera cêntimos inteiros (ex.: 899 para "
+            "8,99 €), não euros — recebeu %r." % (total_centimos,)
+        )
     base, resto = divmod(int(total_centimos), int(partes))
     return [base + (1 if i < resto else 0) for i in range(partes)]
 

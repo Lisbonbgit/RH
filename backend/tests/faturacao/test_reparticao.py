@@ -33,6 +33,18 @@ def test_zero_partes_e_recusado():
         repartir_centimos(899, 0)
 
 
+def test_recusa_um_total_que_afinal_e_euros_nao_centimos():
+    """`repartir_centimos` tem uma quase-homónima em `fiscal.py`
+    (`_distribuir_centimos`) que recebe EUROS, não cêntimos — é fácil trocar
+    as duas. Sem esta recusa, `repartir_centimos(8.99, 3)` truncava em
+    silêncio (`int(8.99) == 8`) e devolvia `[3, 3, 2]`, que soma 8, não 8.99:
+    a garantia da docstring ("as partes somam sempre o total") ficava falsa
+    exactamente no caso em que mais importa — três Faturas Simplificadas de
+    0,03 € em vez de 3,00 € cada."""
+    with pytest.raises(ValueError):
+        repartir_centimos(8.99, 3)
+
+
 def test_a_quantidade_reproduz_o_valor_ao_centimo():
     """O que interessa não é a fracção bonita — é que `qty × preço`,
     arredondado como o Vendus arredonda, dê EXACTAMENTE o valor da parte."""
@@ -46,3 +58,24 @@ def test_a_quantidade_de_um_preco_zero_e_recusada():
     resolva, e devolver 0 escondia o problema numa fatura."""
     with pytest.raises(ValueError):
         quantidade_para(300, 0)
+
+
+def test_a_quantidade_recusa_quando_nenhum_candidato_bate_certo():
+    """A verificação de `quantidade_para` (o `if`, os dois vizinhos e o
+    `raise` final) não tem nenhum caso real de açaí que a dispare — medido
+    por amostragem exaustiva contra todos os preços de 0,01 € a 999,99 €
+    cruzados com todos os valores de 1 a 99999 cêntimos, o desvio nunca
+    aconteceu nesse intervalo. Sem um caso real, este teste teria de usar um
+    preço fora dele para provar que a verificação continua lá: a 1000,37 €
+    (deliberadamente fora do intervalo de um item de açaí — só para forçar o
+    desvio de arredondamento de 5 casas), nem a quantidade nem os dois
+    vizinhos mais próximos reproduzem os 13,52 €, e a função tem de recusar
+    em vez de devolver um valor que perde o cêntimo em silêncio. Se
+    `quantidade_para` for um dia simplificada para
+    `round(alvo / preco, CASAS_DA_QUANTIDADE)` sem esta verificação — a
+    "leitura sugere que o `if` parece sempre verdadeiro" — é este teste que
+    fica vermelho, não o `test_a_quantidade_reproduz_o_valor_ao_centimo`
+    (esse só apanha uma perda de RESOLUÇÃO, 5 para 2 casas, não a remoção da
+    verificação em si)."""
+    with pytest.raises(ValueError):
+        quantidade_para(1352, 1000.37)
