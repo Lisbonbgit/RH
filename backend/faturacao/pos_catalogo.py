@@ -121,6 +121,11 @@ def _grupo_publico(grupo: Dict) -> Dict:
             {"id": o.get("id"), "nome": o.get("nome"), "preco": o.get("preco", 0)}
             for o in opcoes
         ],
+        # Um grupo gravado antes destes campos existirem vale como o que
+        # sempre foi: uma lista de opções que sai na fatura. Os `.get` com
+        # omissão são o que impede o POS de rebentar num catálogo antigo.
+        "tipo": grupo.get("tipo", "opcoes"),
+        "sai_na_fatura": grupo.get("sai_na_fatura", True),
     }
 
 

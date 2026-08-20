@@ -321,6 +321,7 @@ def test_catalogo_devolve_os_campos_do_produto_e_nenhum_id_do_mongo(monkeypatch)
     assert resposta["grupos_personalizacao"][0] == {
         "id": "grupo-1", "nome": "Toppings", "min_select": 0, "max_select": 0,
         "opcoes": [{"id": "op-nutella", "nome": "Nutella", "preco": 0.95}],
+        "tipo": "opcoes", "sai_na_fatura": True,
     }
     assert "_id" not in resposta["grupos_personalizacao"][0]["opcoes"][0]
 
@@ -346,6 +347,35 @@ def test_opcoes_inactivas_nao_vem_mas_o_minimo_do_grupo_fica_como_esta(monkeypat
     assert grupos["grupo-1"]["min_select"] == 1
     assert grupos["grupo-1"]["max_select"] == 1
     assert [o["id"] for o in grupos["grupo-2"]["opcoes"]] == ["op-nutella"]
+
+
+def test_o_catalogo_do_pos_diz_o_tipo_e_o_sai_na_fatura_do_grupo(monkeypatch):
+    """O pedido guiado (Plano 2C) decide o passo a mostrar pelo `tipo` do
+    grupo, e o que escreve na fatura por `sai_na_fatura` — os dois campos
+    que a Task 1 acrescentou ao grupo no backoffice. Sem eles aqui, o ecrã
+    do balcão não tinha como saber que este grupo é texto livre."""
+    _monta(
+        monkeypatch,
+        grupos=[_grupo(tipo="texto", sai_na_fatura=False, opcoes=[])],
+    )
+
+    grupo = _corre(catalogo_do_pos(_={}))["grupos_personalizacao"][0]
+
+    assert grupo["tipo"] == "texto"
+    assert grupo["sai_na_fatura"] is False
+
+
+def test_um_grupo_antigo_sem_os_campos_vale_como_lista_que_sai_na_fatura(monkeypatch):
+    """Os grupos gravados antes desta alteração não têm `tipo` nem
+    `sai_na_fatura`. O POS não pode rebentar por causa disso, e o valor por
+    omissão tem de ser o comportamento de sempre: uma lista de opções que
+    sai na fatura."""
+    _monta(monkeypatch, grupos=[_grupo()])
+
+    grupo = _corre(catalogo_do_pos(_={}))["grupos_personalizacao"][0]
+
+    assert grupo["tipo"] == "opcoes"
+    assert grupo["sai_na_fatura"] is True
 
 
 def test_catalogo_vazio_devolve_as_tres_listas_e_a_contagem(monkeypatch):
