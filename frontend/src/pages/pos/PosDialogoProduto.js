@@ -216,6 +216,10 @@ export default function PosDialogoProduto({
   const [descontoEur, setDescontoEur] = useState(arranque.descontoEur);
   const [opcoes, setOpcoes] = useState(arranque.opcoes);
   const [vista, setVista] = useState(arranque.vista);
+  // Há uma edição de `opcoes` feita no painel de Personalizações de sempre
+  // (mais abaixo) que ainda não foi gravada nesta linha — ver o guarda do
+  // efeito de resincronização a seguir, e a razão de este estado existir.
+  const [opcoesPorGravar, setOpcoesPorGravar] = useState(false);
 
   useEffect(() => {
     setQuantidade(arranque.quantidade);
@@ -225,6 +229,7 @@ export default function PosDialogoProduto({
     setDescontoEur(arranque.descontoEur);
     setOpcoes(arranque.opcoes);
     setVista(arranque.vista);
+    setOpcoesPorGravar(false);
   }, [arranque]);
 
   // "Editar pedido" (Task 7) grava directamente no servidor — `editarLinha`,
@@ -237,12 +242,27 @@ export default function PosDialogoProduto({
   // Gravar deste ecrã — que manda `opcoes` sempre, mais abaixo — desfazia a
   // correcção ao gravar por cima o valor antigo.
   //
-  // Guardado contra o painel de Personalizações (`vista === 'personalizacoes'`
-  // mais abaixo, onde `opcoes` SE edita à mão): o "Editar pedido" só está à
-  // vista na vista principal, por isso as duas edições nunca deviam correr
-  // ao mesmo tempo — mas o guarda custa pouco e não deixa dúvidas.
+  // O guarda de baixo NÃO É `vista === 'personalizacoes'` sozinho — foi,
+  // até um achado da revisão da Task 7 mostrar que isso é uma garantia
+  // falsa. "Concluir", no painel de Personalizações, NÃO grava — devolve
+  // `vista` a 'linha' e a edição fica pendurada em `opcoes`, por gravar.
+  // Nesse estado, o "Editar pedido" já não tinha guarda nenhum: o cenário
+  // real é uma opção órfã (o gestor desactivou o grupo dela com a conta
+  // aberta) que a operadora retira no painel de sempre, "Concluir", e só
+  // DEPOIS se lembra de reabrir "Editar pedido" para outra coisa — o
+  // pop-up semeia-se a partir da `linha` (a verdade do servidor, que ainda
+  // tem a opção órfã, porque "Concluir" nunca a gravou), grava por cima com
+  // `editarLinha`, e este efeito devolvia a opção órfã e o preço dela à
+  // linha, em silêncio, apagando exactamente a correcção que a operadora
+  // acabara de fazer. `opcoesPorGravar` é o que falta: fica verdadeiro
+  // assim que o painel muda `opcoes` (ver o `onChange` mais abaixo) e só
+  // volta a falso quando a `chave` muda (uma linha ou um produto novos) —
+  // sobrevive ao "Concluir" de propósito, ao contrário de `vista`. O botão
+  // "Editar pedido" fica desligado enquanto isto for verdade (mais abaixo),
+  // por isso as duas edições deixam mesmo de poder correr ao mesmo tempo —
+  // agora é verdade, e não só a intenção do comentário antigo.
   useEffect(() => {
-    if (vista === 'personalizacoes') return;
+    if (vista === 'personalizacoes' || opcoesPorGravar) return;
     setOpcoes(Array.isArray(linha?.opcoes) ? linha.opcoes.filter(Boolean) : []);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [linha]);
@@ -398,7 +418,15 @@ export default function PosDialogoProduto({
         </header>
 
         <div className="flex-1 overflow-y-auto p-4 min-h-0">
-          <PosPersonalizacoes grupos={grupos} seleccionadas={opcoes} onChange={setOpcoes} />
+          {/* `opcoesPorGravar` marca-se aqui, e só aqui — é a ÚNICA maneira
+              de `opcoes` mudar fora do arranque e da resincronização do
+              "Editar pedido" (ver o efeito acima). Sem isto, uma opção
+              retirada aqui e nunca gravada não deixava rasto nenhum. */}
+          <PosPersonalizacoes
+            grupos={grupos}
+            seleccionadas={opcoes}
+            onChange={(novas) => { setOpcoes(novas); setOpcoesPorGravar(true); }}
+          />
         </div>
 
         <div className="border-t p-4 space-y-3 shrink-0">
@@ -460,11 +488,23 @@ export default function PosDialogoProduto({
               variant="outline"
               className="w-full h-12 text-base justify-start"
               onClick={onEditarPedido}
-              disabled={aGravar}
+              disabled={aGravar || opcoesPorGravar}
             >
               <Pencil className="h-5 w-5 mr-2" />
               Editar pedido
             </Button>
+            {/* Explica o desligado, e não só o desliga — a mesma regra do
+                "Porquê" do brief desta tarefa: um caminho que fica sem saída
+                sem dizer porquê é o defeito que a Task 7 existe para evitar,
+                só que agora aplicado a este botão. Carregar em Gravar (em
+                baixo) resolve: grava a alteração pendente e fecha a linha —
+                reabri-la já deixa "Editar pedido" outra vez disponível. */}
+            {opcoesPorGravar && (
+              <p className="text-xs text-muted-foreground">
+                Há uma alteração em Personalizações por gravar. Carregue em Gravar, em baixo,
+                antes de editar o pedido outra vez.
+              </p>
+            )}
           </div>
         )}
 
