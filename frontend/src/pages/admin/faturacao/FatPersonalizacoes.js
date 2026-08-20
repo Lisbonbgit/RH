@@ -9,6 +9,7 @@ import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
 import { Badge } from '../../../components/ui/badge';
 import { Switch } from '../../../components/ui/switch';
+import { RadioGroup, RadioGroupItem } from '../../../components/ui/radio-group';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../../../components/ui/dialog';
@@ -24,7 +25,12 @@ const NOME_GRUPO_MAX = 80;
 const NOME_OPCAO_MAX = 60;
 
 const emptyOpcao = () => ({ id: null, nome: '', preco: '0', ativa: true });
-const emptyForm = { nome: '', min_select: '0', max_select: '0', ativo: true, opcoes: [] };
+const emptyForm = {
+  nome: '', min_select: '0', max_select: '0', ativo: true, opcoes: [],
+  // Mesmos defaults do servidor (catalogo.py): "opcoes" e sai_na_fatura=true —
+  // um grupo novo abre já como os toppings de sempre, não como o Nome/Levar.
+  tipo: 'opcoes', sai_na_fatura: true,
+};
 
 // Semântica DERIVADA (faturacao/catalogo.py): sem campos "obrigatorio" ou
 // "tipo" no servidor — só min_select/max_select. Mostra-se por palavras aqui,
@@ -84,6 +90,8 @@ export default function FatPersonalizacoes() {
       min_select: String(grupo.min_select ?? 0),
       max_select: String(grupo.max_select ?? 0),
       ativo: grupo.ativo !== false,
+      tipo: grupo.tipo || 'opcoes',
+      sai_na_fatura: grupo.sai_na_fatura !== false,
       opcoes: (grupo.opcoes || []).map((o) => ({
         id: o.id || null,
         nome: o.nome || '',
@@ -109,6 +117,19 @@ export default function FatPersonalizacoes() {
     setOpcaoErrors((prev) => ({ ...prev, [index]: undefined }));
   };
 
+  const changeTipo = (tipo) => {
+    setForm((prev) => ({
+      ...prev,
+      tipo,
+      // "um grupo de texto não tem opções" (catalogo.py) — limpa-as ao mudar
+      // para Texto livre, senão opções de uma escolha anterior seguiam
+      // penduradas no payload sem aparecerem no ecrã (fantasmas no servidor).
+      opcoes: tipo === 'texto' ? [] : prev.opcoes,
+    }));
+    setOpcaoErrors({});
+    setFormError('');
+  };
+
   const validar = () => {
     const nome = form.nome.trim();
     if (!nome) { toast.error('Indique o nome do grupo'); return false; }
@@ -117,13 +138,18 @@ export default function FatPersonalizacoes() {
     const min = parseInt(form.min_select, 10) || 0;
     const max = parseInt(form.max_select, 10) || 0;
     if (min < 0 || max < 0) { setFormError('O mínimo e o máximo de escolhas não podem ser negativos'); return false; }
-    if (max > 0 && min > max) {
-      setFormError('O mínimo de escolhas não pode ser maior do que o máximo');
-      return false;
-    }
-    if (min > form.opcoes.length) {
-      setFormError('O mínimo de escolhas não pode ser maior do que o número de opções do grupo');
-      return false;
+    // Mesma guarda condicional do model_validator do servidor (catalogo.py):
+    // um grupo de texto não tem opções, e comparar min_select com
+    // len(opcoes) recusava sempre um Nome marcado como obrigatório.
+    if (form.tipo === 'opcoes') {
+      if (max > 0 && min > max) {
+        setFormError('O mínimo de escolhas não pode ser maior do que o máximo');
+        return false;
+      }
+      if (min > form.opcoes.length) {
+        setFormError('O mínimo de escolhas não pode ser maior do que o número de opções do grupo');
+        return false;
+      }
     }
     setFormError('');
 
@@ -152,6 +178,8 @@ export default function FatPersonalizacoes() {
       min_select: parseInt(form.min_select, 10) || 0,
       max_select: parseInt(form.max_select, 10) || 0,
       ativo: form.ativo,
+      tipo: form.tipo,
+      sai_na_fatura: form.sai_na_fatura,
       opcoes: form.opcoes.map((o) => ({
         id: o.id || undefined,
         nome: o.nome.trim(),
@@ -293,39 +321,78 @@ export default function FatPersonalizacoes() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="grupo-min">Mínimo de escolhas</Label>
-                  <Input
-                    id="grupo-min"
-                    type="number"
-                    min="0"
-                    value={form.min_select}
-                    onChange={(e) => { setForm({ ...form, min_select: e.target.value }); setFormError(''); }}
-                    data-testid="grupo-min-input"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="grupo-max">Máximo de escolhas</Label>
-                  <Input
-                    id="grupo-max"
-                    type="number"
-                    min="0"
-                    value={form.max_select}
-                    onChange={(e) => { setForm({ ...form, max_select: e.target.value }); setFormError(''); }}
-                    data-testid="grupo-max-input"
-                  />
-                  <p className="text-xs text-muted-foreground">0 = sem limite</p>
-                </div>
+              <div className="space-y-2">
+                <Label>Tipo *</Label>
+                <RadioGroup
+                  value={form.tipo}
+                  onValueChange={changeTipo}
+                  className="flex items-center gap-6"
+                  data-testid="grupo-tipo-radio"
+                >
+                  <div className="flex items-center gap-2">
+                    <RadioGroupItem value="opcoes" id="grupo-tipo-opcoes" />
+                    <Label htmlFor="grupo-tipo-opcoes" className="cursor-pointer font-normal">Lista de opções</Label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <RadioGroupItem value="texto" id="grupo-tipo-texto" />
+                    <Label htmlFor="grupo-tipo-texto" className="cursor-pointer font-normal">Texto livre</Label>
+                  </div>
+                </RadioGroup>
+                <p className="text-xs text-muted-foreground">
+                  Lista de opções — ao balcão, a funcionária escolhe entre alternativas já definidas (ex.: toppings).
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Texto livre — ao balcão, a funcionária escreve uma resposta (ex.: o nome no copo).
+                </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
-                <span className="text-muted-foreground">Isto torna o grupo:</span>
-                <Badge variant="outline" className={previaRegras.obrigatorio ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-100 text-slate-600 border-slate-200'}>
-                  {previaRegras.obrigatorio ? 'Obrigatório' : 'Opcional'}
-                </Badge>
-                <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">{previaRegras.escolha}</Badge>
-              </div>
+              {form.tipo === 'opcoes' ? (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="grupo-min">Mínimo de escolhas</Label>
+                      <Input
+                        id="grupo-min"
+                        type="number"
+                        min="0"
+                        value={form.min_select}
+                        onChange={(e) => { setForm({ ...form, min_select: e.target.value }); setFormError(''); }}
+                        data-testid="grupo-min-input"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="grupo-max">Máximo de escolhas</Label>
+                      <Input
+                        id="grupo-max"
+                        type="number"
+                        min="0"
+                        value={form.max_select}
+                        onChange={(e) => { setForm({ ...form, max_select: e.target.value }); setFormError(''); }}
+                        data-testid="grupo-max-input"
+                      />
+                      <p className="text-xs text-muted-foreground">0 = sem limite</p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                    <span className="text-muted-foreground">Isto torna o grupo:</span>
+                    <Badge variant="outline" className={previaRegras.obrigatorio ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-100 text-slate-600 border-slate-200'}>
+                      {previaRegras.obrigatorio ? 'Obrigatório' : 'Opcional'}
+                    </Badge>
+                    <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">{previaRegras.escolha}</Badge>
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="grupo-obrigatorio"
+                    checked={Number(form.min_select) >= 1}
+                    onCheckedChange={(v) => { setForm({ ...form, min_select: v ? '1' : '0' }); setFormError(''); }}
+                    data-testid="grupo-obrigatorio-switch"
+                  />
+                  <Label htmlFor="grupo-obrigatorio" className="cursor-pointer">Resposta obrigatória</Label>
+                </div>
+              )}
               {formError && <p className="text-xs text-destructive" data-testid="grupo-form-error">{formError}</p>}
 
               <div className="flex items-center gap-2">
@@ -333,6 +400,24 @@ export default function FatPersonalizacoes() {
                 <Label htmlFor="grupo-ativo" className="cursor-pointer">Grupo ativo</Label>
               </div>
 
+              <div className="space-y-1.5 rounded-md border px-3 py-3">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="grupo-sai-na-fatura"
+                    checked={form.sai_na_fatura}
+                    onCheckedChange={(v) => setForm({ ...form, sai_na_fatura: v })}
+                    data-testid="grupo-sai-na-fatura-switch"
+                  />
+                  <Label htmlFor="grupo-sai-na-fatura" className="cursor-pointer">Sai na fatura</Label>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  As escolhas deste grupo aparecem na fatura do cliente. Desligue num grupo que seja só
+                  para a cozinha — o nome no copo, ou levar/comer aqui.
+                </p>
+                <p className="text-xs text-muted-foreground">Uma opção paga aparece sempre, mesmo com isto desligado.</p>
+              </div>
+
+              {form.tipo === 'opcoes' && (
               <div className="space-y-2 pt-2 border-t">
                 <div className="flex items-center justify-between pt-3">
                   <Label>Opções</Label>
@@ -386,6 +471,7 @@ export default function FatPersonalizacoes() {
                   </div>
                 )}
               </div>
+              )}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancelar</Button>
