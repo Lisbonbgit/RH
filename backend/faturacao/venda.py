@@ -236,7 +236,15 @@ class PedidoDividir(BaseModel):
 class PedidoSepararLinha(BaseModel):
     """Quantas unidades desta linha vão para esta parte — sempre uma FATIA
     da quantidade que já estava na conta, atribuída pelo staff, nunca um
-    valor novo."""
+    valor novo.
+
+    **Sempre um número INTEIRO de unidades — e isto é VERIFICADO, não só
+    descrito.** Ao contrário do `dividir_conta` (que reparte um VALOR e por
+    isso lida com fracções, 0.3337 de um açaí), aqui o staff atribui artigos
+    físicos: nunca 0.6 de um açaí para uma pessoa e 1.4 para a outra. Um
+    comentário a dizer "não há fracções" sem um crivo a impedi-las já
+    escondeu um bloqueador nesta mesma secção do ficheiro — por isso a
+    fracção é recusada aqui, com 422, e não silenciosamente aceite."""
 
     linha_id: str = Field(min_length=1)
     quantidade: float
@@ -244,7 +252,15 @@ class PedidoSepararLinha(BaseModel):
     @field_validator("quantidade")
     @classmethod
     def _valida_quantidade(cls, v):
-        return _recusa_quantidade_impossivel(v)
+        v = _recusa_quantidade_impossivel(v)
+        if v is not None and v != int(v):
+            raise ValueError(
+                "A quantidade %s não é um número inteiro de unidades. Ao "
+                "separar a conta atribuem-se artigos inteiros a cada parte — "
+                "as fracções ficam para o dividir_conta, que reparte por "
+                "VALOR, não por artigo." % v
+            )
+        return v
 
 
 class PedidoSepararParte(BaseModel):
@@ -1557,14 +1573,20 @@ async def dividir_conta(
 # leva o que consumiu. Ao contrário do `dividir_conta` (que reparte um VALOR
 # por N pessoas, ao cêntimo), aqui é o STAFF que diz quem leva o quê — por
 # isso não há fracções: uma linha de 2 açaís vai 1 para cada, nunca 0.6 para
-# um e 1.4 para o outro. É essa diferença que torna esta rota mais simples do
-# que a anterior, e é também por que a spec pôs as fracções fora do âmbito
-# daqui.
+# um e 1.4 para o outro. Isto não é só descrito — `PedidoSepararLinha` RECUSA
+# com 422 uma quantidade que não seja um número inteiro de unidades. É essa
+# diferença que torna esta rota mais simples do que a anterior, e é também
+# por que a spec pôs as fracções fora do âmbito daqui.
 #
 # A decisão estrutural é a MESMA da divisão: cada parte é uma venda normal, e
 # a escrita que a cria — trancar a mãe, perguntar outra vez pela emissão,
 # compensar uma corrida — é literalmente o MESMO código (`_grava_as_partes`),
-# não uma segunda cópia dele.
+# não uma segunda cópia dele. O desconto (de linha e global) da mãe TAMBÉM
+# viaja para as partes, tal como na divisão — repartido PROPORCIONALMENTE ao
+# que cada parte leva (`_reparte_por_peso`), e não em fatias iguais como lá:
+# aqui as partes não pesam o mesmo entre si. E a soma confirma-se ANTES de
+# qualquer escrita (`_confirma_que_as_partes_somam`), a mesma rede que já
+# existia para a divisão.
 
 # Unidade em que as quantidades se SOMAM e se COMPARAM nesta rota — nunca em
 # float. `0.1 + 0.2 != 0.3` na vírgula flutuante binária, e aqui o que está em
@@ -1581,28 +1603,72 @@ def _unidades(quantidade: float) -> int:
     return round(quantidade * _UNIDADES_POR_QUANTIDADE)
 
 
+def _reparte_por_peso(total_centimos: int, pesos: List[int]) -> List[int]:
+    """Reparte `total_centimos` pelos `pesos` dados, PROPORCIONALMENTE — ao
+    contrário de `reparticao.repartir_centimos`, que reparte em partes
+    IGUAIS (a ferramenta certa para o `dividir_conta`, que já repartiu o
+    VALOR de cada linha por N antes de chegar aqui). Aqui as partes não têm
+    o mesmo peso entre si: um desconto de 10% sobre dois açaís e uma
+    Coca-Cola não pode acabar metade em cima de quem só levou a Coca-Cola.
+
+    Chão da divisão inteira para cada peso, e os cêntimos que sobram vão,
+    um a um, para quem tem o maior resto por arredondar — o método do maior
+    resto, que é o que faz a soma fechar ao cêntimo exacto sem beneficiar
+    sempre a mesma parte. Tudo em ARITMÉTICA INTEIRA (multiplicação e resto
+    da divisão, nunca uma divisão em vírgula flutuante): a mesma disciplina
+    de `repartir_centimos`, só que com pesos diferentes em vez de partes
+    iguais."""
+    n = len(pesos)
+    soma_pesos = sum(pesos)
+    if soma_pesos <= 0 or total_centimos == 0:
+        # Nada para repartir (ou nada com peso nenhum para o receber): todas
+        # as partes ficam a 0, e é o `_confirma_que_as_partes_somam` a seguir
+        # que apanha o caso em que isso deixa a soma por bater.
+        return [0] * n
+    numeradores = [total_centimos * peso for peso in pesos]
+    base = [num // soma_pesos for num in numeradores]
+    restos = [num % soma_pesos for num in numeradores]
+    falta = total_centimos - sum(base)
+    for i in sorted(range(n), key=lambda i: restos[i], reverse=True)[:falta]:
+        base[i] += 1
+    return base
+
+
 def _partes_da_separacao(mae: Dict, dados: PedidoSeparar) -> List[List[Dict]]:
     """As linhas de cada parte, tal como o staff as atribuiu — e a
     verificação central desta rota: a soma do que cada linha da mãe recebeu
     tem de dar EXACTAMENTE a quantidade que ela tinha. Nem menos (um artigo
     sem dono sai da loja sem fatura e sem pagamento) nem mais (fatura-se o
     que não se vendeu) — e são dois 422 com mensagens diferentes, porque o
-    que a operadora tem de fazer a seguir também é diferente."""
+    que a operadora tem de fazer a seguir também é diferente.
+
+    **O `desconto_eur` de uma linha reparte-se pelas partes que a
+    atribuição lhe deu — nunca copiado inteiro.** Uma linha de 2 unidades
+    com um desconto de PAR (`desconto_eur`, o tecto validado sobre a linha
+    INTEIRA) separada 1+1 não pode dar a cada filha o desconto completo: é
+    exactamente o defeito que a docstring de `_partes_de_uma_linha` (Task 3)
+    descreve — "um '-3,00 €' copiado tal e qual para as três filhas
+    descontava 9,00 € numa conta que descontou 3,00". Repartido
+    PROPORCIONALMENTE às unidades atribuídas (`_reparte_por_peso`), em
+    cêntimos. O `desconto_pct`, ao contrário, não precisa de nada disto: já
+    incide sobre o bruto de CADA filha, que encolhe sozinho com a
+    quantidade copiada — repartir por percentagem seria repartir o que já
+    está repartido."""
     por_linha = {li["id"]: li for li in (mae.get("linhas") or [])}
     atribuido = {lid: 0 for lid in por_linha}
+    # As unidades que cada parte atribuiu a cada linha, pela MESMA ordem em
+    # que `dados.partes` as lista — é o peso que `_reparte_por_peso` usa a
+    # seguir, e tem de estar sincronizado com a segunda passagem lá em baixo.
+    unidades_por_linha = {lid: [] for lid in por_linha}  # type: Dict[str, List[int]]
 
-    linhas_por_parte = []
     for parte in dados.partes:
-        linhas_da_parte = []
         for pl in parte.linhas:
             linha = por_linha.get(pl.linha_id)
             if linha is None:
                 raise HTTPException(status_code=404, detail=_MSG_LINHA_INEXISTENTE)
-            nova = _copia_da_linha(linha)
-            nova["quantidade"] = pl.quantidade
-            linhas_da_parte.append(nova)
-            atribuido[pl.linha_id] += _unidades(pl.quantidade)
-        linhas_por_parte.append(linhas_da_parte)
+            unidades = _unidades(pl.quantidade)
+            atribuido[pl.linha_id] += unidades
+            unidades_por_linha[pl.linha_id].append(unidades)
 
     for lid, linha in por_linha.items():
         total_linha = linha.get("quantidade", 1)
@@ -1630,6 +1696,36 @@ def _partes_da_separacao(mae: Dict, dados: PedidoSeparar) -> List[List[Dict]]:
                 ),
             )
 
+    # Só depois de confirmado que cada linha bate certo é que se reparte o
+    # `desconto_eur` dela pelas partes — pelos MESMOS pesos que acabaram de
+    # ser validados.
+    descontos_por_linha = {}  # type: Dict[str, List[int]]
+    for lid, linha in por_linha.items():
+        if linha.get("desconto_eur"):
+            descontos_por_linha[lid] = _reparte_por_peso(
+                _centimos(linha["desconto_eur"]), unidades_por_linha[lid]
+            )
+
+    # Segunda passagem por `dados.partes`, agora a construir as linhas de
+    # facto — na MESMA ordem da primeira, para o índice de cada linha_id
+    # apanhar a fatia de desconto que lhe corresponde em
+    # `descontos_por_linha`.
+    indice_por_linha = {lid: 0 for lid in por_linha}
+    linhas_por_parte = []
+    for parte in dados.partes:
+        linhas_da_parte = []
+        for pl in parte.linhas:
+            linha = por_linha[pl.linha_id]
+            nova = _copia_da_linha(linha)
+            nova["quantidade"] = pl.quantidade
+            if pl.linha_id in descontos_por_linha:
+                i = indice_por_linha[pl.linha_id]
+                fatia_centimos = descontos_por_linha[pl.linha_id][i]
+                nova["desconto_eur"] = round(fatia_centimos / 100.0, 2) or None
+                indice_por_linha[pl.linha_id] += 1
+            linhas_da_parte.append(nova)
+        linhas_por_parte.append(linhas_da_parte)
+
     return linhas_por_parte
 
 
@@ -1643,7 +1739,25 @@ async def separar_conta(
     `_garante_aberta`, `_garante_sem_emissao`), e a escrita que segue —
     trancar a mãe condicionada a como foi lida, perguntar outra vez pela
     emissão, compensar uma corrida — é o MESMO ajudante que a divisão usa
-    (`_grava_as_partes`), não uma segunda implementação dele."""
+    (`_grava_as_partes`), não uma segunda implementação dele.
+
+    **O desconto GLOBAL da mãe reparte-se pelas partes, PROPORCIONALMENTE
+    ao que cada uma vale** (`_reparte_por_peso`, pesada pelo líquido de
+    linhas de cada parte) — nunca fica todo na mãe: uma mãe `separada` não
+    emite mais nada, e um desconto que ficasse só nela desaparecia,
+    facturando-se às partes o valor CHEIO. E nunca em fatias iguais como o
+    `dividir_conta` (que pode, porque já repartiu o valor de cada linha em N
+    fatias iguais): aqui as partes não pesam o mesmo entre si, e um desconto
+    de 10% sobre dois açaís não pode acabar metade em cima de uma
+    Coca-Cola.
+
+    **A soma confirma-se ANTES de qualquer escrita**
+    (`_confirma_que_as_partes_somam`, a mesma rede que o `dividir_conta` já
+    usa) — nunca depois. Uma linha cujo desconto (agora reduzido à fatia
+    certa) ainda assim não bata com o bruto da parte, ou uma divergência de
+    arredondamento entre a soma das partes e a mãe, rebentam aqui, em
+    memória, com um 422 e nada gravado — não a meio das escritas, com a mãe
+    já `separada` e filhas órfãs vivas."""
     db = obter_db()
     mae = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
     _garante_aberta(mae)
@@ -1653,7 +1767,22 @@ async def separar_conta(
         raise HTTPException(status_code=422, detail=_MSG_CONTA_VAZIA_NAO_SE_DIVIDE)
 
     linhas_por_parte = _partes_da_separacao(mae, dados)
-    filhas = [_nova_parte(mae, linhas, 0) for linhas in linhas_por_parte]
+
+    # Pesos para o desconto global: o líquido de CADA parte (bruto já menos
+    # o desconto de linha, antes do global) — a mesma base sobre a qual
+    # `_desconto_global_eur` incide na mãe. Um dict só com "linhas" não tem
+    # desconto global nenhum, por isso `_totais(...)["total"]` aqui é
+    # exactamente esse líquido.
+    pesos = [
+        _centimos(_totais({"linhas": linhas})["total"]) for linhas in linhas_por_parte
+    ]
+    globais = _reparte_por_peso(_centimos(_totais(mae)["desconto_global"]), pesos)
+
+    filhas = [
+        _nova_parte(mae, linhas, globais[i])
+        for i, linhas in enumerate(linhas_por_parte)
+    ]
+    _confirma_que_as_partes_somam(mae, filhas)
 
     return await _grava_as_partes(db, venda_id, mae, filhas)
 

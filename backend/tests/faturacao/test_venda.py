@@ -3542,3 +3542,102 @@ def test_separar_recusa_atribuir_mais_do_que_existe(monkeypatch):
             {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
         ]), operador=_operador()))
     assert e.value.status_code == 422
+
+
+def test_separar_reparte_o_desconto_de_linha_pelas_partes(monkeypatch):
+    """Achado crítico da revisão: `_partes_da_separacao` copiava o
+    `desconto_eur` da linha INTEIRO para cada filha, dobrando (ou
+    multiplicando pelo número de partes) o desconto que a conta tinha.
+
+    Açaí Regular 8,99 € × 2 com um desconto de PAR de 1,00 € — mãe = 16,98 €.
+    Separada 1+1, cada filha tem de ficar com METADE do desconto (0,50 €),
+    para as duas somarem os mesmos 16,98 € da conta original."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[
+        _linha(id="l1", produto_nome="Açaí Regular", produto_preco=8.99,
+               quantidade=2, desconto_eur=1.00)])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    r = _corre(separar_conta("venda-1", PedidoSeparar(partes=[
+        {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+        {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+    ]), operador=_operador()))
+
+    assert [p["totais"]["total"] for p in r["partes"]] == [8.49, 8.49]
+    assert round(sum(p["totais"]["total"] for p in r["partes"]), 2) == 16.98
+
+
+def test_separar_reparte_o_desconto_global_pelas_partes(monkeypatch):
+    """Achado crítico da revisão: `separar_conta` chamava sempre
+    `_nova_parte(mae, linhas, 0)` — o desconto GLOBAL da mãe desaparecia e
+    as partes facturavam o valor CHEIO.
+
+    Açaí Regular 8,99 € × 2 com um desconto global de 10% — mãe = 16,18 €.
+    Separada 1+1, cada filha (o mesmo valor uma da outra) tem de ficar com
+    METADE do desconto global (0,90 €), para as duas somarem os mesmos
+    16,18 € — nunca os 17,98 € do valor cheio."""
+    registo = []
+    db = _db(registo, vendas=[_venda(
+        linhas=[_linha(id="l1", produto_nome="Açaí Regular", produto_preco=8.99,
+                       quantidade=2)],
+        desconto_global_pct=10)])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    r = _corre(separar_conta("venda-1", PedidoSeparar(partes=[
+        {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+        {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+    ]), operador=_operador()))
+
+    assert [p["totais"]["total"] for p in r["partes"]] == [8.09, 8.09]
+    assert round(sum(p["totais"]["total"] for p in r["partes"]), 2) == 16.18
+
+
+def test_separar_recusa_antes_de_escrever_quando_as_partes_nao_batem_ao_centimo(monkeypatch):
+    """Achados críticos e importantes da revisão, os dois de uma vez:
+    `separar_conta` não tinha nenhuma rede a confirmar que as partes somam o
+    total da mãe (a que o `dividir_conta` já tem,
+    `_confirma_que_as_partes_somam`) — e sem ela, um 422 só aparecia DEPOIS
+    de as filhas já estarem escritas e a mãe já `separada`.
+
+    O caso do próprio relatório da revisão: Açaí Regular 8,99 € × 3 com um
+    desconto de LINHA de 20% dá uma mãe de 21,58 €. Cada filha, separada
+    1+1+1, arredonda o SEU desconto (1,80 €, sobre 8,99 €) 1 cêntimo abaixo
+    do que a fatia da mãe daria — 7,19 € × 3 = 21,57 €, um cêntimo a menos
+    do que entrou na gaveta. A separação tem de ser RECUSADA (422), e nada
+    pode ficar escrito: nem uma filha inserida, nem a mãe marcada
+    `separada`."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[
+        _linha(id="l1", produto_nome="Açaí Regular", produto_preco=8.99,
+               quantidade=3, desconto_pct=20)])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as e:
+        _corre(separar_conta("venda-1", PedidoSeparar(partes=[
+            {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+            {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+            {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+        ]), operador=_operador()))
+    assert e.value.status_code == 422
+
+    # Nada foi escrito: nenhum insert_one (as filhas nunca nasceram) e a mãe
+    # continua exactamente como estava, `aberta`.
+    assert not any(op[0] == "insert_one" for op in registo)
+    mae_no_fim = _corre(db[COLECOES["vendas"]].find_one({"id": "venda-1"}))
+    assert mae_no_fim["estado"] == "aberta"
+    assert len(mae_no_fim["linhas"]) == 1
+
+
+def test_separar_recusa_quantidade_fraccionaria(monkeypatch):
+    """Achado importante da revisão: o comentário da secção dizia "não há
+    fracções", mas nada no código as impedia — `PedidoSepararLinha.quantidade`
+    aceitava até 5 casas decimais. Uma fracção agora é recusada aqui, com
+    422, e não silenciosamente aceite."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[_linha(id="l1", quantidade=2)])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    with pytest.raises(ValidationError):
+        PedidoSeparar(partes=[
+            {"linhas": [{"linha_id": "l1", "quantidade": 0.5}]},
+            {"linhas": [{"linha_id": "l1", "quantidade": 1.5}]},
+        ])
