@@ -9,12 +9,16 @@ preço e um IVA (ver faturacao/precos.py).
 
 Grupos de personalização seguem o modelo que a app L'Açaí já usa em
 produção — a mesma forma que o Vendus usa: `min_select`/`max_select` e
-opções com preço próprio. A semântica é DERIVADA, sem campos redundantes:
+opções com preço próprio. A semântica de obrigatório/escolha única é
+DERIVADA, sem campo redundante:
 - obrigatório = min_select >= 1
 - escolha única (radio) = max_select == 1
 - max_select == 0 = ilimitado
-Não se acrescenta um campo "obrigatorio" nem "tipo" — seriam uma segunda
-fonte de verdade para a mesma informação.
+Não se acrescenta um campo "obrigatorio" — seria uma segunda fonte de
+verdade para a mesma informação. `tipo` já existe ("opcoes" | "texto"),
+mas não é redundante: distingue um grupo de escolhas de um campo de texto
+livre (o "Nome" do copo do açaí), coisa que min_select/max_select não
+conseguem exprimir.
 """
 import re
 import uuid
@@ -103,6 +107,12 @@ async def apagar_categoria(categoria_id: str, _: dict = Depends(gestor_atual)) -
 # --- Grupos de personalização ----------------------------------------------------
 
 
+# Um grupo é uma lista de opções (o de sempre) ou um campo de texto livre.
+# O texto nasceu do "Nome" que se escreve no copo do açaí: é a única coisa
+# do pedido guiado que não é uma escolha entre alternativas.
+TIPOS_DE_GRUPO = frozenset({"opcoes", "texto"})
+
+
 class OpcaoEntrada(BaseModel):
     """Uma opção dentro de um grupo (ex.: "Nutella", €0,95).
 
@@ -136,9 +146,33 @@ class GrupoPersonalizacaoEntrada(BaseModel):
     max_select: int = Field(default=0, ge=0)
     opcoes: List[OpcaoEntrada] = Field(default_factory=list)
     ativo: bool = True
+    tipo: str = "opcoes"
+    # Se as escolhas deste grupo entram no título da linha da Fatura
+    # Simplificada. Liga-se nos toppings (que descrevem o produto e mudam o
+    # preço) e desliga-se no Nome e no "Consumir na loja", que são para a
+    # cozinha. Ver `precos.linha_de_venda`: uma opção PAGA sai na fatura de
+    # qualquer maneira — este interruptor esconde o que não custa nada,
+    # nunca um euro.
+    sai_na_fatura: bool = True
+
+    @field_validator("tipo")
+    @classmethod
+    def _valida_tipo(cls, v):
+        if v not in TIPOS_DE_GRUPO:
+            raise ValueError(
+                "Tipo de grupo desconhecido: '%s'. Use um destes: %s"
+                % (v, ", ".join(sorted(TIPOS_DE_GRUPO)))
+            )
+        return v
 
     @model_validator(mode="after")
     def _valida_selecao(self):
+        # Um grupo de TEXTO não tem opções: `min_select >= 1` quer dizer
+        # "resposta obrigatória", e comparar isso com len(opcoes) recusava
+        # sempre um Nome obrigatório. As duas guardas abaixo são sobre
+        # escolher de uma lista, e só a essa se aplicam.
+        if self.tipo != "opcoes":
+            return self
         if self.max_select > 0 and self.min_select > self.max_select:
             raise ValueError(
                 "O mínimo de escolhas (%d) não pode ser maior do que o máximo (%d)."

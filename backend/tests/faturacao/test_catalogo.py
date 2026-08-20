@@ -229,11 +229,13 @@ def test_grupo_sem_nome_e_recusado():
         GrupoPersonalizacaoEntrada(nome="")
 
 
-def test_grupo_nao_tem_campos_redundantes():
-    """A semântica é derivada de min_select/max_select — não se acrescenta
-    'obrigatorio' nem 'tipo', que seriam uma segunda fonte de verdade."""
+def test_grupo_nao_tem_campo_obrigatorio_redundante():
+    """A semântica de obrigatório/escolha única é derivada de
+    min_select/max_select — não se acrescenta um campo 'obrigatorio', que
+    seria uma segunda fonte de verdade para a mesma informação. `tipo` já
+    não está nesta lista: distingue opções de texto livre, o que
+    min_select/max_select não conseguem exprimir (ver test_grupo_de_texto_*)."""
     assert "obrigatorio" not in GrupoPersonalizacaoEntrada.model_fields
-    assert "tipo" not in GrupoPersonalizacaoEntrada.model_fields
 
 
 def test_min_select_negativo_e_recusado():
@@ -316,6 +318,29 @@ def test_preco_de_opcao_dentro_do_grupo_com_3_casas_e_recusado():
     with pytest.raises(ValidationError) as e:
         GrupoPersonalizacaoEntrada(nome="Toppings", opcoes=[{"nome": "Nutella", "preco": 0.995}])
     assert "0.995" in str(e.value)
+
+
+def test_grupo_de_texto_nao_precisa_de_opcoes():
+    """Um grupo 'Nome' não tem opções nenhumas — o validador do mínimo, que
+    compara min_select com len(opcoes), não se pode aplicar-lhe."""
+    g = GrupoPersonalizacaoEntrada(nome="Nome", tipo="texto", min_select=1, opcoes=[])
+    assert g.tipo == "texto"
+    assert g.sai_na_fatura is True
+
+
+def test_grupo_recusa_tipo_desconhecido():
+    with pytest.raises(ValidationError):
+        GrupoPersonalizacaoEntrada(nome="Nome", tipo="livre")
+
+
+def test_grupo_de_opcoes_continua_a_recusar_minimo_maior_que_as_opcoes():
+    """A guarda de sempre não pode ter sido desligada para todos ao ser
+    desligada para o tipo texto."""
+    with pytest.raises(ValidationError):
+        GrupoPersonalizacaoEntrada(
+            nome="Tamanho", min_select=3,
+            opcoes=[{"nome": "Pequeno"}, {"nome": "Grande"}],
+        )
 
 
 # --- Produtos: modelo -----------------------------------------------------------
