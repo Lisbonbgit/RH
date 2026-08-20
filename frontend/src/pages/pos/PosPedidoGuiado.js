@@ -293,6 +293,25 @@ export default function PosPedidoGuiado({ produto, grupos, linha, aGravar, onGra
   // o preço da linha sem ninguém pedir (é a mesma regra das "fora do
   // catálogo" do PosPersonalizacoes).
   const [opcoes, setOpcoes] = useState(() => (Array.isArray(linha?.opcoes) ? linha.opcoes.filter(Boolean) : []));
+  // As respostas escritas TAL COMO VIERAM da linha. Guarda-se a lista, e não
+  // só o texto de cada uma, por duas razões que ao balcão são a mesma:
+  //
+  // 1. uma resposta cujo grupo o catálogo já não devolve como grupo de texto
+  //    (o gestor desactivou-o, ou trocou-lhe o tipo) não tem passo nenhum
+  //    onde apareça — mas volta a ser gravada tal e qual, como as opções
+  //    órfãs aqui em cima. O pedido reenvia a lista INTEIRA e o servidor
+  //    grava esse delta em cru: reconstruí-la só a partir dos grupos de hoje
+  //    apagava a MARIA do talão da cozinha porque a operadora foi juntar uma
+  //    dose de Nutella, e sem uma palavra no ecrã;
+  // 2. a ORDEM é a que a linha tinha: o talão põe no copo a PRIMEIRA resposta
+  //    não vazia (`talao._nome_no_copo`), por isso reordenar a lista ao
+  //    corrigir uma linha trocava o nome que vai no copo — a mesma razão por
+  //    que uma alternativa entra no lugar da anterior, e não no fim.
+  const respostasLidas = useMemo(
+    () => (Array.isArray(linha?.respostas_texto) ? linha.respostas_texto.filter((r) => r && r.grupo_id) : []),
+    [linha],
+  );
+
   const [textos, setTextos] = useState(() => {
     const inicial = {};
     (Array.isArray(linha?.respostas_texto) ? linha.respostas_texto : []).forEach((r) => {
@@ -396,23 +415,58 @@ export default function PosPedidoGuiado({ produto, grupos, linha, aGravar, onGra
 
   const gravar = () => {
     if (!podeAvancar || aGravar) return;
+
+    // A resposta de um grupo QUE TEM PASSO sai do campo — é o que a operadora
+    // acabou de escrever (ou de limpar).
+    const doPasso = (g) => ({
+      grupo_id: g.id,
+      // Um retrato, como o `produto_nome` da linha: o talão da cozinha
+      // tem de se ler daqui a um mês sem ir buscar o grupo, que pode ter
+      // mudado de nome ou desaparecido.
+      nome_grupo: g.nome || null,
+      texto: String(textos[g.id] || '').trim(),
+    });
+
+    const comPasso = new Map();
+    passos.forEach((g) => {
+      if (g && g.id && tipoDoGrupo(g) === 'texto') comPasso.set(g.id, g);
+    });
+
+    // A lista sai COMPLETA: primeiro o que a linha trazia, cada resposta no
+    // seu lugar, e só depois os passos que a linha ainda não tinha
+    // respondido. O que não tem passo volta tal e qual — este ecrã não o
+    // mostrou, logo não pode ter sido a operadora a mudá-lo.
+    const respostas = [];
+    const vistos = new Set();
+    respostasLidas.forEach((r) => {
+      // Uma linha antiga com duas respostas ao mesmo grupo: fica a primeira.
+      // Uma resposta por grupo é o que este ecrã sabe escrever, e mandar a
+      // editada duas vezes era pior do que a segunda cópia que já lá estava.
+      if (vistos.has(r.grupo_id)) return;
+      vistos.add(r.grupo_id);
+      const grupoDela = comPasso.get(r.grupo_id);
+      if (grupoDela) { respostas.push(doPasso(grupoDela)); return; }
+      // Órfã: volta com o mesmo texto, normalizada aos três campos do
+      // `RespostaTexto` (venda.py) e ao mesmo `trim` das outras — um campo a
+      // mais, ou um `texto: null` de um servidor antigo, não podem rebentar
+      // em 422 uma gravação que só queria juntar uma dose de Nutella.
+      respostas.push({
+        grupo_id: r.grupo_id,
+        nome_grupo: r.nome_grupo || null,
+        texto: String(r.texto == null ? '' : r.texto).trim(),
+      });
+    });
+    passos.forEach((g) => {
+      if (comPasso.has(g?.id) && !vistos.has(g.id)) { vistos.add(g.id); respostas.push(doPasso(g)); }
+    });
+
     onGravar({
       opcoes,
       // Uma resposta em branco NÃO viaja. O pedido reenvia sempre a lista
       // inteira, por isso deixá-la de fora é precisamente o que apaga um nome
       // que a operadora limpou ao corrigir a linha; e gravar `texto: ""` era
       // deixar no talão da cozinha uma resposta que ninguém deu.
-      respostas_texto: passos
-        .filter((g) => tipoDoGrupo(g) === 'texto')
-        .map((g) => ({
-          grupo_id: g.id,
-          // Um retrato, como o `produto_nome` da linha: o talão da cozinha
-          // tem de se ler daqui a um mês sem ir buscar o grupo, que pode ter
-          // mudado de nome ou desaparecido.
-          nome_grupo: g.nome || null,
-          texto: String(textos[g.id] || '').trim(),
-        }))
-        .filter((r) => r.texto !== ''),
+      respostas_texto: respostas.filter((r) => r.texto !== ''),
     });
   };
 
