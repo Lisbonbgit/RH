@@ -493,6 +493,31 @@ def test_juntar_linha_com_quantidade_zero_e_recusado():
         PedidoJuntarLinha(produto_id="prod-1", quantidade=0)
 
 
+def test_a_quantidade_aceita_uma_fraccao_de_cinco_casas():
+    p = venda_mod.PedidoJuntarLinha(produto_id="p1", quantidade=0.33370)
+    assert p.quantidade == 0.33370
+
+
+def test_a_quantidade_recusa_mais_de_cinco_casas():
+    """Mais casas do que estas e o valor final deixa de ser previsível —
+    é a mesma defesa dos preços, noutra escala."""
+    with pytest.raises(ValidationError):
+        venda_mod.PedidoJuntarLinha(produto_id="p1", quantidade=0.333703)
+
+
+def test_a_quantidade_recusa_zero_e_negativos():
+    for q in (0, -1):
+        with pytest.raises(ValidationError):
+            venda_mod.PedidoJuntarLinha(produto_id="p1", quantidade=q)
+
+
+def test_a_quantidade_inteira_continua_a_ser_inteira():
+    """O caminho normal do balcão não pode ganhar casas decimais: 2 açaís
+    são 2, e é isso que tem de sair no papel."""
+    p = venda_mod.PedidoJuntarLinha(produto_id="p1", quantidade=2)
+    assert p.quantidade == 2
+
+
 def test_juntar_linha_guarda_as_respostas_de_texto(monkeypatch):
     registo = []
     db = _db(registo, vendas=[_venda()], produtos=[_produto()])

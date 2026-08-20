@@ -42,6 +42,7 @@ from .caixa import _obter_caixa_da_loja, _quem, _sessao_aberta
 from .db import COLECOES, obter_db
 from .pos_auth import operador_atual
 from .precos import _tem_mais_de_2_casas_decimais, erros_do_produto, linha_de_venda
+from .reparticao import CASAS_DA_QUANTIDADE
 
 router = APIRouter()
 
@@ -101,6 +102,27 @@ def _recusa_mais_de_2_casas(v):
     return v
 
 
+def _recusa_quantidade_impossivel(v):
+    """A quantidade ganha casas decimais para as contas divididas (uma parte
+    de três de um açaí é 0.3337), mas não ganha resolução infinita: acima das
+    casas que `reparticao` usa, o valor final deixa de ser previsível e o
+    crivo passa a esconder o erro em vez de o apanhar. `gt=0` e não `ge=0`
+    porque uma linha de quantidade zero não é uma venda — é uma linha que não
+    devia existir, e deixá-la entrar dava uma fatura com um artigo a 0,00 €.
+    """
+    if v is None:
+        return v
+    if v <= 0:
+        raise ValueError("A quantidade tem de ser maior do que zero.")
+    casas = repr(float(v)).partition(".")[2]
+    if len(casas) > CASAS_DA_QUANTIDADE:
+        raise ValueError(
+            "A quantidade %s tem mais de %d casas decimais."
+            % (v, CASAS_DA_QUANTIDADE)
+        )
+    return v
+
+
 class PedidoNovaVenda(BaseModel):
     caixa_id: str = Field(min_length=1)
 
@@ -118,7 +140,7 @@ class RespostaTexto(BaseModel):
 
 class PedidoJuntarLinha(BaseModel):
     produto_id: str = Field(min_length=1)
-    quantidade: int = Field(default=1, ge=1)
+    quantidade: float = 1
     opcoes: List[Dict] = Field(default_factory=list)
     respostas_texto: List[RespostaTexto] = Field(default_factory=list)
     preco_override: Optional[float] = None
@@ -126,18 +148,28 @@ class PedidoJuntarLinha(BaseModel):
     desconto_pct: Optional[float] = Field(default=None, ge=0, le=100)
     desconto_eur: Optional[float] = Field(default=None, ge=0)
 
+    @field_validator("quantidade")
+    @classmethod
+    def _valida_quantidade(cls, v):
+        return _recusa_quantidade_impossivel(v)
+
 
 class PedidoEditarLinha(BaseModel):
     # Tudo opcional: só os campos PRESENTES no pedido são alterados (lidos
     # com model_dump(exclude_unset=True)) — permite, por exemplo, limpar um
     # preco_override de volta a None sem ter de repetir o resto da linha.
-    quantidade: Optional[int] = Field(default=None, ge=1)
+    quantidade: Optional[float] = None
     opcoes: Optional[List[Dict]] = None
     respostas_texto: Optional[List[RespostaTexto]] = None
     preco_override: Optional[float] = None
     tax_override: Optional[str] = None
     desconto_pct: Optional[float] = Field(default=None, ge=0, le=100)
     desconto_eur: Optional[float] = Field(default=None, ge=0)
+
+    @field_validator("quantidade")
+    @classmethod
+    def _valida_quantidade(cls, v):
+        return _recusa_quantidade_impossivel(v)
 
 
 class PedidoDescontoGlobal(BaseModel):
