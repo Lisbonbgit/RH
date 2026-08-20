@@ -86,6 +86,45 @@ def test_linha_com_opcoes_soma_ao_preco_unitario():
     assert li["title"] == "Açaí Regular (Nutella, Banana)"
 
 
+def test_opcao_repetida_aparece_com_a_dose_no_titulo():
+    nutella = {"nome": "Nutella", "preco": 0.95}
+    linha = linha_de_venda({"nome": "Açaí Small", "preco": 7.20, "tax_id": "INT"},
+                           1, [nutella, nutella, {"nome": "Morango", "preco": 0}])
+    assert linha["title"] == "Açaí Small (Nutella 2×, Morango)"
+    # duas doses pagas: 7,20 + 0,95 + 0,95
+    assert linha["gross_price"] == 9.10
+
+
+def test_a_ordem_do_titulo_e_a_da_primeira_escolha():
+    """Agregar não pode reordenar: a operadora escolheu por uma ordem e o
+    cliente lê essa ordem no talão."""
+    a = {"nome": "Morango", "preco": 0}
+    b = {"nome": "Nutella", "preco": 0.95}
+    linha = linha_de_venda({"nome": "Açaí", "preco": 5.0, "tax_id": "INT"}, 1, [a, b, a])
+    assert linha["title"] == "Açaí (Morango 2×, Nutella)"
+
+
+def test_opcao_gratuita_de_grupo_escondido_nao_vai_ao_titulo():
+    linha = linha_de_venda(
+        {"nome": "Açaí", "preco": 5.0, "tax_id": "INT"}, 1,
+        [{"nome": "Levar", "preco": 0, "sai_na_fatura": False},
+         {"nome": "Nutella", "preco": 0.95}],
+    )
+    assert linha["title"] == "Açaí (Nutella)"
+    assert linha["gross_price"] == 5.95
+
+
+def test_opcao_PAGA_vai_ao_titulo_mesmo_com_o_interruptor_desligado():
+    """O interruptor esconde o que não custa nada. Nunca um euro: o cliente
+    está a ser cobrado por isto e a fatura tem de o dizer."""
+    linha = linha_de_venda(
+        {"nome": "Açaí", "preco": 5.0, "tax_id": "INT"}, 1,
+        [{"nome": "Whey", "preco": 0.95, "sai_na_fatura": False}],
+    )
+    assert linha["title"] == "Açaí (Whey)"
+    assert linha["gross_price"] == 5.95
+
+
 def test_linha_recusa_produto_sem_iva():
     p = _produto()
     del p["tax_id"]

@@ -115,6 +115,45 @@ def erros_do_produto(produto: Dict) -> List[str]:
     return erros
 
 
+def _descricao_das_opcoes(opcoes: List[Dict]) -> str:
+    """As opções como saem no título da linha: "Nutella 2×, Morango".
+
+    Duas regras, e as duas nasceram de uma decisão do dono:
+
+    - **As repetições agregam-se.** Cada toque na Nutella junta uma dose e
+      cobra outra vez; escrever "Nutella, Nutella, Nutella" no talão do
+      cliente é a mesma informação, ilegível. A ORDEM é a da primeira
+      escolha — agregar não pode reordenar, porque a operadora escolheu por
+      uma ordem e é essa que o cliente lê.
+    - **Um grupo com `sai_na_fatura` desligado não aparece.** É o caso do
+      "Nome" (que é do copo) e do "Consumir na loja" (que é da cozinha):
+      não descrevem o produto e não têm valor fiscal.
+
+    A excepção que não se negoceia: **uma opção PAGA aparece sempre**,
+    esteja o interruptor como estiver. O cliente está a ser cobrado por ela
+    e a fatura tem de o dizer — o interruptor esconde o que não custa nada,
+    nunca um euro. Sem esta linha, desligar o interruptor por engano num
+    grupo de toppings escondia da fatura o que lá foi cobrado.
+    """
+    contagem = {}   # nome -> doses
+    ordem = []      # os nomes pela ordem da primeira escolha
+    for o in opcoes:
+        nome = o.get("nome")
+        if not nome:
+            continue
+        pago = float(o.get("preco", 0) or 0) > 0
+        if not pago and o.get("sai_na_fatura") is False:
+            continue
+        if nome not in contagem:
+            ordem.append(nome)
+            contagem[nome] = 0
+        contagem[nome] += 1
+    return ", ".join(
+        nome if contagem[nome] == 1 else "%s %d×" % (nome, contagem[nome])
+        for nome in ordem
+    )
+
+
 def linha_de_venda(
     produto: Dict,
     quantidade: int = 1,
@@ -169,9 +208,9 @@ def linha_de_venda(
     extra = sum(float(o.get("preco", 0) or 0) for o in opcoes)
 
     titulo = produto.get("nome", "Produto")
-    nomes = [o.get("nome") for o in opcoes if o.get("nome")]
-    if nomes:
-        titulo = "%s (%s)" % (titulo, ", ".join(nomes))
+    descricao = _descricao_das_opcoes(opcoes)
+    if descricao:
+        titulo = "%s (%s)" % (titulo, descricao)
 
     linha = {
         "title": titulo[:100],
