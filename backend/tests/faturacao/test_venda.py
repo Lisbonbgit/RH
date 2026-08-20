@@ -3533,6 +3533,13 @@ def test_separar_recusa_deixar_artigos_por_atribuir(monkeypatch):
 
 
 def test_separar_recusa_atribuir_mais_do_que_existe(monkeypatch):
+    """Achado da revisão: este teste só afirmava o `status_code`, e sem a
+    guarda `atribuido[lid] > _unidades(total_linha)` o pedido cai na mesma
+    em `_confirma_que_as_partes_somam` (com OUTRA mensagem, a errada) —
+    porque a linha por 8,99 € atribuída a mais gente também deixa as
+    partes sem bater com a mãe. A asserção na MENSAGEM, como o teste irmão
+    já faz com "por atribuir", é o que distingue a guarda certa de uma
+    rede genérica a apanhar o mesmo caso por acidente."""
     registo = []
     db = _db(registo, vendas=[_venda(linhas=[_linha(id="l1", quantidade=1)])])
     monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
@@ -3542,6 +3549,42 @@ def test_separar_recusa_atribuir_mais_do_que_existe(monkeypatch):
             {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
         ]), operador=_operador()))
     assert e.value.status_code == 422
+    assert "mais gente do que artigos" in e.value.detail
+
+
+def test_separar_recusa_atribuir_artigo_gratis_duas_vezes(monkeypatch):
+    """Achado crítico da revisão: a prova de que a guarda `atribuido[lid] >
+    _unidades(total_linha)` apanha algo que `_confirma_que_as_partes_somam`
+    (e, agora, também o crivo do achado importante 5 sobre partes sem
+    valor) NÃO apanham.
+
+    Um "Topping oferta" a 0,00 € (quantidade 1 na conta) vai para as DUAS
+    partes — Parte A [topping + Açaí 8,99 €], Parte B [topping + Coca-Cola
+    0,95 €]. Nenhuma das duas partes tem valor 0 (o crivo do achado 5 não
+    dispara) e a SOMA continua a bater (8,99 + 0,95 = 9,94 €, igual à mãe:
+    o topping é grátis, duplicá-lo não muda nenhum total). Só a guarda de
+    "mais gente do que artigos" vê o problema: sem ela a separação seria
+    ACEITE, e saíam duas Faturas Simplificadas com um artigo que só existiu
+    uma vez na conta."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[
+        _linha(id="topping", produto_nome="Topping oferta", produto_preco=0.00,
+               quantidade=1),
+        _linha(id="acai", produto_nome="Açaí Regular", produto_preco=8.99,
+               quantidade=1),
+        _linha(id="coca", produto_nome="Coca-Cola", produto_preco=0.95,
+               quantidade=1),
+    ])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    with pytest.raises(HTTPException) as e:
+        _corre(separar_conta("venda-1", PedidoSeparar(partes=[
+            {"linhas": [{"linha_id": "topping", "quantidade": 1},
+                        {"linha_id": "acai", "quantidade": 1}]},
+            {"linhas": [{"linha_id": "topping", "quantidade": 1},
+                        {"linha_id": "coca", "quantidade": 1}]},
+        ]), operador=_operador()))
+    assert e.value.status_code == 422
+    assert "mais gente do que artigos" in e.value.detail
 
 
 def test_separar_reparte_o_desconto_de_linha_pelas_partes(monkeypatch):
@@ -3565,6 +3608,66 @@ def test_separar_reparte_o_desconto_de_linha_pelas_partes(monkeypatch):
 
     assert [p["totais"]["total"] for p in r["partes"]] == [8.49, 8.49]
     assert round(sum(p["totais"]["total"] for p in r["partes"]), 2) == 16.98
+
+
+def test_separar_reparte_o_desconto_pct_de_linha_sem_perder_um_centimo(monkeypatch):
+    """Achado crítico da revisão: `_partes_da_separacao` copiava
+    `desconto_pct` inteiro para cada filha, e cada uma arredondava o SEU
+    desconto sozinha — que não é o mesmo que arredondar UMA VEZ sobre a
+    linha inteira e repartir o resultado. A docstring de `_partes_de_uma_
+    linha` (Task 3) já tinha documentado isto para o `desconto_eur`; o
+    `desconto_pct` tinha a mesma falha escondida atrás da percentagem.
+
+    Açaí Regular 8,99 € × 3, desconto de LINHA de 20% — mãe = 21,58 €
+    (round(26,97 × 0,20, 2) = 5,39; 26,97 − 5,39). Separada 1+1+1, cada
+    filha arredondava sozinha 20% de 8,99 € = 1,80 € — três filhas de
+    7,19 € somam 21,57 €, um cêntimo a menos do que a mãe (era 422 antes
+    desta correcção). Convertido em euros e repartido pelo maior-resto, as
+    filhas ficam [7,19 / 7,19 / 7,20] — os mesmos 21,58 € da mãe, ao
+    cêntimo exacto."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[
+        _linha(id="l1", produto_nome="Açaí Regular", produto_preco=8.99,
+               quantidade=3, desconto_pct=20)])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    r = _corre(separar_conta("venda-1", PedidoSeparar(partes=[
+        {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+        {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+        {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+    ]), operador=_operador()))
+
+    assert [p["totais"]["total"] for p in r["partes"]] == [7.19, 7.19, 7.20]
+    assert round(sum(p["totais"]["total"] for p in r["partes"]), 2) == 21.58
+    # E cada filha sai com a percentagem já convertida — nunca copiada, ou
+    # voltaria a arredondar sozinha e a refazer o mesmo defeito.
+    assert all(li["desconto_pct"] is None for p in r["partes"] for li in p["linhas"])
+
+
+def test_separar_reparte_o_desconto_de_linha_proporcionalmente_as_unidades(monkeypatch):
+    """Achado importante da revisão: nenhum teste distinguia `_reparte_por_
+    peso` (proporcional às unidades) de uma repartição em fatias IGUAIS
+    (`reparticao.repartir_centimos`) — os testes de desconto da ronda
+    anterior usavam sempre partes SIMÉTRICAS (1+1 do mesmo produto), onde
+    as duas dão o mesmo número.
+
+    Açaí Regular 8,99 € × 3 com um desconto de PAR de 3,00 € — mãe =
+    23,97 €. Separada em [2 unidades] / [1 unidade] (ASSIMÉTRICO): o
+    desconto tem de ir 2,00 € / 1,00 €, na proporção das unidades — nunca
+    1,50 € / 1,50 €, que é o que uma repartição em fatias iguais daria."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[
+        _linha(id="l1", produto_nome="Açaí Regular", produto_preco=8.99,
+               quantidade=3, desconto_eur=3.00)])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    r = _corre(separar_conta("venda-1", PedidoSeparar(partes=[
+        {"linhas": [{"linha_id": "l1", "quantidade": 2}]},
+        {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+    ]), operador=_operador()))
+
+    assert [p["totais"]["total"] for p in r["partes"]] == [15.98, 7.99]
+    assert round(sum(p["totais"]["total"] for p in r["partes"]), 2) == 23.97
 
 
 def test_separar_reparte_o_desconto_global_pelas_partes(monkeypatch):
@@ -3592,40 +3695,85 @@ def test_separar_reparte_o_desconto_global_pelas_partes(monkeypatch):
     assert round(sum(p["totais"]["total"] for p in r["partes"]), 2) == 16.18
 
 
-def test_separar_recusa_antes_de_escrever_quando_as_partes_nao_batem_ao_centimo(monkeypatch):
-    """Achados críticos e importantes da revisão, os dois de uma vez:
-    `separar_conta` não tinha nenhuma rede a confirmar que as partes somam o
-    total da mãe (a que o `dividir_conta` já tem,
-    `_confirma_que_as_partes_somam`) — e sem ela, um 422 só aparecia DEPOIS
-    de as filhas já estarem escritas e a mãe já `separada`.
+def test_separar_reparte_o_desconto_global_proporcionalmente_ao_valor(monkeypatch):
+    """Achado importante da revisão, a mesma lacuna do teste acima mas para
+    o desconto GLOBAL: com partes SIMÉTRICAS, proporcional e "fatias
+    iguais" dão o mesmo número — só um exemplo ASSIMÉTRICO distingue os
+    dois. É o próprio exemplo do comentário do código: "um desconto de 10%
+    sobre dois açaís e uma Coca-Cola não pode acabar metade em cima de
+    quem só levou a Coca-Cola".
 
-    O caso do próprio relatório da revisão: Açaí Regular 8,99 € × 3 com um
-    desconto de LINHA de 20% dá uma mãe de 21,58 €. Cada filha, separada
-    1+1+1, arredonda o SEU desconto (1,80 €, sobre 8,99 €) 1 cêntimo abaixo
-    do que a fatia da mãe daria — 7,19 € × 3 = 21,57 €, um cêntimo a menos
-    do que entrou na gaveta. A separação tem de ser RECUSADA (422), e nada
-    pode ficar escrito: nem uma filha inserida, nem a mãe marcada
-    `separada`."""
+    2 Açaís 8,99 € + 1 Coca-Cola 0,95 €, desconto global de 10% — mãe =
+    17,04 €. Separado [1 açaí] / [1 açaí + Coca]: os PESOS (8,99 € e
+    9,94 €) não são iguais, e o desconto (1,89 €) tem de se repartir na
+    mesma proporção — 0,90 € / 0,99 €, não 0,95 € / 0,95 € (fatias
+    iguais, o que uma mutação nesta linha dava: 8,04 € / 9,00 €)."""
     registo = []
-    db = _db(registo, vendas=[_venda(linhas=[
-        _linha(id="l1", produto_nome="Açaí Regular", produto_preco=8.99,
-               quantidade=3, desconto_pct=20)])])
+    db = _db(registo, vendas=[_venda(
+        linhas=[
+            _linha(id="acai", produto_nome="Açaí Regular", produto_preco=8.99,
+                   quantidade=2),
+            _linha(id="coca", produto_nome="Coca-Cola", produto_preco=0.95,
+                   quantidade=1),
+        ],
+        desconto_global_pct=10)])
     monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
 
-    with pytest.raises(HTTPException) as e:
-        _corre(separar_conta("venda-1", PedidoSeparar(partes=[
-            {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
-            {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
-            {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
-        ]), operador=_operador()))
-    assert e.value.status_code == 422
+    r = _corre(separar_conta("venda-1", PedidoSeparar(partes=[
+        {"linhas": [{"linha_id": "acai", "quantidade": 1}]},
+        {"linhas": [{"linha_id": "acai", "quantidade": 1},
+                    {"linha_id": "coca", "quantidade": 1}]},
+    ]), operador=_operador()))
 
-    # Nada foi escrito: nenhum insert_one (as filhas nunca nasceram) e a mãe
-    # continua exactamente como estava, `aberta`.
-    assert not any(op[0] == "insert_one" for op in registo)
-    mae_no_fim = _corre(db[COLECOES["vendas"]].find_one({"id": "venda-1"}))
-    assert mae_no_fim["estado"] == "aberta"
-    assert len(mae_no_fim["linhas"]) == 1
+    assert [p["totais"]["total"] for p in r["partes"]] == [8.09, 8.95]
+    assert round(sum(p["totais"]["total"] for p in r["partes"]), 2) == 17.04
+
+
+def test_reparte_por_peso_e_proporcional_e_fecha_ao_centimo():
+    """Teste directo do ajudante, sem passar pela rota: prova que
+    `_reparte_por_peso` NÃO é `reparticao.repartir_centimos` com outro
+    nome (fatias iguais) e que o método do maior-resto está mesmo lá.
+
+    Pesos [1, 2] (proporção 1:2) sobre 100 cêntimos: o proporcional exacto
+    seria [33.33, 66.67], impossível ao cêntimo — o maior-resto fecha para
+    [33, 67] (o resto de 2/3 é maior do que o de 1/3, e é para lá que vai o
+    cêntimo que sobra). Uma repartição em fatias iguais (o erro que este
+    teste existe para apanhar) dava [50, 50]; apagar o ciclo do
+    maior-resto dentro do ajudante dava [33, 66], que nem sequer soma
+    100."""
+    assert venda_mod._reparte_por_peso(100, [1, 2]) == [33, 67]
+    assert sum(venda_mod._reparte_por_peso(100, [1, 2])) == 100
+    assert venda_mod._reparte_por_peso(1000, [1, 3]) == [250, 750]
+
+
+def test_confirma_que_as_partes_somam_usa_a_redacao_do_separar(monkeypatch):
+    """Achado importante da revisão: o 422 de `separar_conta` reutilizava a
+    mensagem do `dividir_conta` — "experimente outro número de pessoas",
+    onde não há número de pessoas nenhum a experimentar, só a atribuição
+    que o staff acabou de fazer.
+
+    Teste DIRECTO sobre `_confirma_que_as_partes_somam` (e não via
+    `separar_conta`): depois da correcção do desconto de linha/global
+    acima, a soma das partes de uma separação real bate SEMPRE ao cêntimo
+    (as quantidades são inteiras e os dois descontos fecham pelo
+    maior-resto) — já não há um cenário realista que dispare este 422 pela
+    rota. A rede fica como defesa-em-profundidade, e é isso que este teste
+    prova directamente: com `rota="separar"` a mensagem fala em "separação"
+    e "atribuição", nunca em "dividir" nem "número de pessoas"; com
+    `rota="dividir"` (o valor por omissão) mantém-se exactamente a
+    mensagem que o `dividir_conta` já tinha."""
+    mae = _venda(linhas=[_linha(produto_preco=10.00, quantidade=1)])
+    filha_a_menos = _venda(linhas=[_linha(produto_preco=4.00, quantidade=1)])
+
+    with pytest.raises(HTTPException) as e:
+        venda_mod._confirma_que_as_partes_somam(mae, [filha_a_menos], rota="separar")
+    assert "número de pessoas" not in e.value.detail
+    assert "dividir" not in e.value.detail
+    assert "separação" in e.value.detail
+
+    with pytest.raises(HTTPException) as e:
+        venda_mod._confirma_que_as_partes_somam(mae, [filha_a_menos])
+    assert "experimente outro número de pessoas" in e.value.detail
 
 
 def test_separar_recusa_quantidade_fraccionaria(monkeypatch):
@@ -3641,3 +3789,58 @@ def test_separar_recusa_quantidade_fraccionaria(monkeypatch):
             {"linhas": [{"linha_id": "l1", "quantidade": 0.5}]},
             {"linhas": [{"linha_id": "l1", "quantidade": 1.5}]},
         ])
+
+
+def test_separar_recusa_parte_sem_nenhuma_linha():
+    """Achado importante da revisão: uma parte com `linhas: []` nascia
+    `aberta` a 0,00 € e ficava PRESA para sempre — `fiscal.finalizar`
+    recusa um total que não seja positivo, e a única saída era cancelar,
+    nunca fechar. `PedidoSepararParte.linhas` passou a exigir pelo menos
+    UMA linha (`min_length=1`); o `ValidationError` do Pydantic chega antes
+    de qualquer leitura da base de dados."""
+    with pytest.raises(ValidationError):
+        PedidoSeparar(partes=[
+            {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+            {"linhas": []},
+        ])
+
+
+def test_separar_recusa_mais_de_vinte_partes():
+    """Achado importante da revisão: `PedidoSeparar.partes` não tinha
+    tecto nenhum, ao contrário do `PedidoDividir` (`le=20`, "sem tecto um
+    partes: 1000 criava mil vendas de uma vez"). A mesma razão vale aqui:
+    um dedo distraído (ou um corpo construído por engano) não pode criar
+    21 vendas de uma só vez."""
+    parte = {"linhas": [{"linha_id": "l1", "quantidade": 1}]}
+    with pytest.raises(ValidationError):
+        PedidoSeparar(partes=[parte] * 21)
+    # 20 continua a ser aceite — o tecto é vinte, não dezanove.
+    assert len(PedidoSeparar(partes=[parte] * 20).partes) == 20
+
+
+def test_separar_recusa_parte_cujas_linhas_somam_zero(monkeypatch):
+    """Achado importante da revisão: `min_length=1` em `linhas` não chega —
+    uma parte só com artigos de preço 0,00 € (um "Topping oferta" sozinho,
+    por exemplo) passa esse crivo mas fica igualmente presa: `total <= 0`
+    é exactamente o que `fiscal.finalizar` recusa. Aqui já se sabe o VALOR
+    de cada parte (`_totais`), por isso a recusa acontece em `separar_
+    conta`, e não no Pydantic."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[
+        _linha(id="topping", produto_nome="Topping oferta", produto_preco=0.00,
+               quantidade=1),
+        _linha(id="acai", produto_nome="Açaí Regular", produto_preco=8.99,
+               quantidade=1),
+    ])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as e:
+        _corre(separar_conta("venda-1", PedidoSeparar(partes=[
+            {"linhas": [{"linha_id": "acai", "quantidade": 1}]},
+            {"linhas": [{"linha_id": "topping", "quantidade": 1}]},
+        ]), operador=_operador()))
+    assert e.value.status_code == 422
+    assert e.value.detail == venda_mod._MSG_PARTE_SEM_VALOR
+
+    # Nada foi escrito: a recusa acontece ANTES de qualquer insert_one.
+    assert not any(op[0] == "insert_one" for op in registo)

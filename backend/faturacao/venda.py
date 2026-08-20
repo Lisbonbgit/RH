@@ -62,6 +62,15 @@ _MSG_CONTA_VAZIA_NAO_SE_DIVIDE = (
     "Esta conta ainda não tem nada — não há o que dividir. Pique primeiro o "
     "que o cliente leva."
 )
+# `separar_conta` (achado da revisão): uma parte cujas linhas somam 0,00 €
+# nasceria `aberta` para sempre — `fiscal.finalizar` recusa um total que não
+# seja positivo (`_MSG_TOTAL_NAO_POSITIVO`, fiscal.py) e a única saída é
+# cancelar, não fechar. Recusa-se aqui, antes de gravar nada.
+_MSG_PARTE_SEM_VALOR = (
+    "Uma das partes não leva nenhum artigo com valor — ficaria aberta para "
+    "sempre, sem forma de gerar fatura. Junte-lhe pelo menos um artigo com "
+    "preço, ou junte-a a outra parte."
+)
 _MSG_LINHA_INEXISTENTE = "Linha não encontrada nesta venda."
 _MSG_PRODUTO_INEXISTENTE = "Produto não encontrado."
 # A MESMA mensagem para as cinco rotas de escrita (juntar/editar/remover
@@ -264,16 +273,38 @@ class PedidoSepararLinha(BaseModel):
 
 
 class PedidoSepararParte(BaseModel):
-    linhas: List[PedidoSepararLinha]
+    """Uma parte da separação — as linhas que o staff lhe atribuiu.
+
+    **`min_length=1`: uma parte sem nenhuma linha nasce `aberta` a 0,00 €
+    e fica presa lá para sempre** (achado da revisão) — `fiscal.finalizar`
+    recusa um total que não seja positivo, e a única saída passa a ser
+    cancelar, nunca fechar. Uma parte com `linhas: []` não é um erro de
+    digitação inofensivo: é uma venda fantasma na lista de contas abertas
+    da sessão. Recusada aqui, com 422, antes de chegar a `_partes_da_
+    separacao`. (Uma parte cujas linhas somam 0,00 € — só artigos
+    oferecidos — passa este crivo mas fica igualmente presa; essa recusa-se
+    à frente, em `separar_conta`, depois de se saber o VALOR de cada
+    parte.)"""
+
+    linhas: List[PedidoSepararLinha] = Field(min_length=1)
 
 
 class PedidoSeparar(BaseModel):
     """Quem leva o quê — ao contrário do `PedidoDividir` (que reparte um
     VALOR por N pessoas), aqui é o staff que atribui as linhas, uma a uma,
-    a cada parte. Por isso não há `ge`/`le` sobre o número de partes: o
-    número de partes é só o comprimento desta lista."""
+    a cada parte.
 
-    partes: List[PedidoSepararParte]
+    **`max_length=20`, a MESMA razão do `le=20` no `PedidoDividir`: um dedo
+    distraído.** Ninguém separa uma conta de balcão por mais de vinte
+    pessoas, e sem tecto um `partes` com centenas de entradas cria
+    centenas de vendas de uma só vez (achado da revisão — o comentário
+    desta classe dizia "o número de partes é só o comprimento desta lista"
+    sem impor nada sobre esse comprimento, a mesma lacuna que a Task 3 já
+    tinha fechado com `ge`/`le` no `PedidoDividir`). `min_length=1` porque
+    zero partes não separa nada — cairia de qualquer forma no "por
+    atribuir" a seguir, mas dizê-lo aqui poupa a viagem até lá."""
+
+    partes: List[PedidoSepararParte] = Field(min_length=1, max_length=20)
 
 
 async def _obter_venda_da_loja(db, venda_id: str, loja_id: str) -> Dict:
@@ -1292,7 +1323,9 @@ def _nova_parte(mae: Dict, linhas: List[Dict], desconto_global_centimos: int) ->
     }
 
 
-def _confirma_que_as_partes_somam(mae: Dict, filhas: List[Dict]) -> None:
+def _confirma_que_as_partes_somam(
+    mae: Dict, filhas: List[Dict], rota: str = "dividir"
+) -> None:
     """A verificação que a spec exige, feita sobre as partes JÁ construídas e
     ANTES de qualquer escrita.
 
@@ -1301,21 +1334,39 @@ def _confirma_que_as_partes_somam(mae: Dict, filhas: List[Dict]) -> None:
     isto confirma o CONJUNTO, que é o número que o cliente pagou. Em cêntimos
     inteiros, nunca comparando floats.
 
+    **`rota` escolhe a REDACÇÃO do 422, não a verificação** — a MESMA soma,
+    partilhada pelas duas chamadoras (`dividir_conta` e `separar_conta`),
+    só muda a frase que explica o que fazer a seguir. Para o `dividir_conta`
+    "experimente outro número de pessoas" é uma acção real: `n` é um
+    parâmetro do pedido. Para o `separar_conta` não há "número de pessoas"
+    nenhum para experimentar — o número de partes é o comprimento da
+    atribuição que o staff acabou de fazer, e o que resta fazer é rever
+    essa atribuição, não contar pessoas outra vez (achado da revisão: a
+    mensagem genérica mandava a operadora "experimentar outro número",
+    sem nenhum número para mudar).
+
     Se não fechar, ninguém grava nada e a operadora recebe um 422 com um
-    caminho à frente (outro número de pessoas), em vez de N faturas que somam
-    um cêntimo a mais do que entrou na gaveta."""
+    caminho à frente, em vez de N faturas que somam um cêntimo a mais do
+    que entrou na gaveta."""
     esperado = _centimos(_totais(mae)["total"])
     soma = sum(_centimos(_totais(f)["total"]) for f in filhas)
-    if soma != esperado:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Esta conta não se consegue dividir por %d ao cêntimo: as "
-                "partes somariam %.2f € e a conta é de %.2f €. Nada foi "
-                "alterado — experimente outro número de pessoas."
-                % (len(filhas), soma / 100.0, esperado / 100.0)
-            ),
+    if soma == esperado:
+        return
+    if rota == "separar":
+        detail = (
+            "Esta separação não fecha ao cêntimo: as partes somariam "
+            "%.2f € e a conta é de %.2f €. Nada foi alterado — reveja a "
+            "atribuição das linhas a cada parte."
+            % (soma / 100.0, esperado / 100.0)
         )
+    else:
+        detail = (
+            "Esta conta não se consegue dividir por %d ao cêntimo: as "
+            "partes somariam %.2f € e a conta é de %.2f €. Nada foi "
+            "alterado — experimente outro número de pessoas."
+            % (len(filhas), soma / 100.0, esperado / 100.0)
+        )
+    raise HTTPException(status_code=422, detail=detail)
 
 
 def _a_mae_como_foi_lida(mae: Dict) -> Dict:
@@ -1642,18 +1693,36 @@ def _partes_da_separacao(mae: Dict, dados: PedidoSeparar) -> List[List[Dict]]:
     que não se vendeu) — e são dois 422 com mensagens diferentes, porque o
     que a operadora tem de fazer a seguir também é diferente.
 
-    **O `desconto_eur` de uma linha reparte-se pelas partes que a
-    atribuição lhe deu — nunca copiado inteiro.** Uma linha de 2 unidades
-    com um desconto de PAR (`desconto_eur`, o tecto validado sobre a linha
-    INTEIRA) separada 1+1 não pode dar a cada filha o desconto completo: é
-    exactamente o defeito que a docstring de `_partes_de_uma_linha` (Task 3)
-    descreve — "um '-3,00 €' copiado tal e qual para as três filhas
-    descontava 9,00 € numa conta que descontou 3,00". Repartido
-    PROPORCIONALMENTE às unidades atribuídas (`_reparte_por_peso`), em
-    cêntimos. O `desconto_pct`, ao contrário, não precisa de nada disto: já
-    incide sobre o bruto de CADA filha, que encolhe sozinho com a
-    quantidade copiada — repartir por percentagem seria repartir o que já
-    está repartido."""
+    **O desconto de uma linha reparte-se pelas partes que a atribuição lhe
+    deu — nunca copiado inteiro, e isto vale IGUALMENTE para `desconto_eur`
+    e para `desconto_pct`.** Uma linha de 2 unidades com um desconto de PAR
+    (`desconto_eur`, o tecto validado sobre a linha INTEIRA) separada 1+1
+    não pode dar a cada filha o desconto completo: é exactamente o defeito
+    que a docstring de `_partes_de_uma_linha` (Task 3) descreve — "um
+    '-3,00 €' copiado tal e qual para as três filhas descontava 9,00 € numa
+    conta que descontou 3,00".
+
+    O `desconto_pct` tinha aqui a mesma garantia falsa que a Task 3 já
+    tinha documentado como falsa: "incide sobre o bruto de CADA filha, que
+    encolhe sozinho" ignora que o Vendus ARREDONDA o desconto de cada linha
+    ao cêntimo — `round(bruto × pct / 100, 2)` — e o arredondamento feito
+    em CADA filha, separadamente, não devolve sempre o que o mesmo
+    arredondamento devolve aplicado à linha INTEIRA. Medido: um Açaí de
+    3,02 € × 2 com -20% de linha desconta 1,21 € de uma vez (mãe = 4,83 €)
+    mas 0,60 € + 0,60 € = 1,20 € separado 1+1 (partes = 4,84 €) — a mesma
+    divergência de 1 cêntimo que o `desconto_eur` já tinha, só que
+    escondida atrás de uma percentagem em vez de um valor.
+
+    Por isso os dois convertem-se em EUROS pela mesma função que já lê
+    qualquer um dos dois (`_desconto_da_linha`, sobre a linha INTEIRA como
+    estava na mãe) e repartem-se PROPORCIONALMENTE às unidades atribuídas
+    (`_reparte_por_peso`), em cêntimos — a mesma disciplina de
+    `_partes_de_uma_linha`, que também converte a percentagem em euros
+    antes de repartir e nunca ao contrário. Cada filha sai com
+    `desconto_pct = None` e `desconto_eur` já com a fatia que lhe
+    corresponde: uma percentagem copiada para a filha voltaria a arredondar
+    sozinha, refazendo o mesmo defeito que esta conversão existe para
+    fechar."""
     por_linha = {li["id"]: li for li in (mae.get("linhas") or [])}
     atribuido = {lid: 0 for lid in por_linha}
     # As unidades que cada parte atribuiu a cada linha, pela MESMA ordem em
@@ -1697,13 +1766,17 @@ def _partes_da_separacao(mae: Dict, dados: PedidoSeparar) -> List[List[Dict]]:
             )
 
     # Só depois de confirmado que cada linha bate certo é que se reparte o
-    # `desconto_eur` dela pelas partes — pelos MESMOS pesos que acabaram de
-    # ser validados.
+    # desconto dela pelas partes — pelos MESMOS pesos que acabaram de ser
+    # validados. `_desconto_da_linha` lê o desconto da linha INTEIRA em
+    # euros, seja ele guardado em `desconto_eur` ou em `desconto_pct` (o
+    # Vendus só aceita um dos dois por linha) — a mesma função que
+    # `_partes_de_uma_linha` (Task 3) já usa para a mesma conversão.
     descontos_por_linha = {}  # type: Dict[str, List[int]]
     for lid, linha in por_linha.items():
-        if linha.get("desconto_eur"):
+        desconto_linha_eur = _desconto_da_linha(_linha_vendus(linha))
+        if desconto_linha_eur:
             descontos_por_linha[lid] = _reparte_por_peso(
-                _centimos(linha["desconto_eur"]), unidades_por_linha[lid]
+                _centimos(desconto_linha_eur), unidades_por_linha[lid]
             )
 
     # Segunda passagem por `dados.partes`, agora a construir as linhas de
@@ -1721,6 +1794,12 @@ def _partes_da_separacao(mae: Dict, dados: PedidoSeparar) -> List[List[Dict]]:
             if pl.linha_id in descontos_por_linha:
                 i = indice_por_linha[pl.linha_id]
                 fatia_centimos = descontos_por_linha[pl.linha_id][i]
+                # A percentagem NUNCA viaja para a filha — voltaria a
+                # arredondar sozinha (o próprio defeito que isto corrige).
+                # O desconto desta linha já saiu em euros de
+                # `_desconto_da_linha` lá em cima, seja qual for a forma em
+                # que a mãe o guardava.
+                nova["desconto_pct"] = None
                 nova["desconto_eur"] = round(fatia_centimos / 100.0, 2) or None
                 indice_por_linha[pl.linha_id] += 1
             linhas_da_parte.append(nova)
@@ -1776,13 +1855,22 @@ async def separar_conta(
     pesos = [
         _centimos(_totais({"linhas": linhas})["total"]) for linhas in linhas_por_parte
     ]
+    # Uma parte cujas linhas somam 0,00 € (só artigos oferecidos, preço 0) é
+    # tão presa como uma parte sem linha nenhuma: `fiscal.finalizar` recusa
+    # `total <= 0` (a MESMA guarda que aqui se antecipa, `_MSG_TOTAL_NAO_
+    # POSITIVO` em fiscal.py) e só sobra cancelar — uma venda `aberta` para
+    # sempre na sessão, que a operadora nem vê porque não tem nada visível
+    # de errado. Recusa-se aqui, ANTES de gravar, e não se descobre isto
+    # três clientes depois com uma conta presa.
+    if any(peso <= 0 for peso in pesos):
+        raise HTTPException(status_code=422, detail=_MSG_PARTE_SEM_VALOR)
     globais = _reparte_por_peso(_centimos(_totais(mae)["desconto_global"]), pesos)
 
     filhas = [
         _nova_parte(mae, linhas, globais[i])
         for i, linhas in enumerate(linhas_por_parte)
     ]
-    _confirma_que_as_partes_somam(mae, filhas)
+    _confirma_que_as_partes_somam(mae, filhas, rota="separar")
 
     return await _grava_as_partes(db, venda_id, mae, filhas)
 
