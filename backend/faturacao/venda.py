@@ -32,6 +32,7 @@ Regras que não se negoceiam (brief da Task 2):
   rotas que escrevem confirmam `estado == "aberta"` antes de tocar em nada.
 """
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional
 
@@ -42,12 +43,25 @@ from .caixa import _obter_caixa_da_loja, _quem, _sessao_aberta
 from .db import COLECOES, obter_db
 from .pos_auth import operador_atual
 from .precos import _tem_mais_de_2_casas_decimais, erros_do_produto, linha_de_venda
-from .reparticao import CASAS_DA_QUANTIDADE
+from .reparticao import CASAS_DA_QUANTIDADE, quantidade_para, repartir_centimos
 
 router = APIRouter()
 
 _MSG_VENDA_INEXISTENTE = "Venda não encontrada."
 _MSG_VENDA_NAO_ABERTA = "Esta venda já foi emitida ou cancelada — não aceita alterações."
+# Uma conta DIVIDIDA está travada como uma emitida, mas por outra razão e com
+# outra saída: a operadora não tem nenhuma fatura para procurar, tem partes
+# para cobrar. O genérico mandava-a olhar para o Vendus à procura de um
+# documento que não existe.
+_MSG_VENDA_SEPARADA = (
+    "Esta conta foi dividida; quem emite são as partes. Mexa em cada parte, "
+    "não nesta — alterar a conta original punha as partes a faturar linhas "
+    "que já não existem. Uma parte que ninguém pague cancela-se."
+)
+_MSG_CONTA_VAZIA_NAO_SE_DIVIDE = (
+    "Esta conta ainda não tem nada — não há o que dividir. Pique primeiro o "
+    "que o cliente leva."
+)
 _MSG_LINHA_INEXISTENTE = "Linha não encontrada nesta venda."
 _MSG_PRODUTO_INEXISTENTE = "Produto não encontrado."
 # A MESMA mensagem para as cinco rotas de escrita (juntar/editar/remover
@@ -182,6 +196,17 @@ class PedidoDescontoGlobal(BaseModel):
         return _recusa_mais_de_2_casas(v)
 
 
+class PedidoDividir(BaseModel):
+    """Por quantas pessoas se divide esta conta.
+
+    `ge=2` porque dividir por uma é não dividir: criava uma filha idêntica à
+    mãe e travava a mãe por engano. `le=20` é o tecto de um dedo distraído —
+    ninguém divide uma conta de balcão por mais de vinte, e sem tecto um
+    `partes: 1000` criava mil vendas de uma vez."""
+
+    partes: int = Field(ge=2, le=20)
+
+
 async def _obter_venda_da_loja(db, venda_id: str, loja_id: str) -> Dict:
     """Confirma que a venda existe E pertence à loja do operador autenticado
     — mesmo raciocínio de `_obter_caixa_da_loja` em caixa.py: o âmbito nunca
@@ -193,6 +218,10 @@ async def _obter_venda_da_loja(db, venda_id: str, loja_id: str) -> Dict:
 
 
 def _garante_aberta(venda: Dict) -> None:
+    # `separada` ANTES do genérico: as duas recusam, mas só uma delas diz à
+    # operadora o que fazer a seguir (ver `_MSG_VENDA_SEPARADA`).
+    if venda.get("estado") == "separada":
+        raise HTTPException(status_code=409, detail=_MSG_VENDA_SEPARADA)
     if venda.get("estado") != "aberta":
         raise HTTPException(status_code=409, detail=_MSG_VENDA_NAO_ABERTA)
 
@@ -586,6 +615,13 @@ def _venda_publica(venda: Dict, emissao_por_confirmar: bool = False) -> Dict:
         # não foram canceladas, que é a esmagadora maioria.
         "cancelada_em": venda.get("cancelada_em"),
         "cancelada_por": venda.get("cancelada_por"),
+        # A conta de onde esta parte veio (`dividir_conta`), ou `None` na
+        # esmagadora maioria das contas, que não são parte de nada. Sempre
+        # presente pela mesma regra do `cancelada_em`: o ecrã não pode ter de
+        # adivinhar se a ausência quer dizer "não é uma parte" ou "versão
+        # antiga da API" — é por este campo que ele sabe que está a cobrar
+        # uma pessoa de várias, e não a conta toda.
+        "conta_mae_id": venda.get("conta_mae_id"),
         # O travão, para o ecrã o poder MOSTRAR em vez de o guardar só na
         # memória do browser: até aqui o POS só sabia da emissão incerta pelo
         # 503 que tinha acabado de receber, e dois toques (um F5, a tela de
@@ -1058,6 +1094,236 @@ async def cancelar_venda(venda_id: str, operador: Dict = Depends(operador_atual)
 
     venda.update(atualizacao)
     return _venda_publica(venda)
+
+
+# --- Dividir a conta: N partes que somam SEMPRE o total ------------------------
+#
+# Três amigos, dois açaís e uma Coca-Cola: ou dividem por igual, ou cada um
+# paga o que consumiu — e cada um quer a SUA fatura.
+#
+# **A decisão que mantém o núcleo fiscal intacto: cada parte é uma venda
+# normal.** Dividir cria N contas-filhas a partir da conta-mãe, e daí em diante
+# cada uma é exactamente como qualquer outra venda deste módulo — a sua
+# referência determinística, a sua reserva atómica, a sua idempotência, o seu
+# documento, e o `cancelar_venda` como saída para quem não paga. Nada muda em
+# `precos.linha_de_venda`, em `fiscal.py` ou no `caixa_math`: tudo o que lá foi
+# endurecido aplica-se às partes sem uma linha nova.
+#
+# **A regra que não se negoceia: as partes somam SEMPRE e exactamente o total.**
+# Medido contra a conta Vendus real, um Açaí Regular de 8,99 € por três:
+# `qty 0.333` factura 2,99 € (três somam 8,97) e `qty 0.3333` factura 3,00 €
+# (três somam 9,00). Nenhuma das duas dá 8,99 — mandar a mesma fracção a toda a
+# gente declara à Autoridade Tributária um valor diferente do que entrou na
+# gaveta, e num dia com muitas divisões acumula. Por isso reparte-se o VALOR em
+# cêntimos inteiros (`reparticao.repartir_centimos`) e é dele que se deriva a
+# quantidade de cada parte (`reparticao.quantidade_para`), nunca ao contrário.
+
+
+def _centimos(euros: float) -> int:
+    """Euros (já arredondados a 2 casas por quem os calculou) em cêntimos
+    inteiros. É a fronteira entre a vírgula flutuante, que só se usa para
+    LER o que está gravado, e os inteiros, que é onde toda a repartição
+    acontece."""
+    return int(round(euros * 100))
+
+
+def _partes_de_uma_linha(linha: Dict, partes: int) -> List[Optional[Dict]]:
+    """A mesma linha repartida por N — uma entrada por parte, e `None` na
+    parte que não leva nada desta linha.
+
+    O que se reparte é o VALOR, em cêntimos: o bruto da linha e, à parte, o
+    desconto que ela já dava. A quantidade de cada parte é depois derivada do
+    valor (`quantidade_para`), e não o contrário — é essa ordem que faz as
+    partes somarem o total ao cêntimo.
+
+    **As opções vão INTEIRAS para cada parte.** Três pessoas a partilhar um
+    açaí com Nutella têm de ver "Nutella" nas três faturas: o que se reparte é
+    a quantidade, e o preço unitário (`gross_price`) já inclui as opções.
+
+    **O desconto da linha viaja em EUROS, mesmo quando a mãe o tinha em
+    percentagem.** Em euros porque é a única forma de fechar ao cêntimo: um
+    `round` aplicado a cada fatia não devolve sempre o que devolve aplicado ao
+    total, e essa diferença é a soma das faturas a divergir da gaveta. E porque
+    o contrário é pior de outra maneira — um "-3,00 €" copiado tal e qual para
+    as três filhas descontava 9,00 € numa conta que descontou 3,00, e
+    `precos.linha_de_venda` recusaria a linha (desconto maior do que o bruto da
+    fatia) com um 422 à frente do cliente."""
+    li = _linha_vendus(linha)
+    preco = li["gross_price"]
+    bruto_centimos = _centimos(_bruto_da_linha(li))
+    desconto_centimos = _centimos(_desconto_da_linha(li))
+
+    if bruto_centimos == 0:
+        # Uma linha que não vale nada — um artigo oferecido, com preço 0 — não
+        # se reparte por valor: não há valor nenhum para repartir, e
+        # `quantidade_para` recusa (com razão) um preço zero. Vai INTEIRA para
+        # a primeira parte, a mesma que leva o cêntimo que sobra: aparece numa
+        # fatura, como aparecia na conta, e não muda um cêntimo em nenhuma.
+        return [_copia_da_linha(linha) if i == 0 else None for i in range(partes)]
+
+    brutos = repartir_centimos(bruto_centimos, partes)
+    descontos = repartir_centimos(desconto_centimos, partes)
+
+    repartida = []  # type: List[Optional[Dict]]
+    for bruto, desconto in zip(brutos, descontos):
+        if bruto == 0:
+            # Não chegou um cêntimo para esta pessoa (uma linha de 2 cêntimos
+            # dividida por três). A linha não entra na conta dela: entrar com
+            # quantidade zero punha um artigo a 0,00 € numa Fatura Simplificada
+            # real.
+            repartida.append(None)
+            continue
+        nova = _copia_da_linha(linha)
+        nova["quantidade"] = quantidade_para(bruto, preco)
+        nova["desconto_pct"] = None
+        nova["desconto_eur"] = round(desconto / 100.0, 2) if desconto else None
+        repartida.append(nova)
+    return repartida
+
+
+def _copia_da_linha(linha: Dict) -> Dict:
+    """A linha da parte é um documento NOVO, com id novo, numa venda nova.
+
+    Cópia PROFUNDA e não `dict(...)`: as `opcoes` e as `respostas_texto` são
+    listas aninhadas, e uma cópia rasa deixava as N filhas a partilhar a MESMA
+    lista — uma edição numa parte mexia nas outras. É o mesmo aliasing que já
+    pôs um teste deste módulo a defender um defeito, um nível mais abaixo."""
+    nova = deepcopy(linha)
+    nova["id"] = str(uuid.uuid4())
+    return nova
+
+
+def _nova_parte(mae: Dict, linhas: List[Dict], desconto_global_centimos: int) -> Dict:
+    """Uma parte, com a forma de qualquer outra venda deste módulo.
+
+    `caixa_id`/`sessao_id`/`operador_id` são os da mãe — é o que faz o fecho de
+    caixa somar as partes onde somava a conta. O `dispositivo_id` também, e não
+    é detalhe: a `GET /pos/venda/aberta` filtra por ele, e sem o herdar um F5 a
+    meio dos pagamentos deixava a operadora com o ecrã vazio e as partes por
+    cobrar.
+
+    O desconto global da mãe chega aqui já repartido e em EUROS, com a
+    percentagem a `None` de propósito: uma percentagem copiada para as filhas
+    voltava a incidir sobre a fatia já descontada — o cliente pagava menos do
+    que a conta dizia."""
+    return {
+        "id": str(uuid.uuid4()),
+        "loja_id": mae["loja_id"],
+        "caixa_id": mae["caixa_id"],
+        "sessao_id": mae["sessao_id"],
+        "operador_id": mae.get("operador_id"),
+        "dispositivo_id": mae.get("dispositivo_id"),
+        "conta_mae_id": mae["id"],
+        "linhas": linhas,
+        "linhas_versao": 0,
+        "desconto_global_pct": None,
+        "desconto_global_eur": round(desconto_global_centimos / 100.0, 2) or None,
+        "estado": "aberta",
+        "criada_em": _agora(),
+    }
+
+
+def _confirma_que_as_partes_somam(mae: Dict, filhas: List[Dict]) -> None:
+    """A verificação que a spec exige, feita sobre as partes JÁ construídas e
+    ANTES de qualquer escrita.
+
+    "O Vendus arredonda de forma previsível, mas a defesa não é acreditar
+    nisso — é confirmar." `quantidade_para` já confirma cada fatia sozinha;
+    isto confirma o CONJUNTO, que é o número que o cliente pagou. Em cêntimos
+    inteiros, nunca comparando floats.
+
+    Se não fechar, ninguém grava nada e a operadora recebe um 422 com um
+    caminho à frente (outro número de pessoas), em vez de N faturas que somam
+    um cêntimo a mais do que entrou na gaveta."""
+    esperado = _centimos(_totais(mae)["total"])
+    soma = sum(_centimos(_totais(f)["total"]) for f in filhas)
+    if soma != esperado:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Esta conta não se consegue dividir por %d ao cêntimo: as "
+                "partes somariam %.2f € e a conta é de %.2f €. Nada foi "
+                "alterado — experimente outro número de pessoas."
+                % (len(filhas), soma / 100.0, esperado / 100.0)
+            ),
+        )
+
+
+@router.post("/pos/venda/{venda_id}/dividir", status_code=201)
+async def dividir_conta(
+    venda_id: str, dados: PedidoDividir, operador: Dict = Depends(operador_atual)
+) -> dict:
+    """Divide a conta por N pessoas: N contas-filhas que somam exactamente o
+    total, e uma mãe que passa a `separada` e deixa de ser finalizável.
+
+    As guardas de entrada são as das outras rotas de escrita, e pelas mesmas
+    razões: a venda tem de ser da loja do token (`_obter_venda_da_loja`), tem
+    de estar ABERTA (`_garante_aberta` — uma conta já dividida cai aqui, com a
+    mensagem própria) e não pode ter emissão em curso
+    (`_garante_sem_emissao`). Esta última é a mais importante das três: dividir
+    uma conta congelada fazia nascer N contas prontas a emitir enquanto a mãe
+    podia estar a virar uma Fatura Simplificada real.
+
+    **A ordem das escritas, e o que ela custa.** As filhas nascem primeiro e a
+    mãe trava a seguir: ao contrário, existia um instante em que a conta estava
+    `separada` sem partes nenhumas — a operadora sem conta para cobrar e sem
+    nada para desfazer. O preço desta ordem é a janela entre as duas escritas,
+    e é por isso que a da mãe é CONDICIONADA a `{"estado": "aberta"}` e decide
+    pelo `matched_count` (a mesma técnica do `cancelar_venda`): se a emissão
+    ganhou a corrida, as filhas que acabaram de nascer são apagadas e a
+    operadora leva um 409. Apagá-las é seguro porque ninguém do lado de fora
+    chegou a ver os `id` delas — foram gerados neste pedido e ainda não saíram
+    daqui."""
+    db = obter_db()
+    mae = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
+    _garante_aberta(mae)
+    await _garante_sem_emissao(db, venda_id)
+
+    linhas_da_mae = mae.get("linhas") or []
+    if not linhas_da_mae:
+        raise HTTPException(status_code=422, detail=_MSG_CONTA_VAZIA_NAO_SE_DIVIDE)
+
+    n = dados.partes
+    try:
+        # `ValueError` só sai daqui quando nenhuma quantidade com as casas de
+        # `CASAS_DA_QUANTIDADE` produz a fatia ao cêntimo (medido: não acontece
+        # em nenhum preço de 0,01 € a 999,99 €). Vira 422 e não um 500: é a
+        # conta que não se divide assim, não o servidor que se partiu.
+        repartidas = [_partes_de_uma_linha(li, n) for li in linhas_da_mae]
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    # O desconto GLOBAL também se reparte. Se ficasse só na mãe, as partes
+    # somavam mais do que o cliente pagou — e a mãe já não emite nada.
+    globais = repartir_centimos(_centimos(_totais(mae)["desconto_global"]), n)
+
+    filhas = [
+        _nova_parte(mae, [r[i] for r in repartidas if r[i] is not None], globais[i])
+        for i in range(n)
+    ]
+    _confirma_que_as_partes_somam(mae, filhas)
+
+    for filha in filhas:
+        await db[COLECOES["vendas"]].insert_one(dict(filha))
+
+    atualizacao = {"estado": "separada"}
+    resultado = await db[COLECOES["vendas"]].update_one(
+        {"id": venda_id, "estado": "aberta"}, {"$set": atualizacao}
+    )
+    if resultado.matched_count == 0:
+        # A mãe deixou de estar aberta entre a leitura e agora (emitida ou
+        # cancelada por quem chegou primeiro). As filhas não podem ficar: eram
+        # N contas órfãs prontas a emitir N Faturas Simplificadas de uma conta
+        # que já tem a sua.
+        for filha in filhas:
+            await db[COLECOES["vendas"]].delete_one({"id": filha["id"]})
+        raise HTTPException(status_code=409, detail=_MSG_VENDA_NAO_ABERTA)
+
+    mae.update(atualizacao)
+    return {
+        "conta_mae": _venda_publica(mae),
+        "partes": [_venda_publica(f) for f in filhas],
+    }
 
 
 async def _documento_da_venda(db, venda_id: str) -> Optional[Dict]:

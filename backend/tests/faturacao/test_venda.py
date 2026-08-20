@@ -41,12 +41,14 @@ from faturacao.pos_auth import operador_atual
 from faturacao.precos import linha_de_venda
 from faturacao.venda import (
     PedidoDescontoGlobal,
+    PedidoDividir,
     PedidoEditarLinha,
     PedidoJuntarLinha,
     PedidoNovaVenda,
     abrir_venda,
     aplicar_desconto_global,
     cancelar_venda,
+    dividir_conta,
     editar_linha,
     juntar_linha,
     obter_venda,
@@ -110,6 +112,16 @@ class ResultadoUpdateFalso:
         self.modified_count = matched_count
 
 
+class ResultadoDeleteFalso:
+    """O DeleteResult do pymongo/motor, reduzido ao `deleted_count` — o
+    apagar das filhas de uma divisão que não chegou a fechar (ver
+    `venda.dividir_conta`) é a única escrita deste módulo que apaga alguma
+    coisa."""
+
+    def __init__(self, deleted_count):
+        self.deleted_count = deleted_count
+
+
 class ColeccaoFalsa:
     """Duplo de uma colecção Mongo. As leituras devolvem CÓPIAS, como o
     Motor.
@@ -156,6 +168,18 @@ class ColeccaoFalsa:
         if alvos:
             alvos[0].update(atualizacao.get("$set", {}))
         return ResultadoUpdateFalso(matched_count=len(alvos))
+
+    async def delete_one(self, filtro):
+        """Apaga UM documento, o primeiro que casa — como o Mongo. É o que
+        desfaz as filhas de uma divisão cuja mãe deixou de estar aberta a
+        meio (`venda.dividir_conta`); sem isto, ficavam no Mongo N contas
+        órfãs prontas a emitir faturas de uma conta que ninguém dividiu."""
+        self.registo.append(("delete_one", filtro))
+        for i, d in enumerate(self._documentos):
+            if _corresponde(d, filtro):
+                del self._documentos[i]
+                return ResultadoDeleteFalso(deleted_count=1)
+        return ResultadoDeleteFalso(deleted_count=0)
 
 
 class DbFalsa:
@@ -2811,3 +2835,342 @@ def test_o_id_na_linha_nao_mexe_nos_totais_da_conta():
         _venda(linhas=[_linha(produto_vendus_ref="171258472")], desconto_global_eur=1.5)
     )
     assert com == sem
+
+
+# --- Dividir a conta (POST /pos/venda/{venda_id}/dividir) ----------------------
+#
+# Três amigos levam dois açaís e uma Coca-Cola e dividem por igual — e cada um
+# leva a SUA fatura. A decisão que mantém o núcleo fiscal intacto: cada parte é
+# uma venda NORMAL (a sua referência determinística, a sua reserva atómica, a
+# sua idempotência), e a mãe passa a `separada`.
+#
+# A regra que não se negoceia, e é o que quase todos estes testes medem: **as
+# partes somam SEMPRE e exactamente o total da conta**. Medido contra a conta
+# Vendus real, um açaí de 8,99 € por três: `0.333` factura 2,99 (somam 8,97) e
+# `0.3333` factura 3,00 (somam 9,00) — nenhuma das duas dá 8,99. Mandar a mesma
+# fracção a toda a gente declara à AT um valor diferente do que entrou na
+# gaveta, e num dia com muitas divisões acumula.
+
+
+def test_dividir_por_tres_produz_tres_contas_que_somam_o_total(monkeypatch):
+    registo = []
+    # Conta: 1 Açaí Regular a 8,99. 899 cêntimos por três -> 300, 300, 299.
+    db = _db(registo, vendas=[_venda(linhas=[
+        _linha(produto_nome="Açaí Regular", produto_preco=8.99, quantidade=1)])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    r = _corre(dividir_conta("venda-1", PedidoDividir(partes=3), operador=_operador()))
+
+    totais = [p["totais"]["total"] for p in r["partes"]]
+    assert totais == [3.00, 3.00, 2.99]
+    assert round(sum(totais), 2) == 8.99, "as partes TÊM de somar a conta"
+    assert r["conta_mae"]["estado"] == "separada"
+    assert all(p["conta_mae_id"] == "venda-1" for p in r["partes"])
+
+
+def test_a_conta_mae_deixa_de_aceitar_alteracoes(monkeypatch):
+    """Depois de dividida, quem emite são as filhas. Mexer na mãe deixava
+    as partes a faturar linhas que já não existem."""
+    registo = []
+    db = _db(registo, vendas=[_venda(estado="separada")])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    with pytest.raises(HTTPException) as e:
+        _corre(juntar_linha("venda-1", PedidoJuntarLinha(produto_id="p1"),
+                            operador=_operador()))
+    assert e.value.status_code == 409
+
+
+def test_a_conta_mae_dividida_diz_porque_e_que_esta_travada(monkeypatch):
+    """O 409 genérico ("já foi emitida ou cancelada") mandava a operadora
+    procurar uma fatura que não existe. Uma conta dividida tem uma saída
+    concreta — mexer nas PARTES —, e a mensagem tem de a dizer."""
+    registo = []
+    db = _db(registo, vendas=[_venda(estado="separada")])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    with pytest.raises(HTTPException) as e:
+        _corre(cancelar_venda("venda-1", operador=_operador()))
+    assert e.value.status_code == 409
+    assert e.value.detail == venda_mod._MSG_VENDA_SEPARADA
+    assert e.value.detail != venda_mod._MSG_VENDA_NAO_ABERTA
+
+
+def test_dividir_uma_conta_ja_dividida_e_recusado(monkeypatch):
+    registo = []
+    db = _db(registo, vendas=[_venda(estado="separada")])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    with pytest.raises(HTTPException) as e:
+        _corre(dividir_conta("venda-1", PedidoDividir(partes=2), operador=_operador()))
+    assert e.value.status_code == 409
+
+
+def test_o_desconto_global_tambem_se_reparte(monkeypatch):
+    """A spec di-lo e é fácil esquecer: se o desconto ficasse só na mãe,
+    as três partes somavam mais do que o cliente pagou."""
+    registo = []
+    db = _db(registo, vendas=[_venda(
+        linhas=[_linha(produto_preco=9.00, quantidade=1)],
+        desconto_global_eur=3.00)])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    r = _corre(dividir_conta("venda-1", PedidoDividir(partes=3),
+                             operador=_operador()))
+    assert round(sum(p["totais"]["total"] for p in r["partes"]), 2) == 6.00
+
+
+def test_o_desconto_global_em_percentagem_nao_se_aplica_duas_vezes(monkeypatch):
+    """A mãe tinha 10 % sobre a conta toda. Se a percentagem viajasse tal e
+    qual para as filhas, cada parte descontava 10 % sobre a fatia JÁ
+    descontada — o cliente pagava menos do que a conta dizia. O que viaja
+    é o valor em euros da fatia, repartido ao cêntimo."""
+    registo = []
+    db = _db(registo, vendas=[_venda(
+        linhas=[_linha(produto_preco=9.00, quantidade=1)],
+        desconto_global_pct=10)])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    r = _corre(dividir_conta("venda-1", PedidoDividir(partes=3),
+                             operador=_operador()))
+    assert [p["desconto_global_pct"] for p in r["partes"]] == [None, None, None]
+    assert [p["desconto_global_eur"] for p in r["partes"]] == [0.30, 0.30, 0.30]
+    assert round(sum(p["totais"]["total"] for p in r["partes"]), 2) == 8.10
+
+
+def test_as_partes_herdam_as_personalizacoes_da_linha(monkeypatch):
+    """Três pessoas a partilhar um açaí com Nutella: cada fatura tem de
+    dizer que era um açaí COM Nutella. As opções vão inteiras para cada
+    parte — o que se reparte é a quantidade, e o preço unitário já as
+    inclui."""
+    registo = []
+    nutella = {"id": "o1", "grupo_id": "g1", "nome": "Nutella", "preco": 0.95}
+    db = _db(registo, vendas=[_venda(linhas=[
+        _linha(produto_nome="Açaí", produto_preco=8.99, quantidade=1,
+               opcoes=[nutella])])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    r = _corre(dividir_conta("venda-1", PedidoDividir(partes=3),
+                             operador=_operador()))
+    for parte in r["partes"]:
+        assert parte["linhas"][0]["opcoes"] == [nutella]
+
+
+def test_dividir_uma_conta_vazia_e_recusado(monkeypatch):
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    with pytest.raises(HTTPException) as e:
+        _corre(dividir_conta("venda-1", PedidoDividir(partes=2), operador=_operador()))
+    assert e.value.status_code == 422
+
+
+def test_dividir_por_menos_de_duas_ou_por_mais_de_vinte_e_recusado():
+    """Duas é o mínimo que faz sentido (dividir por uma é não dividir, e
+    deixava a mãe travada por engano); vinte é o tecto para um dedo
+    distraído não criar mil contas numa só escrita."""
+    with pytest.raises(ValidationError):
+        PedidoDividir(partes=1)
+    with pytest.raises(ValidationError):
+        PedidoDividir(partes=21)
+    assert PedidoDividir(partes=2).partes == 2
+    assert PedidoDividir(partes=20).partes == 20
+
+
+def test_cada_parte_e_uma_venda_normal_da_mesma_caixa_e_sessao(monkeypatch):
+    """"Cada parte é uma venda normal" não é uma frase — é o que faz a
+    reserva atómica, a idempotência e o fecho de caixa aplicarem-se às
+    partes sem uma linha nova. Para isso têm de nascer na MESMA sessão de
+    caixa, e no MESMO dispositivo: sem o `dispositivo_id`, um F5 a meio dos
+    pagamentos deixava a operadora sem nada no ecrã (a
+    `GET /pos/venda/aberta` filtra por ele) e as partes por cobrar."""
+    registo = []
+    mae = _venda(dispositivo_id="disp-1", linhas=[_linha(quantidade=1)])
+    db = _db(registo, vendas=[mae])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    r = _corre(dividir_conta("venda-1", PedidoDividir(partes=2), operador=_operador()))
+
+    for parte in r["partes"]:
+        assert parte["estado"] == "aberta"
+        assert parte["caixa_id"] == "caixa-1"
+        assert parte["sessao_id"] == "sessao-1"
+        assert parte["operador_id"] == "op-1"
+        assert parte["id"] != "venda-1"
+    gravadas = db._coleccoes[COLECOES["vendas"]]._documentos
+    filhas = [v for v in gravadas if v.get("conta_mae_id") == "venda-1"]
+    assert len(filhas) == 2
+    assert all(f["dispositivo_id"] == "disp-1" for f in filhas)
+    assert all(f["linhas_versao"] == 0 for f in filhas)
+
+
+def test_dividir_uma_conta_com_emissao_em_curso_e_recusado(monkeypatch):
+    """Uma conta com reserva fiscal está CONGELADA — e dividi-la era a pior
+    das escritas: a mãe podia estar a virar uma Fatura Simplificada real ao
+    mesmo tempo que nasciam três filhas prontas a emitir outras três."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[_linha()])], refs=[_reserva()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    with pytest.raises(HTTPException) as e:
+        _corre(dividir_conta("venda-1", PedidoDividir(partes=3), operador=_operador()))
+    assert e.value.status_code == 409
+    assert e.value.detail == venda_mod._MSG_VENDA_COM_EMISSAO
+
+
+def test_dividir_uma_venda_de_outra_loja_e_404(monkeypatch):
+    registo = []
+    db = _db(registo, vendas=[_venda(loja_id="loja-2", linhas=[_linha()])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    with pytest.raises(HTTPException) as e:
+        _corre(dividir_conta("venda-1", PedidoDividir(partes=2), operador=_operador()))
+    assert e.value.status_code == 404
+
+
+# --- O desconto DE LINHA também se reparte -------------------------------------
+#
+# O brief fala do desconto GLOBAL, e é o que a spec sublinha. Mas o desconto de
+# UMA LINHA em euros é o mesmo estrago ao contrário: um "-3,00 €" copiado tal e
+# qual para as três filhas descontava 9,00 € numa conta que só descontou 3,00 —
+# e, pior, `precos.linha_de_venda` recusaria a linha (o desconto passava a ser
+# maior do que o bruto da fatia) e a divisão rebentava com 422 à frente do
+# cliente.
+
+
+def test_o_desconto_em_euros_de_uma_linha_nao_se_multiplica_pelas_partes(monkeypatch):
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[
+        _linha(produto_preco=9.00, quantidade=1, desconto_eur=3.00)])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    r = _corre(dividir_conta("venda-1", PedidoDividir(partes=3), operador=_operador()))
+
+    assert [p["linhas"][0]["desconto_eur"] for p in r["partes"]] == [1.00, 1.00, 1.00]
+    assert [p["totais"]["total"] for p in r["partes"]] == [2.00, 2.00, 2.00]
+    assert round(sum(p["totais"]["total"] for p in r["partes"]), 2) == 6.00
+
+
+def test_o_desconto_em_percentagem_de_uma_linha_viaja_em_euros_nas_partes(monkeypatch):
+    """A percentagem é proporcional e parecia sobreviver à divisão sozinha.
+    Não sobrevive AO CÊNTIMO: `round` aplicado a cada fatia não devolve
+    sempre o que devolve aplicado ao total, e essa diferença é a soma das
+    faturas a declarar à AT um valor diferente do que entrou na gaveta. O
+    que viaja para as filhas é a fatia em euros do desconto que a mãe já
+    tinha calculado — a mesma regra de tudo o resto aqui."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[
+        _linha(produto_preco=8.99, quantidade=1, desconto_pct=10)])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    r = _corre(dividir_conta("venda-1", PedidoDividir(partes=3), operador=_operador()))
+
+    assert [p["linhas"][0]["desconto_pct"] for p in r["partes"]] == [None, None, None]
+    assert [p["linhas"][0]["desconto_eur"] for p in r["partes"]] == [0.30, 0.30, 0.30]
+    assert [p["totais"]["total"] for p in r["partes"]] == [2.70, 2.70, 2.69]
+    assert round(sum(p["totais"]["total"] for p in r["partes"]), 2) == 8.09
+
+
+# --- As linhas que não se repartem por valor ----------------------------------
+
+
+def test_uma_linha_oferecida_vai_inteira_para_a_primeira_parte(monkeypatch):
+    """Um artigo a 0,00 € (uma oferta da casa) não se reparte por VALOR —
+    não há valor nenhum para repartir, e `quantidade_para` recusa um preço
+    zero (rebentava aqui com um 500 à frente do cliente). Vai inteiro para a
+    primeira parte: aparece numa fatura, como aparecia na conta, e não muda
+    um cêntimo em nenhuma delas."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[
+        _linha(id="l1", produto_preco=8.99, quantidade=1),
+        _linha(id="l2", produto_nome="Água 33cl", produto_preco=0.0, quantidade=1)])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    r = _corre(dividir_conta("venda-1", PedidoDividir(partes=2), operador=_operador()))
+
+    assert [len(p["linhas"]) for p in r["partes"]] == [2, 1]
+    assert r["partes"][0]["linhas"][1]["produto_nome"] == "Água 33cl"
+    assert [p["totais"]["total"] for p in r["partes"]] == [4.50, 4.49]
+
+
+def test_uma_linha_que_nao_chega_para_todos_nao_entra_com_quantidade_zero(monkeypatch):
+    """2 cêntimos por três pessoas: 1, 1, 0. A terceira não paga esta linha,
+    e a linha NÃO entra na conta dela — entrar com quantidade zero punha um
+    artigo a 0,00 € numa Fatura Simplificada real."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[
+        _linha(produto_preco=0.02, quantidade=1)])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    r = _corre(dividir_conta("venda-1", PedidoDividir(partes=3), operador=_operador()))
+
+    assert [len(p["linhas"]) for p in r["partes"]] == [1, 1, 0]
+    assert [p["totais"]["total"] for p in r["partes"]] == [0.01, 0.01, 0.0]
+
+
+# --- A divisão é CONFIRMADA antes de gravar, e desfeita se a mãe mudar ---------
+
+
+def test_uma_divisao_que_nao_fecha_ao_centimo_e_recusada_sem_gravar_nada(monkeypatch):
+    """A spec: "o Vendus arredonda de forma previsível, mas a defesa não é
+    acreditar nisso — é confirmar". Aqui a confirmação é feita sobre as
+    partes JÁ construídas, e antes de qualquer escrita: com a mesma fracção
+    para toda a gente (0.3333 × 8,99 = 3,00 três vezes) a conta declarava
+    9,00 € à AT contra 8,99 € na gaveta."""
+    registo = []
+    mae = _venda(linhas=[_linha(produto_preco=8.99, quantidade=1)])
+    db = _db(registo, vendas=[mae])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(venda_mod, "quantidade_para", lambda centimos, preco: 0.3333)
+
+    with pytest.raises(HTTPException) as e:
+        _corre(dividir_conta("venda-1", PedidoDividir(partes=3), operador=_operador()))
+
+    assert e.value.status_code == 422
+    assert mae["estado"] == "aberta", "a mãe não pode ficar travada por uma divisão recusada"
+    assert len(db._coleccoes[COLECOES["vendas"]]._documentos) == 1, (
+        "nenhuma filha pode ficar gravada quando a divisão não fecha"
+    )
+
+
+class ColeccaoQueMudaAoInserir(ColeccaoFalsa):
+    """A colecção das VENDAS, com um gancho que corre logo depois da PRIMEIRA
+    inserção — que é como se põe a emissão a ganhar a corrida exactamente na
+    janela entre a criação das filhas e a escrita que trava a mãe."""
+
+    def __init__(self, registo, documentos=None, depois_da_primeira_insercao=None):
+        super().__init__(registo, documentos)
+        self._gancho = depois_da_primeira_insercao
+
+    async def insert_one(self, doc):
+        resposta = await super().insert_one(doc)
+        if self._gancho is not None:
+            gancho, self._gancho = self._gancho, None
+            gancho()
+        return resposta
+
+
+def test_se_a_mae_deixar_de_estar_aberta_a_meio_as_filhas_sao_apagadas(monkeypatch):
+    """As filhas nascem ANTES de a mãe ficar travada — é essa ordem que
+    impede uma mãe `separada` sem partes nenhumas. O preço dessa ordem é
+    esta janela: se a emissão ganhar a corrida à escrita condicional, ficam
+    no Mongo N contas órfãs prontas a emitir N Faturas Simplificadas de uma
+    conta que JÁ tem a sua. Por isso a escrita decide pelo `matched_count`
+    (como o `cancelar_venda`) e, quando não casa, desfaz o que criou."""
+    registo = []
+    mae = _venda(linhas=[_linha(produto_preco=8.99, quantidade=1)])
+
+    def emite_entretanto():
+        mae["estado"] = "emitida"
+        mae["documento_id"] = "doc-1"
+
+    vendas = ColeccaoQueMudaAoInserir(registo, [mae], emite_entretanto)
+    db = DbFalsa({
+        COLECOES["vendas"]: vendas,
+        COLECOES["refs_fiscais"]: ColeccaoFalsa(registo, []),
+    })
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as e:
+        _corre(dividir_conta("venda-1", PedidoDividir(partes=3), operador=_operador()))
+
+    assert e.value.status_code == 409
+    assert mae["estado"] == "emitida", "não se toca numa venda que já emitiu"
+    assert [d["id"] for d in vendas._documentos] == ["venda-1"], (
+        "ficaram filhas órfãs de uma divisão que nunca aconteceu"
+    )

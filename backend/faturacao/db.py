@@ -143,6 +143,16 @@ INDICES = [
     # loja+data (spec §4.3).
     ("fat_vendas", [("sessao_id", 1)], {}),
     ("fat_vendas", [("loja_id", 1), ("criada_em", 1)], {}),
+    # As PARTES de uma conta dividida (`venda.py::dividir_conta`, Plano 2C):
+    # a pergunta é "quais são as partes desta conta?" — o ecrã do finalizar
+    # precisa dela para mostrar quem já pagou e quanto falta receber, e a
+    # gestão para ligar N faturas à conta de onde saíram.
+    #
+    # ESPARSO de propósito: só as filhas têm o campo. A esmagadora maioria das
+    # vendas não é parte de nada, e um índice normal indexava-as todas com a
+    # chave a `null` — a parte da chave que ninguém procura, e a que cresce
+    # com cada venda do dia.
+    ("fat_vendas", [("conta_mae_id", 1)], {"sparse": True}),
     # A GARANTIA central da Task 3 (spec §6.1 passo 2): impossível duas
     # tentativas de emissão da MESMA venda reservarem com sucesso ao mesmo
     # tempo — quem perde a corrida apanha DuplicateKeyError e nunca chega a

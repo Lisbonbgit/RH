@@ -228,3 +228,18 @@ def test_existe_indice_de_documento_id_em_fat_refs_fiscais_e_nao_e_esparso():
     ]
     assert len(de_refs) == 1
     assert de_refs[0].get("sparse") is not True
+
+
+def test_existe_indice_esparso_de_conta_mae_id_em_fat_vendas():
+    """"Quais são as partes desta conta?" é a pergunta do ecrã do finalizar
+    depois de dividir (`venda.py::dividir_conta`). ESPARSO: só as filhas têm
+    o campo — um índice normal indexava também todas as vendas normais do
+    dia com a chave a `null`, que é precisamente a parte que ninguém
+    procura."""
+    de_vendas = [
+        opcoes
+        for (coleccao, chaves, opcoes) in INDICES
+        if coleccao == "fat_vendas" and chaves == [("conta_mae_id", 1)]
+    ]
+    assert len(de_vendas) == 1
+    assert de_vendas[0].get("sparse") is True
