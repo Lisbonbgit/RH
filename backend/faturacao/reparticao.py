@@ -24,15 +24,22 @@ def repartir_centimos(total_centimos: int, partes: int) -> List[int]:
     primeiro é quem leva o cêntimo a mais — o que é mais fácil de explicar ao
     balcão do que a última pessoa levar todos os que sobraram.
 
-    `total_centimos` tem de ser mesmo cêntimos inteiros (899, não 8.99). É
-    uma unidade fácil de confundir com a irmã deste ficheiro em `fiscal.py`
-    (`_distribuir_centimos`, essa sim em EUROS) — e sem esta recusa, um total
-    em euros passado por engano era truncado em silêncio pelo `int()` e a
-    garantia de que "as partes somam sempre o total" deixava de ser verdade.
+    `total_centimos` tem de ser mesmo um `int` — 899, não 8.99. É uma
+    unidade fácil de confundir com a irmã deste ficheiro em `fiscal.py`
+    (`_distribuir_centimos`, essa sim em EUROS): esta recusa apanha um total
+    em euros passado como `float` — 8.99, mas também um redondo como 9.0,
+    que sem o `isinstance` passava em silêncio e devolvia cêntimos cem vezes
+    a menos (`repartir_centimos(9.0, 3)` dava `[3, 3, 3]` em vez de
+    `[300, 300, 299]`).
+
+    O que esta guarda NÃO apanha é um total em euros passado já como `int`
+    (9 em vez de 900): olhando só para o valor, é indistinguível de uma
+    conta genuína de 9 cêntimos, e nenhuma guarda resolve isso a partir do
+    número sozinho — a defesa aí tem de estar no chamador, não aqui.
     """
     if partes < 1:
         raise ValueError("Uma conta reparte-se por pelo menos uma parte.")
-    if total_centimos != int(total_centimos):
+    if not isinstance(total_centimos, int):
         raise ValueError(
             "repartir_centimos espera cêntimos inteiros (ex.: 899 para "
             "8,99 €), não euros — recebeu %r." % (total_centimos,)

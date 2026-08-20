@@ -45,6 +45,17 @@ def test_recusa_um_total_que_afinal_e_euros_nao_centimos():
         repartir_centimos(8.99, 3)
 
 
+def test_recusa_um_total_em_euros_redondos_tambem():
+    """A metade traiçoeira do mesmo engano: um total em EUROS que por
+    acaso é redondo (9.0, não 8.99) passava a guarda antiga em silêncio —
+    `total_centimos != int(total_centimos)` só apanha fracção de cêntimo, e
+    9.0 == int(9.0). `repartir_centimos(9.0, 3)` dava `[3, 3, 3]` (soma 9,
+    não 900): três Faturas Simplificadas de 0,03 € em vez de 3,00 € cada,
+    exactamente o cenário que esta função existe para impedir."""
+    with pytest.raises(ValueError):
+        repartir_centimos(9.0, 3)
+
+
 def test_a_quantidade_reproduz_o_valor_ao_centimo():
     """O que interessa não é a fracção bonita — é que `qty × preço`,
     arredondado como o Vendus arredonda, dê EXACTAMENTE o valor da parte."""
