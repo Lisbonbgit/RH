@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import {
   ArrowLeft, Pencil, X, ChevronDown, Loader2, AlertTriangle, CheckCircle2,
-  ShieldAlert, Ban, User, Receipt, Printer, CreditCard, Coins,
+  ShieldAlert, Ban, User, Receipt, Printer, CreditCard, Coins, Divide, Scissors, Users,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -579,7 +579,7 @@ function AvisoErro({ erro }) {
 // 17,35 € paga com 20 €, ela lia "Troco € 2,65", carregava em EMITIR e o 2,65
 // desaparecia. Ficava a tirar o troco de memória, com fila à frente — que é
 // onde os enganos acontecem, e a diferença só aparece no fecho de caixa.
-function DocumentoEmitido({ documento, troco, recuperado, onVoltar }) {
+function DocumentoEmitido({ documento, troco, recuperado, onVoltar, rotuloVoltar }) {
   const emTestes = documento?.modo === 'tests';
 
   return (
@@ -707,8 +707,12 @@ function DocumentoEmitido({ documento, troco, recuperado, onVoltar }) {
       </div>
 
       <div className="shrink-0 border-t bg-card p-4">
+        {/* "Nova Venda" na venda normal; a cobrar uma parte, o que vem a
+            seguir NÃO é uma venda nova — são as outras pessoas da mesma conta,
+            e mandá-la para o balcão com duas partes por cobrar era perder de
+            vista o que falta receber. */}
         <Button className="w-full h-16 text-lg font-heading font-bold" onClick={onVoltar}>
-          Nova Venda
+          {rotuloVoltar || 'Nova Venda'}
         </Button>
       </div>
     </div>
@@ -732,6 +736,16 @@ export default function PosFinalizar({
   documento = null,
   documentoRecuperado = false,
   erroEmissao = null,
+  // Esta conta É uma parte de uma conta repartida, e está a ser cobrada a UMA
+  // pessoa de várias: `{ numero, de, restanteCentimos }` — `restanteCentimos`
+  // é o que fica por receber DEPOIS desta parte, já sem ela. `null` na esmagadora
+  // maioria das vendas, que são a conta inteira. Só muda o que o ecrã DIZ —
+  // a emissão é a mesma, porque a parte é uma venda normal.
+  parte = null,
+  // Repartir a conta. Ausentes (ou a conta já é uma parte) e os dois botões
+  // nem aparecem: um botão que não faz nada é pior do que não existir.
+  onDividir,
+  onSeparar,
 }) {
   // [{ tipo_pagamento_id, valor: string, auto: boolean }] — `valor` é sempre
   // STRING, pelo mesmo motivo do PosCampoValor: um campo controlado que a
@@ -1003,6 +1017,7 @@ export default function PosFinalizar({
         troco={trocoEntregue}
         recuperado={documentoRecuperado}
         onVoltar={onVoltar}
+        rotuloVoltar={parte ? 'Voltar às partes' : null}
       />
     );
   }
@@ -1010,14 +1025,52 @@ export default function PosFinalizar({
   return (
     <div className="flex h-full min-h-0 w-full flex-col">
       <header className="shrink-0 flex items-center gap-2 border-b bg-card px-3 h-16">
-        <Button variant="ghost" size="icon" className="h-12 w-12" onClick={onVoltar} disabled={aEmitir} aria-label="Voltar à conta">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-12 w-12"
+          onClick={onVoltar}
+          disabled={aEmitir}
+          aria-label={parte ? 'Voltar às partes' : 'Voltar à conta'}
+        >
           <ArrowLeft className="h-6 w-6" />
         </Button>
-        <h2 className="font-heading font-bold text-xl">Finalizar</h2>
+        <h2 className="font-heading font-bold text-xl">
+          Finalizar
+          {parte && (
+            <span className="text-muted-foreground font-normal text-base ml-2">
+              Pessoa {parte.numero} de {parte.de}
+            </span>
+          )}
+        </h2>
       </header>
 
       <div className="flex-1 overflow-y-auto p-4 sm:p-6">
         <div className="mx-auto w-full max-w-2xl space-y-4">
+          {/* Em cima de tudo: o que se está a cobrar aqui NÃO é a conta toda.
+              Sem esta faixa, o ecrã de finalizar de uma parte é
+              indistinguível do de uma venda normal — o total é mais pequeno e
+              mais nada — e uma operadora que volte a ele depois de servir
+              outro cliente cobra 3,00 € a quem devia 8,99 €. O que falta
+              receber vem junto, porque é a pergunta seguinte: quantas pessoas
+              ainda faltam. */}
+          {parte && (
+            <section className="rounded-2xl border-2 border-primary bg-primary/10 p-4 flex items-start gap-3">
+              <Users className="h-6 w-6 text-primary shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p className="font-heading font-bold text-lg">
+                  Esta é a parte da pessoa {parte.numero} de {parte.de}.
+                </p>
+                <p className="text-sm mt-0.5">
+                  É uma conta separada, com a sua própria Fatura Simplificada — não é a conta
+                  toda. Depois desta, {parte.restanteCentimos > 0
+                    ? <>ficam por receber <strong className="tabular-nums">{euros(parte.restanteCentimos / 100)}</strong> das outras pessoas.</>
+                    : 'não fica nenhuma parte por cobrar.'}
+                </p>
+              </div>
+            </section>
+          )}
+
           <AvisoErro erro={erroEmissao} />
 
           <CartaoTotal venda={venda} desativado={aEmitir || congelada} onAplicarDesconto={onAplicarDesconto} />
@@ -1123,6 +1176,58 @@ export default function PosFinalizar({
               </div>
             )}
           </Cartao>
+
+          {/* Dividir e Separar, exclusivos — uma conta reparte-se de UMA
+              maneira: ou todos pagam o mesmo, ou cada um paga o que consumiu.
+              Vivem aqui, no finalizar, e não no painel da conta, porque é
+              aqui que a pergunta se faz: é ao pagar que os três amigos dizem
+              que querem faturas separadas.
+
+              Não aparecem quando esta conta JÁ É uma parte (repartir uma parte
+              outra vez é uma conversa que ninguém tem ao balcão), nem quando a
+              conta está congelada por uma emissão que pode estar a acontecer —
+              aí o servidor recusa com 409 (`venda.py::_garante_sem_emissao`), e
+              descobri-lo ao toque é descobri-lo com o cliente à frente. */}
+          {!parte && onDividir && onSeparar && (
+            <section className="rounded-2xl border bg-card p-5">
+              <p className="text-sm text-muted-foreground flex items-center gap-1.5">
+                <Users className="h-4 w-4 shrink-0" />
+                Vários a pagar
+              </p>
+              <p className="text-xs text-muted-foreground/80 mt-1 leading-snug">
+                Cada parte fica com a sua Fatura Simplificada. Depois de repartida, esta conta
+                deixa de aceitar alterações e a divisão não se desfaz.
+              </p>
+              <div className="grid grid-cols-2 gap-2.5 mt-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-16 flex-col gap-0.5"
+                  onClick={onDividir}
+                  disabled={aEmitir || congelada || !temLinhas || total <= 0}
+                >
+                  <span className="flex items-center gap-1.5 font-medium">
+                    <Divide className="h-4 w-4" />
+                    Dividir Conta
+                  </span>
+                  <span className="text-xs font-normal text-muted-foreground">Todos pagam o mesmo</span>
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-16 flex-col gap-0.5"
+                  onClick={onSeparar}
+                  disabled={aEmitir || congelada || !temLinhas || total <= 0}
+                >
+                  <span className="flex items-center gap-1.5 font-medium">
+                    <Scissors className="h-4 w-4" />
+                    Separar Conta
+                  </span>
+                  <span className="text-xs font-normal text-muted-foreground">Cada um o que consumiu</span>
+                </Button>
+              </div>
+            </section>
+          )}
 
           <Collapsible>
             <CollapsibleTrigger asChild>

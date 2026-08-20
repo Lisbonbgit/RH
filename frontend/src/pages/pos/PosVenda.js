@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner';
 import {
   AlertCircle, Ban, ChevronLeft, ChevronRight, EyeOff, ImageOff, Loader2, MoreHorizontal,
-  PauseCircle, Printer, RefreshCw, Search, ShieldAlert, ShoppingCart, Trash2, X,
+  PauseCircle, Printer, RefreshCw, Search, ShieldAlert, ShoppingCart, Trash2, Users, X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,9 +16,11 @@ import {
 import PosDialogoProduto from './PosDialogoProduto';
 import PosFinalizar from './PosFinalizar';
 import PosPedidoGuiado, { resumoDoPedido } from './PosPedidoGuiado';
+import PosReparticao from './PosReparticao';
 import {
   getCatalogoPos, getTiposPagamentoPos, getVendaAberta, obterVenda, abrirVenda, juntarLinha,
   editarLinha, removerLinha, aplicarDescontoGlobal, cancelarVenda, finalizarVenda,
+  dividirConta, separarConta, contasDaLinha,
   contaTravada, duvidaPorApurar, detalhesErroPos, semRespostaPos, ehTimeoutPos, TIMEOUT_PADRAO_MS,
 } from '@/lib/pos';
 
@@ -81,7 +83,10 @@ const MSG_CONTA_TRAVADA_CURTA =
 const euros = (valor) =>
   `€ ${(Number(valor) || 0).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-const cent = (valor) => Math.round(valor * 100) / 100;
+// O dinheiro compara-se em CÊNTIMOS INTEIROS, nunca em vírgula flutuante — a
+// mesma regra do PosFinalizar, e aqui serve para somar o que falta receber das
+// partes de uma conta repartida.
+const centimos = (valor) => Math.round((Number(valor) || 0) * 100);
 
 // Sem acentos e em minúsculas: ao balcão escreve-se "acai" e o produto
 // chama-se "Açaí". Uma pesquisa que só casasse a acentuação exacta era uma
@@ -89,31 +94,11 @@ const cent = (valor) => Math.round(valor * 100) / 100;
 const semAcentos = (texto) =>
   String(texto || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
-// O total de uma linha JÁ GRAVADA, na MESMA ordem de `precos.linha_de_venda`:
-// as opções somam ao preço unitário, o resultado multiplica pela quantidade,
-// e só depois entra o desconto (com `round` a cada passo, como o servidor).
-//
-// É uma estimativa de LEITURA, para a coluna "Preço" do print — nunca um
-// total da conta: esse é o `venda.totais.total` do servidor, e é ele que
-// aparece na faixa. A única divergência possível é um cêntimo num desconto em
-// % que caia exactamente a meio (o Python arredonda para o par, o JavaScript
-// para cima), e por isso a soma destas linhas nunca é mostrada em lado nenhum.
-//
-// O `PosDialogoProduto` tem a sua própria versão desta conta de propósito: a
-// dele trabalha sobre campos de texto a meio de serem escritos, esta trabalha
-// sobre uma linha que o servidor já aceitou.
-const contasDaLinha = (linha) => {
-  const base = linha.preco_override != null ? linha.preco_override : linha.produto_preco;
-  const extra = (linha.opcoes || []).reduce((soma, o) => soma + (Number(o?.preco) || 0), 0);
-  const unitario = cent((Number(base) || 0) + extra);
-  const bruto = cent(unitario * (Number(linha.quantidade) || 0));
-  // Truthiness, como o servidor (`if desconto_eur: ... elif desconto_pct:`):
-  // um desconto de 0 € não é desconto e deixa passar a percentagem.
-  const desconto = linha.desconto_eur
-    ? Number(linha.desconto_eur)
-    : (linha.desconto_pct ? cent(bruto * Number(linha.desconto_pct) / 100) : 0);
-  return { unitario, bruto, desconto, total: cent(bruto - desconto) };
-};
+// A conta de uma linha já gravada vive no `lib/pos.js` — são DOIS ecrãs a ler
+// a mesma linha (este painel e a repartição), e uma segunda cópia daquela
+// ordem de arredondamentos era o mesmo artigo a valer dois números diferentes
+// em dois sítios do mesmo balcão. Estava aqui escrita à mão e foi de lá que a
+// versão do lib nasceu, palavra por palavra.
 
 // Em que balde do PosFinalizar cai um erro da emissão. A regra que manda
 // aqui: **só se diz "nada saiu" quando o servidor o disse**. Um balde errado
@@ -475,6 +460,37 @@ function AvisoContaDeLado({ conta, aPerguntar, onPerguntar }) {
   );
 }
 
+// A conta foi repartida e ficaram partes por cobrar — e a operadora está no
+// balcão, não no ecrã das partes. Sem esta nota, sair do ecrã da repartição
+// para servir o cliente seguinte fazia as partes desaparecerem de vista: o
+// dinheiro por receber continuava a existir (as vendas ficam `aberta` no
+// servidor) mas não havia no ecrã uma única palavra sobre ele nem caminho de
+// volta. É a mesma regra do `AvisoContaDeLado` logo acima — nada desaparece do
+// ecrã em silêncio.
+function AvisoPartesPorCobrar({ porCobrar, deQuantas, faltaCentimos, onVoltar }) {
+  return (
+    <div className="shrink-0 border-b-2 border-primary bg-primary/10 px-4 py-3 flex items-start gap-2.5">
+      <Users className="h-5 w-5 text-primary shrink-0 mt-0.5" />
+      <div className="min-w-0 flex-1 text-sm">
+        <p className="font-medium">
+          {porCobrar === 1
+            ? `Falta cobrar 1 pessoa de ${deQuantas}`
+            : `Faltam cobrar ${porCobrar} pessoas de ${deQuantas}`}
+          {' — '}
+          <span className="tabular-nums font-semibold">{euros(faltaCentimos / 100)}</span>.
+        </p>
+        <p className="text-muted-foreground mt-1">
+          Cada uma leva a sua fatura. Enquanto não forem cobradas ou canceladas, ficam abertas no
+          servidor e o fecho desta caixa vai contá-las.
+        </p>
+        <Button className="h-12 w-full mt-2" onClick={onVoltar}>
+          Voltar às partes
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function LinhaDaConta({ linha, onTocar, travada }) {
   const { unitario, total, desconto } = contasDaLinha(linha);
   // O pedido em duas frases: o serviço e o nome numa (`Levar · Maria`), as
@@ -514,8 +530,9 @@ function LinhaDaConta({ linha, onTocar, travada }) {
 }
 
 function PainelConta({
-  venda, aEscrever, travada, travadaPeloServidor, contaDeLado, aPerguntar,
-  onPerguntar, onPerguntarPelaDeLado, onPorDeLado, onTocarLinha, onFinalizar, onCancelar,
+  venda, aEscrever, travada, travadaPeloServidor, contaDeLado, aPerguntar, partesPorCobrar,
+  onPerguntar, onPerguntarPelaDeLado, onPorDeLado, onVoltarAsPartes, onTocarLinha,
+  onFinalizar, onCancelar,
 }) {
   const linhas = venda?.linhas || [];
   const totais = venda?.totais || {};
@@ -547,6 +564,36 @@ function PainelConta({
           aPerguntar={aPerguntar}
           onPerguntar={onPerguntarPelaDeLado}
         />
+      )}
+
+      {partesPorCobrar && (
+        <AvisoPartesPorCobrar
+          porCobrar={partesPorCobrar.porCobrar}
+          deQuantas={partesPorCobrar.deQuantas}
+          faltaCentimos={partesPorCobrar.faltaCentimos}
+          onVoltar={onVoltarAsPartes}
+        />
+      )}
+
+      {/* Esta conta é uma PARTE de uma conta repartida — é o que se vê depois
+          de um F5 a meio da cobrança, quando o `GET /pos/venda/aberta` devolve
+          a parte mais recente e o ecrã já não tem a lista das outras. Sem esta
+          nota, a parte apresenta-se como uma venda normal e a operadora cobra
+          3,00 € a quem devia 8,99 €. Não se reconstrói a lista (não há rota
+          que a peça), mas diz-se o que se sabe: esta conta faz parte de uma
+          conta maior, e a referência da mãe fica à vista para o gestor. */}
+      {venda?.conta_mae_id && !partesPorCobrar && (
+        <div className="shrink-0 border-b bg-muted/40 px-4 py-3 flex items-start gap-2.5">
+          <Users className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1 text-sm">
+            <p className="font-medium">Esta conta é a parte de uma pessoa.</p>
+            <p className="text-muted-foreground mt-1">
+              Nasceu de uma conta repartida e leva a sua própria fatura — não é a conta toda. As
+              outras partes continuam abertas no servidor. Referência da conta de origem:
+            </p>
+            <p className="font-mono text-xs break-all select-all mt-1">{venda.conta_mae_id}</p>
+          </div>
+        </div>
       )}
 
       <div className="shrink-0 grid grid-cols-[1fr_2.5rem_6rem] gap-2 px-4 h-11 items-center border-b text-xs uppercase tracking-wide text-muted-foreground">
@@ -746,15 +793,55 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
   // Há uma pergunta ao servidor a decorrer (o botão da faixa, ou o relógio).
   const [aPerguntar, setAPerguntar] = useState(false);
 
+  // A conta que está a ser repartida, e as partes que dela nasceram:
+  // `{ modo, mae, partes }` — `partes` a `null` enquanto a repartição ainda
+  // não foi feita.
+  //
+  // **Vive aqui, e não dentro do `PosReparticao`.** Esse ecrã DESMONTA-SE de
+  // cada vez que se vai cobrar uma parte (o finalizar toma o ecrã todo), e o
+  // que morria com ele era exactamente a lista do que falta receber — com
+  // duas pessoas por cobrar e nenhuma forma de voltar a elas.
+  //
+  // Não sobrevive a um F5, e é uma decisão: as partes são vendas normais e
+  // ficam guardadas no servidor, mas não há rota que peça "as partes desta
+  // mãe". Depois de um F5 o `GET /pos/venda/aberta` devolve UMA delas, e o
+  // painel da conta diz o que ela é (`conta_mae_id`) em vez de a mostrar como
+  // se fosse a conta inteira.
+  const [reparticao, setReparticao] = useState(null);
+  // A repartição está a ser pedida ao servidor (o botão do ecrã).
+  const [aRepartir, setARepartir] = useState(false);
+  // O id da parte que está a ser cancelada, ou `null`.
+  const [aCancelarParte, setACancelarParte] = useState(null);
+
   // A conta também vive numa ref: `garantirVenda` corre dentro da fila de
   // escritas (abaixo) e precisa de saber se JÁ existe uma venda neste
   // instante — o `venda` do state é o de quando a função foi criada, e com
   // ele dois toques seguidos abriam duas contas.
   const vendaRef = useRef(null);
+
+  // A lista das partes tem de ouvir o servidor pela MESMA porta por onde a
+  // conta em frente o ouve. Quando a venda que o servidor acabou de descrever
+  // é uma das partes em cobrança — emitida, cancelada, relida depois de uma
+  // emissão que correu mal —, a pastilha dela na lista muda com ela. Sem isto,
+  // a parte ficava eternamente "por cobrar" no ecrã depois de a fatura ter
+  // saído, e o *Falta Receber* não descia.
+  //
+  // `{ ...antiga, ...nova }` e não a nova pura: `_venda_publica` não traz o
+  // `documento` (só o `finalizar` e o `GET /pos/venda/{id}` o trazem), e uma
+  // resposta sem ele não pode apagar o número de fatura que já lá estava.
+  const sincronizarParte = useCallback((atualizada) => {
+    setReparticao((r) => (
+      r?.partes && r.partes.some((p) => p.id === atualizada.id)
+        ? { ...r, partes: r.partes.map((p) => (p.id === atualizada.id ? { ...p, ...atualizada } : p)) }
+        : r
+    ));
+  }, []);
+
   const aplicarVenda = useCallback((nova) => {
     vendaRef.current = nova;
     setVenda(nova);
-  }, []);
+    if (nova?.id) sincronizarParte(nova);
+  }, [sincronizarParte]);
 
   // Uma pergunta de cada vez. O `aPerguntar` do state serve o DESENHO (o
   // spinner do botão) e chega tarde de mais para decidir: o relógio dispara
@@ -1233,6 +1320,175 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
     });
   }, [aEmitir, executar, aplicarVenda, mostrarDocumento, operadorInvalido, apurarAEmissao]);
 
+  // --- Dividir e separar a conta ----------------------------------------------
+  //
+  // Três amigos, dois açaís e uma Coca-Cola: ou dividem por igual, ou cada um
+  // paga o que consumiu — e cada um leva a SUA fatura.
+  //
+  // **Nada aqui é um caminho novo de emissão.** Cada parte que o servidor
+  // devolve é uma venda normal deste módulo, com a sua referência
+  // determinística, a sua reserva atómica e a sua idempotência: cobrá-la é o
+  // `emitir` de sempre com a parte à frente, e deitá-la fora é o
+  // `cancelarVenda` de sempre. É essa decisão — do lado do servidor e deste —
+  // que mantém tudo o que foi endurecido no núcleo fiscal a valer para as
+  // partes sem uma linha nova.
+
+  const abrirReparticao = useCallback((modo) => {
+    if (!vendaRef.current) return;
+    setReparticao({ modo, mae: vendaRef.current, partes: null });
+    setVista('reparticao');
+  }, []);
+
+  const repartir = useCallback(({ modo, partes }) => {
+    if (aRepartir) return;
+    // Trancado JÁ, e não lá dentro da fila: a tarefa pode ficar atrás de
+    // outra escrita e, até ela arrancar, o botão continuava vivo — dois
+    // toques seguidos repartiam a conta duas vezes (o segundo apanharia o 409
+    // da mãe já `separada`, mas o ecrã não pode CONVIDAR a isso).
+    setARepartir(true);
+    executar(async () => {
+      // A mãe é a conta que está à frente — a mesma de que o ecrã fez a
+      // previsão. Guarda-se o id ANTES do pedido, como no `emitir`.
+      const maeId = vendaRef.current?.id;
+      if (!maeId) { setARepartir(false); return; }
+      try {
+        const { data } = modo === 'dividir'
+          ? await dividirConta(maeId, partes)
+          : await separarConta(maeId, partes);
+        setReparticao({ modo, mae: data.conta_mae, partes: data.partes || [] });
+        // A mãe deixou de ser uma conta: passou a `separada` e não aceita
+        // produtos, alterações, descontos nem cancelamento. Tirá-la da frente é
+        // o que impede o toque seguinte de ir bater num 409 — e o que faz o
+        // primeiro produto abrir uma conta NOVA, se ela quiser servir outra
+        // pessoa antes de acabar de cobrar estas.
+        aplicarVenda(null);
+        setEmEdicao(null);
+        toast.success(
+          modo === 'dividir'
+            ? `Conta dividida em ${(data.partes || []).length} partes. Cobre uma de cada vez.`
+            : `Conta separada em ${(data.partes || []).length} partes. Cobre uma de cada vez.`,
+        );
+      } catch (error) {
+        const status = error?.response?.status;
+        if (status === 401) { operadorInvalido(); return; }
+        // Sem resposta, o pedido pode ter sido gravado do outro lado — e o que
+        // estaria gravado são N contas prontas a emitir. Não se afirma nada:
+        // relê-se a conta pelo id que se tem em mãos, e é o estado dela que diz
+        // o que aconteceu. `separada` quer dizer que a repartição foi mesmo
+        // feita, e as partes existem sem este ecrã as ter visto — aí a única
+        // coisa honesta é mandar chamar o gestor, que as encontra na sessão.
+        if (semRespostaPos(error)) {
+          toast.error(
+            `${ehTimeoutPos(error)
+              ? `O servidor não respondeu em ${SEGUNDOS_DE_ESPERA} segundos.`
+              : 'Não houve resposta do servidor.'} Não se sabe se a conta chegou a ser repartida — confirme antes de repetir.`,
+          );
+          try {
+            const { data } = await obterVenda(maeId);
+            if (data?.estado === 'separada') {
+              toast.error(
+                'A conta FOI repartida no servidor, mas as partes não chegaram a este ecrã. '
+                + 'Não reparta outra vez: chame o gestor com a referência desta conta.',
+              );
+              setReparticao(null);
+              setVista('conta');
+              aplicarVenda(null);
+              return;
+            }
+            if (data?.estado !== 'aberta') {
+              // Já não é uma conta: alguém a emitiu ou cancelou primeiro. Não
+              // chegou a ser repartida, e a previsão que está no ecrã é sobre
+              // uma conta que já não existe — não se deixa lá à frente, com um
+              // botão que só pode dar erro.
+              toast.error('Esta conta já não está aberta — não chegou a ser repartida.');
+              setReparticao(null);
+              setVista('conta');
+              aplicarVenda(null);
+              return;
+            }
+            aplicarVenda(data);
+          } catch (erroDaReleitura) {
+            toast.error('Também não foi possível reler esta conta — não reparta outra vez sem confirmar.');
+          }
+          return;
+        }
+        // O servidor RESPONDEU e recusou. As mensagens dele são as boas: dizem
+        // se a conta mudou por baixo (409), se não fecha ao cêntimo ou se há
+        // artigos por atribuir (422), e o que fazer a seguir em cada caso.
+        toast.error(detalhesErroPos(error, 'Não foi possível repartir esta conta.').mensagem);
+        if (status === 409) {
+          // A conta ficou para trás (emitida ou cancelada noutro sítio), ou
+          // mudou por baixo. Nos dois casos a previsão que está no ecrã já não
+          // vale nada: relê-se e volta-se ao balcão.
+          setReparticao(null);
+          setVista('conta');
+          await recarregarVenda();
+        }
+      } finally {
+        setARepartir(false);
+      }
+    });
+  }, [aRepartir, executar, aplicarVenda, operadorInvalido, recarregarVenda]);
+
+  // Cobrar uma parte é pôr a parte à frente e ir ao finalizar de sempre —
+  // sem um segundo caminho de emissão, que é a razão de ser de tudo isto.
+  const cobrarParte = useCallback((parte) => {
+    if (!parte) return;
+    aplicarVenda(parte);
+    setErroEmissao(null);
+    mostrarDocumento(null, false);
+    setEmEdicao(null);
+    setVista('finalizar');
+  }, [aplicarVenda, mostrarDocumento]);
+
+  // A saída para quem não paga. É o `cancelarVenda` de sempre, sobre uma venda
+  // normal — e o ecrã diz o que isso significa antes de o fazer (o diálogo do
+  // PosReparticao): os artigos desta parte saem sem fatura e sem dinheiro.
+  const cancelarParte = useCallback((parte) => executar(async () => {
+    if (!parte?.id) return;
+    setACancelarParte(parte.id);
+    try {
+      const { data } = await cancelarVenda(parte.id);
+      sincronizarParte(data);
+      toast.success('Parte cancelada. Os artigos dela saem sem fatura e sem dinheiro.');
+    } catch (error) {
+      if (error?.response?.status === 401) { operadorInvalido(); return; }
+      toast.error(detalhesErroPos(error, 'Não foi possível cancelar esta parte.').mensagem);
+      // O ecrã não afirma nada sobre o que aconteceu à parte: vai perguntar. É
+      // a mesma disciplina do `apurarAEmissao` — um 409 aqui quer dizer que
+      // nasceu uma reserva fiscal para esta parte, e é o servidor que sabe em
+      // que estado ela ficou.
+      try {
+        const { data } = await obterVenda(parte.id);
+        sincronizarParte(data);
+      } catch (erroDaReleitura) {
+        toast.error('Também não foi possível reler esta parte — o que está no ecrã pode não estar actualizado.');
+      }
+    } finally {
+      setACancelarParte(null);
+    }
+  }), [executar, sincronizarParte, operadorInvalido]);
+
+  // Sair do ecrã da repartição. Antes de repartir não há nada feito e a
+  // escolha deita-se fora inteira (a seta volta ao finalizar); com as partes
+  // já criadas, sair é ir servir o cliente seguinte — e a `reparticao` fica,
+  // para a nota do painel da conta poder dizer o que falta receber e para
+  // haver caminho de volta.
+  const sairDaReparticao = useCallback(() => {
+    if (reparticao?.partes) { setVista('conta'); return; }
+    setReparticao(null);
+    setVista('finalizar');
+  }, [reparticao]);
+
+  // Todas as partes resolvidas (cobradas ou canceladas): a conta acabou.
+  const terminarReparticao = useCallback(() => {
+    setReparticao(null);
+    aplicarVenda(null);
+    mostrarDocumento(null, false);
+    setErroEmissao(null);
+    setVista('conta');
+  }, [aplicarVenda, mostrarDocumento]);
+
   // --- A saída da conta travada -----------------------------------------------
 
   // Vai PERGUNTAR ao servidor o que é feito de uma conta sobre a qual este
@@ -1437,11 +1693,30 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
   // o servidor não disser o que aconteceu, a dúvida acompanha a conta —
   // quem a resolve é o `perguntarPelaConta`, não um botão de navegação.
   const voltarDoFinalizar = useCallback(() => {
+    // A dúvida lê-se ANTES de se largar seja o que for: é ela que decide para
+    // onde se volta, e o `aplicarVenda(null)` logo a seguir apagava a conta de
+    // onde ela vem.
+    const porApurar = duvidaPorApurar(erroEmissao) || contaTravada(vendaRef.current);
     if (documento && vendaRef.current?.estado !== 'aberta') aplicarVenda(null);
     mostrarDocumento(null, false);
     setErroEmissao((anterior) => (duvidaPorApurar(anterior) ? anterior : null));
+    // A cobrar uma PARTE, o que está atrás não é o balcão: são as outras
+    // pessoas da mesma conta. Voltar ao balcão daqui era perder de vista o que
+    // falta receber, com o cliente seguinte já à frente.
+    //
+    // Com uma dúvida por apurar é o contrário, e por isso ela vem primeiro: a
+    // conta travada tem de continuar à frente dela, no painel da conta, onde a
+    // `FaixaContaTravada` explica o que se passa e dá as duas saídas. Mandá-la
+    // para a lista das partes deixava a dúvida órfã — sem faixa, sem relógio a
+    // perguntar ao servidor, e com o EMITIR de outra parte à distância de um
+    // toque.
+    if (reparticao?.partes && !porApurar) {
+      aplicarVenda(null);
+      setVista('reparticao');
+      return;
+    }
     setVista('conta');
-  }, [documento, aplicarVenda, mostrarDocumento]);
+  }, [documento, aplicarVenda, mostrarDocumento, erroEmissao, reparticao]);
 
   // --- O que está no diálogo do produto ---------------------------------------
 
@@ -1497,6 +1772,44 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
   // informação nunca pode dar mais liberdade do que mais informação: as duas
   // razões congelam o ecrã da mesma maneira, e a faixa diz qual delas é.
   const travada = travadaPeloServidor || duvidaPorApurar(erroEmissao);
+
+  // A conta que está à frente é uma das partes em cobrança? Se for, o
+  // finalizar tem de o DIZER — o ecrã de uma parte é indistinguível do de uma
+  // venda normal (um total mais pequeno e mais nada), e cobrar 3,00 € a quem
+  // devia 8,99 € é um engano que só aparece no fecho da caixa.
+  //
+  // `restanteCentimos` é o que fica por receber DEPOIS desta, já sem ela: é a
+  // pergunta seguinte de quem está a cobrar três pessoas à vez.
+  const parteEmCobranca = useMemo(() => {
+    const lista = reparticao?.partes;
+    if (!lista || !venda?.id) return null;
+    const i = lista.findIndex((p) => p.id === venda.id);
+    if (i < 0) return null;
+    return {
+      numero: i + 1,
+      de: lista.length,
+      restanteCentimos: lista.reduce(
+        (soma, p) => (p.estado === 'aberta' && p.id !== venda.id ? soma + centimos(p.totais?.total) : soma),
+        0,
+      ),
+    };
+  }, [reparticao, venda]);
+
+  // As partes que ficaram por cobrar enquanto ela está no balcão. `null`
+  // quando não há repartição nenhuma viva, ou quando já não falta cobrar
+  // ninguém — nesse caso não há dinheiro por receber e a nota só ocupava o
+  // painel.
+  const partesPorCobrar = useMemo(() => {
+    const lista = reparticao?.partes;
+    if (!lista) return null;
+    const abertas = lista.filter((p) => p.estado === 'aberta');
+    if (abertas.length === 0) return null;
+    return {
+      porCobrar: abertas.length,
+      deQuantas: lista.length,
+      faltaCentimos: abertas.reduce((soma, p) => soma + centimos(p.totais?.total), 0),
+    };
+  }, [reparticao]);
 
   // O spinner sozinho era o ecrã de arranque INTEIRO, e sem tecto de espera
   // podia ser o ecrã para sempre: a operadora ficava a olhar para uma roda a
@@ -1568,9 +1881,36 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
           documento={documento}
           documentoRecuperado={documentoRecuperado}
           erroEmissao={erroEmissao}
+          parte={parteEmCobranca}
           onVoltar={voltarDoFinalizar}
           onAplicarDesconto={aplicarDesconto}
           onEmitir={emitir}
+          onDividir={() => abrirReparticao('dividir')}
+          onSeparar={() => abrirReparticao('separar')}
+        />
+      </div>
+    );
+  }
+
+  // O ecrã da repartição toma o ecrã TODO, pela mesma razão do finalizar: a
+  // atribuição artigo a artigo e a conta de cada pessoa lado a lado precisam
+  // da largura, e a grelha ao lado só convidaria a picar mais um artigo numa
+  // conta que está a ser repartida.
+  if (vista === 'reparticao' && reparticao) {
+    return (
+      <div className="flex-1 min-h-0 bg-card">
+        <PosReparticao
+          mae={reparticao.mae}
+          modo={reparticao.modo}
+          partes={reparticao.partes}
+          aRepartir={aRepartir}
+          aCancelarParte={aCancelarParte}
+          onModo={(modo) => setReparticao((r) => (r ? { ...r, modo } : r))}
+          onVoltar={sairDaReparticao}
+          onRepartir={repartir}
+          onCobrarParte={cobrarParte}
+          onCancelarParte={cancelarParte}
+          onTerminar={terminarReparticao}
         />
       </div>
     );
@@ -1705,9 +2045,11 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
                mesmo liam-se como dois problemas diferentes. */
             contaDeLado={contaDeLado && contaDeLado.id !== venda?.id ? contaDeLado : null}
             aPerguntar={aPerguntar}
+            partesPorCobrar={partesPorCobrar}
             onPerguntar={() => perguntarPelaConta(venda?.id)}
             onPerguntarPelaDeLado={() => perguntarPelaConta(contaDeLado?.id)}
             onPorDeLado={porContaDeLado}
+            onVoltarAsPartes={() => setVista('reparticao')}
             onTocarLinha={(linha) => setEmEdicao({ produtoId: linha.produto_id, linhaId: linha.id })}
             /* A dúvida por apurar NÃO se limpa aqui, pela mesma razão da seta
                de voltar (ver `voltarDoFinalizar`): ir ao ecrã de pagamento não
