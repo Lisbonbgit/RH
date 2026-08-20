@@ -233,6 +233,33 @@ class PedidoDividir(BaseModel):
     partes: int = Field(ge=2, le=20)
 
 
+class PedidoSepararLinha(BaseModel):
+    """Quantas unidades desta linha vão para esta parte — sempre uma FATIA
+    da quantidade que já estava na conta, atribuída pelo staff, nunca um
+    valor novo."""
+
+    linha_id: str = Field(min_length=1)
+    quantidade: float
+
+    @field_validator("quantidade")
+    @classmethod
+    def _valida_quantidade(cls, v):
+        return _recusa_quantidade_impossivel(v)
+
+
+class PedidoSepararParte(BaseModel):
+    linhas: List[PedidoSepararLinha]
+
+
+class PedidoSeparar(BaseModel):
+    """Quem leva o quê — ao contrário do `PedidoDividir` (que reparte um
+    VALOR por N pessoas), aqui é o staff que atribui as linhas, uma a uma,
+    a cada parte. Por isso não há `ge`/`le` sobre o número de partes: o
+    número de partes é só o comprimento desta lista."""
+
+    partes: List[PedidoSepararParte]
+
+
 async def _obter_venda_da_loja(db, venda_id: str, loja_id: str) -> Dict:
     """Confirma que a venda existe E pertence à loja do operador autenticado
     — mesmo raciocínio de `_obter_caixa_da_loja` em caixa.py: o âmbito nunca
@@ -1376,20 +1403,14 @@ async def _porque_nao_ficou_dividida(db, venda_id: str) -> str:
     return _MSG_VENDA_COM_EMISSAO
 
 
-@router.post("/pos/venda/{venda_id}/dividir", status_code=201)
-async def dividir_conta(
-    venda_id: str, dados: PedidoDividir, operador: Dict = Depends(operador_atual)
+async def _grava_as_partes(
+    db, venda_id: str, mae: Dict, filhas: List[Dict]
 ) -> dict:
-    """Divide a conta por N pessoas: N contas-filhas que somam exactamente o
-    total, e uma mãe que passa a `separada` e deixa de ser finalizável.
-
-    As guardas de entrada são as das outras rotas de escrita, e pelas mesmas
-    razões: a venda tem de ser da loja do token (`_obter_venda_da_loja`), tem
-    de estar ABERTA (`_garante_aberta` — uma conta já dividida cai aqui, com a
-    mensagem própria) e não pode ter emissão em curso
-    (`_garante_sem_emissao`). Esta última é a mais importante das três: dividir
-    uma conta congelada fazia nascer N contas prontas a emitir enquanto a mãe
-    podia estar a virar uma Fatura Simplificada real.
+    """A escrita partilhada por `dividir_conta` e `separar_conta` (Task 4),
+    depois de cada rota já ter construído as SUAS filhas — o dividir reparte
+    um valor por N, o separar usa a atribuição do staff, mas dali em diante o
+    raciocínio é o MESMO, e vive aqui uma única vez para as duas rotas nunca
+    poderem divergir.
 
     **A ordem das escritas, e o que ela custa.** As filhas nascem primeiro e a
     mãe trava a seguir: ao contrário, existia um instante em que a conta estava
@@ -1398,46 +1419,18 @@ async def dividir_conta(
     a escrita que a trava, e é por isso que essa escrita é CONDICIONADA à mãe
     COMO ELA FOI LIDA — estado, versão das linhas e desconto global
     (`_a_mae_como_foi_lida`) — e decide pelo `matched_count`, não pelas guardas
-    de cima. Se alguém ganhou a corrida nessa janela (a emissão, ou o outro
-    separador do POS a juntar uma linha), as filhas que acabaram de nascer são
-    apagadas e a operadora leva um 409 que diz qual das duas coisas foi.
+    de quem chamou. Se alguém ganhou a corrida nessa janela (a emissão, ou o
+    outro separador do POS a juntar uma linha), as filhas que acabaram de
+    nascer são apagadas e a operadora leva um 409 que diz qual das duas coisas
+    foi.
 
     **E a escrita casar não chega.** A emissão pode ter reservado DEPOIS do
-    `_garante_sem_emissao` sem mudar nada na mãe — nesse caso a escrita
-    condicional casa, e é o `_ligar_venda_ao_documento` que carimba `emitida`
-    por cima do `separada` mais tarde. Por isso pergunta-se outra vez pela
-    reserva DEPOIS de travar a mãe, e compensa-se: filhas apagadas, mãe reposta
-    `aberta` (condicionada a `separada`, nunca por cima de uma venda que já
-    emitiu) e 409."""
-    db = obter_db()
-    mae = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
-    _garante_aberta(mae)
-    await _garante_sem_emissao(db, venda_id)
-
-    linhas_da_mae = mae.get("linhas") or []
-    if not linhas_da_mae:
-        raise HTTPException(status_code=422, detail=_MSG_CONTA_VAZIA_NAO_SE_DIVIDE)
-
-    n = dados.partes
-    try:
-        # `ValueError` só sai daqui quando nenhuma quantidade com as casas de
-        # `CASAS_DA_QUANTIDADE` produz a fatia ao cêntimo (medido: não acontece
-        # em nenhum preço de 0,01 € a 999,99 €). Vira 422 e não um 500: é a
-        # conta que não se divide assim, não o servidor que se partiu.
-        repartidas = [_partes_de_uma_linha(li, n) for li in linhas_da_mae]
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-
-    # O desconto GLOBAL também se reparte. Se ficasse só na mãe, as partes
-    # somavam mais do que o cliente pagou — e a mãe já não emite nada.
-    globais = repartir_centimos(_centimos(_totais(mae)["desconto_global"]), n)
-
-    filhas = [
-        _nova_parte(mae, [r[i] for r in repartidas if r[i] is not None], globais[i])
-        for i in range(n)
-    ]
-    _confirma_que_as_partes_somam(mae, filhas)
-
+    `_garante_sem_emissao` (perguntado por quem chamou, antes de construir as
+    filhas) sem mudar nada na mãe — nesse caso a escrita condicional casa, e é
+    o `_ligar_venda_ao_documento` que carimba `emitida` por cima do `separada`
+    mais tarde. Por isso pergunta-se outra vez pela reserva DEPOIS de travar a
+    mãe, e compensa-se: filhas apagadas, mãe reposta `aberta` (condicionada a
+    `separada`, nunca por cima de uma venda que já emitiu) e 409."""
     for filha in filhas:
         await db[COLECOES["vendas"]].insert_one(dict(filha))
 
@@ -1458,8 +1451,8 @@ async def dividir_conta(
         raise HTTPException(
             status_code=409, detail=await _porque_nao_travou_a_mae(db, venda_id))
 
-    # A janela que o `_garante_sem_emissao` lá de cima NÃO fecha — e esta era a
-    # única das cinco rotas de escrita a deixá-la aberta. Entre aquela pergunta
+    # A janela que o `_garante_sem_emissao` de quem chamou NÃO fecha — e esta
+    # era a única das rotas de escrita a deixá-la aberta. Entre aquela pergunta
     # e esta escrita estão os N inserts das filhas, e lá dentro cabe o
     # `finalizar` (fiscal.py) inteiro: reserva, relê a mãe — que continua
     # `aberta`, porque só a travamos aqui em baixo — e segue para o Vendus. A
@@ -1504,6 +1497,165 @@ async def dividir_conta(
         "conta_mae": _venda_publica(mae),
         "partes": [_venda_publica(f) for f in filhas],
     }
+
+
+@router.post("/pos/venda/{venda_id}/dividir", status_code=201)
+async def dividir_conta(
+    venda_id: str, dados: PedidoDividir, operador: Dict = Depends(operador_atual)
+) -> dict:
+    """Divide a conta por N pessoas: N contas-filhas que somam exactamente o
+    total, e uma mãe que passa a `separada` e deixa de ser finalizável.
+
+    As guardas de entrada são as das outras rotas de escrita, e pelas mesmas
+    razões: a venda tem de ser da loja do token (`_obter_venda_da_loja`), tem
+    de estar ABERTA (`_garante_aberta` — uma conta já dividida cai aqui, com a
+    mensagem própria) e não pode ter emissão em curso
+    (`_garante_sem_emissao`). Esta última é a mais importante das três: dividir
+    uma conta congelada fazia nascer N contas prontas a emitir enquanto a mãe
+    podia estar a virar uma Fatura Simplificada real.
+
+    A construção das filhas (repartir o valor de cada linha e o desconto
+    global por N, e confirmar que somam o total) é o que torna esta rota
+    diferente do `separar_conta` (Task 4); a escrita, o travão da mãe e a
+    compensação de uma corrida são o MESMO código nas duas — ver
+    `_grava_as_partes`."""
+    db = obter_db()
+    mae = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
+    _garante_aberta(mae)
+    await _garante_sem_emissao(db, venda_id)
+
+    linhas_da_mae = mae.get("linhas") or []
+    if not linhas_da_mae:
+        raise HTTPException(status_code=422, detail=_MSG_CONTA_VAZIA_NAO_SE_DIVIDE)
+
+    n = dados.partes
+    try:
+        # `ValueError` só sai daqui quando nenhuma quantidade com as casas de
+        # `CASAS_DA_QUANTIDADE` produz a fatia ao cêntimo (medido: não acontece
+        # em nenhum preço de 0,01 € a 999,99 €). Vira 422 e não um 500: é a
+        # conta que não se divide assim, não o servidor que se partiu.
+        repartidas = [_partes_de_uma_linha(li, n) for li in linhas_da_mae]
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    # O desconto GLOBAL também se reparte. Se ficasse só na mãe, as partes
+    # somavam mais do que o cliente pagou — e a mãe já não emite nada.
+    globais = repartir_centimos(_centimos(_totais(mae)["desconto_global"]), n)
+
+    filhas = [
+        _nova_parte(mae, [r[i] for r in repartidas if r[i] is not None], globais[i])
+        for i in range(n)
+    ]
+    _confirma_que_as_partes_somam(mae, filhas)
+
+    return await _grava_as_partes(db, venda_id, mae, filhas)
+
+
+# --- Separar a conta: cada parte leva as UNIDADES que o staff atribuiu (Task 4) --
+#
+# Três amigos, dois açaís e uma Coca-Cola: quando não pagam por igual, cada um
+# leva o que consumiu. Ao contrário do `dividir_conta` (que reparte um VALOR
+# por N pessoas, ao cêntimo), aqui é o STAFF que diz quem leva o quê — por
+# isso não há fracções: uma linha de 2 açaís vai 1 para cada, nunca 0.6 para
+# um e 1.4 para o outro. É essa diferença que torna esta rota mais simples do
+# que a anterior, e é também por que a spec pôs as fracções fora do âmbito
+# daqui.
+#
+# A decisão estrutural é a MESMA da divisão: cada parte é uma venda normal, e
+# a escrita que a cria — trancar a mãe, perguntar outra vez pela emissão,
+# compensar uma corrida — é literalmente o MESMO código (`_grava_as_partes`),
+# não uma segunda cópia dele.
+
+# Unidade em que as quantidades se SOMAM e se COMPARAM nesta rota — nunca em
+# float. `0.1 + 0.2 != 0.3` na vírgula flutuante binária, e aqui o que está em
+# jogo é uma conta fechar (ou recusar) ao cêntimo certo. Usa a MESMA resolução
+# de `reparticao.CASAS_DA_QUANTIDADE`, e não uma segunda escolhida à parte,
+# para uma quantidade que "bate certo" aqui não poder "não bater" lá.
+_UNIDADES_POR_QUANTIDADE = 10 ** CASAS_DA_QUANTIDADE
+
+
+def _unidades(quantidade: float) -> int:
+    """A quantidade em UNIDADES INTEIRAS, só para somar e comparar sem os
+    erros da vírgula flutuante — nunca para gravar nem para calcular preço,
+    que continuam em float como o resto do módulo."""
+    return round(quantidade * _UNIDADES_POR_QUANTIDADE)
+
+
+def _partes_da_separacao(mae: Dict, dados: PedidoSeparar) -> List[List[Dict]]:
+    """As linhas de cada parte, tal como o staff as atribuiu — e a
+    verificação central desta rota: a soma do que cada linha da mãe recebeu
+    tem de dar EXACTAMENTE a quantidade que ela tinha. Nem menos (um artigo
+    sem dono sai da loja sem fatura e sem pagamento) nem mais (fatura-se o
+    que não se vendeu) — e são dois 422 com mensagens diferentes, porque o
+    que a operadora tem de fazer a seguir também é diferente."""
+    por_linha = {li["id"]: li for li in (mae.get("linhas") or [])}
+    atribuido = {lid: 0 for lid in por_linha}
+
+    linhas_por_parte = []
+    for parte in dados.partes:
+        linhas_da_parte = []
+        for pl in parte.linhas:
+            linha = por_linha.get(pl.linha_id)
+            if linha is None:
+                raise HTTPException(status_code=404, detail=_MSG_LINHA_INEXISTENTE)
+            nova = _copia_da_linha(linha)
+            nova["quantidade"] = pl.quantidade
+            linhas_da_parte.append(nova)
+            atribuido[pl.linha_id] += _unidades(pl.quantidade)
+        linhas_por_parte.append(linhas_da_parte)
+
+    for lid, linha in por_linha.items():
+        total_linha = linha.get("quantidade", 1)
+        atribuido_linha = atribuido[lid] / _UNIDADES_POR_QUANTIDADE
+        nome = linha.get("produto_nome") or "Este artigo"
+        if atribuido[lid] < _unidades(total_linha):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "\"%s\" ainda tem artigos por atribuir a alguém: a conta "
+                    "tem %g e as partes só levam %g. Um artigo que não é de "
+                    "ninguém sai da loja sem fatura e sem pagamento — "
+                    "atribua-o a uma das partes antes de separar a conta."
+                    % (nome, total_linha, atribuido_linha)
+                ),
+            )
+        if atribuido[lid] > _unidades(total_linha):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "\"%s\" ficou atribuída a mais gente do que artigos tem: "
+                    "a conta tem %g e as partes pedem %g. Fatura-se o que foi "
+                    "vendido, nunca mais — reveja a atribuição desta linha."
+                    % (nome, total_linha, atribuido_linha)
+                ),
+            )
+
+    return linhas_por_parte
+
+
+@router.post("/pos/venda/{venda_id}/separar", status_code=201)
+async def separar_conta(
+    venda_id: str, dados: PedidoSeparar, operador: Dict = Depends(operador_atual)
+) -> dict:
+    """Separa a conta pelas linhas que o STAFF atribuiu a cada pessoa — ao
+    contrário do `dividir_conta`, que reparte um VALOR por N. As guardas de
+    entrada são as mesmas três da divisão (`_obter_venda_da_loja`,
+    `_garante_aberta`, `_garante_sem_emissao`), e a escrita que segue —
+    trancar a mãe condicionada a como foi lida, perguntar outra vez pela
+    emissão, compensar uma corrida — é o MESMO ajudante que a divisão usa
+    (`_grava_as_partes`), não uma segunda implementação dele."""
+    db = obter_db()
+    mae = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
+    _garante_aberta(mae)
+    await _garante_sem_emissao(db, venda_id)
+
+    if not (mae.get("linhas") or []):
+        raise HTTPException(status_code=422, detail=_MSG_CONTA_VAZIA_NAO_SE_DIVIDE)
+
+    linhas_por_parte = _partes_da_separacao(mae, dados)
+    filhas = [_nova_parte(mae, linhas, 0) for linhas in linhas_por_parte]
+
+    return await _grava_as_partes(db, venda_id, mae, filhas)
 
 
 async def _documento_da_venda(db, venda_id: str) -> Optional[Dict]:

@@ -45,6 +45,7 @@ from faturacao.venda import (
     PedidoEditarLinha,
     PedidoJuntarLinha,
     PedidoNovaVenda,
+    PedidoSeparar,
     abrir_venda,
     aplicar_desconto_global,
     cancelar_venda,
@@ -53,6 +54,7 @@ from faturacao.venda import (
     juntar_linha,
     obter_venda,
     remover_linha,
+    separar_conta,
     venda_aberta,
 )
 
@@ -3483,3 +3485,60 @@ def test_uma_emissao_abortada_manda_dividir_outra_vez_e_nao_chamar_o_gestor(monk
     )
     assert mae["estado"] == "aberta"
     assert [d["id"] for d in vendas._documentos] == ["venda-1"]
+
+
+# --- Separar a conta (POST /pos/venda/{venda_id}/separar) ----------------------
+#
+# Três amigos, dois açaís e uma Coca-Cola: quando não dividem por igual, cada
+# um leva o que consumiu — e cada um quer a SUA fatura. Ao contrário do
+# `dividir_conta` (que reparte um VALOR por N pessoas), aqui é o STAFF que diz
+# quem leva o quê, linha a linha. Não há fracções: uma linha de 2 açaís vai 1
+# para cada. É essa diferença que torna esta rota mais simples do que a
+# anterior.
+
+
+def test_separar_reparte_os_artigos_pelas_pessoas(monkeypatch):
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[
+        _linha(id="l1", produto_nome="Açaí Regular", produto_preco=8.99, quantidade=2),
+        _linha(id="l2", produto_nome="Coca-Cola", produto_preco=0.95, quantidade=1)])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    r = _corre(separar_conta("venda-1", PedidoSeparar(partes=[
+        {"linhas": [{"linha_id": "l1", "quantidade": 1},
+                    {"linha_id": "l2", "quantidade": 1}]},
+        {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+    ]), operador=_operador()))
+
+    assert [p["totais"]["total"] for p in r["partes"]] == [9.94, 8.99]
+    assert round(sum(p["totais"]["total"] for p in r["partes"]), 2) == 18.93
+    assert r["conta_mae"]["estado"] == "separada"
+    assert all(p["conta_mae_id"] == "venda-1" for p in r["partes"])
+
+
+def test_separar_recusa_deixar_artigos_por_atribuir(monkeypatch):
+    """Um artigo que não é de ninguém sai da loja sem fatura e sem
+    pagamento. Recusa-se aqui, com o cliente à frente, e não depois no
+    fecho de caixa."""
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[
+        _linha(id="l1", produto_preco=8.99, quantidade=2)])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    with pytest.raises(HTTPException) as e:
+        _corre(separar_conta("venda-1", PedidoSeparar(partes=[
+            {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+        ]), operador=_operador()))
+    assert e.value.status_code == 422
+    assert "por atribuir" in e.value.detail
+
+
+def test_separar_recusa_atribuir_mais_do_que_existe(monkeypatch):
+    registo = []
+    db = _db(registo, vendas=[_venda(linhas=[_linha(id="l1", quantidade=1)])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    with pytest.raises(HTTPException) as e:
+        _corre(separar_conta("venda-1", PedidoSeparar(partes=[
+            {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+            {"linhas": [{"linha_id": "l1", "quantidade": 1}]},
+        ]), operador=_operador()))
+    assert e.value.status_code == 422
