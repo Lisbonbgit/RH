@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, ArrowLeft, Loader2, Minus, Plus, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Loader2, Minus, Pencil, Plus, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -112,6 +112,59 @@ const valoresIniciais = (produto, linha, grupos, base) => {
   };
 };
 
+// O pedido de uma linha já gravada, em TRÊS campos rotulados — para o bloco
+// só de leitura no topo deste diálogo (Task 7, brief da faturação): a mesma
+// leitura do `talao.pedido_da_cozinha` (SERVIÇO / NOME no copo / o resto),
+// só que aqui SEPARADOS, ao contrário do `resumoDoPedido` do
+// `PosPedidoGuiado` — esse junta Serviço e Nome numa frase só (é o que cabe
+// na conta), mas aqui, no ecrã onde ela decide se toca em "Editar pedido",
+// Serviço e Nome são coisas diferentes e ela corrige-as por razões
+// diferentes (ver o "Porquê" do brief).
+//
+// Repetida a leitura das opções, e não importada do `PosPedidoGuiado.js`
+// (que já tem uma versão disto, `resumoDoPedido`): esta tarefa só pode mexer
+// neste ficheiro e no `PosVenda.js`.
+const tituloDoPedido = (linha) => {
+  const opcoes = (Array.isArray(linha?.opcoes) ? linha.opcoes : []).filter(Boolean);
+  const respostas = (Array.isArray(linha?.respostas_texto) ? linha.respostas_texto : []).filter(Boolean);
+
+  const servico = [];
+  opcoes.forEach((o) => {
+    // `!== false`, e não `!o.sai_na_fatura`: uma linha gravada antes deste
+    // campo existir chega sem a chave, e essa vale como "sai na fatura" (é o
+    // que o servidor assume) — tratá-la como serviço tirava-lhe a dose no
+    // campo de Personalizações a seguir. A mesma leitura do `resumoDoPedido`.
+    if (o.sai_na_fatura !== false || !o.nome) return;
+    const nome = String(o.nome);
+    if (!servico.includes(nome)) servico.push(nome);
+  });
+
+  // O nome que vai no copo é a PRIMEIRA resposta de texto não vazia — a
+  // mesma regra do `talao._nome_no_copo`, porque é o texto que sai no papel
+  // que a operadora tem na mão.
+  let nome = '';
+  for (let i = 0; i < respostas.length && !nome; i += 1) {
+    const texto = String(respostas[i]?.texto || '').trim();
+    if (texto) nome = texto;
+  }
+
+  const doses = new Map();
+  opcoes.forEach((o) => {
+    if (o.sai_na_fatura === false || !o.nome) return;
+    const chave = String(o.nome);
+    doses.set(chave, (doses.get(chave) || 0) + 1);
+  });
+  // A dose aparece SEMPRE, mesmo a 1× — a mesma razão do `resumoDoPedido`: o
+  // número é para se conferir de relance quantas colheres foram pedidas.
+  const personalizacoes = Array.from(doses, ([n, quantas]) => `${n} ${quantas}×`).join(', ');
+
+  return [
+    { label: 'Serviço', valor: servico.join(' · ') },
+    { label: 'Nome', valor: nome },
+    { label: 'Personalizações', valor: personalizacoes },
+  ].filter((p) => p.valor);
+};
+
 function BlocoRazoes({ razoes }) {
   if (razoes.length === 0) return null;
   return (
@@ -137,7 +190,9 @@ function Seccao({ titulo, children }) {
 // painel direito da conta, não é um modal por cima dela. Como o PosEntrar,
 // enche o espaço que o pai lhe der (`h-full`) e nunca assume que é a página
 // inteira — quem decide isso é o PosVenda.
-export default function PosDialogoProduto({ produto, grupos, linha, aGravar, onGravar, onVoltar, onRemover }) {
+export default function PosDialogoProduto({
+  produto, grupos, linha, aGravar, onGravar, onVoltar, onRemover, onEditarPedido,
+}) {
   // O pai pode manter este componente montado e trocar-lhe o produto por
   // baixo (tocar noutra linha da conta sem passar pela grelha). Sem repor o
   // estado, o ecrã mostrava o nome do artigo novo com a quantidade, o preço e
@@ -172,6 +227,26 @@ export default function PosDialogoProduto({ produto, grupos, linha, aGravar, onG
     setVista(arranque.vista);
   }, [arranque]);
 
+  // "Editar pedido" (Task 7) grava directamente no servidor — `editarLinha`,
+  // chamado pelo `PosPedidoGuiado` que este ecrã reabre por cima de si
+  // próprio — sem passar pelo Gravar aqui embaixo. A `linha` que volta já
+  // tem as opções novas, mas a `chave` não muda (é a MESMA linha, de
+  // propósito — ver o comentário dela acima), por isso o estado local
+  // `opcoes` não se repunha sozinho. Sem este efeito, a Nutella que acabou
+  // de sair do pop-up ficava ausente do Total desta linha, e o PRÓPRIO
+  // Gravar deste ecrã — que manda `opcoes` sempre, mais abaixo — desfazia a
+  // correcção ao gravar por cima o valor antigo.
+  //
+  // Guardado contra o painel de Personalizações (`vista === 'personalizacoes'`
+  // mais abaixo, onde `opcoes` SE edita à mão): o "Editar pedido" só está à
+  // vista na vista principal, por isso as duas edições nunca deviam correr
+  // ao mesmo tempo — mas o guarda custa pouco e não deixa dúvidas.
+  useEffect(() => {
+    if (vista === 'personalizacoes') return;
+    setOpcoes(Array.isArray(linha?.opcoes) ? linha.opcoes.filter(Boolean) : []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linha]);
+
   // As duas leituras da selecção vêm do MESMO sítio que o painel usa, e é de
   // propósito: uma linha montada no pedido guiado chega aqui com doses (a
   // Nutella repetida) e com um grupo de texto no produto, e este ecrã já a
@@ -192,6 +267,13 @@ export default function PosDialogoProduto({ produto, grupos, linha, aGravar, onG
   // cliente tinha na mão a discutir. Só numa linha nova (ou num retrato sem
   // nome) é que se olha para o catálogo.
   const nome = (linha ? linha.produto_nome || produto?.nome : produto?.nome) || 'Produto';
+
+  // O bloco de leitura do topo (Task 7) e o botão que o acompanha. Sai da
+  // LINHA (a verdade do servidor), nunca do `opcoes` local — o bloco lê-se
+  // enquanto o estado local pode estar a meio de ser reposto pelo efeito
+  // acima, e mostrar aí um valor a piscar era pior do que ler sempre a
+  // mesma fonte que o "Editar pedido" também usa para semear o pop-up.
+  const titulo = tituloDoPedido(linha);
 
   // Preencher um limpa o outro. Não é decoração: o Vendus só aceita UM
   // desconto por linha e o servidor resolve o empate com o € a ganhar
@@ -356,6 +438,36 @@ export default function PosDialogoProduto({ produto, grupos, linha, aGravar, onG
       </header>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6 min-h-0">
+        {/* O bloco de leitura do pedido guiado (Task 7, brief da faturação).
+            Só aparece quando HÁ um pedido guiado para reabrir — um produto
+            sem grupos (ou sem `onEditarPedido`, o que o pai só omite quando
+            não há linha nenhuma para editar) não tem passo nenhum para
+            mostrar, e um "Editar pedido" que abrisse um pop-up vazio era um
+            botão morto. Fica ANTES da Quantidade de propósito: é o resumo
+            que ela confere com o cliente antes de mexer em preço ou
+            desconto — a mesma ordem de leitura do talão da cozinha. */}
+        {grupos && grupos.length > 0 && onEditarPedido && (
+          <div className="rounded-2xl border bg-muted/40 p-3 space-y-2.5">
+            <p className="text-sm leading-snug">
+              {titulo.length > 0 ? titulo.map((p, i) => (
+                <React.Fragment key={p.label}>
+                  {i > 0 && ' · '}
+                  <strong className="font-heading">{p.label}</strong> {p.valor}
+                </React.Fragment>
+              )) : 'Sem pedido registado.'}
+            </p>
+            <Button
+              variant="outline"
+              className="w-full h-12 text-base justify-start"
+              onClick={onEditarPedido}
+              disabled={aGravar}
+            >
+              <Pencil className="h-5 w-5 mr-2" />
+              Editar pedido
+            </Button>
+          </div>
+        )}
+
         <Seccao titulo="Quantidade">
           <div className="flex items-center gap-3">
             <button

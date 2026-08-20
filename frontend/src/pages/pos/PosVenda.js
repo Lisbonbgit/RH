@@ -1042,7 +1042,14 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
     juntarProduto(produto, { quantidade: 1, opcoes: [] });
   }, [gruposDoProduto, juntarProduto]);
 
-  const gravarLinha = useCallback((produto, linha, dados) => {
+  // `manterEdicao` (Task 7): o "Editar pedido" reabre o pedido guiado por
+  // CIMA do PosDialogoProduto que já estava aberto — ao gravar, esta função
+  // só actualiza opções e resposta de texto, e o desconto/preço que ela
+  // estava a escrever ali têm de continuar à vista no MESMO ecrã (é a razão
+  // de ser da Task 7: corrigir "esqueci-me da Nutella" não pode escondê-los,
+  // ver o "Porquê" do brief). Por omissão o Gravar fecha a edição — é o que
+  // o Gravar do PRÓPRIO PosDialogoProduto sempre fez, e continua a fazer.
+  const gravarLinha = useCallback((produto, linha, dados, { manterEdicao = false } = {}) => {
     setAGravar(true);
     const terminar = () => setAGravar(false);
     if (linha) {
@@ -1050,7 +1057,7 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
         try {
           const { data } = await editarLinha(vendaRef.current.id, linha.id, dados);
           aplicarVenda(data);
-          setEmEdicao(null);
+          if (!manterEdicao) setEmEdicao(null);
           setPedidoGuiado(null);
         } catch (error) {
           falhou(error, 'Não foi possível gravar esta linha.');
@@ -1072,7 +1079,11 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
     const { produto, linha } = pedidoGuiado;
     gravarLinha(produto, linha, linha
       ? { opcoes, respostas_texto }
-      : { quantidade: 1, opcoes, respostas_texto });
+      : { quantidade: 1, opcoes, respostas_texto },
+      // Uma linha JÁ na conta só chega aqui pelo "Editar pedido" (Task 7) —
+      // o PosDialogoProduto continua aberto por baixo, e é para lá que se
+      // volta (ver o comentário do `manterEdicao` em `gravarLinha`).
+      { manterEdicao: linha != null });
   }, [pedidoGuiado, gravarLinha]);
 
   const removerDaConta = useCallback((linha) => executar(async () => {
@@ -1668,6 +1679,18 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
             onGravar={(dados) => gravarLinha(produtoEmEdicao, linhaEmEdicao, dados)}
             onVoltar={() => setEmEdicao(null)}
             onRemover={linhaEmEdicao ? () => removerDaConta(linhaEmEdicao) : undefined}
+            // "Editar pedido" (Task 7): volta a abrir o MESMO pop-up do
+            // pedido guiado, agora com a `linha` preenchida — é o caminho
+            // curto para corrigir "esqueci-me da Nutella" sem apagar a linha
+            // e picar tudo de novo. Só existe quando há uma linha para
+            // editar; o PosDialogoProduto só mostra o botão quando, além
+            // disso, o produto tem grupos (é ele que decide se há pedido
+            // guiado nenhum para reabrir).
+            onEditarPedido={linhaEmEdicao ? () => setPedidoGuiado({
+              produto: produtoEmEdicao,
+              grupos: gruposDoProduto(produtoEmEdicao),
+              linha: linhaEmEdicao,
+            }) : undefined}
           />
         ) : (
           <PainelConta
