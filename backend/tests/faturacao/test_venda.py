@@ -63,9 +63,19 @@ def _corre(coro):
 
 
 def _corresponde(item, filtro):
+    """Réplica minimalista do casamento de filtro do Mongo: igualdade exacta
+    em cada campo — com suporte extra a `{"$in": [...]}` (mesmo padrão de
+    test_pos_auth.py), que é como `juntar_linha` (Task 3) vai buscar os
+    grupos de personalização das opções da linha."""
     if not filtro:
         return True
-    return all(item.get(chave) == valor for chave, valor in filtro.items())
+    for chave, valor in filtro.items():
+        if isinstance(valor, dict) and "$in" in valor:
+            if item.get(chave) not in valor["$in"]:
+                return False
+        elif item.get(chave) != valor:
+            return False
+    return True
 
 
 class CursorFalso:
@@ -157,7 +167,7 @@ class DbFalsa:
 
 
 def _db(registo, caixas=None, sessoes=None, vendas=None, produtos=None, refs=None,
-        documentos=None):
+        documentos=None, grupos=None):
     return DbFalsa({
         COLECOES["caixas"]: ColeccaoFalsa(registo, caixas),
         COLECOES["sessoes_caixa"]: ColeccaoFalsa(registo, sessoes),
@@ -170,6 +180,12 @@ def _db(registo, caixas=None, sessoes=None, vendas=None, produtos=None, refs=Non
         # que `GET /pos/venda/{venda_id}` devolve a quem perdeu a resposta do
         # EMITIR e ficou sem número nem ATCUD no ecrã.
         COLECOES["documentos"]: ColeccaoFalsa(registo, documentos),
+        # Os grupos de personalização (Task 1/3): `juntar_linha` consulta-os
+        # pelo `grupo_id` das opções para carimbar o retrato do
+        # `sai_na_fatura` em cada opção da linha. Vazio por omissão, como as
+        # outras colecções — a maioria dos testes deste ficheiro não junta
+        # opções com grupo nenhum.
+        COLECOES["grupos_personalizacao"]: ColeccaoFalsa(registo, grupos),
     })
 
 
@@ -475,6 +491,42 @@ def test_juntar_linha_em_venda_emitida_e_recusado_409(monkeypatch):
 def test_juntar_linha_com_quantidade_zero_e_recusado():
     with pytest.raises(ValidationError):
         PedidoJuntarLinha(produto_id="prod-1", quantidade=0)
+
+
+def test_juntar_linha_guarda_as_respostas_de_texto(monkeypatch):
+    registo = []
+    db = _db(registo, vendas=[_venda()], produtos=[_produto()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(juntar_linha(
+        "venda-1", PedidoJuntarLinha(
+            produto_id="prod-1", quantidade=1,
+            respostas_texto=[{"grupo_id": "g-nome", "nome_grupo": "Nome", "texto": "Maria"}],
+        ), operador=_operador()
+    ))
+    assert resultado["linhas"][0]["respostas_texto"] == [
+        {"grupo_id": "g-nome", "nome_grupo": "Nome", "texto": "Maria"}
+    ]
+
+
+def test_juntar_linha_carimba_o_sai_na_fatura_de_cada_opcao(monkeypatch):
+    """Retrato, pela mesma razão que o preço: o gestor pode desligar o
+    interruptor amanhã, e o que saiu no papel não muda."""
+    registo = []
+    grupo = {
+        "id": "g1", "nome": "Consumir na loja", "sai_na_fatura": False,
+        "opcoes": [{"id": "o1", "nome": "Levar", "preco": 0}],
+    }
+    db = _db(registo, vendas=[_venda()], produtos=[_produto()], grupos=[grupo])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(juntar_linha(
+        "venda-1", PedidoJuntarLinha(
+            produto_id="prod-1", quantidade=1,
+            opcoes=[{"id": "o1", "grupo_id": "g1", "nome": "Levar", "preco": 0}],
+        ), operador=_operador()
+    ))
+    assert resultado["linhas"][0]["opcoes"][0]["sai_na_fatura"] is False
 
 
 # --- Alterar quantidade / editar linha --------------------------------------

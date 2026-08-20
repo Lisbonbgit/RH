@@ -105,10 +105,22 @@ class PedidoNovaVenda(BaseModel):
     caixa_id: str = Field(min_length=1)
 
 
+class RespostaTexto(BaseModel):
+    """A resposta a um grupo de tipo texto — hoje, o nome que se escreve no
+    copo. Guarda-se também o `nome_grupo` (um retrato, como o `produto_nome`)
+    para o talão da cozinha poder ser lido daqui a um mês sem ir buscar o
+    grupo, que pode ter mudado de nome ou desaparecido."""
+
+    grupo_id: str = Field(min_length=1)
+    nome_grupo: Optional[str] = None
+    texto: str = Field(max_length=120)
+
+
 class PedidoJuntarLinha(BaseModel):
     produto_id: str = Field(min_length=1)
     quantidade: int = Field(default=1, ge=1)
     opcoes: List[Dict] = Field(default_factory=list)
+    respostas_texto: List[RespostaTexto] = Field(default_factory=list)
     preco_override: Optional[float] = None
     tax_override: Optional[str] = None
     desconto_pct: Optional[float] = Field(default=None, ge=0, le=100)
@@ -121,6 +133,7 @@ class PedidoEditarLinha(BaseModel):
     # preco_override de volta a None sem ter de repetir o resto da linha.
     quantidade: Optional[int] = Field(default=None, ge=1)
     opcoes: Optional[List[Dict]] = None
+    respostas_texto: Optional[List[RespostaTexto]] = None
     preco_override: Optional[float] = None
     tax_override: Optional[str] = None
     desconto_pct: Optional[float] = Field(default=None, ge=0, le=100)
@@ -689,6 +702,24 @@ async def juntar_linha(
     if erros:
         raise HTTPException(status_code=422, detail="; ".join(erros))
 
+    # Retrato do `sai_na_fatura` do grupo no momento da escolha, pela mesma
+    # razão que a linha já guarda `produto_preco`: o gestor pode desligar o
+    # interruptor amanhã, e o que saiu no papel não muda. Sem isto, o título
+    # de uma fatura reimpressa mudava consoante a configuração de hoje.
+    grupos_da_linha = {}
+    ids = [o.get("grupo_id") for o in dados.opcoes if o.get("grupo_id")]
+    if ids:
+        for g in await db[COLECOES["grupos_personalizacao"]].find(
+            {"id": {"$in": ids}}, {"_id": 0, "id": 1, "sai_na_fatura": 1}
+        ).to_list(len(ids)):
+            grupos_da_linha[g["id"]] = g.get("sai_na_fatura", True)
+
+    opcoes = []
+    for o in dados.opcoes:
+        o = dict(o)
+        o["sai_na_fatura"] = grupos_da_linha.get(o.get("grupo_id"), True)
+        opcoes.append(o)
+
     linha = {
         "id": str(uuid.uuid4()),
         "produto_id": produto["id"],
@@ -705,7 +736,8 @@ async def juntar_linha(
         # cobrar.
         "produto_vendus_ref": produto.get("vendus_ref"),
         "quantidade": dados.quantidade,
-        "opcoes": dados.opcoes,
+        "opcoes": opcoes,
+        "respostas_texto": [r.model_dump() for r in dados.respostas_texto],
         "preco_override": dados.preco_override,
         "tax_override": dados.tax_override,
         "desconto_pct": dados.desconto_pct,
