@@ -62,16 +62,18 @@ const tipoDoGrupo = (grupo) => (grupo?.tipo === 'texto' ? 'texto' : 'opcoes');
 
 const opcoesDoGrupo = (grupo) => (Array.isArray(grupo?.opcoes) ? grupo.opcoes.filter(Boolean) : []);
 
-// Uma entrada por opção DIFERENTE, pela ordem da primeira escolha.
+// Uma entrada por opção DIFERENTE, pela ordem da primeira escolha — é o que o
+// contador do máximo deste ecrã tem de contar, porque o `min_select`/
+// `max_select` de um grupo conta OPÇÕES, nunca doses. Nos toppings do açaí não
+// há máximo nenhum e o cliente pede o que quiser; três doses de Nutella não
+// podem esgotar um máximo de três, nem duas doses de Nutella podem satisfazer
+// um mínimo de duas escolhas.
 //
-// É esta lista — e nunca a das doses — que se dá ao `errosDeSelecao`, porque
-// o `min_select`/`max_select` de um grupo conta OPÇÕES, nunca doses. Nos
-// toppings do açaí não há máximo nenhum e o cliente pede o que quiser; três
-// doses de Nutella não podem esgotar um máximo de três, nem duas doses de
-// Nutella podem satisfazer um mínimo de duas escolhas. O `errosDeSelecao`
-// conta ENTRADAS (é o que tem de fazer para o painel de sempre, onde uma
-// escolha é uma entrada) — dar-lhe a lista sem repetições é o que o faz contar
-// opções, e evita uma segunda cópia das frases de erro em PT-PT.
+// Ao `errosDeSelecao` dá-se a lista CRUA: essa regra passou a viver lá dentro,
+// que é onde tinha de estar. Enquanto foi este ecrã a tirar-lhe as repetições
+// antes de lha entregar, o painel de sempre — que recebe a mesma linha quando
+// se vai corrigi-la — continuou a contar doses e recusava-a com "Em Fruta pode
+// escolher no máximo 2." a olhar para duas frutas.
 const umaPorOpcao = (escolhidas) => {
   const vistas = new Set();
   const resultado = [];
@@ -376,17 +378,18 @@ export default function PosPedidoGuiado({ produto, grupos, linha, aGravar, onGra
   const errosDoPasso = useMemo(() => {
     if (!grupo) return [];
     if (tipoDoGrupo(grupo) === 'texto') {
-      // O `errosDeSelecao` NÃO serve a um grupo de texto: ele compara o
-      // mínimo com as opções escolhidas, e um grupo de texto não tem opções
-      // nenhumas — dizia sempre "não tem nenhuma opção disponível — avise o
-      // gestor" a um Nome obrigatório que está ali à espera de ser escrito.
+      // Um grupo de texto tem a SUA frase, dita aqui: o `errosDeSelecao` só
+      // sabe de opções e um grupo de texto não tem nenhuma, por isso ignora-o
+      // (é o que o impede de dizer "não tem nenhuma opção disponível — avise o
+      // gestor" a um Nome obrigatório que está ali à espera de ser escrito) —
+      // mas ignorar não é verificar, e o mínimo do Nome tem de valer.
       const escrito = String(textos[grupo.id] || '').trim();
       if (limite(grupo.min_select) > 0 && !escrito) {
         return [`Falta preencher ${grupo.nome || 'esta resposta'}.`];
       }
       return [];
     }
-    return errosDeSelecao([grupo], umaPorOpcao(opcoes));
+    return errosDeSelecao([grupo], opcoes);
   }, [grupo, opcoes, textos]);
 
   const podeAvancar = errosDoPasso.length === 0;

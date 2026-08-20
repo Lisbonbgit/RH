@@ -172,6 +172,16 @@ export default function PosDialogoProduto({ produto, grupos, linha, aGravar, onG
     setVista(arranque.vista);
   }, [arranque]);
 
+  // As duas leituras da selecção vêm do MESMO sítio que o painel usa, e é de
+  // propósito: uma linha montada no pedido guiado chega aqui com doses (a
+  // Nutella repetida) e com um grupo de texto no produto, e este ecrã já a
+  // recusou por causa das duas coisas — "Em Fruta pode escolher no máximo 2."
+  // a olhar para Morango 3× + Kiwi 1×, e "Nome exige 1 escolha mas não tem
+  // nenhuma opção disponível — avise o gestor" a olhar para um grupo que nunca
+  // teve opções. Com o Gravar desligado, aquela linha ficava sem desconto, sem
+  // quantidade e sem preço: só se podia apagar e picar de novo. As duas regras
+  // (contar opções diferentes, ignorar os grupos de texto) vivem hoje dentro
+  // do `errosDeSelecao`, para nenhum chamador as poder esquecer outra vez.
   const errosSelecao = useMemo(() => errosDeSelecao(grupos || [], opcoes), [grupos, opcoes]);
   const resumo = resumoDaSelecao(opcoes);
 
