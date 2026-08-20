@@ -209,6 +209,57 @@ export const temMaisDe2CasasDecimaisPos = (valor) => {
   return casas.length > 2;
 };
 
+// --- A conta de uma linha ----------------------------------------------------
+//
+// Vive aqui, e não dentro de um ecrã, porque são DOIS ecrãs a ler a mesma
+// linha: o painel da conta (PosVenda) e a repartição (PosReparticao). Uma
+// segunda cópia desta ordem de arredondamentos era o mesmo artigo a valer
+// dois números diferentes em dois sítios do mesmo balcão.
+const cent = (valor) => Math.round(valor * 100) / 100;
+
+// O total de uma linha JÁ GRAVADA, na MESMA ordem de `precos.linha_de_venda`:
+// as opções somam ao preço unitário, o resultado multiplica pela quantidade,
+// e só depois entra o desconto (com `round` a cada passo, como o servidor).
+//
+// É uma estimativa de LEITURA, para a coluna "Preço" do print — nunca um
+// total da conta: esse é o `venda.totais.total` do servidor. A única
+// divergência possível é um cêntimo num desconto em % que caia exactamente a
+// meio (o Python arredonda para o par, o JavaScript para cima), e por isso a
+// soma destas linhas nunca é mostrada como total de nada.
+//
+// O `PosDialogoProduto` tem a sua própria versão desta conta de propósito: a
+// dele trabalha sobre campos de texto a meio de serem escritos, esta trabalha
+// sobre uma linha que o servidor já aceitou.
+export const contasDaLinha = (linha) => {
+  const base = linha.preco_override != null ? linha.preco_override : linha.produto_preco;
+  const extra = (linha.opcoes || []).reduce((soma, o) => soma + (Number(o?.preco) || 0), 0);
+  const unitario = cent((Number(base) || 0) + extra);
+  const bruto = cent(unitario * (Number(linha.quantidade) || 0));
+  // Truthiness, como o servidor (`if desconto_eur: ... elif desconto_pct:`):
+  // um desconto de 0 € não é desconto e deixa passar a percentagem.
+  const desconto = linha.desconto_eur
+    ? Number(linha.desconto_eur)
+    : (linha.desconto_pct ? cent(bruto * Number(linha.desconto_pct) / 100) : 0);
+  return { unitario, bruto, desconto, total: cent(bruto - desconto) };
+};
+
+// A MESMA repartição do servidor (`reparticao.repartir_centimos`), em cêntimos
+// INTEIROS: a base para todos e o cêntimo que sobra para as PRIMEIRAS partes.
+//
+// Existe aqui por uma razão só — o ecrã tem de poder dizer quanto vai pagar
+// cada pessoa ANTES de dividir, com o cliente à frente a perguntar. Os valores
+// que contam continuam a ser os que o servidor devolve em cada parte, e é por
+// isso que esta conta tem de ser a mesma que a de lá: um ecrã a prometer
+// 3,00 / 3,00 / 2,99 e um servidor a repartir de outra maneira é uma promessa
+// que a fatura desmente à frente do cliente.
+export const repartirCentimos = (totalCentimos, partes) => {
+  if (!(partes >= 1)) return [];
+  const total = Math.round(Number(totalCentimos) || 0);
+  const base = Math.floor(total / partes);
+  const resto = total - base * partes;
+  return Array.from({ length: partes }, (_, i) => base + (i < resto ? 1 : 0));
+};
+
 // --- Chamadas ----------------------------------------------------------------
 
 // Sem cabeçalhos (bootstrap): o dispositivo ainda não tem nenhum token neste
@@ -365,3 +416,21 @@ export const duvidaPorApurar = (erroEmissao) =>
 // PosVenda trata-o como 'incerto', que é a verdade.
 export const finalizarVenda = (vendaId, dados) =>
   api.post(`/pos/venda/${vendaId}/finalizar`, dados, { timeout: TIMEOUT_COM_VENDUS_MS });
+
+// --- Dividir e separar a conta -----------------------------------------------
+//
+// Cada parte que estas duas devolvem é uma VENDA NORMAL deste módulo (a mesma
+// forma de `_venda_publica`, com `conta_mae_id` preenchido): daí em diante
+// emite-se, cancela-se e pergunta-se por ela exactamente com as chamadas que
+// já existem aqui em cima. Não há um segundo caminho de emissão para as
+// partes, e é isso que mantém o núcleo fiscal — a reserva atómica, a
+// idempotência, o travão — a valer para elas sem uma linha nova.
+//
+// `partes` é um NÚMERO no dividir (por quantas pessoas) e uma LISTA no separar
+// (quem leva o quê): [{ linhas: [{ linha_id, quantidade }] }, …].
+
+export const dividirConta = (vendaId, partes) =>
+  api.post(`/pos/venda/${vendaId}/dividir`, { partes });
+
+export const separarConta = (vendaId, partes) =>
+  api.post(`/pos/venda/${vendaId}/separar`, { partes });
