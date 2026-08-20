@@ -109,6 +109,21 @@ _MSG_CANCELAMENTO_ABORTADO_SEM_EMISSAO = (
     "Simplificada e a conta está outra vez aberta. Carregue em Cancelar "
     "outra vez."
 )
+# As duas mensagens da DIVISÃO DESFEITA (ver `_porque_nao_ficou_dividida`) — a
+# mesma disciplina das duas de cima, com as palavras da divisão. As do
+# cancelamento não servem aqui: a operadora carregou em DIVIDIR, e ouvir "esta
+# conta NÃO foi cancelada" mandava-a procurar um cancelamento que ninguém pediu.
+_MSG_DIVISAO_EMITIDA_ENTRETANTO = (
+    "Esta conta NÃO foi dividida: a fatura saiu mesmo, mesmo agora — a Fatura "
+    "Simplificada da conta INTEIRA está entregue à Autoridade Tributária, e as "
+    "partes que estavam a nascer foram apagadas. Uma venda faturada não se "
+    "divide; o que estiver errado nela corrige-se com uma nota de crédito."
+)
+_MSG_DIVISAO_ABORTADA_SEM_EMISSAO = (
+    "Esta conta NÃO foi dividida: estava a decorrer uma emissão, que "
+    "entretanto foi abortada sem chegar a emitir — NÃO saiu nenhuma Fatura "
+    "Simplificada e a conta está outra vez aberta e inteira. Divida outra vez."
+)
 
 
 def _agora() -> str:
@@ -1328,6 +1343,39 @@ async def _porque_nao_travou_a_mae(db, venda_id: str) -> str:
     return _MSG_VENDA_NAO_ABERTA
 
 
+async def _porque_nao_ficou_dividida(db, venda_id: str) -> str:
+    """A mensagem do 409 da divisão DESFEITA — escolhida pelo estado que a
+    conta tem NO INSTANTE EM QUE A OPERADORA A LÊ, e não pelo que ela tinha
+    quando a compensação começou.
+
+    É o `_porque_nao_foi_cancelada` com as palavras da divisão, e existe pela
+    mesma lição (A3): um diagnóstico velho manda chamar o gestor a uma loja
+    cheia por causa de uma conta perfeitamente boa.
+
+    As três saídas possíveis, todas verdadeiras no instante em que se lêem:
+    1. a mãe ficou `emitida` — a emissão ganhou mesmo e saiu UMA Fatura
+       Simplificada da conta inteira: não há divisão nenhuma a repetir, e o
+       que a operadora precisa de saber é que a fatura SAIU;
+    2. a reserva ainda lá está — a emissão continua viva ou ficou por
+       confirmar: é o caso em que o gestor faz falta, e a mensagem de sempre
+       (`_MSG_VENDA_COM_EMISSAO`) está certa;
+    3. nem uma coisa nem outra — o `finalizar` releu a mãe, encontrou-a
+       `separada`, libertou a reserva e abortou sem emitir; a compensação
+       repôs a conta `aberta` e dividir outra vez resolve."""
+    venda = await db[COLECOES["vendas"]].find_one({"id": venda_id})
+    estado = (venda or {}).get("estado")
+    if estado == "emitida":
+        return _MSG_DIVISAO_EMITIDA_ENTRETANTO
+    if await _tem_reserva_fiscal(db, venda_id):
+        return _MSG_VENDA_COM_EMISSAO
+    if estado == "aberta":
+        return _MSG_DIVISAO_ABORTADA_SEM_EMISSAO
+    # Estado inesperado (a venda desapareceu, ou ficou num estado que este
+    # módulo não escreve): não se inventa um diagnóstico — vale a mensagem
+    # mais conservadora, a que manda confirmar antes de mexer.
+    return _MSG_VENDA_COM_EMISSAO
+
+
 @router.post("/pos/venda/{venda_id}/dividir", status_code=201)
 async def dividir_conta(
     venda_id: str, dados: PedidoDividir, operador: Dict = Depends(operador_atual)
@@ -1352,7 +1400,15 @@ async def dividir_conta(
     (`_a_mae_como_foi_lida`) — e decide pelo `matched_count`, não pelas guardas
     de cima. Se alguém ganhou a corrida nessa janela (a emissão, ou o outro
     separador do POS a juntar uma linha), as filhas que acabaram de nascer são
-    apagadas e a operadora leva um 409 que diz qual das duas coisas foi."""
+    apagadas e a operadora leva um 409 que diz qual das duas coisas foi.
+
+    **E a escrita casar não chega.** A emissão pode ter reservado DEPOIS do
+    `_garante_sem_emissao` sem mudar nada na mãe — nesse caso a escrita
+    condicional casa, e é o `_ligar_venda_ao_documento` que carimba `emitida`
+    por cima do `separada` mais tarde. Por isso pergunta-se outra vez pela
+    reserva DEPOIS de travar a mãe, e compensa-se: filhas apagadas, mãe reposta
+    `aberta` (condicionada a `separada`, nunca por cima de uma venda que já
+    emitiu) e 409."""
     db = obter_db()
     mae = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
     _garante_aberta(mae)
@@ -1401,6 +1457,47 @@ async def dividir_conta(
             await db[COLECOES["vendas"]].delete_one({"id": filha["id"]})
         raise HTTPException(
             status_code=409, detail=await _porque_nao_travou_a_mae(db, venda_id))
+
+    # A janela que o `_garante_sem_emissao` lá de cima NÃO fecha — e esta era a
+    # única das cinco rotas de escrita a deixá-la aberta. Entre aquela pergunta
+    # e esta escrita estão os N inserts das filhas, e lá dentro cabe o
+    # `finalizar` (fiscal.py) inteiro: reserva, relê a mãe — que continua
+    # `aberta`, porque só a travamos aqui em baixo — e segue para o Vendus. A
+    # escrita condicional acima CASA na mesma (a mãe não mudou: mesmo estado,
+    # mesmas linhas, mesmo desconto), e quando o Vendus responde o
+    # `_ligar_venda_ao_documento` carimba `emitida` por cima do `separada` sem
+    # condição de estado nenhuma. Ficava no sistema uma mãe com uma Fatura
+    # Simplificada REAL de 8,99 € entregue à Autoridade Tributária E três
+    # filhas `aberta` prontas a emitir outros 8,99 € — que a
+    # `GET /pos/venda/aberta` ainda devolve sozinha à operadora, porque as
+    # filhas herdam a sessão e o dispositivo da mãe (`_nova_parte`). O cliente
+    # pagava duas vezes e declaravam-se 17,98 € de uma conta de 8,99 €.
+    #
+    # Por isso pergunta-se OUTRA VEZ depois de escrever, como o
+    # `cancelar_venda` já faz na mesma janela, e compensa-se.
+    #
+    # **A ordem da compensação é deliberada: as filhas primeiro, a mãe depois.**
+    # Se o processo morrer entre as duas escritas, uma mãe `separada` sem partes
+    # é uma conta travada que o gestor resolve (e que a emissão em curso vai
+    # marcar `emitida` de qualquer maneira); filhas órfãs vivas são N Faturas
+    # Simplificadas reais a mais. Repõe-se o que se pode perder, nunca o que se
+    # pode duplicar.
+    #
+    # E a reposição é CONDICIONADA a {"estado": "separada"} — o único estado que
+    # a NOSSA escrita pode ter deixado — exactamente pela razão do
+    # `cancelar_venda`: se o `_gravar_documento` já pôs `emitida` por cima dela,
+    # o filtro não casa e não lhe tocamos. Incondicional, reabria como `aberta`
+    # uma venda com FS real e ATCUD, que é o estrago que isto existe para
+    # evitar.
+    if await _tem_reserva_fiscal(db, venda_id):
+        for filha in filhas:
+            await db[COLECOES["vendas"]].delete_one({"id": filha["id"]})
+        await db[COLECOES["vendas"]].update_one(
+            {"id": venda_id, "estado": "separada"}, {"$set": {"estado": "aberta"}}
+        )
+        raise HTTPException(
+            status_code=409, detail=await _porque_nao_ficou_dividida(db, venda_id)
+        )
 
     mae.update(atualizacao)
     return {

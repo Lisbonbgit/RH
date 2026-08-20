@@ -3322,3 +3322,164 @@ def test_dividir_uma_conta_ja_alterada_varias_vezes_fecha_na_mesma(monkeypatch):
     assert [p["totais"]["total"] for p in r["partes"]] == [2.00, 2.00, 2.00]
     assert r["conta_mae"]["estado"] == "separada"
     assert mae["estado"] == "separada", "a mãe tem de ficar mesmo travada no Mongo"
+
+
+# --- A emissão que se mete DEPOIS de a mãe já estar travada --------------------
+#
+# A outra metade da mesma corrida, e a que faltava: a divisão perguntava pela
+# reserva ANTES de escrever (`_garante_sem_emissao`) e decidia com essa resposta
+# N+1 `await`s mais tarde, sem prender nada dessa pergunta. Entre as duas cabe o
+# `finalizar` inteiro — e ele não muda NADA na mãe, por isso a escrita
+# condicional de `_a_mae_como_foi_lida` casa na mesma e a divisão fecha com um
+# 201. É o `_ligar_venda_ao_documento` que carimba `emitida` por cima do
+# `separada`, sem condição de estado nenhuma, quando o Vendus responde.
+#
+# O que ficava no sistema: uma mãe `emitida` com uma Fatura Simplificada REAL de
+# 8,99 € entregue à Autoridade Tributária E três filhas `aberta` prontas a
+# emitir outros 8,99 € — e a `GET /pos/venda/aberta` até as devolve sozinha à
+# operadora, porque herdam a sessão e o dispositivo da mãe. O cliente pagava
+# duas vezes e declaravam-se 17,98 € de uma conta de 8,99 €.
+#
+# A saída é a que o `cancelar_venda` já escreveu para esta MESMA janela:
+# perguntar outra vez depois de escrever, e compensar.
+
+
+def _db_de_uma_divisao_com_emissao_a_meio(registo, mae, refs, gancho):
+    """A mãe travada com sucesso e, logo a seguir a essa escrita, a emissão a
+    aparecer — que é exactamente a janela que a pergunta de cima não fecha."""
+    vendas = ColeccaoComCorridaDepoisDaEscrita(registo, [mae], gancho)
+    db = DbFalsa({
+        COLECOES["vendas"]: vendas,
+        COLECOES["refs_fiscais"]: ColeccaoFalsa(registo, refs),
+    })
+    return db, vendas
+
+
+def test_uma_reserva_que_aparece_depois_de_travar_a_mae_desfaz_a_divisao(monkeypatch):
+    """As três filhas são apagadas e a mãe volta a `aberta`: quem está a
+    emitir é o `finalizar`, e a conta que ele vai facturar é a INTEIRA.
+
+    Sem esta segunda pergunta a rota respondia 201 com [3,00 / 3,00 / 2,99] a
+    uma operadora que ficava com três contas para cobrar por cima de uma
+    fatura que já ia a caminho da Autoridade Tributária."""
+    registo = []
+    mae = _venda(linhas=[_linha(produto_preco=8.99, quantidade=1)])
+    refs = []
+
+    def reserva_entretanto(_documentos):
+        refs.append(_reserva())
+
+    db, vendas = _db_de_uma_divisao_com_emissao_a_meio(
+        registo, mae, refs, reserva_entretanto)
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as e:
+        _corre(dividir_conta("venda-1", PedidoDividir(partes=3), operador=_operador()))
+
+    assert e.value.status_code == 409
+    assert e.value.detail == venda_mod._MSG_VENDA_COM_EMISSAO, (
+        "a reserva ainda lá está: é o caso em que o gestor faz mesmo falta"
+    )
+    assert [d["id"] for d in vendas._documentos] == ["venda-1"], (
+        "ficaram filhas órfãs prontas a emitir por cima da fatura da mãe"
+    )
+    assert mae["estado"] == "aberta", (
+        "a mãe ficou `separada` com uma emissão a decorrer — e uma conta "
+        "`separada` não aceita juntar, nem descontar, nem cancelar"
+    )
+
+    # A ORDEM da compensação, e não só o seu efeito: as filhas primeiro, a mãe
+    # depois. Um processo que morra entre as duas escritas deixa, pela ordem
+    # certa, uma mãe travada que o gestor resolve; pela ordem contrária deixa
+    # N contas órfãs vivas, que são N Faturas Simplificadas reais a mais.
+    passos = [r[0] for r in registo]
+    ultimo_apagar = len(passos) - 1 - passos[::-1].index("delete_one")
+    reposicao = [i for i, r in enumerate(registo)
+                 if r[0] == "update_one" and r[1].get("estado") == "separada"]
+    assert reposicao, "a mãe não foi reposta com a condição {'estado': 'separada'}"
+    assert reposicao[0] > ultimo_apagar, (
+        "a mãe foi reposta ANTES de as filhas serem apagadas"
+    )
+
+
+def test_a_divisao_desfeita_nunca_ressuscita_uma_mae_ja_emitida(monkeypatch):
+    """A mesma corrida no desfecho mais perigoso: entre a nossa escrita e a
+    segunda pergunta, o `fiscal.py::_gravar_documento` gravou a FS e pôs a
+    venda `emitida` — e o $set dele não tem condição de estado nenhuma, por
+    isso caiu por cima do nosso `separada`.
+
+    A reposição é condicionada a {"estado": "separada"}: aqui não casa, e não
+    lhe tocamos. Incondicional, reabria como `aberta` uma venda com Fatura
+    Simplificada real e ATCUD — que sumia do Z (`soma_vendas_dinheiro` só soma
+    as emitidas) e ficava a convidar a operadora a facturá-la outra vez. As
+    filhas desaparecem à mesma: a conta INTEIRA já está facturada."""
+    registo = []
+    mae = _venda(linhas=[_linha(produto_preco=8.99, quantidade=1)])
+    refs = []
+
+    def emite_e_reserva(documentos):
+        documentos[0]["estado"] = "emitida"
+        documentos[0]["documento_id"] = "doc-1"
+        refs.append(_reserva())
+
+    db, vendas = _db_de_uma_divisao_com_emissao_a_meio(
+        registo, mae, refs, emite_e_reserva)
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as e:
+        _corre(dividir_conta("venda-1", PedidoDividir(partes=3), operador=_operador()))
+
+    assert e.value.status_code == 409
+    assert e.value.detail == venda_mod._MSG_DIVISAO_EMITIDA_ENTRETANTO, (
+        "a fatura SAIU — mandá-la chamar o gestor ou dividir outra vez era "
+        "mentira sobre um documento fiscal real"
+    )
+    assert mae["estado"] == "emitida", "a compensação ressuscitou uma venda com FS real"
+    assert mae["documento_id"] == "doc-1"
+    assert [d["id"] for d in vendas._documentos] == ["venda-1"], (
+        "ficaram filhas de uma conta que já foi facturada por inteiro"
+    )
+
+
+class RefsQueSomemDepoisDeResponder(ColeccaoFalsa):
+    """A reserva que existe quando a compensação pergunta por ela e já não
+    existe quando a mensagem é escolhida: o `finalizar` releu a mãe, encontrou-a
+    `separada`, libertou a reserva e abortou SEM falar com o Vendus
+    (`fiscal.py::VendaJaNaoAberta`)."""
+
+    async def find_one(self, filtro, projecao=None):
+        resposta = await super().find_one(filtro, projecao)
+        if resposta is not None:
+            self._documentos[:] = []
+        return resposta
+
+
+def test_uma_emissao_abortada_manda_dividir_outra_vez_e_nao_chamar_o_gestor(monkeypatch):
+    """A lição A3 aplicada à divisão: a conta acaba `aberta`, sem reserva e sem
+    fatura nenhuma — mandar chamar o gestor a uma loja cheia por causa de uma
+    conta perfeitamente boa é o mesmo erro que dizer "tente outra vez" onde não
+    se pode tentar, ao contrário. Basta dividir outra vez."""
+    registo = []
+    mae = _venda(linhas=[_linha(produto_preco=8.99, quantidade=1)])
+    refs = []
+
+    def reserva_entretanto(_documentos):
+        refs.append(_reserva())
+
+    vendas = ColeccaoComCorridaDepoisDaEscrita(registo, [mae], reserva_entretanto)
+    db = DbFalsa({
+        COLECOES["vendas"]: vendas,
+        COLECOES["refs_fiscais"]: RefsQueSomemDepoisDeResponder(registo, refs),
+    })
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as e:
+        _corre(dividir_conta("venda-1", PedidoDividir(partes=3), operador=_operador()))
+
+    assert e.value.status_code == 409
+    assert e.value.detail == venda_mod._MSG_DIVISAO_ABORTADA_SEM_EMISSAO
+    assert "gestor" not in e.value.detail, (
+        "não há emissão nenhuma nem fatura nenhuma: o gestor não faz falta aqui"
+    )
+    assert mae["estado"] == "aberta"
+    assert [d["id"] for d in vendas._documentos] == ["venda-1"]
