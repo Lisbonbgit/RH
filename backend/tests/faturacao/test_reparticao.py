@@ -64,6 +64,18 @@ def test_a_quantidade_reproduz_o_valor_ao_centimo():
         assert round(q * 8.99, 2) == centimos / 100
 
 
+def test_a_quantidade_produto_de_preco_acima_dos_10_euros():
+    """Estrutural: todos os outros casos deste ficheiro usam `preco=8.99`,
+    e abaixo dos 10 € três casas decimais de quantidade ainda chegam para
+    reproduzir o cêntimo — por isso nenhum apanharia `CASAS_DA_QUANTIDADE`
+    cair de 5 para 3. A Taça Família (17,98 €, dois açaís de 8,99 €, um
+    preço que já existe noutros testes deste módulo) fecha esse buraco: a
+    3 casas, `quantidade_para(600, 17.98)` nem produz quantidade válida —
+    rebenta com `ValueError` em vez de deixar dividir a conta por três."""
+    q = quantidade_para(600, 17.98)
+    assert round(q * 17.98, 2) == 6.00
+
+
 def test_a_quantidade_de_um_preco_zero_e_recusada():
     """Um preço zero não produz valor nenhum: não há quantidade que o
     resolva, e devolver 0 escondia o problema numa fatura."""
@@ -73,14 +85,19 @@ def test_a_quantidade_de_um_preco_zero_e_recusada():
 
 def test_a_quantidade_recusa_quando_nenhum_candidato_bate_certo():
     """A verificação de `quantidade_para` (o `if`, os dois vizinhos e o
-    `raise` final) não tem nenhum caso real de açaí que a dispare — medido
-    por amostragem exaustiva contra todos os preços de 0,01 € a 999,99 €
-    cruzados com todos os valores de 1 a 99999 cêntimos, o desvio nunca
-    aconteceu nesse intervalo. Sem um caso real, este teste teria de usar um
-    preço fora dele para provar que a verificação continua lá: a 1000,37 €
-    (deliberadamente fora do intervalo de um item de açaí — só para forçar o
-    desvio de arredondamento de 5 casas), nem a quantidade nem os dois
-    vizinhos mais próximos reproduzem os 13,52 €, e a função tem de recusar
+    `raise` final) não tem nenhum caso real de açaí que a dispare — e
+    prova-se numa linha, não por amostragem: `round(alvo/preco,
+    CASAS_DA_QUANTIDADE)` desvia da divisão exacta, no máximo, meia unidade
+    da última casa — `preco × 0,5 × 10⁻⁵`. Para qualquer preço abaixo de
+    1000 €, isso é menos de `1000 × 5×10⁻⁶ = 0,005 €`: meio cêntimo, que é
+    exactamente o que separa dois valores ao arredondar a 2 casas. Por isso
+    `round(q × preco, 2)` acerta sempre o cêntimo certo para os preços de um
+    item de açaí, e o `if` nunca cai para o ramo dos vizinhos nem para o
+    `raise`. Sem um caso real, este teste teria de usar um preço fora desse
+    intervalo para provar que a verificação continua lá: a 1000,37 €
+    (deliberadamente acima dos 1000 € — só para forçar o desvio de
+    arredondamento de 5 casas), nem a quantidade nem os dois vizinhos mais
+    próximos reproduzem os 13,52 €, e a função tem de recusar
     em vez de devolver um valor que perde o cêntimo em silêncio. Se
     `quantidade_para` for um dia simplificada para
     `round(alvo / preco, CASAS_DA_QUANTIDADE)` sem esta verificação — a

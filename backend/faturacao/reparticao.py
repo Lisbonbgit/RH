@@ -11,7 +11,12 @@ from typing import List
 # Casas decimais da QUANTIDADE. São mais do que as 2 dos preços de propósito,
 # e por uma razão diferente: uma quantidade não é dinheiro, é o que PRODUZ o
 # dinheiro, e é preciso resolução para o valor final cair no cêntimo certo.
-# Cinco chegam e o Vendus aceita-as (medido contra a conta real).
+# Medido contra a conta real: a 3 casas, qty 0.333 facturava 2,99 € (errado —
+# a parte era 3,00 €); a 4 casas, qty 0.3333 já facturava os 3,00 € certos.
+# Cinco dá margem extra para preços mais altos do cardápio (ver
+# test_a_quantidade_produto_de_preco_acima_dos_10_euros, 17,98 €), mas isso
+# é suposição, não medição — ninguém mostrou o Vendus a preservar uma 5.ª
+# casa decimal da quantidade.
 CASAS_DA_QUANTIDADE = 5
 
 
@@ -55,8 +60,15 @@ def quantidade_para(valor_centimos: int, preco: float) -> float:
     `qty × gross_price` e arredondar a 2 casas, transforma no valor exacto
     desta parte. E **confirma-o antes de devolver** — o Vendus arredonda de
     forma previsível, mas a defesa deste módulo nunca é acreditar num
-    comportamento externo; é medi-lo. Medido: `0.3333 × 8.99` sai 3,00 € na
-    conta real, e é assim que se escolhe o número.
+    comportamento externo; é medi-lo.
+
+    O que foi medido contra a conta real: a 3 casas, `0.333 × 8.99` fatura
+    2,99 € (errado); a 4 casas, `0.3333 × 8.99` já fatura os 3,00 € certos.
+    Isso valida a RESOLUÇÃO de `CASAS_DA_QUANTIDADE`, não o número exacto que
+    esta função devolve hoje — a 5 casas (o valor em vigor),
+    `quantidade_para(300, 8.99)` devolve `0.3337`, não `0.3333`: outro
+    candidato, encontrado pela mesma verificação, que também acerta o
+    cêntimo.
     """
     if not preco:
         raise ValueError(
@@ -69,6 +81,12 @@ def quantidade_para(valor_centimos: int, preco: float) -> float:
         return q
     # O arredondamento da divisão caiu do lado errado. Anda um passo mínimo
     # para cada lado — mais do que isso e o preço é que não produz este valor.
+    # Para os preços reais de um item de açaí (abaixo dos 1000 €) este ramo é
+    # matematicamente inalcançável — a prova está na docstring do teste que o
+    # cobre (test_a_quantidade_recusa_quando_nenhum_candidato_bate_certo).
+    # Fica na mesma: é uma rede para lá desse domínio, e o pior que este laço
+    # faz, mesmo errado, é recusar a fatura — nunca emiti-la com o cêntimo
+    # trocado.
     passo = 10 ** -CASAS_DA_QUANTIDADE
     for candidato in (round(q + passo, CASAS_DA_QUANTIDADE),
                       round(q - passo, CASAS_DA_QUANTIDADE)):
