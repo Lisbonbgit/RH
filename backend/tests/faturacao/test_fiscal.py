@@ -208,6 +208,19 @@ class ColeccaoFalsa:
             self._documentos.remove(alvo)
         return ResultadoDeleteFalso(deleted_count=0 if alvo is None else 1)
 
+    async def update_many(self, filtro, atualizacao):
+        """`$set`/`$unset` em TODAS as que casam — hoje só o `$unset` da
+        etiqueta do posto, que o fecho de caixa faz às contas que deixa
+        abertas (`caixa._largar_o_posto_das_contas_abertas`). Sem isto o duplo
+        levantava `AttributeError`, o `except` de lá engolia-o e o teste ficava
+        verde a medir o contrário do que diz."""
+        alvos = [d for d in self._documentos if _corresponde(d, filtro)]
+        for alvo in alvos:
+            alvo.update(atualizacao.get("$set", {}))
+            for campo in atualizacao.get("$unset", {}):
+                alvo.pop(campo, None)
+        return ResultadoUpdateFalso(matched_count=len(alvos))
+
     async def update_one(self, filtro, atualizacao):
         await asyncio.sleep(0)
         alvos = [d for d in self._documentos if _corresponde(d, filtro)]

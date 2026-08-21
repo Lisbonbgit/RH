@@ -25,6 +25,7 @@ import {
   contaTravada, duvidaPorApurar, detalhesErroPos, semRespostaPos,
   ehTimeoutPos, TIMEOUT_PADRAO_MS, entregarContaAoGestor,
   razaoDeNaoComecar, razaoDaGrelhaMorta, MSG_CONTA_TRAVADA_CURTA,
+  contaDeOutraCaixa,
 } from '@/lib/pos';
 
 // O ecrã de venda do POS (Plano 2C, Tasks 3 e 4, dos prints do Vendus): a
@@ -586,7 +587,7 @@ function LinhaDaConta({ linha, onTocar, travada }) {
 }
 
 function PainelConta({
-  venda, aEscrever, travada, travadaPeloServidor, contasTravadasLargadas, aPerguntar,
+  venda, caixa, aEscrever, travada, travadaPeloServidor, contasTravadasLargadas, aPerguntar,
   partesPorCobrar,
   onPerguntar, onLargar, onVoltarAsPartes, onTocarLinha,
   onFinalizar, onCancelar,
@@ -636,6 +637,29 @@ function PainelConta({
           faltaCentimos={partesPorCobrar.faltaCentimos}
           onVoltar={onVoltarAsPartes}
         />
+      )}
+
+      {/* **Esta conta veio de OUTRA caixa deste PC.** Não é um erro nem um
+          aviso: é a troca de caixa, e é o caminho normal quando o localStorage
+          não traz caixa e o ecrã «Qual caixa?» do PosApp pede uma. O que era
+          um BECO — a rota recusava a conta seguinte por causa dela e nenhum
+          ecrã a mostrava — passou a ser isto: a conta está à frente e diz de
+          onde vem. Sem esta linha, a operadora olha para uma conta que não
+          reconhece com o cliente à frente.
+          A caixa da CONTA é que manda no que lhe acontece: cobrá-la emite no
+          turno em que ela nasceu, e é nesse Z que ela entra. */}
+      {contaDeOutraCaixa(venda, caixa?.id) && (
+        <div className="shrink-0 border-b bg-muted/40 px-4 py-3 flex items-start gap-2.5">
+          <ShoppingCart className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1 text-sm">
+            <p className="font-medium">Esta conta ficou aberta noutra caixa deste PC.</p>
+            <p className="text-muted-foreground mt-1">
+              Está à sua frente e acaba-se aqui — cobre-a ou cancele-a antes de começar a do
+              cliente seguinte. Quando a cobrar, ela entra no fecho da caixa em que foi aberta,
+              e não no da caixa «{caixa?.nome || '—'}».
+            </p>
+          </div>
+        </div>
       )}
 
       {/* Esta conta é uma PARTE de uma conta repartida — é o que se vê depois
@@ -2294,6 +2318,12 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
         ) : (
           <PainelConta
             venda={venda}
+            /* A caixa em que o ECRÃ está, para o painel poder dizer quando a
+               conta à frente veio de outra (`contaDeOutraCaixa`). Passa-se o
+               objecto e não só o id porque a nota escreve o NOME desta — e
+               isto não é o `useEffect` do catálogo, onde passar a caixa
+               inteira recarregava o ecrã a meio de uma venda. */
+            caixa={caixa}
             aEscrever={escritas > 0}
             travada={travada}
             travadaPeloServidor={travadaPeloServidor}

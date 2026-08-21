@@ -160,7 +160,7 @@ _MSG_DIVISAO_ABORTADA_SEM_EMISSAO = (
     "entretanto foi abortada sem chegar a emitir — NÃO saiu nenhuma Fatura "
     "Simplificada e a conta está outra vez aberta e inteira. Divida outra vez."
 )
-# A recusa de `abrir_venda` (ver `_conta_por_resolver`). Diz o que ela tem de
+# A recusa de `abrir_venda` (ver `_contas_do_balcao`). Diz o que ela tem de
 # fazer, e diz as DUAS saídas — cobrar e cancelar — porque a conta que está a
 # prender o posto tanto pode ser um cliente que ainda vai pagar como um que
 # desistiu. As partes de uma conta dividida contam: uma conta dividida só acaba
@@ -189,6 +189,30 @@ _MSG_CONTA_POR_RESOLVER = (
     "confirmar — essa não se cobra nem se cancela aqui —, toque em «Servir o "
     "cliente seguinte»: a conta passa a ser do gestor, que a resolve no "
     "backoffice, e o balcão fica livre."
+)
+# **E DIZ ONDE ELA FICOU**, quando ficou noutra caixa. A frase acima manda
+# «acabe a que está à frente», e numa loja com duas caixas activas isso podia
+# ser uma instrução impossível: a conta estava à frente noutra caixa e o ecrã
+# não a mostrava. Agora mostra (`_contas_do_balcao` é um conjunto só), e a
+# recusa acrescenta o nome da caixa — mas SÓ quando é outra: numa loja com uma
+# caixa, «ela ficou na caixa Balcão» é ruído sobre a única caixa que existe.
+_MSG_CONTA_NOUTRA_CAIXA = (
+    " Ela foi aberta na caixa «%s» e é lá que continua — mas está à sua frente "
+    "neste ecrã na mesma, e é aqui que a acaba."
+)
+# O beco que a mudança de chave do índice podia abrir, dito por extenso em vez
+# de deixado a 409 mudo. Só se chega aqui se o índice recusar a conta nova e a
+# leitura do posto não encontrar nada: uma conta `aberta` de um turno JÁ
+# FECHADO que ficou com a etiqueta do posto porque o
+# `caixa.py::_largar_o_posto_das_contas_abertas` não conseguiu tirá-la. Não é
+# recuperável do balcão — a conta é de um turno fechado e é do gestor —, por
+# isso a frase manda-a para quem a consegue arrumar, e diz onde.
+_MSG_ETIQUETA_PRESA = (
+    "Este PC ficou com uma conta por arrumar de um turno JÁ FECHADO, e é ela "
+    "que está a impedir a conta nova. Não se resolve aqui: peça ao gestor para "
+    "a arrumar no backoffice, em «Contas por cobrar de turnos fechados». "
+    "Assim que ele o fizer, este posto volta a abrir contas — não é preciso "
+    "reiniciar nada."
 )
 # `POST /pos/venda/{id}/entregar-ao-gestor` — as três recusas.
 #
@@ -937,7 +961,7 @@ def _venda_publica(venda: Dict, emissao_por_confirmar: bool = False) -> Dict:
         "emissao_por_confirmar": emissao_por_confirmar,
         # **A MARCA: de quem é esta conta.** Gravada na venda, e não deduzida
         # de mais nada — é ela que faz o conjunto que a PORTA conta
-        # (`_conta_por_resolver`) e o conjunto que o ECRÃ mostra
+        # (`_contas_do_balcao`) e o conjunto que o ECRÃ mostra
         # (`GET /pos/venda/aberta`) serem o mesmo conjunto. Uma conta com esta
         # marca saiu do balcão e é do gestor: não prende o posto, não volta ao
         # ecrã da operadora, e não se destranca sozinha quando o gestor libertar
@@ -954,96 +978,157 @@ def _venda_publica(venda: Dict, emissao_por_confirmar: bool = False) -> Dict:
     }
 
 
-# O FILTRO DO CONJUNTO — escrito UMA vez, e é isso que ele é.
+# --- O CONJUNTO. UM. -----------------------------------------------------------
 #
-# **A raiz de tudo o que este ficheiro corrigiu nesta ronda: o conjunto que a
-# PORTA contava e o conjunto que o ECRÃ mostrava não eram o mesmo conjunto.**
-# `_conta_por_resolver` varria todas as `aberta` do posto e deitava fora as
-# travadas por uma pergunta CALCULADA (existe reserva em `fat_refs_fiscais`?);
-# `GET /pos/venda/aberta` devolvia a mais recente sem essa pergunta. Enquanto
-# houvesse uma conta só, os dois batiam certo — e foi por isso que passou.
+# **A raiz, e é a terceira vez que ela muda de sítio em vez de fechar.** Havia
+# QUATRO respostas à pergunta "que contas tem este posto por resolver?":
+# `_conta_por_resolver` (a porta) varria todas as sessões abertas da LOJA;
+# `GET /pos/venda/aberta` (o ecrã) varria UMA sessão e trazia UMA conta;
+# `GET /pos/venda/repartidas` varria a mesma sessão e só as partes; e a chave
+# do índice único era `"{sessao_id}|{dispositivo_id}"`. Enquanto houvesse uma
+# caixa e uma conta, os quatro concordavam — e foi por isso que passou três
+# vezes.
 #
-# A diferença entrava pela excepção da travada, e o estrago está medido na
-# docstring de `entregar_ao_gestor`: a conta do cliente ANTERIOR a ressuscitar
-# à frente, sem marca nenhuma, e a Coca-Cola do cliente seguinte a aterrar
-# nela — uma Fatura Simplificada de 10,99 € com o açaí de outra pessoa.
+# **Medido pelas rotas reais, numa loja com duas caixas activas.** 8,99 €
+# picados na caixa Balcão; o PC passa para a caixa Drive (o ecrã «Qual caixa?»
+# do `PosApp.js` é o caminho normal quando o localStorage não traz caixa)::
 #
-# Agora a excepção é uma MARCA GRAVADA (`entregue_ao_gestor_em`) e este filtro
-# é literalmente o mesmo objecto nos três sítios que têm de concordar:
-# `_conta_por_resolver` (a porta), `venda_aberta` (o ecrã) e
-# `contas_repartidas` (as partes no ecrã). Uma cópia em cada um voltava a
-# divergir no dia em que um deles mudasse — que foi o que aconteceu.
-def _filtro_do_balcao(sessao_ids, dispositivo_id: Optional[str]) -> Dict:
-    """As contas que ainda são DO BALCÃO deste posto: `aberta`, deste
-    dispositivo, numa destas sessões, e ainda não entregues ao gestor.
+#     GET /pos/venda/aberta?caixa_id=caixa-2  -> None
+#     GET /pos/venda/repartidas?caixa_id=...  -> []
+#     GET /fiscal/reservas-presas             -> 0
+#     GET /pos/caixa/contas-esquecidas        -> []
+#     POST /pos/venda -> 409 «Acabe a que está à frente: cobre-a ou cancele-a»
+#
+# Sete toques até ficar sem saída, e as três saídas que a mensagem nomeia
+# (cobrar, cancelar, entregar ao gestor) exigem todas uma conta no ecrã. E dois
+# `POST /pos/venda` simultâneos em caixas diferentes davam **201 + 201**,
+# porque as chaves do índice diferiam no `sessao_id` mas a porta era da loja.
+#
+# **A correcção não é alinhar dois conjuntos — já se tentou três vezes.** É
+# haver UM: esta função, e o âmbito dela NÃO É UM PARÂMETRO. Quem a chama passa
+# a loja e o dispositivo, os dois do token do operador, e não tem como pedir
+# outra coisa — não há um `caixa_id`, nem um `sessao_ids`, que dois chamadores
+# possam passar diferente. É a assinatura que impede a quarta divergência, e
+# `test_um_posto_uma_conta.py` prende-a.
+#
+# **O âmbito é o POSTO, e a razão é a das duas pontas.** Um PC atende um
+# cliente de cada vez (a regra do dono: «não existe isso de pôr uma conta de
+# lado e cobrar outra»), seja qual for a caixa que o ecrã tenha escolhido no
+# localStorage — por isso a recusa é do posto. E o ecrã tem de MOSTRAR o que a
+# porta conta, incluindo a conta que ficou noutra caixa: é a única forma de as
+# saídas se executarem com o dedo. O contrário — recusar a troca de caixa e
+# mandá-la voltar à caixa de origem — parece mais arrumado e não é: basta o
+# gestor DESACTIVAR essa caixa (o `GET /pos/caixa/estado` dela passa a 404)
+# para o dinheiro ficar sem caminho nenhum. Aqui não fica: a leitura não passa
+# pela caixa da conta, só pela sessão dela, e essa continua aberta.
+#
+# **E a sessão da conta é que manda no que se lhe pode fazer.** Cobrá-la emite
+# na sessão em que ela nasceu (`fiscal.py`), e as escritas confirmam essa
+# sessão (`_garante_sessao_desta_venda_aberta`) — trazer a conta ao ecrã de
+# outra caixa não a muda de turno nem de Z.
+async def _contas_do_balcao(db, loja_id: str, dispositivo_id: Optional[str]) -> List[Dict]:
+    """**As contas que este POSTO tem por resolver**, da mais recente para a
+    mais antiga — e é este o conjunto, o único, para a porta
+    (`POST /pos/venda`) e para os dois ecrãs (`GET /pos/venda/aberta` e
+    `GET /pos/venda/repartidas`).
 
-    `entregue_ao_gestor_em: None` casa, no Mongo, com o campo AUSENTE e com o
-    campo a `null` — a mesma semântica que dispensou migração ao
-    `dispositivo_id`: todas as contas gravadas antes desta marca são, por
-    definição, contas do balcão."""
-    return {
-        "sessao_id": {"$in": list(sessao_ids)},
-        "estado": "aberta",
-        "dispositivo_id": dispositivo_id,
-        "entregue_ao_gestor_em": None,
-    }
+    São as contas `aberta` deste dispositivo, em qualquer sessão AINDA ABERTA
+    desta loja, e ainda não entregues ao gestor:
 
+    - **`aberta`**: as emitidas, canceladas e separadas já estão resolvidas.
+    - **deste dispositivo**: ao balcão a conta é do POSTO, não da pessoa (a
+      Ana entra com o PIN dela e a conta da Rafaela continua lá) e não da
+      caixa. Dois PCs na mesma caixa atendem dois clientes ao mesmo tempo, e
+      é por isso que o `dispositivo_id` está aqui — sem ele, o cliente do
+      balcão pagava o açaí do drive-thru, e isso não era uma corrida de
+      milissegundos, era o estado estável dessa configuração o dia inteiro.
+    - **numa sessão aberta desta loja**: uma conta de um turno já fechado é
+      dinheiro do passado e é do gestor (`caixa.py::_contas_esquecidas`); o
+      balcão pergunta pelo cliente que está à frente.
+    - **não entregue ao gestor**: a marca (`entregue_ao_gestor_em`) é GRAVADA
+      e tira a conta travada dos dois lados ao mesmo tempo. `None` casa, no
+      Mongo, com o campo AUSENTE e com o campo a `null` — todas as contas
+      gravadas antes desta marca são, por definição, contas do balcão, e por
+      isso isto dispensou migração.
 
-async def _sessoes_abertas_da_loja(db, loja_id: str) -> List[str]:
-    """Os ids das sessões de caixa ABERTAS desta loja.
+    As PARTES de uma conta dividida entram sem uma regra à parte: `_nova_parte`
+    herda-lhes a sessão e o dispositivo da mãe, e uma conta dividida só acaba
+    quando todas as partes estiverem cobradas ou canceladas.
 
-    **Porque é que o âmbito da porta é a LOJA e já não uma sessão só.** O
-    `caixa_id` de `POST /pos/venda` vem do CORPO do pedido, e numa loja com
-    duas caixas activas o mesmo PC com o mesmo token abria uma conta em cada:
-    a recusa era por sessão, e duas sessões são dois conjuntos. O âmbito da
-    recusa tem de ser o do POSTO — um PC atende um cliente de cada vez, seja
-    qual for a caixa que o corpo do pedido nomeie.
+    Uma loja tem duas ou três caixas com uma sessão aberta cada, por isso a
+    primeira leitura são dois ou três documentos (há índice por `loja_id`); a
+    segunda traz o punhado de contas abertas deste posto (índice parcial por
+    `criada_em`, só sobre as `aberta`).
 
-    Uma loja tem duas ou três caixas e uma sessão aberta por caixa, por isso
-    isto são dois ou três documentos; há índice por `loja_id`
-    (`db.py::INDICES`)."""
+    `loja_id` é o do token do operador. A sessão de caixa grava sempre o
+    `loja_id` (`caixa.py::abrir_caixa`, e o próprio Z lê-o sem recuo nenhum),
+    por isso não há aqui o remendo que a versão anterior tinha para uma sessão
+    sem esse campo — um remendo que, além de proteger de nada, era o único
+    sítio por onde o âmbito voltava a entrar como argumento."""
     sessoes = await (
         db[COLECOES["sessoes_caixa"]]
         .find({"loja_id": loja_id, "estado": "aberta"}, {"_id": 0, "id": 1})
         .to_list(50)
     )
-    return [s["id"] for s in sessoes if s.get("id")]
-
-
-async def _conta_por_resolver(db, sessao_ids, dispositivo_id: Optional[str]) -> Optional[Dict]:
-    """A conta deste posto que ainda está por resolver — ou `None`, quando o
-    balcão está livre para o cliente seguinte.
-
-    **Um PC atende UM cliente de cada vez.** Não existe pôr uma conta de lado e
-    cobrar outra: atende-se o cliente, fecha-se a fatura, e só então há cliente
-    seguinte. Uma conta dividida só acaba quando TODAS as partes estiverem
-    cobradas ou canceladas — as partes são vendas `aberta` deste dispositivo
-    (`_nova_parte` herda-lhe o `dispositivo_id`), e por isso contam aqui sem
-    uma regra à parte.
-
-    **O conjunto é o de `_filtro_do_balcao`, o MESMO de `GET /pos/venda/aberta`
-    e de `GET /pos/venda/repartidas`** — e essa é a correcção desta ronda, não
-    um detalhe. Enquanto a porta tivesse uma excepção que o ecrã não tinha,
-    havia contas que prendiam sem se verem ou que se viam sem prenderem, e as
-    duas pontas dessa diferença custavam dinheiro.
-
-    **A travada JÁ NÃO é excepção — passou a ser uma SAÍDA.** A operadora
-    continua sem a poder cobrar nem cancelar (as cinco rotas de escrita
-    recusam-na, `_garante_sem_emissao`), e se ela prendesse o posto para sempre
-    o balcão parava: por isso existe `POST /pos/venda/{id}/entregar-ao-gestor`,
-    que a marca como do gestor e a tira DOS DOIS conjuntos ao mesmo tempo. A
-    diferença entre isso e a excepção calculada de antes é toda: a marca fica
-    GRAVADA, e continua verdade depois de o gestor libertar a reserva.
-
-    Devolve a conta, e não um booleano, para quem chamar poder dizer QUAL —
-    hoje ninguém precisa, mas a alternativa era voltar a lê-la."""
-    abertas = await (
+    sessao_ids = [s["id"] for s in sessoes if s.get("id")]
+    if not sessao_ids:
+        return []
+    return await (
         db[COLECOES["vendas"]]
-        .find(_filtro_do_balcao(sessao_ids, dispositivo_id))
+        .find({
+            "sessao_id": {"$in": sessao_ids},
+            "estado": "aberta",
+            "dispositivo_id": dispositivo_id,
+            "entregue_ao_gestor_em": None,
+        })
         .sort("criada_em", -1)
         .to_list(1000)
     )
-    return abertas[0] if abertas else None
+
+
+def _etiqueta_do_posto(loja_id: str, dispositivo_id: Optional[str]) -> str:
+    """A chave do índice único parcial de `db.py` — **o mesmo âmbito de
+    `_contas_do_balcao`**, e é essa igualdade que faz o índice fechar a corrida
+    que a leitura não fecha.
+
+    Era `"{sessao_id}|{dispositivo_id}"`, e por isso a corrida atravessava-a:
+    dois `POST /pos/venda` simultâneos do mesmo PC em caixas diferentes liam os
+    dois um balcão livre e inseriam os dois, porque as chaves diferiam no
+    `sessao_id`. Medido: 201 + 201, duas contas abertas neste posto — uma delas
+    invisível, que é o defeito inteiro outra vez.
+
+    Sem a sessão na chave, uma conta que fique `aberta` quando o turno fecha
+    continuaria a ocupar o posto no dia seguinte, e a porta — que só varre
+    sessões ABERTAS — responderia "o balcão está livre" ao mesmo tempo que o
+    índice recusava: um beco novo no lugar do velho. Por isso o fecho de caixa
+    tira a etiqueta às contas que deixa abertas
+    (`caixa.py::_largar_o_posto_das_contas_abertas`). São os dois lados da
+    mesma decisão e não se separam."""
+    return "%s|%s" % (loja_id, dispositivo_id)
+
+
+async def _porque_nao_ha_cliente_seguinte(db, conta: Dict, caixa_pedida: str) -> str:
+    """A recusa de `abrir_venda`, com a caixa da conta lá dentro quando ela não
+    é a caixa em que o ecrã está.
+
+    A frase base manda «acabe a que está à frente». Ela só é executável porque
+    a conta está mesmo à frente — `GET /pos/venda/aberta` devolve a mais
+    recente do MESMO conjunto que esta recusa conta —, e quando a conta vem de
+    outra caixa deste posto a operadora precisa de ler de ONDE, senão olha para
+    uma conta que não sabe de onde veio.
+
+    O nome da caixa lê-se aqui e não se guarda na venda: o gestor pode
+    renomear a caixa, e o que interessa é o nome de HOJE, que é o que está
+    escrito no ecrã «Qual caixa?». Uma leitura, e só no caminho da recusa.
+    Sem caixa encontrada (foi apagada), não se inventa nada — fica a frase
+    base, que continua verdadeira."""
+    if not conta.get("caixa_id") or conta.get("caixa_id") == caixa_pedida:
+        return _MSG_CONTA_POR_RESOLVER
+    caixa = await db[COLECOES["caixas"]].find_one({"id": conta["caixa_id"]})
+    nome = (caixa or {}).get("nome")
+    if not nome:
+        return _MSG_CONTA_POR_RESOLVER
+    return _MSG_CONTA_POR_RESOLVER + (_MSG_CONTA_NOUTRA_CAIXA % nome)
 
 
 @router.post("/pos/venda", status_code=201)
@@ -1071,19 +1156,19 @@ async def abrir_venda(dados: PedidoNovaVenda, operador: Dict = Depends(operador_
     await _obter_caixa_da_loja(db, dados.caixa_id, operador["loja_id"])
     sessao = await _sessao_aberta(db, dados.caixa_id)
 
-    # O âmbito da recusa é o POSTO, e por isso a pergunta é feita a TODAS as
-    # sessões abertas desta loja — não só à desta caixa. Ver
-    # `_sessoes_abertas_da_loja`: o `caixa_id` vem do CORPO do pedido, e a
-    # recusa por sessão deixava o mesmo PC abrir uma conta em cada caixa.
-    sessao_ids = await _sessoes_abertas_da_loja(db, operador["loja_id"])
-    # A desta caixa entra sempre, mesmo que a leitura acima a não traga (uma
-    # sessão antiga sem `loja_id`): a garantia nunca pode ficar mais fraca do
-    # que era por causa de um campo que falta.
-    if sessao["id"] not in sessao_ids:
-        sessao_ids.append(sessao["id"])
-
-    if await _conta_por_resolver(db, sessao_ids, operador.get("dispositivo_id")) is not None:
-        raise HTTPException(status_code=409, detail=_MSG_CONTA_POR_RESOLVER)
+    # **O CONJUNTO, e é o mesmo que o ecrã mostra** — a MESMA função, com os
+    # MESMOS argumentos (ver `_contas_do_balcao`). O `caixa_id` do corpo do
+    # pedido não entra aqui: um PC atende um cliente de cada vez, seja qual for
+    # a caixa que o localStorage tenha escolhido, e era a recusa por sessão que
+    # deixava o mesmo PC abrir uma conta em cada caixa.
+    por_resolver = await _contas_do_balcao(
+        db, operador["loja_id"], operador.get("dispositivo_id"))
+    if por_resolver:
+        raise HTTPException(
+            status_code=409,
+            detail=await _porque_nao_ha_cliente_seguinte(
+                db, por_resolver[0], dados.caixa_id),
+        )
 
     venda = {
         "id": str(uuid.uuid4()),
@@ -1107,7 +1192,7 @@ async def abrir_venda(dados: PedidoNovaVenda, operador: Dict = Depends(operador_
         "estado": "aberta",
         "criada_em": _agora(),
         # A marca de quem é a conta, presente desde o nascimento e a `None`:
-        # esta acaba de nascer no balcão. Ver `_filtro_do_balcao`.
+        # esta acaba de nascer no balcão. Ver `_contas_do_balcao`.
         "entregue_ao_gestor_em": None,
         "entregue_ao_gestor_por": None,
         # A etiqueta do POSTO — o único campo deste documento que existe só
@@ -1115,7 +1200,8 @@ async def abrir_venda(dados: PedidoNovaVenda, operador: Dict = Depends(operador_
         # `db.py` que impede DUAS contas em curso no mesmo posto. Só a conta
         # que nasce no balcão a tem: `_nova_parte` não a copia (as partes são
         # várias por posto, de propósito) e `entregar_ao_gestor` tira-a.
-        "posto_em_curso": "%s|%s" % (sessao["id"], operador.get("dispositivo_id")),
+        "posto_em_curso": _etiqueta_do_posto(
+            operador["loja_id"], operador.get("dispositivo_id")),
     }
     # **A CORRIDA DO DUPLO TOQUE, e é o índice que a decide.** A verificação
     # acima é ler-e-depois-escrever: dois `POST /pos/venda` simultâneos do
@@ -1123,25 +1209,42 @@ async def abrir_venda(dados: PedidoNovaVenda, operador: Dict = Depends(operador_
     # duplo de Mongo a ceder o event loop em cada leitura (que é o que o Motor
     # faz contra o Mongo real): **201 e 201, duas contas abertas neste posto**.
     #
-    # O predicado da porta passou a ser expressável num índice precisamente
-    # porque a excepção da travada deixou de ser calculada: o índice único
-    # PARCIAL de `db.py` (`fat_vendas`, {sessao_id, dispositivo_id}, só onde
-    # `estado: "aberta"`, `conta_mae_id: null` e `entregue_ao_gestor_em: null`)
-    # é o mesmo conjunto de `_filtro_do_balcao`. Quem perde a corrida apanha
-    # `DuplicateKeyError` no INSERT — nunca chega a gravar nada — e sai daqui
-    # com a MESMA recusa de quem a perdeu pela leitura.
+    # O predicado da porta é expressável num índice precisamente porque a
+    # excepção da travada deixou de ser calculada: o índice único PARCIAL de
+    # `db.py` (`fat_vendas`, `posto_em_curso`, só onde `estado: "aberta"`) tem
+    # agora a chave do MESMO âmbito de `_contas_do_balcao` — o posto, e já não
+    # a sessão (ver `_etiqueta_do_posto`). Era essa diferença que a corrida
+    # atravessava: com a chave da sessão, dois toques em caixas diferentes
+    # davam 201 + 201. Quem perde a corrida apanha `DuplicateKeyError` no
+    # INSERT — nunca chega a gravar nada — e sai daqui com a MESMA recusa de
+    # quem a perdeu pela leitura.
     #
     # Uma conta que muda de estado (emitida, cancelada, separada) ou que é
-    # entregue ao gestor sai SOZINHA do índice: não há nenhum campo para
-    # limpar à mão em lado nenhum, e por isso não há nenhum sítio onde um
-    # esquecimento tranque o posto para o resto do turno. Se o índice não
-    # existir (uma base antiga com órfãs que impedem a criação —
-    # `criar_indices` regista e segue), fica a garantia de antes, que é a
-    # leitura acima.
+    # entregue ao gestor sai SOZINHA do índice. O único sítio que tem de tirar
+    # a etiqueta À MÃO é o fecho de caixa
+    # (`caixa.py::_largar_o_posto_das_contas_abertas`), e é o preço de a chave
+    # já não ter a sessão: sem isso, uma conta esquecida num turno fechado
+    # trancava este PC no dia seguinte. Se o índice não existir (uma base
+    # antiga com órfãs que impedem a criação — `criar_indices` regista e
+    # segue), fica a garantia de antes, que é a leitura acima.
     try:
         await db[COLECOES["vendas"]].insert_one(dict(venda))
     except DuplicateKeyError:
-        raise HTTPException(status_code=409, detail=_MSG_CONTA_POR_RESOLVER)
+        # A leitura acima disse que o balcão estava livre e o índice diz que
+        # não: ou perdemos a corrida do duplo toque (o caso normal, e a conta
+        # que ganhou está mesmo à frente da operadora), ou ficou para trás uma
+        # etiqueta de um turno fechado que o `_largar_o_posto_das_contas_
+        # abertas` não conseguiu tirar. Relê-se para dizer QUAL — a recusa que
+        # não sabe explicar-se é o beco que esta ronda veio fechar.
+        ganhou = await _contas_do_balcao(
+            db, operador["loja_id"], operador.get("dispositivo_id"))
+        if ganhou:
+            raise HTTPException(
+                status_code=409,
+                detail=await _porque_nao_ha_cliente_seguinte(
+                    db, ganhou[0], dados.caixa_id),
+            )
+        raise HTTPException(status_code=409, detail=_MSG_ETIQUETA_PRESA)
     return _venda_publica(venda)
 
 
@@ -1186,34 +1289,32 @@ async def venda_aberta(
     """
     db = obter_db()
     await _obter_caixa_da_loja(db, caixa_id, operador["loja_id"])
-    sessao = await _sessao_aberta(db, caixa_id)
+    # O `caixa_id` continua a ser exigido e a ser confirmado ABERTO, e não é
+    # decoração: sem caixa aberta o POS não vende, e é o 409 daqui que manda o
+    # ecrã para o `PosCaixaFechada`. O que ele já NÃO faz é escolher o
+    # conjunto — ver a linha a seguir.
+    await _sessao_aberta(db, caixa_id)
 
-    # A MAIS RECENTE. Uma sessão pode ter várias contas abertas ao mesmo
-    # tempo (o `POST /pos/venda` cria sempre uma nova, e as órfãs de antes
-    # desta rota continuam lá); a que a operadora tem à frente é sempre a
-    # última que abriu, nunca a primeira que o Mongo calhar devolver.
+    # **O MESMO conjunto da porta — a MESMA função, com os MESMOS argumentos**
+    # (`_contas_do_balcao`), e é essa identidade que é a correcção. Enquanto
+    # esta rota tivesse um âmbito próprio, havia contas que prendiam o posto
+    # sem aparecerem aqui: a que ressuscitava à frente do cliente errado, e
+    # depois a que ficava presa noutra caixa com o ecrã a dizer que o balcão
+    # estava livre.
     #
-    # `dispositivo_id` vem do token (pos_auth.py::entrar), nunca da query.
+    # A MAIS RECENTE (a lista vem ordenada por `criada_em` descendente): a que
+    # a operadora tem à frente é sempre a última que abriu. Ela pode ser de
+    # OUTRA caixa deste posto, e é de propósito — a resposta traz o `caixa_id`
+    # dela, e o ecrã diz-lhe onde ficou.
     #
-    # Um token emitido ANTES desta alteração não o traz, e as vendas abertas
-    # com ele também não têm o campo. Filtrar por `None` casa, no Mongo, com
-    # o campo AUSENTE e com o campo a `null` — é a semântica da igualdade a
-    # null, e é o que faz esta mudança não precisar de migração nenhuma:
-    # token antigo só encontra conta antiga, token novo só encontra conta
-    # nova, e os dois nunca se cruzam. Não é suposição: os quatro
-    # cruzamentos estão provados em test_venda.py.
-    # O MESMO conjunto da porta (`_filtro_do_balcao`), e é essa igualdade que
-    # é a correcção: enquanto a porta tinha uma excepção que esta rota não
-    # tinha, havia contas que prendiam o posto sem aparecerem aqui — e a
-    # primeira delas era a conta que ressuscitava à frente do cliente errado.
-    # A sessão é a DESTA caixa (o ecrã é de uma caixa só, ao contrário da
-    # porta, cujo âmbito é o posto inteiro).
-    abertas = await (
-        db[COLECOES["vendas"]]
-        .find(_filtro_do_balcao([sessao["id"]], operador.get("dispositivo_id")))
-        .sort("criada_em", -1)
-        .to_list(1)
-    )
+    # `dispositivo_id` vem do token (pos_auth.py::entrar), nunca da query. Um
+    # token emitido ANTES desse campo não o traz, e as vendas abertas com ele
+    # também não têm o campo: filtrar por `None` casa, no Mongo, com o campo
+    # ausente e com o campo a `null`, por isso token antigo só encontra conta
+    # antiga e token novo só encontra conta nova. Os quatro cruzamentos estão
+    # provados em test_venda.py.
+    abertas = await _contas_do_balcao(
+        db, operador["loja_id"], operador.get("dispositivo_id"))
     if not abertas:
         return None
 
@@ -1652,8 +1753,8 @@ async def entregar_ao_gestor(
     uma excepção calculada é uma frase sobre o MUNDO (existe uma reserva?) e o
     que faz falta é uma frase sobre a CONTA (de quem ela é). A marca é a
     segunda: fica escrita, sobrevive ao gestor libertar a reserva, tira a
-    conta da porta e do ecrã ao MESMO tempo (`_filtro_do_balcao`, um objecto
-    só, lido pelos três sítios), e torna o predicado da porta expressável num
+    conta da porta e do ecrã ao MESMO tempo (`_contas_do_balcao`, uma função
+    só, chamada pelos três sítios), e torna o predicado da porta expressável num
     índice único parcial — que é o que fecha a corrida do duplo toque sem lock
     nenhum (ver `abrir_venda`).
 
@@ -2495,23 +2596,21 @@ async def contas_repartidas(
     """
     db = obter_db()
     await _obter_caixa_da_loja(db, caixa_id, operador["loja_id"])
-    sessao = await _sessao_aberta(db, caixa_id)
+    # Como em `venda_aberta`: exige-se uma caixa ABERTA para o ecrã existir,
+    # mas não é ela que escolhe o conjunto.
+    await _sessao_aberta(db, caixa_id)
 
+    # **O MESMO conjunto da porta e do ecrã da conta em curso** — a MESMA
+    # função (`_contas_do_balcao`), e é daqui que sai a resposta: as partes por
+    # cobrar deste posto são, sem uma regra à parte, as contas deste conjunto
+    # que têm `conta_mae_id`.
+    #
     # A pergunta começa pelas PARTES por cobrar, e não pelas mães `separada`,
     # por uma questão de resposta: uma mãe separada cujas partes já foram
     # todas cobradas não é para mostrar, e começar por ela obrigava a
-    # perguntar por cada uma para depois a deitar fora. Assim, o que sai desta
-    # primeira leitura já é só o que interessa.
-    #
-    # `dispositivo_id` vem do TOKEN, nunca da query — como em
-    # `venda_aberta`, e com a mesma semântica para os tokens antigos: filtrar
-    # por `None` casa, no Mongo, com o campo ausente e com o campo a `null`.
-    abertas = await (
-        db[COLECOES["vendas"]]
-        .find(_filtro_do_balcao([sessao["id"]], operador.get("dispositivo_id")))
-        .sort("criada_em", -1)
-        .to_list(1000)
-    )
+    # perguntar por cada uma para depois a deitar fora.
+    abertas = await _contas_do_balcao(
+        db, operador["loja_id"], operador.get("dispositivo_id"))
 
     # As mães pela ordem em que a parte aberta MAIS RECENTE de cada uma
     # aparece — a mesma regra do "a mais recente" de `venda_aberta`, para o

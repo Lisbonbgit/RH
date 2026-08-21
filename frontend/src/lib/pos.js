@@ -587,6 +587,27 @@ const eurosPos = (valor) =>
 export const partesAbertas = (partes) =>
   (partes || []).filter((p) => p?.estado === 'aberta' && !p?.entregue_ao_gestor_em);
 
+// **Esta conta é de OUTRA caixa deste posto?**
+//
+// Desde que a porta (`venda.py::abrir_venda`) e o ecrã
+// (`GET /pos/venda/aberta`) passaram a ler o MESMO conjunto — o do POSTO, em
+// qualquer caixa cuja sessão esteja aberta (`venda.py::_contas_do_balcao`) —,
+// a conta que o ecrã põe à frente pode ter nascido noutra caixa. É o caso
+// normal da troca de caixa: a operadora pica 8,99 € no Balcão, o PC passa para
+// o Drive (o ecrã «Qual caixa?» do PosApp), e a conta continua à frente dela.
+//
+// Antes disto, esse mesmo arranjo era um BECO: o ecrã respondia `null` e a
+// rota respondia 409 «acabe a que está à frente», com nada à frente. Agora a
+// conta está lá — e tem de dizer DE ONDE, senão a operadora olha para uma
+// conta que não sabe de onde veio e desconfia de tudo o resto no mesmo ecrã.
+//
+// Vive aqui, e não escrita dentro do painel, pela razão de sempre neste
+// ficheiro: uma decisão que nenhum teste consegue EXECUTAR é uma decisão que
+// ninguém está a guardar. Sem um dos dois ids a resposta é `false` — não se
+// inventa uma diferença a partir do que não se sabe.
+export const contaDeOutraCaixa = (venda, caixaId) =>
+  !!venda?.caixa_id && !!caixaId && venda.caixa_id !== caixaId;
+
 // Esta venda é UMA das partes em cobrança? Compara-se pelo `id`, que é o que
 // não muda: a parte volta do servidor a cada leitura com totais e estado
 // diferentes, e comparar o objecto (ou o total) dava "não" a meio da

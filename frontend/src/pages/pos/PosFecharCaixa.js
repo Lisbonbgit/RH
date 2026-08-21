@@ -121,12 +121,26 @@ function ContasPorCobrar({ contas, momento }) {
   const antes = momento === 'antes';
   const todas = contas.contas || [];
 
-  // As duas famílias. `trava_o_fecho === true` de propósito, e não a verdade
-  // genérica do JavaScript: uma resposta de um servidor anterior a este campo
-  // não pode passar a dizer que TODAS as contas travam o fecho — era a mesma
-  // frase errada, só que ao contrário e mais assustadora.
+  // As TRÊS famílias. `trava_o_fecho === true` e `entregue_ao_gestor === true`
+  // de propósito, e não a verdade genérica do JavaScript: uma resposta de um
+  // servidor anterior a estes campos não pode passar a dizer que TODAS as
+  // contas travam o fecho, nem que são todas do gestor — era a mesma frase
+  // errada, só que ao contrário e mais assustadora.
   const travam = todas.filter((c) => c.trava_o_fecho === true);
-  const porCobrar = todas.filter((c) => c.trava_o_fecho !== true);
+  // **A conta ENTREGUE AO GESTOR, e porque é que ela precisa de família
+  // própria.** Chegava aqui com `trava_o_fecho: false` (o gestor já libertou a
+  // reserva dela) e caía no monte do "por cobrar", debaixo de uma frase que
+  // manda «cobre-as antes de fechar; se ninguém pagar, cancele-as». Nenhuma
+  // das duas saídas é executável: as escritas do balcão recusam-na
+  // (`venda.py::_garante_do_balcao`) e ela não aparece em ecrã nenhum do POS
+  // de onde se lhe possa tocar (`venda.py::_contas_do_balcao` exclui-a). O
+  // servidor sempre mandou a marca — `entregue_ao_gestor` —, e este ecrã nunca
+  // a desenhou. Pedir à operadora o que a rota recusa é o mesmo beco que esta
+  // ronda inteira persegue, e aqui custava-lhe uma tentativa e um telefonema.
+  const doGestor = todas.filter(
+    (c) => c.trava_o_fecho !== true && c.entregue_ao_gestor === true);
+  const porCobrar = todas.filter(
+    (c) => c.trava_o_fecho !== true && c.entregue_ao_gestor !== true);
   const noutroPosto = porCobrar.filter((c) => !destePosto(c, contas));
   // O euro desta caixa vem SOMADO DO SERVIDOR (`total_por_cobrar`), e não de
   // um `reduce` sobre a lista: é a regra 1 do cabeçalho do PosVenda — o ecrã
@@ -140,6 +154,21 @@ function ContasPorCobrar({ contas, momento }) {
   // recuo, esse servidor punha "€ 0,00" por cima de uma lista com contas lá
   // dentro, que é a pior das mentiras possíveis num ecrã de fecho.
   const totalPorCobrar = contas.total_por_cobrar ?? contas.total;
+  // Os euros das outras duas caixas: o servidor manda os subtotais
+  // já somados (`total_por_cobrar` é tudo o que não trava; `total_do_balcao` e
+  // `total_do_gestor` são as duas metades dele), e é de lá que saem — nunca de
+  // um `reduce` aqui, que era pôr o JavaScript a fazer aritmética de dinheiro
+  // sobre números que o servidor já fechou ao cêntimo.
+  //
+  // Sem `total_do_gestor` na resposta (um servidor anterior a esta ronda), a
+  // família do gestor vem vazia — `entregue_ao_gestor` também não vinha — e o
+  // recuo do balcão para `total_por_cobrar` continua exacto.
+  const totalDoGestor = contas.total_do_gestor;
+  // E o do BALCÃO — a família de cima sem as do gestor. Recuo para
+  // `total_por_cobrar` quando o servidor é anterior a esta ronda: aí a família
+  // do gestor vem vazia (`entregue_ao_gestor` também não vinha) e os dois
+  // números são o mesmo, por isso o recuo continua exacto.
+  const totalDoBalcao = contas.total_do_balcao ?? totalPorCobrar;
 
   return (
     <div className="space-y-2">
@@ -177,7 +206,7 @@ function ContasPorCobrar({ contas, momento }) {
               ? '1 conta fica por cobrar neste turno'
               : `${porCobrar.length} contas ficam por cobrar neste turno`}
             {' — '}
-            <span className="tabular-nums">{euros(totalPorCobrar)}</span>.
+            <span className="tabular-nums">{euros(totalDoBalcao)}</span>.
           </p>
           <p className={antes ? 'mt-1' : 'mt-1 text-muted-foreground'}>
             {antes
@@ -205,6 +234,33 @@ function ContasPorCobrar({ contas, momento }) {
             linhas={porCobrar}
             mostrarPosto={noutroPosto.length > 0}
           />
+        </Bloco>
+      )}
+
+      {/* A que JÁ É DO GESTOR. Não trava o fecho e não é para cobrar aqui: a
+          operadora entregou-a («Servir o cliente seguinte») e a partir daí é
+          ele que a resolve, no backoffice. A única coisa que este ecrã lhe
+          deve é dizer isso — e a referência, que é o que ela lhe dá ao
+          telefone. */}
+      {doGestor.length > 0 && (
+        <Bloco tom="neutro" icone={<Users className="h-4 w-4 shrink-0 mt-0.5" />}>
+          <p className="font-medium">
+            {doGestor.length === 1
+              ? '1 conta já foi entregue ao gestor'
+              : `${doGestor.length} contas já foram entregues ao gestor`}
+            {totalDoGestor != null && (
+              <>
+                {' — '}
+                <span className="tabular-nums">{euros(totalDoGestor)}</span>
+              </>
+            )}.
+          </p>
+          <p className="mt-1 text-muted-foreground">
+            {antes
+              ? 'Não impedem o fecho e não são para cobrar nem cancelar aqui — saíram do balcão e é o gestor que as resolve, no backoffice. Ficam registadas no Z como dinheiro por receber. Referência:'
+              : 'Ficam registadas neste Z como dinheiro por receber e é o gestor que as resolve, no backoffice. Referência:'}
+          </p>
+          <ListaDeContas contas={contas} linhas={doGestor} mostrarPosto={false} />
         </Bloco>
       )}
     </div>

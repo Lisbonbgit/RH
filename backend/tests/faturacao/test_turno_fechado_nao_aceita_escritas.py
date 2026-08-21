@@ -76,6 +76,13 @@ def _corresponde(item, filtro):
         if isinstance(valor, dict) and "$in" in valor:
             if item.get(chave) not in valor["$in"]:
                 return False
+        # `$ne`, e não é um extra decorativo: é por ele que o travão do fecho
+        # pergunta pelas contas que ainda NÃO estão `emitida`
+        # (`caixa._venda_com_emissao_viva`). Um duplo que o ignorasse casava
+        # com tudo e punha o teste a medir o contrário do que diz.
+        elif isinstance(valor, dict) and "$ne" in valor:
+            if item.get(chave) == valor["$ne"]:
+                return False
         elif item.get(chave) != valor:
             return False
     return True
@@ -128,6 +135,19 @@ class ColeccaoFalsa:
         self.registo.append(("insert_one", self.nome, dict(doc)))
         self._documentos.append(deepcopy(doc))
         return None
+
+    async def update_many(self, filtro, atualizacao):
+        """`$set`/`$unset` em TODAS as que casam — hoje só o `$unset` da
+        etiqueta do posto, que o fecho de caixa faz às contas que deixa
+        abertas (`caixa._largar_o_posto_das_contas_abertas`). Sem isto o duplo
+        levantava `AttributeError`, o `except` de lá engolia-o e o teste ficava
+        verde a medir o contrário do que diz."""
+        alvos = [d for d in self._documentos if _corresponde(d, filtro)]
+        for alvo in alvos:
+            alvo.update(atualizacao.get("$set", {}))
+            for campo in atualizacao.get("$unset", {}):
+                alvo.pop(campo, None)
+        return ResultadoUpdateFalso(matched_count=len(alvos))
 
     async def update_one(self, filtro, atualizacao):
         self.registo.append(("update_one", self.nome, filtro, atualizacao))

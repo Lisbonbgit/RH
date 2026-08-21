@@ -634,8 +634,12 @@ def test_a_entrega_liberta_o_posto_no_INDICE_e_nao_so_na_leitura(monkeypatch):
     conta que já é do gestor — para o resto do turno."""
     db = _monta(monkeypatch, com_indice=True)
     a = _cliente_a_com_acai(db)
+    # A etiqueta LIDA da função que a escreve, nunca copiada para aqui: ela
+    # mudou de âmbito (era `"{sessao_id}|{dispositivo_id}"`, é agora
+    # `"{loja_id}|{dispositivo_id}"` — ver `venda._etiqueta_do_posto`), e uma
+    # cópia local prendia este teste ao formato de ontem em vez de à garantia.
     assert [d.get("posto_em_curso") for d in _vendas_cruas(db)] == [
-        "sessao-1|%s" % _PC]
+        venda_mod._etiqueta_do_posto(_op()["loja_id"], _PC)]
 
     _corre(entregar_ao_gestor(a["id"], operador=_op()))
     assert "posto_em_curso" not in _vendas_cruas(db)[0], (

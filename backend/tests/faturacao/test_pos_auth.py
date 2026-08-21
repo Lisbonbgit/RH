@@ -65,6 +65,13 @@ def _corresponde(item, filtro):
         if isinstance(valor, dict) and "$in" in valor:
             if item.get(chave) not in valor["$in"]:
                 return False
+        # `$ne`, e não é um extra decorativo: é por ele que o travão do fecho
+        # pergunta pelas contas que ainda NÃO estão `emitida`
+        # (`caixa._venda_com_emissao_viva`). Um duplo que o ignorasse casava
+        # com tudo e punha o teste a medir o contrário do que diz.
+        elif isinstance(valor, dict) and "$ne" in valor:
+            if item.get(chave) == valor["$ne"]:
+                return False
         elif item.get(chave) != valor:
             return False
     return True

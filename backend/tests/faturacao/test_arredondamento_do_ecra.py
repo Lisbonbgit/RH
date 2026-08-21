@@ -87,7 +87,17 @@ def _corpo_da_funcao(texto: str, assinatura: str, ficheiro: Path) -> str:
             % (assinatura, ficheiro.name)
         )
     inicio = texto.index(assinatura)
-    i = texto.index("{", inicio)
+    # A chaveta procura-se a partir do FIM da assinatura, e não do princípio:
+    # uma arrow function que desestrutura os parâmetros
+    # (`({ venda, partes }) =>`) tem uma chaveta DENTRO da assinatura, e
+    # começar por essa devolvia só a lista de parâmetros — o guião gerado
+    # rebentava com um `SyntaxError` em vez de correr a decisão. Nenhuma das
+    # funções que ESTE ficheiro extrai desestrutura, por isso a diferença não
+    # se via aqui; via-se em quem o importa (`test_um_posto_uma_conta.py`, que
+    # corre o `razaoDaGrelhaMorta`). O gémeo desta função em
+    # `test_partes_por_cobrar_no_ecra.py` já tinha esta correcção — e é a
+    # existência do gémeo que a fez faltar aqui.
+    i = texto.index("{", inicio + len(assinatura))
     profundidade = 0
     for fim in range(i, len(texto)):
         if texto[fim] == "{":

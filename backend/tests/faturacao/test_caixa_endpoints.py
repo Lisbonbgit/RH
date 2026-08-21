@@ -36,10 +36,22 @@ def _corre(coro):
 
 def _corresponde(item, filtro):
     """Réplica minimalista do casamento de filtro do Mongo: igualdade exacta
-    em cada campo pedido."""
+    em cada campo pedido, mais o `$ne`.
+
+    O `$ne` é por onde o travão do fecho pergunta pelas contas que ainda NÃO
+    estão `emitida` (`caixa._venda_com_emissao_viva`). Um duplo que o
+    ignorasse tratava `{"$ne": "emitida"}` como um valor a comparar, não
+    casava com venda nenhuma, e os testes do fecho deste ficheiro ficavam
+    verdes a medir uma sessão sem contas."""
     if not filtro:
         return True
-    return all(item.get(chave) == valor for chave, valor in filtro.items())
+    for chave, valor in filtro.items():
+        if isinstance(valor, dict) and "$ne" in valor:
+            if item.get(chave) == valor["$ne"]:
+                return False
+        elif item.get(chave) != valor:
+            return False
+    return True
 
 
 def _como_o_motor(documento):
@@ -115,6 +127,19 @@ class ColeccaoFalsa:
         self.registo.append(("insert_one", dict(doc)))
         self._documentos.append(deepcopy(doc))
         return None
+
+    async def update_many(self, filtro, atualizacao):
+        """`$set`/`$unset` em TODAS as que casam — hoje só o `$unset` da
+        etiqueta do posto, que o fecho de caixa faz às contas que deixa
+        abertas (`caixa._largar_o_posto_das_contas_abertas`). Sem isto o duplo
+        levantava `AttributeError`, o `except` de lá engolia-o e o teste ficava
+        verde a medir o contrário do que diz."""
+        alvos = [d for d in self._documentos if _corresponde(d, filtro)]
+        for alvo in alvos:
+            alvo.update(atualizacao.get("$set", {}))
+            for campo in atualizacao.get("$unset", {}):
+                alvo.pop(campo, None)
+        return ResultadoUpdateFalso(matched_count=len(alvos))
 
     async def update_one(self, filtro, atualizacao):
         self.registo.append(("update_one", filtro, atualizacao))

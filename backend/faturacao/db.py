@@ -162,12 +162,23 @@ INDICES = [
     # **201 e 201, duas contas abertas no mesmo posto** — e, antes da marca
     # `entregue_ao_gestor_em`, uma delas invisível no ecrã.
     #
-    # A chave é `posto_em_curso` — a etiqueta `"{sessao_id}|{dispositivo_id}"`
-    # que `venda.abrir_venda` escreve na conta que nasce no balcão, e SÓ nela.
+    # A chave é `posto_em_curso` — a etiqueta `"{loja_id}|{dispositivo_id}"`
+    # que `venda.abrir_venda` escreve na conta que nasce no balcão, e SÓ nela
+    # (`venda._etiqueta_do_posto`).
     #
-    # **Porque é que a chave é um campo derivado e não `{sessao_id,
+    # **A etiqueta era `"{sessao_id}|{dispositivo_id}"`, e por aí a corrida
+    # atravessava-a.** Numa loja com duas caixas activas, dois `POST
+    # /pos/venda` simultâneos do mesmo PC em CAIXAS DIFERENTES davam 201 +
+    # 201: as chaves diferiam no `sessao_id`, e o posto ficava com duas contas
+    # abertas — uma delas invisível. O âmbito da chave tem de ser o mesmo de
+    # `venda._contas_do_balcao`, que é o POSTO; e é por isso que a sessão saiu
+    # dela. O preço está pago em `caixa._largar_o_posto_das_contas_abertas`:
+    # sem a sessão na chave, uma conta esquecida num turno fechado trancava
+    # esse PC no dia seguinte, por isso o fecho tira-lhe a etiqueta.
+    #
+    # **Porque é que a chave é um campo derivado e não `{loja_id,
     # dispositivo_id}`.** O predicado a impor é o de
-    # `venda._filtro_do_balcao`, e ele exclui duas famílias: as PARTES de uma
+    # `venda._contas_do_balcao`, e ele exclui duas famílias: as PARTES de uma
     # conta dividida (várias por posto, de propósito) e as contas já entregues
     # ao gestor. Excluí-las no filtro parcial exigia `conta_mae_id: null` /
     # `entregue_ao_gestor_em: null` lá dentro, e a igualdade a `null` num
@@ -181,12 +192,18 @@ INDICES = [
     # fosse uma pergunta a OUTRA colecção (`fat_refs_fiscais`), nenhum índice
     # de `fat_vendas` o podia dizer.
     #
-    # **Só há UM sítio que tira a etiqueta**, e é o `entregar_ao_gestor`: as
-    # outras três saídas da conta (emitida, cancelada, separada) tiram-na
-    # sozinhas, porque o filtro parcial é `estado: "aberta"` e uma venda que
-    # muda de estado sai do índice sem ninguém lhe tocar. Um só sítio é o que
-    # torna isto seguro: um esquecimento aqui trancava o posto para o resto do
-    # turno, e não há onde o esquecer.
+    # **Há DOIS sítios que tiram a etiqueta**, e os dois estão escritos:
+    # `venda.entregar_ao_gestor` (a conta travada deixa de ser do balcão) e
+    # `caixa._largar_o_posto_das_contas_abertas` (o turno fechou, e o que
+    # ficou aberto é do gestor). As outras três saídas da conta (emitida,
+    # cancelada, separada) tiram-na sozinhas, porque o filtro parcial é
+    # `estado: "aberta"` e uma venda que muda de estado sai do índice sem
+    # ninguém lhe tocar. Os dois sítios são um a mais do que se queria — um
+    # esquecimento em qualquer deles tranca um posto — e é por isso que os
+    # dois são recusas EXPLICADAS e não 409 mudos: o `abrir_venda` relê o
+    # posto quando o índice recusa e, se não encontrar nada, diz por extenso
+    # que é uma etiqueta presa de um turno fechado e que quem a arruma é o
+    # gestor (`venda._MSG_ETIQUETA_PRESA`).
     #
     # Numa base que já tenha duas `aberta` no mesmo posto (as órfãs de antes
     # desta ronda), a CRIAÇÃO falha — `criar_indices` regista o erro e o
