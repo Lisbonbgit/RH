@@ -479,32 +479,6 @@ export const obterVenda = (vendaId) => api.get(`/pos/venda/${vendaId}`);
 // escrever a comparação à vista é o que torna essa decisão legível.
 export const contaTravada = (venda) => venda?.emissao_por_confirmar === true;
 
-// O MOTIVO com que uma conta sai da frente para dar lugar a outra — a nota
-// que fica no painel depende dele, e as duas notas dizem coisas opostas:
-//
-//   'balcao'  — "continua aberta à espera de ser cobrada ou cancelada.
-//               Retome-a para acabar de a cobrar."
-//   'travada' — "tem uma emissão por confirmar, e só o gestor a resolve."
-//
-// **`cederOLugarDaConta` passava sempre `'balcao'`**, mesmo quando a conta
-// que cede o lugar está travada: a nota mandava a operadora cobrar ou
-// cancelar uma conta que não pode ser nem uma coisa nem outra, e escondia-lhe
-// a única coisa verdadeira sobre ela — que há uma fatura por confirmar e que
-// é preciso chamar o gestor.
-//
-// Vive aqui, e não dentro do `useCallback` do PosVenda, pela mesma razão de
-// `ehUmaDasPartes` e `partesAbertas`: uma decisão escrita à mão dentro de um
-// componente React não se consegue EXECUTAR num teste — o guarda que a devia
-// proteger só conseguia procurar `porContaDeLado(` no texto da função, nunca
-// com que argumento, e trocar `'balcao'` por `'travada'` deixava a suite
-// inteira verde (medido: 1029 testes, zero vermelhos). Aqui é uma função
-// pura, corre em Node, e a troca fica vermelha.
-//
-// A pergunta é a do SERVIDOR (`contaTravada`), a mesma que desenha a
-// `FaixaContaTravada` — nunca uma segunda regra escrita a seguir.
-export const motivoDeQuemCedeOLugar = (venda) =>
-  (contaTravada(venda) ? 'travada' : 'balcao');
-
 // --- A dúvida que ainda não foi apurada --------------------------------------
 //
 // O outro travão, e o que ele tem de diferente do de cima: `contaTravada` é o

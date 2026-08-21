@@ -156,6 +156,19 @@ _MSG_DIVISAO_ABORTADA_SEM_EMISSAO = (
     "entretanto foi abortada sem chegar a emitir — NÃO saiu nenhuma Fatura "
     "Simplificada e a conta está outra vez aberta e inteira. Divida outra vez."
 )
+# A recusa de `abrir_venda` (ver `_conta_por_resolver`). Diz o que ela tem de
+# fazer, e diz as DUAS saídas — cobrar e cancelar — porque a conta que está a
+# prender o posto tanto pode ser um cliente que ainda vai pagar como um que
+# desistiu. As partes de uma conta dividida contam: uma conta dividida só acaba
+# quando TODAS as partes estiverem cobradas ou canceladas.
+_MSG_CONTA_POR_RESOLVER = (
+    "Este posto já tem uma conta por resolver — não se começa a do cliente "
+    "seguinte por cima dela. Acabe a que está à frente: cobre-a ou cancele-a. "
+    "Se a dividiu, ela só acaba quando todas as partes estiverem cobradas ou "
+    "canceladas. A única conta que não conta é a que está TRAVADA, com uma "
+    "emissão de fatura por confirmar: essa não se cobra nem se cancela aqui — "
+    "é o gestor que a resolve, no backoffice."
+)
 
 
 def _agora() -> str:
@@ -808,11 +821,79 @@ def _venda_publica(venda: Dict, emissao_por_confirmar: bool = False) -> Dict:
     }
 
 
+async def _conta_por_resolver(db, sessao_id: str, dispositivo_id: Optional[str]) -> Optional[Dict]:
+    """A conta deste posto que ainda está por resolver — ou `None`, quando o
+    balcão está livre para o cliente seguinte.
+
+    **Um PC atende UM cliente de cada vez.** Não existe pôr uma conta de lado e
+    cobrar outra: atende-se o cliente, fecha-se a fatura, e só então há cliente
+    seguinte. Uma conta dividida só acaba quando TODAS as partes estiverem
+    cobradas ou canceladas — as partes são vendas `aberta` deste dispositivo
+    (`_nova_parte` herda-lhe o `dispositivo_id`), e por isso contam aqui sem
+    uma regra à parte.
+
+    **O âmbito é o mesmo de `GET /pos/venda/aberta`, de propósito**: a sessão
+    aberta da caixa E o `dispositivo_id` do TOKEN, nunca da query. Tem de ser o
+    mesmo par, senão as duas rotas discordavam sobre o que é "a conta deste
+    posto" — e a recusa passaria a ser sobre uma conta que o ecrã não consegue
+    mostrar. Vale aqui a mesma semântica que dispensa migração: filtrar por
+    `None` casa, no Mongo, com o campo AUSENTE e com o campo a `null`, por isso
+    um token antigo só encontra contas antigas e um novo só encontra novas.
+
+    **A ÚNICA que não conta é a TRAVADA** — a que tem uma emissão de fatura por
+    confirmar (`_emissao_por_confirmar`: existe reserva fiscal e a venda ainda
+    não está `emitida`). A operadora não a consegue cobrar nem cancelar: as
+    cinco rotas de escrita recusam-na com 409 (`_garante_sem_emissao`), e quem
+    a resolve é o gestor, no backoffice, depois de ver no Vendus se a Fatura
+    Simplificada chegou a sair. Se ela prendesse o posto, o balcão parava — e
+    parava por causa de uma conta que ninguém ali consegue fechar. Só ela: uma
+    conta travada largada deixa abrir a seguinte, e nenhuma outra deixa.
+
+    Devolve a conta, e não um booleano, para quem chamar poder dizer QUAL —
+    hoje ninguém precisa, mas a alternativa era voltar a lê-la."""
+    abertas = await (
+        db[COLECOES["vendas"]]
+        .find({
+            "sessao_id": sessao_id,
+            "estado": "aberta",
+            "dispositivo_id": dispositivo_id,
+        })
+        .sort("criada_em", -1)
+        .to_list(1000)
+    )
+    for conta in abertas:
+        if not await _emissao_por_confirmar(db, conta):
+            return conta
+    return None
+
+
 @router.post("/pos/venda", status_code=201)
 async def abrir_venda(dados: PedidoNovaVenda, operador: Dict = Depends(operador_atual)) -> dict:
+    """A conta nova do cliente seguinte — se não houver nenhuma por resolver
+    neste posto.
+
+    Esta rota criava SEMPRE uma venda nova, sem olhar às que já estavam
+    abertas, e era essa porta que deixava uma conta ficar `aberta` no servidor
+    e invisível no ecrã: o ecrã tem UM lugar para a conta em curso, e a conta
+    anterior saía dele sem sair da base de dados. Só o fecho de caixa voltava a
+    mencioná-la, horas depois (`caixa.py::_contas_abertas_da_sessao`). Medido,
+    com a porta ainda aberta: picado um Açaí de 8,99 € e começada a conta
+    seguinte com uma Embalagem de 0,15 €, ficavam **2 contas abertas neste PC e
+    1 mostrável no ecrã — 8,99 € abertos e invisíveis**; com a mesma conta
+    dividida em duas partes e a operadora a tocar em "Cobrar" numa delas, **3
+    abertas e 2 no ecrã**.
+
+    A porta fecha-se AQUI e não no ecrã: os ecrãs do POS desenham-se sem
+    servidor nenhum, e um ecrã que evita o pedido não impede pedido nenhum — um
+    segundo separador, um F5 a meio ou uma versão antiga do bundle voltavam a
+    abri-la. O ecrã faz-lhe companhia (o cartão de produto fica morto com a
+    razão à vista), mas quem recusa é a rota."""
     db = obter_db()
     await _obter_caixa_da_loja(db, dados.caixa_id, operador["loja_id"])
     sessao = await _sessao_aberta(db, dados.caixa_id)
+
+    if await _conta_por_resolver(db, sessao["id"], operador.get("dispositivo_id")) is not None:
+        raise HTTPException(status_code=409, detail=_MSG_CONTA_POR_RESOLVER)
 
     venda = {
         "id": str(uuid.uuid4()),

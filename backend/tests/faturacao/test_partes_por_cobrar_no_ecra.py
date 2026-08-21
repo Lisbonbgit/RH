@@ -53,6 +53,7 @@ _ASSINATURA_ABERTAS = "export const partesAbertas = (partes) =>"
 _ASSINATURA_EH_PARTE = "export const ehUmaDasPartes = (venda, partes) =>"
 _ASSINATURA_VOLTAR = "const voltarDoFinalizar = useCallback(() =>"
 _ASSINATURA_ABRIR = "const abrirReparticao = useCallback((modo) =>"
+_ASSINATURA_TOCAR = "const tocarProduto = useCallback((produto) =>"
 
 
 def _ler(ficheiro: Path) -> str:
@@ -340,183 +341,35 @@ def test_o_arranque_do_ecra_pergunta_ao_servidor_pelas_partes_por_cobrar():
     )
 
 
-# --- As três portas por onde uma conta saía em silêncio -----------------------
+# --- As saídas da conta em curso ----------------------------------------------
 #
-# A regra do ficheiro é uma só: **uma conta só sai do ecrã pelo
-# `porContaDeLado`**, que a grava e deixa uma nota permanente no painel. Havia
-# três sítios a não cumpri-la, e os dois primeiros custaram contas medidas no
-# browser:
+# **Esta secção era outra coisa, e o que ela guardava deixou de existir.**
+# Guardava a "conta posta de lado": o `cobrarParte` e o `terminarReparticao`
+# tinham de ceder o lugar (`cederOLugarDaConta` → `porContaDeLado`) à conta do
+# balcão que a operadora tivesse começado enquanto as partes esperavam, e essa
+# conta ficava numa nota do painel, com um botão para a retomar.
 #
-#   1. `cobrarParte` fazia `aplicarVenda(parte)` sem olhar para a frente: com
-#      um Café Expresso de 1,00 € picado (`v-9`), "Voltar às partes" →
-#      "Cobrar" → voltar dava "Não existem produtos associados" no painel
-#      enquanto o servidor respondia `v-9: aberta 1 ['Café Expresso']`.
-#   2. `terminarReparticao` (o "Nova Venda" das partes) fazia
-#      `aplicarVenda(null)` pela mesma razão: duas contas do balcão abertas no
-#      servidor e nenhuma no ecrã.
-#   3. E o terceiro era não haver mais nenhum — percorridos um a um todos os
-#      `aplicarVenda(` do ficheiro. Os que ficaram guardam-se com o teste do
-#      fim desta secção, que conta as saídas permitidas.
-
-_ASSINATURA_COBRAR = "const cobrarParte = useCallback((parte) =>"
-_ASSINATURA_TERMINAR = "const terminarReparticao = useCallback(() =>"
-_ASSINATURA_CEDER = "const cederOLugarDaConta = useCallback(() =>"
-_ASSINATURA_POR_DE_LADO = "const porContaDeLado = useCallback((motivo = 'travada') =>"
-
-
-def test_cobrar_uma_parte_nao_larga_a_conta_que_esta_a_frente():
-    texto = _ler(_POS_VENDA)
-    corpo = _so_codigo(_corpo_da_funcao(texto, _ASSINATURA_COBRAR, _POS_VENDA))
-    assert "cederOLugarDaConta()" in corpo, (
-        "O `cobrarParte` voltou a pôr a parte à frente sem olhar para a conta "
-        "que lá estava. Essa conta fica `aberta` no servidor e invisível no "
-        "ecrã, e o toque seguinte abre outra por cima dela."
-    )
-    assert corpo.index("cederOLugarDaConta()") < corpo.index("aplicarVenda("), (
-        "O lugar é cedido DEPOIS de a parte já estar à frente — quando isso "
-        "corre, a conta anterior já foi largada."
-    )
-
-
-def test_o_nova_venda_das_partes_nao_larga_a_conta_que_esta_a_frente():
-    corpo = _so_codigo(
-        _corpo_da_funcao(_ler(_POS_VENDA), _ASSINATURA_TERMINAR, _POS_VENDA))
-    assert "cederOLugarDaConta()" in corpo, (
-        "O `terminarReparticao` voltou a largar a conta do balcão. Medido: "
-        "duas contas abertas no servidor e nenhuma no ecrã."
-    )
-    assert "aplicarVenda(" not in corpo, (
-        "O `terminarReparticao` voltou a mexer na conta em curso por sua "
-        "conta. Quem a tira da frente é o `cederOLugarDaConta`, que sabe "
-        "quando é preciso deixar uma nota."
-    )
-
-
-_ASSINATURA_MOTIVO = "export const motivoDeQuemCedeOLugar = (venda) =>"
-_ASSINATURA_TRAVADA = "export const contaTravada = (venda) =>"
-
-
-def _motivos_do_ecra(vendas, tmp_path: Path):
-    """Corre em Node o `motivoDeQuemCedeOLugar` tal como está escrito no
-    `lib/pos.js` — sem cópia nenhuma dele escrita aqui.
-
-    **Porque é que este teste teve de passar a EXECUTAR o JavaScript.** A
-    decisão vivia dentro do `useCallback` do `cederOLugarDaConta`, e um guarda
-    de texto só conseguia procurar `porContaDeLado(` no corpo da função —
-    nunca com que argumento. Mutação medida nesta ronda: trocar `'balcao'` por
-    `'travada'` deixava os 1029 testes verdes. Passou a viver em `lib/pos.js`
-    exactamente para isto deixar de ser possível."""
-    lib = _ler(_LIB_POS)
-    guiao = tmp_path / "motivos.js"
-    guiao.write_text(
-        "\n".join([
-            _corpo_da_seta(lib, _ASSINATURA_TRAVADA, _LIB_POS).replace("export ", "", 1),
-            _corpo_da_seta(lib, _ASSINATURA_MOTIVO, _LIB_POS).replace("export ", "", 1),
-            "const vendas = %s;" % json.dumps(vendas),
-            "process.stdout.write(JSON.stringify("
-            "vendas.map((v) => motivoDeQuemCedeOLugar(v))));",
-        ]),
-        encoding="utf-8",
-    )
-    resultado = subprocess.run(
-        [_node(), str(guiao)], stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
-    if resultado.returncode != 0:
-        pytest.fail(
-            "O JavaScript do ecrã não correu:\n%s"
-            % resultado.stderr.decode("utf-8", "replace")
-        )
-    return json.loads(resultado.stdout.decode("utf-8"))
-
-
-def test_uma_conta_TRAVADA_que_cede_o_lugar_leva_a_nota_de_travada(tmp_path):
-    """O defeito: `cederOLugarDaConta` passava sempre `'balcao'`. A nota que
-    ficava no painel dizia "à espera de ser cobrada ou cancelada" sobre uma
-    conta que não pode ser NENHUMA das duas — tem uma emissão por confirmar, e
-    é o gestor que a resolve. A nota certa já existia e o ecrã já a sabia
-    desenhar; faltava escolhê-la."""
-    normal = {"id": "v-9", "estado": "aberta", "totais": {"total": 1.00}}
-    travada = dict(normal, id="v-10", emissao_por_confirmar=True)
-
-    assert _motivos_do_ecra([normal, travada], tmp_path) == ["balcao", "travada"], (
-        "A conta travada voltou a sair da frente com a nota do balcão — a que "
-        "lhe promete um «Retomar esta conta» que não a desbloqueia, e que lhe "
-        "esconde a única coisa verdadeira sobre ela."
-    )
-
-
-def test_uma_conta_normal_nunca_leva_a_nota_da_travada(tmp_path):
-    """O reverso, e vale tanto como o de cima: pôr a nota da travada em
-    qualquer conta que ceda o lugar mandava a operadora chamar o gestor por
-    causa de um café — e tirava-lhe o «Retomar esta conta», que é a única
-    saída que a conta normal tem.
-
-    Os dois casos são o mesmo de outra maneira: o campo AUSENTE (uma resposta
-    de uma versão do servidor anterior a ele) tem de ler-se como conta normal,
-    e não como travada."""
-    sem_campo = {"id": "v-1", "estado": "aberta"}
-    a_false = {"id": "v-2", "estado": "aberta", "emissao_por_confirmar": False}
-
-    assert _motivos_do_ecra([sem_campo, a_false], tmp_path) == ["balcao", "balcao"]
-
-
-def test_a_porta_de_saida_e_mesmo_o_por_conta_de_lado():
-    """`cederOLugarDaConta` não pode ser um SEGUNDO caminho de saída: tem de
-    acabar no `porContaDeLado`, que é o que grava a conta e deixa a nota — e o
-    motivo tem de sair do `motivoDeQuemCedeOLugar`, nunca de um literal
-    escrito à mão aqui dentro (que é onde nenhum teste lhe chega)."""
-    corpo = _so_codigo(
-        _corpo_da_funcao(_ler(_POS_VENDA), _ASSINATURA_CEDER, _POS_VENDA))
-    assert "motivoDeQuemCedeOLugar(" in corpo, (
-        "O `cederOLugarDaConta` voltou a decidir o motivo por sua conta. "
-        "Escrito aqui dentro, o motivo deixa de ser executável por um teste — "
-        "e foi assim que ele ficou preso em `'balcao'` durante duas rondas."
-    )
-    assert "porContaDeLado(" in corpo, (
-        "O `cederOLugarDaConta` deixou de acabar no `porContaDeLado` — passou "
-        "a ser um segundo caminho por onde uma conta sai do ecrã, que é "
-        "exactamente o que a regra deste ficheiro proíbe."
-    )
-    assert "ehUmaDasPartes(" in corpo, (
-        "O `cederOLugarDaConta` deixou de distinguir uma PARTE (que não sai de "
-        "vista nenhuma — está na lista) de uma conta do balcão. Sem isso, "
-        "trocar de pessoa a cobrar enchia o painel de notas sobre contas que "
-        "ninguém perdeu."
-    )
-
-
-def test_a_nota_do_painel_e_uma_LISTA_e_nao_um_lugar_so():
-    """Pôr uma segunda conta de lado apagava a nota da primeira — a mesma
-    desaparição silenciosa que estas notas existem para impedir, e logo sobre a
-    conta TRAVADA, que é a que o gestor precisa de ir buscar. Com dois
-    caminhos novos a chamar isto, deixou de ser uma hipótese remota."""
-    corpo = _sem_comentarios(
-        _corpo_da_funcao(_ler(_POS_VENDA), _ASSINATURA_POR_DE_LADO, _POS_VENDA))
-    assert "setContasDeLado((postas) =>" in corpo, (
-        "O `porContaDeLado` voltou a escrever uma conta só. A segunda apaga a "
-        "nota da primeira."
-    )
-    assert "...postas" in corpo, (
-        "O `porContaDeLado` deixou de ACRESCENTAR à lista das contas de lado — "
-        "escreve por cima dela."
-    )
-    venda = _ler(_POS_VENDA)
-    assert "contasDeLado.map((conta) =>" in venda, (
-        "O painel voltou a desenhar uma nota só, e não uma por conta."
-    )
+# O dono disse que essa situação não acontece: «não existe isso de pôr uma conta
+# de lado e cobrar outra. é atender cliente e fechar a fatura. e ir para o
+# próximo cliente.» Não há conta do balcão a começar enquanto as partes esperam
+# — `venda.py::abrir_venda` recusa-a com 409 — e por isso não há lugar a ceder.
+# A maquinaria e os testes dela foram apagados; a porta ficou fechada no
+# servidor, e é lá que ela se guarda (`test_uma_conta_de_cada_vez.py`).
+#
+# O que sobrevive é a rede por baixo de tudo: nenhuma conta sai do ecrã sem se
+# saber porquê.
 
 
 def test_as_saidas_da_conta_em_curso_estao_todas_contadas():
-    """A rede por baixo dos três testes de cima: percorridos um a um TODOS os
-    `aplicarVenda(` do ficheiro, os únicos que largam a conta em curso
-    (`aplicarVenda(null)`) são os que já se sabe porque o fazem. Um número a
-    subir sem uma linha neste teste é um caminho novo por onde uma conta pode
-    voltar a sair em silêncio — e obriga a olhar para ele."""
+    """Percorridos um a um TODOS os `aplicarVenda(` do ficheiro, os únicos que
+    largam a conta em curso (`aplicarVenda(null)`) são os que já se sabe porque
+    o fazem. Um número a subir sem uma linha neste teste é um caminho novo por
+    onde uma conta pode sair em silêncio — e obriga a olhar para ele."""
     codigo = _so_codigo(_ler(_POS_VENDA))
     largam = codigo.count("aplicarVenda(null)")
-    assert largam == 12, (
+    assert largam == 11, (
         "O número de sítios que largam a conta em curso mudou (encontrei %d, "
-        "eram 12). Os doze, e a razão de cada um:\n"
+        "eram 11). Os onze, e a razão de cada um:\n"
         "  1. `recarregarVenda` — o servidor RESPONDEU e recusou: sabe-se que\n"
         "     o ecrã está errado, e mostrar a antiga era manter um estado já\n"
         "     sabido falso.\n"
@@ -524,23 +377,50 @@ def test_as_saidas_da_conta_em_curso_estao_todas_contadas():
         "     é uma das PARTES recuperadas: vai-se à lista delas, não se\n"
         "     apresenta uma pessoa como se fosse a conta toda.\n"
         "  3. `cancelarConta` — acabou de ser cancelada no servidor.\n"
-        "  4. `porContaDeLado` — A PORTA: grava a conta e deixa a nota.\n"
-        "  5. e 6. `cederOLugarDaConta` — os dois casos em que não há nada a\n"
-        "     perder de vista: uma PARTE (está na lista das partes) e uma\n"
-        "     conta que o servidor já deu por terminada.\n"
-        "  7. `repartir` — a mãe passou a `separada` e não emite mais nada.\n"
-        "  8. e 9. `repartir`, sem resposta do servidor — a mãe foi mesmo\n"
+        "  4. `largarContaTravada` — a ÚNICA conta que sai da frente por\n"
+        "     resolver: não se cobra nem se cancela aqui, e fica na nota do\n"
+        "     painel com a referência para o gestor.\n"
+        "  5. `repartir` — a mãe passou a `separada` e não emite mais nada.\n"
+        "  6. e 7. `repartir`, sem resposta do servidor — a mãe foi mesmo\n"
         "     repartida, ou já não estava aberta: nos dois casos a conta que\n"
         "     estava à frente deixou de existir.\n"
-        " 10. `perguntarPelaConta` — a conta À FRENTE já não está aberta: foi\n"
+        "  8. `terminarReparticao` — as partes estão todas resolvidas e o\n"
+        "     ecrã limpa-se para a venda seguinte.\n"
+        "  9. `perguntarPelaConta` — a conta À FRENTE já não está aberta: foi\n"
         "     resolvida pelo gestor.\n"
-        " 11. `voltarDoFinalizar` — a venda foi emitida e há documento à\n"
+        " 10. `voltarDoFinalizar` — a venda foi emitida e há documento à\n"
         "     vista.\n"
-        " 12. `voltarDoFinalizar` — a PARTE sai da frente para a lista das\n"
+        " 11. `voltarDoFinalizar` — a PARTE sai da frente para a lista das\n"
         "     partes, para onde o ecrã vai a seguir.\n"
         "Se acrescentou um, confirme que a conta que ele larga não fica aberta "
         "no servidor sem nada no ecrã a dizê-lo — e actualize este número."
         % largam
+    )
+
+
+def test_a_grelha_nao_deixa_comecar_nada_com_partes_por_resolver():
+    """A cortesia do lado do ecrã da recusa que a rota faz. A garantia é o 409
+    do `venda.py::abrir_venda`; isto é só o que impede a operadora de descobrir
+    a regra a bater com o nariz nela, com o cliente à frente — o cartão fica
+    morto com a frase no `title`, e o toque, se lá chegar por outro caminho,
+    diz a mesma frase."""
+    texto = _ler(_POS_VENDA)
+    corpo = _so_codigo(_corpo_da_funcao(texto, _ASSINATURA_TOCAR, _POS_VENDA))
+    assert "razaoDeNaoComecar(" in corpo, (
+        "O `tocarProduto` deixou de recusar começar uma conta nova com partes "
+        "por resolver. O servidor recusa na mesma (409), mas a operadora "
+        "descobre-o com o cliente à frente."
+    )
+    assert "partesAbertas(" in corpo, (
+        "A pergunta 'quem falta cobrar' voltou a ser escrita à mão no "
+        "`tocarProduto`. Vive em lib/pos.js, uma definição só."
+    )
+    assert "const bloqueioDaGrelha = " in _sem_comentarios(texto), (
+        "Os cartões da grelha deixaram de ter uma razão para estarem mortos — "
+        "voltam a convidar ao toque que a rota recusa."
+    )
+    assert "bloqueio={bloqueioDaGrelha}" in texto, (
+        "A grelha deixou de passar a razão aos cartões."
     )
 
 

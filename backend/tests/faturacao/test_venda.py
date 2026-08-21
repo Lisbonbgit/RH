@@ -327,6 +327,167 @@ def test_abrir_venda_com_sucesso(monkeypatch):
     }
 
 
+# --- Uma conta de cada vez, neste posto ---------------------------------------
+#
+# «não existe isso de pôr uma conta de lado e cobrar outra. é atender cliente e
+# fechar a fatura. e ir para o próximo cliente.» — o dono, sobre o balcão.
+#
+# Esta rota criava SEMPRE uma venda nova, sem olhar às que já estavam abertas, e
+# era essa porta que deixava uma conta ficar `aberta` no servidor e invisível no
+# ecrã: o ecrã tem UM lugar para a conta em curso, e a conta anterior saía dele
+# sem sair da base de dados — só o fecho de caixa voltava a mencioná-la, horas
+# depois. Medido com a porta ainda aberta, pelas rotas reais: picado um Açaí de
+# 8,99 € e começada a conta seguinte com uma Embalagem de 0,15 €, ficavam **2
+# contas abertas neste PC e 1 mostrável no ecrã** — 8,99 € abertos e invisíveis;
+# com a mesma conta dividida em duas partes e a operadora a tocar em "Cobrar"
+# numa delas, **3 abertas e 2 no ecrã**, 0,15 € por receber sem nada a dizê-lo.
+#
+# A porta fecha-se AQUI e não no ecrã: os ecrãs do POS desenham-se sem servidor
+# nenhum, e um ecrã que evita o pedido não impede pedido nenhum.
+
+
+def _abertas_do_posto(db, dispositivo_id=None):
+    return [
+        d for d in db._coleccoes[COLECOES["vendas"]]._documentos
+        if d["estado"] == "aberta" and d.get("dispositivo_id") == dispositivo_id
+    ]
+
+
+def test_nao_se_abre_uma_conta_por_cima_de_outra_por_resolver(monkeypatch):
+    """A conta do cliente anterior continua `aberta` e não foi cobrada nem
+    cancelada: não há cliente seguinte neste PC. E não fica gravada nenhuma
+    venda nova — um 409 que já tivesse inserido a conta era o defeito com uma
+    mensagem por cima."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(linhas=[_linha()])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(abrir_venda(PedidoNovaVenda(caixa_id="caixa-1"), operador=_operador()))
+    assert excinfo.value.status_code == 409
+    assert len(_abertas_do_posto(db)) == 1
+
+
+def test_as_partes_por_cobrar_sao_conta_por_resolver(monkeypatch):
+    """Uma conta dividida só acaba quando TODAS as partes estiverem cobradas
+    ou canceladas. As partes herdam o `dispositivo_id` da mãe, por isso contam
+    aqui sem uma regra à parte — e a mãe, já `separada`, não conta.
+
+    O cenário é feito pela rota REAL (`dividir_conta`) e não com partes
+    escritas à mão: uma parte inventada aqui podia ter uma forma que o servidor
+    nunca produz."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(linhas=[_linha()])], produtos=[_produto()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    op = _operador()
+
+    partes = _corre(dividir_conta("venda-1", PedidoDividir(partes=2), operador=op))["partes"]
+    assert len(partes) == 2
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(abrir_venda(PedidoNovaVenda(caixa_id="caixa-1"), operador=op))
+    assert excinfo.value.status_code == 409
+
+    # Cobrada UMA, a outra continua a prender o posto — "todas" quer dizer
+    # todas.
+    db._coleccoes[COLECOES["vendas"]]._documentos = [
+        dict(d, estado="emitida") if d["id"] == partes[0]["id"] else d
+        for d in db._coleccoes[COLECOES["vendas"]]._documentos
+    ]
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(abrir_venda(PedidoNovaVenda(caixa_id="caixa-1"), operador=op))
+    assert excinfo.value.status_code == 409
+
+    # Resolvidas as duas, o balcão está livre.
+    db._coleccoes[COLECOES["vendas"]]._documentos = [
+        dict(d, estado="cancelada") if d["id"] == partes[1]["id"] else d
+        for d in db._coleccoes[COLECOES["vendas"]]._documentos
+    ]
+    assert _corre(abrir_venda(
+        PedidoNovaVenda(caixa_id="caixa-1"), operador=op))["estado"] == "aberta"
+
+
+def test_a_conta_travada_e_a_unica_que_deixa_abrir_a_seguinte(monkeypatch):
+    """A ÚNICA excepção, e a razão dela: a operadora não consegue cobrar nem
+    cancelar uma conta com uma emissão por confirmar — as cinco rotas de
+    escrita recusam-na —, e quem a resolve é o gestor no backoffice. Se ela
+    prendesse o posto, o balcão parava por causa de uma conta que ninguém ali
+    consegue fechar."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(linhas=[_linha()])], refs=[_reserva()])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    nova = _corre(abrir_venda(PedidoNovaVenda(caixa_id="caixa-1"), operador=_operador()))
+    assert nova["estado"] == "aberta"
+    assert nova["id"] != "venda-1"
+
+
+def test_uma_travada_ao_lado_nao_desculpa_a_conta_normal(monkeypatch):
+    """A excepção não pode reabrir a porta: com uma conta travada E uma conta
+    normal abertas no mesmo posto, quem manda é a normal — essa a operadora
+    cobra ou cancela."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(id="venda-travada", linhas=[_linha()]),
+                     _venda(id="venda-normal", linhas=[_linha()],
+                            criada_em="2026-08-15T09:10:00+00:00")],
+             refs=[_reserva(venda_id="venda-travada")])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(abrir_venda(PedidoNovaVenda(caixa_id="caixa-1"), operador=_operador()))
+    assert excinfo.value.status_code == 409
+
+
+def test_a_conta_de_outro_posto_nao_prende_este(monkeypatch):
+    """O âmbito é o MESMO de `GET /pos/venda/aberta` — a sessão E o
+    dispositivo do token. Uma loja com uma caixa e dois PCs emparelhados (o
+    "PC Balcão" e o "PC Drive-Thru") partilha a sessão: se a recusa fosse só
+    pela sessão, o drive-thru fechava o balcão."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(dispositivo_id="pc-drive", linhas=[_linha()])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    nova = _corre(abrir_venda(
+        PedidoNovaVenda(caixa_id="caixa-1"),
+        operador=_operador(dispositivo_id="pc-balcao")))
+    assert nova["estado"] == "aberta"
+    # E cada posto continua com a SUA: a do drive-thru não passou a ser desta.
+    assert [v["id"] for v in _abertas_do_posto(db, "pc-balcao")] == [nova["id"]]
+    assert [v["id"] for v in _abertas_do_posto(db, "pc-drive")] == ["venda-1"]
+
+
+def test_a_conta_de_outra_sessao_nao_prende_esta(monkeypatch):
+    """Uma conta esquecida num turno JÁ FECHADO não pode prender o turno de
+    hoje: essa é do gestor (`FatReservasPresas.js`), e o balcão não lhe chega.
+    """
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(sessao_id="sessao-de-ontem", linhas=[_linha()])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    assert _corre(abrir_venda(
+        PedidoNovaVenda(caixa_id="caixa-1"), operador=_operador()))["estado"] == "aberta"
+
+
+@pytest.mark.parametrize("estado", ["emitida", "cancelada", "separada"])
+def test_uma_conta_ja_resolvida_nao_prende_nada(estado, monkeypatch):
+    """Cobrada, deitada fora ou repartida: nenhuma delas é uma conta por
+    resolver. A `separada` sozinha nunca prende — quem prende são as partes
+    dela, que são vendas `aberta` por direito próprio."""
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
+             vendas=[_venda(estado=estado, linhas=[_linha()])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    assert _corre(abrir_venda(
+        PedidoNovaVenda(caixa_id="caixa-1"), operador=_operador()))["estado"] == "aberta"
+
+
 def test_abrir_venda_sem_sessao_aberta_e_recusado_409(monkeypatch):
     registo = []
     db = _db(registo, caixas=[_caixa()], sessoes=[])
@@ -1846,7 +2007,10 @@ def test_o_campo_vem_sempre_na_resposta_das_rotas_de_venda(monkeypatch):
     db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
              vendas=[_venda(linhas=[_linha()])], produtos=[_produto()])
     monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
-    op = _operador()
+    # De outro posto: a `venda-1` que as outras cinco rotas mexem é a conta por
+    # resolver de um PC vizinho, e não deste — senão `abrir_venda` recusava-a
+    # com 409 (`_conta_por_resolver`), que é outro teste e não este.
+    op = _operador(dispositivo_id="pc-balcao")
 
     respostas = [
         _corre(abrir_venda(PedidoNovaVenda(caixa_id="caixa-1"), operador=op)),

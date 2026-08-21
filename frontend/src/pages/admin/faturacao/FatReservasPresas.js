@@ -769,8 +769,8 @@ export default function FatReservasPresas() {
               Nenhuma. Todos os turnos fechados deixaram as contas deles
               resolvidas — cobradas ou canceladas. Esta lista ganha linhas
               quando uma conta fica aberta e o turno fecha por cima dela: uma
-              parte de uma conta repartida que ninguém pagou, ou uma conta que
-              a operadora pôs de lado e nunca mais retomou. O relatório Z desse
+              parte de uma conta repartida que ninguém pagou, ou uma conta
+              travada que ficou à espera do gestor e nunca foi resolvida. O relatório Z desse
               turno regista-as, mas o Z é papel — é aqui que elas continuam a
               existir.
             </p>

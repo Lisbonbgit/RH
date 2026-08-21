@@ -465,8 +465,8 @@ function AvisoErro({ erro }) {
               documento à vista no Vendus.
             </p>
             <p className="text-sm">
-              Não fique presa a este ecrã: volte à conta (a seta em cima) e ponha-a de lado para
-              servir o cliente seguinte. O ecrã continua a perguntar ao servidor e mostra o que
+              Não fique presa a este ecrã: volte à conta (a seta em cima) e largue-a para servir
+              o cliente seguinte. O ecrã continua a perguntar ao servidor e mostra o que
               aconteceu a esta venda assim que o gestor a resolver.
             </p>
             {erro.mensagem && <p className="text-xs text-muted-foreground break-words">{erro.mensagem}</p>}
@@ -499,7 +499,7 @@ function AvisoErro({ erro }) {
               Este ecrã está a perguntar ao servidor de poucos em poucos segundos e diz o que
               aconteceu a esta venda assim que houver resposta. <strong>Se ficar assim, chame o
               gestor</strong> — é ele que confirma no Vendus o que saiu desta venda. Entretanto,
-              volte à conta (a seta em cima): pode pôr esta conta de lado e servir o cliente
+              volte à conta (a seta em cima): pode largar esta conta e servir o cliente
               seguinte.
             </p>
           </div>
@@ -1298,11 +1298,12 @@ export default function PosFinalizar({
                   dizia-lhe o que NÃO podia fazer e mais nada — e a conta
                   travada prendia o posto inteiro, com o cliente seguinte à
                   espera. A seta de voltar leva à conta, e é lá que estão os
-                  dois botões: perguntar outra vez ao servidor, e pôr esta
-                  conta de lado para servir o cliente seguinte numa conta
-                  nova. */}
+                  dois botões: perguntar outra vez ao servidor, e largar esta
+                  conta para servir o cliente seguinte numa conta nova. É a
+                  ÚNICA conta que pode sair da frente por resolver — ver a
+                  `FaixaContaTravada` do PosVenda. */}
               <p className="text-muted-foreground mt-1">
-                Volte à conta (a seta em cima, à esquerda): pode pôr esta conta de lado e servir o
+                Volte à conta (a seta em cima, à esquerda): pode largar esta conta e servir o
                 cliente seguinte numa conta nova enquanto o gestor a resolve. Este ecrã continua a
                 perguntar ao servidor e destranca-se sozinho assim que houver resposta.
               </p>
