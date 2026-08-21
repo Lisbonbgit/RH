@@ -18,7 +18,15 @@ import { temMaisDe2CasasDecimaisPos } from '@/lib/pos';
 // `onVirgula` ausente = sem tecla de vírgula, e a casa fica VAZIA em vez de
 // as teclas subirem: o NIF não leva casas decimais, e um teclado que muda de
 // forma consoante o campo obriga a operadora a procurar o zero outra vez.
-export function TecladoNumerico({ onDigito, onVirgula, onApagar, onLimpar, disabled, rotulo = 'Abrir calculadora' }) {
+//
+// O `rotulo` é o nome do controlo para quem não vê o ícone, e é por isso que
+// o valor por omissão é "Teclado do valor" e não "Abrir calculadora": no
+// painel do desconto estes botões aparecem AOS PARES, lado a lado e a 8px um
+// do outro, com o mesmo ícone — "Teclado da percentagem" e "Teclado do
+// valor". Dois nomes de famílias diferentes para o mesmo controlo ("abrir
+// calculadora" e "teclado de…") obrigavam quem ouve o ecrã a adivinhar qual
+// deles era o do euro. Todos os rótulos deste POS são "Teclado do/da X".
+export function TecladoNumerico({ onDigito, onVirgula, onApagar, onLimpar, disabled, rotulo = 'Teclado do valor' }) {
   const [aberto, setAberto] = useState(false);
   const tecla = 'h-12 rounded-lg border bg-card text-lg font-semibold hover:bg-accent active:scale-95 transition-transform';
 
@@ -59,6 +67,15 @@ export function TecladoNumerico({ onDigito, onVirgula, onApagar, onLimpar, disab
   );
 }
 
+// Em Portugal escreve-se 10,50 — e desde que há uma tecla `,` DESENHADA no
+// ecrã, ver o campo responder com um ponto é a operadora a assistir ao
+// sistema a corrigi-la ao contrário, várias vezes por dia. O ponto continua a
+// ser a forma como o valor VIVE (é assim que `Number(valor)` o lê, e é
+// `Number` que o envia para o servidor, aqui e no PosFinalizar); a vírgula é
+// só como ele se MOSTRA. Uma coisa e outra, e nunca a mesma: guardar a
+// vírgula no estado era `Number('10,50')` a dar `NaN` no meio do dinheiro.
+export const comVirgula = (valor) => String(valor ?? '').replace('.', ',');
+
 // Campo de dinheiro do POS: grande, com "um botão de calculadora ao lado"
 // (do print do Vendus) — aqui um teclado táctil, a mesma ideia da entrada
 // por PIN mas para um valor com casas decimais. Partilhado por três ecrãs
@@ -95,7 +112,7 @@ export default function PosCampoValor({ id, label, valor, onChange, autoFocus, d
           </span>
           <Input
             id={id}
-            value={valor}
+            value={comVirgula(valor)}
             onChange={(e) => aceitarTexto(e.target.value)}
             inputMode="decimal"
             autoFocus={autoFocus}

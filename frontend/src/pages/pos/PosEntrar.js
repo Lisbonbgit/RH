@@ -23,7 +23,12 @@ function Relogio() {
   const data = agora.toLocaleDateString('pt-PT', { weekday: 'long', day: 'numeric', month: 'long' });
   return (
     <div className="text-center select-none">
-      <div className="font-heading font-bold text-6xl md:text-7xl tabular-nums tracking-tight">{hora}</div>
+      {/* Num painel baixo (≤900px de altura) o relógio desce a 3rem: são 24px
+          que passam para o teclado do PIN, e a hora continua a ler-se do outro
+          lado do balcão. O `!` é preciso porque o `md:text-7xl` é uma media
+          query tão específica como esta e a ordem entre as duas não é nossa —
+          aqui a altura manda sempre sobre a largura. */}
+      <div className="font-heading font-bold text-6xl md:text-7xl [@media(max-height:900px)]:!text-5xl tabular-nums tracking-tight">{hora}</div>
       <div className="text-muted-foreground mt-1 capitalize">{data}</div>
     </div>
   );
@@ -68,15 +73,48 @@ function CaraOperador({ operador, onEscolher }) {
 // mudava de forma consoante o texto à volta.
 //
 // Uma largura em `rem` não depende de ninguém: 17,5rem = 280px, três teclas
-// de 85,3px quadradas. Fica do tamanho dos avatares redondos do ecrã ao lado
-// (`h-20 w-20` = 80px), que é a escala a que este ecrã se toca — um dedo, com
-// um cliente à frente. O tecto é em `vw` e não em `%` de propósito: é uma
-// medida absoluta, e uma percentagem aqui era voltar a pendurar a grelha na
-// largura que o pai não tem.
+// de 85,3px quadradas, que é a escala a que este ecrã se toca — um dedo, com
+// um cliente à frente. (O avatar DESTE ecrã, o da pessoa já escolhida, mede
+// `h-16` = 64px; os 80px do `h-20 w-20` são os do ecrã ANTERIOR, o de
+// escolher a cara. Quem vier ajustar esta escala compara com 64, não com 80.)
+// O tecto é em `vw` e não em `%` de propósito: é uma medida absoluta, e uma
+// percentagem aqui era voltar a pendurar a grelha na largura que o pai não
+// tem.
+//
+// O SEGUNDO TECTO É A ALTURA, e é a outra metade da mesma correcção: teclas
+// de 85,3px fazem uma grelha de 4×85,3 + 3×12 = 377px, e isso deixou de
+// caber no painel de um balcão. Medido no browser, com subtítulo (os dois
+// estados desta tela levam um): a 1366×768 e a 1024×768 o `0` acabava 17,3px
+// ABAIXO da dobra, com 41px de overflow; a 1280×720 viam-se 20 dos 85,3px do
+// `0`; a 1366×640 — o que sobra de um painel 768 quando o POS não corre em
+// quiosque — o `0` e o apagar não se viam de todo e o 7/8/9 ficava cortado a
+// meio. Uma operadora sem o zero não entra no sistema.
+//
+// Por isso a largura é o MENOR de três tectos (e nunca menos do que um chão):
+//   · 17,5rem — o tamanho de dedo, quando há altura para ele;
+//   · 100vw − 3rem — o ecrã menos o `p-6` do pai;
+//   · 75vh − 256px — a altura que sobra, convertida em largura.
+// O terceiro é a conta da grelha ao contrário: com `k` = lado da tecla, a
+// grelha mede 4k + 36 de alto e 3k + 24 de largo, logo
+// largura = ¾·(altura disponível − 36) + 24. O resto deste ecrã ocupa ~335px
+// CONSTANTES abaixo dos 900px de altura (é para isso que servem as trocas de
+// `gap`/`padding`/tamanho do relógio lá em baixo, e é por isso que a linha de
+// erro do PIN está sempre reservada em vez de aparecer só quando falha — se
+// aparecesse, empurrava o teclado 32px para fora outra vez, exactamente na
+// vez em que é preciso reescrever o PIN). ¾·335 + 3 ≈ 254; os 256 são esses
+// com uma folga pequena — medido a 1366×640, o ecrã inteiro dá 637,3px em
+// 640. O chão de 13,5rem são teclas de 64px, o tamanho antigo: abaixo de
+// ~630px de altura o ecrã prefere deslizar a encolher a tecla mais do que
+// isso (a 1366×560 mede-se: teclas de 64px e 64px de deslize).
+//
+// O compromisso, por extenso: a 768 e a 720 a tecla continua nos 85,3px
+// inteiros; só a 640 é que encolhe (~67px, ainda maior do que os 64px de
+// antes) para o teclado TODO caber. Uma tecla um pouco mais pequena toca-se;
+// uma tecla fora do ecrã não.
 function TeclasNumericas({ onDigito, onApagar, desativado }) {
   const teclas = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'apagar'];
   return (
-    <div className="grid grid-cols-3 gap-3 w-[17.5rem] max-w-[calc(100vw-3rem)]">
+    <div className="grid grid-cols-3 gap-3 w-[max(13.5rem,min(17.5rem,100vw_-_3rem,75vh_-_256px))]">
       {teclas.map((t, i) => {
         if (t === '') return <div key={i} />;
         if (t === 'apagar') {
@@ -238,7 +276,7 @@ export default function PosEntrar({ onEntrar, onDispositivoInvalido, subtitulo }
       );
     }
     return (
-      <div className="flex flex-col items-center gap-6">
+      <div className="flex flex-col items-center gap-6 [@media(max-height:900px)]:gap-3">
         <button
           type="button"
           onClick={voltar}
@@ -267,7 +305,11 @@ export default function PosEntrar({ onEntrar, onDispositivoInvalido, subtitulo }
           {enviando && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground ml-2" />}
         </div>
 
-        {erroPin && <p className="text-destructive text-sm font-medium text-center max-w-xs">{erroPin}</p>}
+        {/* A linha do erro está SEMPRE aqui, vazia ou não (`min-h-5`): se
+            aparecesse só quando o PIN falha, empurrava o teclado 32px para
+            baixo — e num painel baixo isso é o `0` a sair do ecrã na única
+            vez em que é mesmo preciso reescrever o PIN. */}
+        <p className="text-destructive text-sm font-medium text-center max-w-xs min-h-5" aria-live="polite">{erroPin}</p>
 
         <TeclasNumericas onDigito={digitar} onApagar={apagar} desativado={enviando} />
       </div>
@@ -275,10 +317,21 @@ export default function PosEntrar({ onEntrar, onDispositivoInvalido, subtitulo }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [carregando, erroLista, selecionado, operadores, pin, enviando, erroPin]);
 
+  // O ecrã INTEIRO é o orçamento de altura do teclado do PIN — cada px que
+  // este cabeçalho gasta é um px que a tecla não tem. Por isso, num painel de
+  // ≤900px de altura (todos os do balcão: 768, 720, e os 640 que sobram de um
+  // 768 com barra de browser), os espaços encolhem: `gap-10`→`gap-4` entre o
+  // relógio e o conteúdo, `p-6`→`py-2` em cima e em baixo. Acima disso — um
+  // monitor a sério — fica tudo como estava, que é onde há espaço para
+  // respirar. O relógio e o subtítulo passaram a viver no MESMO bloco: o
+  // `-mt-8` que o subtítulo tinha era um `gap-10` a ser desfeito à mão, e
+  // desfazia-o com um número que deixava de bater assim que o `gap` mudasse.
   return (
-    <div className="min-h-screen w-full flex flex-col items-center justify-center gap-10 p-6 bg-app-grid">
-      <Relogio />
-      {subtitulo && <p className="text-muted-foreground -mt-8">{subtitulo}</p>}
+    <div className="min-h-screen w-full flex flex-col items-center justify-center gap-10 [@media(max-height:900px)]:gap-4 p-6 [@media(max-height:900px)]:py-2 bg-app-grid">
+      <div className="flex flex-col items-center">
+        <Relogio />
+        {subtitulo && <p className="text-muted-foreground mt-1 text-center">{subtitulo}</p>}
+      </div>
       {conteudo}
     </div>
   );

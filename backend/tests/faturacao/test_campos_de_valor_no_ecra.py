@@ -218,9 +218,34 @@ def test_um_tipo_com_o_valor_errado_volta_a_ter_caixa(tmp_path):
     )
 
 
+# OS VALORES SÃO O TESTE. Este guarda existe para uma coisa só: impedir que a
+# comparação de dinheiro volte à vírgula flutuante. E até 2026-08-21 não a
+# impedia — trocar `centimos(unico.valor) === totalCentimos` por
+# `Number(unico.valor) * 100 === totalCentimos` deixava a suite TODA verde
+# (1107 passed), porque os valores escolhidos (0,30 / 8,50 / 8,49 / "") são
+# todos casos em que `Number(v) * 100` calha dar um inteiro exacto. Um teste
+# que não consegue ficar vermelho é pior do que não existir: a próxima pessoa
+# acredita nele.
+#
+# Estes três são os que apanham. Em Node:
+#   Number('10.20') * 100 -> 1019.9999999999999
+#   Number('1.15')  * 100 ->  114.99999999999999
+#   Number('0.29')  * 100 ->   28.999999999999996
+# São contas de balcão banais — um açaí de 10,20 €, um café e um bolo a 1,15 €,
+# uma saca a 0,29 €. Com a comparação em vírgula flutuante, o ecrã dizia à
+# operadora que faltava um cêntimo numa venda certa, e punha-lhe uma caixa de
+# valor à frente para "corrigir" o que já estava certo.
+#
+# `test_os_valores_deste_ficheiro_sao_mesmo_a_armadilha` (aqui em baixo) prova
+# em Node que estes pares são MESMO a armadilha — se alguém os trocar por
+# valores inofensivos, é esse teste que fica vermelho a dizer porquê.
+_ARMADILHAS_DA_VIRGULA_FLUTUANTE = (("10.20", 1020), ("1.15", 115), ("0.29", 29))
+
+
 @pytest.mark.parametrize(
     "valor,total,esperado",
-    [
+    [(valor, total, []) for valor, total in _ARMADILHAS_DA_VIRGULA_FLUTUANTE]
+    + [
         # 0,1 + 0,2 dá 0.30000000000000004 em JS. A comparação é em CÊNTIMOS
         # INTEIROS, como no servidor (fiscal.py::finalizar) — se fosse em
         # vírgula flutuante, esta conta ficava para sempre a dizer que faltava
@@ -228,6 +253,7 @@ def test_um_tipo_com_o_valor_errado_volta_a_ter_caixa(tmp_path):
         ("0.30", 30, []),
         ("8.50", 850, []),
         # Um cêntimo a menos é um cêntimo a menos: a caixa tem de voltar.
+        ("10.19", 1020, ["x"]),
         ("8.49", 850, ["x"]),
         # O campo em branco (`Number('') === 0`) não é o total de nada.
         ("", 850, ["x"]),
@@ -237,7 +263,40 @@ def test_a_comparacao_e_em_centimos_inteiros(valor, total, esperado, tmp_path):
     campos = _o_que_o_ecra_pergunta(
         [{"pagamentos": [_pagamento("x", valor)], "totalCentimos": total}], tmp_path
     )[0]
-    assert campos == esperado
+    assert campos == esperado, (
+        "Com %r numa conta de %d cêntimos o ecrã devia pedir %r. Se isto caiu "
+        "logo a seguir a mexer no `centimos`, a comparação voltou a ser em "
+        "vírgula flutuante: Number(%r) * 100 não é %d."
+        % (valor, total, esperado, valor, total)
+    )
+
+
+def test_os_valores_deste_ficheiro_sao_mesmo_a_armadilha(tmp_path):
+    """O guarda do guarda: prova em Node que os valores de cima são os que
+    distinguem `Math.round(v * 100)` de `v * 100`. Sem isto, o teste desta
+    regra pode ser desarmado sem uma linha vermelha — bastava alguém escolher
+    outros valores tão razoáveis como 8,50."""
+    guiao = tmp_path / "armadilha.js"
+    guiao.write_text(
+        "const casos = %s;\n"
+        "process.stdout.write(JSON.stringify("
+        "casos.map(([valor, total]) => Number(valor) * 100 === total)));"
+        % json.dumps([list(par) for par in _ARMADILHAS_DA_VIRGULA_FLUTUANTE]),
+        encoding="utf-8",
+    )
+    resultado = subprocess.run(
+        [_node(), str(guiao)], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    assert resultado.returncode == 0, resultado.stderr.decode("utf-8", "replace")
+    exacto = json.loads(resultado.stdout.decode("utf-8"))
+    assert exacto == [False] * len(_ARMADILHAS_DA_VIRGULA_FLUTUANTE), (
+        "Estes valores deixaram de ser a armadilha: %s. Em vírgula flutuante "
+        "eles TÊM de falhar a comparação — é essa a razão de existirem. Se "
+        "alguém os trocou por valores certinhos, o teste do `centimos` deixou "
+        "de guardar seja o que for; escolham outros que partam (0,29 / 1,15 / "
+        "10,20 partem)."
+        % list(zip(_ARMADILHAS_DA_VIRGULA_FLUTUANTE, exacto))
+    )
 
 
 # --- Guardas de texto: o que não se consegue executar ------------------------

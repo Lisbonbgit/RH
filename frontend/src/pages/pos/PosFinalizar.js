@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible';
-import PosCampoValor, { TecladoNumerico } from './PosCampoValor';
+import PosCampoValor, { TecladoNumerico, comVirgula } from './PosCampoValor';
 import { contaTravada, duvidaPorApurar, detalhesErroPos, temMaisDe2CasasDecimaisPos } from '@/lib/pos';
 
 // O ecrã de finalizar (Plano 2C, Task 4): três cartões — Total, Cliente e
@@ -40,6 +40,9 @@ const centimos = (valor) => Math.round((Number(valor) || 0) * 100);
 
 // Só dígitos e uma única separação decimal — a mesma ideia do PosCampoValor,
 // mas para a percentagem, que não leva símbolo de euro nem calculadora.
+// GUARDA com ponto (é `Number(pct)` que sai daqui para `desconto_pct`) e
+// MOSTRA com vírgula (`comVirgula`, no `value` do campo): a tecla `,` do
+// teclado táctil não pode escrever um `.` à frente de quem lhe tocou.
 const aceitarNumero = (texto) => {
   const comPonto = String(texto).replace(',', '.');
   const limpo = comPonto.replace(/[^0-9.]/g, '');
@@ -253,7 +256,7 @@ function CartaoTotal({ venda, desativado, onAplicarDesconto }) {
                 <div className="relative flex-1">
                   <Input
                     id="desconto-global-pct"
-                    value={pct}
+                    value={comVirgula(pct)}
                     onChange={(e) => setPct(aceitarNumero(e.target.value))}
                     inputMode="decimal"
                     placeholder="0"
