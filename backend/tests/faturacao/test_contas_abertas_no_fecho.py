@@ -674,3 +674,239 @@ def test_uma_conta_sem_valor_nao_estraga_nenhum_dos_subtotais(monkeypatch):
     assert r["total"] == 14.10
     assert r["total_por_cobrar"] == 14.10
     assert r["total_que_trava"] == 0.0
+
+
+# --- O RETRATO REPETIDO: o Z descreve o turno no instante em que assina -------
+#
+# **O defeito desta ronda, medido pelas funções reais.** A guarda que
+# `venda.py` ganhou na ronda passada (`_garante_sessao_desta_venda_aberta`)
+# PERGUNTA pela sessão e não a prende. Entre a pergunta e a escrita da rota há
+# idas ao Mongo, e um fecho inteiro cabe lá dentro: com o fecho a correr nessa
+# janela, o Z era assinado com `contas_abertas {quantas: 1, total: 14.10}` e a
+# seguir o `POST /pos/venda/{id}/linhas` respondia 201 deixando a conta a
+# 21,15 €; o `PUT /pos/venda/{id}/desconto` respondia 200 e gravava 50 %; o
+# `dividir` e o `separar` criavam partes `aberta` numa sessão já `fechada`. O
+# `contas_abertas` gravado na sessão continuava a dizer 14,10 € nos quatro.
+#
+# O estrago não é a escrita aterrar — é o Z MENTIR: é o único registo de que
+# aqueles euros ficaram por receber, e ninguém volta a olhar para a sessão
+# depois do fecho.
+#
+# A correcção não trava escritas nenhumas: tira o retrato das contas abertas
+# outra vez, e outra, até duas leituras seguidas darem exactamente o mesmo. A
+# marca `a_fechar` garante que o conjunto de escritas em voo é finito e drena
+# (nenhum escritor NOVO passa a guarda), por isso a repetição converge — e o Z
+# é assinado sobre a última leitura.
+
+
+class _CursorQueDeixaAterrarUmaEscrita(CursorFalso):
+    """Um cursor que, DEPOIS de entregar o resultado de um retrato, deixa
+    aterrar a escrita que estava em voo.
+
+    É a única forma de pôr a escrita exactamente onde ela dói: entre duas
+    leituras do fecho. Só conta como retrato a leitura que ordena por
+    `criada_em` — o filtro de `_contas_abertas_da_sessao` é, letra por letra,
+    o de `_venda_com_emissao_viva`, e no registo não se distinguem; a
+    ordenação distingue."""
+
+    def __init__(self, itens, registo, nome, aterrar):
+        super().__init__(itens, registo, nome)
+        self._aterrar = aterrar
+        self._e_um_retrato = False
+
+    def sort(self, campo, direccao=1):
+        if campo == "criada_em" and direccao == 1:
+            self._e_um_retrato = True
+        return super().sort(campo, direccao)
+
+    async def to_list(self, n=None):
+        itens = await super().to_list(n)
+        if self._e_um_retrato:
+            self._aterrar()
+        return itens
+
+
+class _VendasComEscritasEmVoo(ColeccaoFalsa):
+    """As vendas, com uma fila de escritas que aterram uma por cada retrato
+    tirado — o equivalente, em lock-step, a rotas que passaram a guarda um
+    instante antes da marca `a_fechar` e cuja escrita chega a seguir."""
+
+    def __init__(self, registo, nome, documentos, escritas):
+        super().__init__(registo, nome, documentos)
+        self._escritas = list(escritas)
+        self.retratos = 0
+
+    def find(self, filtro=None, projecao=None):
+        self.registo.append(("find", self.nome, filtro))
+        itens = [deepcopy(d) for d in self._documentos if _corresponde(d, filtro)]
+
+        def aterrar():
+            self.retratos += 1
+            if self._escritas:
+                self._escritas.pop(0)(self._documentos)
+
+        return _CursorQueDeixaAterrarUmaEscrita(itens, self.registo, self.nome, aterrar)
+
+
+def _monta_com_escritas_em_voo(monkeypatch, vendas, escritas):
+    registo = []
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()], movimentos=[],
+             vendas=[], refs=[])
+    coleccao = _VendasComEscritasEmVoo(registo, "vendas", vendas, escritas)
+    db._coleccoes[COLECOES["vendas"]] = coleccao
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    _sem_vendus(monkeypatch)
+    return db, coleccao
+
+
+def _mais_um_acai(documentos):
+    """A escrita medida: `POST /pos/venda/{id}/linhas` a aterrar depois da
+    marca — a conta sobe de 14,10 € para 21,15 €."""
+    documentos[0]["linhas"].append(_linha(id="linha-2", quantidade=1))
+
+
+def test_o_z_leva_a_conta_como_ela_ficou_e_nao_como_estava(monkeypatch):
+    """14,10 € no primeiro retrato, um açaí a aterrar a seguir, 21,15 € na
+    base. O Z tem de dizer 21,15 € — com uma leitura só dizia 14,10 €, e esse
+    número era o único registo daquele dinheiro por receber."""
+    _, vendas = _monta_com_escritas_em_voo(
+        monkeypatch, vendas=[_venda_aberta()], escritas=[_mais_um_acai])
+
+    z = _corre(fechar_caixa(
+        PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador()))
+
+    assert z["contas_abertas"]["total"] == 21.15, (
+        "O Z foi assinado com o retrato de ANTES da escrita — diz %s € onde a "
+        "base tem 21,15 €." % z["contas_abertas"]["total"]
+    )
+    assert z["contas_abertas"]["total_por_cobrar"] == 21.15
+    assert vendas.retratos >= 3, (
+        "O retrato não chegou a ser repetido: uma leitura só não pode "
+        "detectar uma escrita que aterra a seguir a ela."
+    )
+
+
+def test_o_que_fica_gravado_na_sessao_e_o_retrato_estavel(monkeypatch):
+    """O Z de papel é o que a operadora leva; o que o gestor lê dias depois é
+    o `contas_abertas` gravado na sessão. Têm de ser o mesmo número."""
+    db, _ = _monta_com_escritas_em_voo(
+        monkeypatch, vendas=[_venda_aberta()], escritas=[_mais_um_acai])
+
+    _corre(fechar_caixa(
+        PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador()))
+
+    sessao = db[COLECOES["sessoes_caixa"]]._documentos[0]
+    assert sessao["contas_abertas"]["total"] == 21.15
+
+
+def test_sem_nada_a_mudar_bastam_dois_retratos(monkeypatch):
+    """O caso normal — que é toda a gente, todas as noites. Duas leituras
+    concordantes e assina-se; repetir sem fim uma leitura por conta aberta
+    era pagar o preço de uma corrida que não está a acontecer."""
+    _, vendas = _monta_com_escritas_em_voo(
+        monkeypatch, vendas=[_venda_aberta()], escritas=[])
+
+    z = _corre(fechar_caixa(
+        PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador()))
+
+    assert z["contas_abertas"]["total"] == 14.10
+    assert vendas.retratos == 2, (
+        "Foram tirados %s retratos onde dois bastavam." % vendas.retratos)
+
+
+def test_um_cancelamento_a_aterrar_depois_da_marca_entra_no_z(monkeypatch):
+    """O `cancelar_venda` é a única escrita que NÃO passa pela guarda, de
+    propósito. Com uma leitura só, um cancelar que aterrasse depois dela
+    ficava fora do Z: a primeira tentativa de fecho dizia 1 conta / 14,10 € e
+    a retoma respondia `{'quantas': 0, 'total': 0.0}` — dois Z da mesma
+    sessão a discordar. Agora o retrato é retirado e o Z descreve o que está
+    mesmo lá quando assina."""
+    def cancela(documentos):
+        documentos[0]["estado"] = "cancelada"
+
+    _, vendas = _monta_com_escritas_em_voo(
+        monkeypatch, vendas=[_venda_aberta()], escritas=[cancela])
+
+    z = _corre(fechar_caixa(
+        PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador()))
+
+    assert z["contas_abertas"]["quantas"] == 0, (
+        "O Z ficou a dizer que uma conta cancelada ficou por cobrar.")
+    assert z["contas_abertas"]["total"] == 0.0
+    assert vendas.retratos >= 3
+
+
+def test_uma_parte_nascida_depois_da_marca_tambem_entra(monkeypatch):
+    """`dividir`/`separar` fazem NASCER contas. Uma parte que apareça depois
+    do primeiro retrato tem de entrar no Z — senão o turno fecha com dinheiro
+    por receber que não está escrito em lado nenhum."""
+    def nasce_uma_parte(documentos):
+        documentos.append(_venda_aberta(
+            id="parte-2", conta_mae_id="venda-1",
+            criada_em="2026-08-15T09:07:00+00:00"))
+
+    _, _ = _monta_com_escritas_em_voo(
+        monkeypatch, vendas=[_venda_aberta()], escritas=[nasce_uma_parte])
+
+    z = _corre(fechar_caixa(
+        PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador()))
+
+    assert z["contas_abertas"]["quantas"] == 2
+    assert z["contas_abertas"]["total"] == 28.20
+
+
+def test_se_nunca_estabilizar_nao_se_assina_nenhum_z(monkeypatch):
+    """Não estabilizar não é assinar na mesma. É 409 — e a caixa fica em
+    `a_fechar`, que é o estado de que se sai carregando outra vez em FECHAR
+    CAIXA, e é essa marca que faz a tentativa seguinte encontrar tudo
+    parado."""
+    def sobe(documentos):
+        documentos[0]["linhas"].append(_linha(id="mais", quantidade=1))
+
+    db, _ = _monta_com_escritas_em_voo(
+        monkeypatch, vendas=[_venda_aberta()], escritas=[sobe] * 20)
+
+    with pytest.raises(HTTPException) as e:
+        _corre(fechar_caixa(
+            PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador()))
+
+    assert e.value.status_code == 409
+    assert e.value.detail == caixa_mod._MSG_FECHO_SEM_RETRATO_ESTAVEL
+    sessao = db[COLECOES["sessoes_caixa"]]._documentos[0]
+    assert sessao["estado"] == "a_fechar", (
+        "A caixa não ficou marcada a fechar — é essa marca que impede "
+        "escritas novas e que faz a tentativa seguinte estabilizar."
+    )
+    assert sessao.get("contas_abertas") is None, "Ficou gravado um Z que não se assinou."
+    assert sessao.get("fechada_em") is None
+
+
+def test_o_retrato_repetido_nao_desfaz_a_ordem_marca_depois_leitura(monkeypatch):
+    """A repetição acrescenta leituras DEPOIS da marca — nunca uma antes. Se
+    a primeira delas escorregasse para cima da marca, voltava-se ao retrato
+    que ainda podia mudar entre a leitura e o Z."""
+    _, _ = _monta_com_escritas_em_voo(
+        monkeypatch, vendas=[_venda_aberta()], escritas=[])
+    registo = []
+
+    db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()], movimentos=[],
+             vendas=[_venda_aberta()], refs=[])
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    _corre(fechar_caixa(
+        PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_operador()))
+
+    marca = next(
+        i for i, ev in enumerate(registo)
+        if ev[0] == "update_one" and ev[1] == "sessoes"
+        and ev[3].get("$set", {}).get("estado") == "a_fechar"
+    )
+    retratos = [
+        i for i, ev in enumerate(registo)
+        if ev[0] == "sort" and ev[1] == "vendas" and ev[2] == "criada_em"
+    ]
+    assert len(retratos) >= 2, "O retrato deixou de ser repetido."
+    assert min(retratos) > marca, (
+        "Um dos retratos foi tirado ANTES da marca `a_fechar`.")

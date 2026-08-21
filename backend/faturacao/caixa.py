@@ -112,6 +112,19 @@ _MSG_FECHO_COM_EMISSAO_EM_CURSO = (
     "assim presa, é o gestor que a resolve primeiro, na lista de reservas "
     "fiscais presas do backoffice."
 )
+# O retrato das contas abertas não estabilizou (ver
+# `_retrato_estavel_das_contas_abertas`). A caixa fica marcada `a_fechar` de
+# propósito: é essa marca que impede escritas NOVAS, e é ela que faz a
+# tentativa seguinte estabilizar. Não assinar em silêncio é o ponto todo —
+# um Z que não descreve as contas como elas estão vale menos do que nenhum.
+_MSG_FECHO_SEM_RETRATO_ESTAVEL = (
+    "O turno NÃO foi fechado: as contas desta caixa continuaram a mudar "
+    "enquanto o Z estava a ser calculado, e um Z que não diga o que ficou "
+    "por cobrar não se assina. Nada se perdeu e nenhum Z saiu — a caixa "
+    "ficou marcada como A FECHAR e, a partir daqui, já não aceita "
+    "alterações às contas. Carregue outra vez em FECHAR CAIXA daqui a "
+    "alguns segundos: o que estava a meio já terá acabado."
+)
 
 
 def _agora() -> str:
@@ -699,14 +712,21 @@ async def fechar_caixa(
     #     (`fiscal.py::_garante_sessao_da_venda_aberta`).
     # A sétima rota de escrita, o `cancelar_venda`, passa de propósito: não
     # muda o valor de conta nenhuma e é a única forma de arrumar uma conta que
-    # ninguém pagou (ver a docstring dela). Uma conta cancelada depois desta
-    # leitura fica no Z como ficou por cobrar — que é a verdade do turno.
+    # ninguém pagou (ver a docstring dela).
+    #
+    # **E as três guardas continuam a não ser exclusão mútua** — foi o que
+    # esta ronda mediu. Elas PERGUNTAM pela sessão e não a prendem: uma rota
+    # que passe a pergunta um instante antes da marca ainda escreve depois
+    # dela, e o Z assinado com `{quantas: 1, total: 14.10}` ficava a
+    # contradizer uma conta que a base já tinha a 21,15 €. Por isso o retrato
+    # não se tira uma vez: tira-se até dar duas vezes o mesmo (ver
+    # `_retrato_estavel_das_contas_abertas`), e só então se assina.
     #
     # Não trava o fecho — ver `_contas_abertas_da_sessao` — mas fica escrito
     # no Z e no documento da sessão, para o gestor o encontrar amanhã sem ter
     # de adivinhar o que aconteceu ao dinheiro que a operadora diz ter visto
     # no ecrã.
-    contas_abertas = await _contas_abertas_da_sessao(
+    contas_abertas = await _retrato_estavel_das_contas_abertas(
         db, sessao["id"], dispositivo_id=operador.get("dispositivo_id")
     )
 
@@ -998,6 +1018,91 @@ async def _contas_abertas_da_sessao(db, sessao_id: str, dispositivo_id=None) -> 
         "contas": contas,
         "dispositivo_id": dispositivo_id,
     }
+
+
+# Quantas vezes se volta a tirar o retrato antes de desistir de assinar o Z.
+# É um TECTO e não folga, pelo mesmo raciocínio do `_TENTATIVAS` de
+# `venda.py`: cada ronda custa uma releitura das contas abertas desta sessão
+# (um punhado de documentos), e o que está no fim dele não é perda nenhuma —
+# é um 409 que diz a verdade e uma caixa que continua marcada `a_fechar`,
+# à espera do segundo toque em FECHAR CAIXA.
+_RONDAS_DO_RETRATO = 5
+
+
+async def _retrato_estavel_das_contas_abertas(db, sessao_id, dispositivo_id) -> Dict:
+    """O retrato das contas abertas TIRADO ATÉ DAR DUAS VEZES O MESMO — e é
+    isso que faz o Z descrever o turno no instante em que é assinado.
+
+    **O defeito, medido pelas rotas reais.** A guarda que `venda.py` ganhou na
+    ronda passada (`_garante_sessao_desta_venda_aberta`) PERGUNTA pela sessão
+    e não a prende: entre a pergunta e a escrita da rota ainda há idas ao
+    Mongo, e um fecho inteiro cabe lá dentro. Reproduzido, com as funções
+    reais e o fecho a correr nessa janela: o Z é assinado com
+    `contas_abertas` `{quantas: 1, total: 14.10}` e a seguir
+      - `POST /pos/venda/{id}/linhas` responde 201 e a conta fica a 21,15 €;
+      - `PUT /pos/venda/{id}/desconto` responde 200 e grava 50 % (7,05 €);
+      - `dividir`/`separar` criam partes `aberta` numa sessão já `fechada`.
+    O `contas_abertas` gravado na sessão continuava a dizer 14,10 € nos
+    quatro casos. **O estrago não é a escrita landar — é o Z mentir**: ele é
+    o único registo de que aqueles euros ficaram por receber, ninguém volta a
+    olhar para a sessão depois do fecho, e o número que lá está era o de
+    antes.
+
+    **Porque é que voltar a tirar o retrato chega, e não é um `sleep`
+    disfarçado.** A marca `a_fechar` é posta ANTES de qualquer soma (ver
+    `fechar_caixa`, "A JANELA"). A partir dela **nenhum escritor NOVO passa a
+    guarda** — as seis rotas que mexem no dinheiro exigem a sessão desta venda
+    `aberta`. Logo o conjunto de escritas em voo no instante da marca é
+    FINITO, e cada uma delas está a poucas idas ao Mongo de aterrar: drena
+    sozinho. Duas leituras seguidas a dar exactamente o mesmo são a evidência,
+    à distância de uma ida-e-volta completa, de que já não está a aterrar
+    nada — e é sobre a última delas que o Z é assinado.
+
+    **O que isto NÃO promete, dito por inteiro.** Não é exclusão mútua: uma
+    escrita que passou a guarda antes da marca e que só aterre DEPOIS da
+    última leitura ainda apanha o Z já assinado. O que se compra é evidência —
+    a janela deixa de ser "tudo o que acontecer entre a única leitura e a
+    escrita do Z" e passa a ser "uma escrita que sobreviva a duas leituras
+    concordantes e ainda assim aterre a seguir". Fechá-la a sério exigia
+    carimbar cada venda da sessão na marca e condicionar as sete escritas a
+    esse carimbo (mutação atómica por documento, sem transacções) — mais sete
+    sítios a mudar e uma escrita por conta em cada fecho; fica registado aqui
+    como o degrau seguinte, se algum dia se medir que faz falta.
+
+    **E arruma o cancelamento, que é a única escrita que passa de propósito.**
+    O `venda.cancelar_venda` não passa pela guarda (é a saída de uma conta que
+    ninguém pagou, ver a docstring dele) e, com uma leitura só, um cancelar
+    que aterrasse depois dela ficava de fora do Z: a retoma do fecho passava a
+    responder `{'quantas': 0, 'total': 0.0}` onde a primeira tentativa dizia
+    1 conta / 14,10 €. Com o retrato repetido, o cancelamento aparece na
+    releitura e o Z descreve o que está mesmo lá no momento em que assina —
+    a conta cancelada deixa de ser "por cobrar", que é a verdade, e é a mesma
+    verdade que o Z já contava para um cancelamento anterior à marca. É por
+    isso que o 409 de `arrumar_conta_esquecida` deixou de prometer um estrago
+    que já não existe (ver `_MSG_CONTA_ESQUECIDA_COM_FECHO_A_DECORRER`).
+
+    Não estabilizar não é assinar na mesma: é 409. A caixa fica em `a_fechar`
+    — o estado de que se sai carregando outra vez em FECHAR CAIXA
+    (`_sessao_por_fechar`) — e essa marca é precisamente o que faz a
+    tentativa seguinte encontrar tudo parado."""
+    retrato = await _contas_abertas_da_sessao(
+        db, sessao_id, dispositivo_id=dispositivo_id)
+    for _ in range(_RONDAS_DO_RETRATO - 1):
+        outra_vez = await _contas_abertas_da_sessao(
+            db, sessao_id, dispositivo_id=dispositivo_id)
+        if outra_vez == retrato:
+            return outra_vez
+        # Não é ruído: cada linha destas é uma escrita que aterrou DEPOIS de
+        # a caixa estar marcada a fechar. Uma ou outra é o normal (uma rota
+        # que passou a guarda mesmo antes da marca); muitas, todos os dias,
+        # querem dizer que a guarda está a deixar passar coisa nova.
+        logger.warning(
+            "[faturacao] as contas abertas da sessão %s mudaram durante o "
+            "fecho (%s → %s por cobrar); a tirar o retrato outra vez.",
+            sessao_id, retrato.get("total"), outra_vez.get("total"),
+        )
+        retrato = outra_vez
+    raise HTTPException(status_code=409, detail=_MSG_FECHO_SEM_RETRATO_ESTAVEL)
 
 
 @router.get("/pos/caixa/contas-abertas")
