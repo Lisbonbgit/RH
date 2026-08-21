@@ -194,9 +194,18 @@ class DbFalsa:
 
 def _db(registo, caixas=None, sessoes=None, vendas=None, produtos=None, refs=None,
         documentos=None, grupos=None):
+    # A sessão ABERTA está lá por omissão, e passou a ter de estar: desde que
+    # as rotas de escrita confirmam a sessão desta venda
+    # (`venda.py::_garante_sessao_desta_venda_aberta`), uma base sem sessão
+    # nenhuma não é um duplo mínimo — é uma loja com a caixa fechada, e a
+    # resposta certa a tudo lá dentro é 409. Quem quer mesmo essa loja
+    # continua a pedi-la à letra (`sessoes=[]`), e é isso que distingue os
+    # dois casos: `None` quer dizer "não me interessa a caixa neste teste",
+    # `[]` quer dizer "a caixa está fechada".
     return DbFalsa({
         COLECOES["caixas"]: ColeccaoFalsa(registo, caixas),
-        COLECOES["sessoes_caixa"]: ColeccaoFalsa(registo, sessoes),
+        COLECOES["sessoes_caixa"]: ColeccaoFalsa(
+            registo, [_sessao()] if sessoes is None else sessoes),
         COLECOES["vendas"]: ColeccaoFalsa(registo, vendas),
         COLECOES["produtos"]: ColeccaoFalsa(registo, produtos),
         # A reserva de emissão do fiscal.py — o cancelamento pergunta por
@@ -3165,6 +3174,10 @@ def test_se_a_mae_deixar_de_estar_aberta_a_meio_as_filhas_sao_apagadas(monkeypat
     db = DbFalsa({
         COLECOES["vendas"]: vendas,
         COLECOES["refs_fiscais"]: ColeccaoFalsa(registo, []),
+        # A caixa ABERTA, senão o que se está a medir aqui deixa de correr:
+        # `dividir_conta` confirma a sessão desta venda antes de repartir
+        # seja o que for.
+        COLECOES["sessoes_caixa"]: ColeccaoFalsa(registo, [_sessao()]),
     })
     monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
 
@@ -3353,6 +3366,7 @@ def _db_de_uma_divisao_com_emissao_a_meio(registo, mae, refs, gancho):
     db = DbFalsa({
         COLECOES["vendas"]: vendas,
         COLECOES["refs_fiscais"]: ColeccaoFalsa(registo, refs),
+        COLECOES["sessoes_caixa"]: ColeccaoFalsa(registo, [_sessao()]),
     })
     return db, vendas
 
@@ -3472,6 +3486,7 @@ def test_uma_emissao_abortada_manda_dividir_outra_vez_e_nao_chamar_o_gestor(monk
     db = DbFalsa({
         COLECOES["vendas"]: vendas,
         COLECOES["refs_fiscais"]: RefsQueSomemDepoisDeResponder(registo, refs),
+        COLECOES["sessoes_caixa"]: ColeccaoFalsa(registo, [_sessao()]),
     })
     monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
 

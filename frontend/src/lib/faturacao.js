@@ -125,6 +125,34 @@ export const libertarReserva = (vendaId, confirmadoNoVendus, nota) =>
     nota: nota || null,
   });
 
+// --- Contas por cobrar de turnos JÁ FECHADOS ---------------------------------
+//
+// As que sobreviveram ao Z. Medido: 14,10 € divididos por 2, ninguém cobrado,
+// caixa fechada — `GET /pos/venda/repartidas` → `[]`, `GET /pos/venda/aberta`
+// → `null`, `GET /pos/caixa/contas-abertas` → `{quantas: 0}`, e as duas partes
+// continuavam `aberta` na base com o `sessao_id` do turno anterior. Nenhum ecrã
+// voltava a mostrá-las, e o `contas_abertas` que o fecho grava na sessão não
+// tinha um único leitor.
+//
+// De GESTOR e não do POS, e é uma decisão: a operadora do turno seguinte não
+// tem nada que mexer numa conta de um turno que outra pessoa fechou — as rotas
+// de escrita da venda recusam-lho (`venda.py::_garante_sessao_desta_venda_
+// aberta`), e um ecrã do balcão a mostrá-las era mandá-la fazer uma coisa que
+// o servidor não lhe deixa.
+export const getContasEsquecidas = () => axios.get(`${API_URL}/faturacao/caixa/contas-esquecidas`);
+
+// Dá a conta por perdida: passa-a a `cancelada`, com o nome de quem o decidiu.
+//
+// **Só depois de perguntar a quem lá estava.** Cancelar declara "isto nunca
+// foi pago", e isso pode ser falso — o cliente pode ter pago em dinheiro e a
+// operadora esquecido-se de finalizar. Por isso o ecrã pede uma declaração
+// explícita antes de chamar isto, o mesmo desenho do `libertarReserva` aqui em
+// cima. O servidor recusa por sua conta as três que não se arrumam por aqui:
+// a que já não está aberta, a de um turno AINDA ABERTO (essa é do balcão) e a
+// que tem uma reserva fiscal por resolver (essa é do card de cima).
+export const arrumarContaEsquecida = (vendaId) =>
+  axios.post(`${API_URL}/faturacao/caixa/contas-esquecidas/${vendaId}/arrumar`);
+
 // Mesmo crivo do backend (precos.py:_tem_mais_de_2_casas_decimais), para o
 // campo dizer "não pode ter mais de 2 casas decimais" ANTES de ir ao
 // servidor. Number.prototype.toString() em JS, tal como repr() em Python,

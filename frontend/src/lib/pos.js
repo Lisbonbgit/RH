@@ -215,21 +215,82 @@ export const temMaisDe2CasasDecimaisPos = (valor) => {
 // linha: o painel da conta (PosVenda) e a repartição (PosReparticao). Uma
 // segunda cópia desta ordem de arredondamentos era o mesmo artigo a valer
 // dois números diferentes em dois sítios do mesmo balcão.
-const cent = (valor) => Math.round(valor * 100) / 100;
+
+// O `round(x, 2)` do Python, em JavaScript — e não o arredondamento natural
+// daqui, que é outro.
+//
+// Isto era `Math.round(valor * 100) / 100`, e as duas coisas que essa linha
+// fazia mal somam-se: multiplicar por 100 empurra o valor para cima do meio
+// cêntimo (7,15 × 10 ÷ 100 é 0,71499999…, mas × 100 dá 71,5 redondo), e o
+// `Math.round` arredonda o meio PARA CIMA. O Python olha para o valor exacto
+// do double e, no empate mesmo, arredonda PARA O PAR. Um desconto em
+// PERCENTAGEM que caia a meio do cêntimo decidia-se para lados diferentes nos
+// dois sítios, e o ecrã prometia um cêntimo que a fatura desmentia: um Açaí
+// Regular de 7,15 € com −10 % dividido por dois mostrava as pastilhas
+// 3,22 / 3,21 (soma 6,43) por baixo de um total de 6,44 €, e o servidor
+// repartia 3,22 / 3,22 — a segunda pessoa pagava um cêntimo a mais do que o
+// ecrã lhe tinha prometido à frente do cliente.
+//
+// Como se faz o mesmo que ele em duas linhas:
+//
+// - `toFixed(2)` decide pelo valor EXACTO do double (é o que a norma exige),
+//   e não pelo produto por 100 — logo aí acerta com o Python em tudo o que
+//   não seja um empate exacto;
+// - no empate exacto, `toFixed` sobe e o Python vai para o par. Um empate
+//   exacto a 2 casas só existe quando o valor é um múltiplo ÍMPAR de 0,125
+//   (0,125 · 0,375 · 0,625 · 1,125 …) — os únicos que o binário representa
+//   mesmo em cima do meio cêntimo —, e é isso que o `× 8` reconhece sem
+//   arredondar nada (multiplicar por uma potência de dois é exacto). Aí,
+//   quando a subida deu um número ÍMPAR de cêntimos, desce-se um: é a mesma
+//   escolha do par.
+//
+// Verificado contra o `round(x, 2)` do Python em 124 000 valores (todos os
+// múltiplos ímpares de 0,125 até 500 €, todas as percentagens de desconto da
+// casa sobre todos os preços até 40 €, e 80 000 aleatórios): zero
+// divergências, contra 5340 da versão anterior. O guarda que o prova vive em
+// `backend/tests/faturacao/test_arredondamento_do_ecra.py`, e corre este
+// mesmo código em Node — nunca uma cópia dele escrita lá.
+//
+// **Exportada, e é por isso que ela vive aqui e não dentro do `contasDaLinha`.**
+// O `PosDialogoProduto` faz a conta da linha por sua conta — a dele trabalha
+// sobre campos de texto a meio de serem escritos, esta sobre uma linha que o
+// servidor já aceitou — e tinha aqui a SUA cópia desta função, com o mesmo
+// defeito e um comentário a dá-lo por inevitável. A ENTRADA das duas é
+// diferente e tem de ser; a ORDEM dos passos e o ARREDONDAMENTO não são —
+// são, os dois, os de `precos.linha_de_venda`. Corrigir o arredondamento num
+// sítio e deixar o outro a dizer 6,43 € onde o servidor grava 6,44 € é o
+// mesmo número a valer duas coisas no mesmo balcão.
+export const arredondarComoOServidor = (valor) => {
+  const x = Number(valor);
+  // NaN e Infinito passam como estavam: quem chama já os filtra
+  // (`Number(...) || 0`), e inventar aqui um 0 escondia um valor estragado.
+  if (!Number.isFinite(x)) return x;
+  const centimos = Math.round(Number(Math.abs(x).toFixed(2)) * 100);
+  const empate = Number.isInteger(x * 8) && Math.abs(x * 8) % 2 === 1;
+  const escolhido = empate && centimos % 2 === 1 ? centimos - 1 : centimos;
+  return (x < 0 ? -escolhido : escolhido) / 100;
+};
+
+// Nome curto para as contas aqui em baixo, onde ele aparece quatro vezes na
+// mesma expressão.
+const cent = arredondarComoOServidor;
 
 // O total de uma linha JÁ GRAVADA, na MESMA ordem de `precos.linha_de_venda`:
 // as opções somam ao preço unitário, o resultado multiplica pela quantidade,
 // e só depois entra o desconto (com `round` a cada passo, como o servidor).
 //
-// É uma estimativa de LEITURA, para a coluna "Preço" do print — nunca um
-// total da conta: esse é o `venda.totais.total` do servidor. A única
-// divergência possível é um cêntimo num desconto em % que caia exactamente a
-// meio (o Python arredonda para o par, o JavaScript para cima), e por isso a
-// soma destas linhas nunca é mostrada como total de nada.
+// É uma leitura da linha, para a coluna "Preço" do print — nunca um total da
+// conta: esse é o `venda.totais.total` do servidor, e é ele que se mostra.
+// Isto acerta com o servidor ao cêntimo (o `cent` acima faz o mesmo
+// arredondamento que ele), mas continua a não somar a conta toda: o desconto
+// GLOBAL não passa por aqui, e uma soma destas linhas apresentada como total
+// seria um número que ninguém do outro lado calculou.
 //
-// O `PosDialogoProduto` tem a sua própria versão desta conta de propósito: a
-// dele trabalha sobre campos de texto a meio de serem escritos, esta trabalha
-// sobre uma linha que o servidor já aceitou.
+// O `PosDialogoProduto` tem a sua própria versão desta conta de propósito, e a
+// diferença é a ENTRADA e só ela: a dele trabalha sobre campos de texto a meio
+// de serem escritos, esta trabalha sobre uma linha que o servidor já aceitou.
+// Os passos são os mesmos nos dois, e nos dois são os de
+// `precos.linha_de_venda` — quem lá mexer tem de mexer aqui.
 export const contasDaLinha = (linha) => {
   const base = linha.preco_override != null ? linha.preco_override : linha.produto_preco;
   const extra = (linha.opcoes || []).reduce((soma, o) => soma + (Number(o?.preco) || 0), 0);
@@ -241,6 +302,41 @@ export const contasDaLinha = (linha) => {
     ? Number(linha.desconto_eur)
     : (linha.desconto_pct ? cent(bruto * Number(linha.desconto_pct) / 100) : 0);
   return { unitario, bruto, desconto, total: cent(bruto - desconto) };
+};
+
+// --- As unidades de uma conta ------------------------------------------------
+
+// As casas decimais da QUANTIDADE — as MESMAS de
+// `faturacao/reparticao.py::CASAS_DA_QUANTIDADE`. Um guarda em
+// `test_partes_por_cobrar_no_ecra.py` confronta este número com o de lá: as
+// quantidades fraccionadas que aqui se somam são as que o servidor gravou com
+// essa resolução, e duas resoluções diferentes davam duas contagens diferentes
+// da mesma conta.
+export const CASAS_DA_QUANTIDADE_POS = 5;
+
+const UNIDADES_POR_QUANTIDADE = 10 ** CASAS_DA_QUANTIDADE_POS;
+
+// Quantas UNIDADES leva esta conta — a soma das quantidades das linhas, feita
+// em unidades INTEIRAS e só depois convertida.
+//
+// A soma em cru (`soma + Number(li.quantidade)`) era vírgula flutuante a somar
+// vírgula flutuante: numa parte recuperada de uma conta dividida, cujas
+// quantidades têm cinco casas, o painel escrevia **"2 Produtos /
+// 0.9666699999999999 Uni."**. Não mexe em dinheiro — o total é sempre o
+// `venda.totais.total` do servidor —, mas é o género de número que faz a
+// operadora desconfiar de tudo o resto que está no mesmo ecrã, e ela tem o
+// cliente à frente.
+//
+// É a mesma disciplina de `reparticao.py` e de `venda.py::_unidades`: o que se
+// SOMA conta-se em inteiros, nunca em floats. Aqui o inteiro é a unidade
+// mínima da quantidade (10⁻⁵), não o cêntimo, porque o que se soma são
+// quantidades e não dinheiro.
+export const unidadesDaConta = (linhas) => {
+  const emUnidades = (linhas || []).reduce(
+    (soma, li) => soma + Math.round((Number(li?.quantidade) || 0) * UNIDADES_POR_QUANTIDADE),
+    0,
+  );
+  return emUnidades / UNIDADES_POR_QUANTIDADE;
 };
 
 // A MESMA repartição do servidor (`reparticao.repartir_centimos`), em cêntimos
@@ -298,6 +394,14 @@ export const registarMovimento = (dados) => api.post('/pos/caixa/movimento', dad
 // fechou mesmo — e sem o Z que ela precisa de ver.
 export const fecharCaixa = (dados) =>
   api.post('/pos/caixa/fechar', dados, { timeout: TIMEOUT_COM_VENDUS_MS });
+
+// O que fica por cobrar se a caixa fechar agora: `{ quantas, total, contas }`.
+// Só leitura, e é chamada pelo diálogo do fecho ANTES da contagem — a
+// operadora tem de poder ver isto enquanto ainda pode ir cobrar ou cancelar,
+// não depois de assinar o Z. O Z que sai a seguir traz a mesma lista outra
+// vez, essa já definitiva (ver `caixa.py::_contas_abertas_da_sessao`).
+export const getContasAbertasDaCaixa = (caixaId) =>
+  api.get('/pos/caixa/contas-abertas', { params: { caixa_id: caixaId } });
 
 // --- Catálogo e tipos de pagamento -------------------------------------------
 //
@@ -375,6 +479,32 @@ export const obterVenda = (vendaId) => api.get(`/pos/venda/${vendaId}`);
 // escrever a comparação à vista é o que torna essa decisão legível.
 export const contaTravada = (venda) => venda?.emissao_por_confirmar === true;
 
+// O MOTIVO com que uma conta sai da frente para dar lugar a outra — a nota
+// que fica no painel depende dele, e as duas notas dizem coisas opostas:
+//
+//   'balcao'  — "continua aberta à espera de ser cobrada ou cancelada.
+//               Retome-a para acabar de a cobrar."
+//   'travada' — "tem uma emissão por confirmar, e só o gestor a resolve."
+//
+// **`cederOLugarDaConta` passava sempre `'balcao'`**, mesmo quando a conta
+// que cede o lugar está travada: a nota mandava a operadora cobrar ou
+// cancelar uma conta que não pode ser nem uma coisa nem outra, e escondia-lhe
+// a única coisa verdadeira sobre ela — que há uma fatura por confirmar e que
+// é preciso chamar o gestor.
+//
+// Vive aqui, e não dentro do `useCallback` do PosVenda, pela mesma razão de
+// `ehUmaDasPartes` e `partesAbertas`: uma decisão escrita à mão dentro de um
+// componente React não se consegue EXECUTAR num teste — o guarda que a devia
+// proteger só conseguia procurar `porContaDeLado(` no texto da função, nunca
+// com que argumento, e trocar `'balcao'` por `'travada'` deixava a suite
+// inteira verde (medido: 1029 testes, zero vermelhos). Aqui é uma função
+// pura, corre em Node, e a troca fica vermelha.
+//
+// A pergunta é a do SERVIDOR (`contaTravada`), a mesma que desenha a
+// `FaixaContaTravada` — nunca uma segunda regra escrita a seguir.
+export const motivoDeQuemCedeOLugar = (venda) =>
+  (contaTravada(venda) ? 'travada' : 'balcao');
+
 // --- A dúvida que ainda não foi apurada --------------------------------------
 //
 // O outro travão, e o que ele tem de diferente do de cima: `contaTravada` é o
@@ -429,8 +559,69 @@ export const finalizarVenda = (vendaId, dados) =>
 // `partes` é um NÚMERO no dividir (por quantas pessoas) e uma LISTA no separar
 // (quem leva o quê): [{ linhas: [{ linha_id, quantidade }] }, …].
 
+// --- A conta repartida, vista de fora ----------------------------------------
+//
+// Duas perguntas que o PosVenda faz em quatro sítios — a nota do painel do
+// balcão, o travão que impede uma segunda repartição, a razão encostada aos
+// botões de repartir e a seta de voltar do finalizar. Vivem aqui, e não
+// escritas à mão em cada um deles, porque foi exactamente assim que as duas
+// se trocaram uma pela outra: a seta de voltar perguntava "**há** partes por
+// cobrar?" quando a pergunta era "**esta conta é** uma delas?", e com partes
+// vivas o finalizar de uma conta normal do balcão largava-a do ecrã e aterrava
+// nas partes do cliente anterior — a conta ficava aberta no servidor, sem uma
+// palavra no ecrã.
+
+// As partes que ainda estão por cobrar: nem emitidas nem canceladas. O
+// `estado` é sempre o que o SERVIDOR gravou — uma parte emitida ou cancelada
+// noutro sítio tem de se ler aqui como o que ela é agora, nunca como o que
+// este ecrã se lembra dela.
+export const partesAbertas = (partes) =>
+  (partes || []).filter((p) => p?.estado === 'aberta');
+
+// Esta venda é UMA das partes em cobrança? Compara-se pelo `id`, que é o que
+// não muda: a parte volta do servidor a cada leitura com totais e estado
+// diferentes, e comparar o objecto (ou o total) dava "não" a meio da
+// cobrança. Sem `id` a resposta é sempre `false` — uma conta que ainda não
+// nasceu no servidor não é parte de nada.
+export const ehUmaDasPartes = (venda, partes) =>
+  !!venda?.id && (partes || []).some((p) => p?.id === venda.id);
+
 export const dividirConta = (vendaId, partes) =>
   api.post(`/pos/venda/${vendaId}/dividir`, { partes });
 
 export const separarConta = (vendaId, partes) =>
   api.post(`/pos/venda/${vendaId}/separar`, { partes });
+
+// --- E a repartição depois de o browser se ter esquecido dela ----------------
+//
+// **A repartição vivia SÓ na memória do browser, e o dinheiro por receber
+// desaparecia com ela.** Um F5, a tela de descanso, um "Trocar de operador" ou
+// o browser a ir abaixo, e a faixa "Faltam cobrar 2 pessoas de 2 — 14,10 €"
+// sumia do ecrã sem uma palavra. Medido, com o servidor a confirmar: dividido
+// 14,10 € por duas pessoas, servido o cliente seguinte e carregado em "Trocar
+// de operador" — a conta do balcão foi recuperada (`getVendaAberta` sempre
+// soube fazê-lo) e as duas partes não; `abertas no servidor: v-5, v-6, v-7`
+// contra `devolve: v-7`.
+//
+// É o mesmo acidente que o `contaTravada` já resolveu duas secções acima, e a
+// solução é a mesma: **a verdade vem do servidor**. Cada grupo tem a forma
+// EXACTA do que `dividirConta`/`separarConta` devolvem — `{ modo, conta_mae,
+// partes }` — para o ecrã montar a repartição pelo mesmo caminho, venha ela
+// de um toque ou de um arranque.
+export const getContasRepartidas = (caixaId) =>
+  api.get('/pos/venda/repartidas', { params: { caixa_id: caixaId } });
+
+// A repartição como o PosVenda a guarda (`{ modo, mae, partes }`), a partir do
+// que qualquer uma das três rotas devolve. Vive aqui para não haver duas
+// traduções da mesma resposta: enquanto o arranque montasse este objecto à
+// mão, bastava o servidor ganhar um campo para o caminho do F5 ficar com uma
+// repartição diferente da do toque.
+//
+// `modo` a `null` (uma repartição feita antes de o servidor o gravar) cai no
+// valor por omissão do PosReparticao — é o que ele já fazia, e é melhor do que
+// inventar aqui um modo que ninguém escolheu.
+export const reparticaoDoServidor = (grupo) => (
+  grupo?.conta_mae
+    ? { modo: grupo.modo || 'dividir', mae: grupo.conta_mae, partes: grupo.partes || [] }
+    : null
+);

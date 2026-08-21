@@ -7,7 +7,7 @@ import PosCampoValor from './PosCampoValor';
 import PosPersonalizacoes, {
   ehIndicacaoDeServico, errosDeSelecao, resumoDaSelecao,
 } from './PosPersonalizacoes';
-import { temMaisDe2CasasDecimaisPos } from '@/lib/pos';
+import { arredondarComoOServidor, temMaisDe2CasasDecimaisPos } from '@/lib/pos';
 
 // Os códigos são os do Vendus (`_TAXAS` em faturacao/precos.py). A operadora vê
 // a PERCENTAGEM — é o que ela sabe de cor do balcão — mas o que viaja para o
@@ -27,13 +27,31 @@ const euros = (valor) =>
   `€ ${(Number(valor) || 0).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 // Arredonda a 2 casas a CADA passo, como o servidor faz em
-// `precos.linha_de_venda` e `venda.py::_totais` — não uma vez no fim. Uma
-// única divergência conhecida: num desconto em % que caia exactamente a meio
-// cêntimo, o Python arredonda para o par e o JavaScript para cima, e a
-// estimativa pode ficar a um cêntimo do papel. É por isso que o número que
-// manda depois de Gravar é sempre o `venda.totais` que o servidor devolve, e
-// nunca este.
-const cent = (valor) => Math.round(valor * 100) / 100;
+// `precos.linha_de_venda` e `venda.py::_totais` — não uma vez no fim.
+//
+// **Vem de `lib/pos.js`, e não escrito outra vez aqui.** Era
+// `Math.round(valor * 100) / 100`, com um comentário a dar por inevitável a
+// divergência de um cêntimo num desconto em percentagem que caísse a meio.
+// Não era inevitável, era só outro arredondamento: medido no browser, um
+// artigo de 7,15 € com −10 % escrevia **TOTAL DA LINHA € 6,43** neste
+// diálogo, e o servidor gravava a linha a 6,44 €.
+//
+// **O que difere entre este ecrã e o `contasDaLinha` é a ENTRADA, não a
+// ordem.** Aqui esteve escrito que "a ORDEM das contas é diferente em cada
+// ecrã de propósito", e não é: os quatro passos abaixo são, um a um, os do
+// `contasDaLinha` e os do `precos.linha_de_venda` — opções somam ao unitário,
+// o unitário multiplica pela quantidade, o desconto entra por último, com
+// `round` a cada passo. O que é diferente é de onde vêm os números: este lê
+// CAMPOS DE TEXTO a meio de serem escritos (um preço apagado, uma
+// percentagem por acabar), o `contasDaLinha` lê uma linha que o servidor já
+// aceitou. Escrever "a ordem é diferente" era dar licença à próxima
+// alteração para a mudar — e foi exactamente uma frase assim, sobre o
+// arredondamento, que autorizou o cêntimo de divergência que acabou de ser
+// corrigido.
+//
+// O número que manda depois de Gravar continua a ser o `venda.totais` do
+// servidor, e nunca este: aqui não há sequer conta ainda.
+const cent = arredondarComoOServidor;
 
 // Um campo vazio é vazio, não é zero: `Number('')` dá 0, e era assim que um
 // preço apagado a meio virava um artigo oferecido sem ninguém pedir.

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner';
 import {
   AlertCircle, Ban, ChevronLeft, ChevronRight, EyeOff, ImageOff, Loader2, MoreHorizontal,
-  PauseCircle, Printer, RefreshCw, Search, ShieldAlert, ShoppingCart, Trash2, Users, X,
+  PauseCircle, Printer, RefreshCw, Search, ShieldAlert, ShoppingCart, Trash2, Undo2, Users, X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -20,8 +20,10 @@ import PosReparticao from './PosReparticao';
 import {
   getCatalogoPos, getTiposPagamentoPos, getVendaAberta, obterVenda, abrirVenda, juntarLinha,
   editarLinha, removerLinha, aplicarDescontoGlobal, cancelarVenda, finalizarVenda,
-  dividirConta, separarConta, contasDaLinha,
-  contaTravada, duvidaPorApurar, detalhesErroPos, semRespostaPos, ehTimeoutPos, TIMEOUT_PADRAO_MS,
+  dividirConta, separarConta, contasDaLinha, partesAbertas, ehUmaDasPartes,
+  getContasRepartidas, reparticaoDoServidor, unidadesDaConta, CASAS_DA_QUANTIDADE_POS,
+  contaTravada, motivoDeQuemCedeOLugar, duvidaPorApurar, detalhesErroPos, semRespostaPos,
+  ehTimeoutPos, TIMEOUT_PADRAO_MS,
 } from '@/lib/pos';
 
 // O ecrã de venda do POS (Plano 2C, Tasks 3 e 4, dos prints do Vendus): a
@@ -87,6 +89,22 @@ const euros = (valor) =>
 // mesma regra do PosFinalizar, e aqui serve para somar o que falta receber das
 // partes de uma conta repartida.
 const centimos = (valor) => Math.round((Number(valor) || 0) * 100);
+
+// Porque é que esta conta não se pode repartir — ou `null` quando se pode.
+//
+// UMA frase, e não duas: é ela que desliga os botões do finalizar com a razão
+// à vista por cima deles (`impedeRepartir`) e é ela que o `abrirReparticao`
+// diz se alguém lá chegar por outro caminho. Escritas em separado, o botão e a
+// recusa acabam a dizer coisas diferentes sobre o mesmo dinheiro por receber.
+const razaoDeNaoRepartir = (porCobrar) => {
+  if (porCobrar.length === 0) return null;
+  const falta = porCobrar.reduce((soma, p) => soma + centimos(p?.totais?.total), 0);
+  return `${porCobrar.length === 1
+    ? 'Ainda falta cobrar 1 pessoa'
+    : `Ainda faltam cobrar ${porCobrar.length} pessoas`} da conta anterior `
+    + `(${euros(falta / 100)}). Só há lugar para uma conta repartida de cada vez — `
+    + 'cobre-as ou cancele-as primeiro.';
+};
 
 // Sem acentos e em minúsculas: ao balcão escreve-se "acai" e o produto
 // chama-se "Açaí". Uma pesquisa que só casasse a acentuação exacta era uma
@@ -410,51 +428,89 @@ function FaixaContaTravada({ peloServidor, aPerguntar, onPerguntar, onPorDeLado 
   );
 }
 
-// A conta travada que ela pôs de lado para servir o cliente seguinte. Não
-// desaparece do ecrã em silêncio (regra 3 do cabeçalho): continua a existir no
-// servidor, continua com a emissão por confirmar, e é ela que vai recusar o
-// fecho da caixa daqui a umas horas — com esta referência lá dentro
-// (`caixa.py::_MSG_FECHO_COM_EMISSAO_EM_CURSO`, que nomeia o id da conta). É
-// por isso que o id está aqui à vista e em texto seleccionável: é o que ela
-// tem de dizer ao gestor, e o que ele vai procurar na lista de reservas
-// fiscais presas do backoffice.
+// A conta que ela pôs de lado para servir o cliente seguinte. Não desaparece
+// do ecrã em silêncio (regra 3 do cabeçalho): continua a existir no servidor, e
+// é por isso que o id está aqui à vista e em texto seleccionável.
+//
+// **Duas razões para uma conta ficar de lado, e a nota tem de dizer a certa.**
+// `motivo: 'travada'` é a original — uma conta com a emissão por confirmar, que
+// só o gestor resolve e que vai recusar o fecho da caixa daqui a umas horas com
+// esta referência lá dentro (`caixa.py::_MSG_FECHO_COM_EMISSAO_EM_CURSO`).
+// `motivo: 'balcao'` é a conta NORMAL que teve de sair da frente para dar lugar
+// a outra (cobrar uma parte de uma conta repartida): não tem problema nenhum,
+// só não cabia no ecrã ao mesmo tempo que a outra — e por isso tem uma saída
+// que a travada não tem, que é voltar. Escrever-lhe por cima "tem uma emissão
+// por confirmar" era mandar a operadora chamar o gestor por causa de um café.
 //
 // Esta nota vive só nesta montagem do ecrã (um F5 leva-a): a partir do momento
 // em que existe uma conta nova, o `GET /pos/venda/aberta` devolve a NOVA — a
 // posta de lado deixa de ter por onde voltar ao ecrã, e quem passa a guardá-la
-// é o servidor, que é onde ela tem de estar guardada.
-function AvisoContaDeLado({ conta, aPerguntar, onPerguntar }) {
+// é o servidor, que é onde ela tem de estar guardada. O que a apanha a seguir é
+// o fecho da caixa, que agora conta TODAS as contas abertas da sessão e as
+// mostra antes do Z (`caixa.py::_contas_abertas_da_sessao`).
+function AvisoContaDeLado({ conta, aPerguntar, aRetomar, podeRetomar, onPerguntar, onRetomar }) {
+  const doBalcao = conta.motivo === 'balcao';
   return (
     <div className="shrink-0 border-b bg-muted/40 px-4 py-3 flex items-start gap-2.5">
       <PauseCircle className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
       <div className="min-w-0 flex-1 text-sm">
         <p className="font-medium">
-          Conta travada posta de lado{conta.total != null ? `: ${euros(conta.total)}` : ''}.
+          {doBalcao ? 'Conta posta de lado' : 'Conta travada posta de lado'}
+          {conta.total != null ? `: ${euros(conta.total)}` : ''}.
         </p>
         {/* A nota diz o que se SABE desta conta, e o que se sabe depende de
-            como ela ficou travada — a bandeira do servidor é uma certeza, a
+            como ela ficou de lado — a bandeira do servidor é uma certeza, a
             releitura falhada não é nenhuma. Escrever "tem uma emissão por
             confirmar" por cima da segunda era afirmar o que ninguém viu. */}
         <p className="text-muted-foreground mt-1">
-          {conta.peloServidor
-            ? 'Continua guardada no servidor com a emissão por confirmar, e só o gestor a resolve. O fecho desta caixa vai recusar-se enquanto ela estiver assim.'
-            : 'Continua guardada no servidor com uma emissão por apurar: não se sabe se a Fatura Simplificada chegou a sair, e só o gestor o pode confirmar. Se tiver mesmo ficado presa, o fecho desta caixa vai recusar-se enquanto ela estiver assim.'}
-          {' '}Dê-lhe esta referência:
+          {doBalcao
+            ? 'Continua aberta no servidor com os artigos que já lá estavam, à espera de ser cobrada ou cancelada. Retome-a para acabar de a cobrar — e enquanto isso não acontecer, o fecho desta caixa mostra-a antes do Z.'
+            : (conta.peloServidor
+              ? 'Continua guardada no servidor com a emissão por confirmar, e só o gestor a resolve. O fecho desta caixa vai recusar-se enquanto ela estiver assim.'
+              : 'Continua guardada no servidor com uma emissão por apurar: não se sabe se a Fatura Simplificada chegou a sair, e só o gestor o pode confirmar. Se tiver mesmo ficado presa, o fecho desta caixa vai recusar-se enquanto ela estiver assim.')}
+          {' '}{doBalcao ? 'Referência:' : 'Dê-lhe esta referência:'}
         </p>
         <p className="font-mono text-xs break-all select-all mt-1">{conta.id}</p>
-        <Button
-          variant="outline"
-          className="h-12 w-full mt-2"
-          onClick={onPerguntar}
-          disabled={aPerguntar}
-        >
-          {aPerguntar ? (
-            <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-          ) : (
-            <RefreshCw className="h-5 w-5 mr-2" />
-          )}
-          {aPerguntar ? 'A perguntar ao servidor…' : 'Já foi resolvida?'}
-        </Button>
+        {doBalcao ? (
+          <>
+            <Button
+              variant="outline"
+              className="h-12 w-full mt-2"
+              onClick={onRetomar}
+              disabled={!podeRetomar || aRetomar}
+            >
+              {aRetomar ? (
+                <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+              ) : (
+                <Undo2 className="h-5 w-5 mr-2" />
+              )}
+              {aRetomar ? 'A ir buscar a conta…' : 'Retomar esta conta'}
+            </Button>
+            {/* A razão à vista, a mesma regra do resto do ficheiro: há UM
+                lugar para a conta em curso, e trazer esta para cá com outra à
+                frente era largar essa outra — exactamente o que tudo isto
+                existe para impedir. */}
+            {!podeRetomar && (
+              <p className="text-xs text-muted-foreground mt-1.5 leading-snug">
+                Acabe ou ponha de lado a conta que está à frente para poder retomar esta.
+              </p>
+            )}
+          </>
+        ) : (
+          <Button
+            variant="outline"
+            className="h-12 w-full mt-2"
+            onClick={onPerguntar}
+            disabled={aPerguntar}
+          >
+            {aPerguntar ? (
+              <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+            ) : (
+              <RefreshCw className="h-5 w-5 mr-2" />
+            )}
+            {aPerguntar ? 'A perguntar ao servidor…' : 'Já foi resolvida?'}
+          </Button>
+        )}
       </div>
     </div>
   );
@@ -479,9 +535,16 @@ function AvisoPartesPorCobrar({ porCobrar, deQuantas, faltaCentimos, onVoltar })
           {' — '}
           <span className="tabular-nums font-semibold">{euros(faltaCentimos / 100)}</span>.
         </p>
+        {/* Esta frase é uma PROMESSA sobre dinheiro, e durante um tempo foi
+            falsa: o Z lia só as vendas `emitida` e o único travão do fecho
+            exigia uma reserva fiscal, que uma parte que nunca foi ao EMITIR
+            não tem — a caixa fechava e o Z saía sem uma palavra sobre elas.
+            Agora conta mesmo: `caixa.py::_contas_abertas_da_sessao` soma
+            TODAS as contas abertas da sessão, o diálogo do fecho mostra-as
+            antes da contagem e o Z leva-as escritas. */}
         <p className="text-muted-foreground mt-1">
           Cada uma leva a sua fatura. Enquanto não forem cobradas ou canceladas, ficam abertas no
-          servidor e o fecho desta caixa vai contá-las.
+          servidor, e o fecho desta caixa mostra-as antes de assinar o Z.
         </p>
         <Button className="h-12 w-full mt-2" onClick={onVoltar}>
           Voltar às partes
@@ -530,15 +593,22 @@ function LinhaDaConta({ linha, onTocar, travada }) {
 }
 
 function PainelConta({
-  venda, aEscrever, travada, travadaPeloServidor, contaDeLado, aPerguntar, partesPorCobrar,
-  onPerguntar, onPerguntarPelaDeLado, onPorDeLado, onVoltarAsPartes, onTocarLinha,
+  venda, aEscrever, travada, travadaPeloServidor, contasDeLado, aPerguntar, aRetomar,
+  partesPorCobrar,
+  onPerguntar, onPerguntarPelaDeLado, onPorDeLado, onRetomarDeLado, onVoltarAsPartes, onTocarLinha,
   onFinalizar, onCancelar,
 }) {
   const linhas = venda?.linhas || [];
   const totais = venda?.totais || {};
   // "N Produtos" e "N Uni." são coisas diferentes e no print aparecem as
   // duas: produtos são LINHAS da conta, unidades é a soma das quantidades.
-  const unidades = linhas.reduce((soma, li) => soma + (Number(li.quantidade) || 0), 0);
+  //
+  // A soma vive em `lib/pos.js` e é feita em unidades INTEIRAS: somada em
+  // vírgula flutuante, uma parte recuperada de uma conta dividida escrevia
+  // aqui "0.9666699999999999 Uni.". E escreve-se com o separador decimal de
+  // cá — o `unidades` cru saía com um ponto no meio de um ecrã em português.
+  const unidades = unidadesDaConta(linhas)
+    .toLocaleString('pt-PT', { maximumFractionDigits: CASAS_DA_QUANTIDADE_POS });
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-card">
@@ -554,17 +624,28 @@ function PainelConta({
         />
       )}
 
-      {/* A conta travada que já foi posta de lado. Fica por baixo da faixa —
-          nas raras vezes em que as duas aparecem juntas (a posta de lado
-          voltou a ser a conta em curso porque o servidor não deixou abrir
-          outra), a que está À FRENTE dela é que manda. */}
-      {contaDeLado && (
+      {/* As contas já postas de lado. Ficam por baixo da faixa — nas raras
+          vezes em que as duas aparecem juntas (a posta de lado voltou a ser a
+          conta em curso porque o servidor não deixou abrir outra), a que está
+          À FRENTE dela é que manda.
+          UMA NOTA POR CONTA, e não um único lugar: enquanto isto era uma
+          conta só, pôr uma segunda de lado apagava a nota da primeira do ecrã
+          — a mesma desaparição silenciosa que estas notas existem para
+          impedir, e logo sobre a conta travada, que é a que o gestor precisa
+          de encontrar. */}
+      {contasDeLado.map((conta) => (
         <AvisoContaDeLado
-          conta={contaDeLado}
+          key={conta.id}
+          conta={conta}
           aPerguntar={aPerguntar}
-          onPerguntar={onPerguntarPelaDeLado}
+          aRetomar={aRetomar === conta.id}
+          // Há UM lugar para a conta em curso: com uma à frente, retomar esta
+          // era largar essa.
+          podeRetomar={!venda}
+          onPerguntar={() => onPerguntarPelaDeLado(conta)}
+          onRetomar={() => onRetomarDeLado(conta)}
         />
-      )}
+      ))}
 
       {partesPorCobrar && (
         <AvisoPartesPorCobrar
@@ -784,14 +865,23 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
   const [erroEmissao, setErroEmissao] = useState(null);
   const [aConfirmarCancelar, setAConfirmarCancelar] = useState(false);
 
-  // A conta travada que ela pôs de lado para servir o cliente seguinte —
-  // { id, total }, o mínimo para a nota do painel poder dizer QUAL é e para
-  // se poder voltar a perguntar por ela. Não é a conta inteira de propósito:
-  // a conta inteira, guardada aqui, era uma segunda cópia do que só o
-  // servidor sabe, e ficaria velha no instante seguinte.
-  const [contaDeLado, setContaDeLado] = useState(null);
+  // As contas que ela pôs de lado para servir o cliente seguinte —
+  // `[{ id, total, motivo, peloServidor }]`, o mínimo para a nota do painel
+  // poder dizer QUAL é cada uma e para se poder voltar a perguntar por ela (ou
+  // retomá-la). Não é a conta inteira de propósito: a conta inteira, guardada
+  // aqui, era uma segunda cópia do que só o servidor sabe, e ficaria velha no
+  // instante seguinte.
+  //
+  // **Uma LISTA, e não uma conta só.** Havia um lugar, e o segundo
+  // `porContaDeLado` apagava a nota do primeiro: a conta travada que o gestor
+  // tem de ir buscar desaparecia do ecrã porque a operadora foi cobrar uma
+  // parte. Com dois caminhos novos a chamar isto (`cobrarParte` e
+  // `terminarReparticao`), deixou de ser uma hipótese remota.
+  const [contasDeLado, setContasDeLado] = useState([]);
   // Há uma pergunta ao servidor a decorrer (o botão da faixa, ou o relógio).
   const [aPerguntar, setAPerguntar] = useState(false);
+  // O id da conta de lado que está a ser retomada, ou `null`.
+  const [aRetomar, setARetomar] = useState(null);
 
   // A conta que está a ser repartida, e as partes que dela nasceram:
   // `{ modo, mae, partes }` — `partes` a `null` enquanto a repartição ainda
@@ -969,10 +1059,20 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
       // não um erro. É também o que devolve a conta em curso depois da tela
       // de descanso, de um F5 ou de o browser ir abaixo, em vez de a
       // operadora repicar tudo.
-      const [respCatalogo, respTipos, respVenda] = await Promise.all([
+      const [respCatalogo, respTipos, respVenda, respRepartidas] = await Promise.all([
         getCatalogoPos(),
         getTiposPagamentoPos(),
         getVendaAberta(caixaId),
+        // As pessoas que ficaram por cobrar de uma conta repartida. **O
+        // `.catch` não é preguiça — é a razão pela qual esta pergunta é uma
+        // rota à parte.** Vai no mesmo `Promise.all` para não custar um
+        // segundo ida-e-volta no arranque, mas um `Promise.all` rejeita
+        // inteiro à primeira falha: sem isto, uma rota nova a responder mal
+        // deixava a operadora no ecrã de erro, sem catálogo e sem a conta em
+        // curso — uma pergunta acrescentada a derrubar o balcão. O erro
+        // apanha-se aqui e trata-se em baixo, com uma frase; nunca em
+        // silêncio.
+        getContasRepartidas(caixaId).catch((erroDasPartes) => ({ erroDasPartes })),
       ]);
       if (!aindaEDaVez()) return;
       setCatalogo({
@@ -991,7 +1091,67 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
         ocultos: Number(respCatalogo.data?.produtos_ocultos_categoria_inativa) || 0,
       });
       setTiposPagamento(respTipos.data || []);
-      aplicarVenda(respVenda.data || null);
+
+      // --- O que ficou por cobrar, e que até aqui morria com o browser -------
+      //
+      // O `reparticao` é estado do React e mais nada: um F5, a tela de
+      // descanso, um "Trocar de operador" ou o browser a ir abaixo, e a faixa
+      // "Faltam cobrar 2 pessoas de 2 — 14,10 €" desaparecia sem uma palavra,
+      // com as duas partes bem `aberta` no servidor. Medido: `abertas no
+      // servidor: v-5, v-6, v-7` → o ecrã recuperava `v-7` e mais nada.
+      // Agora a lista vem de onde ela sempre esteve guardada — do servidor.
+      const daFrente = respVenda.data || null;
+      const restaurada = respRepartidas.erroDasPartes
+        ? null
+        : reparticaoDoServidor((respRepartidas.data || [])[0]);
+      if (respRepartidas.erroDasPartes) {
+        // Não se afirma que não há partes por cobrar — não se sabe. Diz-se
+        // que não se sabe, e diz-se onde é que isso se confirma: o fecho
+        // desta caixa lista todas as contas abertas da sessão antes do Z.
+        if (respRepartidas.erroDasPartes?.response?.status === 401) {
+          operadorInvalido();
+          return;
+        }
+        aplicarVenda(daFrente);
+        toast.error(
+          'Não foi possível saber se ficaram pessoas por cobrar de uma conta repartida. '
+          + 'Se dividiu alguma, confirme-a no fecho da caixa antes de assinar o Z.',
+        );
+        return;
+      }
+
+      setReparticao(restaurada);
+      // A `GET /pos/venda/aberta` devolve a venda mais recente do posto — e
+      // depois de uma conta ser repartida, a mais recente é uma das PARTES.
+      // Pô-la à frente apresentava a parte de uma pessoa como se fosse a conta
+      // do balcão. Com a lista recuperada há sítio melhor: as partes, que é
+      // exactamente onde o ecrã fica quando se acaba de repartir.
+      if (restaurada && ehUmaDasPartes(daFrente, restaurada.partes)) {
+        aplicarVenda(null);
+        setVista('reparticao');
+      } else {
+        aplicarVenda(daFrente);
+      }
+
+      const porCobrar = partesAbertas(restaurada?.partes);
+      if (porCobrar.length > 0) {
+        const falta = porCobrar.reduce((soma, p) => soma + centimos(p?.totais?.total), 0);
+        toast.error(
+          `${porCobrar.length === 1 ? 'Ficou 1 pessoa' : `Ficaram ${porCobrar.length} pessoas`}`
+          + ` por cobrar de uma conta repartida — ${euros(falta / 100)}.`,
+        );
+      }
+      // Só há UM lugar no ecrã para uma conta repartida (ver
+      // `abrirReparticao`). Com mais do que uma por cobrar — o que só
+      // acontece a partir de dados anteriores a essa recusa, ou de dois
+      // separadores do POS no mesmo PC — mostra-se a mais recente e DIZ-SE que
+      // há outras, em vez de as deixar caladas.
+      if ((respRepartidas.data || []).length > 1) {
+        toast.error(
+          `Há ${respRepartidas.data.length} contas repartidas por cobrar neste posto. O ecrã mostra `
+          + 'a mais recente; o fecho da caixa lista-as todas antes do Z.',
+        );
+      }
     } catch (error) {
       if (!aindaEDaVez()) return;
       if (error?.response?.status === 401) { operadorInvalido(); return; }
@@ -1320,6 +1480,155 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
     });
   }, [aEmitir, executar, aplicarVenda, mostrarDocumento, operadorInvalido, apurarAEmissao]);
 
+  // --- A ÚNICA porta por onde uma conta sai do ecrã ---------------------------
+  //
+  // Põe a conta que está à frente DE LADO e deixa o balcão a andar. Nasceu
+  // como a segunda metade da correcção do beco sem saída da conta travada, e a
+  // que salva o resto da fila: com a conta travada à frente, os cartões de
+  // produto estavam todos `disabled` e o `garantirVenda` só abre conta nova
+  // quando não há nenhuma — o cliente seguinte não era servido naquele posto,
+  // e nem sequer havia um toast a explicar porquê (medido: 0 toasts, 0 pedidos
+  // ao servidor).
+  //
+  // **Não fala com o servidor, e é de propósito.** A conta continua lá
+  // exactamente como está. O que muda é só o ecrã: sem conta em curso, os
+  // cartões voltam a estar vivos e o primeiro produto abre uma conta NOVA no
+  // servidor, pelo caminho de sempre (regra 2 do cabeçalho: a conta nasce ao
+  // primeiro produto, nunca antes — abrir aqui uma conta vazia era pôr uma
+  // órfã em `fat_vendas` de cada vez que ela tocasse neste botão).
+  //
+  // O servidor deixa, e isso foi confirmado no código dele antes de este botão
+  // existir: `venda.py::abrir_venda` cria sempre uma venda nova sem olhar às
+  // que já estão abertas, e `GET /pos/venda/aberta` devolve a MAIS RECENTE
+  // desta sessão e deste dispositivo — a nova. A que ficou de lado continua
+  // visível na nota do painel, e a partir daqui o fecho de caixa também a
+  // conta e a mostra antes do Z (`caixa.py::_contas_abertas_da_sessao`).
+  //
+  // **Está declarada AQUI EM CIMA, e não com o resto da conta travada, porque
+  // passou a ser a porta de saída de TODA a gente.** A regra deste ficheiro é
+  // que uma conta só sai do ecrã por aqui, e havia três sítios que não a
+  // cumpriam — dois deles a seguir (`cobrarParte` e `terminarReparticao`), que
+  // largavam a conta do balcão com `aplicarVenda(...)` sem sequer olhar para
+  // ela. Para eles a poderem chamar, ela tem de existir primeiro: numa lista
+  // de dependências de um `useCallback`, um `const` declarado mais abaixo é um
+  // ReferenceError no render, não um detalhe de arrumação.
+  //
+  // `motivo` decide a NOTA, e só a nota — 'travada' (a conta que o gestor tem
+  // de resolver) ou 'balcao' (a conta normal que teve de ceder o lugar).
+  const porContaDeLado = useCallback((motivo = 'travada') => {
+    const posta = vendaRef.current;
+    if (!posta?.id) return;
+    setContasDeLado((postas) => (
+      // Sem repetidos: a mesma conta pode ser posta de lado duas vezes (foi
+      // retomada e voltou a ceder o lugar), e duas notas iguais no painel eram
+      // duas contas onde só há uma.
+      postas.some((c) => c.id === posta.id) ? postas : [...postas, {
+        id: posta.id,
+        total: posta.totais?.total ?? null,
+        motivo,
+        // Como é que esta conta ficou travada, para a nota não afirmar mais do
+        // que se soube no momento em que ela foi posta de lado.
+        peloServidor: contaTravada(posta),
+      }]
+    ));
+    aplicarVenda(null);
+    setEmEdicao(null);
+    setErroEmissao(null);
+    mostrarDocumento(null, false);
+    setVista('conta');
+    toast.success(motivo === 'balcao'
+      ? `A conta que estava à frente${posta.totais?.total != null ? ` (${euros(posta.totais.total)})` : ''} ficou de lado — está na nota do painel, para retomar.`
+      : 'Conta posta de lado. Toque num produto para começar a conta do cliente seguinte.');
+  }, [aplicarVenda, mostrarDocumento]);
+
+  // A conta da frente tem de ceder o lugar a outra. **Nenhum caminho pode
+  // largá-la sozinho** — é isto que os que precisam do lugar chamam primeiro.
+  //
+  // Os dois defeitos que isto fecha, medidos no browser:
+  //   - `cobrarParte` fazia `aplicarVenda(parte)` sem olhar para a frente: com
+  //     um Café Expresso de 1,00 € picado (`v-9`), "Voltar às partes" →
+  //     "Cobrar" → voltar dava um painel a dizer "Não existem produtos
+  //     associados" enquanto o servidor respondia `v-9: aberta 1 ['Café
+  //     Expresso']`. O toque seguinte abria outra conta por cima dela.
+  //   - `terminarReparticao` (o "Nova Venda" do ecrã das partes) fazia
+  //     `aplicarVenda(null)` pela mesma razão: duas contas do balcão abertas
+  //     no servidor e nenhuma no ecrã.
+  //
+  // Os dois casos em que NÃO se põe nada de lado não são excepções à regra,
+  // são contas que não estão a sair de vista nenhuma — e uma nota sobre elas
+  // seria ruído a competir com as notas que interessam.
+  const cederOLugarDaConta = useCallback(() => {
+    const daFrente = vendaRef.current;
+    if (!daFrente?.id) return;
+    // Uma PARTE não se põe de lado: ela está na lista das partes, com o estado
+    // que o servidor lhe deu, e é para essa lista que a operadora vai a
+    // seguir. É a mesma pergunta do `voltarDoFinalizar`, e vive no mesmo sítio
+    // (`lib/pos.js`) — foi por estar escrita à mão que ela já se trocou uma
+    // vez pela sua vizinha.
+    if (ehUmaDasPartes(daFrente, reparticao?.partes)) { aplicarVenda(null); return; }
+    // Uma conta que o servidor já deu por terminada (emitida, cancelada,
+    // separada) não tem nada por receber e não deixa nada para trás.
+    if (daFrente.estado !== 'aberta') { aplicarVenda(null); return; }
+    // **O motivo tem de ser o desta conta, e não o do caminho.** Isto passava
+    // sempre `'balcao'`, mesmo quando a conta que cede o lugar está TRAVADA —
+    // e a nota do painel ficava a dizer "à espera de ser cobrada ou
+    // cancelada" sobre uma conta que não pode ser nenhuma das duas: tem uma
+    // fatura por confirmar, e é o gestor que a resolve. A nota certa já
+    // existia (`motivo: 'travada'`) e o ecrã já a sabe desenhar; o que
+    // faltava era escolhê-la. A escolha vive em `lib/pos.js`
+    // (`motivoDeQuemCedeOLugar`) e não escrita aqui: dentro deste
+    // `useCallback` nenhum teste a consegue EXECUTAR, e foi por isso que
+    // trocar o argumento deixava a suite inteira verde.
+    porContaDeLado(motivoDeQuemCedeOLugar(daFrente));
+  }, [reparticao, aplicarVenda, porContaDeLado]);
+
+  // O caminho de volta de uma conta do balcão que ficou de lado. Sem ele, a
+  // nota do painel dizia à operadora que a conta existe e não lhe dava nada
+  // para fazer com isso — e uma conta que só o fecho da caixa volta a
+  // mencionar é uma conta perdida com passos extra.
+  //
+  // Vai PERGUNTAR ao servidor em vez de guardar a conta inteira aqui, pela
+  // mesma razão de sempre: entre pô-la de lado e retomá-la ela pode ter sido
+  // emitida ou cancelada noutro posto, e o que se põe à frente da operadora
+  // tem de ser a conta como ela está agora.
+  const retomarContaDeLado = useCallback(async (conta) => {
+    if (!conta?.id || aRetomar) return;
+    // Há UM lugar para a conta em curso. O botão já vem desligado com a razão
+    // à vista (`podeRetomar`); isto é a garantia por baixo dele — a mesma
+    // dupla que o `abrirReparticao` tem.
+    if (vendaRef.current) {
+      toast.error('Já há uma conta à frente. Acabe-a ou ponha-a de lado antes de retomar esta.');
+      return;
+    }
+    setARetomar(conta.id);
+    try {
+      const { data } = await obterVenda(conta.id);
+      if (data?.estado !== 'aberta') {
+        // Resolvida noutro sítio: a nota sai porque o motivo dela desapareceu,
+        // e diz-se o que lhe aconteceu — nunca desaparece calada.
+        setContasDeLado((postas) => postas.filter((c) => c.id !== conta.id));
+        toast.success(data?.documento?.numero
+          ? `Esta conta já foi cobrada noutro sítio: saiu a fatura ${data.documento.numero}.`
+          : 'Esta conta já não está aberta — foi resolvida entretanto. Não há nada para retomar.');
+        return;
+      }
+      setContasDeLado((postas) => postas.filter((c) => c.id !== conta.id));
+      // A conta vem como o servidor a tem AGORA — o `emissao_por_confirmar`
+      // incluído. Se entretanto ficou travada, é a `FaixaContaTravada` que a
+      // recebe à frente, com as duas saídas dela.
+      aplicarVenda(data);
+      setEmEdicao(null);
+      mostrarDocumento(null, false);
+      setVista('conta');
+      toast.success('Conta retomada.');
+    } catch (error) {
+      if (error?.response?.status === 401) { operadorInvalido(); return; }
+      toast.error('Não foi possível ir buscar esta conta ao servidor — a nota fica no painel, tente daqui a pouco.');
+    } finally {
+      setARetomar(null);
+    }
+  }, [aRetomar, aplicarVenda, mostrarDocumento, operadorInvalido]);
+
   // --- Dividir e separar a conta ----------------------------------------------
   //
   // Três amigos, dois açaís e uma Coca-Cola: ou dividem por igual, ou cada um
@@ -1333,11 +1642,35 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
   // que mantém tudo o que foi endurecido no núcleo fiscal a valer para as
   // partes sem uma linha nova.
 
+  // **Há UM lugar para uma repartição — este `reparticao` — e por isso não se
+  // abre uma segunda por cima de uma que ainda tem gente por pagar.** Não era
+  // "começar outra": era apagar a primeira. Medido: separada uma conta de
+  // 16,41 € em 8,41 + 8,00, as duas por cobrar, bastava começar a conta do
+  // cliente seguinte e tocar em "Dividir Conta" **só para ver a previsão** —
+  // a `mae` e as `partes` passavam a ser as da conta nova, e recuar com a
+  // seta (`sairDaReparticao`, que com `partes` a `null` deita a repartição
+  // fora) levava com ela a faixa "Faltam cobrar 2 pessoas de 2". As duas
+  // partes continuavam abertas no servidor, com 16,41 € por receber, e o ecrã
+  // não voltava a dizer uma palavra sobre elas.
+  //
+  // Recusa-se e diz-se porquê, que é a mesma regra do resto do ficheiro. Em
+  // uso normal isto nunca dispara: o botão que traz aqui já vem desligado com
+  // a razão à vista (`impedeRepartir`, no PosFinalizar). Está aqui na mesma
+  // porque um botão desligado é uma cortesia e isto é a garantia — nenhum
+  // caminho novo pode entrar por baixo dele e apagar dinheiro por receber.
+  //
+  // Partes já TODAS resolvidas (cobradas ou canceladas) não impedem nada: não
+  // há dinheiro por receber nenhum e não há nada para perder de vista.
   const abrirReparticao = useCallback((modo) => {
     if (!vendaRef.current) return;
+    const razao = razaoDeNaoRepartir(partesAbertas(reparticao?.partes));
+    if (razao) {
+      toast.error(razao);
+      return;
+    }
     setReparticao({ modo, mae: vendaRef.current, partes: null });
     setVista('reparticao');
-  }, []);
+  }, [reparticao]);
 
   const repartir = useCallback(({ modo, partes }) => {
     if (aRepartir) return;
@@ -1432,14 +1765,23 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
 
   // Cobrar uma parte é pôr a parte à frente e ir ao finalizar de sempre —
   // sem um segundo caminho de emissão, que é a razão de ser de tudo isto.
+  //
+  // **O lugar da conta em curso é UM, e este caminho quer-no.** Fazia
+  // `aplicarVenda(parte)` sem olhar para o que lá estava: a conta que a
+  // operadora tinha começado enquanto as partes esperavam era largada em
+  // silêncio — `aberta` no servidor, invisível no ecrã, e com o toque seguinte
+  // a abrir outra por cima. Cede-se o lugar pela porta de sempre
+  // (`cederOLugarDaConta` → `porContaDeLado`), que deixa a nota permanente no
+  // painel e o caminho de volta.
   const cobrarParte = useCallback((parte) => {
     if (!parte) return;
+    cederOLugarDaConta();
     aplicarVenda(parte);
     setErroEmissao(null);
     mostrarDocumento(null, false);
     setEmEdicao(null);
     setVista('finalizar');
-  }, [aplicarVenda, mostrarDocumento]);
+  }, [cederOLugarDaConta, aplicarVenda, mostrarDocumento]);
 
   // A saída para quem não paga. É o `cancelarVenda` de sempre, sobre uma venda
   // normal — e o ecrã diz o que isso significa antes de o fazer (o diálogo do
@@ -1474,20 +1816,36 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
   // já criadas, sair é ir servir o cliente seguinte — e a `reparticao` fica,
   // para a nota do painel da conta poder dizer o que falta receber e para
   // haver caminho de volta.
+  //
+  // O `setReparticao(null)` de baixo só é seguro por causa da recusa do
+  // `abrirReparticao`: sem ela, `partes` a `null` podia ser uma previsão nova
+  // ESCRITA POR CIMA de uma repartição com gente por pagar, e era aqui que as
+  // partes dessa gente desapareciam do ecrã. Com a recusa, `partes` a `null`
+  // quer dizer sempre o que parece — uma escolha que ainda não fez nada a
+  // ninguém.
   const sairDaReparticao = useCallback(() => {
     if (reparticao?.partes) { setVista('conta'); return; }
     setReparticao(null);
     setVista('finalizar');
   }, [reparticao]);
 
-  // Todas as partes resolvidas (cobradas ou canceladas): a conta acabou.
+  // Todas as partes resolvidas (cobradas ou canceladas): a conta acabou. É o
+  // botão "Nova Venda" do ecrã das partes.
+  //
+  // O `aplicarVenda(null)` que aqui estava era a MESMA porta escancarada do
+  // `cobrarParte`, com o mesmo preço: se a operadora tinha começado a conta do
+  // cliente seguinte enquanto cobrava as partes, "Nova Venda" largava-a —
+  // duas contas do balcão abertas no servidor e nenhuma no ecrã. Agora ela
+  // cede o lugar pela porta de sempre e fica na nota do painel; se não houver
+  // conta nenhuma à frente (o caso normal), isto não faz nada e o ecrã fica
+  // limpo para a venda seguinte, que é o que o botão promete.
   const terminarReparticao = useCallback(() => {
+    cederOLugarDaConta();
     setReparticao(null);
-    aplicarVenda(null);
     mostrarDocumento(null, false);
     setErroEmissao(null);
     setVista('conta');
-  }, [aplicarVenda, mostrarDocumento]);
+  }, [cederOLugarDaConta, mostrarDocumento]);
 
   // --- A saída da conta travada -----------------------------------------------
 
@@ -1525,7 +1883,7 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
       // Destravou. Se era a conta posta de lado, deixa de o estar — a nota do
       // painel desaparece porque o motivo dela desapareceu, não porque alguém
       // a fechou.
-      setContaDeLado((posta) => (posta && posta.id === vendaId ? null : posta));
+      setContasDeLado((postas) => postas.filter((c) => c.id !== vendaId));
       // É a conta que ela tem à frente, ou uma que está de lado? Só a que está
       // à frente é que manda no ecrã; a outra dá um aviso e mais nada — nunca
       // se troca por baixo dos dedos dela a conta que ela está a picar.
@@ -1631,48 +1989,6 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
     return () => clearInterval(relogio);
   }, [contaComDuvida, aEmitir, perguntarPelaConta]);
 
-  // Põe a conta travada DE LADO e deixa o balcão a andar. É a segunda metade
-  // da correcção do beco sem saída, e a que salva o resto da fila: com a conta
-  // travada à frente, os cartões de produto estavam todos `disabled` e o
-  // `garantirVenda` só abre conta nova quando não há nenhuma — o cliente
-  // seguinte não era servido naquele posto, e nem sequer havia um toast a
-  // explicar porquê (medido: 0 toasts, 0 pedidos ao servidor).
-  //
-  // **Não fala com o servidor, e é de propósito.** A conta travada continua lá
-  // exactamente como está — é o que o gestor vai ter de olhar, e é ela que vai
-  // recusar o fecho da caixa até estar resolvida. O que muda é só o ecrã: sem
-  // conta em curso, os cartões voltam a estar vivos e o primeiro produto abre
-  // uma conta NOVA no servidor, pelo caminho de sempre (regra 2 do cabeçalho:
-  // a conta nasce ao primeiro produto, nunca antes — abrir aqui uma conta
-  // vazia era pôr uma órfã em `fat_vendas` de cada vez que ela tocasse neste
-  // botão).
-  //
-  // O servidor deixa, e isso foi confirmado no código dele antes de este botão
-  // existir: `venda.py::abrir_venda` cria sempre uma venda nova sem olhar às
-  // que já estão abertas, e `GET /pos/venda/aberta` devolve a MAIS RECENTE
-  // desta sessão e deste dispositivo — a nova. A travada fica para trás,
-  // visível para o gestor (a lista de reservas fiscais presas do backoffice) e
-  // para o fecho de caixa, que se recusa a fechar enquanto ela existir e diz o
-  // id dela (`caixa.py::_MSG_FECHO_COM_EMISSAO_EM_CURSO`). É por isso que a
-  // nota do painel continua a mostrá-la aqui: nada desaparece em silêncio.
-  const porContaDeLado = useCallback(() => {
-    const posta = vendaRef.current;
-    if (!posta) return;
-    setContaDeLado({
-      id: posta.id,
-      total: posta.totais?.total ?? null,
-      // Como é que esta conta ficou travada, para a nota não afirmar mais do
-      // que se soube no momento em que ela foi posta de lado.
-      peloServidor: contaTravada(posta),
-    });
-    aplicarVenda(null);
-    setEmEdicao(null);
-    setErroEmissao(null);
-    mostrarDocumento(null, false);
-    setVista('conta');
-    toast.success('Conta posta de lado. Toque num produto para começar a conta do cliente seguinte.');
-  }, [aplicarVenda, mostrarDocumento]);
-
   // A seta de voltar do finalizar E o "Nova Venda" de depois de emitir são o
   // mesmo callback (é o contrato do PosFinalizar).
   //
@@ -1693,11 +2009,28 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
   // o servidor não disser o que aconteceu, a dúvida acompanha a conta —
   // quem a resolve é o `perguntarPelaConta`, não um botão de navegação.
   const voltarDoFinalizar = useCallback(() => {
-    // A dúvida lê-se ANTES de se largar seja o que for: é ela que decide para
-    // onde se volta, e o `aplicarVenda(null)` logo a seguir apagava a conta de
-    // onde ela vem.
-    const porApurar = duvidaPorApurar(erroEmissao) || contaTravada(vendaRef.current);
-    if (documento && vendaRef.current?.estado !== 'aberta') aplicarVenda(null);
+    // A conta de onde se volta lê-se ANTES de se largar seja o que for: é ela
+    // que decide para onde se vai, e o `aplicarVenda(null)` logo a seguir
+    // apagava-a.
+    const daFrente = vendaRef.current;
+    const porApurar = duvidaPorApurar(erroEmissao) || contaTravada(daFrente);
+    // A pergunta que faltava, e que custou uma conta: esta conta é UMA DAS
+    // PARTES em cobrança, ou é uma venda do balcão que nada tem a ver com
+    // elas? A condição era só "há partes por cobrar", e com partes vivas a
+    // seta de voltar do finalizar de uma conta NORMAL — a Embalagem de 0,15 €
+    // do cliente seguinte — largava-a (`aplicarVenda(null)`) e aterrava em
+    // "Cobrar as partes" do cliente ANTERIOR. A conta ficava `aberta` no
+    // servidor, sem uma palavra no ecrã e sem caminho de volta, e o toque
+    // seguinte abria outra por cima dela — órfã e invisível, exactamente o que
+    // o `porContaDeLado` existe para impedir. Uma conta só sai do ecrã por
+    // esse botão, que a grava e deixa a nota permanente no painel; daqui não
+    // sai nenhuma, e a nota das partes (`AvisoPartesPorCobrar`) continua a
+    // dizer o que falta receber por cima da conta que ficou à frente.
+    //
+    // A mesma linha fazia o "Nova Venda" de uma venda já emitida aterrar nas
+    // partes de outra pessoa — um botão a dizer uma coisa e a fazer outra.
+    const ehParte = ehUmaDasPartes(daFrente, reparticao?.partes);
+    if (documento && daFrente?.estado !== 'aberta') aplicarVenda(null);
     mostrarDocumento(null, false);
     setErroEmissao((anterior) => (duvidaPorApurar(anterior) ? anterior : null));
     // A cobrar uma PARTE, o que está atrás não é o balcão: são as outras
@@ -1710,7 +2043,9 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
     // para a lista das partes deixava a dúvida órfã — sem faixa, sem relógio a
     // perguntar ao servidor, e com o EMITIR de outra parte à distância de um
     // toque.
-    if (reparticao?.partes && !porApurar) {
+    if (ehParte && !porApurar) {
+      // A parte sai da frente, mas não desaparece: está na lista para onde se
+      // vai a seguir, com o estado que o servidor lhe deu.
       aplicarVenda(null);
       setVista('reparticao');
       return;
@@ -1802,7 +2137,9 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
   const partesPorCobrar = useMemo(() => {
     const lista = reparticao?.partes;
     if (!lista) return null;
-    const abertas = lista.filter((p) => p.estado === 'aberta');
+    // A MESMA pergunta do travão do `abrirReparticao` e da razão que desliga
+    // os botões de repartir — uma definição só, em `lib/pos.js`.
+    const abertas = partesAbertas(lista);
     if (abertas.length === 0) return null;
     return {
       porCobrar: abertas.length,
@@ -1810,6 +2147,13 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
       faltaCentimos: abertas.reduce((soma, p) => soma + centimos(p.totais?.total), 0),
     };
   }, [reparticao]);
+
+  // A razão por que os dois botões de repartir estão desligados no finalizar,
+  // ou `null`. É a MESMA frase e a MESMA pergunta que fazem o
+  // `abrirReparticao` recusar: assim não há forma de o botão convidar ao que a
+  // função recusa, nem de a função recusar sem o ecrã ter dito porquê antes do
+  // toque.
+  const impedeRepartir = razaoDeNaoRepartir(partesAbertas(reparticao?.partes));
 
   // O spinner sozinho era o ecrã de arranque INTEIRO, e sem tecto de espera
   // podia ser o ecrã para sempre: a operadora ficava a olhar para uma roda a
@@ -1887,6 +2231,7 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
           onEmitir={emitir}
           onDividir={() => abrirReparticao('dividir')}
           onSeparar={() => abrirReparticao('separar')}
+          impedeRepartir={impedeRepartir}
         />
       </div>
     );
@@ -2038,17 +2383,25 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
             aEscrever={escritas > 0}
             travada={travada}
             travadaPeloServidor={travadaPeloServidor}
-            /* A conta posta de lado só se anuncia enquanto for OUTRA que não a
-               que está à frente: se o ecrã tiver voltado a ela (o servidor não
-               deixou abrir a nova, e o `GET /pos/venda/aberta` devolveu-a
-               outra vez), quem fala dela é a faixa, e duas caixas a dizer o
-               mesmo liam-se como dois problemas diferentes. */
-            contaDeLado={contaDeLado && contaDeLado.id !== venda?.id ? contaDeLado : null}
+            /* Uma conta posta de lado só se anuncia enquanto for OUTRA que não
+               a que está à frente: se o ecrã tiver voltado a ela (o servidor
+               não deixou abrir a nova, e o `GET /pos/venda/aberta` devolveu-a
+               outra vez, ou ela foi retomada), quem fala dela é a faixa — e
+               duas caixas a dizer o mesmo liam-se como dois problemas
+               diferentes. */
+            contasDeLado={contasDeLado.filter((c) => c.id !== venda?.id)}
             aPerguntar={aPerguntar}
+            aRetomar={aRetomar}
             partesPorCobrar={partesPorCobrar}
             onPerguntar={() => perguntarPelaConta(venda?.id)}
-            onPerguntarPelaDeLado={() => perguntarPelaConta(contaDeLado?.id)}
-            onPorDeLado={porContaDeLado}
+            onPerguntarPelaDeLado={(conta) => perguntarPelaConta(conta?.id)}
+            /* Envolvido, e não `onPorDeLado={porContaDeLado}`: o `onClick` do
+               botão passa o evento do rato como primeiro argumento, e o
+               primeiro argumento desta função é o MOTIVO da nota. Ligada
+               directamente, guardava um SyntheticEvent inteiro dentro do
+               estado, no lugar da palavra que decide o que a nota diz. */
+            onPorDeLado={() => porContaDeLado('travada')}
+            onRetomarDeLado={retomarContaDeLado}
             onVoltarAsPartes={() => setVista('reparticao')}
             onTocarLinha={(linha) => setEmEdicao({ produtoId: linha.produto_id, linhaId: linha.id })}
             /* A dúvida por apurar NÃO se limpa aqui, pela mesma razão da seta

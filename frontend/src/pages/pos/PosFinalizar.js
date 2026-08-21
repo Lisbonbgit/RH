@@ -746,6 +746,13 @@ export default function PosFinalizar({
   // nem aparecem: um botão que não faz nada é pior do que não existir.
   onDividir,
   onSeparar,
+  // A frase que explica por que é que os dois botões estão desligados, ou
+  // `null` para os deixar vivos. Só há lugar para UMA conta repartida de cada
+  // vez (ver `PosVenda::abrirReparticao`), e uma segunda por cima de uma que
+  // ainda tem gente por pagar apagava a primeira do ecrã, com o dinheiro dela
+  // por receber. A frase vem de cima já escrita, do mesmo sítio que faz o
+  // `abrirReparticao` recusar — este ecrã não a redescobre nem a reescreve.
+  impedeRepartir = null,
 }) {
   // [{ tipo_pagamento_id, valor: string, auto: boolean }] — `valor` é sempre
   // STRING, pelo mesmo motivo do PosCampoValor: um campo controlado que a
@@ -1198,13 +1205,23 @@ export default function PosFinalizar({
                 Cada parte fica com a sua Fatura Simplificada. Depois de repartida, esta conta
                 deixa de aceitar alterações e a divisão não se desfaz.
               </p>
+              {/* A razão vive encostada aos botões que ela está a tentar
+                  carregar, como o `motivoBloqueio` do EMITIR: é a MESMA frase
+                  que os desliga, por isso não há forma de os desligar em
+                  silêncio nem de os deixar convidar ao que a função recusa. */}
+              {impedeRepartir && (
+                <div className="mt-3 flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3">
+                  <AlertTriangle className="h-5 w-5 text-warning shrink-0 mt-0.5" />
+                  <p className="text-sm">{impedeRepartir}</p>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-2.5 mt-3">
                 <Button
                   type="button"
                   variant="outline"
                   className="h-16 flex-col gap-0.5"
                   onClick={onDividir}
-                  disabled={aEmitir || congelada || !temLinhas || total <= 0}
+                  disabled={aEmitir || congelada || !temLinhas || total <= 0 || !!impedeRepartir}
                 >
                   <span className="flex items-center gap-1.5 font-medium">
                     <Divide className="h-4 w-4" />
@@ -1217,7 +1234,7 @@ export default function PosFinalizar({
                   variant="outline"
                   className="h-16 flex-col gap-0.5"
                   onClick={onSeparar}
-                  disabled={aEmitir || congelada || !temLinhas || total <= 0}
+                  disabled={aEmitir || congelada || !temLinhas || total <= 0 || !!impedeRepartir}
                 >
                   <span className="flex items-center gap-1.5 font-medium">
                     <Scissors className="h-4 w-4" />

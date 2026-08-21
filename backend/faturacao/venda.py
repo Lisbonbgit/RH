@@ -84,6 +84,29 @@ _MSG_VENDA_COM_EMISSAO = (
     "depois de se confirmar no Vendus se a Fatura Simplificada chegou a sair "
     "é que se sabe o que fazer a esta conta."
 )
+# As duas da SESSÃO (ver `_garante_sessao_desta_venda_aberta`). São duas e não
+# uma porque a saída que a operadora tem à frente é diferente em cada uma —
+# a mesma distinção que o núcleo fiscal já faz no FINALIZAR
+# (`fiscal.py::SessaoEmFechoAgora`), com as palavras de quem está a PICAR e
+# não a cobrar: aqui não há Fatura Simplificada nenhuma em jogo, só uma conta
+# que ela está a tentar mudar.
+_MSG_SESSAO_A_FECHAR_AGORA = (
+    "A caixa desta conta está a FECHAR o turno neste momento — o Z está a ser "
+    "calculado e, enquanto isso, esta sessão não aceita alterações às contas. "
+    "Nada foi gravado: a conta continua aqui, tal como está. Espere alguns "
+    "segundos e repita — um fecho demora um instante."
+)
+# Um fecho FEITO. O Z já está assinado e leva lá dentro esta conta, com o
+# valor que ela tinha (`caixa.py::_contas_abertas_da_sessao`): mudá-la agora
+# punha o retrato assinado a discordar da base de dados, e ninguém volta a
+# olhar para a sessão depois do fecho para dar por isso.
+_MSG_SESSAO_JA_FECHADA = (
+    "A caixa desta conta já fechou o turno — o Z está assinado e esta conta "
+    "ficou lá registada tal como está. Um turno fechado não aceita alterações "
+    "às contas dele: se o cliente ainda quer levar, pique numa conta nova na "
+    "caixa que está aberta agora; se esta conta já não vai ser paga, é o "
+    "gestor que a arruma."
+)
 # O choque de duas alterações à MESMA conta (ver `_aplicar_as_linhas`). Não é
 # um erro para chamar o gestor — é uma conta que mudou por baixo e que se relê.
 _MSG_CONTA_MUDOU_DEBAIXO = (
@@ -374,6 +397,51 @@ async def _garante_sem_emissao(db, venda_id: str) -> None:
         raise HTTPException(status_code=409, detail=_MSG_VENDA_COM_EMISSAO)
 
 
+async def _garante_sessao_desta_venda_aberta(db, venda: Dict) -> None:
+    """**A sessão de caixa DESTA venda tem de estar aberta para lhe mexer** —
+    o mesmo raciocínio (e a mesma pergunta) de
+    `fiscal.py::_garante_sessao_da_venda_aberta`, que o `finalizar` faz desde
+    o defeito I1, agora também nas rotas que ESCREVEM na conta.
+
+    **O que faltava, medido pelas rotas reais.** Havia um comentário no fecho
+    (e outro no ecrã) a afirmar que, a partir da marca `a_fechar`, "nenhuma
+    conta nova pode nascer nesta sessão, porque `abrir_venda` resolve a
+    sessão por `_sessao_aberta`". A afirmação era verdadeira sobre o
+    `abrir_venda` e falsa sobre tudo o resto: só ele passava por lá. Com a
+    sessão em `a_fechar`, um `POST /pos/venda/{id}/dividir` passava e nasciam
+    3 contas `aberta` nessa sessão; com a sessão já `fechada`, o `dividir`
+    passava outra vez (2 partes novas com o `sessao_id` da sessão fechada) e
+    o `POST /pos/venda/{id}/linhas` também — a conta subiu de 14,10 € para
+    21,15 € numa sessão cujo Z já estava assinado.
+
+    É o pior dos dois mundos: o Z é um retrato assinado de um turno (o
+    `contas_abertas` que `caixa.py::_contas_abertas_da_sessao` grava lá dentro
+    diz, com valor, o que ficou por cobrar) e o turno continuava a mudar por
+    baixo dele. Ninguém volta a olhar para a sessão depois do fecho, por isso
+    a divergência não aparecia em relatório nenhum.
+
+    A pergunta é pela sessão DESTA venda (`venda["sessao_id"]`), nunca "há
+    alguma sessão aberta nesta caixa" — a caixa pode ter reaberto entretanto
+    com uma sessão nova, que não tem nada a ver com esta conta antiga. E é
+    `venda.get(...)`, não `venda[...]`: uma venda sem `sessao_id` (dados
+    corrompidos, uma migração incompleta) cai no MESMO 409, nunca num
+    KeyError/500 — `find_one({"id": None})` não encontra nada e o `if not
+    sessao` trata disso.
+
+    Distingue os mesmos dois casos do núcleo fiscal, porque a saída que a
+    operadora tem à frente é diferente em cada um: um fecho A DECORRER
+    (`a_fechar`) é uma espera de segundos e a conta continua exactamente
+    onde está; um fecho FEITO é o fim desta conta neste turno.
+
+    **O `cancelar_venda` é a única rota de escrita que NÃO passa por aqui**,
+    e é uma decisão, não um esquecimento — ver a docstring dela."""
+    sessao = await db[COLECOES["sessoes_caixa"]].find_one({"id": venda.get("sessao_id")})
+    if sessao and sessao.get("estado") == "a_fechar":
+        raise HTTPException(status_code=409, detail=_MSG_SESSAO_A_FECHAR_AGORA)
+    if not sessao or sessao.get("estado") != "aberta":
+        raise HTTPException(status_code=409, detail=_MSG_SESSAO_JA_FECHADA)
+
+
 async def _porque_nao_foi_cancelada(db, venda_id: str) -> str:
     """A mensagem do 409 do cancelamento compensado — escolhida pelo estado
     que a conta tem NO MOMENTO EM QUE A MENSAGEM É ENVIADA, e não pelo que
@@ -536,10 +604,16 @@ async def _aplicar_as_linhas(
             # a conta: entre duas tentativas pode ter nascido uma reserva
             # fiscal, e uma conta com emissão em curso está congelada
             # (`_garante_sem_emissao`) — repetir por cima dela era escrever
-            # numa venda que pode estar a virar Fatura Simplificada.
+            # numa venda que pode estar a virar Fatura Simplificada. Pela
+            # mesma razão se repete a da SESSÃO: as tentativas duram
+            # milissegundos, mas é exactamente nessa ordem de grandeza que
+            # `caixa.py::fechar_caixa` marca a sessão `a_fechar` — repetir
+            # sem voltar a perguntar era deixar a escrita entrar num turno
+            # que já está a somar o Z.
             venda = await _obter_venda_da_loja(db, venda_id, loja_id)
             _garante_aberta(venda)
             await _garante_sem_emissao(db, venda_id)
+            await _garante_sessao_desta_venda_aberta(db, venda)
 
         linhas = aplicar(venda)
         versao = venda.get("linhas_versao")
@@ -931,6 +1005,11 @@ async def juntar_linha(
     venda = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
     _garante_aberta(venda)
     await _garante_sem_emissao(db, venda_id)
+    # DEPOIS da emissão, e não antes: uma conta travada é travada em qualquer
+    # turno, e "chame o gestor" é a acção certa nos dois casos — dizer-lhe
+    # primeiro "o turno já fechou" mandava-a ir picar noutra caixa uma conta
+    # que pode ter uma Fatura Simplificada real a nascer.
+    await _garante_sessao_desta_venda_aberta(db, venda)
 
     produto = await db[COLECOES["produtos"]].find_one({"id": dados.produto_id}, {"_id": 0})
     if not produto:
@@ -993,6 +1072,7 @@ async def editar_linha(
     venda = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
     _garante_aberta(venda)
     await _garante_sem_emissao(db, venda_id)
+    await _garante_sessao_desta_venda_aberta(db, venda)
 
     alteracoes = dados.model_dump(exclude_unset=True)
     if alteracoes.get("opcoes") is not None:
@@ -1054,6 +1134,7 @@ async def remover_linha(
     venda = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
     _garante_aberta(venda)
     await _garante_sem_emissao(db, venda_id)
+    await _garante_sessao_desta_venda_aberta(db, venda)
 
     def remover(conta):
         linhas = list(conta.get("linhas") or [])
@@ -1075,6 +1156,7 @@ async def aplicar_desconto_global(
     venda = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
     _garante_aberta(venda)
     await _garante_sem_emissao(db, venda_id)
+    await _garante_sessao_desta_venda_aberta(db, venda)
 
     atualizacao = {
         "desconto_global_pct": dados.desconto_pct,
@@ -1124,6 +1206,22 @@ async def cancelar_venda(venda_id: str, operador: Dict = Depends(operador_atual)
 
     Por isso: reserva presente → 409 e o gestor. Nunca um "tente novamente",
     que só convidava a operadora a carregar outra vez no mesmo botão.
+
+    **A ÚNICA rota de escrita sem `_garante_sessao_desta_venda_aberta`, e é
+    uma decisão.** As outras seis recusam numa sessão que já não está aberta
+    porque MUDAM DINHEIRO — a conta que o Z registou por 14,10 € passava a
+    valer 21,15 € debaixo de um Z assinado, ou nasciam partes novas num turno
+    fechado. Cancelar não muda o valor de nada nem faz nascer conta nenhuma:
+    escreve exactamente aquilo que o Z já diz — que esta conta nunca foi
+    cobrada — e é a única forma de a arrumar. Bloqueá-la aqui era deixar as
+    contas de um turno fechado presas em `aberta` para sempre, que é o
+    problema oposto e não o mesmo.
+
+    Quem chega a esta rota com a sessão já fechada é o gestor
+    (`caixa.py::arrumar_conta_esquecida`, o ecrã das contas por cobrar de
+    turnos fechados), e não a operadora: com a caixa fechada, nenhum ecrã do
+    POS mostra estas contas — nem `GET /pos/venda/aberta` nem `GET
+    /pos/venda/repartidas`, que resolvem a sessão por `_sessao_aberta`.
     """
     db = obter_db()
     venda = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
@@ -1471,7 +1569,7 @@ async def _porque_nao_ficou_dividida(db, venda_id: str) -> str:
 
 
 async def _grava_as_partes(
-    db, venda_id: str, mae: Dict, filhas: List[Dict]
+    db, venda_id: str, mae: Dict, filhas: List[Dict], modo: str
 ) -> dict:
     """A escrita partilhada por `dividir_conta` e `separar_conta` (Task 4),
     depois de cada rota já ter construído as SUAS filhas — o dividir reparte
@@ -1501,7 +1599,16 @@ async def _grava_as_partes(
     for filha in filhas:
         await db[COLECOES["vendas"]].insert_one(dict(filha))
 
-    atualizacao = {"estado": "separada"}
+    # `reparticao_modo` fica gravado NA MÃE, na mesma escrita que a trava, e
+    # não porque o servidor precise dele para alguma coisa: precisa o ECRÃ.
+    # "Divisão de Conta" e "Conta Separada" são dois cabeçalhos diferentes, e
+    # sem este campo a lista de partes recuperada do servidor
+    # (`contas_repartidas`, abaixo) tinha de adivinhar qual deles escrever —
+    # ou seja, tinha de mentir metade das vezes. Uma repartição feita ANTES
+    # deste campo existir não o tem: sai `None` e o ecrã fica com o cabeçalho
+    # por omissão, que é o que ele já fazia — nada rebenta e não é preciso
+    # migração nenhuma.
+    atualizacao = {"estado": "separada", "reparticao_modo": modo}
     resultado = await db[COLECOES["vendas"]].update_one(
         _a_mae_como_foi_lida(mae), {"$set": atualizacao}
     )
@@ -1560,7 +1667,12 @@ async def _grava_as_partes(
         )
 
     mae.update(atualizacao)
+    # A MESMA forma que `contas_repartidas` devolve ao recuperar isto do
+    # servidor — `modo` incluído. É de propósito: o ecrã constrói a
+    # repartição a partir das duas respostas, e duas formas diferentes para a
+    # mesma coisa acabam com um dos dois caminhos a esquecer-se de um campo.
     return {
+        "modo": modo,
         "conta_mae": _venda_publica(mae),
         "partes": [_venda_publica(f) for f in filhas],
     }
@@ -1590,6 +1702,13 @@ async def dividir_conta(
     mae = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
     _garante_aberta(mae)
     await _garante_sem_emissao(db, venda_id)
+    # A conta que nasce daqui herda o `sessao_id` da mãe (`_nova_parte`): sem
+    # esta guarda, dividir uma conta numa sessão FECHADA fazia nascer partes
+    # `aberta` num turno cujo Z já estava assinado — medido, 2 partes numa
+    # sessão fechada. E em `a_fechar` era pior ainda: nasciam DEPOIS de o
+    # fecho ter contado as contas abertas, e ficavam fora do próprio Z que
+    # existe para as mencionar.
+    await _garante_sessao_desta_venda_aberta(db, mae)
 
     linhas_da_mae = mae.get("linhas") or []
     if not linhas_da_mae:
@@ -1615,7 +1734,7 @@ async def dividir_conta(
     ]
     _confirma_que_as_partes_somam(mae, filhas)
 
-    return await _grava_as_partes(db, venda_id, mae, filhas)
+    return await _grava_as_partes(db, venda_id, mae, filhas, "dividir")
 
 
 # --- Separar a conta: cada parte leva as UNIDADES que o staff atribuiu (Task 4) --
@@ -1841,6 +1960,9 @@ async def separar_conta(
     mae = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
     _garante_aberta(mae)
     await _garante_sem_emissao(db, venda_id)
+    # A mesma guarda (e a mesma razão) do `dividir_conta`: as partes herdam o
+    # `sessao_id` da mãe, e um turno fechado não pode ganhar contas novas.
+    await _garante_sessao_desta_venda_aberta(db, mae)
 
     if not (mae.get("linhas") or []):
         raise HTTPException(status_code=422, detail=_MSG_CONTA_VAZIA_NAO_SE_DIVIDE)
@@ -1872,7 +1994,141 @@ async def separar_conta(
     ]
     _confirma_que_as_partes_somam(mae, filhas, rota="separar")
 
-    return await _grava_as_partes(db, venda_id, mae, filhas)
+    return await _grava_as_partes(db, venda_id, mae, filhas, "separar")
+
+
+# --- As partes por cobrar, ao arrancar o ecrã ---------------------------------
+#
+# Declarada ANTES de `GET /pos/venda/{venda_id}` (que está no fim do
+# ficheiro), pela razão de sempre: as duas casam com um caminho de três
+# segmentos e a de `{venda_id}` casa com qualquer um. Abaixo dela, "repartidas"
+# era lido como um id de venda e a operadora apanhava um 404.
+
+
+@router.get("/pos/venda/repartidas")
+async def contas_repartidas(
+    caixa_id: str, operador: Dict = Depends(operador_atual)
+) -> List[dict]:
+    """As contas repartidas deste posto que ainda têm gente por pagar — cada
+    uma com a mãe e com TODAS as suas partes, no formato de `dividir_conta`.
+
+    **Porque é uma rota nova e não um alargamento do `GET /pos/venda/aberta`.**
+    A tentação era acrescentar as partes à resposta dessa rota, já que é ela
+    que o ecrã chama ao arrancar. Três razões decidiram contra, e a terceira
+    sozinha chegava:
+
+    1. **Ela responde `null`, e é isso que dá a resposta.** `venda_aberta`
+       devolve `Optional[dict]`: `null` quer dizer "não há conta em curso", e
+       o ecrã lê essa resposta como a conta que vai pôr à frente
+       (`aplicarVenda(respVenda.data || null)`). Uma conta repartida deixa
+       precisamente o posto SEM conta em curso — a mãe fica `separada` e o
+       ecrã fica vazio — por isso o caso que mais interessa aqui é
+       exactamente aquele em que a outra rota tem de continuar a responder
+       `null`. Embrulhar tudo num `{conta: ..., partes: [...]}` mudava o
+       significado da resposta dela para todos os chamadores de uma vez.
+    2. **São dois âmbitos e duas cardinalidades.** Aquela pergunta é "qual é a
+       conta que está à frente" e responde UMA (a mais recente); esta é
+       "quanto é que ficou por receber neste posto" e responde N, e as N são
+       contas que não estão à frente de ninguém.
+    3. **A que existe é o caminho de recuperação da conta em curso, e não se
+       parte o que salva o balcão.** É por ela que o posto recupera a conta
+       depois da tela de descanso e de um F5. Uma pergunta nova, que ninguém
+       ainda faz, não pode custar-lhe nada — e uma rota separada é a única
+       forma de garantir isso: falhe ela o que falhar, a conta em curso volta
+       na mesma.
+
+    **O âmbito é o da sessão E do dispositivo**, o mesmo (e pela mesma razão)
+    de `GET /pos/venda/aberta`: as partes herdam o `dispositivo_id` da mãe
+    (`_nova_parte`), e a repartição é o estado do ECRÃ daquele posto — o "PC
+    Drive-Thru" não tem nada que mostrar as pessoas por cobrar do "PC Balcão",
+    tal como não mostra a conta em curso dele. Quem tem de ver TODAS as contas
+    abertas da sessão, venham do posto que vierem, é o fecho de caixa — e é lá
+    que isso está (`caixa.py::_contas_abertas_da_sessao`).
+
+    **Devolve as partes TODAS de cada mãe, não só as que faltam.** A faixa do
+    balcão diz "Faltam cobrar 2 pessoas **de 3**", e a lista mostra o número
+    da fatura das que já foram cobradas: com só as abertas na resposta, o "de
+    3" virava "de 2" e a conta parecia mais pequena do que foi. O que decide
+    se um grupo entra na resposta é ter pelo menos uma parte ainda `aberta`;
+    uma repartição inteiramente resolvida não é dinheiro por receber e não
+    tem de voltar ao ecrã.
+
+    Sem sessão aberta, o 409 de `_sessao_aberta` — não há partes por cobrar
+    numa caixa que não está aberta. Sem partes nenhumas, `[]`, que é o estado
+    normal do balcão e não é erro nenhum.
+    """
+    db = obter_db()
+    await _obter_caixa_da_loja(db, caixa_id, operador["loja_id"])
+    sessao = await _sessao_aberta(db, caixa_id)
+
+    # A pergunta começa pelas PARTES por cobrar, e não pelas mães `separada`,
+    # por uma questão de resposta: uma mãe separada cujas partes já foram
+    # todas cobradas não é para mostrar, e começar por ela obrigava a
+    # perguntar por cada uma para depois a deitar fora. Assim, o que sai desta
+    # primeira leitura já é só o que interessa.
+    #
+    # `dispositivo_id` vem do TOKEN, nunca da query — como em
+    # `venda_aberta`, e com a mesma semântica para os tokens antigos: filtrar
+    # por `None` casa, no Mongo, com o campo ausente e com o campo a `null`.
+    abertas = await (
+        db[COLECOES["vendas"]]
+        .find({
+            "sessao_id": sessao["id"],
+            "estado": "aberta",
+            "dispositivo_id": operador.get("dispositivo_id"),
+        })
+        .sort("criada_em", -1)
+        .to_list(1000)
+    )
+
+    # As mães pela ordem em que a parte aberta MAIS RECENTE de cada uma
+    # aparece — a mesma regra do "a mais recente" de `venda_aberta`, para o
+    # ecrã, que só tem lugar para uma repartição de cada vez, ficar com a que
+    # a operadora estava mesmo a cobrar. `dict.fromkeys` guarda a ordem e tira
+    # os repetidos numa passagem (Python 3.7+).
+    maes_ids = list(dict.fromkeys(
+        v["conta_mae_id"] for v in abertas if v.get("conta_mae_id")
+    ))
+
+    grupos = []
+    for mae_id in maes_ids:
+        # A mãe pelo âmbito de sempre — a loja do token. Uma parte não pode
+        # arrastar para a resposta uma conta de outra loja, e o `find_one`
+        # pode não encontrar nada (uma parte cuja mãe foi apagada à mão na
+        # base de dados): aí salta-se o grupo em vez de rebentar o arranque do
+        # ecrã inteiro.
+        mae = await db[COLECOES["vendas"]].find_one(
+            {"id": mae_id, "loja_id": operador["loja_id"]}
+        )
+        if mae is None:
+            continue
+        irmas = await (
+            db[COLECOES["vendas"]]
+            .find({"conta_mae_id": mae_id})
+            .sort("criada_em", 1)
+            .to_list(1000)
+        )
+        grupos.append({
+            "modo": mae.get("reparticao_modo"),
+            "conta_mae": _venda_publica(
+                mae, emissao_por_confirmar=await _emissao_por_confirmar(db, mae)
+            ),
+            # O travão pergunta-se por PARTE, e não se assume `False` para
+            # nenhuma: é desta lista que sai a conta que a operadora vai pôr à
+            # frente para cobrar, e uma parte com uma emissão por confirmar
+            # tem de chegar ao ecrã já travada — senão o EMITIR aparece aceso
+            # por cima de uma Fatura Simplificada que pode ter saído, que é o
+            # defeito que `emissao_por_confirmar` existe para fechar. São
+            # poucas leituras (no máximo 20 partes por conta) e só correm
+            # quando há mesmo uma repartição por cobrar.
+            "partes": [
+                _venda_publica(
+                    irma, emissao_por_confirmar=await _emissao_por_confirmar(db, irma)
+                )
+                for irma in irmas
+            ],
+        })
+    return grupos
 
 
 async def _documento_da_venda(db, venda_id: str) -> Optional[Dict]:

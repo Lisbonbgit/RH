@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   getReservasPresas, reconciliarReserva, libertarReserva, getLojas, detalhesErro,
+  getContasEsquecidas, arrumarContaEsquecida,
 } from '../../../lib/faturacao';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
@@ -17,7 +18,7 @@ import {
 } from '../../../components/ui/alert-dialog';
 import {
   ShieldAlert, RefreshCw, Copy, Check, CheckCircle2, AlertTriangle, Clock,
-  FileSearch, Unlock, Store, Loader2,
+  FileSearch, Unlock, Store, Loader2, Wallet, Ban,
 } from 'lucide-react';
 import PageHeader from '../../../components/PageHeader';
 import { toast } from 'sonner';
@@ -209,6 +210,17 @@ export default function FatReservasPresas() {
   const [avisosZ, setAvisosZ] = useState(() => lerAvisosZ());
   const [avisoADispensar, setAvisoADispensar] = useState(null);
 
+  // As contas por cobrar de turnos JÁ FECHADOS — ver o comentário do card, lá
+  // em baixo. Estado PRÓPRIO, e não misturado com o das reservas: a lista de
+  // emergência das reservas presas é a razão de ser deste ecrã e não pode
+  // ficar inacessível porque a segunda pergunta falhou — a mesma regra que
+  // este ficheiro já aplica às lojas.
+  const [esquecidas, setEsquecidas] = useState([]);
+  const [erroEsquecidas, setErroEsquecidas] = useState(null);
+  const [alvoArrumar, setAlvoArrumar] = useState(null);
+  const [confirmouQueNaoFoiPaga, setConfirmouQueNaoFoiPaga] = useState(false);
+  const [aArrumar, setAArrumar] = useState(false);
+
   const carregar = useCallback(async () => {
     setLoading(true);
     setErroLista(null);
@@ -234,7 +246,48 @@ export default function FatReservasPresas() {
     } catch (error) {
       setLojasPorId({});
     }
+    // E as contas por cobrar de turnos fechados, também à parte e pela mesma
+    // razão. Se falhar, diz-se que não se sabe — nunca se desenha uma lista
+    // vazia, que aqui se leria como "não ficou dinheiro por receber".
+    try {
+      const { data } = await getContasEsquecidas();
+      setEsquecidas(Array.isArray(data) ? data : []);
+      setErroEsquecidas(null);
+    } catch (error) {
+      const { mensagem } = detalhesErro(
+        error, 'Não foi possível carregar as contas por cobrar de turnos fechados.');
+      setErroEsquecidas(mensagem);
+      setEsquecidas([]);
+    }
   }, []);
+
+  // --- Arrumar uma conta de um turno fechado ---------------------------------
+  //
+  // A confirmação à mão é o mesmo desenho do LIBERTAR aqui em cima, e pela
+  // mesma família de razões: arrumar declara ao sistema que esta conta NUNCA
+  // FOI PAGA, e isso pode ser falso — o cliente pode ter pago em dinheiro e a
+  // operadora esquecido-se de finalizar. Nesse caso o dinheiro está na gaveta
+  // e a venda nunca existiu: é uma conversa com quem lá estava, não um clique.
+  const executarArrumar = async (conta) => {
+    setAArrumar(true);
+    try {
+      await arrumarContaEsquecida(conta.id);
+      setAlvoArrumar(null);
+      setConfirmouQueNaoFoiPaga(false);
+      toast.success('Conta dada por perdida. Fica registada como cancelada, com o seu nome.');
+      await carregar();
+    } catch (error) {
+      // A mensagem é a do servidor, tal e qual — já vem em PT-PT e já diz o
+      // que fazer a seguir (ir ao card de cima, ou ao POS). Sem "tente
+      // novamente": as três recusas são fundamentadas e repetir dava a mesma.
+      mostrarErro(error, 'Não foi possível arrumar esta conta.', null);
+      setAlvoArrumar(null);
+      setConfirmouQueNaoFoiPaga(false);
+      await carregar();
+    } finally {
+      setAArrumar(false);
+    }
+  };
 
   useEffect(() => { carregar(); }, [carregar]);
 
@@ -470,7 +523,7 @@ export default function FatReservasPresas() {
       <PageHeader
         icon={ShieldAlert}
         title="Reservas Fiscais Presas"
-        subtitle="Vendas cuja Fatura Simplificada ficou a meio — e as duas saídas que existem"
+        subtitle="O que ficou pendurado: emissões a meio, e contas por cobrar de turnos já fechados"
       >
         <Button variant="outline" onClick={carregar} disabled={loading} data-testid="atualizar-reservas-btn">
           <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
@@ -667,6 +720,162 @@ export default function FatReservasPresas() {
                 );
               })}
             </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* --- Contas por cobrar de turnos JÁ FECHADOS --------------------------
+          **O buraco que este card fecha, com os números que se mediram.**
+          14,10 € divididos por duas pessoas, ninguém cobrado, caixa fechada,
+          turno seguinte aberto. `GET /pos/venda/repartidas` → `[]`; `GET
+          /pos/venda/aberta` → `null`; `GET /pos/caixa/contas-abertas` →
+          `{quantas: 0}`. As duas partes continuavam na base a `estado=aberta`
+          com o `sessao_id` do turno anterior, e NENHUM ecrã voltava a
+          mostrá-las. O `contas_abertas` que o fecho grava na sessão não tinha
+          um único leitor em todo o repositório: escrevia-se para o Z de papel
+          e mais nada.
+
+          **Porque é que vive AQUI, e não num ecrã próprio.** É o mesmo género
+          de problema das reservas presas — ficou a meio, não se resolve
+          sozinho, e é preciso alguém ir perguntar o que aconteceu — e este é
+          o ecrã a que o gestor já vem quando a loja lhe telefona. Um ecrã novo
+          era um segundo sítio a que ele teria de se lembrar de ir; e as duas
+          listas cruzam-se (uma conta com reserva fiscal aparece nas duas, e a
+          de cima é que manda), o que se lê muito melhor lado a lado do que em
+          páginas diferentes.
+
+          **E porque é que não vive no POS.** A operadora do turno seguinte não
+          tem nada que mexer numa conta de um turno que outra pessoa fechou —
+          mexer nela mudava um Z já assinado, e o servidor recusa-lho desde
+          esta ronda (`venda.py::_garante_sessao_desta_venda_aberta`). Um ecrã
+          do balcão a mostrá-las era pedir-lhe uma coisa que ela não pode
+          fazer. */}
+      <Card data-testid="contas-esquecidas-card">
+        <CardContent className="p-5 space-y-4">
+          <div className="flex items-center gap-2">
+            <Wallet className="h-5 w-5 text-muted-foreground shrink-0" />
+            <h3 className="font-semibold">
+              Contas por cobrar de turnos fechados
+              {esquecidas.length > 0 ? ` (${esquecidas.length})` : ''}
+            </h3>
+          </div>
+
+          {erroEsquecidas ? (
+            <Bloco tom="aviso" titulo="Não foi possível carregar esta lista" testid="esquecidas-erro">
+              <p>{erroEsquecidas}</p>
+            </Bloco>
+          ) : esquecidas.length === 0 ? (
+            <p className="text-sm text-muted-foreground" data-testid="esquecidas-vazio">
+              Nenhuma. Todos os turnos fechados deixaram as contas deles
+              resolvidas — cobradas ou canceladas. Esta lista ganha linhas
+              quando uma conta fica aberta e o turno fecha por cima dela: uma
+              parte de uma conta repartida que ninguém pagou, ou uma conta que
+              a operadora pôs de lado e nunca mais retomou. O relatório Z desse
+              turno regista-as, mas o Z é papel — é aqui que elas continuam a
+              existir.
+            </p>
+          ) : (
+            <>
+              <p className="text-sm text-muted-foreground" data-testid="esquecidas-resumo">
+                {plural(esquecidas.length, 'conta ficou', 'contas ficaram')} aberta
+                {esquecidas.length === 1 ? '' : 's'} num turno que já fechou —{' '}
+                <span className="font-semibold text-foreground">
+                  {fmtEUR(esquecidas.reduce((t, c) => t + (Number(c.total) || 0), 0))}
+                </span>
+                . Esse dinheiro não foi facturado nem entrou em nenhum Z como venda.
+                Nenhum ecrã do POS lhes chega: com a caixa fechada, o balcão só vê
+                o turno que está a decorrer.
+              </p>
+
+              <div className="space-y-3">
+                {esquecidas.map((c) => (
+                  <div
+                    key={c.id}
+                    className="rounded-xl border bg-card p-4 space-y-3"
+                    data-testid={`conta-esquecida-${c.id}`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+                        <span className="flex items-center gap-1.5 font-semibold">
+                          <Store className="h-4 w-4 text-muted-foreground shrink-0" />
+                          {nomeLoja(c)}
+                        </span>
+                        <span className="text-lg font-bold" data-testid={`esquecida-total-${c.id}`}>
+                          {fmtEUR(c.total) || (
+                            <span className="text-base font-medium text-muted-foreground">
+                              valor indisponível
+                            </span>
+                          )}
+                        </span>
+                        {/* "Faltou cobrar uma pessoa" e "ficou uma conta a
+                            meio" são duas conversas diferentes com quem lá
+                            estava. */}
+                        {/* Tokens, e não uma cor fixa: estes dois crachás
+                            nasceram nesta ronda e não têm de herdar a paleta
+                            escrita à mão dos de cima (que são anteriores aos
+                            tokens do tema). */}
+                        {c.conta_mae_id && (
+                          <Badge variant="outline" className="bg-muted text-muted-foreground border-border">
+                            Parte de uma conta repartida
+                          </Badge>
+                        )}
+                        {c.reserva_fiscal_por_resolver && (
+                          <Badge variant="outline" className="bg-destructive/10 text-destructive border-destructive/30" data-testid={`esquecida-travada-${c.id}`}>
+                            Reserva fiscal por resolver
+                          </Badge>
+                        )}
+                      </div>
+                      <span className="flex items-center gap-1.5 text-sm text-muted-foreground shrink-0">
+                        <Clock className="h-3.5 w-3.5" />
+                        {formatarData(c.criada_em) || 'data desconhecida'}
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-muted-foreground">
+                      Conta {c.id}
+                      {c.caixa_nome ? ` · caixa ${c.caixa_nome}` : ''}
+                      {c.sessao_id ? ` · turno ${c.sessao_id}` : ''}
+                      {/* O turno SEM estado é uma sessão que desapareceu da
+                          base — dinheiro sem turno nenhum, que é ainda mais
+                          invisível do que o resto. Diz-se. */}
+                      {c.sessao_estado
+                        ? (formatarData(c.sessao_fechada_em)
+                          ? ` · fechado a ${formatarData(c.sessao_fechada_em)}` : '')
+                        : ' · o turno desta conta já não existe na base de dados'}
+                      {c.sessao_fechada_por?.nome ? ` por ${c.sessao_fechada_por.nome}` : ''}
+                    </p>
+
+                    {c.reserva_fiscal_por_resolver ? (
+                      <Bloco tom="perigo" titulo="Esta resolve-se primeiro em cima">
+                        <p>
+                          Tem uma reserva fiscal por resolver: pode existir uma Fatura Simplificada
+                          real desta venda do lado da Autoridade Tributária. Enquanto não se souber,
+                          esta conta não se arruma daqui — resolva a reserva na lista acima
+                          (reconciliar, ou libertar depois de confirmar no Vendus) e volte aqui.
+                        </p>
+                      </Bloco>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <BotaoCopiar valor={c.id} rotulo="Copiar referência" testid={`copiar-esquecida-${c.id}`} />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => { setConfirmouQueNaoFoiPaga(false); setAlvoArrumar(c); }}
+                          data-testid={`arrumar-esquecida-${c.id}`}
+                        >
+                          <Ban className="h-4 w-4 mr-2" />
+                          Dar por perdida
+                        </Button>
+                        <span className="text-xs text-muted-foreground">
+                          Só depois de perguntar a quem estava nesse turno.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
@@ -879,6 +1088,79 @@ export default function FatReservasPresas() {
             )}
             <Button type="button" onClick={() => setResultado(null)} disabled={aReconciliar} data-testid="resultado-fechar-btn">
               Fechar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dar por perdida — a acção que declara "isto nunca foi pago". Diálogo
+          próprio e com uma declaração à mão, e não um `AlertDialog` de sim/não,
+          pela mesma razão do LIBERTAR: se a conta TIVER sido paga em dinheiro e
+          a operadora se tiver esquecido de finalizar, cancelá-la apaga do
+          sistema a única pista de que aqueles euros entraram na gaveta. O
+          caminho fácil não pode ser o destrutivo. */}
+      <Dialog
+        open={!!alvoArrumar}
+        onOpenChange={(o) => { if (!o && !aArrumar) { setAlvoArrumar(null); setConfirmouQueNaoFoiPaga(false); } }}
+      >
+        <DialogContent data-testid="arrumar-dialog" className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="text-destructive">Dar esta conta por perdida</DialogTitle>
+            <DialogDescription>
+              {alvoArrumar
+                ? `${nomeLoja(alvoArrumar)} · ${fmtEUR(alvoArrumar.total) || 'valor indisponível'}`
+                : ''}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <Bloco tom="perigo" titulo="O que isto declara">
+              <p>
+                Que esta conta NUNCA foi paga. Ela passa a cancelada, com o seu nome e a data, e
+                sai desta lista. O relatório Z daquele turno não muda — continua a registá-la como
+                tendo ficado por cobrar, que é a verdade do turno.
+              </p>
+            </Bloco>
+            <Bloco tom="aviso" titulo="Antes de carregar">
+              <p>
+                Pergunte a quem estava nesse turno. Se o cliente pagou em dinheiro e a operadora se
+                esqueceu de finalizar, o dinheiro está na gaveta e a venda nunca existiu no sistema —
+                dar a conta por perdida apaga a última pista de que aqueles euros entraram, e a
+                diferença do Z fica sem explicação.
+              </p>
+            </Bloco>
+
+            <div className="flex items-start gap-3 rounded-lg border p-3">
+              <Checkbox
+                id="confirmar-nao-foi-paga"
+                checked={confirmouQueNaoFoiPaga}
+                onCheckedChange={(v) => setConfirmouQueNaoFoiPaga(v === true)}
+                data-testid="confirmar-nao-foi-paga"
+              />
+              <Label htmlFor="confirmar-nao-foi-paga" className="text-sm font-normal leading-snug">
+                Confirmo que perguntei a quem estava nesse turno e que esta conta não foi paga.
+              </Label>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => { setAlvoArrumar(null); setConfirmouQueNaoFoiPaga(false); }}
+              disabled={aArrumar}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => executarArrumar(alvoArrumar)}
+              disabled={aArrumar || !confirmouQueNaoFoiPaga}
+              data-testid="confirmar-arrumar-btn"
+            >
+              {aArrumar ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Ban className="h-4 w-4 mr-2" />}
+              {aArrumar ? 'A arrumar...' : 'Dar por perdida'}
             </Button>
           </DialogFooter>
         </DialogContent>

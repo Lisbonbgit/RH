@@ -43,6 +43,7 @@ from typing import Dict, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .auth import gestor_atual
 from .caixa_math import diferenca, esperado, soma_vendas_dinheiro, total_por_tipo
 from .db import COLECOES, obter_db
 from .pos_auth import operador_atual
@@ -676,6 +677,39 @@ async def fechar_caixa(
         {"sessao_id": sessao["id"], "estado": "emitida"}
     ).to_list(10000)
 
+    # O que NÃO virou fatura nenhuma neste turno. Lido depois da marca, como
+    # tudo o resto aqui, e por isso definitivo — mas o "por isso" custou uma
+    # ronda a ficar verdadeiro, e a lista das razões escreve-se por extenso
+    # de propósito. Até esta ronda dizia-se aqui que "a partir da marca
+    # nenhuma conta nova pode nascer nesta sessão, porque `abrir_venda`
+    # resolve a sessão por `_sessao_aberta`". Só o `abrir_venda` é que passava
+    # por lá: medido pelas rotas reais, com a sessão em `a_fechar` o
+    # `POST /pos/venda/{id}/dividir` passava e nasciam 3 contas `aberta`
+    # nesta sessão, e com a sessão já `fechada` o mesmo `dividir` e o
+    # `POST /pos/venda/{id}/linhas` passavam outra vez — a conta subia de
+    # 14,10 € para 21,15 € debaixo de um Z assinado. O que torna esta leitura
+    # definitiva são as TRÊS guardas, e não uma:
+    #   - nenhuma conta nova nasce nesta sessão — `venda.py::abrir_venda`
+    #     resolve a sessão por `_sessao_aberta`, que só aceita `aberta`;
+    #   - nenhuma conta desta sessão muda de valor nem se reparte — as seis
+    #     rotas de escrita de `venda.py` (linhas, desconto, dividir, separar)
+    #     confirmam a sessão DESTA venda
+    #     (`venda.py::_garante_sessao_desta_venda_aberta`);
+    #   - nenhuma das abertas passa a `emitida` — o núcleo fiscal recusa
+    #     (`fiscal.py::_garante_sessao_da_venda_aberta`).
+    # A sétima rota de escrita, o `cancelar_venda`, passa de propósito: não
+    # muda o valor de conta nenhuma e é a única forma de arrumar uma conta que
+    # ninguém pagou (ver a docstring dela). Uma conta cancelada depois desta
+    # leitura fica no Z como ficou por cobrar — que é a verdade do turno.
+    #
+    # Não trava o fecho — ver `_contas_abertas_da_sessao` — mas fica escrito
+    # no Z e no documento da sessão, para o gestor o encontrar amanhã sem ter
+    # de adivinhar o que aconteceu ao dinheiro que a operadora diz ter visto
+    # no ecrã.
+    contas_abertas = await _contas_abertas_da_sessao(
+        db, sessao["id"], dispositivo_id=operador.get("dispositivo_id")
+    )
+
     vendas_dinheiro = soma_vendas_dinheiro(vendas)
     entradas = total_por_tipo(movimentos, "entrada")
     saidas = total_por_tipo(movimentos, "saida")
@@ -691,6 +725,11 @@ async def fechar_caixa(
         "contado": dados.contado,
         "esperado": esperado_valor,
         "diferenca": diferenca_valor,
+        # Gravado na sessão, e não só devolvido: o Z que a operadora leva é
+        # papel, e a pergunta "o que é que ficou por cobrar na noite de
+        # terça?" faz-se dias depois, no backoffice. Um número que só existe
+        # numa resposta HTTP que ninguém guardou não responde a nada.
+        "contas_abertas": contas_abertas,
     }
     # I2 (a revisão do núcleo fiscal): esta escrita não tinha condição de
     # estado nenhuma — dois fechos concorrentes da MESMA sessão passavam os
@@ -741,6 +780,11 @@ async def fechar_caixa(
         "contado": dados.contado,
         "esperado": esperado_valor,
         "diferenca": diferenca_valor,
+        # SEMPRE presente, mesmo com `quantas: 0` — a mesma regra do
+        # `emissao_por_confirmar` em `venda.py`: o ecrã não pode ter de
+        # adivinhar se a ausência da chave quer dizer "não ficou nada por
+        # cobrar" ou "esta versão do servidor não sabe responder a isso".
+        "contas_abertas": contas_abertas,
         "verificacao_vendus": verificacao_vendus,
     }
 
@@ -791,6 +835,208 @@ async def _venda_com_emissao_viva(db, sessao_id: str) -> Optional[Dict]:
     return None
 
 
+async def _nome_dos_dispositivos(db, ids) -> Dict:
+    """O nome de cada PC emparelhado, por id — para o ecrã poder dizer "PC
+    Drive-Thru" onde só tinha um uuid.
+
+    Um punhado de ids (os postos de uma loja), por isso um `$in` chega e não
+    há N leituras. Um id sem documento (o PC foi revogado desde então) fica
+    simplesmente de fora: quem lê trata a ausência como "outro posto", que é
+    a verdade que se sabe."""
+    ids = [i for i in dict.fromkeys(ids) if i]
+    if not ids:
+        return {}
+    encontrados = await db[COLECOES["dispositivos"]].find(
+        {"id": {"$in": ids}}, {"_id": 0, "id": 1, "nome": 1}
+    ).to_list(len(ids))
+    return {d["id"]: d.get("nome") for d in encontrados if d.get("id")}
+
+
+async def _contas_abertas_da_sessao(db, sessao_id: str, dispositivo_id=None) -> Dict:
+    """Quantas contas desta sessão ficam por cobrar, e quanto valem.
+
+    **O buraco que isto fecha.** A faixa que a operadora lia no balcão, por
+    cima das partes de uma conta repartida, prometia-lhe isto: "enquanto não
+    forem cobradas ou canceladas, ficam abertas no servidor e o fecho desta
+    caixa vai contá-las". Não contava. O Z lê `{"sessao_id": …, "estado":
+    "emitida"}` e mais nada, e o único travão do fecho —
+    `_venda_com_emissao_viva` — exige uma RESERVA FISCAL, que uma parte que
+    nunca chegou ao EMITIR não tem. Dividida uma conta de 14,10 € por duas
+    pessoas e cobrada nenhuma, a caixa fechava, o Z saía sem uma palavra
+    sobre elas, e os 14,10 € por receber não apareciam em relatório nenhum —
+    nem neste, nem no da sessão seguinte, que filtra por outro `sessao_id`.
+
+    **E porque é que isto NÃO trava o fecho.** Seria a correcção fácil e é a
+    errada: uma parte que ninguém vai pagar (o cliente foi-se embora, a
+    operadora esqueceu-se de a cancelar) prendia a loja para sempre — regra 3
+    do dono, o fecho não bloqueia, regista e segue. E também não se resolve
+    mudando a frase da faixa para "não conta": o dinheiro por receber existe
+    à mesma, e um Z que não o menciona é um Z que esconde. Conta-se, escreve-
+    se no Z e diz-se à operadora ANTES de ela assinar — que é o que
+    `GET /pos/caixa/contas-abertas` serve.
+
+    **Não é só sobre partes.** A pergunta é feita a TODAS as contas `aberta`
+    da sessão: a conta que ficou meia-picada quando o cliente desistiu, a
+    conta travada que ela pôs de lado, e as partes de quem dividiu. Todas são
+    a mesma coisa do ponto de vista do turno — dinheiro que o ecrã mostrou e
+    que não entrou em fatura nenhuma.
+
+    **A sessão, e não o dispositivo.** Ao contrário de
+    `venda.contas_repartidas` (que responde ao ECRÃ de um posto), o Z é do
+    TURNO: uma conta aberta no "PC Drive-Thru" tem de aparecer no Z da caixa
+    que os dois postos partilham, senão volta a haver dinheiro por receber que
+    ninguém vê.
+
+    **E é por isso que cada conta diz de que POSTO é.** O âmbito desta lista
+    é o turno, mas todas as acções do ecrã são do posto: `GET
+    /pos/venda/repartidas` filtra pelo `dispositivo_id` do token. Medido: dois
+    postos na mesma caixa, o Drive-Thru divide a conta dele e não cobra
+    ninguém; o fecho pedido do Balcão listava as três contas do turno (28,20
+    €) e mandava-a cobrá-las, e o ecrã do Balcão respondia `0 grupos`. A
+    operadora lia uma instrução que não conseguia cumprir. Alargar o âmbito
+    das ACÇÕES seria pior (uma operadora a cobrar a conta do outro posto é
+    outro problema, e mais caro); o que estava errado era o texto, e o texto
+    só pode dizer a verdade se souber de quem é cada conta. Sai o
+    `dispositivo_id` em cru e o `dispositivo_nome` para o ecrã o poder
+    escrever por extenso.
+
+    **E se ela trava o fecho ou não** (`trava_o_fecho`). Nem todas estas
+    contas são iguais perante o botão FECHAR CAIXA: uma conta com RESERVA
+    FISCAL viva recusa-o mesmo (`_venda_com_emissao_viva`, e está certo que
+    recuse), enquanto as outras não travam nada. O ecrã dizia "Não impedem o
+    fecho" sobre todas — medido no browser: o diálogo listou 2 partes e uma
+    conta travada, e carregar em Fechar Caixa devolveu 409 por causa da
+    travada. O critério é o MESMO de `_venda_com_emissao_viva` (a conta está
+    `aberta` e existe uma reserva para ela), feito conta a conta em vez de
+    parar na primeira.
+
+    `dispositivo_id` é o posto de onde a pergunta foi feita — no fecho, o PC
+    onde a operadora carregou em FECHAR CAIXA. Sai na resposta para quem a
+    desenha poder comparar sem ter de adivinhar quem está a perguntar (o
+    token do POS não viaja para o browser em texto legível).
+
+    O `import` de `venda.py` é LOCAL pela mesma razão do
+    `_verificar_vendas_dinheiro` aqui em baixo: `venda.py` importa deste
+    módulo, e um import no topo fechava o ciclo. E é o `_totais` DELE, não uma
+    soma escrita aqui — o valor de uma conta sai sempre de
+    `precos.linha_de_venda`, em todo o módulo (regra 1 do cabeçalho de
+    `venda.py`).
+    """
+    from .venda import _totais
+
+    abertas = await db[COLECOES["vendas"]].find(
+        {"sessao_id": sessao_id, "estado": "aberta"}
+    ).sort("criada_em", 1).to_list(1000)
+
+    nomes = await _nome_dos_dispositivos(
+        db, [v.get("dispositivo_id") for v in abertas]
+    )
+
+    contas = []
+    total = 0.0
+    total_que_trava = 0.0
+    total_por_cobrar = 0.0
+    for venda in abertas:
+        try:
+            valor = _totais(venda)["total"]
+        except Exception as e:  # noqa: BLE001 — o fecho nunca falha por isto
+            # Uma linha que `linha_de_venda` já não sabe avaliar (um produto
+            # que perdeu o IVA no retrato, uma conta gravada por uma versão
+            # anterior) não pode transformar o fecho num 500 — isso mandava a
+            # funcionária fechar outra vez uma caixa que não fechou. A conta
+            # CONTA-SE na mesma, com o valor a `None`: o que não se pode
+            # perder é a existência dela, e "não sabemos quanto vale" é uma
+            # resposta honesta que a operadora consegue levar ao gestor.
+            logger.warning(
+                "[faturacao] não foi possível somar a conta aberta %s da sessão "
+                "%s: %s (entra no Z sem valor).", venda.get("id"), sessao_id, e,
+            )
+            valor = None
+        trava = await db[COLECOES["refs_fiscais"]].find_one(
+            {"venda_id": venda.get("id")}
+        ) is not None
+        if valor is not None:
+            total = round(total + valor, 2)
+            # Os dois SUBTOTAIS saem daqui, e não de uma soma no browser. É a
+            # regra 1 do cabeçalho de `venda.py` (o valor de uma conta sai
+            # sempre do servidor) aplicada ao que o ecrã passou a precisar
+            # desta ronda: ele mostra as duas famílias em caixas separadas, e
+            # cada caixa tem o seu próprio euro em cima. Somá-los no
+            # JavaScript era pôr o ecrã a fazer aritmética de dinheiro — a
+            # única coisa que este módulo nunca lhe deixa fazer.
+            if trava:
+                total_que_trava = round(total_que_trava + valor, 2)
+            else:
+                total_por_cobrar = round(total_por_cobrar + valor, 2)
+        contas.append({
+            "id": venda.get("id"),
+            "total": valor,
+            "criada_em": venda.get("criada_em"),
+            # Qual delas é uma PARTE de uma conta repartida, e de qual. É o que
+            # distingue "faltou cobrar uma pessoa" de "ficou uma conta a meio"
+            # — duas conversas diferentes com o gestor no dia seguinte.
+            "conta_mae_id": venda.get("conta_mae_id"),
+            # De que POSTO é — ver a docstring. Sempre presentes as duas
+            # chaves (o nome a `None` quando o PC já foi revogado), pela
+            # regra do `emissao_por_confirmar` em venda.py: quem desenha não
+            # pode ter de adivinhar se a ausência quer dizer "não se sabe" ou
+            # "esta versão do servidor não responde a isso".
+            "dispositivo_id": venda.get("dispositivo_id"),
+            "dispositivo_nome": nomes.get(venda.get("dispositivo_id")),
+            # A que IMPEDE o fecho, separada das que não impedem nada.
+            "trava_o_fecho": trava,
+        })
+    return {
+        "quantas": len(contas),
+        "total": total,
+        # As duas metades de `total`, já somadas aqui — ver o comentário no
+        # ciclo. `quantas_travam` acompanha-as pela mesma razão: o ecrã
+        # escreve "1 conta IMPEDE o fecho" e não pode ter de contar a lista.
+        "quantas_travam": sum(1 for c in contas if c["trava_o_fecho"]),
+        "total_que_trava": total_que_trava,
+        "total_por_cobrar": total_por_cobrar,
+        "contas": contas,
+        "dispositivo_id": dispositivo_id,
+    }
+
+
+@router.get("/pos/caixa/contas-abertas")
+async def contas_abertas_da_caixa(
+    caixa_id: str, operador: Dict = Depends(operador_atual)
+) -> dict:
+    """O que vai ficar por cobrar se a caixa fechar agora — para a operadora
+    poder ver isso ANTES de assinar o Z, e não depois.
+
+    Só leitura, e é essa a decisão de desenho: a alternativa era o próprio
+    `POST /pos/caixa/fechar` recusar o primeiro pedido e pedir uma
+    confirmação. Não se fez, por duas razões. A primeira é que essa recusa
+    tinha de acontecer DEPOIS da marca `a_fechar` (antes dela, a lista podia
+    mudar entre a pergunta e o fecho), e desfazer a marca para pedir uma
+    confirmação é abrir outra vez a janela que `fechar_caixa` fechou. A
+    segunda é a regra 3 do dono: o fecho não tem portas. Uma leitura à parte
+    dá a informação a tempo sem pôr nada disso em jogo — e o Z que sai a
+    seguir traz a lista outra vez, essa já definitiva (calculada depois da
+    marca, quando mais nenhuma conta desta sessão pode nascer, mudar de valor
+    ou ser repartida — ver a lista das três guardas em `fechar_caixa`).
+
+    Usa `_sessao_viva` e não `_sessao_aberta`: uma sessão que ficou a meio de
+    um fecho continua a ter contas abertas, e é precisamente nessa que a
+    operadora vai carregar em FECHAR outra vez. Sem sessão viva nenhuma não
+    há nada por cobrar — responde-se com zero, e não com um erro."""
+    db = obter_db()
+    await _obter_caixa_da_loja(db, caixa_id, operador["loja_id"])
+    sessao = await _sessao_viva(db, caixa_id, {"_id": 0})
+    if sessao is None:
+        return {
+            "quantas": 0, "total": 0.0, "quantas_travam": 0,
+            "total_que_trava": 0.0, "total_por_cobrar": 0.0, "contas": [],
+            "dispositivo_id": operador.get("dispositivo_id"),
+        }
+    return await _contas_abertas_da_sessao(
+        db, sessao["id"], dispositivo_id=operador.get("dispositivo_id")
+    )
+
+
 async def _verificar_vendas_dinheiro(db, sessao: Dict, vendas_dinheiro_local: float) -> Optional[Dict]:
     """Ponte para `fiscal.py::verificar_vendas_dinheiro_no_vendus`, com um
     import LOCAL (não ao nível do módulo) de propósito: `fiscal.py` importa
@@ -803,3 +1049,252 @@ async def _verificar_vendas_dinheiro(db, sessao: Dict, vendas_dinheiro_local: fl
     testes com `monkeypatch.setattr(caixa_mod, "_verificar_vendas_dinheiro", ...)`."""
     from .fiscal import verificar_vendas_dinheiro_no_vendus
     return await verificar_vendas_dinheiro_no_vendus(db, sessao, vendas_dinheiro_local)
+
+
+# --- As contas que sobreviveram ao Z (o buraco a seguir ao fecho) --------------
+#
+# **Medido, com números.** 14,10 € divididos por 2, ninguém cobrado, caixa
+# fechada, turno seguinte aberto. `GET /pos/venda/repartidas` → `[]`; `GET
+# /pos/venda/aberta` → `null`; `GET /pos/caixa/contas-abertas` →
+# `{quantas: 0}`. As duas partes continuavam na base a `estado=aberta` com o
+# `sessao_id` do turno anterior, e NENHUM ecrã voltava a mostrá-las. O
+# `contas_abertas` que o fecho grava na sessão não tinha um único leitor em
+# todo o repositório: escrevia-se para o Z de papel e mais nada.
+#
+# Não é um acidente dos ecrãs do POS — é o desenho deles, e está certo:
+# `venda_aberta` e `contas_repartidas` resolvem a sessão por `_sessao_aberta`,
+# porque um balcão só mostra o turno que está a decorrer. O que faltava era o
+# outro lado.
+#
+# **Porque é que a saída é o BACKOFFICE, e não um ecrã novo no POS.** Três
+# razões, e a terceira decide:
+#   1. A operadora do turno seguinte não tem nada que fazer a uma conta de um
+#      turno que ela não fechou — mexer nela mudava um Z que outra pessoa
+#      assinou. As rotas de escrita da venda recusam-lhe isso desde esta ronda
+#      (`venda.py::_garante_sessao_desta_venda_aberta`), e um ecrã que lhe
+#      mostrasse contas em que ela não pode tocar era o defeito 4 outra vez:
+#      uma instrução que ela não consegue cumprir.
+#   2. A pergunta é do GESTOR e é sobre dinheiro do passado ("o que é que
+#      ficou por receber na noite de terça, e porquê?"), não sobre o cliente
+#      que está à frente.
+#   3. O ecrã já existe e é onde ele vai quando alguma coisa fica pendurada: a
+#      lista das reservas fiscais presas. Uma conta aberta de um turno fechado
+#      é o mesmo género de problema — ficou a meio, ninguém a resolve sozinha,
+#      e é preciso alguém ir perguntar o que aconteceu. Um ecrã NOVO para isto
+#      era um segundo sítio a que ele teria de se lembrar de ir.
+
+_LIMITE_CONTAS_ESQUECIDAS = 500
+
+_MSG_CONTA_ESQUECIDA_INEXISTENTE = "Conta não encontrada."
+_MSG_CONTA_ESQUECIDA_JA_RESOLVIDA = (
+    "Esta conta já não está aberta — foi cobrada, cancelada ou repartida "
+    "entretanto. Recarregue a lista."
+)
+_MSG_CONTA_ESQUECIDA_DE_TURNO_ABERTO = (
+    "A caixa desta conta está ABERTA neste momento — esta conta é do turno "
+    "que está a decorrer e é no POS que ela se resolve: cobra-se ou "
+    "cancela-se no balcão, por quem está lá. Só depois de o turno fechar é "
+    "que ela passa a ser um problema de gestão."
+)
+# O turno DELA está a fechar-se agora. Cancelá-la neste instante tirava-a da
+# lista que o Z está a somar (`_contas_abertas_da_sessao` é lida depois da
+# marca `a_fechar`) — o Z sairia sem a mencionar, e o registo de que aqueles
+# euros ficaram por receber desaparecia. É uma espera de segundos; e um fecho
+# que tenha ficado preso destranca-se no POS, carregando outra vez em FECHAR
+# CAIXA (ver `_MSG_SESSAO_A_MEIO_DE_UM_FECHO`), não por aqui.
+_MSG_CONTA_ESQUECIDA_COM_FECHO_A_DECORRER = (
+    "A caixa desta conta está a FECHAR o turno neste momento — o Z está a ser "
+    "calculado e esta conta ainda vai entrar nele como ficando por cobrar. "
+    "Nada foi alterado. Espere que o fecho termine e recarregue a lista; se o "
+    "fecho tiver ficado preso, é no POS que se conclui (FECHAR CAIXA outra "
+    "vez), e só depois é que esta conta se arruma aqui."
+)
+_MSG_CONTA_ESQUECIDA_TRAVADA = (
+    "Esta conta tem uma reserva fiscal por resolver — pode ter uma Fatura "
+    "Simplificada real do lado da AT. Não se arruma por aqui: resolva-a "
+    "primeiro em Reservas Fiscais Presas (reconciliar, ou libertar depois de "
+    "confirmar no Vendus que não saiu documento nenhum) e só então é que se "
+    "sabe o que fazer a esta conta."
+)
+
+
+async def _contas_esquecidas(db) -> list:
+    """Todas as contas que ficaram `aberta` num turno que já não está aberto.
+
+    **A pergunta começa pelas VENDAS e não pelas sessões**, e é o contrário do
+    que parece: as sessões que não estão abertas são TODAS as que alguma vez
+    existiram (uma por caixa e por dia, para sempre), e as vendas `aberta` são
+    um punhado — as que estão mesmo em curso agora, mais estas. Começar pelas
+    sessões era varrer um ano de turnos para encontrar duas contas.
+
+    Uma sessão pode aparecer muitas vezes seguidas nesta lista (as partes de
+    uma conta repartida são todas do mesmo turno), por isso as sessões e as
+    caixas lêem-se UMA vez cada e ficam em memória durante a passagem — o
+    mesmo cuidado de `_nome_dos_dispositivos`.
+
+    **O tecto (`_LIMITE_CONTAS_ESQUECIDAS`) corta pelo lado certo.** A
+    ordenação é `criada_em` ASCENDENTE e é feita antes do corte, por isso o
+    que fica de fora é o mais RECENTE — que é, quase sempre, o turno que está
+    a decorrer e que esta lista deita fora a seguir. As esquecidas, essas, são
+    as mais velhas: entram sempre.
+
+    O valor sai do `_totais` de `venda.py` (import local, o ciclo de sempre) e
+    nunca de uma soma escrita aqui, e uma conta que já não se consegue somar
+    entra na mesma com o valor a `None`: a regra é a de
+    `_contas_abertas_da_sessao` — o que não se pode perder é a EXISTÊNCIA
+    dela, e "não sabemos quanto vale" é uma resposta honesta que o gestor
+    consegue levar a quem lá estava."""
+    from .venda import _totais
+
+    abertas = await db[COLECOES["vendas"]].find(
+        {"estado": "aberta"}
+    ).sort("criada_em", 1).to_list(_LIMITE_CONTAS_ESQUECIDAS)
+
+    sessoes: Dict = {}
+    caixas: Dict = {}
+    saida = []
+    for venda in abertas:
+        sessao_id = venda.get("sessao_id")
+        if sessao_id not in sessoes:
+            sessoes[sessao_id] = await db[COLECOES["sessoes_caixa"]].find_one(
+                {"id": sessao_id}, {"_id": 0}
+            )
+        sessao = sessoes[sessao_id]
+        # A sessão ABERTA é o turno a decorrer: essa conta está no ecrã de
+        # alguém neste instante e não é um esquecimento. Uma sessão que
+        # desapareceu (`None`) entra: é dinheiro sem turno nenhum, que é ainda
+        # mais invisível do que o resto.
+        if sessao is not None and sessao.get("estado") == "aberta":
+            continue
+
+        caixa_id = venda.get("caixa_id")
+        if caixa_id not in caixas:
+            caixas[caixa_id] = await db[COLECOES["caixas"]].find_one(
+                {"id": caixa_id}, {"_id": 0}
+            )
+        caixa = caixas[caixa_id] or {}
+
+        try:
+            valor = _totais(venda)["total"]
+        except Exception as e:  # noqa: BLE001 — ver a docstring
+            logger.warning(
+                "[faturacao] não foi possível somar a conta esquecida %s: %s "
+                "(entra na lista sem valor).", venda.get("id"), e,
+            )
+            valor = None
+
+        saida.append({
+            "id": venda.get("id"),
+            "loja_id": venda.get("loja_id"),
+            "total": valor,
+            "criada_em": venda.get("criada_em"),
+            "conta_mae_id": venda.get("conta_mae_id"),
+            "caixa_id": caixa_id,
+            "caixa_nome": caixa.get("nome"),
+            "sessao_id": sessao_id,
+            # `None` quando a sessão desapareceu da base — e é uma informação,
+            # não um buraco: quem lê tem de poder distinguir "o turno fechou"
+            # de "não há turno nenhum onde procurar".
+            "sessao_estado": (sessao or {}).get("estado"),
+            "sessao_fechada_em": (sessao or {}).get("fechada_em"),
+            "sessao_fechada_por": (sessao or {}).get("fechada_por"),
+            # Quem estava a picar. É por aqui que o gestor sabe a quem
+            # perguntar o que aconteceu àquele cliente.
+            "operador_id": venda.get("operador_id"),
+            "dispositivo_id": venda.get("dispositivo_id"),
+            # A que NÃO se arruma por aqui: tem uma reserva fiscal e pode ter
+            # uma FS real do lado da AT. Aparece na mesma (o dinheiro não pode
+            # ficar invisível), marcada, e o ecrã manda-o ao card de cima.
+            "reserva_fiscal_por_resolver": await db[
+                COLECOES["refs_fiscais"]
+            ].find_one({"venda_id": venda.get("id")}) is not None,
+        })
+    return saida
+
+
+@router.get("/caixa/contas-esquecidas")
+async def listar_contas_esquecidas(_: Dict = Depends(gestor_atual)) -> list:
+    """As contas por cobrar de turnos JÁ FECHADOS — o leitor que o
+    `contas_abertas` do Z nunca teve.
+
+    Rota de GESTÃO (`gestor_atual`) e não do POS, e sem prefixo `/pos/`: ver
+    o comentário desta secção. Devolve todas as lojas, como
+    `fiscal.listar_reservas_presas` — é o ecrã que filtra, e o gestor de
+    várias lojas precisa de ver as várias.
+
+    Só leitura. Nada aqui mexe numa sessão fechada: um Z assinado não se
+    reabre para nada, e muito menos para uma listagem."""
+    return await _contas_esquecidas(obter_db())
+
+
+@router.post("/caixa/contas-esquecidas/{venda_id}/arrumar")
+async def arrumar_conta_esquecida(
+    venda_id: str, gestor: Dict = Depends(gestor_atual)
+) -> dict:
+    """Dá por perdida uma conta aberta de um turno já fechado: passa-a a
+    `cancelada`, com o nome de quem o decidiu.
+
+    **Porque é que existe um botão, e não só uma lista.** Uma lista que nunca
+    se esvazia deixa de ser lida — e a partir daí volta a haver dinheiro
+    invisível, só que agora com um ecrã por cima a fingir o contrário. O que
+    se guarda é a DIRECÇÃO do caminho fácil: a acção destrutiva pede uma
+    declaração explícita no ecrã (o mesmo desenho de LIBERTAR, em
+    `FatReservasPresas`), porque cancelar declara "isto nunca foi pago" e isso
+    pode ser falso — o cliente pode ter pago em dinheiro e a operadora
+    esquecido-se de finalizar. Primeiro pergunta-se a quem lá estava; só
+    depois se arruma.
+
+    **O que ela NÃO faz: mexer no Z.** O Z daquele turno já registou esta
+    conta como ficando por cobrar, com o valor que ela tinha
+    (`_contas_abertas_da_sessao`), e continua a dizer exactamente isso — que é
+    a verdade do turno. Cancelar não muda o valor de nada nem faz nascer nada:
+    escreve só o desfecho, para o dinheiro deixar de estar em suspenso.
+
+    **A escrita é a do POS, não uma segunda cópia dela.** Delega em
+    `venda.cancelar_venda`, e é isso que lhe dá de graça a disciplina toda que
+    lá está: a escrita condicionada a `{"estado": "aberta"}` (o `matched_count`
+    decide, não a leitura), a segunda pergunta pela reserva DEPOIS de escrever,
+    e a compensação que repõe `aberta` se uma reserva aparecer no meio. Uma
+    reescrita disto aqui era garantir que um dia divergiam — e a metade que
+    divergisse era a que mexe num documento fiscal.
+
+    O `operador` que se lhe passa é o GESTOR vestido de operador: a loja vem
+    da própria venda (o gestor não tem uma), e o `nome` é o email dele, que é
+    a identidade que o backoffice conhece. Fica em `cancelada_por` e distingue-
+    se sozinho de um nome próprio de operadora ao balcão.
+
+    As quatro recusas, todas antes de qualquer escrita:
+    - a conta já não está `aberta` (alguém a resolveu entretanto);
+    - o turno DELA ainda está aberto — isso resolve-se no POS, por quem lá
+      está, e não aqui;
+    - o turno DELA está a fechar-se neste instante — o Z está a somar a lista
+      onde esta conta entra, e cancelá-la agora fazia-a desaparecer dele (ver
+      `_MSG_CONTA_ESQUECIDA_COM_FECHO_A_DECORRER`);
+    - tem uma reserva fiscal por resolver — essa vai primeiro a Reservas
+      Fiscais Presas, e é lá que se descobre se saiu uma FS real."""
+    from .venda import cancelar_venda
+
+    db = obter_db()
+    venda = await db[COLECOES["vendas"]].find_one({"id": venda_id})
+    if not venda:
+        raise HTTPException(status_code=404, detail=_MSG_CONTA_ESQUECIDA_INEXISTENTE)
+    if venda.get("estado") != "aberta":
+        raise HTTPException(
+            status_code=409, detail=_MSG_CONTA_ESQUECIDA_JA_RESOLVIDA)
+
+    sessao = await db[COLECOES["sessoes_caixa"]].find_one({"id": venda.get("sessao_id")})
+    if sessao is not None and sessao.get("estado") == "aberta":
+        raise HTTPException(
+            status_code=409, detail=_MSG_CONTA_ESQUECIDA_DE_TURNO_ABERTO)
+    if sessao is not None and sessao.get("estado") == "a_fechar":
+        raise HTTPException(
+            status_code=409, detail=_MSG_CONTA_ESQUECIDA_COM_FECHO_A_DECORRER)
+
+    if await db[COLECOES["refs_fiscais"]].find_one({"venda_id": venda_id}) is not None:
+        raise HTTPException(status_code=409, detail=_MSG_CONTA_ESQUECIDA_TRAVADA)
+
+    return await cancelar_venda(venda_id, operador={
+        "loja_id": venda.get("loja_id"),
+        "operador_id": gestor.get("user_id"),
+        "nome": gestor.get("email"),
+    })

@@ -153,6 +153,24 @@ INDICES = [
     # chave a `null` — a parte da chave que ninguém procura, e a que cresce
     # com cada venda do dia.
     ("fat_vendas", [("conta_mae_id", 1)], {"sparse": True}),
+    # As contas que ficaram ABERTAS num turno já fechado (`caixa.py::
+    # _contas_esquecidas`, o ecrã do gestor). A pergunta é
+    # `{"estado": "aberta"}` ordenada por `criada_em`, e sem índice era um
+    # varrimento completo de `fat_vendas` — a mesma colecção que ao fim de um
+    # ano tem centenas de milhares de vendas RESOLVIDAS, que são exactamente
+    # as que esta pergunta não quer ver.
+    #
+    # PARCIAL, e pela mesma razão do índice único de sessão aberta aqui em
+    # cima: o que interessa indexar são as poucas contas `aberta` que existem
+    # em cada instante (as em curso, mais as esquecidas), e não as 365 mil
+    # que já viraram fatura. O `criada_em` na chave serve a ordenação da
+    # listagem sem uma passagem extra. Uma venda que muda de estado sai
+    # sozinha do índice.
+    (
+        "fat_vendas",
+        [("criada_em", 1)],
+        {"partialFilterExpression": {"estado": "aberta"}},
+    ),
     # A GARANTIA central da Task 3 (spec §6.1 passo 2): impossível duas
     # tentativas de emissão da MESMA venda reservarem com sucesso ao mesmo
     # tempo — quem perde a corrida apanha DuplicateKeyError e nunca chega a
