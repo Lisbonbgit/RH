@@ -1,0 +1,273 @@
+"""O ecrã de finalizar deixa de perguntar o valor de um pagamento que não tem dúvida.
+
+O dono, a percorrer o POS: «se a pessoa selecionar só um tipo de pagamento não
+precisa mostrar esta caixa de valor que aparece em baixo. só aparece a opção de
+colocar o valor de cada tipo de pagamento quando a pessoa selecionar dinheiro e
+multibanco os dois. pois se o staff seleciona só uber ou só multibanco ou só
+glovo. significa que o valor estava já certo.»
+
+Medido no browser antes de mexer: com "Multibanco" sozinho numa conta de
+8,50 €, o ecrã acrescentava uma linha de 630×94px — uma caixa de 502×64px com
+o 8,50 já lá dentro, o botão da calculadora de 64×64 e o × de 48px — para
+perguntar um número com uma única resposta possível. Em todas as vendas
+normais do dia.
+
+**Porque é que isto é um teste em Python a correr JavaScript.** A decisão vivia
+dentro do `map` do JSX, onde nenhum teste lhe chega: mudá-la (ou desfazê-la)
+não fazia nada ficar vermelho. Saiu para uma função pura e exportada,
+`camposDeValorDoPagamento`, e este ficheiro CORRE-A em Node, exactamente como
+está escrita no ecrã — sem uma segunda cópia da regra escrita aqui. É a
+técnica do `test_resumo_do_ecra.py` e do `test_partes_por_cobrar_no_ecra.py`,
+e a razão é a mesma: uma decisão que nenhum teste consegue executar é uma
+decisão que se troca sem ninguém dar por isso.
+
+O que este ficheiro NÃO pode deixar passar em silêncio, e por isso também tem
+guardas de texto:
+
+· que a regra volte a ser decidida à mão dentro do componente (o `map` do JSX
+  tem de CHAMAR a função, não redescobri-la);
+· que o **valor recebido** passe a depender do número de pagamentos. Não pode:
+  é dele que sai o troco, e o dono foi explícito — «ainda fica disponível o
+  valor recebido que dá muito jeito quando o pagamento é em dinheiro dar o
+  troco né». Depende só do tipo dar troco, com ou sem repartição.
+"""
+import json
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+# backend/tests/faturacao/este_ficheiro.py -> raiz do repositório
+_RAIZ = Path(__file__).resolve().parents[3]
+_POS_FINALIZAR = _RAIZ / "frontend" / "src" / "pages" / "pos" / "PosFinalizar.js"
+
+_ASSINATURA_CENTIMOS = "const centimos = (valor) =>"
+_ASSINATURA_CAMPOS = "export const camposDeValorDoPagamento = (pagamentos, totalCentimos) => {"
+_ASSINATURA_TROCO = "const mostrarTroco ="
+
+
+def _ler(ficheiro: Path) -> str:
+    if not ficheiro.exists():
+        pytest.fail(
+            "Não encontrei %s. Se o ecrã mudou de sítio, este guarda tem de ir "
+            "atrás dele — não se apaga." % ficheiro
+        )
+    return ficheiro.read_text(encoding="utf-8")
+
+
+def _corpo_da_funcao(texto: str, assinatura: str, ficheiro: Path) -> str:
+    """O código de uma função, do início da assinatura até à chaveta que a
+    fecha. Falha alto se a assinatura desapareceu: um guarda que não encontra
+    o que devia vigiar e se cala passa a verde para sempre."""
+    if assinatura not in texto:
+        pytest.fail(
+            "Não encontrei `%s` em %s. Se a função foi renomeada ou movida, a "
+            "regra que ela cumpre continua a ter de ser guardada."
+            % (assinatura, ficheiro.name)
+        )
+    inicio = texto.index(assinatura)
+    i = texto.index("{", inicio + len(assinatura) - 1)
+    profundidade = 0
+    for fim in range(i, len(texto)):
+        if texto[fim] == "{":
+            profundidade += 1
+        elif texto[fim] == "}":
+            profundidade -= 1
+            if profundidade == 0:
+                return texto[inicio:fim + 1]
+    pytest.fail("A função `%s` em %s não fecha." % (assinatura, ficheiro.name))
+
+
+def _corpo_da_seta(texto: str, assinatura: str, ficheiro: Path) -> str:
+    """O mesmo, para uma expressão de uma linha: até ao `;`."""
+    if assinatura not in texto:
+        pytest.fail("Não encontrei `%s` em %s." % (assinatura, ficheiro.name))
+    inicio = texto.index(assinatura)
+    fim = texto.index(";", inicio)
+    return texto[inicio:fim + 1]
+
+
+def _sem_comentarios(codigo: str) -> str:
+    """O código sem os comentários — os comentários deste ecrã descrevem o
+    defeito com as palavras dele, e um guarda que procurasse essas palavras no
+    texto todo ficava vermelho por causa da explicação em vez do código."""
+    return re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", codigo, flags=re.S))
+
+
+def _node() -> str:
+    caminho = shutil.which("node")
+    if caminho:
+        return caminho
+    # O node deste Mac vive fora do PATH (ver a memória do projecto). Sem ele
+    # o teste diz porque não correu, em vez de ficar verde a fingir.
+    candidato = Path.home() / ".local" / "node" / "bin" / "node"
+    if candidato.exists():
+        return str(candidato)
+    pytest.skip(
+        "Sem `node` para executar o JavaScript do ecrã "
+        "(nem no PATH nem em ~/.local/node/bin)."
+    )
+
+
+def _o_que_o_ecra_pergunta(casos, tmp_path: Path):
+    """Corre em Node a decisão tal como está escrita no `PosFinalizar.js` —
+    sem cópia nenhuma dela escrita aqui."""
+    ecra = _ler(_POS_FINALIZAR)
+    guiao = tmp_path / "campos.js"
+    guiao.write_text(
+        "\n".join([
+            # `export` fora: isto corre como um guião solto, não como módulo.
+            _corpo_da_seta(ecra, _ASSINATURA_CENTIMOS, _POS_FINALIZAR),
+            _corpo_da_funcao(ecra, _ASSINATURA_CAMPOS, _POS_FINALIZAR).replace("export ", "", 1),
+            "const casos = %s;" % json.dumps(casos),
+            "process.stdout.write(JSON.stringify(casos.map(",
+            "  ({ pagamentos, totalCentimos }) => camposDeValorDoPagamento(pagamentos, totalCentimos)",
+            ")));",
+        ]),
+        encoding="utf-8",
+    )
+    resultado = subprocess.run(
+        [_node(), str(guiao)], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    if resultado.returncode != 0:
+        pytest.fail(
+            "O JavaScript do ecrã não correu:\n%s"
+            % resultado.stderr.decode("utf-8", "replace")
+        )
+    return json.loads(resultado.stdout.decode("utf-8"))
+
+
+# A conta que está no browser: um Açaí Grande de 8,50 €.
+_TOTAL = 850
+
+
+def _pagamento(tipo, valor):
+    """Como o ecrã guarda um pagamento — o `valor` é sempre STRING, nunca
+    Number (é um campo controlado a meio de ser escrito)."""
+    return {"tipo_pagamento_id": tipo, "valor": valor, "auto": True}
+
+
+@pytest.mark.parametrize("tipo", ["multibanco", "uber", "glovo", "dinheiro"])
+def test_um_tipo_sozinho_nao_leva_caixa_de_valor(tipo, tmp_path):
+    """A queixa do dono, com os quatro tipos que ele nomeou. Um só tipo
+    escolhido quer dizer que o valor já estava certo: é o total da conta, e
+    não há segunda resposta possível."""
+    campos = _o_que_o_ecra_pergunta(
+        [{"pagamentos": [_pagamento(tipo, "8.50")], "totalCentimos": _TOTAL}], tmp_path
+    )[0]
+    assert campos == [], (
+        "Com %s sozinho o ecrã ainda pergunta o valor. Não há nada a decidir: "
+        "é a conta toda." % tipo
+    )
+
+
+def test_dois_tipos_levam_uma_caixa_cada(tmp_path):
+    """"só aparece a opção de colocar o valor de cada tipo de pagamento quando
+    a pessoa selecionar dinheiro e multibanco os dois" — aí é a operadora que
+    reparte, e nenhum dos dois valores se adivinha."""
+    campos = _o_que_o_ecra_pergunta([{
+        "pagamentos": [_pagamento("dinheiro", "3.50"), _pagamento("multibanco", "5.00")],
+        "totalCentimos": _TOTAL,
+    }], tmp_path)[0]
+    assert campos == ["dinheiro", "multibanco"], (
+        "Com a conta repartida por dois, os DOIS campos têm de aparecer — um "
+        "por tipo."
+    )
+
+
+def test_tres_tipos_levam_tres_caixas(tmp_path):
+    campos = _o_que_o_ecra_pergunta([{
+        "pagamentos": [
+            _pagamento("dinheiro", "2.50"),
+            _pagamento("multibanco", "5.00"),
+            _pagamento("uber", "1.00"),
+        ],
+        "totalCentimos": _TOTAL,
+    }], tmp_path)[0]
+    assert campos == ["dinheiro", "multibanco", "uber"]
+
+
+def test_sem_pagamento_escolhido_nao_ha_campo_nenhum(tmp_path):
+    """Antes de escolher como se paga não há linha nenhuma para mostrar — o
+    ecrã pede é que se escolha um tipo."""
+    for vazio in ([], None):
+        campos = _o_que_o_ecra_pergunta(
+            [{"pagamentos": vazio, "totalCentimos": _TOTAL}], tmp_path
+        )[0]
+        assert campos == []
+
+
+def test_um_tipo_com_o_valor_errado_volta_a_ter_caixa(tmp_path):
+    """O beco sem saída que esta regra tinha de evitar, com os números do
+    balcão: Dinheiro (automático, 8,50) + Multibanco, escrever 5,00 no
+    Multibanco, e retirar o Dinheiro. Fica UM pagamento — mas de 5,00 numa
+    conta de 8,50, porque foi escrito à mão e o ecrã nunca reescreve por baixo
+    da operadora.
+
+    Sem esta linha o ecrã dizia "Falta distribuir € 3,50" com o EMITIR morto e
+    **sem caixa nenhuma onde escrever**, com fila à frente."""
+    campos = _o_que_o_ecra_pergunta([{
+        "pagamentos": [{"tipo_pagamento_id": "multibanco", "valor": "5.00", "auto": False}],
+        "totalCentimos": _TOTAL,
+    }], tmp_path)[0]
+    assert campos == ["multibanco"], (
+        "Um pagamento sozinho que NÃO cobre a conta tem de continuar a ter "
+        "caixa — senão não há por onde a corrigir."
+    )
+
+
+@pytest.mark.parametrize(
+    "valor,total,esperado",
+    [
+        # 0,1 + 0,2 dá 0.30000000000000004 em JS. A comparação é em CÊNTIMOS
+        # INTEIROS, como no servidor (fiscal.py::finalizar) — se fosse em
+        # vírgula flutuante, esta conta ficava para sempre a dizer que faltava
+        # um cêntimo e a caixa aparecia numa venda que estava certa.
+        ("0.30", 30, []),
+        ("8.50", 850, []),
+        # Um cêntimo a menos é um cêntimo a menos: a caixa tem de voltar.
+        ("8.49", 850, ["x"]),
+        # O campo em branco (`Number('') === 0`) não é o total de nada.
+        ("", 850, ["x"]),
+    ],
+)
+def test_a_comparacao_e_em_centimos_inteiros(valor, total, esperado, tmp_path):
+    campos = _o_que_o_ecra_pergunta(
+        [{"pagamentos": [_pagamento("x", valor)], "totalCentimos": total}], tmp_path
+    )[0]
+    assert campos == esperado
+
+
+# --- Guardas de texto: o que não se consegue executar ------------------------
+
+
+def test_o_ecra_chama_a_funcao_em_vez_de_redescobrir_a_regra():
+    """A decisão só está guardada enquanto for ESTA função a fazê-la. Escrita
+    outra vez à mão dentro do JSX, os testes de cima continuavam verdes e o
+    ecrã fazia outra coisa."""
+    ecra = _sem_comentarios(_ler(_POS_FINALIZAR))
+    assert "camposDeValorDoPagamento(pagamentos, totalCentimos)" in ecra, (
+        "O PosFinalizar deixou de chamar `camposDeValorDoPagamento`. A regra "
+        "não pode voltar para dentro do JSX, onde nenhum teste lhe chega."
+    )
+    assert "comCampoDeValor.includes(p.tipo_pagamento_id)" in ecra, (
+        "A linha do pagamento deixou de perguntar à decisão se leva caixa de "
+        "valor."
+    )
+
+
+def test_o_valor_recebido_nao_depende_de_quantos_pagamentos_ha():
+    """«ainda fica disponível o valor recebido que dá muito jeito quando o
+    pagamento é em dinheiro dar o troco né» — com um tipo ou com três. O
+    `mostrarTroco` olha para o `da_troco` do TIPO e para mais nada; assim que
+    olhasse para o número de pagamentos, o troco desaparecia exactamente na
+    venda mais comum do balcão (dinheiro sozinho)."""
+    ecra = _ler(_POS_FINALIZAR)
+    linha = _sem_comentarios(_corpo_da_seta(ecra, _ASSINATURA_TROCO, _POS_FINALIZAR))
+    assert "da_troco" in linha, "O `mostrarTroco` deixou de olhar para o `da_troco` do tipo."
+    assert "length" not in linha and "comCampoDeValor" not in linha, (
+        "O valor recebido passou a depender de quantos pagamentos há: %s\n"
+        "Não pode. O troco sai do dinheiro, haja um tipo ou três." % linha.strip()
+    )

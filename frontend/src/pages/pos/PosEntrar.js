@@ -52,10 +52,31 @@ function CaraOperador({ operador, onEscolher }) {
   );
 }
 
+// LARGURA FIXA, e teclas QUADRADAS (`aspect-square`), e as duas coisas são a
+// mesma correcção — medida no browser, que é o único sítio onde este defeito
+// existe.
+//
+// O que cá estava era `w-full max-w-[19rem]` com teclas `h-16`, e a conta que
+// isso parece fazer (304px de grelha, teclas de 93×64) nunca chegou a
+// acontecer: o `w-full` é uma PERCENTAGEM, e o pai (`flex flex-col
+// items-center`, dentro de outro `items-center`) não tem largura própria —
+// encolhe ao conteúdo. A largura da grelha passava a ser decidida pelo irmão
+// mais largo, que é o link "Escolher outra pessoa": 158,2px. Tirando os dois
+// intervalos de 12px, cada tecla ficava com **44,7px de largura para 64px de
+// altura** — mais alta do que larga, espremida, e o `max-w-[19rem]` nunca
+// chegava a morder. É este o "esticado" que o dono viu, e é por isso que ele
+// mudava de forma consoante o texto à volta.
+//
+// Uma largura em `rem` não depende de ninguém: 17,5rem = 280px, três teclas
+// de 85,3px quadradas. Fica do tamanho dos avatares redondos do ecrã ao lado
+// (`h-20 w-20` = 80px), que é a escala a que este ecrã se toca — um dedo, com
+// um cliente à frente. O tecto é em `vw` e não em `%` de propósito: é uma
+// medida absoluta, e uma percentagem aqui era voltar a pendurar a grelha na
+// largura que o pai não tem.
 function TeclasNumericas({ onDigito, onApagar, desativado }) {
   const teclas = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'apagar'];
   return (
-    <div className="grid grid-cols-3 gap-3 w-full max-w-[19rem]">
+    <div className="grid grid-cols-3 gap-3 w-[17.5rem] max-w-[calc(100vw-3rem)]">
       {teclas.map((t, i) => {
         if (t === '') return <div key={i} />;
         if (t === 'apagar') {
@@ -65,10 +86,10 @@ function TeclasNumericas({ onDigito, onApagar, desativado }) {
               type="button"
               disabled={desativado}
               onClick={onApagar}
-              className="h-16 rounded-2xl border bg-card flex items-center justify-center active:scale-[0.96] transition-transform disabled:opacity-50"
+              className="aspect-square rounded-2xl border bg-card flex items-center justify-center active:scale-[0.96] transition-transform disabled:opacity-50 hover:bg-accent"
               aria-label="Apagar"
             >
-              <Delete className="h-6 w-6" />
+              <Delete className="h-7 w-7" />
             </button>
           );
         }
@@ -78,7 +99,7 @@ function TeclasNumericas({ onDigito, onApagar, desativado }) {
             type="button"
             disabled={desativado}
             onClick={() => onDigito(t)}
-            className="h-16 rounded-2xl border bg-card text-2xl font-heading font-bold active:scale-[0.96] transition-transform disabled:opacity-50 hover:bg-accent"
+            className="aspect-square rounded-2xl border bg-card text-3xl font-heading font-bold active:scale-[0.96] transition-transform disabled:opacity-50 hover:bg-accent"
           >
             {t}
           </button>

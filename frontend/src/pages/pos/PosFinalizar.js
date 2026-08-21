@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible';
-import PosCampoValor from './PosCampoValor';
+import PosCampoValor, { TecladoNumerico } from './PosCampoValor';
 import { contaTravada, duvidaPorApurar, detalhesErroPos, temMaisDe2CasasDecimaisPos } from '@/lib/pos';
 
 // O ecrã de finalizar (Plano 2C, Task 4): três cartões — Total, Cliente e
@@ -45,6 +45,40 @@ const aceitarNumero = (texto) => {
   const limpo = comPonto.replace(/[^0-9.]/g, '');
   const partes = limpo.split('.');
   return partes.length > 2 ? partes[0] + '.' + partes.slice(1).join('') : limpo;
+};
+
+// QUE campos de valor é que o ecrã mostra. Exportada e sem React nenhum
+// dentro, para o `test_campos_de_valor_no_ecra.py` a poder CORRER em Node —
+// é a mesma razão do `partesAbertas`/`ehUmaDasPartes` do `lib/pos.js`: uma
+// decisão de ecrã que nenhum teste consegue executar é uma decisão que se
+// troca sem ninguém dar por isso. (Fica neste ficheiro, e não no `lib/pos.js`,
+// porque é um só ecrã que a faz — e porque o `lib/pos.js` está a ser mudado
+// por outro trabalho a decorrer no mesmo ramo.)
+//
+// A regra é a do dono, e é sobre o que há A DECIDIR:
+//
+//  · **Um só tipo escolhido → nenhum campo.** Uber, Glovo ou Multibanco
+//    sozinhos querem dizer que o valor já estava certo: é o total, e não há
+//    outra resposta possível. Era um campo a mais em todas as vendas normais
+//    do dia — 94px de ecrã a perguntar o que não tem dúvida.
+//  · **Dois ou mais → um campo por tipo**, porque aí é a operadora que
+//    reparte, e nenhum dos valores se adivinha.
+//  · **Um só tipo, mas com o valor JÁ ESCRITO à mão e diferente do total** →
+//    o campo volta. Acontece a sério: escolher Dinheiro (automático, 8,50) e
+//    Multibanco, escrever 5,00 no Multibanco e retirar o Dinheiro deixa um
+//    único pagamento de 5,00 numa conta de 8,50. Sem esta terceira linha, o
+//    ecrã dizia "Falta distribuir 3,50" com o EMITIR morto e SEM CAIXA
+//    NENHUMA onde escrever — um beco sem saída, com fila à frente.
+//
+// O que VAI PARA O SERVIDOR não é decidido aqui e não muda com isto: os
+// `pagamentos` continuam a ser os mesmos, com os mesmos valores. O que muda é
+// só o ecrã deixar de perguntar quando não há nada a perguntar.
+export const camposDeValorDoPagamento = (pagamentos, totalCentimos) => {
+  const escolhidos = pagamentos || [];
+  if (escolhidos.length === 0) return [];
+  if (escolhidos.length > 1) return escolhidos.map((p) => p.tipo_pagamento_id);
+  const unico = escolhidos[0];
+  return centimos(unico.valor) === totalCentimos ? [] : [unico.tipo_pagamento_id];
 };
 
 const soDigitos = (texto) => String(texto || '').replace(/\D/g, '');
@@ -202,21 +236,42 @@ function CartaoTotal({ venda, desativado, onAplicarDesconto }) {
         <div className="mt-4 rounded-xl bg-muted/60 p-4 space-y-3 animate-fade-in">
           <p className="text-sm font-medium">Desconto a aplicar à conta toda</p>
           <div className="grid grid-cols-2 gap-3">
+            {/* O MESMO teclado do campo ao lado. Os dois campos são a mesma
+                decisão da operadora — "quanto é que se tira a esta conta" — e
+                só um deles se podia escrever com um dedo; o outro mandava-a ao
+                teclado do PC, com o cliente à frente.
+
+                O que NÃO muda com o teclado: o € continua a ter precedência
+                sobre a percentagem (regra do servidor, ver `usaEur`/`usaPct`
+                aqui em cima), e a percentagem continua a NÃO levar o crivo das
+                2 casas decimais, de propósito — 0 a 100 não é dinheiro. O
+                teclado só escreve dígitos e uma vírgula no mesmo `aceitarNumero`
+                que o campo já usava; não sabe nada sobre percentagens. */}
             <div className="space-y-1.5">
               <Label htmlFor="desconto-global-pct">Percentagem</Label>
-              <div className="relative">
-                <Input
-                  id="desconto-global-pct"
-                  value={pct}
-                  onChange={(e) => setPct(aceitarNumero(e.target.value))}
-                  inputMode="decimal"
-                  placeholder="0"
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Input
+                    id="desconto-global-pct"
+                    value={pct}
+                    onChange={(e) => setPct(aceitarNumero(e.target.value))}
+                    inputMode="decimal"
+                    placeholder="0"
+                    disabled={aGuardar}
+                    className="h-16 pr-10 text-2xl font-heading font-bold text-right"
+                  />
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xl font-heading font-bold text-muted-foreground pointer-events-none">
+                    %
+                  </span>
+                </div>
+                <TecladoNumerico
+                  rotulo="Teclado da percentagem"
+                  onDigito={(d) => setPct(aceitarNumero(pct + d))}
+                  onVirgula={() => { if (!pct.includes('.')) setPct(aceitarNumero(pct + '.')); }}
+                  onApagar={() => setPct(pct.slice(0, -1))}
+                  onLimpar={() => setPct('')}
                   disabled={aGuardar}
-                  className="h-16 pr-10 text-2xl font-heading font-bold text-right"
                 />
-                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xl font-heading font-bold text-muted-foreground pointer-events-none">
-                  %
-                </span>
               </div>
               {pctInvalida && <p className="text-xs text-destructive">A percentagem tem de estar entre 0 e 100.</p>}
             </div>
@@ -318,15 +373,39 @@ function CartaoCliente({ nifTexto, onNifTexto, desativado }) {
                 (fiscal.py::PedidoFinalizarVenda._valida_nif normaliza para
                 dígitos e exige 9). Sem NIF o Vendus assume Consumidor Final,
                 por isso o campo vazio é um estado legítimo e não um erro. */}
-            <Input
-              id="nif-cliente"
-              value={nifTexto}
-              onChange={(e) => onNifTexto(e.target.value.replace(/[^0-9 ]/g, '').slice(0, 11))}
-              inputMode="numeric"
-              placeholder="Sem NIF — Consumidor Final"
-              disabled={desativado}
-              className="h-16 text-2xl font-heading font-bold tracking-wider"
-            />
+            {/* O MESMO teclado dos valores, sem a tecla da vírgula: são nove
+                dígitos, sem casas decimais e sem símbolo de euro. Sem ele,
+                este era o único campo do ecrã de finalizar que obrigava a ir
+                ao teclado do PC — e é o campo em que o cliente está à espera,
+                a ditar o número.
+
+                O teclado escreve pelas MESMAS regras do campo: só dígitos, e
+                nunca mais do que nove (o `nifValido` do pai bloqueia o EMITIR
+                com um NIF a meio, e o servidor exige nove —
+                `fiscal.py::PedidoFinalizarVenda._valida_nif`). Ao nono toque
+                o teclado deixa de escrever, em vez de deixar crescer um número
+                que a emissão vai recusar. */}
+            <div className="flex items-center gap-2">
+              <Input
+                id="nif-cliente"
+                value={nifTexto}
+                onChange={(e) => onNifTexto(e.target.value.replace(/[^0-9 ]/g, '').slice(0, 11))}
+                inputMode="numeric"
+                placeholder="Sem NIF — Consumidor Final"
+                disabled={desativado}
+                className="h-16 flex-1 text-2xl font-heading font-bold tracking-wider"
+              />
+              <TecladoNumerico
+                rotulo="Teclado do NIF"
+                onDigito={(d) => { if (digitos.length < 9) onNifTexto(nifTexto + d); }}
+                // Apaga sempre um DÍGITO, e não um carácter: o campo aceita
+                // espaços na escrita ("123 456 789") e um apagar por carácter
+                // gastava toques a comer espaços que a operadora nem vê.
+                onApagar={() => onNifTexto(nifTexto.replace(/\D+$/, '').slice(0, -1))}
+                onLimpar={() => onNifTexto('')}
+                disabled={desativado}
+              />
+            </div>
             {incompleto && (
               <p className="text-sm text-destructive">
                 O NIF tem de ter 9 dígitos — faltam {9 - digitos.length}.
@@ -829,6 +908,10 @@ export default function PosFinalizar({
   const somaCentimos = pagamentos.reduce((soma, p) => soma + centimos(p.valor), 0);
   const faltaCentimos = totalCentimos - somaCentimos;
 
+  // Que pagamentos é que levam caixa de valor — ver `camposDeValorDoPagamento`
+  // lá em cima, que é onde a regra vive e onde os testes lhe chegam.
+  const comCampoDeValor = camposDeValorDoPagamento(pagamentos, totalCentimos);
+
   const digitosNif = soDigitos(nifTexto);
   const nifValido = digitosNif.length === 0 || digitosNif.length === 9;
 
@@ -1116,35 +1199,50 @@ export default function PosFinalizar({
             {pagamentos.length > 0 && (
               <div className="mt-4 space-y-3">
                 <Separator />
-                {pagamentos.map((p) => (
-                  <div key={p.tipo_pagamento_id} className="flex items-end gap-2">
-                    <div className="flex-1 min-w-0">
-                      {/* O `autoFocus` só é honrado na montagem, que é
-                          exactamente quando se quer: a linha do pagamento que
-                          acabou de nascer vazia recebe o cursor, e o valor
-                          escreve-se sem ter de o ir procurar com o rato. */}
-                      <PosCampoValor
-                        id={`pagamento-${p.tipo_pagamento_id}`}
-                        label={tipoPorId.get(p.tipo_pagamento_id)?.nome || 'Pagamento'}
-                        valor={p.valor}
-                        onChange={(v) => escreverValor(p.tipo_pagamento_id, v)}
-                        autoFocus={p.tipo_pagamento_id === focoPagamentoId}
+                {pagamentos.map((p) => {
+                  const nome = tipoPorId.get(p.tipo_pagamento_id)?.nome || 'Pagamento';
+                  const aPerguntar = comCampoDeValor.includes(p.tipo_pagamento_id);
+                  return (
+                    <div key={p.tipo_pagamento_id} className="flex items-end gap-2">
+                      <div className="flex-1 min-w-0">
+                        {aPerguntar ? (
+                          /* O `autoFocus` só é honrado na montagem, que é
+                             exactamente quando se quer: a linha do pagamento
+                             que acabou de nascer vazia recebe o cursor, e o
+                             valor escreve-se sem ter de o ir procurar com o
+                             rato. */
+                          <PosCampoValor
+                            id={`pagamento-${p.tipo_pagamento_id}`}
+                            label={nome}
+                            valor={p.valor}
+                            onChange={(v) => escreverValor(p.tipo_pagamento_id, v)}
+                            autoFocus={p.tipo_pagamento_id === focoPagamentoId}
+                            disabled={aEmitir || congelada}
+                          />
+                        ) : (
+                          /* Sem caixa, mas NUNCA em silêncio: o valor continua
+                             escrito, porque é ele que vai na fatura. O que
+                             desaparece é só a pergunta. */
+                          <div className="flex h-12 items-center justify-between gap-3 rounded-xl bg-muted/60 px-4">
+                            <span className="text-sm font-medium truncate">{nome}</span>
+                            <span className="font-heading font-bold text-xl tabular-nums shrink-0">{euros(p.valor)}</span>
+                          </div>
+                        )}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className={`${aPerguntar ? 'h-16' : 'h-12'} w-12 shrink-0`}
+                        onClick={() => alternarTipo(tipoPorId.get(p.tipo_pagamento_id) || { id: p.tipo_pagamento_id })}
                         disabled={aEmitir || congelada}
-                      />
+                        aria-label={`Retirar ${nome}`}
+                      >
+                        <X className="h-5 w-5" />
+                      </Button>
                     </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-16 w-12 shrink-0"
-                      onClick={() => alternarTipo(tipoPorId.get(p.tipo_pagamento_id) || { id: p.tipo_pagamento_id })}
-                      disabled={aEmitir || congelada}
-                      aria-label={`Retirar ${tipoPorId.get(p.tipo_pagamento_id)?.nome || 'pagamento'}`}
-                    >
-                      <X className="h-5 w-5" />
-                    </Button>
-                  </div>
-                ))}
+                  );
+                })}
 
                 {/* O que falta, em tempo real: o servidor recusa com 422 uma
                     soma que não bata EXACTAMENTE com o total
