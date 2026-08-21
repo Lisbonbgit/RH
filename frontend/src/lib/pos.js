@@ -444,6 +444,23 @@ export const aplicarDescontoGlobal = (vendaId, dados) =>
 
 export const cancelarVenda = (vendaId) => api.post(`/pos/venda/${vendaId}/cancelar`);
 
+// **Entregar ao gestor a conta TRAVADA** — o botão "Servir o cliente seguinte".
+//
+// Era um gesto só do ecrã (`aplicarVenda(null)` e mais nada), e essa era a
+// raiz do pior defeito desta ronda: o servidor continuava a contar a conta
+// como travada — uma dedução a partir da reserva fiscal, não um facto gravado
+// — e no instante em que o gestor libertasse a reserva ela voltava a ser uma
+// conta normal do balcão. Ressuscitava à frente do cliente SEGUINTE, sem marca
+// nenhuma, e o primeiro produto dele aterrava na conta do anterior: medido,
+// 8,99 € + 2,00 € numa Fatura Simplificada de 10,99 € com o açaí de outra
+// pessoa.
+//
+// Agora é uma ESCRITA: o servidor grava `entregue_ao_gestor_em` na venda, e a
+// partir daí ela sai ao mesmo tempo da porta do `POST /pos/venda` e do
+// `GET /pos/venda/aberta`. Não volta ao balcão — resolve-se no backoffice.
+export const entregarContaAoGestor = (vendaId) =>
+  api.post(`/pos/venda/${vendaId}/entregar-ao-gestor`);
+
 // A venda pelo ID, em QUALQUER estado — e com o `documento` fiscal lá
 // dentro quando já existe (venda.py::obter_venda). É a única pergunta
 // honesta que o ecrã pode fazer depois de uma emissão que não devolveu 200:
@@ -533,6 +550,15 @@ export const finalizarVenda = (vendaId, dados) =>
 // `partes` é um NÚMERO no dividir (por quantas pessoas) e uma LISTA no separar
 // (quem leva o quê): [{ linhas: [{ linha_id, quantidade }] }, …].
 
+// O dinheiro compara-se e soma-se em CÊNTIMOS INTEIROS, nunca em vírgula
+// flutuante (regra 1 do cabeçalho de `venda.py`, do lado do ecrã). Estas duas
+// vivem aqui porque `razaoDeNaoComecar` as usa, e essa frase é executada por um
+// teste em Node — uma cópia no componente ficava fora do alcance dele.
+const centimosPos = (valor) => Math.round((Number(valor) || 0) * 100);
+
+const eurosPos = (valor) =>
+  `€ ${(Number(valor) || 0).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 // --- A conta repartida, vista de fora ----------------------------------------
 //
 // Duas perguntas que o PosVenda faz em quatro sítios — a nota do painel do
@@ -545,12 +571,21 @@ export const finalizarVenda = (vendaId, dados) =>
 // nas partes do cliente anterior — a conta ficava aberta no servidor, sem uma
 // palavra no ecrã.
 
-// As partes que ainda estão por cobrar: nem emitidas nem canceladas. O
-// `estado` é sempre o que o SERVIDOR gravou — uma parte emitida ou cancelada
-// noutro sítio tem de se ler aqui como o que ela é agora, nunca como o que
-// este ecrã se lembra dela.
+// As partes que ainda estão por cobrar NESTE POSTO: nem emitidas, nem
+// canceladas, nem entregues ao gestor. O `estado` é sempre o que o SERVIDOR
+// gravou — uma parte emitida ou cancelada noutro sítio tem de se ler aqui como
+// o que ela é agora, nunca como o que este ecrã se lembra dela.
+//
+// **`entregue_ao_gestor_em` entra nesta pergunta pela mesma razão que entra em
+// `venda.py::_filtro_do_balcao`:** é este conjunto que decide a faixa "faltam
+// cobrar N pessoas", o travão da segunda repartição e a razão encostada aos
+// botões — e uma parte travada que a operadora já entregou ao gestor não é
+// coisa que ela consiga cobrar nem cancelar. Contá-la era pôr o ecrã a pedir
+// uma acção que a rota recusa, que é o defeito que esta ronda inteira
+// persegue. O "de M" da faixa não encolhe: esse é o comprimento da lista toda,
+// e uma conta não pode parecer mais pequena do que foi.
 export const partesAbertas = (partes) =>
-  (partes || []).filter((p) => p?.estado === 'aberta');
+  (partes || []).filter((p) => p?.estado === 'aberta' && !p?.entregue_ao_gestor_em);
 
 // Esta venda é UMA das partes em cobrança? Compara-se pelo `id`, que é o que
 // não muda: a parte volta do servidor a cada leitura com totais e estado
@@ -559,6 +594,63 @@ export const partesAbertas = (partes) =>
 // nasceu no servidor não é parte de nada.
 export const ehUmaDasPartes = (venda, partes) =>
   !!venda?.id && (partes || []).some((p) => p?.id === venda.id);
+
+// --- Porque é que a GRELHA DE PRODUTOS está morta ----------------------------
+//
+// **A decisão vive aqui porque é aqui que um teste lhe chega.** Estava dentro
+// do `PosVenda.js`, e o guarda que existia sobre ela só verificava que certos
+// identificadores APARECIAM no ficheiro: partir o bloqueio a sério deixava-o
+// verde. Uma decisão que nenhum teste consegue EXECUTAR é uma decisão que
+// ninguém está a guardar — é a mesma razão que já trouxe para cá o
+// `ehUmaDasPartes` e o `partesAbertas`.
+//
+// **Isto é a cortesia; quem recusa é a ROTA.** `venda.py::abrir_venda` responde
+// 409 a quem tente começar a conta do cliente seguinte com uma conta por
+// resolver neste posto, e é essa recusa que fecha a porta — os ecrãs do POS
+// desenham-se sem servidor nenhum, e um ecrã que evita o pedido não impede
+// pedido nenhum. Estas frases só evitam que a operadora descubra a regra a
+// bater com o nariz nela, com o cliente à frente.
+
+// Porque é que não se COMEÇA a conta do cliente seguinte — ou `null` quando se
+// pode. Um posto atende um cliente de cada vez: uma conta dividida só acaba
+// quando todas as partes estiverem cobradas ou canceladas, e até lá não há
+// cliente seguinte neste PC.
+export const razaoDeNaoComecar = (porCobrar) => {
+  if (porCobrar.length === 0) return null;
+  const falta = porCobrar.reduce((soma, p) => soma + centimosPos(p?.totais?.total), 0);
+  return `${porCobrar.length === 1
+    ? 'Ainda falta cobrar 1 pessoa'
+    : `Ainda faltam cobrar ${porCobrar.length} pessoas`} desta conta `
+    + `(${eurosPos(falta / 100)}). Atende-se um cliente de cada vez: acabe esta conta — `
+    + 'cobre ou cancele as partes que faltam — antes de começar a do cliente seguinte.';
+};
+
+// A frase curta que fica no `title` de cada cartão de produto quando a conta à
+// frente está travada. Diz a saída, e a saída é um botão que existe:
+// "Servir o cliente seguinte" entrega a conta ao gestor
+// (`venda.py::entregar_ao_gestor`).
+export const MSG_CONTA_TRAVADA_CURTA =
+  'Conta travada: há uma emissão de fatura por confirmar. Toque em «Servir o cliente '
+  + 'seguinte» para a entregar ao gestor e atender o próximo — é ele que a resolve.';
+
+// **A decisão inteira, numa função só:** porque é que os cartões de produto
+// estão apagados, ou `null` quando não estão.
+//
+// Duas razões, e as duas são o servidor a recusar:
+//   1. a conta à frente está TRAVADA — nenhuma linha entra nela
+//      (`venda.py::_garante_sem_emissao`), e a saída é entregá-la ao gestor;
+//   2. não há conta à frente e há partes por resolver neste posto — nenhuma
+//      conta nova nasce aqui (`venda.py::abrir_venda`, 409).
+//
+// **Com uma conta À FRENTE que não está travada, a grelha está VIVA** — e tem
+// de estar: tocar num produto junta-lhe uma linha, que é o cliente que ela
+// está a atender. Só quando não há conta nenhuma é que o toque tenta abrir uma
+// nova, e é só aí que a recusa da rota entra em jogo.
+export const razaoDaGrelhaMorta = ({ venda, partes }) => {
+  if (contaTravada(venda)) return MSG_CONTA_TRAVADA_CURTA;
+  if (venda) return null;
+  return razaoDeNaoComecar(partesAbertas(partes));
+};
 
 export const dividirConta = (vendaId, partes) =>
   api.post(`/pos/venda/${vendaId}/dividir`, { partes });

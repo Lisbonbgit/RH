@@ -776,15 +776,25 @@ export default function FatReservasPresas() {
             </p>
           ) : (
             <>
+              {/* O texto diz as DUAS famílias desde que existe a marca
+                  `entregue_ao_gestor_em`: as contas de turnos já fechados (as
+                  de sempre) e as que a operadora ENTREGOU ao gestor, que podem
+                  ser do turno que está a decorrer neste instante. O que as une
+                  é o que esta lista existe para dizer — nenhum ecrã do POS lhes
+                  chega. Dizer só "num turno que já fechou" era descrever
+                  metade da lista, e era a metade que o gestor nunca tinha
+                  visto. */}
               <p className="text-sm text-muted-foreground" data-testid="esquecidas-resumo">
                 {plural(esquecidas.length, 'conta ficou', 'contas ficaram')} aberta
-                {esquecidas.length === 1 ? '' : 's'} num turno que já fechou —{' '}
+                {esquecidas.length === 1 ? '' : 's'} sem ninguém no POS que lhes chegue —{' '}
                 <span className="font-semibold text-foreground">
                   {fmtEUR(esquecidas.reduce((t, c) => t + (Number(c.total) || 0), 0))}
                 </span>
                 . Esse dinheiro não foi facturado nem entrou em nenhum Z como venda.
-                Nenhum ecrã do POS lhes chega: com a caixa fechada, o balcão só vê
-                o turno que está a decorrer.
+                São as contas de turnos que já fecharam (com a caixa fechada, o balcão
+                só vê o turno que está a decorrer) e as que a operadora entregou ao
+                gestor por estarem travadas — essas saíram do balcão de propósito e
+                não voltam lá, mesmo que o turno delas ainda esteja aberto.
               </p>
 
               <div className="space-y-3">
@@ -822,6 +832,15 @@ export default function FatReservasPresas() {
                         {c.reserva_fiscal_por_resolver && (
                           <Badge variant="outline" className="bg-destructive/10 text-destructive border-destructive/30" data-testid={`esquecida-travada-${c.id}`}>
                             Reserva fiscal por resolver
+                          </Badge>
+                        )}
+                        {/* A que chegou aqui pela porta NOVA. Sem este crachá,
+                            o gestor via uma conta do turno de HOJE no meio das
+                            esquecidas de ontem e não percebia porquê. */}
+                        {c.entregue_ao_gestor_em && (
+                          <Badge variant="outline" className="bg-primary/10 text-primary border-primary/30" data-testid={`esquecida-entregue-${c.id}`}>
+                            Entregue ao gestor no POS
+                            {c.entregue_ao_gestor_por?.nome ? ` por ${c.entregue_ao_gestor_por.nome}` : ''}
                           </Badge>
                         )}
                       </div>

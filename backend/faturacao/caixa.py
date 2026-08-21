@@ -834,6 +834,15 @@ async def _venda_com_emissao_viva(db, sessao_id: str) -> Optional[Dict]:
     de `fat_refs_fiscais`, que ao fim de um ano tem centenas de milhares de
     reservas resolvidas.
 
+    **A conta entregue ao gestor conta aqui na mesma**, e é de propósito: a
+    marca (`venda.py::entregar_ao_gestor`) diz de quem é a conta, não o que
+    foi facturado. Enquanto a reserva fiscal dela estiver viva, pode estar a
+    nascer uma Fatura Simplificada REAL do outro lado — e fechar a caixa a
+    meio disso é fechar as contas antes de o dinheiro estar contado, seja de
+    quem for a conta. Quem a destranca é o gestor, no backoffice; a partir daí
+    ela deixa de travar o fecho e passa a entrar no Z como dinheiro por
+    receber, que é o que ela é.
+
     A outra metade desta defesa está em `fiscal.py`: depois de ganhar a
     reserva, a emissão relê a SESSÃO e aborta se ela já não estiver aberta
     (`SessaoJaNaoAberta`). São as duas necessárias, e não bastam por si só:
@@ -897,9 +906,14 @@ async def _contas_abertas_da_sessao(db, sessao_id: str, dispositivo_id=None) -> 
 
     **Não é só sobre partes.** A pergunta é feita a TODAS as contas `aberta`
     da sessão: a conta que ficou meia-picada quando o cliente desistiu, a
-    conta travada que ela pôs de lado, e as partes de quem dividiu. Todas são
-    a mesma coisa do ponto de vista do turno — dinheiro que o ecrã mostrou e
-    que não entrou em fatura nenhuma.
+    conta travada que ficou à espera do gestor, a que a operadora já lhe
+    ENTREGOU (`venda.py::entregar_ao_gestor`) e as partes de quem dividiu.
+    Todas são a mesma coisa do ponto de vista do turno — dinheiro que o ecrã
+    mostrou e que não entrou em fatura nenhuma. A entregue ao gestor conta
+    aqui na mesma, e tem de contar: sair do BALCÃO não é ser cobrada, e o Z é
+    o único registo de que aqueles euros ficaram por receber neste turno. Sai
+    marcada (`entregue_ao_gestor`), porque a operadora não a pode cobrar nem
+    cancelar e o ecrã não lhe pode pedir isso.
 
     **A sessão, e não o dispositivo.** Ao contrário de
     `venda.contas_repartidas` (que responde ao ECRÃ de um posto), o Z é do
@@ -1005,6 +1019,14 @@ async def _contas_abertas_da_sessao(db, sessao_id: str, dispositivo_id=None) -> 
             "dispositivo_nome": nomes.get(venda.get("dispositivo_id")),
             # A que IMPEDE o fecho, separada das que não impedem nada.
             "trava_o_fecho": trava,
+            # A que JÁ NÃO É DO BALCÃO. O ecrã do fecho lista estas contas e
+            # manda cobrá-las ou cancelá-las; esta a operadora não consegue
+            # fazer nem uma coisa nem outra — é do gestor, e está na lista
+            # dele (`GET /caixa/contas-esquecidas`). Sem esta chave, o
+            # diálogo do fecho voltava a dar uma instrução que ninguém ali
+            # consegue cumprir, que é o mesmo defeito do texto que o
+            # `dispositivo_nome` veio corrigir.
+            "entregue_ao_gestor": bool(venda.get("entregue_ao_gestor_em")),
         })
     return {
         "quantas": len(contas),
@@ -1241,7 +1263,10 @@ async def _contas_esquecidas(db) -> list:
     ordenação é `criada_em` ASCENDENTE e é feita antes do corte, por isso o
     que fica de fora é o mais RECENTE — que é, quase sempre, o turno que está
     a decorrer e que esta lista deita fora a seguir. As esquecidas, essas, são
-    as mais velhas: entram sempre.
+    as mais velhas: entram sempre. A conta ENTREGUE AO GESTOR é a única desta
+    lista que pode ser de hoje, e cai do lado certo do corte pela mesma razão:
+    o tecto só morde com centenas de contas abertas ao mesmo tempo, e nessa
+    altura o problema já não é este ecrã.
 
     O valor sai do `_totais` de `venda.py` (import local, o ciclo de sempre) e
     nunca de uma soma escrita aqui, e uma conta que já não se consegue somar
@@ -1269,7 +1294,20 @@ async def _contas_esquecidas(db) -> list:
         # alguém neste instante e não é um esquecimento. Uma sessão que
         # desapareceu (`None`) entra: é dinheiro sem turno nenhum, que é ainda
         # mais invisível do que o resto.
-        if sessao is not None and sessao.get("estado") == "aberta":
+        #
+        # **A EXCEPÇÃO, e é ela que fecha o buraco da conta que ressuscitava.**
+        # Uma conta ENTREGUE AO GESTOR (`venda.py::entregar_ao_gestor`) não
+        # está no ecrã de ninguém — foi tirada do balcão de propósito, e a
+        # marca é a prova gravada disso. Enquanto esta lista a excluísse por
+        # causa do turno estar aberto, ela não aparecia em sítio NENHUM onde
+        # alguém a fosse procurar: nem em `/pos/venda/aberta`, nem em
+        # `/pos/venda/repartidas`, nem em `/fiscal/reservas-presas` assim que o
+        # gestor libertasse a reserva. Ficava só no Z, horas depois. A frase
+        # que estava aqui — «essa conta está no ecrã de alguém neste instante»
+        # — deixou de ser verdade para esta família, e é para ela que a lista
+        # existe.
+        entregue = bool(venda.get("entregue_ao_gestor_em"))
+        if not entregue and sessao is not None and sessao.get("estado") == "aberta":
             continue
 
         caixa_id = venda.get("caixa_id")
@@ -1313,13 +1351,23 @@ async def _contas_esquecidas(db) -> list:
             "reserva_fiscal_por_resolver": await db[
                 COLECOES["refs_fiscais"]
             ].find_one({"venda_id": venda.get("id")}) is not None,
+            # A que chegou aqui pela porta NOVA: a operadora entregou-a, e o
+            # turno dela pode ainda estar a decorrer. Sem estas duas chaves, o
+            # gestor via uma conta de hoje no meio das esquecidas de ontem sem
+            # perceber porquê — e não sabia a quem perguntar o que aconteceu
+            # àquele cliente.
+            "entregue_ao_gestor_em": venda.get("entregue_ao_gestor_em"),
+            "entregue_ao_gestor_por": venda.get("entregue_ao_gestor_por"),
         })
     return saida
 
 
 @router.get("/caixa/contas-esquecidas")
 async def listar_contas_esquecidas(_: Dict = Depends(gestor_atual)) -> list:
-    """As contas por cobrar de turnos JÁ FECHADOS — o leitor que o
+    """As contas por cobrar que já não têm ninguém no POS que lhes chegue: as
+    de turnos JÁ FECHADOS, e as que a operadora ENTREGOU ao gestor (essas
+    aparecem mesmo com o turno a decorrer — ver `_contas_esquecidas`) — o
+    leitor que o
     `contas_abertas` do Z nunca teve.
 
     Rota de GESTÃO (`gestor_atual`) e não do POS, e sem prefixo `/pos/`: ver
@@ -1336,7 +1384,8 @@ async def listar_contas_esquecidas(_: Dict = Depends(gestor_atual)) -> list:
 async def arrumar_conta_esquecida(
     venda_id: str, gestor: Dict = Depends(gestor_atual)
 ) -> dict:
-    """Dá por perdida uma conta aberta de um turno já fechado: passa-a a
+    """Dá por perdida uma conta aberta de um turno já fechado — ou uma que a
+    operadora entregou ao gestor, seja qual for o estado do turno: passa-a a
     `cancelada`, com o nome de quem o decidiu.
 
     **Porque é que existe um botão, e não só uma lista.** Uma lista que nunca
@@ -1370,8 +1419,9 @@ async def arrumar_conta_esquecida(
 
     As quatro recusas, todas antes de qualquer escrita:
     - a conta já não está `aberta` (alguém a resolveu entretanto);
-    - o turno DELA ainda está aberto — isso resolve-se no POS, por quem lá
-      está, e não aqui;
+    - o turno DELA ainda está aberto E ela ainda é do balcão — isso resolve-se
+      no POS, por quem lá está, e não aqui. Uma conta ENTREGUE AO GESTOR não
+      cai nesta recusa: essa já não tem ninguém no POS que lhe chegue;
     - o turno DELA está a fechar-se neste instante — o Z está a somar a lista
       onde esta conta entra, e cancelá-la agora fazia-a desaparecer dele (ver
       `_MSG_CONTA_ESQUECIDA_COM_FECHO_A_DECORRER`);
@@ -1388,7 +1438,19 @@ async def arrumar_conta_esquecida(
             status_code=409, detail=_MSG_CONTA_ESQUECIDA_JA_RESOLVIDA)
 
     sessao = await db[COLECOES["sessoes_caixa"]].find_one({"id": venda.get("sessao_id")})
-    if sessao is not None and sessao.get("estado") == "aberta":
+    # A recusa do turno ABERTO tem uma excepção, e é a razão de ser da marca:
+    # uma conta ENTREGUE AO GESTOR (`venda.py::entregar_ao_gestor`) já NÃO se
+    # resolve no POS — foi tirada do balcão precisamente porque a operadora não
+    # a consegue cobrar nem cancelar. Mandá-la de volta a "quem lá está" era
+    # nomear uma saída que não existe, e a conta ficava sem nenhuma até o turno
+    # fechar. É deste par — a lista que passou a mostrá-la com o turno aberto e
+    # este botão que passou a poder arrumá-la — que sai a promessa de que ela
+    # continua do gestor até ele a resolver.
+    if (
+        not venda.get("entregue_ao_gestor_em")
+        and sessao is not None
+        and sessao.get("estado") == "aberta"
+    ):
         raise HTTPException(
             status_code=409, detail=_MSG_CONTA_ESQUECIDA_DE_TURNO_ABERTO)
     if sessao is not None and sessao.get("estado") == "a_fechar":

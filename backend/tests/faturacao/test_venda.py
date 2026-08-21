@@ -28,6 +28,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from pymongo.errors import DuplicateKeyError
 
 from faturacao import router as router_do_modulo
 from faturacao import venda as venda_mod
@@ -92,14 +93,17 @@ class CursorFalso:
     de inserção — um teste que continua verde com o código de produção
     partido não defende nada (já aconteceu 3× neste módulo)."""
 
-    def __init__(self, itens):
+    def __init__(self, itens, ceder=False):
         self._itens = list(itens)
+        self._ceder = ceder
 
     def sort(self, campo, direccao=1):
         self._itens.sort(key=lambda d: d.get(campo), reverse=(direccao == -1))
         return self
 
     async def to_list(self, n=None):
+        if self._ceder:
+            await asyncio.sleep(0)
         return self._itens if n is None else self._itens[:n]
 
 
@@ -144,31 +148,96 @@ class ColeccaoFalsa:
     razão uma cópia: em produção o que fica gravado é BSON, e nada do que o
     código de produção faça ao dicionário que inseriu volta a tocar-lhe."""
 
-    def __init__(self, registo, documentos=None):
+    def __init__(self, registo, documentos=None, unico=None, ceder=False):
         self.registo = registo
         self._documentos = documentos if documentos is not None else []
+        # **CEDER o event loop em cada operação — e é isso que faz uma corrida
+        # ser uma corrida.** Sem isto, duas rotas lançadas com
+        # `asyncio.gather` correm uma DEPOIS da outra até ao fim (nenhuma
+        # operação deste duplo tem `await` nenhum), e um teste de concorrência
+        # ficava verde a testar o caminho sequencial. O Motor contra o Mongo
+        # real cede em cada ida à base de dados; este flag põe o duplo a fazer
+        # o mesmo.
+        self._ceder = ceder
+        # A CHAVE de um índice ÚNICO PARCIAL que este duplo faz cumprir, ou
+        # `None` (o normal). É uma função `doc -> chave | None`: `None` quer
+        # dizer "este documento não entra no índice", tal como um
+        # `partialFilterExpression` que não casa.
+        #
+        # **Sem isto, nenhum teste da corrida do duplo toque podia ser
+        # honesto.** O que fecha essa corrida é o índice único parcial de
+        # `db.py` (`fat_vendas`, `posto_em_curso`), e um duplo que aceita
+        # sempre o insert prova o contrário do que se quer: ficava verde com a
+        # garantia real apagada. Aqui o insert REBENTA com `DuplicateKeyError`,
+        # como o Mongo, e é isso que dá a `abrir_venda` alguma coisa para
+        # apanhar.
+        self._unico = unico
+
+    def _chave_unica(self, doc):
+        return self._unico(doc) if self._unico else None
 
     def find(self, filtro=None, projecao=None):
         self.registo.append(("find", filtro))
         return CursorFalso(
-            [deepcopy(d) for d in self._documentos if _corresponde(d, filtro)]
+            [deepcopy(d) for d in self._documentos if _corresponde(d, filtro)],
+            ceder=self._ceder,
         )
 
     async def find_one(self, filtro, projecao=None):
         self.registo.append(("find_one", filtro))
         encontrados = [d for d in self._documentos if _corresponde(d, filtro)]
-        return deepcopy(encontrados[0]) if encontrados else None
+        resposta = deepcopy(encontrados[0]) if encontrados else None
+        # O retrato tira-se PRIMEIRO e só depois se cede o controlo — que é a
+        # ordem do Motor: a leitura é servida num instante e a resposta chega
+        # ao chamador noutro. É essa ordem que faz duas rotas simultâneas
+        # decidirem sobre a MESMA fotografia, que é o que uma corrida de
+        # ler-e-depois-escrever é. Ceder ANTES de ler dava a cada uma a
+        # escrita da outra já feita, e nenhum teste de concorrência chegava a
+        # tocar nas escritas condicionais que existem para isto.
+        if self._ceder:
+            await asyncio.sleep(0)
+        return resposta
 
     async def insert_one(self, doc):
+        if self._ceder:
+            await asyncio.sleep(0)
         self.registo.append(("insert_one", dict(doc)))
+        chave = self._chave_unica(doc)
+        if chave is not None and any(
+            self._chave_unica(d) == chave for d in self._documentos
+        ):
+            raise DuplicateKeyError("E11000 duplicate key error (duplo): %r" % (chave,))
         self._documentos.append(deepcopy(doc))
         return None
 
     async def update_one(self, filtro, atualizacao):
+        """`$set` e `$unset`, e a colisão do índice único.
+
+        O `$unset` faz falta desde que existe a etiqueta `posto_em_curso`: é
+        `entregar_ao_gestor` que a tira, e um duplo que ignorasse o `$unset`
+        deixava a conta entregue a ocupar o posto no índice — o teste da
+        entrega passava e o balcão real ficava trancado.
+
+        E a colisão faz falta porque uma escrita pode voltar a pôr um
+        documento DENTRO do índice (as duas compensações que repõem
+        `estado: "aberta"`); sem ela, `_repor_aberta` nunca via o
+        `DuplicateKeyError` que existe para apanhar."""
         self.registo.append(("update_one", filtro, atualizacao))
         alvos = [d for d in self._documentos if _corresponde(d, filtro)]
         if alvos:
-            alvos[0].update(atualizacao.get("$set", {}))
+            proposto = deepcopy(alvos[0])
+            proposto.update(atualizacao.get("$set", {}))
+            for campo in atualizacao.get("$unset", {}):
+                proposto.pop(campo, None)
+            chave = self._chave_unica(proposto)
+            if chave is not None and any(
+                d is not alvos[0] and self._chave_unica(d) == chave
+                for d in self._documentos
+            ):
+                raise DuplicateKeyError(
+                    "E11000 duplicate key error (duplo): %r" % (chave,))
+            alvos[0].clear()
+            alvos[0].update(proposto)
         return ResultadoUpdateFalso(matched_count=len(alvos))
 
     async def delete_one(self, filtro):
@@ -192,8 +261,19 @@ class DbFalsa:
         return self._coleccoes.setdefault(nome, ColeccaoFalsa([]))
 
 
+# A chave do índice único PARCIAL de `db.py` sobre `fat_vendas`, escrita aqui
+# como o Mongo a aplicaria: só as contas `aberta` que TÊM a etiqueta do posto
+# entram nele. É a mesma condição, e não uma paráfrase — o
+# `test_indices.py::test_existe_indice_unico_para_a_conta_em_curso_do_posto`
+# prende a declaração ao que este duplo faz cumprir.
+def _chave_do_posto(doc):
+    if doc.get("estado") != "aberta" or doc.get("posto_em_curso") is None:
+        return None
+    return doc["posto_em_curso"]
+
+
 def _db(registo, caixas=None, sessoes=None, vendas=None, produtos=None, refs=None,
-        documentos=None, grupos=None):
+        documentos=None, grupos=None, com_indice_do_posto=False, ceder=False):
     # A sessão ABERTA está lá por omissão, e passou a ter de estar: desde que
     # as rotas de escrita confirmam a sessão desta venda
     # (`venda.py::_garante_sessao_desta_venda_aberta`), uma base sem sessão
@@ -206,7 +286,9 @@ def _db(registo, caixas=None, sessoes=None, vendas=None, produtos=None, refs=Non
         COLECOES["caixas"]: ColeccaoFalsa(registo, caixas),
         COLECOES["sessoes_caixa"]: ColeccaoFalsa(
             registo, [_sessao()] if sessoes is None else sessoes),
-        COLECOES["vendas"]: ColeccaoFalsa(registo, vendas),
+        COLECOES["vendas"]: ColeccaoFalsa(
+            registo, vendas, ceder=ceder,
+            unico=_chave_do_posto if com_indice_do_posto else None),
         COLECOES["produtos"]: ColeccaoFalsa(registo, produtos),
         # A reserva de emissão do fiscal.py — o cancelamento pergunta por
         # ela antes de deitar uma conta fora.
@@ -409,26 +491,35 @@ def test_as_partes_por_cobrar_sao_conta_por_resolver(monkeypatch):
         PedidoNovaVenda(caixa_id="caixa-1"), operador=op))["estado"] == "aberta"
 
 
-def test_a_conta_travada_e_a_unica_que_deixa_abrir_a_seguinte(monkeypatch):
-    """A ÚNICA excepção, e a razão dela: a operadora não consegue cobrar nem
-    cancelar uma conta com uma emissão por confirmar — as cinco rotas de
-    escrita recusam-na —, e quem a resolve é o gestor no backoffice. Se ela
-    prendesse o posto, o balcão parava por causa de uma conta que ninguém ali
-    consegue fechar."""
+def test_a_conta_travada_tambem_prende_o_posto_ate_ser_entregue(monkeypatch):
+    """**A excepção que estava aqui era a raiz do defeito, e por isso caiu.**
+
+    Este teste dizia o contrário: "a conta travada é a ÚNICA que deixa abrir a
+    seguinte". A razão era boa — a operadora não a cobra nem a cancela, e se
+    ela prendesse o posto o balcão parava —, mas a excepção era CALCULADA
+    (existe reserva em `fat_refs_fiscais`?) e não gravada. Deixava de ser
+    verdade no instante em que o gestor libertasse a reserva, e a partir daí a
+    conta do cliente anterior voltava a estar no conjunto da porta sem estar em
+    conjunto nenhum que alguém visse.
+
+    Agora a travada prende o posto como qualquer outra, e a saída dela é uma
+    ACÇÃO com uma marca gravada: `POST /pos/venda/{id}/entregar-ao-gestor`. Ver
+    `test_conta_entregue_ao_gestor.py`, que reproduz o estrago com números."""
     registo = []
     db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
              vendas=[_venda(linhas=[_linha()])], refs=[_reserva()])
     monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
 
-    nova = _corre(abrir_venda(PedidoNovaVenda(caixa_id="caixa-1"), operador=_operador()))
-    assert nova["estado"] == "aberta"
-    assert nova["id"] != "venda-1"
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(abrir_venda(PedidoNovaVenda(caixa_id="caixa-1"), operador=_operador()))
+    assert excinfo.value.status_code == 409
+    assert len(_abertas_do_posto(db)) == 1
 
 
 def test_uma_travada_ao_lado_nao_desculpa_a_conta_normal(monkeypatch):
-    """A excepção não pode reabrir a porta: com uma conta travada E uma conta
-    normal abertas no mesmo posto, quem manda é a normal — essa a operadora
-    cobra ou cancela."""
+    """Com uma conta travada E uma conta normal abertas no mesmo posto, o
+    posto está preso — e estava-o já antes desta ronda, porque a normal
+    contava. Continua a contar."""
     registo = []
     db = _db(registo, caixas=[_caixa()], sessoes=[_sessao()],
              vendas=[_venda(id="venda-travada", linhas=[_linha()]),

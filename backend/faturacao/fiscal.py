@@ -2111,6 +2111,18 @@ _MSG_LIBERTAR_O_QUE_CONFIRMOU = (
     "Fatura Simplificada da mesma venda, que só se corrige com uma nota de "
     "crédito."
 )
+# A conta que a operadora ENTREGOU ao gestor: nenhuma das duas frases abaixo
+# lhe serve. Ela não "volta ao POS" (a marca `entregue_ao_gestor_em` tira-a do
+# balcão e libertar a reserva não a devolve — era exactamente essa devolução
+# silenciosa que punha a conta do cliente anterior dentro da fatura do
+# seguinte), e também não é uma conta de um turno fechado: o turno dela pode
+# estar a decorrer neste instante.
+_MSG_LIBERTAR_A_SEGUIR_ENTREGUE = (
+    "Esta conta foi ENTREGUE ao gestor no POS e continua a ser dele: libertar "
+    "a reserva não a devolve ao balcão. Resolva-a aqui, em Contas por "
+    "Resolver — dê-a por perdida se ninguém a pagou, ou use a reconciliação "
+    "(Reconciliar) se afinal aparecer um documento no Vendus para esta venda."
+)
 _MSG_LIBERTAR_A_SEGUIR = (
     "A conta voltou a poder ser alterada, cancelada ou finalizada no POS. Se "
     "afinal aparecer um documento no Vendus para esta venda, NÃO a finalize: "
@@ -2610,10 +2622,30 @@ async def libertar_reserva_presa(
        `matched_count` que decide a corrida em `cancelar_venda` e em
        `_reclamar_retoma`.
 
-    A venda NÃO se toca: fica como estava (`aberta`), que é precisamente o que
-    devolve o balcão ao serviço. O que se apaga é só a reserva — e o que a
-    resposta promete a seguir depende da CAIXA desta venda: com a sessão
-    fechada, `finalizar` não é uma das saídas (ver
+    **A venda NÃO se toca: fica exactamente como estava.** O que se apaga é só
+    a reserva.
+
+    Esta frase dizia a seguir «que é precisamente o que devolve o balcão ao
+    serviço», e era essa metade que estava errada — e cara. Enquanto a
+    excepção da porta do POS fosse CALCULADA ("não conta a conta que tiver
+    reserva viva"), apagar a reserva aqui destrancava, à distância e sem
+    escrever nada na venda, uma conta que a operadora já tinha largado do
+    ecrã: ela ressuscitava à frente do cliente SEGUINTE, sem marca nenhuma, e
+    o primeiro produto dele aterrava na conta do anterior. Medido nas rotas
+    reais: 8,99 € do cliente A + 2,00 € do cliente seguinte numa só conta de
+    10,99 €, com a Fatura Simplificada a levar os dois artigos (ver a
+    docstring de `venda.py::entregar_ao_gestor`).
+
+    Deixou de ser possível porque a excepção passou a ser uma MARCA GRAVADA na
+    venda (`entregue_ao_gestor_em`). Esta rota continua a não tocar na venda —
+    e é por isso que a marca sobrevive: uma conta que a operadora entregou ao
+    gestor continua do gestor depois de ele libertar a reserva, e resolve-se
+    onde ela está, na lista dele (`GET /caixa/contas-esquecidas`, com o botão
+    de a dar por perdida, e `reconciliar_reserva_presa` para o caso de a FS ter
+    mesmo saído). O balcão não a recebe de volta.
+
+    O que a resposta promete a seguir depende da CAIXA desta venda: com a
+    sessão fechada, `finalizar` não é uma das saídas (ver
     `_MSG_LIBERTAR_A_SEGUIR_SESSAO_FECHADA` e a rota de reconciliar)."""
     db = obter_db()
     reserva = await db[COLECOES["refs_fiscais"]].find_one({"venda_id": venda_id})
@@ -2712,9 +2744,15 @@ async def libertar_reserva_presa(
         "presa_ha_segundos": presa_ha_segundos,
         "sessao_estado": sessao.get("estado") if sessao else None,
         "o_que_confirmou": _MSG_LIBERTAR_O_QUE_CONFIRMOU % ext_ref,
+        # A marca da venda manda sobre o estado da sessão: uma conta entregue
+        # não volta ao POS, esteja o turno aberto ou fechado.
         "a_seguir": (
-            _MSG_LIBERTAR_A_SEGUIR if sessao_aberta
-            else _MSG_LIBERTAR_A_SEGUIR_SESSAO_FECHADA
+            _MSG_LIBERTAR_A_SEGUIR_ENTREGUE
+            if (venda or {}).get("entregue_ao_gestor_em")
+            else (
+                _MSG_LIBERTAR_A_SEGUIR if sessao_aberta
+                else _MSG_LIBERTAR_A_SEGUIR_SESSAO_FECHADA
+            )
         ),
     }
 

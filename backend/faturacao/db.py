@@ -153,6 +153,57 @@ INDICES = [
     # chave a `null` — a parte da chave que ninguém procura, e a que cresce
     # com cada venda do dia.
     ("fat_vendas", [("conta_mae_id", 1)], {"sparse": True}),
+    # **UMA CONTA DE CADA VEZ POR POSTO — a garantia, e não a cortesia.**
+    #
+    # `venda.abrir_venda` verificava e depois inseria, sem lock e sem índice:
+    # dois `POST /pos/venda` simultâneos do mesmo PC liam os dois um balcão
+    # livre e inseriam os dois. Medido com o duplo de Mongo a ceder o event
+    # loop em cada leitura (que é o que o Motor faz contra o Mongo real):
+    # **201 e 201, duas contas abertas no mesmo posto** — e, antes da marca
+    # `entregue_ao_gestor_em`, uma delas invisível no ecrã.
+    #
+    # A chave é `posto_em_curso` — a etiqueta `"{sessao_id}|{dispositivo_id}"`
+    # que `venda.abrir_venda` escreve na conta que nasce no balcão, e SÓ nela.
+    #
+    # **Porque é que a chave é um campo derivado e não `{sessao_id,
+    # dispositivo_id}`.** O predicado a impor é o de
+    # `venda._filtro_do_balcao`, e ele exclui duas famílias: as PARTES de uma
+    # conta dividida (várias por posto, de propósito) e as contas já entregues
+    # ao gestor. Excluí-las no filtro parcial exigia `conta_mae_id: null` /
+    # `entregue_ao_gestor_em: null` lá dentro, e a igualdade a `null` num
+    # `partialFilterExpression` não é terreno em que se aposte uma garantia
+    # (o `$exists: false` não é sequer aceite). Com a etiqueta, o filtro usa
+    # só as duas formas que o Mongo documenta como aceites — uma igualdade e
+    # um `$exists: true` — e as partes ficam de fora por não terem o campo.
+    #
+    # **Só se tornou expressável num índice depois de a excepção da travada
+    # deixar de ser calculada.** Enquanto "não conta a que tem reserva viva"
+    # fosse uma pergunta a OUTRA colecção (`fat_refs_fiscais`), nenhum índice
+    # de `fat_vendas` o podia dizer.
+    #
+    # **Só há UM sítio que tira a etiqueta**, e é o `entregar_ao_gestor`: as
+    # outras três saídas da conta (emitida, cancelada, separada) tiram-na
+    # sozinhas, porque o filtro parcial é `estado: "aberta"` e uma venda que
+    # muda de estado sai do índice sem ninguém lhe tocar. Um só sítio é o que
+    # torna isto seguro: um esquecimento aqui trancava o posto para o resto do
+    # turno, e não há onde o esquecer.
+    #
+    # Numa base que já tenha duas `aberta` no mesmo posto (as órfãs de antes
+    # desta ronda), a CRIAÇÃO falha — `criar_indices` regista o erro e o
+    # módulo arranca na mesma, com a garantia de antes, que é a leitura de
+    # `abrir_venda`. É o desfecho certo: recusar o arranque do POS de cinco
+    # lojas por causa de contas velhas seria o estrago ao contrário.
+    (
+        "fat_vendas",
+        [("posto_em_curso", 1)],
+        {
+            "unique": True,
+            "partialFilterExpression": {
+                "estado": "aberta",
+                "posto_em_curso": {"$exists": True},
+            },
+        },
+    ),
     # As contas que ficaram ABERTAS num turno já fechado (`caixa.py::
     # _contas_esquecidas`, o ecrã do gestor). A pergunta é
     # `{"estado": "aberta"}` ordenada por `criada_em`, e sem índice era um
