@@ -54,12 +54,94 @@ def soma_vendas_dinheiro(vendas: List[Dict]) -> float:
     `tipo_fiscal` do SNAPSHOT gravado em cada pagamento no momento da
     emissão (faturacao/fiscal.py::finalizar), nunca reconsulta
     fat_tipos_pagamento ao vivo — um tipo de pagamento reconfigurado
-    amanhã não pode mudar retroactivamente o Z de uma sessão já fechada."""
-    total = 0.0
+    amanhã não pode mudar retroactivamente o Z de uma sessão já fechada.
+
+    **Calculado a partir de `por_tipo_de_pagamento`, e não em paralelo com
+    ela.** As duas respondem à mesma pergunta (quanto entrou, e em quê) e
+    são mostradas lado a lado no mesmo ecrã: o Ponto de Caixa e o Z põem o
+    "Vendas em dinheiro" logo por cima da linha "Dinheiro" do
+    desdobramento. Duas somas independentes que "têm de concordar" acabam
+    sempre por discordar — neste módulo já aconteceu três vezes — e aqui a
+    discordância seria visível ao balcão, na mesma janela, sem ninguém
+    saber qual das duas está certa. Por isso só existe uma soma: esta filtra
+    as linhas `NU` daquela."""
+    return round(
+        sum(
+            linha["total"]
+            for linha in por_tipo_de_pagamento(vendas)
+            if linha["tipo_fiscal"] == "NU"
+        ),
+        2,
+    )
+
+
+def _centimos(valor) -> int:
+    """Um valor em euros nos cêntimos INTEIROS que ele vale.
+
+    Os pagamentos entram no Mongo já limitados a 2 casas decimais (a soma
+    deles é validada contra o total da venda em `fiscal.py::finalizar`, e o
+    total sai de `precos.linha_de_venda`, que recusa 3 casas), por isso o
+    `round` aqui não pode comer nada — só desfaz o ruído binário de
+    `8.99 * 100 == 898.9999...`."""
+    return int(round(float(valor or 0) * 100))
+
+
+def por_tipo_de_pagamento(vendas: List[Dict]) -> List[Dict]:
+    """Quanto entrou em CADA tipo de pagamento nas vendas emitidas de uma
+    sessão — dinheiro, multibanco, Uber Eats, Bolt, Glovo.
+
+    É a pergunta que o Z não sabia responder: ele dava o total em dinheiro
+    (`soma_vendas_dinheiro`) e mais nada, e ao fechar ninguém conseguia
+    bater o rolo do terminal de Multibanco nem o extracto do Glovo contra o
+    turno — o gestor fechava o mês a somar à mão. A MESMA função serve o
+    Ponto de Caixa (a conferência a meio do turno) e o Z (o fecho): não são
+    dois cálculos que têm de dar o mesmo, é um só, chamado duas vezes.
+
+    Agrupa pelo `tipo_pagamento_id` do SNAPSHOT gravado em cada pagamento
+    (`fiscal.py::finalizar`), nunca por `fat_tipos_pagamento` ao vivo —
+    renomear o "Uber Eats" para "Uber" amanhã não pode reescrever o Z de
+    ontem. O `nome` e o `tipo_fiscal` que saem são os do PRIMEIRO pagamento
+    visto para esse id, pela mesma razão.
+
+    Soma em CÊNTIMOS INTEIROS e só converte a euros no fim: `0.29 + 1.15 +
+    10.20` em vírgula flutuante dá `11.639999999999999`, e um turno tem
+    centenas de parcelas.
+
+    A ordem é por total decrescente (o que mais entrou primeiro, que é o
+    que a operadora procura), com o nome a desempatar — determinística, para
+    duas leituras seguidas do mesmo turno não trocarem as linhas de sítio.
+    """
+    linhas: Dict = {}
     for venda in vendas or []:
         if venda.get("estado") != "emitida":
             continue
         for pagamento in venda.get("pagamentos") or []:
-            if pagamento.get("tipo_fiscal") == "NU":
-                total += float(pagamento.get("valor", 0) or 0)
-    return round(total, 2)
+            # O `nome` como chave de recurso: um pagamento sem
+            # `tipo_pagamento_id` (não devia existir) não pode desaparecer
+            # da conta — dinheiro que se cala é o pior desfecho possível.
+            chave = pagamento.get("tipo_pagamento_id") or pagamento.get("nome")
+            linha = linhas.get(chave)
+            if linha is None:
+                linha = linhas[chave] = {
+                    "tipo_pagamento_id": pagamento.get("tipo_pagamento_id"),
+                    "nome": pagamento.get("nome"),
+                    "tipo_fiscal": pagamento.get("tipo_fiscal"),
+                    "centimos": 0,
+                    "quantos": 0,
+                }
+            linha["centimos"] += _centimos(pagamento.get("valor"))
+            linha["quantos"] += 1
+    saida = [
+        {
+            "tipo_pagamento_id": linha["tipo_pagamento_id"],
+            "nome": linha["nome"],
+            "tipo_fiscal": linha["tipo_fiscal"],
+            "total": linha["centimos"] / 100.0,
+            # Quantos pagamentos (não quantas vendas): uma venda paga metade
+            # em dinheiro e metade em multibanco conta uma vez em cada linha.
+            "quantos": linha["quantos"],
+        }
+        for linha in linhas.values()
+    ]
+    saida.sort(key=lambda linha: (-linha["total"], linha["nome"] or ""))
+    return saida

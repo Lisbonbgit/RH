@@ -386,6 +386,17 @@ export const getEstadoCaixa = (caixaId) =>
 export const abrirCaixa = (dados) => api.post('/pos/caixa/abrir', dados);
 export const registarMovimento = (dados) => api.post('/pos/caixa/movimento', dados);
 
+// O Ponto de Caixa: a conferência a meio do turno. É um GET e o servidor não
+// escreve uma única vez a responder-lhe — não marca `a_fechar`, não carimba
+// a sessão, não confirma movimento nenhum. Pode ser pedido as vezes que
+// forem precisas, dos dois PCs do mesmo balcão, e no meio de uma venda.
+//
+// Fica no timeout PADRÃO, e não no do Vendus: ao contrário do fecho, isto
+// só fala com o Mongo. E é bom que estoure depressa — a operadora está a
+// meio do turno e volta a pedir.
+export const getPontoDeCaixa = (caixaId) =>
+  api.get('/pos/caixa/ponto', { params: { caixa_id: caixaId } });
+
 // Tecto próprio: o fecho não é só uma escrita no Mongo — `caixa.py::
 // fechar_caixa` reconcilia as vendas em dinheiro contra o Vendus antes de
 // gravar o Z, e essa leitura é paginada por cada dia da sessão (ver

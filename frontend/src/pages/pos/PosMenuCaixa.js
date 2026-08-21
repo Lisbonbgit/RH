@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import {
-  Wallet, Info, BanknoteArrowDown, BanknoteArrowUp, Store, DoorOpen, GraduationCap, Lock, LogOut, Loader2,
+  Wallet, Info, BanknoteArrowDown, BanknoteArrowUp, Store, DoorOpen, GraduationCap, Lock, LogOut,
+  Loader2, HelpCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,8 +11,12 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Separator } from '@/components/ui/separator';
 import PosCampoValor from './PosCampoValor';
-import { registarMovimento, detalhesErroPos, temMaisDe2CasasDecimaisPos } from '@/lib/pos';
+import PosResumoDoTurno from './PosResumoDoTurno';
+import {
+  registarMovimento, getPontoDeCaixa, detalhesErroPos, temMaisDe2CasasDecimaisPos,
+} from '@/lib/pos';
 
 const formatarData = (isoString) => {
   if (!isoString) return null;
@@ -86,6 +91,89 @@ function DialogoMovimento({ tipo, aberto, onFechar, caixaId, onRegistado }) {
           <Button variant="outline" onClick={onFechar} disabled={aEnviar}>Cancelar</Button>
           <Button onClick={submeter} disabled={!podeSubmeter}>
             {aEnviar ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Confirmar'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// O Ponto de Caixa: a conferência a meio do turno, sem fechar nada.
+//
+// A operadora quer saber se a gaveta bate certo às 15h, em vez de descobrir
+// às 23h que houve um erro de troco que já não consegue reconstituir. E
+// serve a rendição de turno — uma sai, outra entra, sem fechar a caixa.
+//
+// **Não fecha, não assina, não muda nada.** Não há aqui botão nenhum de
+// confirmar: fecha-se a janela e a caixa fica como estava. É a razão de o
+// servidor responder a isto com um GET que não escreve uma única vez.
+//
+// Os números **não se calculam aqui**. Chegam todos somados do servidor,
+// pela mesma função que produz o Z (`caixa._resumo_do_turno`) — se este
+// ecrã somasse euros por sua conta, a conferência das 15h e o Z das 23h
+// seriam dois cálculos diferentes sobre o mesmo dinheiro, e o mais provável
+// era a operadora passar a tarde a procurar uma diferença que não existe.
+function DialogoPontoDeCaixa({ aberto, onFechar, lojaNome, caixa, operador }) {
+  const [resumo, setResumo] = useState(null);
+  const [erro, setErro] = useState(null);
+
+  // Lido de FRESCO a cada abertura, e o anterior deitado fora primeiro: um
+  // ponto de caixa é uma fotografia de um instante, e mostrar o da última
+  // vez enquanto o novo não chega é mostrar um número velho sem o dizer.
+  useEffect(() => {
+    if (!aberto || !caixa?.id) return;
+    let vivo = true;
+    setResumo(null);
+    setErro(null);
+    getPontoDeCaixa(caixa.id)
+      .then(({ data }) => { if (vivo) setResumo(data); })
+      .catch((error) => {
+        if (!vivo) return;
+        const { mensagem } = detalhesErroPos(error, 'Não foi possível ler o ponto de caixa.');
+        setErro(mensagem);
+      });
+    return () => { vivo = false; };
+  }, [aberto, caixa?.id]);
+
+  return (
+    <Dialog open={aberto} onOpenChange={(v) => { if (!v) onFechar(); }}>
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogHeader><DialogTitle>Ponto de Caixa</DialogTitle></DialogHeader>
+
+        <div className="text-sm text-muted-foreground space-y-0.5">
+          <p>{lojaNome || 'Loja'} · {caixa?.nome} · {operador?.nome}</p>
+          <p>
+            Turno aberto por {resumo?.sessao?.aberta_por?.nome || '—'}
+            {formatarData(resumo?.sessao?.aberta_em) ? ` em ${formatarData(resumo.sessao.aberta_em)}` : ''}
+          </p>
+          {/* A hora da conferência, impressa. A folha fica na bancada
+              depois de a venda seguinte entrar; sem isto, meia hora depois
+              ninguém sabe se o número ainda vale. */}
+          {resumo?.momento && <p>Conferência às {formatarData(resumo.momento)}</p>}
+        </div>
+
+        <Separator />
+
+        {erro ? (
+          <div className="flex items-start gap-2 rounded-lg bg-muted p-3 text-sm text-muted-foreground">
+            <HelpCircle className="h-4 w-4 shrink-0 mt-0.5" />
+            <span>{erro}</span>
+          </div>
+        ) : !resumo ? (
+          <div className="flex items-center gap-2 rounded-lg bg-muted p-3 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+            <span>A somar o turno…</span>
+          </div>
+        ) : (
+          <PosResumoDoTurno resumo={resumo} />
+        )}
+
+        <DialogFooter>
+          {/* "Fechar" a janela, e nunca "Confirmar": não há nada para
+              confirmar, e um botão de confirmação num ecrã que não muda nada
+              convida a operadora a pensar que fechou a caixa. */}
+          <Button variant="outline" className="w-full h-11" onClick={onFechar}>
+            Fechar
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -179,16 +267,13 @@ export default function PosMenuCaixa({ operador, lojaNome, caixa, sessao, onSair
         </DialogContent>
       </Dialog>
 
-      <Dialog open={pontoAberto} onOpenChange={setPontoAberto}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Ponto de Caixa</DialogTitle></DialogHeader>
-          <div className="space-y-2 text-sm">
-            <p><span className="text-muted-foreground">Loja:</span> {lojaNome || '—'}</p>
-            <p><span className="text-muted-foreground">Caixa:</span> {caixa?.nome}</p>
-            <p><span className="text-muted-foreground">Operador ligado:</span> {operador?.nome}</p>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <DialogoPontoDeCaixa
+        aberto={pontoAberto}
+        onFechar={() => setPontoAberto(false)}
+        lojaNome={lojaNome}
+        caixa={caixa}
+        operador={operador}
+      />
     </header>
   );
 }

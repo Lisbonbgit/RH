@@ -44,7 +44,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .auth import gestor_atual
-from .caixa_math import diferenca, esperado, soma_vendas_dinheiro, total_por_tipo
+from .caixa_math import (
+    diferenca,
+    esperado,
+    por_tipo_de_pagamento,
+    soma_vendas_dinheiro,
+    total_por_tipo,
+)
 from .db import COLECOES, obter_db
 from .pos_auth import operador_atual
 from .precos import _tem_mais_de_2_casas_decimais
@@ -542,6 +548,137 @@ async def registar_movimento(
     return movimento
 
 
+async def _movimentos_que_contam(db, sessao: Dict) -> list:
+    """As entradas e saídas de uma sessão que contam mesmo para a gaveta.
+
+    Conta o movimento que está na lista `movimentos_confirmados` da SESSÃO
+    OU o que foi escrito ANTES dessa lista existir (esses não têm
+    `por_confirmar` nenhum e nunca entraram em lista nenhuma — uma sessão
+    aberta no turno do deploy não pode ver os seus movimentos desaparecer do
+    Z). Fica de fora só o que ficou a meio: inserido, `por_confirmar: True`,
+    e nunca confirmado em sessão nenhuma — dinheiro que ninguém tirou da
+    gaveta, porque quem o pediu levou 409 ou nem chegou a receber resposta.
+
+    **Uma função e não duas.** O Z (`fechar_caixa`) e o Ponto de Caixa
+    (`ponto_de_caixa`, a conferência a meio do turno) fazem esta mesma
+    leitura, e um filtro copiado nos dois sítios era uma diferença à espera
+    de acontecer: a operadora confere a gaveta às 15h com um número e às 23h
+    o Z dá-lhe outro, sem nada no meio que o explique.
+
+    Quem passa a `sessao` decide de que retrato dela se lê a lista: o fecho
+    passa a sessão RELIDA depois da marca `a_fechar` (a fronteira exacta do
+    turno), o Ponto de Caixa passa a que tem em mão — a meio do turno não há
+    fronteira nenhuma a respeitar, e o número que ele dá vale para o
+    instante em que foi pedido."""
+    confirmados = set(sessao.get("movimentos_confirmados") or [])
+    movimentos = await db[COLECOES["movimentos_caixa"]].find(
+        {"sessao_id": sessao["id"]}
+    ).to_list(10000)
+    return [
+        m for m in movimentos
+        if m.get("id") in confirmados or m.get("por_confirmar") is not True
+    ]
+
+
+def _resumo_do_turno(sessao: Dict, movimentos: list, vendas: list) -> Dict:
+    """Os números de um turno — os mesmos para o Ponto de Caixa e para o Z.
+
+    Recebe o que já foi lido da base de dados e não lê nada: é aritmética
+    pura sobre listas, e é a ÚNICA que os dois ecrãs usam. O Ponto de Caixa
+    é literalmente o Z sem o fecho — o mesmo `esperado`, os mesmos
+    movimentos, o mesmo desdobramento por tipo de pagamento e o mesmo mapa
+    de imposto — e a única forma de isso continuar verdade daqui a um ano é
+    não haver dois sítios onde estas somas se fazem.
+
+    `total_faturado` é a soma da tabela do imposto, e não das vendas outra
+    vez: o número que aparece por baixo de uma tabela tem de ser a soma da
+    tabela que está por cima dele.
+
+    O import de `mapa_imposto` é LOCAL pela mesma razão que o de `fiscal.py`
+    em `_verificar_vendas_dinheiro`, mais abaixo: o mapa de imposto lê as
+    linhas do documento por `fiscal._itens_vendus`, e `fiscal.py` importa de
+    `venda.py`, que importa deste módulo — um import no topo do ficheiro
+    fechava o ciclo `caixa → mapa_imposto → fiscal → venda → caixa`."""
+    from .mapa_imposto import mapa_de_imposto, totais_do_mapa
+
+    mapa = mapa_de_imposto(vendas)
+    totais = totais_do_mapa(mapa)
+    vendas_dinheiro = soma_vendas_dinheiro(vendas)
+    return {
+        "fundo": sessao.get("fundo"),
+        "vendas_dinheiro": vendas_dinheiro,
+        "entradas": total_por_tipo(movimentos, "entrada"),
+        "saidas": total_por_tipo(movimentos, "saida"),
+        "esperado": esperado(sessao.get("fundo"), vendas_dinheiro, movimentos),
+        # O desdobramento que o Z não tinha: quanto entrou em dinheiro, em
+        # multibanco, no Uber Eats, no Bolt, no Glovo. Sem ele ninguém
+        # conseguia bater o rolo do terminal de Multibanco nem o extracto do
+        # Glovo contra o turno, e o gestor fechava o mês a somar à mão.
+        "pagamentos": por_tipo_de_pagamento(vendas),
+        "mapa_imposto": mapa,
+        # A última linha da tabela do imposto, do lado do servidor: o ecrã
+        # não soma colunas (regra da casa — a aritmética de dinheiro é do
+        # servidor, e um total recalculado no browser é uma segunda verdade).
+        "base_tributavel": totais["base"],
+        "iva_total": totais["iva"],
+        "total_faturado": totais["total"],
+        "quantos_documentos": sum(
+            1 for v in vendas if v.get("estado") == "emitida"
+        ),
+    }
+
+
+@router.get("/pos/caixa/ponto")
+async def ponto_de_caixa(
+    caixa_id: str, operador: Dict = Depends(operador_atual)
+) -> dict:
+    """O Ponto de Caixa: a conferência a meio do turno, **sem fechar nada**.
+
+    A operadora quer saber se a gaveta bate certo às 15h, em vez de
+    descobrir às 23h que houve um erro de troco que já não consegue
+    reconstituir. E serve a rendição de turno — uma sai, outra entra, sem
+    fechar a caixa.
+
+    **Não fecha, não assina, não muda nada.** É um GET e não escreve uma
+    única vez: nem marca `a_fechar` (que travaria as emissões durante a
+    conferência), nem carimba a sessão, nem toca nos movimentos. Pode ser
+    pedido as vezes que forem precisas, dos dois PCs do mesmo balcão, e no
+    meio de uma venda.
+
+    Devolve o MESMO que o Z devolve (`_resumo_do_turno`), menos o que só o
+    fecho tem: o contado e a diferença. O `esperado` é o mesmo número, pela
+    mesma função — é essa a razão de este ecrã existir."""
+    db = obter_db()
+    # `caixa_id` é OBRIGATÓRIO aqui, ao contrário do `estado_caixa` (que o
+    # aceita ausente para o ecrã de entrada poder perguntar qual é a caixa
+    # quando a loja tem mais do que uma). Quem chega ao Ponto de Caixa já
+    # está dentro da app, com uma sessão aberta e uma caixa escolhida — não
+    # há ambiguidade nenhuma para resolver, e adivinhá-la seria a mesma
+    # escolha errada que o ecrã de entrada existe para não fazer.
+    caixa = await _obter_caixa_da_loja(db, caixa_id, operador["loja_id"])
+    sessao = await _sessao_viva(db, caixa["id"], {"_id": 0})
+    if not sessao:
+        raise HTTPException(status_code=409, detail=_MSG_SEM_SESSAO_ABERTA)
+
+    movimentos = await _movimentos_que_contam(db, sessao)
+    vendas = await db[COLECOES["vendas"]].find(
+        {"sessao_id": sessao["id"], "estado": "emitida"}
+    ).to_list(10000)
+
+    resumo = _resumo_do_turno(sessao, movimentos, vendas)
+    resumo.update({
+        "caixa": {"id": caixa["id"], "nome": caixa.get("nome")},
+        "sessao": _sessao_publica(sessao),
+        # O instante da conferência. Um Ponto de Caixa é uma fotografia de um
+        # momento e a folha continua na bancada depois de a venda seguinte
+        # entrar — sem a hora impressa nela, meia hora depois ninguém sabe se
+        # o número ainda vale.
+        "momento": _agora(),
+        "operador": _quem(operador),
+    })
+    return resumo
+
+
 @router.post("/pos/caixa/fechar")
 async def fechar_caixa(
     dados: PedidoFecharCaixa, operador: Dict = Depends(operador_atual)
@@ -671,21 +808,7 @@ async def fechar_caixa(
     # Ler a lista do `sessao` de cima (lido ANTES da marca) perdia um
     # movimento confirmado nesse intervalo.
     sessao_marcada = await db[COLECOES["sessoes_caixa"]].find_one({"id": sessao["id"]})
-    confirmados = set((sessao_marcada or sessao).get("movimentos_confirmados") or [])
-    movimentos = await db[COLECOES["movimentos_caixa"]].find(
-        {"sessao_id": sessao["id"]}
-    ).to_list(10000)
-    # Conta o movimento que está na lista da sessão OU o que foi escrito
-    # ANTES desta correcção existir (esses não têm `por_confirmar` nenhum e
-    # nunca entraram em lista nenhuma — uma sessão aberta no turno do deploy
-    # não pode ver os seus movimentos desaparecer do Z). Fica de fora só o
-    # que ficou a meio: inserido, `por_confirmar: True`, e nunca confirmado
-    # em sessão nenhuma — dinheiro que ninguém tirou da gaveta, porque quem o
-    # pediu levou 409 ou nem chegou a receber resposta.
-    movimentos = [
-        m for m in movimentos
-        if m.get("id") in confirmados or m.get("por_confirmar") is not True
-    ]
+    movimentos = await _movimentos_que_contam(db, sessao_marcada or sessao)
     vendas = await db[COLECOES["vendas"]].find(
         {"sessao_id": sessao["id"], "estado": "emitida"}
     ).to_list(10000)
@@ -730,10 +853,14 @@ async def fechar_caixa(
         db, sessao["id"], dispositivo_id=operador.get("dispositivo_id")
     )
 
-    vendas_dinheiro = soma_vendas_dinheiro(vendas)
-    entradas = total_por_tipo(movimentos, "entrada")
-    saidas = total_por_tipo(movimentos, "saida")
-    esperado_valor = esperado(sessao["fundo"], vendas_dinheiro, movimentos)
+    # Os números do turno — a MESMA função que o Ponto de Caixa usa a meio da
+    # tarde, e não uma segunda cópia dela. É essa partilha que garante que o
+    # `esperado` que a operadora viu às 15h e o que sai no Z às 23h são o
+    # mesmo cálculo, e que o desdobramento por tipo de pagamento não pode
+    # discordar entre os dois ecrãs.
+    resumo = _resumo_do_turno(sessao, movimentos, vendas)
+    vendas_dinheiro = resumo["vendas_dinheiro"]
+    esperado_valor = resumo["esperado"]
     diferenca_valor = diferenca(esperado_valor, dados.contado)
 
     fechada_em = _agora()
@@ -796,14 +923,33 @@ async def fechar_caixa(
         "aberta_em": sessao["aberta_em"],
         "fundo": sessao["fundo"],
         "vendas_dinheiro": vendas_dinheiro,
-        "entradas": entradas,
-        "saidas": saidas,
+        "entradas": resumo["entradas"],
+        "saidas": resumo["saidas"],
         "estado": atualizacao["estado"],
         "fechada_por": fechada_por,
         "fechada_em": fechada_em,
         "contado": dados.contado,
         "esperado": esperado_valor,
         "diferenca": diferenca_valor,
+        # O desdobramento por tipo de pagamento e o mapa de imposto do turno
+        # — as duas coisas que o Z não dizia.
+        #
+        # **Acrescentados à RESPOSTA, e não ao que se grava.** O que fica
+        # escrito na sessão (`atualizacao`, acima) não muda uma vírgula: um Z
+        # já assinado continua a ler-se exactamente como se lia, e nenhum
+        # turno antigo passa a ter campos que não tinha. Podiam gravar-se,
+        # como se gravam as `contas_abertas` — mas essas são um retrato de um
+        # instante que mais ninguém consegue reconstituir, e estas duas
+        # DERIVAM-SE inteiras das vendas emitidas da sessão, que ficam no
+        # Mongo para sempre e já não podem mudar. Guardar uma cópia de um
+        # número que se recalcula é criar uma segunda verdade para amanhã
+        # alguém encontrar diferente da primeira.
+        "pagamentos": resumo["pagamentos"],
+        "mapa_imposto": resumo["mapa_imposto"],
+        "base_tributavel": resumo["base_tributavel"],
+        "iva_total": resumo["iva_total"],
+        "total_faturado": resumo["total_faturado"],
+        "quantos_documentos": resumo["quantos_documentos"],
         # SEMPRE presente, mesmo com `quantas: 0` — a mesma regra do
         # `emissao_por_confirmar` em `venda.py`: o ecrã não pode ter de
         # adivinhar se a ausência da chave quer dizer "não ficou nada por

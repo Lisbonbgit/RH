@@ -5,20 +5,14 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
 import PosCampoValor from './PosCampoValor';
+// O `euros` e o `LinhaValor` vivem no PosResumoDoTurno e vêm de lá — eram
+// duas cópias do mesmo desenho, e o Z e o Ponto de Caixa mostram agora os
+// mesmos números lado a lado: dois desenhos a divergir seriam a mesma
+// informação a parecer duas coisas diferentes.
+import PosResumoDoTurno, { euros, LinhaValor } from './PosResumoDoTurno';
 import {
   fecharCaixa, getContasAbertasDaCaixa, detalhesErroPos, temMaisDe2CasasDecimaisPos,
 } from '@/lib/pos';
-
-const euros = (valor) => `€ ${(Number(valor) || 0).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-function LinhaValor({ label, valor, destaque }) {
-  return (
-    <div className="flex items-center justify-between py-1.5">
-      <span className="text-muted-foreground text-sm">{label}</span>
-      <span className={destaque ? 'font-heading font-bold text-lg' : 'font-medium'}>{valor}</span>
-    </div>
-  );
-}
 
 // Quantas contas deste turno ficam por cobrar, e quanto valem.
 //
@@ -334,7 +328,7 @@ export default function PosFecharCaixa({ aberto, onFechar, caixa, sessao, onFech
 
   return (
     <Dialog open={aberto} onOpenChange={(v) => { if (!v && !resultado) onFechar(); }}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         {!resultado ? (
           <>
             <DialogHeader><DialogTitle>Fechar Caixa</DialogTitle></DialogHeader>
@@ -371,13 +365,26 @@ export default function PosFecharCaixa({ aberto, onFechar, caixa, sessao, onFech
         ) : (
           <>
             <DialogHeader><DialogTitle>Relatório Z</DialogTitle></DialogHeader>
+
+            {/* O mesmo bloco que a operadora já viu no Ponto de Caixa a meio
+                da tarde — movimentos do turno, desdobramento por tipo de
+                pagamento e mapa de imposto — desenhado pelo MESMO componente
+                sobre os números da MESMA função do servidor
+                (`caixa._resumo_do_turno`).
+
+                O desdobramento por tipo de pagamento é o que faltava aqui: o
+                Z dava o total em dinheiro e mais nada, e ao fechar ninguém
+                conseguia bater o rolo do terminal de Multibanco nem o
+                extracto do Glovo contra o turno — o gestor fechava o mês a
+                somar à mão. O mapa de imposto é o que a contabilista pede, e
+                a esta hora as vendas do turno já não mudam.
+
+                O que o Z tem a mais, e o Ponto de Caixa não pode ter, é a
+                contagem: o contado e a diferença. */}
+            <PosResumoDoTurno resumo={resultado} />
+
             <div className="divide-y">
-              <LinhaValor label="Fundo de abertura" valor={euros(resultado.fundo)} />
-              <LinhaValor label="Vendas em dinheiro" valor={euros(resultado.vendas_dinheiro)} />
-              <LinhaValor label="Entradas" valor={euros(resultado.entradas)} />
-              <LinhaValor label="Saídas" valor={euros(resultado.saidas)} />
-              <LinhaValor label="Esperado" valor={euros(resultado.esperado)} destaque />
-              <LinhaValor label="Contado" valor={euros(resultado.contado)} destaque />
+              <LinhaValor label="Contado na gaveta" valor={euros(resultado.contado)} destaque />
               <LinhaValor
                 label="Diferença"
                 valor={`${resultado.diferenca > 0 ? '+' : ''}${euros(resultado.diferenca)}`}
