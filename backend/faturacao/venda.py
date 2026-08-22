@@ -592,9 +592,17 @@ async def _garante_sessao_desta_venda_aberta(db, venda: Dict) -> None:
 
 
 async def _repor_aberta(db, filtro: Dict, atualizacao: Dict) -> None:
-    """As duas COMPENSAÇÕES deste módulo que voltam a pôr uma venda `aberta`
-    (o cancelamento desfeito e a divisão abortada), protegidas do índice
+    """As COMPENSAÇÕES deste módulo que repõem o estado de partida de uma
+    venda (o cancelamento desfeito e a divisão abortada), protegidas do índice
     único parcial que passou a existir em `fat_vendas`.
+
+    O nome é de quando eram só duas e as duas repunham `aberta`. Desde que o
+    gestor pode cancelar uma mãe `separada` sem partes
+    (`caixa.py::arrumar_conta_esquecida`), o `estado` reposto é o que o
+    chamador leu — e nesse caso é `separada`. Não muda nada aqui: o índice
+    único é PARCIAL sobre `estado: "aberta"`, por isso repor `separada` não
+    lhe toca sequer, e o ramo da colisão é o mesmo de sempre para o caso em
+    que se repõe `aberta`.
 
     O índice trava DUAS contas em curso no mesmo posto, e uma venda que volta
     a `aberta` volta a entrar nele com a etiqueta `posto_em_curso` que nunca
@@ -1740,10 +1748,35 @@ async def cancelar_venda(venda_id: str, operador: Dict = Depends(operador_atual)
     db = obter_db()
     venda = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
     _garante_aberta(venda)
+    return await _cancelar_conta(db, venda, operador)
+
+
+async def _cancelar_conta(db, venda: Dict, operador: Dict) -> dict:
+    """**A escrita do cancelamento, e é UMA só** — a do balcão
+    (`cancelar_venda`) e a do gestor (`caixa.py::arrumar_conta_esquecida`).
+
+    Quem decide SE se pode cancelar é o chamador, e são decisões diferentes: o
+    balcão só cancela o que está `aberta` (`_garante_aberta`); o gestor cancela
+    também a mãe `separada` a quem a divisão morreu a meio, porque essa não
+    tem mais ninguém que lhe chegue (ver lá o porquê). O que não pode ser
+    diferente — e é isto — é a DISCIPLINA da escrita: a condição de estado no
+    `update_one`, a segunda pergunta pela reserva DEPOIS de escrever, e a
+    compensação que repõe o estado de partida.
+
+    **O estado de partida é o que se LEU**, e é ele que condiciona a escrita e
+    a compensação. Estava aqui o literal `"aberta"` dos dois lados; com o
+    gestor a poder cancelar uma `separada`, um literal ou carimbava
+    `cancelada` por cima de uma venda que entretanto mudou (o filtro deixava
+    de casar — esse era o lado seguro) ou, na compensação, ressuscitava como
+    `aberta` uma mãe que nunca esteve aberta e voltava a pô-la à frente da
+    operadora. Ler o estado e usá-lo nos dois sítios é a mesma técnica de
+    sempre, escrita uma vez em vez de duas."""
+    venda_id = venda["id"]
+    estado_de_partida = venda.get("estado")
 
     await _garante_sem_emissao(db, venda_id)
 
-    # A escrita é CONDICIONADA a {"estado": "aberta"} — a mesma técnica de I2
+    # A escrita é CONDICIONADA ao estado que se leu — a mesma técnica de I2
     # em caixa.py, e aqui pela pior das razões: entre o `_garante_aberta`
     # acima e esta linha, o `finalizar` (fiscal.py) pode ter emitido esta
     # mesma venda. Um $set incondicional carimbava "cancelada" por cima de
@@ -1765,7 +1798,7 @@ async def cancelar_venda(venda_id: str, operador: Dict = Depends(operador_atual)
         "cancelada_por": _quem(operador),
     }
     resultado = await db[COLECOES["vendas"]].update_one(
-        {"id": venda_id, "estado": "aberta"}, {"$set": atualizacao}
+        {"id": venda_id, "estado": estado_de_partida}, {"$set": atualizacao}
     )
     if resultado.matched_count == 0:
         raise HTTPException(status_code=409, detail=_MSG_VENDA_NAO_ABERTA)
@@ -1785,8 +1818,9 @@ async def cancelar_venda(venda_id: str, operador: Dict = Depends(operador_atual)
     #    precisamente o estrago que este código existe para evitar.
     # 2. Ninguém mais neste módulo escreve "cancelada", por isso a conta que
     #    reabrimos é a que nós próprios acabámos de fechar.
-    # 3. `aberta` é o estado em que ela estava um segundo antes, e nada se
-    #    perde: os carimbos do cancelamento voltam a `None` na mesma escrita.
+    # 3. o estado de partida é aquele em que ela estava um segundo antes, e
+    #    nada se perde: os carimbos do cancelamento voltam a `None` na mesma
+    #    escrita.
     #
     # Em qualquer dos desfechos a operadora ouve o MESMO 409 — a conta não
     # foi cancelada, e é isso que ela precisa de saber antes de mexer em mais
@@ -1799,7 +1833,8 @@ async def cancelar_venda(venda_id: str, operador: Dict = Depends(operador_atual)
         await _repor_aberta(
             db,
             {"id": venda_id, "estado": "cancelada"},
-            {"estado": "aberta", "cancelada_em": None, "cancelada_por": None},
+            {"estado": estado_de_partida, "cancelada_em": None,
+             "cancelada_por": None},
         )
         raise HTTPException(
             status_code=409, detail=await _porque_nao_foi_cancelada(db, venda_id)

@@ -882,11 +882,22 @@ def test_um_cancelamento_a_aterrar_depois_da_marca_entra_no_z(monkeypatch):
 def test_uma_parte_nascida_depois_da_marca_tambem_entra(monkeypatch):
     """`dividir`/`separar` fazem NASCER contas. Uma parte que apareça depois
     do primeiro retrato tem de entrar no Z — senão o turno fecha com dinheiro
-    por receber que não está escrito em lado nenhum."""
+    por receber que não está escrito em lado nenhum.
+
+    A escrita em voo é a que a rota real faz — a mãe passa a `separada` E as
+    partes nascem, na mesma operação (`venda._grava_as_partes`). Uma parte
+    cuja mãe ainda está `aberta` NÃO entra no Z e é de propósito: nessa janela
+    o dinheiro dela ainda é o da mãe, que já está no retrato pelo total, e
+    contá-la era contar duas vezes o mesmo euro
+    (`por_resolver._mae_ja_travou`)."""
     def nasce_uma_parte(documentos):
+        documentos[0]["estado"] = "separada"
+        documentos.append(_venda_aberta(
+            id="parte-1", conta_mae_id="venda-1",
+            criada_em="2026-08-15T09:07:00+00:00"))
         documentos.append(_venda_aberta(
             id="parte-2", conta_mae_id="venda-1",
-            criada_em="2026-08-15T09:07:00+00:00"))
+            criada_em="2026-08-15T09:07:01+00:00"))
 
     _, _ = _monta_com_escritas_em_voo(
         monkeypatch, vendas=[_venda_aberta()], escritas=[nasce_uma_parte])

@@ -41,14 +41,30 @@ _RESUMO = _POS / "PosResumoDoTurno.js"
 
 _ASSINATURA_NUMERO = "export const numeroPos = (valor) =>"
 
-# Os oito ficheiros que tinham a sua cópia. A lista está aqui à mão de
-# propósito: é ela que faz o guarda falhar quando alguém acrescentar um ecrã
-# novo com a nona.
-_ECRAS = (
-    "PosVenda.js", "PosResumoDoTurno.js", "PosDialogoProduto.js",
-    "PosPersonalizacoes.js", "PosFinalizar.js", "PosPedidoGuiado.js",
-    "PosReparticao.js",
-)
+# **TODOS os ecrãs do POS, e não uma lista deles.** Estava aqui uma tupla de 7
+# nomes, com um comentário a dizer que ela era à mão «de propósito, é ela que
+# faz o guarda falhar quando alguém acrescentar um ecrã novo». Não fazia: a
+# pasta tem 15 ficheiros, e os DOIS que tinham mesmo a sua cópia da formatação
+# (`PosMenuCaixa.js` e `PosCaixaFechada.js`, medidos — campo ausente «€ 0,00»,
+# campo a `null` «€ 0,00») eram, precisamente, dois dos oito que não estavam na
+# lista. Uma lista que não contém aquilo que o guarda procura faz o guarda
+# medir o vazio, e o comentário dizia o contrário.
+#
+# Percorre-se a PASTA. Um ecrã novo entra sozinho — e nunca mais há uma lista
+# para alguém se esquecer de actualizar.
+_MINIMO_DE_ECRAS = 15
+
+
+def _ecras_do_pos():
+    ficheiros = sorted(p.name for p in _POS.glob("*.js"))
+    assert len(ficheiros) >= _MINIMO_DE_ECRAS, (
+        "A pasta `pages/pos` tem %d ficheiros e o guarda contava com pelo "
+        "menos %d — se ecrãs foram mesmo apagados, baixe-se este número de "
+        "propósito; um glob que deixe de casar deixa este guarda a verificar "
+        "o vazio, que é exactamente o que ele veio corrigir."
+        % (len(ficheiros), _MINIMO_DE_ECRAS)
+    )
+    return ficheiros
 
 
 def _formatado(valores, tmp_path):
@@ -110,9 +126,13 @@ def test_nenhum_ecra_do_pos_volta_a_ter_a_sua_copia():
 
     Eram oito cópias, e é assim que uma família de defeitos nasce: corrigia-se
     uma e as outras sete ficavam. Nenhum ecrã do POS pode voltar a escrever a
-    sua — a formatação vem de `lib/pos.js`."""
+    sua — a formatação vem de `lib/pos.js`.
+
+    E percorre a PASTA inteira, não uma lista de nomes: com a lista, duas
+    cópias vivas (`PosMenuCaixa.js` e `PosCaixaFechada.js`) ficaram oito meses
+    à vista de um guarda que não olhava para elas."""
     culpados = []
-    for nome in _ECRAS:
+    for nome in _ecras_do_pos():
         texto = _ler(_POS / nome)
         # O que se procura é a FORMATAÇÃO (o `toLocaleString('pt-PT')` com o
         # `|| 0` colado), e não o `centimosPos` — esse também tem um `|| 0` e

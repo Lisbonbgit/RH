@@ -29,14 +29,16 @@ O que este ficheiro guarda:
 Duplo de base de dados no padrão de test_contas_abertas_no_fecho.py. Nenhum
 teste liga a uma base de dados nem à rede.
 """
-import re
 import asyncio
+import pathlib
+import re
 from copy import deepcopy
 
 import pytest
 from fastapi import HTTPException
 
 from faturacao import caixa as caixa_mod
+from faturacao import fiscal as fiscal_mod
 from faturacao import venda as venda_mod
 from faturacao.caixa import (
     _MSG_CONTA_ESQUECIDA_DE_TURNO_ABERTO,
@@ -211,6 +213,10 @@ def _monta(monkeypatch, vendas, sessoes=None, caixas=None, refs=None):
     })
     monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
     monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    # A OUTRA lista do gestor (`fiscal.listar_reservas_presas`) é metade da
+    # resposta à pergunta «há aqui alguém que lhe possa pegar?» — sem ela,
+    # um guarda sobre as saídas media meio ecrã.
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
     return db, registo
 
 
@@ -454,8 +460,9 @@ def test_arrumar_uma_conta_que_nao_existe_e_404(monkeypatch):
 
 
 def test_arrumar_passa_pela_escrita_condicionada_do_cancelar_venda(monkeypatch):
-    """Delega em `venda.cancelar_venda` e não numa segunda cópia da escrita —
-    é de lá que vem a disciplina toda: o filtro `{"estado": "aberta"}` (é o
+    """Delega em `venda._cancelar_conta` — a MESMA escrita que
+    `venda.cancelar_venda` usa — e não numa segunda cópia dela: é de lá que vem
+    a disciplina toda, o filtro condicionado ao estado que se leu (é o
     `matched_count` que decide, não a leitura de cima) e a segunda pergunta
     pela reserva DEPOIS de escrever. Prova-se pelo FILTRO da escrita, que é o
     que uma reescrita à mão aqui perderia primeiro."""
@@ -522,3 +529,279 @@ def test_arrumar_uma_conta_de_um_turno_A_FECHAR_e_recusado(monkeypatch):
     assert e.value.status_code == 409
     assert e.value.detail == caixa_mod._MSG_CONTA_ESQUECIDA_COM_FECHO_A_DECORRER
     assert db[COLECOES["vendas"]]._documentos[0]["estado"] == "aberta"
+
+
+# --- A regra: por resolver sem saída é um beco ---------------------------------
+#
+# **Toda a conta que `por_resolver.contas_por_resolver` declara POR RESOLVER
+# tem de ter pelo menos uma acção EXECUTÁVEL que a resolva.**
+#
+# Medido antes desta ronda, sobre uma mãe `separada` sem partes de 11,64 €: a
+# lista mostrava-a com `reserva_fiscal_por_resolver: false`, o ecrã desenhava-
+# lhe o botão «Dar por perdida», e carregar devolvia 409 «Esta conta já não
+# está aberta — … Recarregue a lista.» Recarregar trazia a mesma linha de
+# volta: o ciclo fechava-se sobre si próprio. Sete rotas, zero saídas.
+
+
+# As CINCO formas com que uma conta chega a esta lista. O nome de cada uma é o
+# que se lhe chama ao telefone; o que está aqui é como ela fica na base.
+_FAMILIAS = {
+    # (documentos das vendas, reservas, motivo esperado, tem reserva viva)
+    "conta_aberta": (lambda: [_venda()], None, "conta_aberta", False),
+    "mae_separada_sem_partes": (
+        lambda: [_venda(id="parte-1", estado="separada")], None,
+        "mae_separada_sem_partes", False),
+    "estado_desconhecido": (
+        lambda: [_venda(estado="em_conferencia")], None,
+        "estado_desconhecido", False),
+    "conta_aberta_com_reserva_viva": (
+        lambda: [_venda()], "parte-1", "conta_aberta", True),
+    # A filha que a compensação de `venda._grava_as_partes` apagou: fica só a
+    # reserva, sem venda nenhuma por baixo.
+    "reserva_orfa": (lambda: [], "parte-1", "emissao_viva", True),
+}
+
+
+def _monta_da_familia(monkeypatch, familia):
+    vendas, com_reserva, _, _ = _FAMILIAS[familia]
+    refs = None
+    if com_reserva:
+        refs = [{
+            "id": "ref-1",
+            "ext_ref": ext_ref_determinista("loja-1", "sessao-ontem", com_reserva),
+            "venda_id": com_reserva, "documento_id": None,
+            "criado_em": "2026-08-14T22:11:00+00:00",
+        }]
+    return _monta(monkeypatch, vendas=vendas(), refs=refs)
+
+
+def _recusa(gestor=None):
+    """O `detail` da recusa de `arrumar`, ou `None` se ela não recusou."""
+    try:
+        _corre(arrumar_conta_esquecida("parte-1", gestor=gestor or _gestor()))
+    except HTTPException as e:
+        return e.detail
+    return None
+
+
+@pytest.mark.parametrize("familia", sorted(_FAMILIAS))
+def test_nenhuma_familia_por_resolver_fica_sem_saida(monkeypatch, familia):
+    """Para cada família do predicado: ou o botão desta lista a resolve, ou a
+    recusa NOMEIA um ecrã onde a saída existe mesmo.
+
+    A recusa que não pode acontecer a família nenhuma é
+    `_MSG_CONTA_ESQUECIDA_JA_RESOLVIDA` — «foi cobrada, cancelada ou repartida
+    entretanto. Recarregue a lista.» Sobre uma conta que ESTÁ na lista, ela é
+    uma instrução que se contradiz: recarregar traz a mesma linha de volta."""
+    _, _, motivo, trava = _FAMILIAS[familia]
+    db, _ = _monta_da_familia(monkeypatch, familia)
+    lista = _corre(listar_contas_esquecidas(_=_gestor()))
+    assert [(c["motivo"], c["reserva_fiscal_por_resolver"]) for c in lista] == [
+        (motivo, trava)], (
+        "O cenário da família «%s» deixou de produzir a família: %r"
+        % (familia, lista))
+
+    recusa = _recusa()
+    assert recusa != _MSG_CONTA_ESQUECIDA_JA_RESOLVIDA, (
+        "A família «%s» está na lista e o botão dela responde «recarregue a "
+        "lista» — e recarregar traz a mesma linha de volta. É o beco que esta "
+        "regra existe para não haver." % familia)
+
+    if trava:
+        # A saída é NOUTRO ecrã (Reservas Fiscais Presas: Libertar ou
+        # Reconciliar), e a recusa manda-o lá. Tem de estar mesmo lá.
+        assert recusa == _MSG_CONTA_ESQUECIDA_TRAVADA
+        assert "Reservas Fiscais Presas" in recusa
+        assert [r["venda_id"] for r in _corre(fiscal_mod.listar_reservas_presas())] == [
+            "parte-1"], (
+            "A recusa manda o gestor a Reservas Fiscais Presas e a conta não "
+            "está lá — a saída nomeada não existe.")
+    elif motivo == "estado_desconhecido":
+        # **A única que NÃO pode ter saída**, e por isso deixou de ser tratada
+        # como as outras: cancelar declara «isto nunca foi pago», e sobre um
+        # estado que este sistema não sabe ler não se pode declarar nada. Tem
+        # nome e texto próprios — ver
+        # `caixa._MSG_CONTA_ESQUECIDA_ESTADO_DESCONHECIDO`.
+        assert recusa is not None
+        assert "em_conferencia" in recusa, (
+            "A frase não diz QUAL é o estado que o sistema não conhece — sem "
+            "isso, o gestor não tem o que levar a quem mantém o sistema.")
+        assert "nada foi alterado" in recusa.lower()
+        assert db[COLECOES["vendas"]]._documentos[0]["estado"] == "em_conferencia", (
+            "O botão que devia recusar escreveu na mesma.")
+    else:
+        assert recusa is None, (
+            "A família «%s» não tem ninguém no POS que lhe chegue e este botão "
+            "recusou-a (%r): fica sem saída nenhuma." % (familia, recusa))
+        assert _corre(listar_contas_esquecidas(_=_gestor())) == [], (
+            "A conta foi arrumada e a lista continua a mostrá-la.")
+
+
+def test_a_mae_separada_sem_partes_arruma_se_mesmo_com_o_turno_ABERTO(monkeypatch):
+    """A recusa do turno aberto é sobre quem está EM CURSO NO BALCÃO, e a mãe
+    `separada` não está: o POS recusa-lhe alterar e cancelar, e ela nem chega
+    ao ecrã da operadora. Mandá-la para «quem lá está» era nomear uma saída
+    que não existe — o mesmo que a marca `entregue_ao_gestor` já tinha vindo
+    corrigir para a outra família."""
+    db, _ = _monta(monkeypatch, vendas=[_venda(id="parte-1", estado="separada")],
+                   sessoes=[_sessao(estado="aberta")])
+    assert [c["motivo"] for c in _corre(listar_contas_esquecidas(_=_gestor()))] == [
+        "mae_separada_sem_partes"]
+
+    _corre(arrumar_conta_esquecida("parte-1", gestor=_gestor()))
+
+    assert db[COLECOES["vendas"]]._documentos[0]["estado"] == "cancelada"
+
+
+def test_arrumar_a_mae_separada_escreve_condicionado_ao_estado_dela(monkeypatch):
+    """E a escrita continua a ser a do POS: condicionada ao estado que se LEU
+    — `separada`, aqui, e não o literal `"aberta"` que lá estava. Com o
+    literal, o filtro nunca casava e o botão respondia 409 sobre uma escrita
+    que não aconteceu; e a compensação repunha `aberta` uma mãe que nunca
+    esteve aberta, devolvendo-a ao ecrã da operadora."""
+    _, registo = _monta(monkeypatch, vendas=[_venda(id="parte-1", estado="separada")])
+
+    _corre(arrumar_conta_esquecida("parte-1", gestor=_gestor()))
+
+    escritas = [e for e in registo if e[0] == "update_one" and e[1] == "vendas"]
+    assert len(escritas) == 1
+    assert escritas[0][2] == {"id": "parte-1", "estado": "separada"}
+
+
+def test_uma_mae_separada_COM_partes_nao_esta_na_lista_nem_se_arruma(monkeypatch):
+    """A fronteira do outro lado: uma mãe cujas partes existem está RESOLVIDA
+    — o dinheiro dela mudou-se para as filhas. Não aparece nesta lista, e o
+    botão sobre ela responde «já foi … repartida entretanto. Recarregue a
+    lista», que aqui é a instrução certa: recarregar não a traz de volta."""
+    _monta(monkeypatch, vendas=[
+        _venda(id="mae", estado="separada", conta_mae_id=None),
+        _venda(id="parte-1", conta_mae_id="mae"),
+    ])
+
+    assert [c["id"] for c in _corre(listar_contas_esquecidas(_=_gestor()))] == ["parte-1"]
+    with pytest.raises(HTTPException) as e:
+        _corre(arrumar_conta_esquecida("mae", gestor=_gestor()))
+    assert (e.value.status_code, e.value.detail) == (
+        409, _MSG_CONTA_ESQUECIDA_JA_RESOLVIDA)
+
+
+# --- O ecrã desenha o que o servidor lhe manda ---------------------------------
+
+
+_ECRA_DO_GESTOR = (
+    pathlib.Path(__file__).resolve().parents[3]
+    / "frontend" / "src" / "pages" / "admin" / "faturacao" / "FatReservasPresas.js"
+)
+
+# Os dois campos que o ecrã não desenha com o nome deles, e porquê. Não é uma
+# lista de dispensas: é a razão escrita de cada uma, e uma linha nova aqui é
+# uma decisão que alguém tem de justificar.
+_SO_PARA_O_GEMEO_LEGIVEL = {
+    # O ecrã desenha o `caixa_nome`, que é o mesmo dado numa forma que o gestor
+    # lê. Um id ao lado do nome não acrescentava nada.
+    "caixa_id",
+    # Vai pelo `nomeLoja(c)`, que o traduz para o nome da loja (e recua para o
+    # id quando a loja não é conhecida).
+    "loja_id",
+}
+
+
+def test_o_ecra_do_gestor_usa_todos_os_campos_que_o_servidor_manda(monkeypatch):
+    """**O servidor manda e o ecrã não desenha** — foi assim que o beco da mãe
+    `separada` ficou invisível.
+
+    `_contas_esquecidas` passou a mandar `motivo` e `estado_da_venda` com o
+    comentário «sem isto o ecrã tinha três coisas diferentes com o mesmo
+    aspecto». O ecrã não desenhava nem um nem outro (o `badgeMotivo` que lá
+    existia é da OUTRA lista, a das reservas presas), e por isso uma conta
+    sem saída nenhuma tinha exactamente o aspecto de uma conta cobrável, com o
+    botão «Dar por perdida» por baixo.
+
+    Os campos saem da RESPOSTA da rota, não de uma lista escrita aqui: um
+    campo novo entra sozinho, e é isso que impede este guarda de envelhecer
+    calado.
+
+    O que ele mede é o USO (`c.<campo>` aparece no ficheiro), e não o desenho —
+    um guarda de texto não sabe distinguir um `<Badge>` de um `if`. Quem mede
+    o desenho de cada MOTIVO é o guarda a seguir; este apanha a omissão
+    inteira, que foi o que aconteceu."""
+    _monta(monkeypatch, vendas=[_venda()])
+    conta = _corre(listar_contas_esquecidas(_=_gestor()))[0]
+    ecra = _ECRA_DO_GESTOR.read_text(encoding="utf-8")
+
+    esquecidos = [
+        campo for campo in conta
+        if campo not in _SO_PARA_O_GEMEO_LEGIVEL and ("c.%s" % campo) not in ecra
+    ]
+    assert esquecidos == [], (
+        "O servidor manda %s em cada conta esquecida e o ecrã do gestor não "
+        "desenha nada disso. É esta omissão que faz três coisas diferentes "
+        "terem o mesmo aspecto — e um botão que devolve 409 por baixo de uma "
+        "delas." % esquecidos
+    )
+
+
+def test_o_ecra_do_gestor_nao_oferece_o_botao_a_quem_ele_recusa(monkeypatch):
+    """A outra metade da regra, do lado do ecrã: a família
+    `estado_desconhecido` é a única que este botão não pode resolver, e por
+    isso é a única que não pode ter o botão desenhado. Um botão que devolve
+    409 e uma lista que o volta a desenhar a seguir é o ciclo que esta ronda
+    veio abrir."""
+    ecra = _ECRA_DO_GESTOR.read_text(encoding="utf-8")
+    assert "c.motivo === 'estado_desconhecido'" in ecra, (
+        "O ecrã voltou a desenhar «Dar por perdida» por cima de um estado que "
+        "o servidor recusa — e recarregar traz a mesma linha de volta.")
+    ramo = ecra[ecra.index("c.motivo === 'estado_desconhecido'"):]
+    ramo = ramo[:ramo.index("c.reserva_fiscal_por_resolver ?")]
+    assert "arrumar-esquecida-" not in ramo, (
+        "O botão «Dar por perdida» voltou a ser desenhado a esta família. "
+        "(A frase dela NOMEIA o botão de propósito, para explicar porque é "
+        "que ele não está lá — por isso o que se procura é o botão, não o "
+        "texto.)")
+    assert "não sabe ler" in ramo and "Copiar referência" in ramo, (
+        "A frase desta família deixou de dizer o que se sabe e o que se leva a "
+        "quem mantém o sistema.")
+
+
+def test_o_ecra_do_gestor_tem_um_rotulo_para_cada_motivo_do_servidor():
+    """E o `motivo` não basta ser LIDO: cada família tem de ter um rótulo que o
+    gestor veja.
+
+    Os motivos saem das constantes de `por_resolver`, não de uma lista escrita
+    aqui — um motivo novo do lado do servidor faz este guarda ficar vermelho no
+    dia em que nascer, que é o único dia em que alguém se lembra de lhe
+    escrever o texto.
+
+    `conta_aberta` é a única sem crachá, e é de propósito: é a família normal
+    desta lista (o parágrafo por cima já a descreve) e um crachá em todas as
+    linhas não distingue nada."""
+    from faturacao import por_resolver
+
+    motivos = {
+        v for k, v in vars(por_resolver).items()
+        if k.startswith("MOTIVO_") and isinstance(v, str)
+    }
+    assert por_resolver.MOTIVO_ABERTA in motivos, (
+        "As constantes dos motivos mudaram de nome e este guarda deixou de as "
+        "encontrar.")
+    ecra = _ECRA_DO_GESTOR.read_text(encoding="utf-8")
+
+    # O sítio onde o rótulo é DESENHADO, e não só o mapa onde ele está
+    # escrito: sem esta linha, apagar o crachá do cartão deixava o mapa
+    # intacto e este guarda verde. (O que um guarda de texto não consegue
+    # provar é que o React o pinta mesmo — o que ele prende é a existência do
+    # sítio, que é o que desapareceu.)
+    assert "BADGE_MOTIVO_CONTA[c.motivo]" in ecra and "esquecida-motivo-" in ecra, (
+        "O cartão da conta esquecida deixou de desenhar o crachá do motivo: as "
+        "três famílias voltam a ter o mesmo aspecto.")
+
+    sem_rotulo = sorted(
+        m for m in motivos - {por_resolver.MOTIVO_ABERTA}
+        if ("%s:" % m) not in ecra
+    )
+    assert sem_rotulo == [], (
+        "O servidor pode mandar as contas com o motivo %s e o ecrã do gestor "
+        "não tem rótulo nenhum para elas: ficam com o aspecto de uma conta "
+        "normal, e a instrução por baixo passa a ser a errada." % sem_rotulo
+    )
+

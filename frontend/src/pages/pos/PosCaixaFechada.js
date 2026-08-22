@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import { Lock, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import PosCampoValor from './PosCampoValor';
-import { abrirCaixa, detalhesErroPos, temMaisDe2CasasDecimaisPos } from '@/lib/pos';
+import { abrirCaixa, detalhesErroPos, eurosPos, temMaisDe2CasasDecimaisPos } from '@/lib/pos';
 
 const formatarData = (isoString) => {
   if (!isoString) return null;
@@ -16,9 +16,6 @@ const formatarData = (isoString) => {
     return null;
   }
 };
-
-const formatarEuros = (valor) =>
-  (Number(valor) || 0).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // Estado "sem sessão aberta" da caixa (Task 2, do print do Vendus). Quem sai
 // daqui é sempre por POST /pos/caixa/abrir com sucesso — nunca há um
@@ -60,7 +57,7 @@ export default function PosCaixaFechada({ caixa, ultimoFecho, onAberta }) {
 
           {ultimoFecho && dataFecho ? (
             <div className="w-full mt-6 rounded-xl bg-muted px-4 py-3 text-sm text-muted-foreground">
-              Em {dataFecho} · Por {ultimoFecho.fechada_por?.nome || '—'} · Montante: € {formatarEuros(ultimoFecho.contado)}
+              Em {dataFecho} · Por {ultimoFecho.fechada_por?.nome || '—'} · Montante: {eurosPos(ultimoFecho.contado)}
             </div>
           ) : (
             <div className="w-full mt-6 rounded-xl bg-muted px-4 py-3 text-sm text-muted-foreground">

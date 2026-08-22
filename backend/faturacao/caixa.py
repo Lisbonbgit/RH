@@ -1567,6 +1567,33 @@ _MSG_CONTA_ESQUECIDA_COM_FECHO_A_DECORRER = (
     "fecho tiver ficado preso, é no POS que se conclui (FECHAR CAIXA outra "
     "vez), e só depois é que esta conta se arruma aqui."
 )
+# **A família que NÃO se arruma, e que por isso tem nome e texto próprios.**
+#
+# A regra desta ronda é: toda a conta que o predicado declara POR RESOLVER tem
+# de ter pelo menos uma acção executável que a resolva. Esta é a única que não
+# pode ter, e a razão é a mesma que a põe na lista: `por_resolver` conta os
+# estados por `$nin` sobre os dois terminais, de propósito, para um estado que
+# apareça amanhã cair do lado de CONTAR. Contar é seguro; AGIR não é. «Dar por
+# perdida» escreve `cancelada`, que é declarar «isto nunca foi pago» — e sobre
+# um estado que esta versão não conhece não se pode declarar nada: ele pode
+# muito bem querer dizer «pago, à espera de conferência», e o botão apagava a
+# receita.
+#
+# Por isso ela fica onde o dinheiro é contado (no Z e na lista do gestor, que é
+# o que impede o dinheiro de ficar invisível) mas SEM o botão — e com esta
+# frase no lugar dele, que diz o que se sabe, o que não se sabe e a quem se
+# leva. Um botão que devolve 409 e uma lista que o volta a desenhar a seguir é
+# um ciclo fechado sobre si próprio; uma frase que diz «isto não se resolve
+# aqui, e porquê» não é.
+_MSG_CONTA_ESQUECIDA_ESTADO_DESCONHECIDO = (
+    "Esta conta está num estado que esta versão do sistema não conhece "
+    "(«%s»). Ela CONTA como dinheiro por receber — é por isso que aparece "
+    "aqui e no Z do turno —, mas não se arruma por aqui: dar por perdida "
+    "escreve «cancelada», e isso declara que nunca foi paga. Sobre um estado "
+    "que o sistema não sabe ler, isso não se pode declarar. Guarde a "
+    "referência desta conta e leve-a a quem mantém o sistema; nada foi "
+    "alterado."
+)
 _MSG_CONTA_ESQUECIDA_TRAVADA = (
     "Esta conta tem uma reserva fiscal por resolver — pode ter uma Fatura "
     "Simplificada real do lado da AT. Não se arruma por aqui: resolva-a "
@@ -1657,9 +1684,14 @@ async def _contas_esquecidas(db) -> list:
         # órfã não tem venda nenhuma para pôr num ecrã. Deixá-las cá fora
         # enquanto o turno estivesse aberto era repetir, para elas, o buraco
         # que a entrega já tinha fechado.
-        entregue = bool(item["entregue_ao_gestor_em"])
-        do_ecra_de_alguem = item["motivo"] == "conta_aberta" and not entregue
-        if do_ecra_de_alguem and sessao is not None and sessao.get("estado") == "aberta":
+        # `em_curso_no_balcao` é o atributo que o PREDICADO já calculou (a
+        # conta `aberta`, não entregue). Estava aqui reescrito à mão
+        # (`motivo == "conta_aberta" and not entregue`) — a mesma decisão em
+        # dois sítios, que é a forma como esta família de defeitos nasce, e a
+        # mesma que `arrumar_conta_esquecida` tem de fazer para o botão e a
+        # lista não poderem discordar.
+        if (item["em_curso_no_balcao"] and sessao is not None
+                and sessao.get("estado") == "aberta"):
             continue
 
         caixa_id = venda.get("caixa_id")
@@ -1731,9 +1763,49 @@ async def listar_contas_esquecidas(_: Dict = Depends(gestor_atual)) -> list:
 async def arrumar_conta_esquecida(
     venda_id: str, gestor: Dict = Depends(gestor_atual)
 ) -> dict:
-    """Dá por perdida uma conta aberta de um turno já fechado — ou uma que a
-    operadora entregou ao gestor, seja qual for o estado do turno: passa-a a
-    `cancelada`, com o nome de quem o decidiu.
+    """Dá por perdida uma conta que o predicado declara POR RESOLVER e que já
+    não tem ninguém no POS que lhe chegue: passa-a a `cancelada`, com o nome
+    de quem o decidiu.
+
+    **A regra desta ronda, e é ela que decide tudo o que está aqui em baixo:
+    toda a conta que `por_resolver.contas_por_resolver` declara por resolver
+    tem de ter pelo menos uma acção EXECUTÁVEL que a resolva.** Uma lista que
+    mostra uma linha, desenha-lhe um botão e devolve 409 quando ele é
+    carregado — e a recarga traz a mesma linha de volta — é um ciclo fechado
+    sobre si próprio, e é pior do que não ter botão nenhum.
+
+    Medido, antes desta ronda, sobre uma mãe `separada` sem partes de 11,64 €:
+    sete rotas e ZERO saídas, com o turno aberto e com o turno fechado —
+    `arrumar` 409 «Esta conta já não está aberta», alterar 409, cancelar 409,
+    `GET /pos/venda/aberta` `null`, `GET /pos/venda/repartidas` `[]`. E a
+    mensagem que o próprio sistema escrevia (`fiscal._MSG_LIBERTAR_A_SEGUIR_-
+    REPARTIDA`) mandava o gestor «resolva-a aqui, em Contas por Resolver — dê-a
+    por perdida se ninguém a pagou»: uma saída nomeada, zero executáveis.
+
+    **O que passou a poder arrumar-se**, e é a leitura directa da regra:
+
+    - `conta_aberta` — a de sempre;
+    - `mae_separada_sem_partes` — a divisão que morreu a meio. O POS recusa-a
+      toda (`_garante_aberta` responde 409 a alterar e a cancelar) e ela nem
+      chega ao ecrã: se não for aqui, não é em lado nenhum.
+
+    **O que continua a NÃO se arrumar aqui, e cada um com a sua saída
+    nomeada:**
+
+    - `emissao_viva` — vai primeiro a Reservas Fiscais Presas, e é lá que se
+      descobre se saiu uma FS real. LIBERTAR e Reconciliar existem e correm;
+    - `estado_desconhecido` — não tem saída nenhuma, e por isso deixou de ser
+      tratada como as outras: tem nome e texto próprios
+      (`_MSG_CONTA_ESQUECIDA_ESTADO_DESCONHECIDO`), e o ecrã não lhe desenha
+      botão nenhum. Ver lá o porquê.
+
+    **A pergunta é feita ao MESMO predicado que desenhou a lista**
+    (`por_resolver.contas_por_resolver`), e não a um conjunto de condições
+    reescrito aqui: era assim que o botão e a lista discordavam — a lista
+    passou a mostrar a mãe `separada` e este botão continuava a exigir
+    `estado == "aberta"`. Custa uma leitura das vendas em estado não terminal
+    (um punhado) por clique, que é exactamente a leitura que a lista ao lado
+    já fez.
 
     **Porque é que existe um botão, e não só uma lista.** Uma lista que nunca
     se esvazia deixa de ser lida — e a partir daí volta a haver dinheiro
@@ -1752,63 +1824,86 @@ async def arrumar_conta_esquecida(
     escreve só o desfecho, para o dinheiro deixar de estar em suspenso.
 
     **A escrita é a do POS, não uma segunda cópia dela.** Delega em
-    `venda.cancelar_venda`, e é isso que lhe dá de graça a disciplina toda que
-    lá está: a escrita condicionada a `{"estado": "aberta"}` (o `matched_count`
-    decide, não a leitura), a segunda pergunta pela reserva DEPOIS de escrever,
-    e a compensação que repõe `aberta` se uma reserva aparecer no meio. Uma
-    reescrita disto aqui era garantir que um dia divergiam — e a metade que
-    divergisse era a que mexe num documento fiscal.
+    `venda._cancelar_conta` — a mesma função que `venda.cancelar_venda` usa —,
+    e é isso que lhe dá de graça a disciplina toda que lá está: a escrita
+    condicionada ao estado que se leu (o `matched_count` decide, não a
+    leitura), a segunda pergunta pela reserva DEPOIS de escrever, e a
+    compensação que repõe esse mesmo estado se uma reserva aparecer no meio.
+    Uma reescrita disto aqui era garantir que um dia divergiam — e a metade que
+    divergisse era a que mexe num documento fiscal. O que muda de um chamador
+    para o outro é só QUEM pode ser cancelado, e essa decisão é de cada lado.
 
     O `operador` que se lhe passa é o GESTOR vestido de operador: a loja vem
     da própria venda (o gestor não tem uma), e o `nome` é o email dele, que é
     a identidade que o backoffice conhece. Fica em `cancelada_por` e distingue-
     se sozinho de um nome próprio de operadora ao balcão.
 
-    As quatro recusas, todas antes de qualquer escrita:
-    - a conta já não está `aberta` (alguém a resolveu entretanto);
-    - o turno DELA ainda está aberto E ela ainda é do balcão — isso resolve-se
-      no POS, por quem lá está, e não aqui. Uma conta ENTREGUE AO GESTOR não
-      cai nesta recusa: essa já não tem ninguém no POS que lhe chegue;
+    As cinco recusas, todas antes de qualquer escrita:
+    - a conta já não está por resolver (alguém a cobrou, cancelou ou repartiu
+      entretanto — ou nunca existiu, e aí é 404);
+    - o turno DELA ainda está aberto E ela ainda está EM CURSO NO BALCÃO —
+      isso resolve-se no POS, por quem lá está, e não aqui. É o MESMO
+      `em_curso_no_balcao` por que a lista se filtra, e por isso a linha que o
+      gestor vê é exactamente a linha que este botão aceita. Uma conta
+      ENTREGUE AO GESTOR, e a mãe `separada`, não caem nesta recusa: essas já
+      não têm ninguém no POS que lhes chegue;
     - o turno DELA está a fechar-se neste instante — o Z está a somar a lista
       onde esta conta entra, e cancelá-la agora fazia-a desaparecer dele (ver
       `_MSG_CONTA_ESQUECIDA_COM_FECHO_A_DECORRER`);
     - tem uma reserva fiscal por resolver — essa vai primeiro a Reservas
-      Fiscais Presas, e é lá que se descobre se saiu uma FS real."""
-    from .venda import cancelar_venda
+      Fiscais Presas, e é lá que se descobre se saiu uma FS real;
+    - está num estado que este sistema não conhece — ver
+      `_MSG_CONTA_ESQUECIDA_ESTADO_DESCONHECIDO`."""
+    from .por_resolver import MOTIVO_ESTADO_DESCONHECIDO, contas_por_resolver
+    from .venda import _cancelar_conta
 
     db = obter_db()
-    venda = await db[COLECOES["vendas"]].find_one({"id": venda_id})
-    if not venda:
-        raise HTTPException(status_code=404, detail=_MSG_CONTA_ESQUECIDA_INEXISTENTE)
-    if venda.get("estado") != "aberta":
+    item = next(
+        (i for i in await contas_por_resolver(db, None) if i["id"] == venda_id),
+        None,
+    )
+    if item is None:
+        # A distinção interessa a quem está a olhar para o ecrã: "não existe"
+        # e "já foi resolvida" mandam-no a sítios diferentes. Uma mãe
+        # `separada` COM partes cai aqui de propósito — ela está resolvida, e
+        # quem se cobra são as partes.
+        existe = await db[COLECOES["vendas"]].find_one(
+            {"id": venda_id}, {"_id": 0, "id": 1})
         raise HTTPException(
-            status_code=409, detail=_MSG_CONTA_ESQUECIDA_JA_RESOLVIDA)
+            status_code=409 if existe else 404,
+            detail=(_MSG_CONTA_ESQUECIDA_JA_RESOLVIDA if existe
+                    else _MSG_CONTA_ESQUECIDA_INEXISTENTE),
+        )
 
-    sessao = await db[COLECOES["sessoes_caixa"]].find_one({"id": venda.get("sessao_id")})
-    # A recusa do turno ABERTO tem uma excepção, e é a razão de ser da marca:
-    # uma conta ENTREGUE AO GESTOR (`venda.py::entregar_ao_gestor`) já NÃO se
-    # resolve no POS — foi tirada do balcão precisamente porque a operadora não
-    # a consegue cobrar nem cancelar. Mandá-la de volta a "quem lá está" era
-    # nomear uma saída que não existe, e a conta ficava sem nenhuma até o turno
-    # fechar. É deste par — a lista que passou a mostrá-la com o turno aberto e
-    # este botão que passou a poder arrumá-la — que sai a promessa de que ela
-    # continua do gestor até ele a resolver.
-    if (
-        not venda.get("entregue_ao_gestor_em")
-        and sessao is not None
-        and sessao.get("estado") == "aberta"
-    ):
+    if item["tem_reserva_viva"]:
+        raise HTTPException(status_code=409, detail=_MSG_CONTA_ESQUECIDA_TRAVADA)
+    if item["motivo"] == MOTIVO_ESTADO_DESCONHECIDO:
+        raise HTTPException(
+            status_code=409,
+            detail=_MSG_CONTA_ESQUECIDA_ESTADO_DESCONHECIDO % item["estado_da_venda"],
+        )
+
+    sessao = await db[COLECOES["sessoes_caixa"]].find_one({"id": item["sessao_id"]})
+    # A recusa do turno ABERTO é sobre quem está EM CURSO NO BALCÃO, e é a
+    # razão de ser da marca de entrega: uma conta ENTREGUE AO GESTOR
+    # (`venda.py::entregar_ao_gestor`) já NÃO se resolve no POS — foi tirada
+    # do balcão precisamente porque a operadora não a consegue cobrar nem
+    # cancelar. Mandá-la de volta a "quem lá está" era nomear uma saída que
+    # não existe. Pela MESMA razão, a mãe `separada` sem partes também não cai
+    # aqui: o POS recusa-lhe tudo e ela nem aparece no ecrã.
+    if (item["em_curso_no_balcao"] and sessao is not None
+            and sessao.get("estado") == "aberta"):
         raise HTTPException(
             status_code=409, detail=_MSG_CONTA_ESQUECIDA_DE_TURNO_ABERTO)
     if sessao is not None and sessao.get("estado") == "a_fechar":
         raise HTTPException(
             status_code=409, detail=_MSG_CONTA_ESQUECIDA_COM_FECHO_A_DECORRER)
 
-    if await db[COLECOES["refs_fiscais"]].find_one({"venda_id": venda_id}) is not None:
-        raise HTTPException(status_code=409, detail=_MSG_CONTA_ESQUECIDA_TRAVADA)
-
-    return await cancelar_venda(venda_id, operador={
-        "loja_id": venda.get("loja_id"),
+    # `item["venda"]` nunca é `None` aqui: o único item do predicado que pode
+    # não ter venda é a reserva órfã, e essa traz sempre `tem_reserva_viva`,
+    # que foi recusado lá em cima.
+    return await _cancelar_conta(db, item["venda"], operador={
+        "loja_id": item["loja_id"],
         "operador_id": gestor.get("user_id"),
         "nome": gestor.get("email"),
     })

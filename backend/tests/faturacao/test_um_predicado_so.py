@@ -49,7 +49,7 @@ from faturacao.caixa import (
     _venda_com_emissao_viva,
 )
 from faturacao.fiscal import ext_ref_determinista, listar_reservas_presas
-from faturacao.venda import _contas_do_balcao
+from faturacao.venda import _contas_do_balcao, contas_repartidas, venda_aberta
 
 from .test_venda import (  # noqa: F401
     _caixa,
@@ -298,11 +298,14 @@ def test_uma_mae_separada_COM_partes_esta_resolvida(monkeypatch):
     dobro."""
     db, _ = _monta(monkeypatch, "separada_com_partes", "aberta", False)
 
-    dialogo = _corre(_contas_abertas_da_sessao(db, _SESSAO))
-    assert [c["id"] for c in dialogo["contas"]] == ["parte"], (
-        "A mãe voltou a ser contada por cima das partes dela — o Z passa a "
+    assert _corre(_os_cinco_leitores(db)) == {
+        # A PARTE é a conta em curso e o grupo da divisão está no ecrã; a
+        # mãe não aparece a leitor nenhum.
+        "aberta": "parte", "repartidas": [["parte"]],
+        "dialogo": ["parte"], "quantas": 1, "total": _TOTAL,
+        "gestor": [], "trava": None, "presas": [],
+    }, ("A mãe voltou a ser contada por cima das partes dela — o Z passa a "
         "dizer o dobro do que ficou por receber.")
-    assert dialogo["total"] == _TOTAL
 
 
 def test_uma_reserva_sem_venda_chega_ao_dialogo_e_nao_so_ao_travao(monkeypatch):
@@ -395,12 +398,62 @@ def _db_com_a_mae_aberta(monkeypatch):
     return db
 
 
+async def _os_cinco_leitores(db, com_balcao=True):
+    """**Os CINCO leitores, todos**, na ordem do cabeçalho de `por_resolver.py`.
+
+    O guarda que estava aqui tinha o nome da propriedade inteira («as partes
+    não existem PARA NINGUÉM») e interrogava um quinto dela: o ecrã. Medido
+    com a mutação de validação (`_mae_ja_travou` -> `return True`), caíam 2
+    testes em 1350 e os dois eram sobre os ecrãs do POS — zero sobre o
+    diálogo, zero sobre o Z, zero sobre a lista do gestor. Um teste com o nome
+    de uma propriedade que só interroga um dos leitores é pior do que não
+    existir, porque a próxima pessoa acredita nele.
+
+    `com_balcao=False` para uma sessão já fechada: as duas rotas do ecrã
+    resolvem a sessão por `caixa._sessao_aberta` e respondem 409 antes de
+    chegarem ao predicado — não é uma resposta sobre esta conta, é a caixa a
+    dizer que fechou."""
+    op = _operador(dispositivo_id=_PC)
+    dialogo = await _contas_abertas_da_sessao(db, _SESSAO)
+    resposta = {
+        # 1 e 2 — a porta e os dois ecrãs (`venda._contas_do_balcao`).
+        "aberta": None,
+        "repartidas": [],
+        # 3 — o diálogo do fecho e o Z (`caixa._contas_abertas_da_sessao`).
+        "dialogo": [c["id"] for c in dialogo["contas"]],
+        "quantas": dialogo["quantas"],
+        "total": dialogo["total"],
+        # 4 — a lista do gestor (`caixa._contas_esquecidas`).
+        "gestor": [c["id"] for c in await _contas_esquecidas(db)],
+        # 5 — o travão do fecho (`caixa._venda_com_emissao_viva`) e a outra
+        #     lista do gestor (`fiscal.listar_reservas_presas`).
+        "trava": ((await _venda_com_emissao_viva(
+            db, {"id": _SESSAO, "loja_id": _LOJA})) or {}).get("id"),
+        "presas": [r["venda_id"] for r in await listar_reservas_presas()],
+    }
+    if com_balcao:
+        resposta["aberta"] = (
+            (await venda_aberta("caixa-1", operador=op)) or {}).get("id")
+        resposta["repartidas"] = [
+            [p["id"] for p in g["partes"]]
+            for g in await contas_repartidas("caixa-1", operador=op)
+        ]
+    return resposta
+
+
 def test_as_partes_nao_existem_para_ninguem_antes_de_a_mae_travar(monkeypatch):
     """A janela entre o último insert e a escrita que trava a mãe, espiada por
-    dentro. Se alguém a conseguir observar, a compensação está a apagar coisas
-    que já foram vistas."""
+    dentro, com **os cinco leitores** a serem perguntados lá de dentro. Se
+    algum a conseguir observar, a compensação está a apagar coisas que já
+    foram vistas — e o Z está a contar duas vezes o mesmo dinheiro.
+
+    Medido nesta janela, ANTES desta ronda, pela rota real
+    `POST /pos/venda/{mãe}/dividir` com o `insert_one` espiado: o ecrã via a
+    mãe (11,35 €) e `GET /pos/caixa/contas-abertas` respondia **quantas=4,
+    TOTAL 22,70 €** — a mãe MAIS as três filhas, o mesmo dinheiro contado
+    duas vezes."""
     from faturacao.db import COLECOES
-    from faturacao.venda import PedidoDividir, contas_repartidas, dividir_conta, venda_aberta
+    from faturacao.venda import PedidoDividir, dividir_conta
 
     db = _db_com_a_mae_aberta(monkeypatch)
     col = db[COLECOES["vendas"]]
@@ -413,10 +466,7 @@ def test_as_partes_nao_existem_para_ninguem_antes_de_a_mae_travar(monkeypatch):
         inserts["n"] += 1
         if inserts["n"] == 3:  # as três filhas já lá estão; a mãe ainda `aberta`
             visto["estado_da_mae"] = (await col.find_one({"id": "mae"}))["estado"]
-            visto["repartidas"] = await contas_repartidas(
-                "caixa-1", operador=_operador(dispositivo_id=_PC))
-            visto["aberta"] = await venda_aberta(
-                "caixa-1", operador=_operador(dispositivo_id=_PC))
+            visto["leitores"] = await _os_cinco_leitores(db)
 
     col.insert_one = insert_espia
     try:
@@ -427,13 +477,100 @@ def test_as_partes_nao_existem_para_ninguem_antes_de_a_mae_travar(monkeypatch):
 
     assert visto["estado_da_mae"] == "aberta", (
         "A espia deixou de apanhar a janela — a mãe já tinha travado.")
-    assert visto["repartidas"] == [], (
-        "O `GET /pos/venda/repartidas` voltou a mostrar as partes de uma "
-        "divisão que ainda não aconteceu: %r" % (visto["repartidas"],))
-    assert visto["aberta"] is not None and visto["aberta"]["id"] == "mae", (
-        "O ecrã voltou a pôr uma PARTE à frente da operadora no lugar da conta "
-        "que ela tem em mãos: %r" % (visto["aberta"] or {}).get("id"))
-    assert visto["aberta"]["totais"]["total"] == 11.35
+    assert visto["leitores"] == {
+        # O ecrã: a conta que a operadora tem à frente, e nenhum grupo de
+        # partes de uma divisão que ainda não aconteceu.
+        "aberta": "mae", "repartidas": [],
+        # O diálogo do fecho e o Z: UMA conta e 11,35 € — não quatro e 22,70 €.
+        "dialogo": ["mae"], "quantas": 1, "total": 11.35,
+        # A lista do gestor: a mãe está no ecrã de alguém neste instante e o
+        # turno está aberto, por isso não é um esquecimento de ninguém.
+        "gestor": [],
+        "trava": None, "presas": [],
+    }, (
+        "Um dos cinco leitores voltou a ver as partes de uma divisão que ainda "
+        "não aconteceu: %r" % (visto["leitores"],))
+
+
+def _db_de_uma_divisao_que_morreu_a_meio(monkeypatch, partes=3):
+    """**O estado PERMANENTE**, e não a janela: o processo morre entre o
+    último insert das filhas e o `$set` que trava a mãe
+    (`venda._grava_as_partes` diz por extenso que esse desfecho fica de fora
+    da compensação, por escolha). A partir daí a base tem uma mãe `aberta` com
+    N filhas `aberta` para sempre — e o Z de hoje à noite é assinado por cima
+    disso.
+
+    Fabrica-se pela ROTA REAL, matando o `insert_one` da última filha: um
+    documento escrito à mão aqui era uma base que a produção nunca teria
+    gravado."""
+    from faturacao.db import COLECOES
+    from faturacao.venda import PedidoDividir, dividir_conta
+
+    db = _db_com_a_mae_aberta(monkeypatch)
+    col = db[COLECOES["vendas"]]
+    original = col.insert_one
+    inserts = {"n": 0}
+
+    async def insert_que_morre(doc):
+        await original(doc)
+        inserts["n"] += 1
+        if inserts["n"] == partes:
+            raise RuntimeError("o processo morreu antes do $set da mãe")
+
+    col.insert_one = insert_que_morre
+    try:
+        _corre(dividir_conta("mae", PedidoDividir(partes=partes),
+                             operador=_operador(dispositivo_id=_PC)))
+    except RuntimeError:
+        pass
+    finally:
+        col.insert_one = original
+
+    assert _corre(col.find_one({"id": "mae"}))["estado"] == "aberta"
+    assert len(_corre(col.find({"conta_mae_id": "mae"}).to_list(10))) == partes
+    return db
+
+
+def test_uma_divisao_que_morreu_a_meio_nao_duplica_o_dinheiro_no_z(monkeypatch):
+    """**E não é só transitório.** Com a mãe `aberta` e as três filhas
+    gravadas para sempre, medido antes desta ronda com a sessão FECHADA:
+    `GET /pos/caixa/contas-abertas` **quantas=4, TOTAL 22,70 €** e a lista do
+    gestor com as QUATRO. O Z era assinado a dizer 22,70 € por cobrar numa
+    conta de 11,35 €.
+
+    Este é o teste que interroga o leitor que a janela não consegue
+    interrogar: com o turno ABERTO a lista do gestor está vazia por desenho
+    (a mãe está no ecrã de alguém), e é só depois de o turno fechar que ela
+    responde alguma coisa."""
+    from faturacao.db import COLECOES
+
+    db = _db_de_uma_divisao_que_morreu_a_meio(monkeypatch)
+
+    # As DUAS medições são feitas ANTES de qualquer `assert`, de propósito: a
+    # lista do gestor só responde alguma coisa com o turno fechado, e um
+    # `assert` a meio deixava esse leitor por interrogar sempre que o primeiro
+    # falhasse — que é exactamente a forma como o guarda anterior chegou a ter
+    # o nome de uma propriedade inteira e a interrogar um quinto dela.
+    obtido = {"com o turno ABERTO": _corre(_os_cinco_leitores(db))}
+    _corre(db[COLECOES["sessoes_caixa"]].update_one(
+        {"id": _SESSAO}, {"$set": {"estado": "fechada"}}))
+    obtido["com o turno FECHADO"] = _corre(_os_cinco_leitores(db, com_balcao=False))
+
+    assert obtido == {
+        "com o turno ABERTO": {
+            "aberta": "mae", "repartidas": [],
+            "dialogo": ["mae"], "quantas": 1, "total": 11.35,
+            "gestor": [], "trava": None, "presas": [],
+        },
+        "com o turno FECHADO": {
+            "aberta": None, "repartidas": [],
+            "dialogo": ["mae"], "quantas": 1, "total": 11.35,
+            # A mãe passa a ser do gestor — e é ela, sozinha, que ele tem de
+            # arrumar. As filhas não são dinheiro nenhum a mais.
+            "gestor": ["mae"], "trava": None, "presas": [],
+        },
+    }, ("Um dos cinco leitores voltou a contar duas vezes o mesmo dinheiro "
+        "por causa de uma divisão que nunca aconteceu: %r" % (obtido,))
 
 
 def test_depois_de_a_mae_travar_as_partes_aparecem_todas(monkeypatch):
@@ -458,10 +595,56 @@ def test_depois_de_a_mae_travar_as_partes_aparecem_todas(monkeypatch):
 def test_uma_parte_cuja_mae_foi_apagada_a_mao_continua_a_aparecer(monkeypatch):
     """A pergunta é «a mãe já travou?», e uma mãe que não existe não pode
     responder que não: esconder o dinheiro de uma parte órfã era o defeito ao
-    contrário."""
+    contrário.
+
+    E interroga os CINCO, não só o balcão: a exclusão passou a ser do
+    PREDICADO, por isso um `_mae_ja_travou` que respondesse `False` a uma mãe
+    apagada fazia esta conta desaparecer do Z e da lista do gestor ao mesmo
+    tempo — que é o dobro do estrago que este guarda foi escrito para
+    apanhar."""
     db, _ = _monta(monkeypatch, "filha_orfa", "aberta", False)
 
-    assert [v["id"] for v in _corre(_contas_do_balcao(db, _LOJA, _PC))] == ["conta"]
+    assert _corre(_os_cinco_leitores(db)) == {
+        "aberta": "conta", "repartidas": [],
+        "dialogo": ["conta"], "quantas": 1, "total": _TOTAL,
+        "gestor": [], "trava": None, "presas": [],
+    }, "Uma parte órfã voltou a ficar escondida de algum dos cinco leitores."
+
+
+def test_uma_parte_com_reserva_viva_chega_ao_travao_mesmo_antes_de_a_mae_travar(monkeypatch):
+    """**A fronteira do outro lado da RAIZ 1**, e é a única coisa que atravessa
+    a exclusão: uma parte cuja mãe ainda não travou fica invisível ao balcão e
+    ao Z porque o dinheiro dela ainda é o da mãe — mas se ela tiver uma RESERVA
+    VIVA, pode estar a nascer uma Fatura Simplificada REAL do lado da AT, e
+    isso não é dinheiro por cobrar: é um documento fiscal.
+
+    Entre esconder um euro que já está contado na mãe e esconder um documento
+    fiscal, o lado seguro é deixá-la entrar — sem `em_curso_no_balcao`, para o
+    ecrã continuar a não a ver. Sem esta ressalva, `contas_por_resolver`
+    engolia a reserva e o fecho assinava por cima dela."""
+    from faturacao.db import COLECOES
+
+    db = _db_de_uma_divisao_que_morreu_a_meio(monkeypatch)
+    filhas = _corre(db[COLECOES["vendas"]].find({"conta_mae_id": "mae"}).to_list(10))
+    filha = filhas[0]["id"]
+    _corre(db[COLECOES["refs_fiscais"]].insert_one({
+        "id": "ref-1", "ext_ref": ext_ref_determinista(_LOJA, _SESSAO, filha),
+        "venda_id": filha, "criado_em": "2026-08-21T10:02:00+00:00",
+        "documento_id": None,
+    }))
+
+    leitores = _corre(_os_cinco_leitores(db))
+    assert leitores["aberta"] == "mae" and leitores["repartidas"] == [], (
+        "A parte com reserva viva voltou ao ECRÃ da operadora: %r" % (leitores,))
+    assert leitores["trava"] == filha, (
+        "O fecho deixou de travar por uma emissão viva — assina-se um Z por "
+        "cima de uma Fatura Simplificada que pode estar a nascer.")
+    assert leitores["presas"] == [filha], (
+        "E o gestor deixou de a ter em Reservas Fiscais Presas, que é o único "
+        "ecrã de onde ela se destranca.")
+    # E ela entra no diálogo que a operadora lê ANTES de assinar — invariante 1
+    # da matriz: se o travão trava, o diálogo conta.
+    assert filha in leitores["dialogo"]
 
 
 # --- RAIZ 3: LIBERTAR não pode fazer dinheiro desaparecer ----------------------

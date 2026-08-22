@@ -15,7 +15,8 @@ import { Separator } from '@/components/ui/separator';
 import PosCampoValor from './PosCampoValor';
 import PosResumoDoTurno from './PosResumoDoTurno';
 import {
-  registarMovimento, getPontoDeCaixa, detalhesErroPos, temMaisDe2CasasDecimaisPos,
+  registarMovimento, getPontoDeCaixa, detalhesErroPos, eurosPos,
+  temMaisDe2CasasDecimaisPos,
 } from '@/lib/pos';
 
 const formatarData = (isoString) => {
@@ -29,9 +30,6 @@ const formatarData = (isoString) => {
     return null;
   }
 };
-
-const formatarEuros = (valor) =>
-  (Number(valor) || 0).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 function DialogoMovimento({ tipo, aberto, onFechar, caixaId, onRegistado }) {
   const [valor, setValor] = useState('');
@@ -262,7 +260,7 @@ export default function PosMenuCaixa({ operador, lojaNome, caixa, sessao, onSair
             <p><span className="text-muted-foreground">Caixa:</span> {caixa?.nome}</p>
             <p><span className="text-muted-foreground">Aberta por:</span> {sessao?.aberta_por?.nome || '—'}</p>
             <p><span className="text-muted-foreground">Aberta em:</span> {formatarData(sessao?.aberta_em) || '—'}</p>
-            <p><span className="text-muted-foreground">Fundo de abertura:</span> € {formatarEuros(sessao?.fundo)}</p>
+            <p><span className="text-muted-foreground">Fundo de abertura:</span> {eurosPos(sessao?.fundo)}</p>
           </div>
         </DialogContent>
       </Dialog>

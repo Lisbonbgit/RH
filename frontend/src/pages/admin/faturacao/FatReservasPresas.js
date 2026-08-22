@@ -142,6 +142,36 @@ const BADGE_MOTIVO = {
 const badgeMotivo = (motivo) =>
   BADGE_MOTIVO[motivo] || { texto: motivo || 'Desconhecido', classe: 'bg-slate-100 text-slate-600 border-slate-200' };
 
+// **O MOTIVO das contas por cobrar** — outra pergunta, outro mapa. O servidor
+// passou a mandar `motivo` e `estado_da_venda` em cada conta esquecida (ver
+// `caixa.py::_contas_esquecidas`) e este ecrã não desenhava nem um nem outro:
+// três coisas com origens completamente diferentes — uma conta que ficou
+// aberta, uma divisão que morreu a meio e uma reserva sem venda nenhuma —
+// tinham exactamente o mesmo aspecto, e era essa omissão que tornava invisível
+// ao gestor o beco em que a mãe `separada` estava presa.
+//
+// `conta_aberta` NÃO tem crachá de propósito: é a família normal desta lista
+// (o texto por cima já a descreve) e um crachá em todas as linhas não
+// distingue nada.
+const BADGE_MOTIVO_CONTA = {
+  mae_separada_sem_partes: {
+    texto: 'Divisão que morreu a meio',
+    classe: 'bg-amber-50 text-amber-700 border-amber-200',
+  },
+  // Não é «reserva sem venda»: esta família apanha também a venda CANCELADA
+  // cuja reserva ficou viva — `cancelada` é terminal para a venda e não para a
+  // EMISSÃO. Quem diz qual dos dois casos é, é o `estado_da_venda` desenhado
+  // por baixo («sem venda na base de dados», ou «venda cancelada»).
+  emissao_viva: {
+    texto: 'Emissão por resolver',
+    classe: 'bg-red-50 text-red-700 border-red-200',
+  },
+  estado_desconhecido: {
+    texto: 'Estado desconhecido',
+    classe: 'bg-slate-100 text-slate-600 border-slate-200',
+  },
+};
+
 // Um botão de copiar reutilizado pela referência externa (que o gestor tem de
 // ir procurar ao Vendus, à mão, e escrever mal uma vez é procurar a venda
 // errada) e pelo aviso do Z.
@@ -829,6 +859,19 @@ export default function FatReservasPresas() {
                             Parte de uma conta repartida
                           </Badge>
                         )}
+                        {/* PORQUÊ é que esta conta está aqui. Sem isto, "cobre-a
+                            ou dê-a por perdida" era a instrução escrita por cima
+                            de três coisas diferentes — e para duas delas era a
+                            instrução errada. */}
+                        {BADGE_MOTIVO_CONTA[c.motivo] && (
+                          <Badge
+                            variant="outline"
+                            className={BADGE_MOTIVO_CONTA[c.motivo].classe}
+                            data-testid={`esquecida-motivo-${c.id}`}
+                          >
+                            {BADGE_MOTIVO_CONTA[c.motivo].texto}
+                          </Badge>
+                        )}
                         {c.reserva_fiscal_por_resolver && (
                           <Badge variant="outline" className="bg-destructive/10 text-destructive border-destructive/30" data-testid={`esquecida-travada-${c.id}`}>
                             Reserva fiscal por resolver
@@ -852,6 +895,14 @@ export default function FatReservasPresas() {
 
                     <p className="text-xs text-muted-foreground">
                       Conta {c.id}
+                      {/* Em que estado ficou a VENDA. É a diferença entre uma
+                          conta que se cobra e uma que o POS já não aceita — e
+                          `null` quer dizer que já não há venda nenhuma por
+                          baixo da reserva, que é uma informação e não um
+                          buraco. */}
+                      {c.estado_da_venda
+                        ? ` · venda ${c.estado_da_venda}`
+                        : ' · sem venda na base de dados'}
                       {c.caixa_nome ? ` · caixa ${c.caixa_nome}` : ''}
                       {c.sessao_id ? ` · turno ${c.sessao_id}` : ''}
                       {/* O turno SEM estado é uma sessão que desapareceu da
@@ -862,9 +913,39 @@ export default function FatReservasPresas() {
                           ? ` · fechado a ${formatarData(c.sessao_fechada_em)}` : '')
                         : ' · o turno desta conta já não existe na base de dados'}
                       {c.sessao_fechada_por?.nome ? ` por ${c.sessao_fechada_por.nome}` : ''}
+                      {/* Quem estava a picar, e em que posto. O servidor manda
+                          os dois de propósito — «é por aqui que o gestor sabe a
+                          quem perguntar o que aconteceu àquele cliente»
+                          (`caixa.py::_contas_esquecidas`) — e este ecrã não
+                          desenhava nenhum: a instrução «pergunte a quem estava
+                          nesse turno» ficava sem dizer a quem. */}
+                      {c.operador_id ? ` · operador ${c.operador_id}` : ''}
+                      {c.dispositivo_id ? ` · posto ${c.dispositivo_id}` : ''}
                     </p>
 
-                    {c.reserva_fiscal_por_resolver ? (
+                    {/* TRÊS ramos e não dois, porque há três desfechos
+                        diferentes — e a regra é que toda a conta que apareça
+                        nesta lista tenha uma saída que EXISTE. Um botão que
+                        devolve 409 e uma lista que o volta a desenhar a seguir
+                        é um ciclo fechado sobre si próprio (ver
+                        `caixa.py::arrumar_conta_esquecida`). */}
+                    {c.motivo === 'estado_desconhecido' ? (
+                      <Bloco tom="aviso" titulo="Esta não se resolve por aqui" testid={`esquecida-desconhecida-${c.id}`}>
+                        <p>
+                          A venda está num estado que esta versão do sistema não sabe ler
+                          {c.estado_da_venda ? ` («${c.estado_da_venda}»)` : ''}. Ela CONTA
+                          como dinheiro por receber — é por isso que aparece aqui e no Z do
+                          turno —, mas «Dar por perdida» escreve «cancelada», e isso declara
+                          que a conta nunca foi paga. Sobre um estado que o sistema não
+                          conhece, isso não se pode declarar: pode muito bem já ter sido
+                          cobrada de outra maneira. Copie a referência e leve-a a quem
+                          mantém o sistema.
+                        </p>
+                        <div className="mt-2">
+                          <BotaoCopiar valor={c.id} rotulo="Copiar referência" testid={`copiar-desconhecida-${c.id}`} />
+                        </div>
+                      </Bloco>
+                    ) : c.reserva_fiscal_por_resolver ? (
                       <Bloco tom="perigo" titulo="Esta resolve-se primeiro em cima">
                         <p>
                           Tem uma reserva fiscal por resolver: pode existir uma Fatura Simplificada
@@ -887,7 +968,9 @@ export default function FatReservasPresas() {
                           Dar por perdida
                         </Button>
                         <span className="text-xs text-muted-foreground">
-                          Só depois de perguntar a quem estava nesse turno.
+                          {c.motivo === 'mae_separada_sem_partes'
+                            ? 'A divisão desta conta morreu a meio: o POS já não lhe toca e é aqui que ela se arruma. Só depois de perguntar a quem estava nesse turno.'
+                            : 'Só depois de perguntar a quem estava nesse turno.'}
                         </span>
                       </div>
                     )}

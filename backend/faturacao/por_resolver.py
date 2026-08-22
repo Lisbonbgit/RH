@@ -55,6 +55,16 @@ Está por resolver:
    É o critério de `fiscal.py::listar_reservas_presas`, e a pergunta faz-se
    do lado das RESERVAS precisamente para a venda apagada entrar.
 
+E **não** está por resolver, apesar de a venda estar num estado não terminal:
+
+- **uma PARTE cuja mãe ainda não está `separada`.** As filhas nascem primeiro
+  e a mãe trava a seguir (`venda._grava_as_partes`); enquanto a mãe não virou,
+  o dinheiro daquelas linhas ainda é o DELA, e ela está nesta mesma lista pelo
+  total. Contar as duas era contar duas vezes o mesmo euro. Ver
+  `_mae_ja_travou`: a pergunta está no PREDICADO, e não dentro do atributo de
+  um consumidor — foi lá que esteve uma ronda inteira, e os outros quatro
+  leitores nunca lhe chegaram.
+
 ## O âmbito
 
 `sessao_ids` — a lista de sessões, ou `None` para TODAS (o âmbito do gestor,
@@ -168,7 +178,26 @@ async def _mae_ja_travou(db, venda: Dict, conhecidas: Dict) -> bool:
 
     Com esta pergunta a janela deixa de ser observável, e é isso que torna a
     compensação segura: as filhas podem ser apagadas porque ninguém as podia
-    ver."""
+    ver.
+
+    **E ela é feita AQUI, no predicado, e não dentro de um atributo.** Até
+    esta ronda vivia dentro do cálculo de `em_curso_no_balcao` — isto é, num
+    único CONSUMIDOR — e os outros quatro leitores nunca lhe chegavam. Medido
+    pela rota real `POST /pos/venda/{mãe}/dividir`, com o `insert_one` espiado
+    no instante em que a terceira filha aterra e a mãe ainda está `aberta`:
+    `GET /pos/venda/aberta` respondia a mãe (11,64 €) e
+    `GET /pos/caixa/contas-abertas` respondia **quantas=4, TOTAL 23,28 €** — a
+    mãe MAIS as três filhas, o mesmo dinheiro contado duas vezes.
+
+    E não é só transitório: se o processo morrer entre o último insert e o
+    `$set` da mãe (o desfecho que `venda._grava_as_partes` deixa de fora da
+    compensação, por escolha), o estado mãe-`aberta`-com-filhas é PERMANENTE.
+    Medido com a sessão fechada: **o Z era assinado com 4 contas e 23,28 € por
+    cobrar**, e a lista do gestor mostrava as quatro.
+
+    A afirmação — «as partes não existem PARA NINGUÉM» — estava certa; o sítio
+    onde ela vivia é que não estava. Uma decisão do PREDICADO não pode morar
+    dentro do atributo de um consumidor."""
     mae_id = venda.get("conta_mae_id")
     if not mae_id:
         return True
@@ -213,6 +242,16 @@ async def contas_por_resolver(db, sessao_ids: List[str]) -> List[Dict]:
     )
     maes_conhecidas: Dict[str, Optional[Dict]] = {}
     for venda in vendas:
+        # **RAIZ 1, e é aqui que ela tem de estar.** Uma PARTE cuja mãe ainda
+        # não travou não está por resolver para leitor nenhum: o dinheiro dela
+        # ainda é o da MÃE, que está logo aqui ao lado nesta mesma lista e
+        # conta pelo total. Contá-la era contar duas vezes o mesmo euro — e foi
+        # assim que um Z ficou com 4 contas e 23,28 € numa conta de 11,64 €.
+        #
+        # A pergunta é feita a TODA a venda e não só às `aberta`: a frase é
+        # sobre a PARTE, não sobre o estado dela.
+        if not await _mae_ja_travou(db, venda, maes_conhecidas):
+            continue
         estado = venda.get("estado")
         if estado == "separada":
             # Uma mãe separada COM partes está resolvida: o dinheiro mudou-se
@@ -228,10 +267,12 @@ async def contas_por_resolver(db, sessao_ids: List[str]) -> List[Dict]:
             # conta, e diz por extenso que não o conhece.
             motivo = MOTIVO_ESTADO_DESCONHECIDO
         item = _item(venda, venda["id"], motivo)
+        # As duas decisões que sobram aqui são do BALCÃO e só dele: o ecrã só
+        # sabe mostrar uma conta `aberta`, e a marca do gestor tira-a de lá.
+        # A terceira — «a mãe já travou?» — subiu para o topo do laço, porque
+        # não é uma pergunta do balcão: é do predicado.
         item["em_curso_no_balcao"] = (
-            estado == "aberta"
-            and not venda.get("entregue_ao_gestor_em")
-            and await _mae_ja_travou(db, venda, maes_conhecidas)
+            estado == "aberta" and not venda.get("entregue_ao_gestor_em")
         )
         itens[venda["id"]] = item
 
@@ -272,6 +313,15 @@ async def contas_por_resolver(db, sessao_ids: List[str]) -> List[Dict]:
             continue
         item = itens.get(venda_id)
         if item is None:
+            # Uma PARTE excluída lá em cima (a mãe ainda não travou) pode
+            # voltar a entrar por AQUI, se tiver uma reserva viva — e tem de
+            # voltar. «Não existe para ninguém» é uma frase sobre dinheiro por
+            # cobrar, e uma reserva viva não é isso: é uma Fatura Simplificada
+            # que pode estar a nascer do lado da AT. Entre esconder um euro que
+            # já está contado na mãe e esconder um documento fiscal real, o
+            # lado seguro é este. Entra sem `em_curso_no_balcao` — o ecrã
+            # continua a não a ver —, e quem lhe pega é o travão do fecho e o
+            # gestor, que é onde ela pertence.
             item = itens[venda_id] = _item(venda, venda_id, MOTIVO_EMISSAO_VIVA)
         item["tem_reserva_viva"] = True
 
