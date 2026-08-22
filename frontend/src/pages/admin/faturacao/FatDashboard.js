@@ -9,6 +9,7 @@ import {
   Store, Info, RefreshCw, Rocket, Star, TrendingUp, PackageSearch,
 } from 'lucide-react';
 import PageHeader from '../../../components/PageHeader';
+import FatModoDeEmissao from './FatModoDeEmissao';
 import { toast } from 'sonner';
 
 // Euro à portuguesa via Intl.NumberFormat('pt-PT', ...): símbolo DEPOIS do
@@ -359,6 +360,11 @@ export default function FatDashboard() {
           <Label htmlFor="fat-vat-toggle" className="text-sm cursor-pointer whitespace-nowrap">Valores c/ IVA</Label>
         </div>
       </PageHeader>
+
+      {/* Em que modo é que as lojas estão a emitir. Fica ANTES dos números:
+          uma receita do dia lida por baixo de um POS em modo de testes é uma
+          receita que não existe. */}
+      <FatModoDeEmissao />
 
       {loading && !dashboard ? (
         <div className="flex items-center justify-center h-40">

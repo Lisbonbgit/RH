@@ -778,3 +778,175 @@ export const reparticaoDoServidor = (grupo) => (
     ? { modo: grupo.modo || 'dividir', mae: grupo.conta_mae, partes: grupo.partes || [] }
     : null
 );
+
+// --- Em que modo é que este POS está a emitir --------------------------------
+//
+// **O dono perguntou «neste momento está tudo em teste né? posso fazer faturas
+// aqui normal.» e ninguém soube responder sem ir ao servidor.** Enquanto a
+// resposta viver só numa variável de ambiente, os dois enganos ficam ambos
+// possíveis, e são simétricos:
+//
+// - em `tests` sem aviso, a operadora julga que está a vender a sério — o
+//   cliente leva um talão sem valor, **nada chega à Autoridade Tributária**, e
+//   a loja pensa que facturou o dia;
+// - em `normal` com o aviso ligado, ela julga que está a treinar e emite
+//   **Faturas Simplificadas REAIS** em nome da Fordaimon Foods.
+//
+// Por isso a faixa **não pode adivinhar**, e por isso há TRÊS estados e não
+// dois. O terceiro é o que decide se ela funciona: um ecrã que, ao não
+// conseguir perguntar, decide não mostrar nada cai exactamente no primeiro
+// engano — e cai em silêncio.
+//
+// **Vive aqui, e não dentro de um componente, porque é aqui que um teste lhe
+// chega e a pode EXECUTAR.** Já aconteceu duas vezes neste módulo um guarda
+// verificar que certos nomes apareciam num ficheiro e ficar verde com a decisão
+// desligada por trás deles. O guarda destas quatro funções corre-as mesmo, em
+// Node (`backend/tests/faturacao/test_a_faixa_do_modo_no_ecra.py`).
+
+export const MODO_TESTES = 'tests';
+export const MODO_NORMAL = 'normal';
+export const MODO_DESCONHECIDO = 'desconhecido';
+
+// O valor cru do servidor, lido como um dos três estados.
+//
+// A comparação é EXACTA — sem `trim()`, sem `toLowerCase()`. É a mesma
+// comparação que `vendus/emissao.py::_MODOS_VALIDOS` faz para decidir se emite,
+// e tem de ser: com `VENDUS_MODE="TESTS"` o servidor RECUSA-SE a emitir, e uma
+// cortesia aqui punha o ecrã a anunciar «modo de testes» sobre uma emissão que
+// nem sequer acontece. Tudo o que não for exactamente uma das duas palavras é
+// o terceiro estado, incluindo `null`, `undefined` e o campo que não veio.
+export const estadoDoModo = (bruto) => {
+  if (bruto === MODO_TESTES) return MODO_TESTES;
+  if (bruto === MODO_NORMAL) return MODO_NORMAL;
+  return MODO_DESCONHECIDO;
+};
+
+// X-Device-Token (dispositivo_atual), e deliberadamente NÃO o operador: a faixa
+// tem de continuar de pé durante a troca de operador, e nesse instante o ecrã
+// não tem token de operador nenhum. Ver `faturacao/modo.py`.
+export const getModoDeEmissao = () => api.get('/pos/modo-de-emissao');
+
+// **Perguntar, e nunca ficar sem resposta.** `pedir` é um parâmetro e não um
+// import por uma razão só: é isso que torna esta função executável por um teste
+// — o «servidor não respondeu» reproduz-se com uma função que rebenta, sem rede
+// nenhuma. O backoffice passa-lhe a SUA chamada (o JWT de gestão) e recebe a
+// mesma decisão, sem uma segunda cópia deste `catch`.
+//
+// O `catch` está aqui, e não no `useEffect` de um ecrã, porque foi essa a forma
+// de falhar que isto existe para apanhar: um `await` sem rede deixa a promessa
+// rejeitada, o estado do React fica no valor inicial e o ecrã não desenha nada
+// — que é indistinguível de `normal` para quem está ao balcão.
+export const estadoDoModoLido = async (pedir) => {
+  try {
+    const { data } = await pedir();
+    return estadoDoModo(data?.modo);
+  } catch (e) {
+    return MODO_DESCONHECIDO;
+  }
+};
+
+export const lerEstadoDoModo = () => estadoDoModoLido(getModoDeEmissao);
+
+// O que a faixa diz — ou `null` quando não há faixa nenhuma.
+//
+// `normal` é silêncio, e é deliberado: é o estado normal de trabalho, e uma
+// faixa permanente treinava a operadora a ignorá-la — e nesse dia ela ignorava
+// também a de `tests`. O dono já se queixou de o ecrã ser grande de mais e
+// pediu uma área de trabalho mais contida; o estado normal não paga um pixel a
+// um aviso que não tem nada para avisar.
+//
+// Qualquer coisa que não seja um dos dois estados conhecidos — incluindo o
+// `undefined` do primeiro render, antes de a resposta chegar — dá o aviso do
+// terceiro estado. Na dúvida não se escolhe um dos dois lados.
+export const faixaDoModo = (estado) => {
+  if (estado === MODO_NORMAL) return null;
+  if (estado === MODO_TESTES) {
+    return {
+      estado: MODO_TESTES,
+      tom: 'alarme',
+      titulo: 'MODO DE TESTES — estas faturas não valem nada',
+      texto: 'Nada do que emitir aqui chega à Autoridade Tributária. '
+        + 'Serve para treinar; não serve para vender.',
+    };
+  }
+  return {
+    estado: MODO_DESCONHECIDO,
+    tom: 'perigo',
+    titulo: 'NÃO SABEMOS SE ESTAS FATURAS SÃO REAIS',
+    texto: 'O servidor não disse em que modo está a emitir. '
+      + 'Não venda até isto estar resolvido — chame o gestor.',
+  };
+};
+
+// **O carimbo daquela fatura em concreto**, e não o modo do instante em que a
+// página foi carregada. O documento vem do servidor com o campo `modo`
+// (`fiscal.py`), e é essa a verdade dele: um turno que começou em `tests` e a
+// que o gestor mudou o servidor a meio tem documentos dos dois tipos à frente.
+//
+// **O terceiro estado é o que faltava aqui.** O ecrã da confirmação já avisava
+// do modo `tests`, mas um documento SEM o campo `modo` (um servidor mais velho,
+// uma releitura que o perdeu) não mostrava nada — e «nada» lê-se como «é real».
+export const avisoDoDocumento = (documento) => {
+  const estado = estadoDoModo(documento?.modo);
+  if (estado === MODO_NORMAL) return null;
+  if (estado === MODO_TESTES) {
+    return {
+      estado: MODO_TESTES,
+      tom: 'alarme',
+      titulo: 'Documento SEM VALOR FISCAL',
+      texto: 'Saiu em modo de testes do Vendus: não foi comunicado à Autoridade '
+        + 'Tributária e não serve como fatura. Avise o gestor antes de continuar a vender.',
+    };
+  }
+  return {
+    estado: MODO_DESCONHECIDO,
+    tom: 'perigo',
+    titulo: 'NÃO SABEMOS SE ESTA FATURA É REAL',
+    texto: 'O documento saiu sem dizer em que modo. Confirme-o no Vendus antes de '
+      + 'entregar o talão e avise o gestor — pode não ter valor fiscal.',
+  };
+};
+
+// A MESMA pergunta, no backoffice — e a única diferença deliberada.
+//
+// **No POS, `normal` é silêncio; aqui, `normal` responde.** É uma saída
+// consciente da regra dos três estados, e a razão é o pedido original: o dono
+// perguntou «está tudo em teste né?» e teve de esperar que alguém fosse ao
+// servidor. O balcão vive em `normal` o dia inteiro e uma faixa permanente
+// ensinava a operadora a ignorar as outras duas; o gestor entra aqui de vez em
+// quando, precisamente para CONFIRMAR, e um ecrã calado obriga-o a saber de cor
+// que o silêncio quer dizer «sim». O ALARME continua a obedecer à mesma regra
+// dos três estados — o que muda é que aqui o estado normal também se lê.
+//
+// Vive neste ficheiro, ao lado das outras duas, para haver um sítio só onde se
+// vê o que cada ecrã diz em cada estado. O backoffice importa daqui só funções
+// puras: a instância de axios do POS (isolada de propósito, ver o cabeçalho)
+// não vai com elas, e a chamada de rede do backoffice é a dele, com o JWT de
+// gestão (`lib/faturacao.js::getModoDeEmissaoDoBackoffice`).
+export const avisoDoModoNoBackoffice = (estado) => {
+  if (estado === MODO_NORMAL) {
+    return {
+      estado: MODO_NORMAL,
+      tom: 'calmo',
+      titulo: 'A emitir faturas reais',
+      texto: 'Modo normal: as Faturas Simplificadas do POS são comunicadas à '
+        + 'Autoridade Tributária.',
+    };
+  }
+  if (estado === MODO_TESTES) {
+    return {
+      estado: MODO_TESTES,
+      tom: 'alarme',
+      titulo: 'MODO DE TESTES — as lojas não estão a facturar',
+      texto: 'Nada do que sai do POS chega à Autoridade Tributária. Os documentos '
+        + 'parecem faturas e não valem nada.',
+    };
+  }
+  return {
+    estado: MODO_DESCONHECIDO,
+    tom: 'perigo',
+    titulo: 'NÃO SABEMOS EM QUE MODO O POS ESTÁ A EMITIR',
+    texto: 'O servidor não respondeu à pergunta. Confirme o VENDUS_MODE antes de '
+      + 'deixar as lojas vender.',
+  };
+};

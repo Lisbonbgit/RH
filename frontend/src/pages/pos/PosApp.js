@@ -9,10 +9,12 @@ import PosCaixaFechada from './PosCaixaFechada';
 import PosMenuCaixa from './PosMenuCaixa';
 import PosFecharCaixa from './PosFecharCaixa';
 import PosVenda from './PosVenda';
+import PosFaixaModo from './PosFaixaModo';
 import {
   getDeviceToken, getLojaId, getLojaNome, getOperatorToken, getOperadorGuardado,
   guardarOperador, esquecerOperador, esquecerDispositivo,
   getEstadoCaixa, getCaixaIdGuardada, guardarCaixaId, detalhesErroPos,
+  lerEstadoDoModo,
 } from '@/lib/pos';
 
 // O shell do POS (Plano 2C, Task 1): a máquina de estados de
@@ -49,7 +51,7 @@ function EcraErro({ mensagem, onTentar }) {
 // Barra de cima para o estado "caixa fechada": só identidade + trocar de
 // operador — nenhuma das acções do menu Caixa (PosMenuCaixa) se aplica sem
 // uma sessão aberta, por isso não é o mesmo componente.
-function TopoSimples({ lojaNome, caixa, operador, onSair }) {
+function TopoSimples({ lojaNome, caixa, operador, onSair, modo }) {
   return (
     <header className="border-b bg-card">
       <div className="flex items-center justify-between gap-3 px-4 sm:px-6 h-16">
@@ -62,6 +64,10 @@ function TopoSimples({ lojaNome, caixa, operador, onSair }) {
             <p className="text-xs text-muted-foreground truncate">{caixa?.nome}</p>
           </div>
         </div>
+        {/* No vão que o `justify-between` já deixava vazio: em `normal` não
+            desenha um pixel e esta barra fica exactamente como estava. */}
+        <PosFaixaModo estado={modo} />
+
         <div className="flex items-center gap-2 min-w-0">
           <p className="text-sm font-medium truncate max-w-[9rem] hidden sm:block">{operador?.nome}</p>
           <Button variant="ghost" size="icon" onClick={onSair} title="Trocar de operador" aria-label="Trocar de operador">
@@ -82,7 +88,7 @@ function TopoSimples({ lojaNome, caixa, operador, onSair }) {
 // vão como props: o servidor tira-os do token, e o PosVenda só existe
 // enquanto há sessão aberta (fechar a caixa devolve o ecrã ao
 // PosCaixaFechada).
-function AppInterna({ operador, lojaNome, onSair, onOperadorInvalido }) {
+function AppInterna({ operador, lojaNome, onSair, onOperadorInvalido, modo }) {
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState(null);
   const [caixas, setCaixas] = useState([]);
@@ -142,7 +148,7 @@ function AppInterna({ operador, lojaNome, onSair, onOperadorInvalido }) {
   if (!sessaoAberta) {
     return (
       <div className="min-h-screen flex flex-col bg-app-grid">
-        <TopoSimples lojaNome={lojaNome} caixa={caixa} operador={operador} onSair={onSair} />
+        <TopoSimples lojaNome={lojaNome} caixa={caixa} operador={operador} onSair={onSair} modo={modo} />
         <PosCaixaFechada caixa={caixa} ultimoFecho={ultimoFecho} onAberta={() => carregar(caixa.id)} />
       </div>
     );
@@ -157,6 +163,7 @@ function AppInterna({ operador, lojaNome, onSair, onOperadorInvalido }) {
     // direita fica quieto, que é como um balcão se usa.
     <div className="h-screen overflow-hidden flex flex-col bg-app-grid">
       <PosMenuCaixa
+        modo={modo}
         operador={operador}
         lojaNome={lojaNome}
         caixa={caixa}
@@ -187,6 +194,40 @@ export default function PosApp() {
     const dados = getOperadorGuardado();
     return token && dados ? { token, dados } : null;
   });
+
+  // **Em que modo é que este POS está a emitir** — `tests`, `normal`, ou o
+  // terceiro estado, «não se sabe». O valor inicial é deliberadamente
+  // `undefined`: antes de o servidor responder o ecrã NÃO SABE, e
+  // `faixaDoModo(undefined)` desenha o aviso do terceiro estado em vez de o
+  // silêncio de `normal`. Começar em `'normal'` (ou em `null` tratado como
+  // silêncio) era escolher um dos dois lados por omissão, e é esse o engano
+  // que a faixa inteira existe para não deixar acontecer.
+  //
+  // **Vive AQUI, no `PosApp`, e não lá dentro**, porque aqui é o que não
+  // desmonta: sair (`Trocar de operador`) devolve o ecrã ao `PosEntrar` e
+  // desmonta o `AppInterna` e tudo o que está por baixo. Lido lá dentro, o
+  // modo perdia-se a cada troca de operador e a faixa recomeçava em
+  // «desconhecido» de cada vez — que é a maneira certa de ensinar toda a gente
+  // a ignorá-la.
+  //
+  // `lerEstadoDoModo` NUNCA rejeita: o `catch` está dentro dela (lib/pos.js),
+  // e é por isso que aqui não há `.catch` nenhum a fazer falta. Sem rede, sem
+  // rota, com um 401 ou com uma resposta que não se percebe, o que chega é
+  // `'desconhecido'`.
+  //
+  // Relido de minuto a minuto: o modo só muda quando alguém mexe no servidor,
+  // mas é assim que o ecrã SAI do terceiro estado sozinho quando a rede volta
+  // — sem obrigar a operadora a adivinhar que tem de fazer F5.
+  const [modo, setModo] = useState(undefined);
+
+  useEffect(() => {
+    if (!dispositivo) return undefined;
+    let vivo = true;
+    const ler = () => lerEstadoDoModo().then((estado) => { if (vivo) setModo(estado); });
+    ler();
+    const relogio = setInterval(ler, 60000);
+    return () => { vivo = false; clearInterval(relogio); };
+  }, [dispositivo]);
 
   const dispositivoInvalido = useCallback(() => {
     esquecerDispositivo();
@@ -233,6 +274,7 @@ export default function PosApp() {
         lojaNome={dispositivo.lojaNome}
         onSair={sair}
         onOperadorInvalido={operadorInvalido}
+        modo={modo}
       />
     </PosBloqueado>
   );

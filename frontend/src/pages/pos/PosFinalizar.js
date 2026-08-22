@@ -12,7 +12,7 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/component
 import PosCampoValor, { TecladoNumerico, comVirgula } from './PosCampoValor';
 import {
   contaTravada, duvidaPorApurar, detalhesErroPos, eurosPos as euros,
-  temMaisDe2CasasDecimaisPos,
+  temMaisDe2CasasDecimaisPos, avisoDoDocumento,
 } from '@/lib/pos';
 
 // O ecrã de finalizar (Plano 2C, Task 4): três cartões — Total, Cliente e
@@ -666,7 +666,15 @@ function AvisoErro({ erro }) {
 // desaparecia. Ficava a tirar o troco de memória, com fila à frente — que é
 // onde os enganos acontecem, e a diferença só aparece no fecho de caixa.
 function DocumentoEmitido({ documento, troco, recuperado, onVoltar, rotuloVoltar }) {
-  const emTestes = documento?.modo === 'tests';
+  // **O carimbo DESTA fatura**, e não o modo do instante em que a página foi
+  // carregada: um turno que começou em `tests` e a que o gestor mudou o
+  // servidor a meio tem documentos dos dois tipos à frente, e o que vale para
+  // este talão é o `modo` que veio gravado nele (`fiscal.py`).
+  //
+  // A decisão dos três estados vive em `lib/pos.js::avisoDoDocumento`, onde um
+  // teste a corre. Aqui só se desenha o que ela devolver — `null` é o
+  // documento normal, e nesse caso não há cartão nenhum.
+  const avisoDoModo = avisoDoDocumento(documento);
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col">
@@ -692,19 +700,30 @@ function DocumentoEmitido({ documento, troco, recuperado, onVoltar, rotuloVoltar
             </section>
           )}
 
-          {/* O modo 'tests' do Vendus produz um documento que PARECE uma
-              fatura e não é nenhuma — não conta para a AT, não conta para o Z.
-              Se isto passasse despercebido, uma loja podia faturar um dia
-              inteiro para o vazio. */}
-          {emTestes && (
-            <section className="rounded-2xl border-2 border-warning bg-warning/10 p-5 flex items-start gap-3">
-              <ShieldAlert className="h-7 w-7 text-warning shrink-0" />
+          {/* Dois casos, e o segundo é o que faltava aqui.
+              - `tests`: o Vendus produz um documento que PARECE uma fatura e
+                não é nenhuma — não conta para a AT, não conta para o Z. Se
+                passasse despercebido, uma loja podia facturar um dia inteiro
+                para o vazio.
+              - **sem carimbo legível**: o documento veio sem o campo `modo` (um
+                servidor mais velho, uma releitura que o perdeu). Antes, esse
+                caso não desenhava nada — e «nada» lê-se como «é real». */}
+          {avisoDoModo && (
+            <section
+              className={`rounded-2xl border-2 p-5 flex items-start gap-3 ${
+                avisoDoModo.tom === 'perigo'
+                  ? 'border-destructive bg-destructive/10'
+                  : 'border-warning bg-warning/10'
+              }`}
+            >
+              <ShieldAlert
+                className={`h-7 w-7 shrink-0 ${
+                  avisoDoModo.tom === 'perigo' ? 'text-destructive' : 'text-warning'
+                }`}
+              />
               <div>
-                <p className="font-heading font-bold text-lg">Documento SEM VALOR FISCAL</p>
-                <p className="text-sm mt-1">
-                  Saiu em modo de testes do Vendus: não foi comunicado à Autoridade Tributária e
-                  não serve como fatura. Avise o gestor antes de continuar a vender.
-                </p>
+                <p className="font-heading font-bold text-lg">{avisoDoModo.titulo}</p>
+                <p className="text-sm mt-1">{avisoDoModo.texto}</p>
               </div>
             </section>
           )}

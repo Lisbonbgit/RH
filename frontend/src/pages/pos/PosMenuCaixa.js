@@ -13,6 +13,7 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
 import PosCampoValor from './PosCampoValor';
+import PosFaixaModo from './PosFaixaModo';
 import PosResumoDoTurno from './PosResumoDoTurno';
 import {
   registarMovimento, getPontoDeCaixa, detalhesErroPos, eurosPos,
@@ -185,7 +186,7 @@ function DialogoPontoDeCaixa({ aberto, onFechar, lojaNome, caixa, operador }) {
 // ligado. Abrir Gaveta e Modo de Formação ficam visíveis mas desligados —
 // nenhum dos dois tem suporte no servidor ainda — com uma explicação em vez
 // de um botão morto sem dizer porquê.
-export default function PosMenuCaixa({ operador, lojaNome, caixa, sessao, onSair, onFecharCaixa, onMovimentoRegistado }) {
+export default function PosMenuCaixa({ operador, lojaNome, caixa, sessao, onSair, onFecharCaixa, onMovimentoRegistado, modo }) {
   const [dialogoMovimento, setDialogoMovimento] = useState(null); // 'entrada' | 'saida' | null
   const [estadoAberto, setEstadoAberto] = useState(false);
   const [pontoAberto, setPontoAberto] = useState(false);
@@ -202,6 +203,14 @@ export default function PosMenuCaixa({ operador, lojaNome, caixa, sessao, onSair
             <p className="text-xs text-muted-foreground truncate">{caixa?.nome}</p>
           </div>
         </div>
+
+        {/* A faixa do modo de emissão vai AQUI, no vão que o
+            `justify-between` já deixava vazio entre a identidade da loja e o
+            botão «Caixa» — não numa linha por cima da barra. Em `normal` não
+            desenha um único pixel e este topo fica exactamente como estava; nos
+            outros dois estados o que muda é a cor da barra inteira, sem um
+            pixel a mais de altura. Ver PosFaixaModo.js. */}
+        <PosFaixaModo estado={modo} />
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

@@ -23,6 +23,18 @@ export const detalhesErro = (error, fallback) => {
 };
 
 // Dashboard
+// Em que modo é que o POS das lojas está a emitir: `{ modo: 'tests' | 'normal'
+// | null }`. `null` é o terceiro estado — o servidor NÃO SABE (VENDUS_MODE
+// ausente ou estragado), que é exactamente o conjunto de casos em que a emissão
+// se recusa a acontecer. Ver `faturacao/modo.py`.
+//
+// JWT de gestão, como todas as deste ficheiro. A rota gémea do POS
+// (`/pos/modo-de-emissao`) responde o mesmo com o token do dispositivo — não é
+// a mesma rota porque as duas famílias de autenticação deste módulo nunca se
+// misturam (test_protecao_rotas.py).
+export const getModoDeEmissaoDoBackoffice = () =>
+  axios.get(`${API_URL}/faturacao/modo-de-emissao`);
+
 export const getFatDashboard = (comIva = true) =>
   axios.get(`${API_URL}/faturacao/dashboard`, { params: { com_iva: comIva } });
 
