@@ -325,8 +325,14 @@ def _cenario(*, documentos, fatura, conta_aberta, ha_mais=False, limite=200,
         "  await act(async () => {});",
         "  const saida = { fechado: textoVisivel(alvo) };",
         "  const abrir = [...alvo.querySelectorAll('button')].find(",
-        "    (b) => (b.textContent || '').includes('Faturação'));",
+        "    (b) => (b.textContent || '').includes('Documentos'));",
         "  await act(async () => { abrir.click(); });",
+        "  await act(async () => {});",
+        "  // A aba Documentos abre nas OPÇÕES; a lista é a opção Faturação.",
+        "  const opcao = [...alvo.querySelectorAll('button')].find(",
+        "    (b) => (b.textContent || '').includes('Faturação'));",
+        "  saida.tem_opcao_faturacao = !!opcao;",
+        "  await act(async () => { opcao.click(); });",
         "  await act(async () => {});",
         "  saida.lista = textoVisivel(alvo);",
         "  if (%s) {" % ("true" if abrir_fatura else "false"),
@@ -363,7 +369,10 @@ def test_o_painel_so_abre_depois_de_alguem_CARREGAR(ecra_normal):
     fatura em ecrã nenhum. É o que faz o resto deste ficheiro medir alguma
     coisa — se o painel estivesse sempre desenhado, todos os guardas a seguir
     ficavam verdes sem que ninguém o tivesse aberto."""
-    assert "Faturação" in ecra_normal["fechado"]
+    # A ABA chama-se «Documentos»; «Faturação» é a opção lá dentro, e por isso
+    # não se lê na barra antes do toque.
+    assert "Documentos" in ecra_normal["fechado"]
+    assert "Faturação" not in ecra_normal["fechado"]
     assert "FS 05P2026/1824" not in ecra_normal["fechado"]
 
 
@@ -566,11 +575,17 @@ def barra_do_pos(tmp_path_factory):
         "  await act(async () => { raiz.render(React.createElement(PosApp)); });",
         "  await act(async () => {});",
         "  const saida = { barra: textoVisivel(alvo) };",
+        "  // A ABA é «Documentos»; a lista está na opção «Faturação» lá dentro.",
         "  const abrir = [...alvo.querySelectorAll('button')].find(",
-        "    (b) => (b.textContent || '').includes('Faturação'));",
+        "    (b) => (b.textContent || '').includes('Documentos'));",
         "  saida.tem_botao = !!abrir;",
         "  if (abrir) {",
         "    await act(async () => { abrir.click(); });",
+        "    await act(async () => {});",
+        "    saida.opcoes = textoVisivel(alvo);",
+        "    const opcao = [...alvo.querySelectorAll('button')].find(",
+        "      (b) => (b.textContent || '').includes('Faturação'));",
+        "    await act(async () => { opcao.click(); });",
         "    await act(async () => {});",
         "    saida.aberto = textoVisivel(alvo);",
         "  }",
@@ -585,7 +600,7 @@ def test_o_separador_ESTA_na_barra_do_POS_ao_lado_do_Caixa(barra_do_pos):
     remoção do `<PosFaturacao />` do `PosMenuCaixa` não sobrevive — e sem ele o
     separador podia estar impecável e não estar no balcão."""
     assert "Loja do Guarda" in barra_do_pos["barra"], "Não é a barra do POS."
-    assert "Faturação" in barra_do_pos["barra"]
+    assert "Documentos" in barra_do_pos["barra"]
     assert "Caixa" in barra_do_pos["barra"]
     assert barra_do_pos["tem_botao"] is True
 
@@ -681,8 +696,14 @@ def copia_no_balcao(tmp_path_factory):
         "  await act(async () => {});",
         "  const saida = { antes: textoVisivel(alvo) };",
         "  const abrir = [...alvo.querySelectorAll('button')].find(",
-        "    (b) => (b.textContent || '').includes('Faturação'));",
+        "    (b) => (b.textContent || '').includes('Documentos'));",
         "  await act(async () => { abrir.click(); });",
+        "  await act(async () => {});",
+        "  // A aba Documentos abre nas OPÇÕES; a lista é a opção Faturação.",
+        "  const opcao = [...alvo.querySelectorAll('button')].find(",
+        "    (b) => (b.textContent || '').includes('Faturação'));",
+        "  saida.tem_opcao_faturacao = !!opcao;",
+        "  await act(async () => { opcao.click(); });",
         "  await act(async () => {});",
         "  const linha = [...alvo.querySelectorAll('button')].find(",
         "    (b) => (b.textContent || '').includes('FS 05P2026/1824'));",

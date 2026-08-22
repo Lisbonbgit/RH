@@ -328,6 +328,9 @@ function Fatura({ fatura, contaEmCurso, aCopiar, onCopiar, onVoltar }) {
 
 export default function PosFaturacao({ caixa, onContaCopiada }) {
   const [aberto, setAberto] = useState(false);
+  // 'menu' (as opções da aba Documentos) | 'lista' (as faturas). A fatura
+  // aberta é o `abertaId`, e manda sobre as duas.
+  const [vista, setVista] = useState('menu');
   const [lista, setLista] = useState(null);
   const [erro, setErro] = useState(null);
   const [pesquisa, setPesquisa] = useState('');
@@ -375,10 +378,12 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
   }, [caixaId]);
 
   useEffect(() => {
-    if (!aberto) return;
+    // Só pergunta ao servidor quando a lista está mesmo à frente: abrir a aba
+    // para ver as opções não tem de ir buscar faturas nenhumas.
+    if (!aberto || vista !== 'lista') return;
     carregar();
     lerContaEmCurso();
-  }, [aberto, carregar, lerContaEmCurso]);
+  }, [aberto, vista, carregar, lerContaEmCurso]);
 
   useEffect(() => {
     if (!abertaId) { setFatura(null); setErroFatura(null); return undefined; }
@@ -427,20 +432,50 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
 
   return (
     <>
+      {/* **DOCUMENTOS é a aba, FATURAÇÃO é a opção lá dentro** — pedido do dono.
+          Isto começou por ser um botão «Faturação» que abria a lista de uma vez:
+          comia o nível do meio e não deixava sítio para as opções que ainda
+          faltam. */}
       <Button
         variant="outline"
         size="lg"
         className="h-11"
-        onClick={() => { setAbertaId(null); setAberto(true); }}
+        onClick={() => { setAbertaId(null); setVista('menu'); setAberto(true); }}
       >
-        <Receipt className="h-4 w-4 mr-1" /> Faturação
+        <Receipt className="h-4 w-4 mr-1" /> Documentos
       </Button>
 
-      <Dialog open={aberto} onOpenChange={(v) => { if (!v) { setAberto(false); setAbertaId(null); } }}>
+      <Dialog open={aberto} onOpenChange={(v) => { if (!v) { setAberto(false); setAbertaId(null); setVista('menu'); } }}>
         <DialogContent className="max-w-3xl max-h-[92vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{abertaId ? 'Fatura' : 'Faturação'}</DialogTitle>
+            {/* O nome diz onde a operadora está: a aba, a opção que escolheu, ou
+                a fatura que abriu. */}
+            <DialogTitle>
+              {abertaId ? 'Fatura' : (vista === 'menu' ? 'Documentos' : 'Faturação')}
+            </DialogTitle>
           </DialogHeader>
+
+          {/* **As opções em botões grandes, e não num menu suspenso.** Dois
+              motivos, e o segundo é o que decidiu: um menu suspenso do Radix
+              vive fora deste painel e não se abre com um toque simples, o que o
+              deixava fora do alcance das guardas — e neste módulo já se viu um
+              ecrã inteiro partir-se com a suite verde. O primeiro é o dedo: quem
+              está ao balcão com fila à frente acerta num botão de 56px, não num
+              item de menu. */}
+          {!abertaId && vista === 'menu' && (
+            <div className="flex flex-col gap-3 py-2">
+              <Button
+                variant="outline"
+                className="w-full h-14 justify-start text-base"
+                onClick={() => setVista('lista')}
+              >
+                <Receipt className="h-5 w-5 mr-3" /> Faturação
+                <span className="ml-auto text-xs text-muted-foreground font-normal">
+                  As faturas já emitidas nesta caixa
+                </span>
+              </Button>
+            </div>
+          )}
 
           {abertaId ? (
             erroFatura ? (
