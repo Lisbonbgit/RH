@@ -8,7 +8,7 @@ import {
   getNotaCreditoPos, preVisualizarNotaCreditoPos, emitirNotaCreditoPos,
   getTiposPagamentoPos, detalhesErroPos, eurosPos,
   quantidadeDaNotaPos, linhasDaNotaPos, linhaDaNotaCreditavel,
-  razaoDeNaoEmitirNotaCredito, efeitoNaGavetaPos,
+  razaoDeNaoEmitirNotaCredito, efeitoNaGavetaPos, avisoDoMeioDeDevolucaoPos,
 } from '@/lib/pos';
 
 // O ecrã da **NOTA DE CRÉDITO**, no desenho do print do POS do Vendus que o
@@ -212,6 +212,15 @@ export default function PosNotaCredito({ documento, onFechar, onEmitida, caixaId
   // isso que faz o segundo toque no botão ser o mesmo toque. `useRef` e não
   // `useState` de propósito — um re-render não pode gerar outra.
   const intencao = useRef(novaIntencao());
+  // **A tranca do duplo toque, e é um `useRef` de propósito.** O `aEmitir` do
+  // estado desliga o botão, mas só depois de o React voltar a desenhar — dois
+  // toques rápidos no mesmo dedo correm os DOIS com o mesmo `aEmitir` a
+  // `false` fechado no callback, e saíam dois `POST`. O servidor apanha-os (é
+  // a mesma intenção, e o índice único torna o segundo inofensivo), mas o
+  // segundo volta 409 «esta nota já está a ser emitida» e pinta de vermelho um
+  // ecrã em que a nota SAIU. A tranca é lida e escrita no mesmo instante do
+  // toque, sem esperar por render nenhum.
+  const aEmitirAgora = useRef(false);
 
   const documentoId = documento?.id;
 
@@ -295,12 +304,20 @@ export default function PosNotaCredito({ documento, onFechar, onEmitida, caixaId
   }, [linhas]);
 
   const tipoEscolhido = tipos.find((t) => t.id === tipoId) || null;
+  const avisoDoMeio = avisoDoMeioDeDevolucaoPos({
+    tipo: tipoEscolhido,
+    pagamentos: dados?.pagamentos,
+    // O total vem do servidor (`pre-visualizar`), como todo o dinheiro deste
+    // ecrã — nunca de uma soma feita aqui.
+    total: resumo?.total,
+  });
   const naoEmitir = razaoDeNaoEmitirNotaCredito({
     linhas: escolhidas, motivo, tipoPagamentoId: tipoId, aEmitir,
   }) || (erroDaSelecao ? 'Corrija a selecção antes de emitir.' : null);
 
   const emitir = useCallback(async () => {
-    if (aEmitir) return;
+    if (aEmitirAgora.current) return;
+    aEmitirAgora.current = true;
     setAEmitir(true);
     try {
       const { data } = await emitirNotaCreditoPos(documentoId, {
@@ -319,9 +336,10 @@ export default function PosNotaCredito({ documento, onFechar, onEmitida, caixaId
       toast.error(mensagem);
       setErro(mensagem);
     } finally {
+      aEmitirAgora.current = false;
       setAEmitir(false);
     }
-  }, [aEmitir, documentoId, caixaId, motivo, tipoId, escolhidas, onEmitida]);
+  }, [documentoId, caixaId, motivo, tipoId, escolhidas, onEmitida]);
 
   // --- Depois de emitir: o que a operadora tem de fazer a seguir ------------
   if (emitida) {
@@ -454,6 +472,35 @@ export default function PosNotaCredito({ documento, onFechar, onEmitida, caixaId
         </div>
       )}
 
+      {/* **Como a fatura foi PAGA, e quanto de cada meio ainda não voltou.**
+          O dono disse «a devolução segue o meio de pagamento» — e até aqui a
+          operadora escolhia o meio sem ver nenhum destes números. Uma fatura
+          de 11,29 € paga 5,00 em dinheiro e 6,29 em Multibanco deixava
+          devolver 9,85 € da GAVETA, que ficava abaixo do fundo inicial. */}
+      {(dados.pagamentos || []).length > 0 && (
+        <div className="rounded-lg border px-3 py-2 text-sm space-y-1">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">
+            Esta fatura foi paga assim
+          </p>
+          {dados.pagamentos.map((p) => (
+            <p
+              key={p.tipo_pagamento_id || p.nome}
+              className="flex items-baseline justify-between gap-3"
+            >
+              <span className="truncate">{p.nome || '—'}</span>
+              <span className="tabular-nums shrink-0">
+                {eurosPos(p.recebido)}
+                {p.devolvido > 0 && (
+                  <span className="ml-1.5 text-muted-foreground">
+                    (já devolvido {eurosPos(p.devolvido)} — sobra {eurosPos(p.disponivel)})
+                  </span>
+                )}
+              </span>
+            </p>
+          ))}
+        </div>
+      )}
+
       <ArtigosDaNota
         linhas={linhas}
         escolhas={escolhas}
@@ -517,6 +564,16 @@ export default function PosNotaCredito({ documento, onFechar, onEmitida, caixaId
               || 'Em dinheiro sai da gaveta e o fecho conta com isso; nos outros '
                 + 'meios fica registada aí e a gaveta não mexe.'}
           </p>
+          {/* **A devolução maior do que o que a fatura recebeu neste meio.**
+              Ninguém a recusa (ver `pagamentos_da_fatura` no servidor) — mas
+              a operadora tem de a LER antes do toque, com o número que vai
+              faltar à gaveta. */}
+          {avisoDoMeio && (
+            <div className="flex items-start gap-2.5 rounded-lg bg-destructive text-destructive-foreground px-3 py-2 text-sm">
+              <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5" />
+              <span>{avisoDoMeio}</span>
+            </div>
+          )}
         </div>
       </div>
 

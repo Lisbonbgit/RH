@@ -478,6 +478,15 @@ def _itens_vendus(venda: Dict) -> List[Dict]:
     return saida
 
 
+# **A marca que separa, dentro do nosso prefixo, uma NOTA DE CRÉDITO de uma
+# Fatura Simplificada.** Vive aqui e não em `nota_credito.py` porque quem
+# precisa de a LER é a reconciliação do fecho, que é deste ficheiro — e
+# `nota_credito.py` importa deste, nunca ao contrário. Uma segunda cópia do
+# `"nc-"` escrita lá era exactamente a divergência que o resto do módulo
+# passa a vida a fechar.
+MARCA_NOTA_CREDITO = "nc-"
+
+
 def ext_ref_determinista(loja_id: str, sessao_id: str, venda_id: str) -> str:
     """`pos-{loja}-{sessao}-{venda}` — depende só da IDENTIDADE da venda,
     nunca de um relógio nem do conteúdo das linhas. Duas tentativas da
@@ -1656,6 +1665,25 @@ def _datas_da_janela(sessao: Dict) -> List[str]:
     return datas
 
 
+def _e_nota_de_credito(documento: Dict, prefixo_ext_ref: str) -> bool:
+    """Se este documento do Vendus é uma NOTA DE CRÉDITO — o dinheiro dele
+    SAIU da gaveta, não entrou.
+
+    Duas perguntas e não uma, porque as duas fontes são independentes: o
+    `type` é do Vendus (é o que lá foi gravado, `vendus/emissao.py` envia
+    `type: "NC"`) e a marca da `ext_ref` é NOSSA
+    (`fiscal.MARCA_NOTA_CREDITO`, o `nc-` que `nota_credito.
+    ext_ref_da_intencao` põe a seguir ao prefixo da sessão). Basta uma delas
+    dizer que é: entre contar uma devolução como venda e contar uma venda
+    como devolução, os dois erros são caros, mas o primeiro é o que já custou
+    — e um `type` que o Vendus deixe de devolver não pode desligar isto em
+    silêncio."""
+    if str(documento.get("type") or "").strip().upper() == "NC":
+        return True
+    resto = str(documento.get("external_reference") or "")[len(prefixo_ext_ref):]
+    return resto.startswith(MARCA_NOTA_CREDITO)
+
+
 def _reconciliar_vendas_dinheiro(
     vendas_dinheiro_local: float,
     documentos_vendus: List[Dict],
@@ -1667,7 +1695,18 @@ def _reconciliar_vendas_dinheiro(
     (`external_reference` com o prefixo `pos-{loja}-{sessao}-`) e não estão
     ANULADOS, e dentro deles só os pagamentos cujo `id` (no Vendus) é de um
     tipo local marcado `tipo_fiscal == 'NU'`. Devolve `None` se bater certo
-    com `vendas_dinheiro_local`; um aviso claro se não bater."""
+    com `vendas_dinheiro_local`; um aviso claro se não bater.
+
+    **O SINAL de cada documento vem do que ele é**, e não do sinal do
+    `amount`. Uma nota de crédito leva o nosso prefixo de propósito (é o que
+    a torna reconhecível como nossa e deste turno) e vai ao Vendus com
+    `payments.amount` POSITIVO — é assim que a API do Vendus recebe a
+    devolução. Somá-la como venda era o defeito medido: uma FS de 11,29 € em
+    dinheiro mais a NC que a credita por inteiro davam «O Vendus regista
+    22,58 € em dinheiro nesta sessão; as nossas vendas somam 0,00 €» — toda a
+    noite com uma devolução em dinheiro acusava uma diferença falsa do DOBRO
+    da devolução, e o único número que o fecho tem para a segunda opinião
+    passava a ser ruído que a operadora aprendia a ignorar."""
     relevantes = [
         d for d in documentos_vendus
         if str(d.get("external_reference") or "").startswith(prefixo_ext_ref)
@@ -1675,9 +1714,10 @@ def _reconciliar_vendas_dinheiro(
     ]
     soma_vendus = 0.0
     for documento in relevantes:
+        sinal = -1.0 if _e_nota_de_credito(documento, prefixo_ext_ref) else 1.0
         for pagamento in documento.get("payments") or []:
             if str(pagamento.get("id")) in ids_pagamento_dinheiro:
-                soma_vendus += float(pagamento.get("amount") or 0)
+                soma_vendus += sinal * float(pagamento.get("amount") or 0)
     soma_vendus = round(soma_vendus, 2)
 
     if soma_vendus == round(vendas_dinheiro_local, 2):

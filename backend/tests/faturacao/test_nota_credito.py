@@ -15,6 +15,7 @@ Os valores expõem o cêntimo de propósito (0,29 · 1,15 · 10,20): a 8,50 e a
 0,30 quase toda a aritmética de IVA parece certa.
 """
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -44,6 +45,7 @@ from faturacao.vendus.emissao import NotaDeCreditoSemMotivo, RegisterIdInvalido
 
 from tests.faturacao.test_fiscal import (
     ColeccaoFalsa,
+    CursorFalso,
     DbFalsa,
     _configura_vendus_env,
     _corre,
@@ -863,6 +865,11 @@ def test_a_rota_grava_o_retrato_do_tipo_de_pagamento_da_devolucao(monkeypatch):
     assert saida["devolucao"] == {
         "tipo_pagamento_id": "tipo-glovo", "nome": "Glovo",
         "tipo_fiscal": "OU", "valor": 10.20,
+        # A fatura por omissão não tem `pagamentos` gravados (é o retrato de
+        # uma venda emitida por uma versão anterior): nesse caso NADA daquele
+        # meio está disponível, e a devolução inteira fica acima do recebido.
+        # É a resposta honesta — e é a que põe o número à frente da operadora.
+        "acima_do_recebido": 10.20,
     }
 
 
@@ -1075,3 +1082,549 @@ def test_a_pre_visualizacao_aplica_o_MESMO_travao_da_emissao(monkeypatch):
             "doc-1", PedidoPreVisualizar(linhas=[{"indice": 1, "quantidade": 9}]),
             operador=_operador()))
     assert erro.value.status_code == 422
+
+
+# --- 10. A CORRIDA: duas notas concorrentes sobre a MESMA fatura -------------
+#
+# O travão da quantidade (`linhas_creditaveis` → `escolher_linhas`) é
+# ler-verificar-escrever, e sozinho não trava nada: duas rotas em paralelo lêem
+# as mesmas notas (nenhuma) e emitem as duas. O índice único de
+# `fat_notas_credito.id` é sobre a INTENÇÃO — por desenho deixa haver várias
+# notas por fatura — e por isso não fecha esta corrida.
+#
+# **Medido, com o duplo de Mongo a ceder o event loop em cada leitura:** uma
+# fatura de 11,29 € paga em dinheiro, dois POST concorrentes com intenções
+# diferentes → estados [201, 201], DUAS emissões reais no Vendus, dois
+# documentos NC, o esperado da gaveta em 38,71 € em vez de 50,00 e o
+# `total_faturado` do turno em −11,29 €. Sem o `to_list` a ceder, a corrida
+# não existe no arnês e continua a existir em produção.
+
+
+class CursorQueCede(CursorFalso):
+    """Um cursor cujo `to_list` CEDE o event loop, como uma leitura de rede
+    faz. Sem isto, `find(...).to_list(...)` corre de fio a pavio dentro de uma
+    só tarefa e as duas rotas nunca se cruzam — o arnês media um mundo em que
+    a corrida é impossível."""
+
+    async def to_list(self, n=None):
+        await asyncio.sleep(0)
+        return await CursorFalso.to_list(self, n)
+
+
+class ColeccaoQueCede(ColeccaoFalsa):
+    def find(self, filtro=None, projecao=None):
+        return CursorQueCede(ColeccaoFalsa.find(self, filtro, projecao)._itens)
+
+
+def _db_que_cede(**kwargs):
+    """O mesmo `_db_nc`, com todas as colecções a ceder nas leituras."""
+    db = _db_nc(**kwargs)
+    for nome, coleccao in list(db._coleccoes.items()):
+        db._coleccoes[nome] = ColeccaoQueCede(
+            coleccao._documentos, indices_unicos=coleccao._indices_unicos)
+    return db
+
+
+def _pedido_da_fatura_inteira(intencao):
+    return _pedido(intencao_id=intencao, linhas=[
+        {"indice": 1, "quantidade": 2},
+        {"indice": 2, "quantidade": 1},
+        {"indice": 3, "quantidade": 3},
+    ])
+
+
+def _duas_em_paralelo(db, monkeypatch):
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+    a = emitir_nota_credito(
+        "doc-1", _pedido_da_fatura_inteira("11111111-1111-4111-8111-111111111111"),
+        operador=_operador())
+    b = emitir_nota_credito(
+        "doc-1", _pedido_da_fatura_inteira("22222222-2222-4222-8222-222222222222"),
+        operador=_operador())
+    return _corre(asyncio.gather(a, b, return_exceptions=True))
+
+
+def test_duas_notas_concorrentes_da_MESMA_fatura_so_uma_emite(monkeypatch):
+    """**O defeito que punha DOIS documentos fiscais reais na AT.** Duas
+    janelas abertas na mesma fatura, dois toques ao mesmo tempo: a segunda
+    perde a escrita condicional que reserva o crédito, e perde ANTES de falar
+    com o Vendus."""
+    db = _db_que_cede()
+    resultados = _duas_em_paralelo(db, monkeypatch)
+
+    codigos = sorted(
+        r.status_code if isinstance(r, HTTPException) else 201 for r in resultados)
+    assert codigos == [201, 409]
+    # UMA emissão real, e um só documento — é isto que a AT vê.
+    assert sum(len(v.chamadas_criar) for v in VendusNCFalso.instancias) == 1
+    documentos = db[COLECOES["documentos"]]._documentos
+    assert len([d for d in documentos if d["tipo"] == "NC"]) == 1
+
+
+def test_a_nota_que_PERDEU_a_corrida_nao_deixa_intencao_nenhuma(monkeypatch):
+    """Perder aqui não custa documento nenhum — e não pode custar o fecho da
+    caixa: uma intenção `reservada` deixada para trás travava o turno."""
+    db = _db_que_cede()
+    _duas_em_paralelo(db, monkeypatch)
+    notas = db[COLECOES["notas_credito"]]._documentos
+    assert [n["estado"] for n in notas] == ["emitida"]
+
+
+def test_a_corrida_perdida_NAO_desconta_a_gaveta_duas_vezes(monkeypatch):
+    """O dinheiro, que é o que se estava a perder. A fatura de 24,14 € paga em
+    dinheiro creditada por inteiro deixa a gaveta no fundo — e não 24,14 €
+    abaixo dele."""
+    venda = _venda_faturada()
+    venda["pagamentos"] = [{"tipo_pagamento_id": "tipo-dinheiro",
+                            "nome": "Dinheiro", "tipo_fiscal": "NU",
+                            "valor": 24.14}]
+    db = _db_que_cede(vendas=[venda])
+    _duas_em_paralelo(db, monkeypatch)
+
+    emitidas = [n for n in db[COLECOES["notas_credito"]]._documentos
+                if n["estado"] == "emitida"]
+    assert soma_vendas_dinheiro([venda], emitidas) == 0.0
+    assert totais_do_mapa(mapa_de_imposto([venda], emitidas))["total"] == 0.0
+
+
+def test_a_recusa_da_corrida_diz_a_operadora_o_que_fazer(monkeypatch):
+    db = _db_que_cede()
+    resultados = _duas_em_paralelo(db, monkeypatch)
+    recusa = next(r for r in resultados if isinstance(r, HTTPException))
+    assert "NÃO saiu" in recusa.detail
+    assert "abra a nota de crédito outra vez" in recusa.detail
+
+
+def test_duas_notas_de_LINHAS_DIFERENTES_da_mesma_fatura_passam_as_duas(monkeypatch):
+    """O controlo, e é o que impede a correcção de ser um cadeado por fatura:
+    duas parciais legítimas — o refrigerante hoje, o açaí amanhã — continuam a
+    poder existir. Aqui, uma de cada vez, como acontece ao balcão."""
+    db = _db_nc()
+    primeira = _emitir(db, monkeypatch, _pedido(linhas=[{"indice": 3, "quantidade": 3}]))
+    segunda = _emitir(db, monkeypatch, _pedido(
+        intencao_id="22222222-2222-4222-8222-222222222222",
+        linhas=[{"indice": 1, "quantidade": 2}]))
+    # `total` é o do DOCUMENTO que o Vendus devolveu; `total_das_linhas` é o
+    # que este servidor somou — e é este que diz o que cada parcial creditou.
+    assert primeira["total_das_linhas"] == 3.45
+    assert segunda["total_das_linhas"] == 20.40
+    assert len([d for d in db[COLECOES["documentos"]]._documentos
+                if d["tipo"] == "NC"]) == 2
+
+
+def test_o_selo_do_credito_avanca_a_cada_nota_emitida(monkeypatch):
+    """A escrita condicional é sobre este selo, e ele vive na FATURA — é o
+    recurso partilhado pelas duas notas."""
+    db = _db_nc()
+    documento = db[COLECOES["documentos"]]._documentos[0]
+    assert "nc_reserva_seq" not in documento
+    _emitir(db, monkeypatch, _pedido(linhas=[{"indice": 3, "quantidade": 1}]))
+    assert documento["nc_reserva_seq"] == 1
+    _emitir(db, monkeypatch, _pedido(
+        intencao_id="22222222-2222-4222-8222-222222222222",
+        linhas=[{"indice": 3, "quantidade": 1}]))
+    assert documento["nc_reserva_seq"] == 2
+
+
+# --- 11. O CÊNTIMO das parciais ----------------------------------------------
+
+
+def test_as_parciais_de_uma_LINHA_somam_exactamente_a_linha(monkeypatch):
+    """Creditar 1 açaí hoje e 1 amanhã devolve os mesmos 20,40 € que creditar
+    os dois de uma vez — e a fatura fica a zero no Z."""
+    venda = _venda_faturada()
+    notas = []
+    for _ in range(2):
+        escolhidas = escolher_linhas(
+            linhas_creditaveis(venda, notas), [{"indice": 1, "quantidade": 1}])
+        notas.append({"linhas": escolhidas, "estado": "emitida",
+                      "total": total_das_linhas(escolhidas)})
+    assert round(sum(n["total"] for n in notas), 2) == 20.40
+
+
+def test_uma_linha_de_dez_a_cinco_centimos_em_cem_fatias_devolve_meio_euro():
+    """**O caso que mostra a raiz.** Cada fatia de 0,1 valia
+    `round(0,1 × 0,05, 2) = 0,01 €` por si só, e cem cêntimos são um euro: a
+    linha de 0,50 € devolvia 1,00 €. E a regra valia para qualquer preço."""
+    venda = _venda_faturada(linhas=[_linha_agua(
+        produto_nome="Topping", produto_preco=0.05, quantidade=10)])
+    notas = []
+    for _ in range(100):
+        escolhidas = escolher_linhas(
+            linhas_creditaveis(venda, notas), [{"indice": 1, "quantidade": 0.1}])
+        notas.append({"linhas": escolhidas, "estado": "emitida",
+                      "total": total_das_linhas(escolhidas)})
+    assert round(sum(n["total"] for n in notas), 2) == 0.50
+    assert totais_do_mapa(mapa_de_imposto([venda], notas))["total"] == 0.0
+
+
+@pytest.mark.parametrize("preco,quantidade,fatias", [
+    (0.05, 10, 100),
+    (0.29, 3, 3),
+    (1.15, 3, 7),
+    (10.20, 2, 3),
+    (9.85, 6, 4),
+])
+def test_fuzz_as_parciais_fraccionarias_nunca_devolvem_mais_do_que_a_fatura(
+        preco, quantidade, fatias):
+    """Parciais FRACCIONÁRIAS — que é o que o campo da quantidade aceita, e o
+    que uma conta repartida produz (0,33337 de um açaí). Medido antes da
+    correcção, em 4986 faturas ao acaso creditadas em duas parciais: 1279
+    devolviam um valor diferente do que a fatura cobrou (441 a mais, 838 a
+    menos, até 0,03 €)."""
+    venda = _venda_faturada(linhas=[_linha_agua(
+        produto_preco=preco, quantidade=quantidade)])
+    esperado = total_das_linhas(linhas_creditaveis(venda, []))
+    notas = []
+    restante = float(quantidade)
+    for i in range(fatias):
+        fatia = round(quantidade / fatias, 5) if i < fatias - 1 else round(restante, 5)
+        restante = round(restante - fatia, 5)
+        if fatia <= 0:
+            continue
+        escolhidas = escolher_linhas(
+            linhas_creditaveis(venda, notas), [{"indice": 1, "quantidade": fatia}])
+        notas.append({"linhas": escolhidas, "estado": "emitida",
+                      "total": total_das_linhas(escolhidas)})
+    assert round(sum(n["total"] for n in notas), 2) == esperado
+
+
+def test_o_desconto_que_vai_ao_VENDUS_reproduz_o_centimo_que_gravamos():
+    """As linhas da nota levam `qty` e `gross_price`, e o Vendus faz a conta
+    dele: `round(bruto × (1 − pct/100), 2)`. Se o desconto enviado não
+    reproduzisse o valor acumulado, o documento entregue à AT dizia um número
+    e nós gravávamos outro — a divergir a cada parcial."""
+    venda = _venda_faturada(linhas=[_linha_agua(
+        produto_preco=0.05, quantidade=10)])
+    notas = []
+    for _ in range(3):
+        escolhidas = escolher_linhas(
+            linhas_creditaveis(venda, notas), [{"indice": 1, "quantidade": 0.1}])
+        for linha in escolhidas:
+            bruto = round(linha["quantidade"] * linha["preco_unitario"], 2)
+            pct = linha.get("desconto_percentagem") or 0.0
+            assert round(bruto * (1 - pct / 100.0), 2) == linha["total"]
+        notas.append({"linhas": escolhidas, "estado": "emitida",
+                      "total": total_das_linhas(escolhidas)})
+
+
+def test_creditar_a_fatura_INTEIRA_de_uma_vez_continua_a_devolver_o_liquido():
+    """O controlo do repartidor: nas contas normais — a esmagadora maioria —
+    o número não muda."""
+    venda = _venda_faturada(desconto_global_pct=10)
+    creditaveis = linhas_creditaveis(venda, [])
+    escolhidas = escolher_linhas(creditaveis, [{"indice": 1, "quantidade": 1}])
+    assert escolhidas[0]["total"] == 9.18
+
+
+# --- 12. Como a fatura foi PAGA, e a devolução confrontada com isso ----------
+#
+# `preparar_nota_credito` nem devolvia os pagamentos, por isso o ecrã não os
+# podia mostrar e a operadora escolhia o meio da devolução às cegas. Medido:
+# fatura de 11,29 € paga 5,00 em dinheiro + 6,29 em Multibanco, creditado só o
+# açaí de 9,85 € com devolução em DINHEIRO → `vendas_dinheiro` de 5,00 para
+# −4,85 € e o esperado da gaveta de 55,00 para 45,15 €, abaixo do fundo.
+
+
+def _venda_mista(**over):
+    v = _venda_faturada(**over)
+    v["pagamentos"] = [
+        {"tipo_pagamento_id": "tipo-dinheiro", "nome": "Dinheiro",
+         "tipo_fiscal": "NU", "valor": 5.00},
+        {"tipo_pagamento_id": "tipo-glovo", "nome": "Glovo",
+         "tipo_fiscal": "OU", "valor": 19.14},
+    ]
+    return v
+
+
+def test_o_ecra_da_nota_recebe_COMO_A_FATURA_FOI_PAGA(monkeypatch):
+    db = _db_nc(vendas=[_venda_mista()])
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+    saida = _corre(preparar_nota_credito("doc-1", operador=_operador()))
+    por_nome = {p["nome"]: p for p in saida["pagamentos"]}
+    assert por_nome["Dinheiro"]["recebido"] == 5.00
+    assert por_nome["Dinheiro"]["disponivel"] == 5.00
+    assert por_nome["Glovo"]["recebido"] == 19.14
+
+
+def test_o_que_ja_foi_devolvido_sai_do_DISPONIVEL_daquele_meio():
+    """As notas `emitida`, `incerta` e `reservada` contam — as mesmas do
+    travão da quantidade, e pela mesma razão: o que talvez tenha saído não se
+    pode contar como disponível outra vez."""
+    notas = [
+        {"estado": "emitida", "devolucao": {"tipo_pagamento_id": "tipo-dinheiro",
+                                            "nome": "Dinheiro", "valor": 1.15}},
+        {"estado": "incerta", "devolucao": {"tipo_pagamento_id": "tipo-dinheiro",
+                                            "nome": "Dinheiro", "valor": 0.29}},
+    ]
+    por_nome = {p["nome"]: p
+                for p in nc_mod.pagamentos_da_fatura(_venda_mista(), notas)}
+    assert por_nome["Dinheiro"]["devolvido"] == 1.44
+    assert por_nome["Dinheiro"]["disponivel"] == 3.56
+
+
+def test_a_nota_GRAVA_quanto_a_devolucao_passa_o_que_aquele_meio_recebeu(monkeypatch):
+    """O facto fica registado — o gestor encontra-o depois, em vez de
+    encontrar uma gaveta abaixo do fundo sem explicação nenhuma."""
+    db = _db_nc(vendas=[_venda_mista()])
+    saida = _emitir(db, monkeypatch, _pedido(linhas=[{"indice": 1, "quantidade": 1}]))
+    assert saida["devolucao"]["valor"] == 10.20
+    assert saida["devolucao"]["acima_do_recebido"] == 5.20  # 10,20 − 5,00
+
+
+def test_uma_devolucao_que_CABE_no_meio_nao_marca_nada(monkeypatch):
+    """O controlo: uma marca que estivesse sempre lá não era marca nenhuma."""
+    venda = _venda_faturada()
+    venda["pagamentos"] = [{"tipo_pagamento_id": "tipo-dinheiro",
+                            "nome": "Dinheiro", "tipo_fiscal": "NU",
+                            "valor": 24.14}]
+    db = _db_nc(vendas=[venda])
+    saida = _emitir(db, monkeypatch, _pedido(linhas=[{"indice": 1, "quantidade": 1}]))
+    assert saida["devolucao"]["acima_do_recebido"] == 0.0
+
+
+def test_devolver_por_um_meio_que_a_fatura_NUNCA_usou_marca_o_valor_TODO():
+    pagamentos = nc_mod.pagamentos_da_fatura(_venda_mista(), [])
+    assert nc_mod.acima_do_recebido(pagamentos, "tipo-mb", 9.85) == 9.85
+
+
+def test_um_TECTO_por_meio_de_pagamento_fechava_a_porta_sem_abrir_outra():
+    """**A justificação de não recusar, medida.** Recusar o que passa o que
+    cada meio recebeu era a defesa mais forte — e nesta fatura fecha a porta:
+    o cliente devolve o açaí de 10,20 € e NENHUM dos meios chega
+    (dinheiro 5,00, Glovo 19,14... e com a fatura de 11,29 € da reprodução,
+    5,00 e 6,29). Uma nota de crédito credita LINHAS, e as mesmas linhas não
+    se creditam duas vezes: não há como partir a devolução em duas notas.
+
+    Este teste guarda a DECISÃO, não o código: mostra que existe uma
+    devolução legítima para a qual nenhum meio chega, e é por isso que o
+    servidor mostra em vez de recusar."""
+    venda = _venda_faturada()
+    venda["pagamentos"] = [
+        {"tipo_pagamento_id": "tipo-dinheiro", "nome": "Dinheiro",
+         "tipo_fiscal": "NU", "valor": 5.00},
+        {"tipo_pagamento_id": "tipo-glovo", "nome": "Glovo",
+         "tipo_fiscal": "OU", "valor": 6.29},
+    ]
+    pagamentos = nc_mod.pagamentos_da_fatura(venda, [])
+    devolucao = 10.20
+    assert all(
+        nc_mod.acima_do_recebido(pagamentos, p["tipo_pagamento_id"], devolucao) > 0
+        for p in pagamentos
+    )
+
+
+# --- 13. A saída da NOTA PRESA ----------------------------------------------
+#
+# Uma intenção fica `reservada` sempre que a rota morre entre o `insert` e o
+# `$set` final — um reinício, um deploy, o 409 da corrida. E o fecho recusa
+# enquanto ela existir: medido, três tentativas seguidas de fechar a caixa,
+# 409 sempre, e nenhuma rota de backoffice sobre `fat_notas_credito`.
+
+_GESTOR = {"user_id": "u-1", "email": "gestor@lisbonb.com"}
+
+
+def _nota_presa(**over):
+    n = {
+        "id": "33333333-3333-4333-8333-333333333333", "loja_id": "loja-1",
+        "caixa_id": "caixa-1", "sessao_id": "sessao-1", "documento_id": "doc-1",
+        "estado": "reservada", "total": 10.20, "numero_origem": "FS 05P2026/1824",
+        "ext_ref": "pos-loja-1-sessao-1-nc-33333333-3333-4333-8333-333333333333",
+        "criada_em": "2020-01-01T00:00:00+00:00", "linhas": [],
+        "motivo": "Cliente devolveu o açaí.",
+        "devolucao": {"tipo_pagamento_id": "tipo-dinheiro", "nome": "Dinheiro",
+                      "tipo_fiscal": "NU", "valor": 10.20},
+    }
+    n.update(over)
+    return n
+
+
+def test_a_nota_presa_APARECE_ao_gestor_com_o_que_ele_precisa(monkeypatch):
+    db = _db_nc(notas=[_nota_presa()])
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+    presas = _corre(nc_mod.listar_notas_credito_presas(_=_GESTOR))
+    assert len(presas) == 1
+    presa = presas[0]
+    assert presa["ext_ref"].endswith("nc-33333333-3333-4333-8333-333333333333")
+    assert presa["numero_origem"] == "FS 05P2026/1824"
+    assert presa["total"] == 10.20
+    assert presa["presa_ha_segundos"] > 0
+    assert presa["emissao_talvez_a_decorrer"] is False
+
+
+def test_uma_nota_EMITIDA_nunca_aparece_nessa_lista(monkeypatch):
+    """O controlo: a lista é das PRESAS. Uma nota que saiu não tem nada a ser
+    resolvido — e uma lista que a mostrasse convidava o gestor a apagar a
+    intenção de um documento fiscal real."""
+    db = _db_nc(notas=[_nota_presa(estado="emitida"), _nota_presa(
+        id="44444444-4444-4444-8444-444444444444", estado="incerta")])
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+    assert _corre(nc_mod.listar_notas_credito_presas(_=_GESTOR)) == []
+
+
+def test_libertar_SEM_confirmar_no_vendus_e_recusado_e_diz_o_que_ir_ver(monkeypatch):
+    """Libertar uma nota que SAIU é autorizar uma segunda nota real da mesma
+    devolução. Um clique distraído não pode chegar aqui."""
+    db = _db_nc(notas=[_nota_presa()])
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+    with pytest.raises(HTTPException) as erro:
+        _corre(nc_mod.libertar_nota_credito_presa(
+            _nota_presa()["id"], nc_mod.PedidoLibertarNota(), gestor=_GESTOR))
+    assert erro.value.status_code == 422
+    assert "procure a referência externa" in erro.value.detail
+    assert db[COLECOES["notas_credito"]]._documentos  # nada foi apagado
+
+
+def test_libertar_COM_confirmacao_apaga_a_intencao_e_DESTRANCA_o_fecho(monkeypatch):
+    db = _db_nc(notas=[_nota_presa()])
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+    sessao = db[COLECOES["sessoes_caixa"]]._documentos[0]
+
+    assert _corre(caixa_mod._nota_de_credito_em_curso(db, sessao)) is not None
+    saida = _corre(nc_mod.libertar_nota_credito_presa(
+        _nota_presa()["id"],
+        nc_mod.PedidoLibertarNota(confirmado_no_vendus=True, nota="Não está lá."),
+        gestor=_GESTOR))
+    assert saida["libertada"] is True
+    assert db[COLECOES["notas_credito"]]._documentos == []
+    assert _corre(caixa_mod._nota_de_credito_em_curso(db, sessao)) is None
+
+
+def test_libertar_uma_nota_que_JA_TEM_documento_e_recusado(monkeypatch):
+    """A confirmação humana pode estar errada, e há coisas que a máquina sabe
+    melhor."""
+    presa = _nota_presa()
+    db = _db_nc(notas=[presa], documentos=[_documento_fs(), {
+        "id": "doc-nc", "tipo": "NC", "loja_id": "loja-1",
+        "numero": "NC 05P2026/9", "atcud": "ATCUD-NC-9",
+        "ext_ref": presa["ext_ref"]}])
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+    with pytest.raises(HTTPException) as erro:
+        _corre(nc_mod.libertar_nota_credito_presa(
+            presa["id"], nc_mod.PedidoLibertarNota(confirmado_no_vendus=True),
+            gestor=_GESTOR))
+    assert erro.value.status_code == 409
+    assert "NC 05P2026/9" in erro.value.detail
+    assert db[COLECOES["notas_credito"]]._documentos
+
+
+def test_uma_nota_RECENTE_nao_se_mexe(monkeypatch):
+    """Dentro da janela de uma emissão normal ela pode estar a falar com o
+    Vendus NESTE instante — e nenhum gestor consegue ter confirmado o Vendus
+    dentro dela."""
+    agora = datetime.now(timezone.utc).isoformat()
+    db = _db_nc(notas=[_nota_presa(criada_em=agora)])
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+    for chamada in (
+        nc_mod.libertar_nota_credito_presa(
+            _nota_presa()["id"],
+            nc_mod.PedidoLibertarNota(confirmado_no_vendus=True), gestor=_GESTOR),
+        nc_mod.marcar_nota_credito_por_apurar(
+            _nota_presa()["id"], nc_mod.PedidoLibertarNota(), gestor=_GESTOR),
+    ):
+        with pytest.raises(HTTPException) as erro:
+            _corre(chamada)
+        assert erro.value.status_code == 409
+        assert "NESTE instante" in erro.value.detail
+
+
+def test_marcar_POR_APURAR_destranca_o_fecho_sem_apagar_nada(monkeypatch):
+    """A saída SEGURA, para quando a nota está no Vendus ou não se apura: ela
+    continua a travar novo crédito das mesmas linhas, continua a não descontar
+    a gaveta, e deixa de travar o fecho."""
+    presa = _nota_presa()
+    db = _db_nc(notas=[presa])
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
+    sessao = db[COLECOES["sessoes_caixa"]]._documentos[0]
+
+    saida = _corre(nc_mod.marcar_nota_credito_por_apurar(
+        presa["id"], nc_mod.PedidoLibertarNota(nota="Vi a NC 2026/9 no Vendus."),
+        gestor=_GESTOR))
+    assert saida["por_apurar"] is True
+    guardada = db[COLECOES["notas_credito"]]._documentos[0]
+    assert guardada["estado"] == "incerta"
+    assert "Vi a NC 2026/9 no Vendus." in guardada["incerta_porque"]
+    assert _corre(caixa_mod._nota_de_credito_em_curso(db, sessao)) is None
+    # E continua a travar o crédito das mesmas linhas.
+    assert ja_creditado_por_linha([guardada]) == ja_creditado_por_linha([presa])
+
+
+def test_resolver_uma_nota_que_JA_NAO_esta_presa_nao_faz_nada(monkeypatch):
+    db = _db_nc(notas=[_nota_presa(estado="emitida")])
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+    with pytest.raises(HTTPException) as erro:
+        _corre(nc_mod.marcar_nota_credito_por_apurar(
+            _nota_presa()["id"], nc_mod.PedidoLibertarNota(), gestor=_GESTOR))
+    assert erro.value.status_code == 409
+    assert "já não está presa" in erro.value.detail
+
+
+def test_a_mensagem_do_fecho_NOMEIA_a_saida_que_existe():
+    """Sem a última frase, a loja lia «espere alguns segundos», esperava, e
+    levava 409 outra vez, sem fim — com UM PC por loja, o turno não fechava e
+    ninguém tinha botão."""
+    assert "notas de crédito presas" in caixa_mod._MSG_FECHO_COM_NOTA_DE_CREDITO_EM_CURSO
+
+
+def test_as_rotas_da_nota_presa_sao_de_GESTAO_e_existem():
+    caminhos = [r.path for r in nc_mod.router.routes]
+    assert "/fiscal/notas-credito-presas" in caminhos
+    assert "/fiscal/notas-credito/{intencao_id}/libertar" in caminhos
+    assert "/fiscal/notas-credito/{intencao_id}/por-apurar" in caminhos
+
+
+def test_quem_le_o_SALDO_e_e_ultrapassado_antes_de_ler_as_NOTAS_perde(monkeypatch):
+    """**A ORDEM das duas leituras é a garantia, e é ela que este guarda
+    prende.**
+
+    O selo lê-se ANTES das notas, e quem reserva mexe no selo DEPOIS de gravar
+    a intenção. Isso deixa exactamente duas ordens possíveis para quem chega a
+    seguir, e as duas acabam bem: ou ele já vê a intenção nas notas (e leva a
+    recusa normal do travão), ou ainda não a viu — e então também ainda não
+    viu o selo mexido, e a escrita condicional dele falha.
+
+    Invertida a ordem (as notas primeiro, o selo depois), abre-se o buraco: um
+    pedido pode ler as notas VAZIAS, ser ultrapassado por inteiro, e só depois
+    ler o selo JÁ MEXIDO — validando contra um retrato velho e ganhando a
+    escrita condicional com o valor novo. Duas notas de crédito reais da mesma
+    fatura.
+
+    Aqui a corrida não se deixa ao acaso: o segundo pedido é suspenso no
+    instante exacto entre as duas leituras, o primeiro corre até ao fim, e só
+    então ele continua."""
+    db = _db_nc()
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+    original = nc_mod._notas_do_documento
+    chegou = asyncio.Event()
+    seguir = asyncio.Event()
+
+    async def _com_pausa(db_, documento_id):
+        notas = await original(db_, documento_id)
+        if not chegou.is_set():
+            chegou.set()
+            await seguir.wait()
+        return notas
+
+    monkeypatch.setattr(nc_mod, "_notas_do_documento", _com_pausa)
+
+    async def cenario():
+        atrasado = asyncio.ensure_future(emitir_nota_credito(
+            "doc-1",
+            _pedido_da_fatura_inteira("22222222-2222-4222-8222-222222222222"),
+            operador=_operador()))
+        await chegou.wait()
+        primeiro = await emitir_nota_credito(
+            "doc-1",
+            _pedido_da_fatura_inteira("11111111-1111-4111-8111-111111111111"),
+            operador=_operador())
+        seguir.set()
+        return primeiro, (await asyncio.gather(atrasado, return_exceptions=True))[0]
+
+    primeiro, segundo = _corre(cenario())
+    assert primeiro["numero"]
+    assert isinstance(segundo, HTTPException) and segundo.status_code == 409
+    assert len([d for d in db[COLECOES["documentos"]]._documentos
+                if d["tipo"] == "NC"]) == 1
+    assert sum(len(v.chamadas_criar) for v in VendusNCFalso.instancias) == 1

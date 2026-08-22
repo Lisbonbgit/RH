@@ -86,6 +86,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from pymongo.errors import DuplicateKeyError
 
+from .auth import gestor_atual
 from .caixa import _obter_caixa_da_loja, _sessao_aberta
 from .db import (
     COLECOES,
@@ -93,10 +94,17 @@ from .db import (
     obter_db,
 )
 from .documentos import _centimos, _documento_da_loja
-from .fiscal import _ERROS_COM_PROVA_DE_QUE_NADA_SAIU, _itens_vendus
+from .fiscal import (
+    _ERROS_COM_PROVA_DE_QUE_NADA_SAIU,
+    _itens_vendus,
+    _percentagem_que_reproduz,
+    ext_ref_determinista,
+    MARCA_NOTA_CREDITO,
+)
 from .importacao import _nif_configurado
 from .mapa_imposto import _liquido_da_linha, mapa_da_nota, totais_do_mapa
 from .pos_auth import operador_atual
+from .reparticao import parte_acumulada
 from .vendus.cliente import VendusErro, VendusIndisponivel, obter_conta
 from .vendus.emissao import ClienteEmissaoVendus, _register_id_configurado
 
@@ -159,6 +167,11 @@ _MSG_EMISSAO_EM_CURSO = (
     "Esta nota de crédito já está a ser emitida neste momento — não se "
     "carrega duas vezes. Espere alguns segundos: se ela sair, aparece aqui "
     "sozinha; nada é emitido duas vezes."
+)
+_MSG_CREDITO_TOMADO_ENTRETANTO = (
+    "Outra nota de crédito desta fatura foi emitida neste instante — esta NÃO "
+    "saiu e nada foi enviado à Autoridade Tributária. Feche esta janela e abra "
+    "a nota de crédito outra vez, para ver o que a fatura ainda deixa creditar."
 )
 _MSG_INTENCAO_DE_OUTRA_FATURA = (
     "O identificador desta devolução já foi usado noutra nota de crédito. "
@@ -275,6 +288,101 @@ def linhas_creditaveis(venda: Optional[Dict], notas: List[Dict]) -> List[Dict]:
     return creditaveis
 
 
+def pagamentos_da_fatura(venda: Optional[Dict], notas: List[Dict]) -> List[Dict]:
+    """**Como é que esta fatura foi PAGA, e quanto de cada meio ainda não foi
+    devolvido.**
+
+    Existia um buraco entre a regra do dono — «a devolução segue o meio de
+    pagamento» — e o que o sistema fazia: nada comparava o meio da devolução
+    com os da fatura, e `preparar_nota_credito` nem sequer devolvia os
+    pagamentos, por isso o ecrã também não os podia mostrar. A operadora
+    escolhia às cegas. Medido: uma fatura de 11,29 € paga **5,00 em dinheiro
+    + 6,29 em Multibanco**, creditado só o açaí de 9,85 € com devolução em
+    DINHEIRO — `vendas_dinheiro` de 5,00 para **−4,85 €** e o esperado da
+    gaveta de 55,00 para **45,15 €, abaixo do fundo inicial**. Saíram 9,85 €
+    em notas de uma venda que só pôs 5,00 € na gaveta.
+
+    **E o servidor NÃO recusa — mostra.** Recusar por meio de pagamento é a
+    defesa mais forte e foi a primeira escolha, até se medir o que ela faz ao
+    balcão: nesta mesma fatura, o cliente devolve o açaí de 9,85 € e NENHUM
+    dos dois meios chega (dinheiro tem 5,00 €, Multibanco tem 6,29 €). Uma
+    nota de crédito credita LINHAS, e as mesmas linhas não se creditam duas
+    vezes — não há como partir a devolução em duas notas. A recusa fechava a
+    porta sem abrir outra, e uma devolução legítima ficava impossível com o
+    cliente à frente.
+
+    O que se faz em vez disso é o que a regra do dono descreve mesmo: pôr os
+    números à frente da operadora ANTES do toque, e **deixar registado**
+    quando a devolução passa o que aquele meio recebeu
+    (`devolucao.acima_do_recebido`) — o gestor encontra isso depois, em vez
+    de encontrar uma gaveta abaixo do fundo sem explicação.
+
+    `devolvido` conta as notas `emitida`, `incerta` e `reservada`, as mesmas
+    do travão da quantidade e pela mesma razão: o que talvez tenha saído não
+    se pode contar como disponível outra vez."""
+    linhas: Dict[str, Dict] = {}
+    for pagamento in (venda or {}).get("pagamentos") or []:
+        chave = pagamento.get("tipo_pagamento_id") or pagamento.get("nome")
+        linha = linhas.get(chave)
+        if linha is None:
+            linha = linhas[chave] = {
+                "tipo_pagamento_id": pagamento.get("tipo_pagamento_id"),
+                "nome": pagamento.get("nome"),
+                "tipo_fiscal": pagamento.get("tipo_fiscal"),
+                "recebido_centimos": 0,
+                "devolvido_centimos": 0,
+            }
+        linha["recebido_centimos"] += _centimos(pagamento.get("valor"))
+
+    for nota in notas or []:
+        if nota.get("estado") not in ("emitida", "incerta", "reservada"):
+            continue
+        devolucao = nota.get("devolucao") or {}
+        chave = devolucao.get("tipo_pagamento_id") or devolucao.get("nome")
+        linha = linhas.get(chave)
+        if linha is None:
+            # Uma devolução por um meio que a fatura não usou: entra com
+            # `recebido` a zero, que é a verdade e é o que a operadora tem de
+            # ver. Escondê-la fazia a soma da coluna não bater com a gaveta.
+            linha = linhas[chave] = {
+                "tipo_pagamento_id": devolucao.get("tipo_pagamento_id"),
+                "nome": devolucao.get("nome"),
+                "tipo_fiscal": devolucao.get("tipo_fiscal"),
+                "recebido_centimos": 0,
+                "devolvido_centimos": 0,
+            }
+        linha["devolvido_centimos"] += _centimos(devolucao.get("valor"))
+
+    saida = []
+    for linha in linhas.values():
+        recebido = linha.pop("recebido_centimos")
+        devolvido = linha.pop("devolvido_centimos")
+        linha["recebido"] = recebido / 100.0
+        linha["devolvido"] = devolvido / 100.0
+        linha["disponivel"] = (recebido - devolvido) / 100.0
+        saida.append(linha)
+    saida.sort(key=lambda li: (-_centimos(li["recebido"]), li["nome"] or ""))
+    return saida
+
+
+def acima_do_recebido(
+    pagamentos: List[Dict], tipo_pagamento_id: str, total: float
+) -> float:
+    """Quanto desta devolução passa o que a fatura ainda tem naquele meio —
+    `0.0` no caso normal.
+
+    Em cêntimos inteiros e do lado do servidor, como tudo o que é dinheiro
+    neste módulo. Um meio que a fatura não usou dá `disponivel` zero, e a
+    devolução inteira fica acima do recebido — que é exactamente o que ela
+    é."""
+    disponivel = 0
+    for linha in pagamentos or []:
+        if linha.get("tipo_pagamento_id") == tipo_pagamento_id:
+            disponivel = _centimos(linha.get("disponivel"))
+            break
+    return max(0, _centimos(total) - disponivel) / 100.0
+
+
 class NotaDeCreditoInvalida(Exception):
     """O pedido da operadora não pode virar nota de crédito nenhuma — e a
     mensagem diz porquê, em português de balcão. Vira 422 na rota."""
@@ -330,22 +438,45 @@ def escolher_linhas(creditaveis: List[Dict], escolhas: List[Dict]) -> List[Dict]
             ))
 
         quantidade = _quantidade_legivel(pedida)
-        # O líquido DESTA quantidade, pela fórmula do Vendus: bruto
-        # arredondado ao cêntimo e depois a percentagem de desconto da linha
-        # original, que é exactamente o que ele vai fazer do lado dele quando
-        # receber esta linha na nota de crédito.
-        total = _liquido_da_linha({
-            "qty": quantidade,
-            "gross_price": linha["preco_unitario"],
-            "discount_percentage": linha.get("desconto_percentagem"),
-        })
+        # **O dinheiro desta parcial é a DIFERENÇA DE DOIS ACUMULADOS**, e
+        # não o líquido da parcial calculado por si só.
+        #
+        # Calculado por si só — `round(qty × preço, 2)` e depois o desconto,
+        # que era o que estava aqui — cada parcial arredonda para cima o seu
+        # próprio meio-cêntimo, e as parciais de uma linha deixam de somar a
+        # linha. Medido: uma linha de 10 × 0,05 € (0,50 €) creditada em 100
+        # fatias de 0,1 devolvia **1,00 €, o dobro**; e em 4986 faturas ao
+        # acaso creditadas em duas parciais fraccionárias, 1279 devolviam
+        # um valor diferente do que a fatura cobrou.
+        #
+        # Com o acumulado (`reparticao.parte_acumulada`, ver lá o porquê de
+        # não ser `repartir_centimos` nem `_distribuir_centimos`) a soma das
+        # parciais de uma linha é, por construção, o líquido da linha —
+        # creditada em quantas vezes for e por que ordem for.
+        total_da_linha = _centimos(linha.get("total"))
+        original = _quantidade_em_inteiros(linha["quantidade"])
+        antes_desta = _quantidade_em_inteiros(linha["creditado"])
+        total = (
+            parte_acumulada(total_da_linha, original, antes_desta + pedida)
+            - parte_acumulada(total_da_linha, original, antes_desta)
+        ) / 100.0
+        # **E o desconto que vai ao Vendus é o que REPRODUZ esse cêntimo.**
+        # As linhas da nota levam `qty` e `gross_price`, e o Vendus faz a
+        # conta dele: sem esta conversão, o documento entregue à AT dizia o
+        # líquido ingénuo da parcial e nós gravávamos o acumulado — as duas
+        # a discordar, e a discordância a aparecer em `total_divergente` a
+        # cada parcial. É o mesmo instrumento que a Fatura Simplificada usa
+        # para fechar o cêntimo do desconto global (`fiscal._itens_vendus`),
+        # e o desconto próprio da linha já vem lá dentro: o alvo é o líquido,
+        # não o bruto.
+        bruto = round(quantidade * (linha["preco_unitario"] or 0), 2)
         escolhidas.append({
             "indice": indice,
             "titulo": linha.get("titulo"),
             "tax_id": linha.get("tax_id"),
             "quantidade": quantidade,
             "preco_unitario": linha["preco_unitario"],
-            "desconto_percentagem": linha.get("desconto_percentagem"),
+            "desconto_percentagem": _percentagem_que_reproduz(bruto, total),
             "id_vendus": linha.get("id_vendus"),
             "total": total,
         })
@@ -370,8 +501,16 @@ def ext_ref_da_intencao(loja_id: str, sessao_id: str, intencao_id: str) -> str:
     referência que não o tivesse deixava a devolução em dinheiro descontada
     do nosso lado e não do lado do Vendus — e o fecho acusava, todas as
     noites em que houvesse uma devolução, uma diferença que ninguém sabia
-    explicar."""
-    return "pos-%s-%s-nc-%s" % (loja_id, sessao_id, intencao_id)
+    explicar.
+
+    O `nc-` é `fiscal.MARCA_NOTA_CREDITO` e o resto é
+    `fiscal.ext_ref_determinista` — as duas metades vêm de lá, e não de um
+    formato escrito outra vez aqui. É por essa marca que a reconciliação do
+    fecho sabe que este documento é uma DEVOLUÇÃO e não uma venda
+    (`fiscal._e_nota_de_credito`); uma segunda cópia do formato divergia da
+    primeira, e a divergência aparecia como uma diferença de gaveta."""
+    return ext_ref_determinista(
+        loja_id, sessao_id, MARCA_NOTA_CREDITO + intencao_id)
 
 
 def itens_vendus_da_nota(linhas: List[Dict], numero_original: str) -> List[Dict]:
@@ -452,6 +591,66 @@ async def _notas_do_documento(db, documento_id: str) -> List[Dict]:
     ).to_list(500)
 
 
+async def _selo_e_notas(db, documento_id: str):
+    """O SELO do saldo desta fatura e as notas que contam para o travão —
+    lidos NESTA ordem, que é o que torna a reserva do crédito atómica.
+
+    **O travão sozinho é ler-verificar-escrever, e isso não trava nada.**
+    Duas rotas em paralelo lêem as mesmas notas (nenhuma), concluem as duas
+    que a fatura está por creditar, e emitem as duas — cada uma com a sua
+    intenção, cada uma legítima pelo índice único de `fat_notas_credito.id`,
+    que é a identidade da INTENÇÃO e por desenho deixa haver várias notas
+    por fatura. Medido pelas rotas reais, com o duplo de Mongo a ceder o
+    event loop em cada leitura: uma fatura de 11,29 € paga em dinheiro,
+    dois `POST` concorrentes com intenções diferentes → **[201, 201], duas
+    emissões REAIS no Vendus, dois documentos NC**, o esperado da gaveta em
+    38,71 € em vez de 50,00 e o `total_faturado` do turno em −11,29 €. O Z
+    fechava a 200 por cima disso.
+
+    O recurso a proteger não é a venda (essa é a da Fatura Simplificada): é
+    **a quantidade creditável de cada linha da fatura**. O selo é o contador
+    de reservas de crédito que vive na PRÓPRIA fatura
+    (`fat_documentos.nc_reserva_seq`), e quem reserva escreve-o
+    CONDICIONALMENTE ao valor que leu (`_reservar_o_credito`) — quem chegar
+    depois não casa e perde, sem nunca chegar a falar com o Vendus.
+
+    **A ordem das duas leituras é a garantia, e não é decorativa.** O selo
+    lê-se ANTES das notas, e quem reserva bump-a o selo DEPOIS de gravar a
+    intenção. Assim, para as duas ordens possíveis:
+
+    - se o outro pedido ainda não gravou a intenção quando lemos as notas,
+      então também ainda não bump-ou o selo — mas vai bump-á-lo antes de
+      emitir, e a nossa escrita condicional (feita sobre o selo antigo)
+      falha;
+    - se já a gravou, então lemos a intenção dele nas notas — ela conta para
+      o travão (`ja_creditado_por_linha` conta a `reservada`) e a recusa é a
+      normal, com a frase que diz quanto ainda dá.
+
+    Não há terceira ordem: o selo lê-se antes das notas, por isso um selo
+    novo implica que a intenção que o produziu já estava gravada."""
+    documento = await db[COLECOES["documentos"]].find_one(
+        {"id": documento_id}, {"_id": 0, "nc_reserva_seq": 1})
+    selo = (documento or {}).get("nc_reserva_seq")
+    notas = await _notas_do_documento(db, documento_id)
+    return selo, notas
+
+
+async def _reservar_o_credito(db, documento_id: str, selo) -> bool:
+    """A RESERVA ATÓMICA do crédito — a escrita condicional que só ganha se
+    ninguém tiver mexido no saldo desde que o lemos.
+
+    É o `matched_count` que decide, como em todo o módulo (`_reservar`,
+    `cancelar_venda`, a marca do fecho). `{"nc_reserva_seq": None}` é o caso
+    da PRIMEIRA nota desta fatura: no Mongo — e no duplo — um filtro por
+    `None` casa também com o campo ausente, por isso não é preciso semear
+    campo nenhum nas faturas que já existem."""
+    resultado = await db[COLECOES["documentos"]].update_one(
+        {"id": documento_id, "nc_reserva_seq": selo},
+        {"$set": {"nc_reserva_seq": (selo or 0) + 1}},
+    )
+    return resultado.matched_count == 1
+
+
 async def _fatura_creditavel(db, documento_id: str, loja_id: str):
     """O documento e a venda dele, confirmados como creditáveis — ou o 4xx
     que diz porque não.
@@ -522,6 +721,10 @@ async def preparar_nota_credito(
             "total": documento.get("total"),
         },
         "cliente_nif": venda.get("cliente_nif"),
+        # **Como a fatura foi paga, e quanto de cada meio ainda não voltou.**
+        # Sem isto o ecrã não podia mostrar nada, e a operadora escolhia o
+        # meio da devolução às cegas — ver `pagamentos_da_fatura`.
+        "pagamentos": pagamentos_da_fatura(venda, notas),
         # O `id_vendus` de cada linha fica DE FORA: é configuração interna
         # da ligação ao Vendus e o balcão não tem nada que a ver — a mesma
         # regra do `vendus_payment_method_id` em
@@ -773,9 +976,14 @@ async def emitir_nota_credito(
        linhas escolhidas contra o travão, o motivo, o tipo de pagamento e a
        configuração do Vendus. Um erro de dados não pode gastar uma intenção
        nem confundir a operadora com um 502;
-    2. **a intenção grava-se ANTES de falar com o Vendus** — é ela a reserva
-       atómica (índice único em `fat_notas_credito.id`), e é o que faz o
-       duplo-toque nunca chegar a emitir duas vezes;
+    2. **a intenção grava-se ANTES de falar com o Vendus** — o índice único
+       em `fat_notas_credito.id` é o que faz o duplo-toque nunca chegar a
+       emitir duas vezes — e logo a seguir **reserva-se o CRÉDITO**, com a
+       escrita condicional de `_reservar_o_credito`. São coisas diferentes:
+       a primeira protege a INTENÇÃO (o mesmo toque repetido), a segunda
+       protege a QUANTIDADE CREDITÁVEL DA FATURA (duas notas diferentes,
+       duas janelas, a creditar a mesma linha). Sem a segunda, o travão era
+       um ler-verificar-escrever e duas notas reais saíam para a AT;
     3. **a sessão relê-se DEPOIS de a intenção estar gravada** — o mesmo par
        (escrever, depois perguntar) que fecha a janela do fecho de caixa: ou
        o fecho vê esta intenção (`caixa._nota_de_credito_em_curso`) e
@@ -799,7 +1007,10 @@ async def emitir_nota_credito(
     # os Z, e o dinheiro devolvido não entrava em conta nenhuma.
     sessao = await _sessao_aberta(db, caixa["id"])
 
-    notas = await _notas_do_documento(db, documento_id)
+    # O SELO do saldo ANTES das notas — ver `_selo_e_notas`: é essa ordem, e
+    # a escrita condicional lá em baixo, que fazem a reserva do crédito ser
+    # atómica em vez de um ler-verificar-escrever que não trava nada.
+    selo, notas = await _selo_e_notas(db, documento_id)
     creditaveis = linhas_creditaveis(venda, notas)
     try:
         escolhidas = escolher_linhas(
@@ -857,6 +1068,13 @@ async def emitir_nota_credito(
             "nome": tipo.get("nome"),
             "tipo_fiscal": tipo.get("tipo_fiscal"),
             "valor": total,
+            # **Quanto desta devolução passa o que a fatura recebeu NESTE
+            # meio** — 0,00 no caso normal. Não é uma recusa (ver
+            # `pagamentos_da_fatura` para o porquê): é o facto gravado, para
+            # o gestor o encontrar depois em vez de encontrar uma gaveta
+            # abaixo do fundo sem explicação nenhuma.
+            "acima_do_recebido": acima_do_recebido(
+                pagamentos_da_fatura(venda, notas), tipo["id"], total),
         },
         "ext_ref": ext_ref_da_intencao(
             operador["loja_id"], sessao["id"], dados.intencao_id),
@@ -870,6 +1088,16 @@ async def emitir_nota_credito(
         await db[COLECOES["notas_credito"]].insert_one(dict(nota))
     except DuplicateKeyError:
         return await _resposta_de_quem_repetiu(db, dados.intencao_id, documento)
+
+    # **A RESERVA DO CRÉDITO**, e é ela que impede duas notas concorrentes de
+    # creditarem a mesma linha. Feita DEPOIS de a intenção estar gravada (é
+    # essa ordem que faz o outro pedido ver sempre uma das duas: ou a intenção
+    # nas notas, ou o selo mexido) e ANTES de qualquer palavra ao Vendus —
+    # perder aqui não custa documento fiscal nenhum, só a intenção que se
+    # liberta a seguir.
+    if not await _reservar_o_credito(db, documento["id"], selo):
+        await _libertar_intencao(db, nota["id"])
+        raise HTTPException(status_code=409, detail=_MSG_CREDITO_TOMADO_ENTRETANTO)
 
     # A releitura da sessão, DEPOIS da reserva — ver o passo 3 da docstring.
     sessao_agora = await db[COLECOES["sessoes_caixa"]].find_one({"id": sessao["id"]})
@@ -941,3 +1169,295 @@ async def _resposta_de_quem_repetiu(db, intencao_id: str, documento: Dict) -> Di
     documento_nc = await db[COLECOES["documentos"]].find_one(
         {"id": existente.get("documento_nc_id")}, {"_id": 0})
     return _resposta_da_nota(existente, documento_nc or {})
+
+
+# --- Gestão: as notas de crédito PRESAS ---------------------------------------
+#
+# **A saída que faltava, e é a mesma que a Fatura Simplificada já tem.**
+#
+# Uma intenção fica `reservada` sempre que a rota morre entre o `insert_one` e
+# o `$set` final: um reinício do servidor, um deploy a meio de uma devolução,
+# ou o 409 da corrida do crédito. E `caixa._nota_de_credito_em_curso` recusa o
+# fecho enquanto existir UMA — com a frase «espere alguns segundos», que aqui
+# nunca chega a ser verdade. Medido: três tentativas seguidas de fechar a
+# caixa, 409 sempre. Com UM PC por loja, é a loja sem conseguir fechar o turno
+# e sem botão nenhum.
+#
+# O desenho é o de `fiscal.py` e não um segundo: uma LISTAGEM que diz o que
+# aconteceu, e as duas saídas que existem consoante o que o gestor encontrar
+# no Vendus —
+#
+#   - **não está lá**: `libertar`, que apaga a intenção. A fatura volta a
+#     deixar creditar aquelas linhas e o turno fecha. Exige
+#     `confirmado_no_vendus=true` com todas as letras, pela mesma razão que a
+#     reserva fiscal: libertar uma nota que SAIU é autorizar uma segunda nota
+#     real da mesma devolução;
+#   - **está lá, ou não se consegue apurar**: `por-apurar`, que a marca
+#     `incerta` — o estado que este módulo já tinha para isto. Conta para o
+#     travão (não se credita por cima do que talvez já tenha saído), NÃO
+#     desconta a gaveta (não se devolve dinheiro que talvez não tenha saído) e
+#     não trava o fecho. É a saída SEGURA, e por isso não pede confirmação
+#     nenhuma.
+#
+# Não há aqui um `reconciliar` como o da FS. A razão é que não faz falta: o
+# documento da nota entra no Z pelo `fat_documentos` da fatura, e uma nota
+# `incerta` que se confirme ter saído resolve-se no Vendus com os números que
+# esta listagem dá (a `ext_ref`, a loja e o total) — inventar uma rota de
+# reconciliação sem ninguém a precisar dela era inventar um segundo desenho.
+
+_LIMITE_NOTAS_PRESAS = 500
+
+# O mesmo relógio de `fiscal._SEGUNDOS_DE_EMISSAO_NORMAL`: dentro desta janela
+# a nota é quase de certeza uma emissão a decorrer NESTE instante, e nenhum
+# gestor consegue ter confirmado o Vendus dentro dela.
+_SEGUNDOS_DE_EMISSAO_NORMAL = 300.0
+
+_MSG_NOTA_PRESA_INEXISTENTE = (
+    "Não há nenhuma nota de crédito com este identificador — nada para "
+    "resolver."
+)
+_MSG_NOTA_PRESA_JA_RESOLVIDA = (
+    "Esta nota de crédito já não está presa: está %s. Não há nada a fazer-lhe "
+    "aqui."
+)
+_MSG_NOTA_PRESA_RECENTE = (
+    "Esta nota de crédito reservou há %.0f segundos — abaixo dos %d de uma "
+    "emissão normal, o que quer dizer que ela pode estar a falar com o Vendus "
+    "NESTE instante. Não se mexe: espere e volte a esta lista."
+)
+_MSG_NOTA_PRESA_SEM_CONFIRMACAO = (
+    "Antes de libertar: abra o Vendus e procure a referência externa «%s». "
+    "LIBERTAR quer dizer «não existe lá nenhuma nota de crédito com esta "
+    "referência». Libertar uma que SAIU é autorizar uma segunda nota de "
+    "crédito real da mesma devolução — dois documentos entregues à "
+    "Autoridade Tributária a devolver o mesmo dinheiro. Se ela estiver lá, ou "
+    "se não conseguir apurar, use «por apurar» em vez desta."
+)
+_MSG_NOTA_PRESA_COM_DOCUMENTO = (
+    "Esta nota de crédito TEM um documento gravado (%s, ATCUD %s) — ela saiu. "
+    "Não se liberta; a confirmação estava errada."
+)
+_MSG_NOTA_PRESA_ULTRAPASSADA = (
+    "A nota de crédito mudou de estado enquanto isto era decidido — nada foi "
+    "alterado. Volte a esta lista e olhe para ela outra vez."
+)
+_MSG_NOTA_PRESA_O_QUE_CONFIRMOU = (
+    "Confirmou que NÃO existe no Vendus nenhuma nota de crédito com a "
+    "referência externa «%s»."
+)
+_MSG_NOTA_PRESA_A_SEGUIR = (
+    "A intenção foi apagada: a fatura volta a deixar creditar estas linhas e o "
+    "fecho desta caixa deixa de ser recusado por causa dela."
+)
+_MSG_NOTA_POR_APURAR_A_SEGUIR = (
+    "A nota ficou marcada POR APURAR: continua a travar novo crédito destas "
+    "linhas (não se credita por cima do que talvez já tenha saído), NÃO "
+    "desconta a gaveta (não se devolve dinheiro que talvez não tenha saído) e "
+    "já não trava o fecho da caixa."
+)
+
+
+def _segundos_desde(instante: Optional[str], agora: datetime) -> Optional[float]:
+    """Há quantos segundos foi `instante` — ou `None` se não se consegue ler.
+
+    `None` não trava nada, pela mesma razão de `fiscal.libertar_reserva_presa`:
+    uma emissão a decorrer tem SEMPRE um `criada_em` legível, escrito por
+    `_agora()` na própria rota; uma nota sem ele é, por construção, dados
+    estragados de há muito — exactamente o caso que estas rotas existem para
+    desentalar."""
+    if not instante:
+        return None
+    try:
+        lido = datetime.fromisoformat(str(instante))
+    except (TypeError, ValueError):
+        return None
+    if lido.tzinfo is None:
+        lido = lido.replace(tzinfo=timezone.utc)
+    return (agora - lido).total_seconds()
+
+
+@router.get("/fiscal/notas-credito-presas")
+async def listar_notas_credito_presas(_: Dict = Depends(gestor_atual)) -> List[Dict]:
+    """Todas as notas de crédito PRESAS — as que reservaram e ficaram
+    `reservada`, que são exactamente as que `caixa._nota_de_credito_em_curso`
+    usa para recusar o fecho.
+
+    Cada uma traz o que o gestor precisa para ir ver ao Vendus (a `ext_ref`, a
+    loja, o número da fatura de origem, o total e o motivo), há quanto tempo
+    está presa, e as duas saídas ditas por extenso."""
+    db = obter_db()
+    agora = datetime.now(timezone.utc)
+    presas = await db[COLECOES["notas_credito"]].find(
+        {"estado": "reservada"}, {"_id": 0}
+    ).to_list(_LIMITE_NOTAS_PRESAS)
+    saida = []
+    for nota in presas:
+        presa_ha_segundos = _segundos_desde(nota.get("criada_em"), agora)
+        saida.append({
+            "id": nota.get("id"),
+            "ext_ref": nota.get("ext_ref"),
+            "loja_id": nota.get("loja_id"),
+            "caixa_id": nota.get("caixa_id"),
+            "sessao_id": nota.get("sessao_id"),
+            "documento_id": nota.get("documento_id"),
+            "numero_origem": nota.get("numero_origem"),
+            "motivo": nota.get("motivo"),
+            "total": nota.get("total"),
+            "devolucao": nota.get("devolucao"),
+            "operador": nota.get("operador"),
+            "criada_em": nota.get("criada_em"),
+            "presa_ha_segundos": presa_ha_segundos,
+            # Uma nota dentro da janela de uma emissão normal pode estar a
+            # falar com o Vendus AGORA — e as duas rotas recusam-na. Dito aqui
+            # para o gestor não carregar num botão que já se sabe recusado.
+            "emissao_talvez_a_decorrer": (
+                presa_ha_segundos is not None
+                and presa_ha_segundos < _SEGUNDOS_DE_EMISSAO_NORMAL
+            ),
+            "saidas": (
+                "Procure a referência externa no Vendus. NÃO está lá: "
+                "LIBERTAR. Está lá, ou não consegue apurar: POR APURAR."
+            ),
+        })
+    saida.sort(key=lambda n: n.get("criada_em") or "")
+    return saida
+
+
+class PedidoLibertarNota(BaseModel):
+    """A confirmação do gestor, exigida com todas as letras — o mesmo contrato
+    de `fiscal.PedidoLibertarReserva`, e sem valor por omissão útil de
+    propósito."""
+
+    confirmado_no_vendus: bool = False
+    nota: Optional[str] = None
+
+
+async def _nota_presa(db, intencao_id: str, agora: datetime) -> Dict:
+    """A nota presa, ou o 4xx que diz porque não se lhe pode tocar."""
+    nota = await db[COLECOES["notas_credito"]].find_one(
+        {"id": intencao_id}, {"_id": 0})
+    if nota is None:
+        raise HTTPException(status_code=404, detail=_MSG_NOTA_PRESA_INEXISTENTE)
+    if nota.get("estado") != "reservada":
+        raise HTTPException(
+            status_code=409,
+            detail=_MSG_NOTA_PRESA_JA_RESOLVIDA % (nota.get("estado") or "num estado desconhecido"),
+        )
+    presa_ha_segundos = _segundos_desde(nota.get("criada_em"), agora)
+    if presa_ha_segundos is not None and presa_ha_segundos < _SEGUNDOS_DE_EMISSAO_NORMAL:
+        raise HTTPException(
+            status_code=409,
+            detail=_MSG_NOTA_PRESA_RECENTE % (
+                presa_ha_segundos, int(_SEGUNDOS_DE_EMISSAO_NORMAL)),
+        )
+    return nota
+
+
+@router.post("/fiscal/notas-credito/{intencao_id}/libertar")
+async def libertar_nota_credito_presa(
+    intencao_id: str,
+    dados: PedidoLibertarNota,
+    gestor: Dict = Depends(gestor_atual),
+) -> Dict:
+    """Apaga a intenção de uma nota de crédito presa — a saída para quando o
+    gestor CONFIRMOU no Vendus que ela não saiu.
+
+    De gestão, nunca do balcão (`gestor_atual`, o token do backoffice — não o
+    PIN da operadora), e recusa-se em quatro casos: a nota não existe (404),
+    já não está `reservada` (409), reservou há menos do que uma emissão normal
+    (409 — pode estar a falar com o Vendus neste instante), ou já tem um
+    documento gravado (409 — ela saiu mesmo, e a confirmação humana estava
+    errada).
+
+    **O apagar é CONDICIONAL ao estado `reservada`**, e é o `deleted_count`
+    que decide: entre as guardas acima e esta linha corre um `await` (a
+    procura do documento) em que a emissão original pode ter acordado e
+    emitido. Apagar-lhe a intenção por baixo era autorizar a segunda nota
+    real — a mesma disciplina de `fiscal._libertar_reserva_se_intacta`."""
+    db = obter_db()
+    agora = datetime.now(timezone.utc)
+    nota = await _nota_presa(db, intencao_id, agora)
+    ext_ref = nota.get("ext_ref")
+
+    if not dados.confirmado_no_vendus:
+        raise HTTPException(
+            status_code=422,
+            detail=_MSG_NOTA_PRESA_SEM_CONFIRMACAO % (ext_ref or "(sem referência)"),
+        )
+
+    documento = await db[COLECOES["documentos"]].find_one({"ext_ref": ext_ref})
+    if ext_ref and documento is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=_MSG_NOTA_PRESA_COM_DOCUMENTO % (
+                documento.get("numero"), documento.get("atcud")),
+        )
+
+    resultado = await db[COLECOES["notas_credito"]].delete_one(
+        {"id": intencao_id, "estado": "reservada"})
+    if resultado.deleted_count != 1:
+        raise HTTPException(status_code=409, detail=_MSG_NOTA_PRESA_ULTRAPASSADA)
+
+    # Apagar a intenção de um documento fiscal à mão é um acto sério, e a
+    # intenção desaparece com ele: sem este registo não ficava rasto de quem a
+    # libertou nem do que disse ter confirmado.
+    logger.warning(
+        "[faturacao] nota de crédito presa libertada à mão: id=%s ext_ref=%s "
+        "loja=%s total=%s por=%s nota=%r",
+        intencao_id, ext_ref, nota.get("loja_id"), nota.get("total"),
+        gestor.get("email") or gestor.get("user_id"), dados.nota,
+    )
+    return {
+        "libertada": True,
+        "id": intencao_id,
+        "ext_ref": ext_ref,
+        "o_que_confirmou": _MSG_NOTA_PRESA_O_QUE_CONFIRMOU % (ext_ref or "(sem referência)"),
+        "a_seguir": _MSG_NOTA_PRESA_A_SEGUIR,
+    }
+
+
+@router.post("/fiscal/notas-credito/{intencao_id}/por-apurar")
+async def marcar_nota_credito_por_apurar(
+    intencao_id: str,
+    dados: PedidoLibertarNota,
+    gestor: Dict = Depends(gestor_atual),
+) -> Dict:
+    """Marca uma nota de crédito presa como POR APURAR (`incerta`) — a saída
+    SEGURA, para quando a nota está no Vendus ou não se consegue apurar.
+
+    Não pede confirmação nenhuma, e é de propósito: esta é a direcção que
+    nunca pode fazer estrago. A nota continua a travar novo crédito das mesmas
+    linhas, continua a não descontar a gaveta, e deixa de travar o fecho —
+    que é exactamente o estado em que uma emissão sem desfecho conhecido já
+    ficava por si (`_marcar_incerta`).
+
+    A marca é CONDICIONAL ao estado `reservada`, pela razão de sempre: entre a
+    leitura e a escrita a emissão original pode ter acordado e concluído, e
+    marcar `incerta` por cima de uma nota `emitida` era apagar do Z uma
+    devolução que aconteceu."""
+    db = obter_db()
+    agora = datetime.now(timezone.utc)
+    nota = await _nota_presa(db, intencao_id, agora)
+
+    porque = "marcada por apurar pelo gestor%s" % (
+        "" if not dados.nota else ": %s" % dados.nota)
+    resultado = await db[COLECOES["notas_credito"]].update_one(
+        {"id": intencao_id, "estado": "reservada"},
+        {"$set": {"estado": "incerta", "incerta_porque": porque,
+                  "incerta_em": _agora()}},
+    )
+    if resultado.matched_count != 1:
+        raise HTTPException(status_code=409, detail=_MSG_NOTA_PRESA_ULTRAPASSADA)
+
+    logger.warning(
+        "[faturacao] nota de crédito presa marcada POR APURAR: id=%s ext_ref=%s "
+        "loja=%s total=%s por=%s nota=%r",
+        intencao_id, nota.get("ext_ref"), nota.get("loja_id"), nota.get("total"),
+        gestor.get("email") or gestor.get("user_id"), dados.nota,
+    )
+    return {
+        "por_apurar": True,
+        "id": intencao_id,
+        "ext_ref": nota.get("ext_ref"),
+        "a_seguir": _MSG_NOTA_POR_APURAR_A_SEGUIR,
+    }

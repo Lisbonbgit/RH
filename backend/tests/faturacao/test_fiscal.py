@@ -39,6 +39,7 @@ from faturacao.fiscal import (
     _datas_da_janela,
     _itens_vendus,
     _reconciliar_vendas_dinheiro,
+    MARCA_NOTA_CREDITO,
     ext_ref_determinista,
     finalizar,
     finalizar_venda,
@@ -1864,6 +1865,91 @@ def test_reconciliar_soma_varios_documentos_da_sessao():
     docs = [_doc_vendus(id=1), _doc_vendus(id=2, payments=[{"id": "316430468", "amount": 2.5}])]
     resultado = _reconciliar_vendas_dinheiro(11.49, docs, "pos-loja-1-sessao-1-", {"316430468"})
     assert resultado is None
+
+
+# --- A NOTA DE CRÉDITO na reconciliação: o dinheiro SAIU, não entrou ----------
+#
+# A NC leva o nosso prefixo de propósito (é o que a torna reconhecível como
+# nossa e deste turno) e vai ao Vendus com `payments.amount` POSITIVO — é assim
+# que a API dele recebe uma devolução. A reconciliação filtrava só pelo prefixo
+# e pelo `status`, e somava-a como venda.
+#
+# **Medido:** FS de 11,29 € em dinheiro + a NC que a credita por inteiro, com
+# as nossas vendas a somar 0,00 € → «O Vendus regista 22.58 € em dinheiro nesta
+# sessão; as nossas vendas somam 0.00 €». Toda a noite com uma devolução em
+# dinheiro acusava uma diferença falsa do DOBRO da devolução — e o único número
+# que o fecho tem para a segunda opinião passava a ser ruído.
+
+
+def _doc_nc_vendus(**over):
+    d = _doc_vendus(
+        id=99,
+        external_reference="pos-loja-1-sessao-1-nc-33333333-3333-4333-8333-333333333333",
+        payments=[{"id": "316430468", "amount": 8.99}],
+    )
+    d["type"] = "NC"
+    d.update(over)
+    return d
+
+
+def test_reconciliar_DESCONTA_a_nota_de_credito_em_vez_de_a_somar():
+    """A fatura e a nota que a credita por inteiro deixam a sessão a zero — dos
+    dois lados."""
+    resultado = _reconciliar_vendas_dinheiro(
+        0.0, [_doc_vendus(), _doc_nc_vendus()], "pos-loja-1-sessao-1-",
+        {"316430468"})
+    assert resultado is None
+
+
+def test_sem_o_sinal_a_nota_de_credito_acusaria_o_DOBRO():
+    """O controlo, e o número exacto do defeito: se a NC contasse como venda, o
+    Vendus somaria 17,98 € onde as nossas vendas somam 0,00 €."""
+    resultado = _reconciliar_vendas_dinheiro(
+        17.98, [_doc_vendus(), _doc_nc_vendus()], "pos-loja-1-sessao-1-",
+        {"316430468"})
+    assert resultado is not None
+    assert "0.00" in resultado["aviso"]
+
+
+def test_a_nota_de_credito_e_reconhecida_pela_MARCA_da_nossa_referencia():
+    """Duas fontes independentes, e basta uma: o `type` é do Vendus, a marca
+    `nc-` é nossa (`fiscal.MARCA_NOTA_CREDITO`). Um `type` que o Vendus deixe
+    de devolver não pode desligar isto em silêncio."""
+    sem_type = _doc_nc_vendus()
+    sem_type.pop("type")
+    resultado = _reconciliar_vendas_dinheiro(
+        0.0, [_doc_vendus(), sem_type], "pos-loja-1-sessao-1-", {"316430468"})
+    assert resultado is None
+
+
+def test_a_nota_de_credito_e_reconhecida_pelo_TYPE_do_vendus():
+    """E ao contrário: um documento cuja referência não traga a marca (um
+    documento antigo, uma referência mexida) mas que o Vendus diga ser NC."""
+    doc = _doc_nc_vendus(external_reference="pos-loja-1-sessao-1-venda-antiga")
+    resultado = _reconciliar_vendas_dinheiro(
+        0.0, [_doc_vendus(), doc], "pos-loja-1-sessao-1-", {"316430468"})
+    assert resultado is None
+
+
+def test_uma_fatura_normal_continua_a_SOMAR():
+    """O controlo do controlo: sem ele, um sinal invertido para tudo passava
+    por «a nota de crédito é descontada»."""
+    resultado = _reconciliar_vendas_dinheiro(
+        8.99, [_doc_vendus()], "pos-loja-1-sessao-1-", {"316430468"})
+    assert resultado is None
+    assert _reconciliar_vendas_dinheiro(
+        -8.99, [_doc_vendus()], "pos-loja-1-sessao-1-", {"316430468"}) is not None
+
+
+def test_a_referencia_da_nota_de_credito_sai_da_MARCA_e_nao_de_um_formato_copiado():
+    """Uma segunda cópia do `"nc-"` escrita em `nota_credito.py` divergia desta
+    na primeira alteração — e a divergência aparecia como uma diferença de
+    gaveta que ninguém sabia explicar."""
+    from faturacao.nota_credito import ext_ref_da_intencao
+
+    ref = ext_ref_da_intencao("loja-1", "sessao-1", "abc")
+    assert ref == "pos-loja-1-sessao-1-nc-abc"
+    assert ref.startswith(ext_ref_determinista("loja-1", "sessao-1", MARCA_NOTA_CREDITO))
 
 
 # --- _datas_da_janela -----------------------------------------------------------

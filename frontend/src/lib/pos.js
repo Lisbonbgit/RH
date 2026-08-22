@@ -1158,6 +1158,35 @@ export const razaoDeNaoEmitirNotaCredito = ({ linhas, motivo, tipoPagamentoId, a
   return null;
 };
 
+// **O que esta fatura RECEBEU no meio escolhido, quando não chega para a
+// devolução — ou `null` quando chega.**
+//
+// A regra do dono é «a devolução segue o meio de pagamento», e até aqui nada
+// no sistema a confrontava: uma fatura de 11,29 € paga 5,00 em dinheiro +
+// 6,29 em Multibanco deixava devolver os 9,85 € do açaí EM DINHEIRO, e o
+// esperado da gaveta caía de 55,00 para 45,15 € — abaixo do fundo inicial,
+// sem uma palavra em lado nenhum.
+//
+// O servidor não recusa (ver `nota_credito.pagamentos_da_fatura`: recusar por
+// meio fecha a porta sem abrir outra, porque uma nota credita LINHAS e as
+// mesmas linhas não se creditam duas vezes). O que ele faz é mandar os
+// pagamentos da fatura, e é esta frase que os põe à frente da operadora ANTES
+// do toque — em euros, com o número que vai faltar à gaveta.
+export const avisoDoMeioDeDevolucaoPos = ({ tipo, pagamentos, total }) => {
+  if (!tipo) return null;
+  const linha = (pagamentos || []).find(
+    (p) => p.tipo_pagamento_id === tipo.id);
+  const disponivel = Number(linha?.disponivel || 0);
+  const centimos = (v) => Math.round(Number(v || 0) * 100);
+  const excesso = centimos(total) - centimos(disponivel);
+  if (excesso <= 0) return null;
+  const meio = tipo.nome || 'este meio';
+  return `Esta fatura só tem ${eurosPos(disponivel)} por devolver em ${meio} `
+    + `e vai devolver ${eurosPos(total)}: saem ${eurosPos(excesso / 100)} `
+    + `${tipo.tipo_fiscal === 'NU' ? 'da gaveta' : `de ${meio}`} que esta `
+    + 'venda não pôs lá.';
+};
+
 // A frase por baixo do meio de devolução escolhido, e é o que a operadora
 // precisa de ler ANTES de emitir: o que vai acontecer à gaveta dela. O
 // `tipo_fiscal` vem do servidor com o tipo de pagamento — 'NU' é numerário.

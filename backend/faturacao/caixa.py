@@ -125,11 +125,19 @@ _MSG_FECHO_COM_EMISSAO_EM_CURSO = (
 # gaveta um dinheiro que o Z nunca contou. A saída é a mesma — esperar uns
 # segundos — porque uma nota de crédito reservada ou é emitida (e conta) ou
 # rebenta (e a reserva desaparece), tudo dentro de uma chamada ao Vendus.
+#
+# **E a frase nomeia a saída, porque ela existe.** Uma intenção fica
+# `reservada` para sempre se a rota morrer entre o `insert` e o `$set` final —
+# um reinício, um deploy, o 409 da corrida do crédito. Sem a última frase, a
+# loja lia «espere alguns segundos», esperava, e levava 409 outra vez, sem
+# fim: medido, três tentativas seguidas de fecho, 409 sempre. Com UM PC por
+# loja, isso é o turno que não fecha e ninguém com botão.
 _MSG_FECHO_COM_NOTA_DE_CREDITO_EM_CURSO = (
     "Há uma NOTA DE CRÉDITO desta caixa em curso ou por confirmar — o turno "
     "não se fecha a meio de uma devolução: o Z sairia sem ela e o dinheiro "
     "devolvido ficava na gaveta como falta por justificar. Espere alguns "
-    "segundos e feche outra vez."
+    "segundos e feche outra vez. Se ela ficar assim presa, é o gestor que a "
+    "resolve primeiro, na lista de notas de crédito presas do backoffice."
 )
 # O retrato das contas abertas não estabilizou (ver
 # `_retrato_estavel_das_contas_abertas`). A caixa fica marcada `a_fechar` de
