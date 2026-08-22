@@ -17,7 +17,7 @@ engano, e cai em silêncio.
 
 **Porque é que os guardas CORREM o código em vez de o lerem.** Já aconteceu
 duas vezes neste módulo um guarda verificar que certos nomes apareciam num
-ficheiro e ficar verde com a decisão desligada por trás deles. Aqui há dois
+ficheiro e ficar verde com a decisão desligada por trás deles. Aqui há três
 níveis, e nenhum é textual:
 
 1. a decisão dos três estados vive em `lib/pos.js` e corre-se em **Node**,
@@ -29,6 +29,10 @@ níveis, e nenhum é textual:
    PRÓPRIO, distinto do de `tests`. Os ecrãs do POS desenham-se sem servidor
    nenhum — dois defeitos foram a produção exactamente assim, e um deles teve
    o POS inteiramente morto com a suite verde.
+3. e a **MONTAGEM** — o `PosApp` montado num DOM a sério, com o servidor
+   fabricado, porque testar as duas peças não testa o fio entre elas: cravar
+   o prop no ecrã de venda (`<PosFaixaModo estado={"normal"} />`) deixava os
+   1440 testes verdes e a faixa desaparecia do balcão. Foi medido.
 
 A extracção e o `node` deste Mac vêm do guarda irmão
 (`test_arredondamento_do_ecra.py`), importados de lá e não copiados.
@@ -412,6 +416,297 @@ def test_no_ecra_um_estado_por_apurar_nunca_fica_em_branco(tmp_path):
     assert "NÃO SABEMOS SE ESTAS FATURAS SÃO REAIS" in html
 
 
+# --- Nível 3: o POS INTEIRO montado, com o servidor fabricado ------------------
+#
+# **O buraco que este nível veio tapar, medido.** Os guardas de cima testam as
+# PEÇAS — a decisão (`lib/pos.js`) e a faixa (`PosFaixaModo`), cada uma
+# sozinha — e nenhum testava a MONTAGEM. Cravar o prop no ecrã de venda
+# (`<PosFaixaModo estado={"normal"} />` no `PosMenuCaixa`) deixava a suite
+# INTEIRA verde e fazia a faixa desaparecer do balcão: cinco lojas a vender um
+# dia inteiro em modo de testes, sem nada chegar à Autoridade Tributária, com
+# tudo verde a dizer que estava bem. A única coisa que cobria a ligação era um
+# guarda de texto (`"<PosFaixaModo" in texto`), e é a quarta vez neste módulo
+# que um guarda de texto fica verde com a decisão desligada por trás dele.
+#
+# **O que se faz aqui.** Monta-se o `PosApp` A SÉRIO — o componente de topo, o
+# mesmo que o browser monta — num DOM (jsdom), com o servidor fabricado à
+# frente do axios do `lib/pos`: nenhuma rede, e o caminho todo é o verdadeiro
+# (o `useEffect` do arranque, o `lerEstadoDoModo`, a leitura do `modo`, o prop
+# a descer, a faixa a desenhar-se). O que se afirma é o HTML que fica no ecrã.
+#
+# É por isso um DOM e não o `renderToStaticMarkup` do nível 2: o
+# `renderToStaticMarkup` não corre `useEffect` nenhum, e era precisamente o
+# arranque — a pergunta ao servidor e a resposta a chegar à barra — que ficava
+# por guardar. Apagar o `ler();` do `useEffect` do `PosApp` deixava, também
+# ele, a suite inteira verde.
+#
+# As duas barras da sessão de trabalho saem das duas ramificações reais do
+# `PosApp`: com sessão aberta é o `PosMenuCaixa` (o ecrã de venda), sem sessão
+# é o `TopoSimples` (a caixa fechada). Não se importa nenhum dos dois à mão —
+# quem os escolhe é o próprio `PosApp`, que é o que está a ser medido.
+#
+# O que entra SUBSTITUÍDO são só os ecrãs que não estão a ser medidos
+# (`PosVenda`, `PosEntrar`, `PosBloqueado`, …), os componentes de UI e os
+# ícones. A faixa, as duas barras, o `PosApp` e o `lib/pos` inteiro entram
+# REAIS — se algum deles entrasse substituído, este guarda media um ecrã que
+# não existe.
+
+_BACKOFFICE = _FRONTEND / "src" / "pages" / "admin" / "faturacao" / "FatModoDeEmissao.js"
+_DASHBOARD = _FRONTEND / "src" / "pages" / "admin" / "faturacao" / "FatDashboard.js"
+
+# Os ecrãs que entram como marcas vazias: nenhum deles tem nada a ver com o
+# modo de emissão, e alguns (o `PosVenda`) arrastariam meia aplicação e uma
+# dúzia de chamadas ao servidor para dentro deste guarda.
+_ECRAS_SUBSTITUIDOS = (
+    "PosEmparelhar", "PosEntrar", "PosBloqueado", "PosCaixaFechada",
+    "PosFecharCaixa", "PosVenda", "PosCampoValor", "PosResumoDoTurno",
+)
+
+
+def _preambulo_de_montagem() -> str:
+    """O carregador que monta ecrãs REAIS do repositório em Node, com DOM e com
+    o servidor fabricado. Devolve JavaScript; quem o usa acrescenta-lhe o
+    cenário."""
+    return "\n".join([
+        "const fs = require('fs');",
+        "const path = require('path');",
+        "const Module = require('module');",
+        "const babel = require('@babel/core');",
+        "const { JSDOM } = require('jsdom');",
+        "const dom = new JSDOM('<!doctype html><html><body><div id=\"raiz\"></div></body></html>',",
+        "  { url: 'http://localhost/' });",
+        "global.window = dom.window;",
+        "global.document = dom.window.document;",
+        "global.navigator = dom.window.navigator;",
+        "global.localStorage = dom.window.localStorage;",
+        "global.IS_REACT_ACT_ENVIRONMENT = true;",
+        "const React = require('react');",
+        "const { act } = require('react');",
+        "const { createRoot } = require('react-dom/client');",
+        "const RAIZ = %s;" % json.dumps(str(_FRONTEND / "src")),
+        "const POS = %s;" % json.dumps(str(_FRONTEND / "src" / "pages" / "pos")),
+        # --- o servidor fabricado, à frente do axios -------------------------
+        # Duas famílias, como no código: a instância criada com `axios.create()`
+        # é a do POS (cabeçalhos de dispositivo/operador) e o `axios` global é o
+        # do backoffice (o JWT de gestão, posto pelo AuthContext). Ficam
+        # separadas aqui de propósito — é assim que se vê por qual delas cada
+        # ecrã perguntou.
+        "const RESPOSTAS_POS = {};",
+        "const RESPOSTAS_GESTAO = {};",
+        "const pedidos = [];",
+        "function responder(tabela, url) {",
+        "  const chave = Object.keys(tabela).find((c) => String(url).endsWith(c));",
+        "  if (!chave) {",
+        "    const e = new Error('pedido nao fabricado: ' + url);",
+        "    e.response = { status: 404 };",
+        "    throw e;",
+        "  }",
+        "  return tabela[chave]();",
+        "}",
+        "const instanciaPos = {",
+        "  interceptors: { request: { use: () => {} }, response: { use: () => {} } },",
+        "  get: async (url) => { pedidos.push('pos:' + url); return responder(RESPOSTAS_POS, url); },",
+        "  post: async (url) => { pedidos.push('pos:' + url); return responder(RESPOSTAS_POS, url); },",
+        "};",
+        "const axiosFalso = {",
+        "  create: () => instanciaPos,",
+        "  defaults: { headers: { common: { Authorization: 'Bearer JWT-DE-GESTAO' } } },",
+        "  get: async (url) => { pedidos.push('gestao:' + url); return responder(RESPOSTAS_GESTAO, url); },",
+        "  post: async (url) => { pedidos.push('gestao:' + url); return responder(RESPOSTAS_GESTAO, url); },",
+        "};",
+        # --- o que entra substituído -----------------------------------------
+        "const icones = new Proxy({}, { get: (_, nome) => (",
+        "  typeof nome === 'string' && nome !== '__esModule'",
+        "    ? () => React.createElement('i', { 'data-icone': String(nome) })",
+        "    : undefined",
+        ") });",
+        "const marca = (nome) => {",
+        "  const C = (props) => React.createElement('div', { 'data-substituto': nome },",
+        "    props && props.children);",
+        "  C.displayName = nome;",
+        "  return C;",
+        "};",
+        "const marcas = new Proxy({}, { get: (_, nome) => (",
+        "  typeof nome === 'string' && nome !== '__esModule' ? marca(String(nome)) : undefined",
+        ") });",
+        "const sonner = { toast: Object.assign(() => {},",
+        "  { success: () => {}, error: () => {}, info: () => {}, warning: () => {} }) };",
+        "const SUBSTITUIDOS = new Set(%s.map((n) => path.join(POS, n + '.js')));"
+        % json.dumps(list(_ECRAS_SUBSTITUIDOS)),
+        # --- o carregador -----------------------------------------------------
+        "const cache = new Map();",
+        "function carregar(ficheiro) {",
+        "  if (cache.has(ficheiro)) return cache.get(ficheiro).exports;",
+        "  if (SUBSTITUIDOS.has(ficheiro)) {",
+        "    return { __esModule: true, default: marca(path.basename(ficheiro, '.js')) };",
+        "  }",
+        "  const codigo = babel.transformSync(fs.readFileSync(ficheiro, 'utf-8'), {",
+        "    presets: [[require.resolve('@babel/preset-react'), { runtime: 'classic' }]],",
+        "    plugins: [require.resolve('@babel/plugin-transform-modules-commonjs')],",
+        "    filename: ficheiro, babelrc: false, configFile: false,",
+        "  }).code;",
+        "  const m = new Module(ficheiro, null);",
+        "  m.filename = ficheiro;",
+        "  m.paths = Module._nodeModulePaths(path.dirname(ficheiro));",
+        "  cache.set(ficheiro, m);",
+        "  const originalRequire = m.require.bind(m);",
+        "  m.require = (pedido) => {",
+        "    if (pedido === 'lucide-react') return icones;",
+        "    if (pedido === 'sonner') return sonner;",
+        "    if (pedido === 'axios') return { __esModule: true, default: axiosFalso };",
+        "    if (pedido.startsWith('@/components/')) return marcas;",
+        "    if (pedido.startsWith('@/')) return carregar(path.join(RAIZ, pedido.slice(2)) + '.js');",
+        "    if (pedido.startsWith('.')) {",
+        "      return carregar(path.resolve(path.dirname(ficheiro), pedido) + '.js');",
+        "    }",
+        "    return originalRequire(pedido);",
+        "  };",
+        "  m._compile(codigo, ficheiro);",
+        "  return m.exports;",
+        "}",
+        # --- montar, e esperar que as respostas cheguem ao ecrã ---------------
+        # O segundo `act` vazio é o que deixa passar as promessas do arranque:
+        # sem ele media-se o primeiro render, antes de o servidor ter respondido
+        # — e o ecrã do primeiro render está certo por outra razão (o terceiro
+        # estado), o que dava um guarda verde por engano.
+        "async function montar(elemento) {",
+        "  const alvo = document.getElementById('raiz');",
+        "  const raiz = createRoot(alvo);",
+        "  await act(async () => { raiz.render(elemento); });",
+        "  await act(async () => {});",
+        "  const html = alvo.innerHTML;",
+        "  await act(async () => { raiz.unmount(); });",
+        "  alvo.innerHTML = '';",
+        "  return html;",
+        "}",
+    ])
+
+
+def _montar_no_node(cenario: str, tmp_path: Path, nome: str):
+    for modulo in ("react-dom", "jsdom", "@babel/core"):
+        if not (_FRONTEND / "node_modules" / modulo).exists():
+            pytest.skip("Sem %s no frontend para montar os ecrãs." % modulo)
+    return _correr_no_node(
+        "\n".join([_preambulo_de_montagem(), cenario]), tmp_path, nome
+    )
+
+
+# As quatro respostas possíveis do servidor à pergunta do modo — as duas que se
+# percebem, e as duas maneiras de não se perceber (um 200 sem modo, e a rota a
+# falhar). As duas últimas TÊM de dar o mesmo ecrã.
+_RESPOSTAS_DO_MODO = "\n".join([
+    "const RESPOSTAS_DO_MODO = [",
+    "  ['tests', () => ({ data: { modo: 'tests' } })],",
+    "  ['normal', () => ({ data: { modo: 'normal' } })],",
+    "  ['sem-modo', () => ({ data: { modo: null } })],",
+    "  ['sem-rota', () => { throw new Error('Network Error'); }],",
+    "];",
+])
+
+_FAIXA_TESTES = "MODO DE TESTES — estas faturas não valem nada"
+_FAIXA_DESCONHECIDO = "NÃO SABEMOS SE ESTAS FATURAS SÃO REAIS"
+_LOJA_DO_GUARDA = "Loja do Guarda"
+
+
+@pytest.fixture(scope="module")
+def barras_do_pos(tmp_path_factory):
+    """O `PosApp` montado a sério, uma vez por cada cruzamento de (barra) com
+    (resposta do servidor) — devolve o HTML que ficou no ecrã.
+
+    `aberta` é o ecrã de venda (barra `PosMenuCaixa`); `fechada` é a caixa por
+    abrir (barra `TopoSimples`). Quem escolhe entre as duas é o `PosApp`, a
+    partir do que o servidor disse da sessão."""
+    cenario = "\n".join([
+        "const lib = carregar(path.join(RAIZ, 'lib', 'pos.js'));",
+        # Emparelhado e com operadora dentro: é o estado em que o balcão passa
+        # o dia, e o único em que há barra — sem dispositivo ou sem operadora o
+        # `PosApp` mostra o emparelhamento ou o teclado do PIN, e não há topo.
+        "lib.guardarDispositivo({ device_token: 'dt', loja_id: 'l1', loja_nome: %s });"
+        % json.dumps(_LOJA_DO_GUARDA),
+        "lib.guardarOperador('ot', { id: 'o1', nome: 'Ana' });",
+        "const PosApp = carregar(path.join(POS, 'PosApp.js')).default;",
+        "const CAIXA = { id: 'c1', nome: 'Caixa 1' };",
+        "const SESSAO = { aberta_por: { nome: 'Ana' }, aberta_em: '2026-08-20T09:00:00', fundo: 50 };",
+        _RESPOSTAS_DO_MODO,
+        "(async () => {",
+        "  const saida = {};",
+        "  for (const [barra, sessao] of [['aberta', SESSAO], ['fechada', null]]) {",
+        "    RESPOSTAS_POS['/pos/caixa/estado'] = () => ({ data: {",
+        "      caixas: [CAIXA], caixa: CAIXA, sessao_aberta: sessao, ultimo_fecho: null,",
+        "    } });",
+        "    for (const [nome, resposta] of RESPOSTAS_DO_MODO) {",
+        "      RESPOSTAS_POS['/pos/modo-de-emissao'] = resposta;",
+        "      saida[barra + '/' + nome] = await montar(React.createElement(PosApp));",
+        "    }",
+        "  }",
+        "  saida.pedidos = pedidos;",
+        "  process.stdout.write(JSON.stringify(saida));",
+        "})().catch((e) => { console.error(e); process.exit(3); });",
+    ])
+    return _montar_no_node(cenario, tmp_path_factory.mktemp("pos"), "montar-pos.js")
+
+
+@pytest.mark.parametrize("barra", ["aberta", "fechada"])
+def test_a_barra_do_POS_montada_ACENDE_quando_o_servidor_diz_tests(barras_do_pos, barra):
+    """O ecrã inteiro, montado, com o servidor a responder `tests`.
+
+    É este o guarda que o prop cravado (`estado={"normal"}` escrito à mão no
+    `PosMenuCaixa`) não sobrevive — e era exactamente essa a mutação que
+    deixava os 1440 testes verdes com a faixa desaparecida do balcão."""
+    html = barras_do_pos[barra + "/tests"]
+    assert _LOJA_DO_GUARDA in html, "Não é a barra do POS que está aqui montada."
+    assert _FAIXA_TESTES in html
+    assert "Autoridade Tributária" in html
+
+
+@pytest.mark.parametrize("barra", ["aberta", "fechada"])
+def test_a_barra_do_POS_montada_fica_MUDA_quando_o_servidor_diz_normal(barras_do_pos, barra):
+    """E muda de verdade: a barra continua lá inteira, sem faixa nenhuma."""
+    html = barras_do_pos[barra + "/normal"]
+    assert _LOJA_DO_GUARDA in html, "Não é a barra do POS que está aqui montada."
+    assert _FAIXA_TESTES not in html
+    assert _FAIXA_DESCONHECIDO not in html
+    assert 'role="alert"' not in html
+
+
+@pytest.mark.parametrize("barra", ["aberta", "fechada"])
+@pytest.mark.parametrize("resposta", ["sem-modo", "sem-rota"])
+def test_a_barra_do_POS_montada_avisa_quando_nao_se_sabe(barras_do_pos, barra, resposta):
+    """Um 200 sem modo e a rota em baixo dão o MESMO ecrã: o aviso do terceiro
+    estado. Nunca o silêncio de `normal`, que é o engano caro."""
+    html = barras_do_pos[barra + "/" + resposta]
+    assert _LOJA_DO_GUARDA in html, "Não é a barra do POS que está aqui montada."
+    assert _FAIXA_DESCONHECIDO in html
+    assert _FAIXA_TESTES not in html
+
+
+@pytest.mark.parametrize("barra", ["aberta", "fechada"])
+def test_o_HTML_das_duas_barras_MUDA_com_o_que_o_servidor_responde(barras_do_pos, barra):
+    """Três respostas, três ecrãs diferentes — a afirmação directa contra o
+    prop cravado. Um `estado` escrito à mão dá três HTML iguais, e cai aqui
+    mesmo que alguém invente um quarto estado com o texto certo."""
+    html = [barras_do_pos["%s/%s" % (barra, r)] for r in ("tests", "normal", "sem-modo")]
+    assert len(set(html)) == 3
+
+
+def test_no_arranque_o_POS_PERGUNTA_ao_servidor_em_que_modo_esta(barras_do_pos):
+    """A pergunta é feita, e é feita pela rota do POS — com o axios do POS, que
+    é o que leva o token do dispositivo.
+
+    Apagar o `ler();` do `useEffect` do `PosApp` (deixando lá o `const ler` e o
+    `setInterval`) deixava a suite inteira verde: ninguém guardava o ARRANQUE,
+    só a função que ele chama. Sem a pergunta, a barra fica presa no terceiro
+    estado durante os primeiros 60 segundos de cada turno."""
+    perguntas = [p for p in barras_do_pos["pedidos"] if p.endswith("/pos/modo-de-emissao")]
+    assert perguntas, "O POS montou-se sem perguntar ao servidor em que modo está a emitir."
+    assert all(p.startswith("pos:") for p in perguntas)
+    # Uma por montagem: as oito do cruzamento (duas barras x quatro respostas).
+    assert len(perguntas) == 8, (
+        "O arranque perguntou %d vezes em vez de uma por montagem. Se passou a "
+        "haver outra leitura legítima, este número acompanha-a — mas confirme "
+        "primeiro que não é o ecrã a remontar-se em ciclo." % len(perguntas)
+    )
+
 # --- Onde a faixa aparece -----------------------------------------------------
 
 
@@ -421,9 +716,10 @@ def test_a_faixa_esta_montada_nas_duas_barras_do_pos():
     `PosApp`). A faixa vive lá dentro, e não numa linha por cima: assim não
     tira um pixel à área de trabalho.
 
-    Este guarda é textual e sabe-se pouco valioso — é por isso que os de cima
-    existem. Serve só para a faixa não ficar montada num sítio só e o outro
-    ecrã passar o dia sem ela."""
+    Este guarda é textual e sabe-se pouco valioso — sobrevive a um prop
+    cravado, que é a mutação que interessa. Quem a apanha são os do nível 3,
+    que montam as duas barras a sério; este fica por ser o que falha primeiro
+    e com a frase certa quando alguém apaga a linha."""
     for ficheiro in (_MENU, _APP):
         texto = _ler(ficheiro)
         assert "<PosFaixaModo" in texto, (
@@ -606,18 +902,71 @@ def test_no_backoffice_os_tres_estados_dizem_coisas_diferentes(tmp_path):
     estados não está a ler nenhum deles."""
     titulos = [a["titulo"] for a in _avisos_de_backoffice(tmp_path)]
     assert len(set(titulos[:3])) == 3
+# --- O ecrã do backoffice, montado ele também --------------------------------
+#
+# Este guarda era inteiramente textual — procurava nomes de funções e a
+# ausência de `/pos/` no ficheiro — e sobrevivia a qualquer mutação que
+# mantivesse os nomes e partisse o que eles fazem. Agora monta-se o ecrã com o
+# servidor fabricado, e o que se afirma é o que o gestor lê.
 
 
-def test_o_ecra_do_backoffice_le_o_modo_com_o_jwt_de_gestao():
-    """E pela rota do backoffice, nunca pela do POS: a do POS pede o token do
-    dispositivo, que o browser do gestor não tem — o painel caía no terceiro
-    estado para sempre, sem ninguém perceber porquê."""
-    ecra = _ler(_RAIZ / "frontend" / "src" / "pages" / "admin" / "faturacao" / "FatModoDeEmissao.js")
-    assert "getModoDeEmissaoDoBackoffice" in ecra
-    assert "estadoDoModoLido" in ecra
-    assert "/pos/" not in ecra
-
-    dashboard = _ler(
-        _RAIZ / "frontend" / "src" / "pages" / "admin" / "faturacao" / "FatDashboard.js"
+@pytest.fixture(scope="module")
+def modo_no_backoffice(tmp_path_factory):
+    cenario = "\n".join([
+        "const Ecra = carregar(%s).default;" % json.dumps(str(_BACKOFFICE)),
+        _RESPOSTAS_DO_MODO,
+        "(async () => {",
+        "  const saida = {};",
+        "  for (const [nome, resposta] of RESPOSTAS_DO_MODO) {",
+        "    RESPOSTAS_GESTAO['/faturacao/modo-de-emissao'] = resposta;",
+        "    saida[nome] = await montar(React.createElement(Ecra));",
+        "  }",
+        "  saida.pedidos = pedidos;",
+        "  process.stdout.write(JSON.stringify(saida));",
+        "})().catch((e) => { console.error(e); process.exit(3); });",
+    ])
+    return _montar_no_node(
+        cenario, tmp_path_factory.mktemp("backoffice"), "montar-backoffice.js"
     )
+
+
+def test_no_backoffice_montado_o_gestor_ve_a_resposta_em_cada_um_dos_tres_estados(
+    modo_no_backoffice,
+):
+    """Incluindo `normal`, a saída deliberada da regra do POS: o gestor entra
+    aqui para CONFIRMAR, e um ecrã calado obriga-o a saber de cor que o
+    silêncio quer dizer «sim»."""
+    assert "A emitir faturas reais" in modo_no_backoffice["normal"]
+    assert "MODO DE TESTES — as lojas não estão a facturar" in modo_no_backoffice["tests"]
+    for resposta in ("sem-modo", "sem-rota"):
+        assert "NÃO SABEMOS EM QUE MODO O POS ESTÁ A EMITIR" in modo_no_backoffice[resposta]
+    tres = [modo_no_backoffice[r] for r in ("tests", "normal", "sem-modo")]
+    assert len(set(tres)) == 3
+
+
+def test_o_ecra_do_backoffice_pergunta_pela_rota_dele_e_com_o_axios_de_gestao(
+    modo_no_backoffice,
+):
+    """Nunca pela rota do POS: essa pede o token do dispositivo, que o browser
+    do gestor não tem — o painel caía no terceiro estado para sempre, sem
+    ninguém perceber porquê. E nunca pela instância de axios do POS, que é a
+    que não leva o JWT de gestão.
+
+    Aqui isto vê-se: o servidor fabricado separa as duas famílias, e o que se
+    afirma é por qual delas o ecrã perguntou."""
+    pedidos = modo_no_backoffice["pedidos"]
+    assert pedidos, "O ecrã do backoffice montou-se sem perguntar nada ao servidor."
+    for pedido in pedidos:
+        assert pedido.startswith("gestao:"), (
+            "O ecrã do backoffice perguntou pelo axios do POS: %s" % pedido
+        )
+        assert pedido.endswith("/api/faturacao/modo-de-emissao"), pedido
+        assert "/pos/" not in pedido, pedido
+
+
+def test_o_painel_do_gestor_monta_esta_linha():
+    """Textual, e sabe-se pouco valioso — serve só para a linha não ficar
+    escrita num ficheiro que ninguém desenha. O que ela DIZ está guardado
+    acima, com o ecrã montado."""
+    dashboard = _ler(_DASHBOARD)
     assert "<FatModoDeEmissao" in dashboard
