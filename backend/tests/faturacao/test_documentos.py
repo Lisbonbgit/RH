@@ -557,18 +557,17 @@ def test_sem_talao_guardado_a_resposta_e_409_e_diz_o_que_falta(monkeypatch):
     assert "talão" in e.value.detail
 
 
-def test_o_documento_gravado_HOJE_nao_tem_talao_nenhum():
-    """**O pressuposto, verificado em vez de acreditado.**
+def test_o_documento_gravado_LEVA_o_talao_certificado():
+    """**O talão fica com a fatura, e é isto que o prova.**
 
-    O trabalho foi pedido com «o talão certificado já está guardado com a
-    fatura». Não está: `fiscal._gravar_documento` constrói o documento campo a
-    campo e `talao_escpos` não está na lista, por isso os bytes que o Vendus
-    devolve são deitados fora no instante em que a fatura é gravada.
+    O Vendus devolve o talão já em ESC/POS na resposta da emissão, e durante um
+    tempo isto deitava-o fora: `_gravar_documento` constrói o documento campo a
+    campo e `talao_escpos` não estava na lista. Reimprimir o talão de um cliente
+    que voltou obrigava a ir outra vez ao Vendus — mais uma chamada por
+    reimpressão, e nada feito com ele em baixo.
 
-    Este teste lê o CÓDIGO DE PRODUÇÃO e não uma cópia — se alguém acrescentar
-    a linha que falta, ele fica vermelho e é isso que se quer: nessa altura o
-    botão de reimprimir passa a ter bytes, e esta afirmação deixa de ser
-    verdade."""
+    Lê o CÓDIGO DE PRODUÇÃO e não uma cópia: tirar a linha põe isto vermelho.
+    """
     import inspect
 
     from faturacao.fiscal import _gravar_documento
@@ -576,9 +575,9 @@ def test_o_documento_gravado_HOJE_nao_tem_talao_nenhum():
     corpo = inspect.getsource(_gravar_documento)
     inicio = corpo.index("documento = {")
     fim = corpo.index("try:", inicio)
-    assert "talao_escpos" not in corpo[inicio:fim], (
-        "O `talao_escpos` passou a ser gravado em fat_documentos — óptimo. "
-        "Apague este teste e ligue o botão «Imprimir» do separador Faturação."
+    assert "talao_escpos" in corpo[inicio:fim], (
+        "O `talao_escpos` deixou de ser gravado em fat_documentos — sem ele, "
+        "reimprimir um talão obriga a voltar ao Vendus."
     )
 
 
