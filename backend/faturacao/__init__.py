@@ -69,6 +69,13 @@ router.include_router(_pos_catalogo)
 from .modo import router as _modo
 router.include_router(_modo)
 
+# O separador Faturação do POS: ler os documentos já emitidos, e as acções
+# sobre um deles. Entra DEPOIS de `venda` e de `fiscal` de propósito — é deles
+# que importa `abrir_venda`/`juntar_linha` e `_itens_vendus`, e nenhum dos dois
+# importa este, por isso não há ciclo nenhum a adiar.
+from .documentos import router as _documentos
+router.include_router(_documentos)
+
 
 async def arrancar():
     """Chamado pelo server.py no arranque.

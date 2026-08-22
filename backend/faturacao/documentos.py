@@ -1,0 +1,637 @@
+"""O separador **Faturação** do POS — a lista dos documentos já emitidos, e a
+fatura aberta com as três acções que o dono pediu (imprimir, nota de crédito,
+copiar para a venda).
+
+Até aqui **não existia rota nenhuma que lesse `fat_documentos`** — nem uma. O
+POS emitia, mostrava o número no ecrã da confirmação, e a fatura desaparecia
+para sempre: a única forma de lá voltar era o `GET /pos/venda/{venda_id}`, e
+esse exige o id da VENDA, que ninguém guardou. Um cliente que volte dez
+minutos depois com o talão rasgado não traz um uuid.
+
+## O ÂMBITO da lista, e porque é este
+
+A pergunta que o balcão faz não é «que documentos emiti neste turno?». É
+**«onde está a fatura daquele cliente?»** — e o cliente que volta não sabe em
+que turno comprou.
+
+- **NÃO é só o turno a decorrer.** O caso que o dono nomeou é o cliente que
+  volta AMANHÃ; uma lista limitada à sessão aberta está VAZIA às 9h da manhã,
+  que é precisamente a hora a que ele aparece. Uma lista assim não é uma lista
+  incompleta: é uma lista que falha sempre no único caso para que existe.
+- **É a LOJA, e não a caixa.** O dono escreveu «desta caixa» e hoje isso é o
+  MESMO conjunto — uma loja tem uma caixa e um PC. No dia em que houver duas,
+  o conjunto certo continua a ser o da loja: o cliente foi servido pela LOJA,
+  não pelo posto, e uma lista por caixa fazia o balcão não encontrar o talão
+  do drive-thru — o cliente ficava sem reimpressão por uma fronteira que
+  ninguém do lado dele consegue ver. É o inverso da regra do
+  `venda._contas_do_balcao`: ali o âmbito estreito PROTEGE (o cliente do
+  balcão não paga o açaí do drive), aqui estreitá-lo só ESCONDE.
+  E o índice `("fat_documentos", [("loja_id", 1), ("emitido_em", 1)])` de
+  `db.py` já serve exactamente esta leitura, ordem incluída; por caixa não há
+  índice nenhum — o `caixa_id` nem sequer está gravado no documento, só na
+  venda.
+- **Com tecto, e a dizer que tem tecto.** `_LIMITE_LISTA` documentos, do mais
+  recente para o mais antigo. Uma loja movimentada faz ~200 vendas por dia,
+  por isso isto é o dia de hoje e a noite de ontem — que é o alcance do
+  cliente que volta. A resposta traz `ha_mais`, e o ecrã DIZ que está a
+  mostrar as N mais recentes: uma lista truncada que não se assume é uma
+  lista que mente sobre o que não encontrou.
+
+## O dinheiro é do servidor, e vem de quem já o somou
+
+Nada aqui soma euros de novo:
+
+- as LINHAS da fatura saem de `fiscal._itens_vendus` — a MESMA função que
+  construiu as linhas entregues à AT — e o líquido de cada uma de
+  `mapa_imposto._liquido_da_linha`, a mesma fórmula que o Vendus aplica do
+  lado dele;
+- o MAPA DE IMPOSTO é `mapa_imposto.mapa_de_imposto`, tal e qual: hoje ele
+  agrega um turno, aqui recebe um documento (uma lista de uma venda). O IVA é
+  o RESTO (`total − base`), por isso `base + iva == total` é exacto por
+  construção, e não por sorte;
+- o TOTAL é o do DOCUMENTO — o número que o Vendus devolveu e que a AT tem.
+  A soma das linhas vai à mesma na resposta (`total_das_linhas`) e, quando os
+  dois não baterem ao cêntimo, `total_divergente` diz que sim. Escolher um
+  deles em silêncio era esconder exactamente o tipo de erro que este ecrã
+  serve para apanhar.
+
+Tudo comparado em CÊNTIMOS INTEIROS (`_centimos`), nunca em vírgula
+flutuante.
+
+## O que este módulo NÃO faz
+
+Não emite, não anula, não altera um documento fiscal e não toca em reserva
+nenhuma. A ÚNICA escrita que sai daqui é `copiar_para_venda` — e mesmo essa
+não escreve nada por sua conta: chama `venda.abrir_venda` e
+`venda.juntar_linha`, as rotas de sempre, com os guardas de sempre. Ver a
+docstring dessa função.
+"""
+import base64
+import logging
+from typing import Dict, List, Optional, Tuple
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+
+from .db import COLECOES, obter_db
+from .fiscal import _itens_vendus
+from .mapa_imposto import _liquido_da_linha, mapa_de_imposto, totais_do_mapa
+from .pos_auth import operador_atual
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+# Quantos documentos a lista traz. Ver o âmbito, no cabeçalho: ~200 vendas/dia
+# numa loja movimentada, portanto isto é o dia de hoje mais a noite de ontem —
+# o alcance do cliente que volta. Lê-se um a mais para saber se há mais, e é
+# esse que faz o `ha_mais` ser um facto e não um palpite.
+_LIMITE_LISTA = 200
+
+# Quantos artigos cabem no resumo de uma linha da lista. Três chegam para a
+# operadora reconhecer o pedido de relance ("Açaí Regular, Saco"); o resto
+# conta-se em `mais_artigos`, que é honesto e cabe.
+_ARTIGOS_NO_RESUMO = 3
+
+_MSG_DOCUMENTO_INEXISTENTE = "Documento não encontrado."
+_MSG_SEM_TALAO = (
+    "Este documento não tem o talão certificado guardado — não há bytes para "
+    "reimprimir. O talão volta a poder tirar-se do Vendus, mas não por aqui."
+)
+_MSG_COPIA_SEM_LINHAS = (
+    "Não há nada para copiar: não sobrou nenhum artigo desta fatura que ainda "
+    "exista no catálogo de hoje."
+)
+
+
+def _centimos(valor) -> int:
+    """Euros para cêntimos inteiros. A mesma conversão de
+    `mapa_imposto._centimos`, e pela mesma razão: o dinheiro compara-se em
+    inteiros."""
+    return int(round(float(valor or 0) * 100))
+
+
+async def _documento_da_loja(db, documento_id: str, loja_id: str) -> Dict:
+    """O documento pelo `id`, e só se for DESTA loja.
+
+    O âmbito é o de `venda._obter_venda_da_loja`, palavra por palavra: o de
+    outra loja é 404 e não 403, porque o id vem do browser e responder 403
+    confirmava a quem perguntasse que aquele documento existe.
+    """
+    documento = await db[COLECOES["documentos"]].find_one({"id": documento_id})
+    if not documento or documento.get("loja_id") != loja_id:
+        raise HTTPException(status_code=404, detail=_MSG_DOCUMENTO_INEXISTENTE)
+    return documento
+
+
+async def _vendas_por_id(db, venda_ids: List[str]) -> Dict[str, Dict]:
+    """As vendas destes documentos, numa leitura só.
+
+    Uma leitura e não N: a lista traz até 200 documentos, e 200 `find_one`
+    seguidos num PC de loja com fila à frente é o género de coisa que se sente
+    no dedo. O índice é o `id`, que é a chave de tudo neste módulo.
+    """
+    if not venda_ids:
+        return {}
+    vendas = await (
+        db[COLECOES["vendas"]]
+        .find({"id": {"$in": list(venda_ids)}})
+        .to_list(len(venda_ids))
+    )
+    return {v["id"]: v for v in vendas if v.get("id")}
+
+
+def _resumo_dos_artigos(venda: Optional[Dict]) -> Tuple[List[Dict], int]:
+    """O que o cliente levou, resumido — os primeiros artigos e quantos
+    ficaram de fora.
+
+    **É esta a coluna que faz a lista servir para alguma coisa.** O cliente
+    que volta raramente sabe o número da fatura, e muitas vezes nem o total
+    exacto; sabe que comprou um açaí grande. Sem o que lá vai, a operadora
+    fica a abrir faturas uma a uma com a fila a crescer.
+
+    Vem de `venda["linhas"]` e não de `_itens_vendus`: o título do Vendus
+    traz os toppings todos entre parêntesis ("Açaí Regular (Nutella 2×,
+    Morango)") e não cabe numa linha de lista. O nome do produto cabe, e é
+    por ele que se reconhece o pedido; a fatura aberta mostra o resto.
+
+    **As repetições AGREGAM-SE**, pela ordem da primeira — a mesma regra (e a
+    mesma razão) de `precos._descricao_das_opcoes` e de `talao._doses`:
+    "1× Coca-Cola · 1× Coca-Cola · 1× Coca-Cola" é a mesma informação que
+    "3× Coca-Cola" e ilegível de relance. Medido no ecrã: uma fatura de cinco
+    refrigerantes ocupava a linha inteira a dizer três vezes o mesmo e
+    escondia atrás de um "+2" que os outros dois também eram refrigerantes.
+    O tecto conta ARTIGOS DIFERENTES, e é isso que faz o "+2" querer dizer
+    "há mais dois artigos diferentes" e não "há mais duas linhas iguais".
+
+    A quantidade é SOMADA aqui, e é a única soma deste módulo: não é dinheiro
+    (a regra do dinheiro somado pelo servidor não lhe toca) e pode ser
+    fraccionária — a parte de uma conta dividida é 0.3337 de um açaí. Quem a
+    formata é o ecrã.
+    """
+    linhas = (venda or {}).get("linhas") or []
+    quantidades: Dict[str, float] = {}
+    ordem: List[str] = []
+    for li in linhas:
+        nome = li.get("produto_nome") or "?"
+        if nome not in quantidades:
+            ordem.append(nome)
+            quantidades[nome] = 0
+        try:
+            quantidades[nome] += float(li.get("quantidade", 1) or 0)
+        except (TypeError, ValueError):
+            # Uma quantidade ilegível não pode apagar o artigo da lista: o que
+            # não se pode perder é a EXISTÊNCIA do artigo (a regra de
+            # `por_resolver._total_da_venda`). Fica sem somar nada.
+            pass
+    artigos = [
+        {"nome": nome, "quantidade": quantidades[nome]}
+        for nome in ordem[:_ARTIGOS_NO_RESUMO]
+    ]
+    return artigos, max(0, len(ordem) - _ARTIGOS_NO_RESUMO)
+
+
+def _pagamentos_publicos(venda: Optional[Dict]) -> List[Dict]:
+    """Como o cliente pagou — o retrato gravado na venda pela emissão
+    (`fiscal.finalizar`, campo `pagamentos`), nunca o tipo de pagamento como
+    ele está configurado HOJE: o gestor pode renomeá-lo, e o que saiu no papel
+    não muda.
+
+    Está na lista e não só na fatura aberta de propósito: «paguei em
+    multibanco» é uma das três coisas que o cliente diz ao voltar, a par do
+    total e do que levou.
+    """
+    return [
+        {"nome": p.get("nome"), "valor": p.get("valor")}
+        for p in (venda or {}).get("pagamentos") or []
+    ]
+
+
+def _documento_na_lista(documento: Dict, venda: Optional[Dict]) -> Dict:
+    artigos, mais = _resumo_dos_artigos(venda)
+    return {
+        "id": documento.get("id"),
+        # A referência que está impressa no talão que o cliente traz na mão.
+        "numero": documento.get("numero"),
+        "atcud": documento.get("atcud"),
+        "emitido_em": documento.get("emitido_em"),
+        "total": documento.get("total"),
+        "tipo": documento.get("tipo"),
+        # O carimbo do modo daquele documento — não o modo de agora. Um
+        # documento emitido em `tests` não vale nada, e a lista tem de o dizer
+        # (mesma regra de `fiscal._resposta_documento` e da faixa do POS).
+        "modo": documento.get("modo"),
+        "artigos": artigos,
+        "mais_artigos": mais,
+        "pagamentos": _pagamentos_publicos(venda),
+        # `False` quando a venda já não existe na base: sem ela não há artigos
+        # nem pagamentos para mostrar, e o ecrã não pode ler a ausência dos
+        # dois como "esta fatura não levou nada". Sempre presente, mesmo
+        # `True`, pela regra de `_venda_publica`: o ecrã não adivinha se a
+        # chave em falta quer dizer "não" ou "versão antiga da API".
+        "tem_venda": venda is not None,
+    }
+
+
+@router.get("/pos/documentos")
+async def listar_documentos(operador: Dict = Depends(operador_atual)) -> dict:
+    """As faturas desta loja, da mais recente para a mais antiga.
+
+    Ver o cabeçalho do módulo para o âmbito e para o porquê de ele ser a loja
+    e não a sessão. Não recebe parâmetro de âmbito NENHUM — nem um `caixa_id`,
+    nem um `sessao_id`, nem um `limite` — pela razão de `_contas_do_balcao`:
+    um âmbito que viaja como argumento é um âmbito que dois chamadores acabam
+    a passar diferente, e a partir daí há dois conjuntos que se dizem o mesmo.
+
+    A loja vem do TOKEN do operador, como tudo neste módulo.
+    """
+    db = obter_db()
+    # Um a mais do que o tecto: é o que transforma "há mais" num facto medido
+    # em vez de uma inferência a partir de a lista ter vindo cheia (que dá a
+    # resposta errada exactamente quando há 200 documentos e nem um a mais).
+    documentos = await (
+        db[COLECOES["documentos"]]
+        .find({"loja_id": operador["loja_id"]})
+        .sort("emitido_em", -1)
+        .to_list(_LIMITE_LISTA + 1)
+    )
+    ha_mais = len(documentos) > _LIMITE_LISTA
+    documentos = documentos[:_LIMITE_LISTA]
+
+    vendas = await _vendas_por_id(
+        db, [d["venda_id"] for d in documentos if d.get("venda_id")]
+    )
+    return {
+        "documentos": [
+            _documento_na_lista(d, vendas.get(d.get("venda_id"))) for d in documentos
+        ],
+        # O tecto vai na resposta para o ecrã poder dizer o número em vez de
+        # uma vaga "as mais recentes" — duas cópias do mesmo limite, uma de
+        # cada lado, acabam sempre com o ecrã a prometer um alcance que já não
+        # é o real (a lição do `SEGUNDOS_DE_ESPERA` no PosVenda).
+        "limite": _LIMITE_LISTA,
+        "ha_mais": ha_mais,
+    }
+
+
+def _linhas_da_fatura(venda: Optional[Dict]) -> List[Dict]:
+    """As linhas como o print do Vendus as mostra: Produto · Preço/Uni. ·
+    Qtd. · Preço.
+
+    O «Produto» é o `title` de `fiscal._itens_vendus` — com os toppings entre
+    parêntesis, exactamente como saiu no papel e como foi entregue à AT. Não é
+    o `produto_nome` da linha: numa reimpressão o cliente confere o que pagou,
+    e o que ele pagou incluía a Nutella.
+
+    O «Preço» é o LÍQUIDO da linha (`mapa_imposto._liquido_da_linha`) — já com
+    o desconto próprio e com a fatia do desconto global que lhe calhou, pela
+    mesma fórmula que o Vendus aplicou. Não é `qtd × preço/uni.`: numa fatura
+    com desconto esses dois números são diferentes, e o que o cliente pagou é
+    este.
+
+    **E é por isso que o `desconto` vai junto.** Visto no ecrã, «Preço/Uni.
+    € 10,20 · Qtd. 1 · Preço € 9,94» lê-se como um erro de soma: não há na
+    fatura uma única palavra a dizer para onde foram os 26 cêntimos, e quem
+    confere um talão para de conferir ali. O valor é a diferença entre o bruto
+    (`qtd × preço/uni.`, arredondado como o Vendus o arredonda) e o líquido, e
+    é SOMADO AQUI e não no ecrã — cêntimos inteiros, como todo o dinheiro deste
+    módulo. Vai a `0.0` quando não houve desconto nenhum, que é o caso normal:
+    o ecrã não pode ter de adivinhar se a ausência do campo quer dizer «não
+    houve» ou «esta versão da API não responde a isso».
+    """
+    if venda is None:
+        return []
+    linhas = []
+    for item in _itens_vendus(venda):
+        bruto = round(item["qty"] * item["gross_price"], 2)
+        liquido = _liquido_da_linha(item)
+        linhas.append({
+            "titulo": item.get("title"),
+            "quantidade": item.get("qty"),
+            "preco_unitario": item.get("gross_price"),
+            "desconto": (_centimos(bruto) - _centimos(liquido)) / 100.0,
+            "total": liquido,
+        })
+    return linhas
+
+
+@router.get("/pos/documentos/{documento_id}")
+async def obter_documento(
+    documento_id: str, operador: Dict = Depends(operador_atual)
+) -> dict:
+    """A fatura aberta — cabeçalho, cliente, artigos, pagamento, mapa de
+    imposto e total.
+
+    **O total que sai daqui é o do DOCUMENTO**, o número que o Vendus
+    devolveu e que a AT tem. A soma das linhas vai junto (`total_das_linhas`)
+    e `total_divergente` diz quando os dois não batem ao cêntimo. Deviam bater
+    sempre — as linhas são as mesmas que foram enviadas e a repartição do
+    desconto global é exacta ao cêntimo (`fiscal._distribuir_centimos`) — e é
+    precisamente por isso que uma divergência tem de aparecer em vez de ser
+    escolhida em silêncio: se um dia aparecer, aconteceu alguma coisa que
+    ninguém previu e alguém tem de a ver.
+
+    Uma venda que já não exista na base dá uma fatura sem artigos e sem mapa,
+    com `tem_venda: false` — e não um 404: o DOCUMENTO existe, tem número e
+    ATCUD, e escondê-lo por causa da venda era esconder um documento fiscal
+    real.
+    """
+    db = obter_db()
+    documento = await _documento_da_loja(db, documento_id, operador["loja_id"])
+    venda = await db[COLECOES["vendas"]].find_one({"id": documento.get("venda_id")})
+
+    linhas = _linhas_da_fatura(venda)
+    # Somado em CÊNTIMOS INTEIROS, nunca com `sum()` sobre floats — é a regra
+    # da casa, e aqui serve para responder a uma pergunta sobre o cêntimo.
+    total_das_linhas = sum(_centimos(li["total"]) for li in linhas)
+    total_documento = documento.get("total")
+
+    # O mapa de imposto DESTE documento: a mesma função do Z, com uma lista de
+    # uma venda. Ela filtra `estado == "emitida"` — a venda de um documento
+    # emitido está sempre nesse estado (`fiscal._gravar_documento` põe-na lá
+    # incondicionalmente), e uma que não esteja produz um mapa vazio em vez de
+    # inventar imposto sobre uma conta que não é fatura nenhuma.
+    mapa = mapa_de_imposto([venda] if venda else [])
+
+    return {
+        "id": documento.get("id"),
+        "numero": documento.get("numero"),
+        "atcud": documento.get("atcud"),
+        "tipo": documento.get("tipo"),
+        "modo": documento.get("modo"),
+        "emitido_em": documento.get("emitido_em"),
+        "vendus_document_id": documento.get("vendus_document_id"),
+        # O NIF que o cliente pediu na altura, ou `None` — que o ecrã lê como
+        # "Consumidor Final", que é o que o Vendus assume quando não vai NIF
+        # nenhum (`fiscal.finalizar`).
+        "cliente_nif": (venda or {}).get("cliente_nif"),
+        "tem_venda": venda is not None,
+        "venda_id": documento.get("venda_id"),
+        "linhas": linhas,
+        "pagamentos": _pagamentos_publicos(venda),
+        "mapa_imposto": mapa,
+        "totais_imposto": totais_do_mapa(mapa),
+        "total": total_documento,
+        "total_das_linhas": total_das_linhas / 100.0,
+        "total_divergente": (
+            total_documento is not None
+            and bool(linhas)
+            and _centimos(total_documento) != total_das_linhas
+        ),
+        # Há bytes de talão guardados com esta fatura? É o que decide se o
+        # botão de reimprimir tem alguma coisa para mandar à impressora
+        # quando o agente existir. Ver `talao_do_documento`.
+        "tem_talao": bool(documento.get("talao_escpos")),
+    }
+
+
+@router.get("/pos/documentos/{documento_id}/talao")
+async def talao_do_documento(
+    documento_id: str, operador: Dict = Depends(operador_atual)
+) -> dict:
+    """Os bytes ESC/POS do talão certificado desta fatura, em base64.
+
+    **É o caminho do servidor até ao ponto em que os bytes estão prontos** — o
+    agente de impressão da loja ainda não existe, e quando existir liga-se
+    aqui sem se mexer nisto. O botão do ecrã fica desligado até lá, com o mesmo
+    «Brevemente» dos outros botões de impressão do POS.
+
+    Reimprimir NÃO volta ao Vendus, de propósito: o talão certificado é o que
+    saiu no papel da primeira vez, e uma segunda ida ao Vendus podia trazer
+    outra coisa (ou não trazer nada, com a rede em baixo) precisamente no
+    momento em que o cliente está à frente à espera do papel dele.
+
+    **ATENÇÃO — e isto está medido, não suposto:** `vendus/emissao.py` traz o
+    `talao_escpos` na resposta da emissão, mas `fiscal._gravar_documento`
+    NÃO o grava em `fat_documentos` (o documento é construído campo a campo, e
+    esse campo não está na lista). Hoje, portanto, esta rota responde 409 a
+    todos os documentos. Falta uma linha no núcleo fiscal, que este trabalho
+    não toca por instrução expressa — ver o relatório.
+
+    Base64 e não bytes crus: a resposta é JSON, e um `bytes` não é
+    serializável. Quem imprime descodifica e manda para a porta série.
+    """
+    db = obter_db()
+    documento = await _documento_da_loja(db, documento_id, operador["loja_id"])
+    talao = documento.get("talao_escpos")
+    if not talao:
+        # 409 e não 404: o DOCUMENTO existe (e o 404 mandava a operadora
+        # procurá-lo outra vez); o que não existe é o papel. A frase diz qual
+        # das duas coisas falta.
+        raise HTTPException(status_code=409, detail=_MSG_SEM_TALAO)
+    if isinstance(talao, str):
+        # Um talão gravado já em base64 (texto) em vez de binário: devolve-se
+        # tal e qual, sem o voltar a codificar — codificar duas vezes dava
+        # bytes que a impressora não percebe, e em silêncio.
+        return {"formato": "escpos-base64", "talao": talao}
+    return {
+        "formato": "escpos-base64",
+        "talao": base64.b64encode(bytes(talao)).decode("ascii"),
+    }
+
+
+async def _opcoes_com_precos_de_hoje(
+    db, opcoes: List[Dict]
+) -> Tuple[List[Dict], List[str]]:
+    """As MESMAS escolhas do cliente, com os nomes e os preços de HOJE — e a
+    lista das que já não existem.
+
+    **Isto é o cerne do «copiar para a venda» e a parte fácil de estragar.**
+    Uma cópia é um pedido NOVO: se a Nutella subiu de 0,95 € para 1,15 €, o
+    cliente paga 1,15 €. As `opcoes` gravadas na linha antiga trazem o preço
+    do dia em que foram vendidas (é um retrato, e é assim que tem de ser para
+    a fatura antiga não mudar) — e `precos.linha_de_venda` soma ao preço
+    unitário o `preco` de CADA opção que lhe passarem. Reenviar as opções tal
+    e qual fazia a conta nova ser cobrada aos preços de ontem, sem nada a
+    dizê-lo. `preco_override` não é a mesma armadilha (esse é do produto e
+    fica de fora, ver `copiar_para_venda`), mas as opções passariam
+    despercebidas: viajam dentro de um `List[Dict]` cru.
+
+    O casamento é pelo `id` da opção dentro do grupo — o campo que
+    `catalogo.OpcaoEntrada` preserva de propósito, «para o histórico de vendas
+    continuar a apontar para o mesmo id mesmo que o nome ou o preço mudem».
+
+    O que já não existe (grupo apagado, opção apagada, opção desactivada,
+    opção antiga sem `id`) NÃO viaja: é DEIXADO DE FORA e vem nomeado na
+    segunda metade do par. Deixá-lo passar com o preço antigo era cobrar por
+    uma coisa que o catálogo já não tem; deixá-lo passar sem preço era dá-la
+    de graça. Nomeá-lo é a terceira saída, e é a única que a operadora
+    consegue usar — ela lê o nome, olha para o ecrã e decide.
+
+    O `sai_na_fatura` NÃO viaja: a linha nasce hoje e o carimbo tira-se hoje,
+    que é exactamente o que `venda._carimbar_sai_na_fatura` faz a uma opção
+    nova. Reenviá-lo era mandar ao servidor um carimbo escolhido pelo cliente.
+    """
+    ids_de_grupo = [o.get("grupo_id") for o in opcoes if o.get("grupo_id")]
+    grupos: Dict[str, Dict] = {}
+    if ids_de_grupo:
+        for g in await db[COLECOES["grupos_personalizacao"]].find(
+            {"id": {"$in": ids_de_grupo}}
+        ).to_list(len(ids_de_grupo)):
+            grupos[g["id"]] = g
+
+    de_hoje: List[Dict] = []
+    perdidas: List[str] = []
+    for antiga in opcoes:
+        nome_antigo = antiga.get("nome") or "?"
+        grupo = grupos.get(antiga.get("grupo_id"))
+        actual = None
+        if grupo and antiga.get("id"):
+            for o in grupo.get("opcoes") or []:
+                if o.get("id") == antiga["id"] and o.get("ativa", True):
+                    actual = o
+                    break
+        if actual is None:
+            perdidas.append(nome_antigo)
+            continue
+        de_hoje.append({
+            "id": actual.get("id"),
+            "grupo_id": grupo["id"],
+            # O nome de HOJE, pela mesma razão do preço: é este pedido que vai
+            # sair no papel, e o papel tem de dizer o que o catálogo diz.
+            "nome": actual.get("nome"),
+            "preco": actual.get("preco", 0),
+        })
+    return de_hoje, perdidas
+
+
+class PedidoCopiar(BaseModel):
+    """A caixa em que a conta nova vai nascer.
+
+    É o mesmo (e único) campo de `venda.PedidoNovaVenda`, e pela mesma razão:
+    a sessão e o operador vêm do TOKEN, nunca do corpo. O `caixa_id` é o que o
+    ecrã tem escolhido no localStorage, e quem o valida é o
+    `_obter_caixa_da_loja` de `abrir_venda` — aqui só se exige que venha."""
+
+    caixa_id: str = Field(min_length=1)
+
+
+@router.post("/pos/documentos/{documento_id}/copiar-para-venda", status_code=201)
+async def copiar_para_venda(
+    documento_id: str,
+    dados: PedidoCopiar,
+    operador: Dict = Depends(operador_atual),
+) -> dict:
+    """Abre uma conta NOVA com as mesmas linhas desta fatura — «o cliente quer
+    o mesmo outra vez».
+
+    **Não escreve uma única vez por sua conta.** Chama `venda.abrir_venda` e
+    `venda.juntar_linha`, as rotas de sempre, e é isso que faz esta cópia
+    herdar TODOS os guardas sem os repetir: a caixa tem de ser desta loja, a
+    sessão tem de estar aberta, o índice único do posto continua a decidir a
+    corrida do duplo toque, o produto sem IVA continua a ser recusado com 422,
+    e o carimbo do `sai_na_fatura` é tirado hoje. Uma segunda implementação
+    «igual» aqui era a sexta cópia de um predicado deste módulo, e as cinco
+    anteriores divergiram todas.
+
+    **UM PC ATENDE UM CLIENTE DE CADA VEZ.** É `abrir_venda` que o impõe (409
+    se este posto tiver conta por resolver), e a recusa dela sobe daqui tal e
+    qual, com a frase dela — que já sabe dizer em que caixa ficou a conta. O
+    ecrã pergunta ANTES do toque (`GET /pos/venda/aberta`) e mostra o botão
+    morto com a razão à vista, mas quem recusa é a rota: os ecrãs do POS
+    desenham-se sem servidor nenhum.
+
+    **OS PREÇOS SÃO OS DE HOJE, e é preciso dizer as três metades disso:**
+
+    1. o PRODUTO é relido do catálogo por `juntar_linha`, que grava um retrato
+       novo (`produto_preco`, `produto_tax_id`, `produto_vendus_ref`) — o preço
+       de hoje entra sozinho, sem nada ser feito aqui;
+    2. as OPÇÕES não: viajam gravadas na linha antiga com o preço do dia em que
+       foram vendidas, e `precos.linha_de_venda` soma-as tal e qual. São
+       reavaliadas em `_opcoes_com_precos_de_hoje`, e é a metade que passava
+       despercebida;
+    3. o `preco_override`, o `tax_override`, os descontos de linha e o desconto
+       GLOBAL **não são copiados**. Um override é um ajuste excepcional
+       daquela venda (uma cortesia, um artigo avariado), não uma propriedade do
+       pedido; repeti-lo às cegas era repetir uma decisão que ninguém tomou
+       hoje — e, no caso do desconto, dar dinheiro. A operadora volta a
+       aplicá-lo se quiser, com o dedo.
+
+    O que já não existe **não faz a cópia falhar**: um produto apagado do
+    catálogo, ou um sem IVA, é DEIXADO DE FORA e vem nomeado em
+    `nao_copiados`. O contrário — 404 a meio — deixava uma conta meia feita no
+    ecrã sem dizer o que lhe faltava, com o cliente à frente. Se não sobrar
+    linha nenhuma, a conta que nasceu é cancelada e sai 409: uma conta vazia
+    presa no posto é pior do que uma recusa.
+    """
+    from .venda import (
+        PedidoJuntarLinha,
+        PedidoNovaVenda,
+        abrir_venda,
+        cancelar_venda,
+        juntar_linha,
+    )
+
+    db = obter_db()
+    documento = await _documento_da_loja(db, documento_id, operador["loja_id"])
+    origem = await db[COLECOES["vendas"]].find_one({"id": documento.get("venda_id")})
+    if origem is None or not (origem.get("linhas") or []):
+        raise HTTPException(status_code=409, detail=_MSG_COPIA_SEM_LINHAS)
+
+    # A porta primeiro: se o posto estiver ocupado, isto levanta 409 ANTES de
+    # se ter lido um único grupo de personalização.
+    nova = await abrir_venda(
+        PedidoNovaVenda(caixa_id=dados.caixa_id), operador=operador)
+
+    nao_copiados: List[str] = []
+    ultima = nova
+    for linha in origem["linhas"]:
+        nome = linha.get("produto_nome") or "?"
+        opcoes, perdidas = await _opcoes_com_precos_de_hoje(
+            db, linha.get("opcoes") or []
+        )
+        for perdida in perdidas:
+            nao_copiados.append("%s: %s (já não está no catálogo)" % (nome, perdida))
+        try:
+            ultima = await juntar_linha(
+                nova["id"],
+                PedidoJuntarLinha(
+                    produto_id=linha.get("produto_id") or "",
+                    quantidade=linha.get("quantidade", 1),
+                    opcoes=opcoes,
+                    # O nome no copo e as outras respostas de texto viajam: é
+                    # tão personalização como o topping, e o cliente que pede
+                    # "o mesmo outra vez" continua a chamar-se o mesmo.
+                    respostas_texto=linha.get("respostas_texto") or [],
+                ),
+                operador=operador,
+            )
+        except HTTPException as e:
+            # 404 (produto apagado) e 422 (produto sem IVA/preço, quantidade
+            # impossível) são os dois desfechos previstos, e os dois querem
+            # dizer a mesma coisa a quem está ao balcão: este artigo já não se
+            # pode vender. Qualquer outro estado (o posto trancou entretanto, a
+            # sessão fechou) NÃO é para engolir — sobe, e a conta fica como
+            # está para a operadora a ver.
+            if e.status_code not in (404, 422):
+                raise
+            nao_copiados.append("%s (%s)" % (nome, e.detail))
+
+    if not (ultima.get("linhas") or []):
+        # Nada sobreviveu. A conta acabada de abrir fica a prender o posto e
+        # não tem nada dentro — cancela-se, e é a MESMA rota de cancelamento
+        # de sempre (que sabe recusar se entretanto houver emissão viva).
+        try:
+            await cancelar_venda(nova["id"], operador=operador)
+        except HTTPException as e:  # noqa: BLE001 — ver a frase a seguir
+            # Se o cancelamento não passar, o que NÃO se pode fazer é calar:
+            # a operadora fica com uma conta vazia à frente e tem de saber
+            # porquê. Fica no log e a recusa segue na mesma.
+            logger.warning(
+                "[faturacao] cópia sem linhas: a conta %s não foi cancelada (%s)",
+                nova["id"], e.detail,
+            )
+        raise HTTPException(status_code=409, detail=_MSG_COPIA_SEM_LINHAS)
+
+    return {
+        "venda": ultima,
+        "copiada_de": {
+            "documento_id": documento.get("id"),
+            "numero": documento.get("numero"),
+        },
+        # Sempre presente, mesmo vazia: o ecrã não pode ter de adivinhar se a
+        # ausência quer dizer "copiou-se tudo" ou "esta versão não responde a
+        # isso" — e a diferença aqui é entre a operadora conferir a conta ou
+        # entregar ao cliente um pedido a que falta um artigo.
+        "nao_copiados": nao_copiados,
+    }

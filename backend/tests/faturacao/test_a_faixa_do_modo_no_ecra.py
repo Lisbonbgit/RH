@@ -656,14 +656,25 @@ def _preambulo_de_montagem() -> str:
         "    if (pedido === 'lucide-react') return icones;",
         "    if (pedido === 'sonner') return sonner;",
         "    if (pedido === 'axios') return { __esModule: true, default: axiosFalso };",
-        "    if (pedido.startsWith('@/components/')) return marcas;",
+        # **As marcas da biblioteca de UI, ou o que o CENÁRIO puser em vez
+        # delas.** Por omissão fica tudo como estava — `global.__componentes` é
+        # `undefined` e as marcas ganham, e é isso que mantém este ficheiro
+        # exactamente como estava. Um cenário que precise de um botão que
+        # RESPONDA AO DEDO (o separador Faturação, em
+        # `test_o_separador_de_faturacao_no_ecra.py`: o painel só abre depois
+        # de alguém carregar) põe lá os seus, ANTES do primeiro `carregar`.
+        # Sem este gancho, a alternativa era uma segunda cópia deste
+        # carregador — e uma segunda cópia diverge da primeira.
+        "    if (pedido.startsWith('@/components/'))",
+        "      return (global.__componentes || marcas);",
         "    if (pedido.startsWith('@/')) return carregar(path.join(RAIZ, pedido.slice(2)) + '.js');",
         "    if (pedido.startsWith('.')) {",
         "      const resolvido = path.resolve(path.dirname(ficheiro), pedido);",
         # A mesma regra do `@/components/`, dita sobre o caminho já resolvido:
         # há ecrãs (o FatDashboard) que os importam por caminho relativo, e um
         # deles arrastava metade da biblioteca de UI para dentro do guarda.
-        "      if (resolvido.startsWith(path.join(RAIZ, 'components'))) return marcas;",
+        "      if (resolvido.startsWith(path.join(RAIZ, 'components')))",
+        "        return (global.__componentes || marcas);",
         "      return carregar(resolvido + '.js');",
         "    }",
         "    return originalRequire(pedido);",

@@ -950,3 +950,129 @@ export const avisoDoModoNoBackoffice = (estado) => {
       + 'deixar as lojas vender.',
   };
 };
+
+// --- O separador FATURAÇÃO ----------------------------------------------------
+//
+// A lista dos documentos já emitidos e a fatura aberta (backend:
+// `faturacao/documentos.py`). Até aqui não havia rota nenhuma que lesse
+// `fat_documentos`, e uma fatura emitida desaparecia do ecrã para sempre: o
+// cliente que voltava com o talão rasgado não tinha por onde ser servido.
+
+export const getDocumentosPos = () => api.get('/pos/documentos');
+
+export const getDocumentoPos = (documentoId) =>
+  api.get(`/pos/documentos/${documentoId}`);
+
+// Abre uma conta NOVA com as mesmas linhas. O servidor recusa com 409 se este
+// posto tiver conta por resolver — ver `razaoDeNaoCopiar`, que é o que faz o
+// ecrã dizer isso ANTES do toque.
+export const copiarDocumentoParaVenda = (documentoId, caixaId) =>
+  api.post(`/pos/documentos/${documentoId}/copiar-para-venda`, { caixa_id: caixaId });
+
+// Sem acentos e em minúsculas — ao balcão escreve-se "acai" e o produto
+// chama-se "Açaí". Mesma normalização do `semAcentos` do PosVenda, aqui porque
+// é aqui que um teste lhe chega e a pode EXECUTAR.
+export const semAcentosPos = (texto) =>
+  String(texto ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+// **A hora da fatura, como a operadora precisa de a ler.**
+//
+// Só a hora ("21:41") quando é de HOJE, que é o caso da esmagadora maioria; com
+// a data à frente quando não é. Sem a data, o cliente que volta AMANHÃ — o caso
+// que o dono nomeou — vê duas faturas das 21:41 na mesma lista e não há forma
+// de saber qual é a dele.
+//
+// `agora` é um parâmetro e não `new Date()` lá dentro, por uma razão só: é isso
+// que torna isto executável por um teste, sem depender do dia em que a suite
+// corre.
+export const momentoDaFaturaPos = (iso, agora) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const hoje = agora instanceof Date ? agora : new Date(agora);
+  const hora = d.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' });
+  const mesmoDia = (a, b) => a.toDateString() === b.toDateString();
+  if (mesmoDia(d, hoje)) return hora;
+  const ontem = new Date(hoje.getTime());
+  ontem.setDate(ontem.getDate() - 1);
+  if (mesmoDia(d, ontem)) return `Ontem ${hora}`;
+  return `${d.toLocaleDateString('pt-PT', { day: '2-digit', month: '2-digit' })} ${hora}`;
+};
+
+// O que o cliente levou, numa linha: "1× Açaí Regular · 1× Coca-Cola  +2".
+//
+// **É esta a coluna por que a operadora encontra a fatura.** O cliente que
+// volta raramente sabe o número e muitas vezes nem o total; sabe que comprou um
+// açaí. As quantidades vêm do servidor tal como estão (podem ser fraccionárias,
+// numa parte de conta dividida) e são desenhadas aqui — não são dinheiro.
+export const resumoDosArtigosPos = (documento) => {
+  const artigos = documento?.artigos || [];
+  if (artigos.length === 0) return '';
+  const partes = artigos.map((a) => {
+    const q = Number(a?.quantidade);
+    const qtd = Number.isFinite(q) ? (Number.isInteger(q) ? q : q.toFixed(2)) : '?';
+    return `${qtd}× ${a?.nome || '?'}`;
+  });
+  const mais = Number(documento?.mais_artigos) || 0;
+  return partes.join(' · ') + (mais > 0 ? ` +${mais}` : '');
+};
+
+// A pesquisa da lista: casa com o NÚMERO, com o TOTAL e com o nome de qualquer
+// artigo. As três coisas que o cliente diz ao voltar, e é por isso que são as
+// três que procuram.
+//
+// O total compara-se pelo TEXTO do número (`11,64` e `11.64` casam os dois),
+// e não por um valor: isto é uma pesquisa, não uma conta — nenhum euro é somado
+// nem comparado aqui.
+export const casaComAPesquisaPos = (documento, texto) => {
+  const procura = semAcentosPos(texto).trim();
+  if (!procura) return true;
+  const total = numeroPos(documento?.total);
+  const campos = [
+    documento?.numero,
+    documento?.atcud,
+    total,
+    total.replace(',', '.'),
+    ...(documento?.artigos || []).map((a) => a?.nome),
+    ...(documento?.pagamentos || []).map((p) => p?.nome),
+  ];
+  return campos.some((c) => semAcentosPos(c).includes(procura));
+};
+
+// **Porque é que «Copiar para a venda» está desligado — ou `null` quando não
+// está.**
+//
+// Vive aqui, e não dentro do JSX, pela razão de sempre neste ficheiro: uma
+// condição escrita no meio de um botão não se corre em lado nenhum, e um guarda
+// que procure o TEXTO da frase fica verde com a condição desligada.
+//
+// **A primeira razão é a regra do dono: um PC atende UM cliente de cada vez.**
+// Quem a impõe é o servidor (`venda.abrir_venda` responde 409 se este posto
+// tiver conta por resolver), e isto é o ecrã a dizê-lo ANTES do toque em vez de
+// depois — a operadora carregava, esperava, e levava uma recusa que já se sabia
+// de antemão, com o cliente à frente.
+export const razaoDeNaoCopiar = ({ contaEmCurso, documento }) => {
+  if (contaEmCurso) {
+    return 'Há uma conta por resolver neste posto. Atende-se um cliente de cada vez: '
+      + 'acabe a que está à frente — cobre-a ou cancele-a — antes de copiar esta fatura '
+      + 'para uma conta nova.';
+  }
+  if (documento && documento.tem_venda === false) {
+    return 'Esta fatura já não tem a conta de origem guardada — não há linhas para copiar.';
+  }
+  if (documento && (documento.linhas || []).length === 0) {
+    return 'Esta fatura não tem nenhuma linha para copiar.';
+  }
+  return null;
+};
+
+// A frase do botão de imprimir, e a do da nota de crédito: os dois ficam à
+// vista e desligados, COM A RAZÃO — a mesma regra que o menu Caixa já usa na
+// gaveta e no modo de formação, e o PosVenda no "Imprimir Pedido".
+export const MSG_IMPRIMIR_BREVEMENTE =
+  'O talão volta a sair na impressora quando o agente de impressão da loja existir — '
+  + 'ainda não existe.';
+
+export const MSG_NOTA_DE_CREDITO_BREVEMENTE =
+  'A nota de crédito é a ronda seguinte. Até lá, um documento errado corrige-se no '
+  + 'Vendus e avisa-se o gestor.';

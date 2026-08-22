@@ -795,7 +795,7 @@ function PainelConta({
 
 // --- O ecrã -------------------------------------------------------------------
 
-export default function PosVenda({ caixa, onOperadorInvalido }) {
+export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) {
   // O ID da caixa, e não o objecto — e o callback do pai por trás de uma ref,
   // e não nas dependências. As duas coisas defendem a MESMA propriedade: este
   // ecrã carrega o catálogo uma vez por caixa e nunca mais. Um render do
@@ -1183,6 +1183,26 @@ export default function PosVenda({ caixa, onOperadorInvalido }) {
   // objecto novo vindo de cima, apagava a conta em curso do ecrã com o
   // cliente à frente.
   useEffect(() => { carregarTudo(); }, [carregarTudo]);
+
+  // **A conta que nasceu no separador Faturação.** «Copiar para a venda» abre
+  // uma conta nova no SERVIDOR (`POST /pos/documentos/{id}/copiar-para-venda`,
+  // que por baixo é o `abrir_venda` de sempre) e este ecrã não estava lá para
+  // a ver. Sem isto, ele continuava a mostrar o balcão vazio, a operadora
+  // tocava num produto e o `POST /pos/venda` respondia 409 sobre uma conta que
+  // não estava em ecrã nenhum — o beco do «um posto, uma conta» outra vez,
+  // reaberto por um lado novo.
+  //
+  // Relê-se a conta em vez de a receber por prop: a verdade da conta vem sempre
+  // do servidor (`recarregarVenda` chama `GET /pos/venda/aberta`), como em todo
+  // este ficheiro. `contasCopiadas` é só a batida do relógio.
+  //
+  // O `0` inicial não conta — no arranque quem carrega a conta é o
+  // `carregarTudo`, e recarregá-la aqui era uma segunda leitura por cada
+  // montagem do ecrã.
+  useEffect(() => {
+    if (!contasCopiadas) return;
+    recarregarVenda();
+  }, [contasCopiadas, recarregarVenda]);
 
   // O relógio do ecrã de espera. Recomeça a cada tentativa e é sempre
   // limpo — um temporizador que sobrevivesse ao fim da carga acendia o aviso

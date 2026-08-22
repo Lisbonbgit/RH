@@ -15,6 +15,7 @@ import { Separator } from '@/components/ui/separator';
 import PosCampoValor from './PosCampoValor';
 import PosFaixaModo from './PosFaixaModo';
 import PosResumoDoTurno from './PosResumoDoTurno';
+import PosFaturacao from './PosFaturacao';
 import {
   registarMovimento, getPontoDeCaixa, detalhesErroPos, eurosPos,
   temMaisDe2CasasDecimaisPos,
@@ -186,7 +187,10 @@ function DialogoPontoDeCaixa({ aberto, onFechar, lojaNome, caixa, operador }) {
 // ligado. Abrir Gaveta e Modo de Formação ficam visíveis mas desligados —
 // nenhum dos dois tem suporte no servidor ainda — com uma explicação em vez
 // de um botão morto sem dizer porquê.
-export default function PosMenuCaixa({ operador, lojaNome, caixa, sessao, onSair, onFecharCaixa, onMovimentoRegistado, modo }) {
+export default function PosMenuCaixa({
+  operador, lojaNome, caixa, sessao, onSair, onFecharCaixa, onMovimentoRegistado, modo,
+  onContaCopiada,
+}) {
   const [dialogoMovimento, setDialogoMovimento] = useState(null); // 'entrada' | 'saida' | null
   const [estadoAberto, setEstadoAberto] = useState(false);
   const [pontoAberto, setPontoAberto] = useState(false);
@@ -211,6 +215,11 @@ export default function PosMenuCaixa({ operador, lojaNome, caixa, sessao, onSair
             outros dois estados o que muda é a cor da barra inteira, sem um
             pixel a mais de altura. Ver PosFaixaModo.js. */}
         <PosFaixaModo estado={modo} />
+
+        {/* Ao lado do «Caixa», que é onde o dono a pediu: «uma aba ao lado do
+            caixa com umas opções». Ver PosFaturacao.js. */}
+        <div className="flex items-center gap-2">
+        <PosFaturacao caixa={caixa} onContaCopiada={onContaCopiada} />
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -245,6 +254,7 @@ export default function PosMenuCaixa({ operador, lojaNome, caixa, sessao, onSair
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        </div>
 
         <div className="flex items-center gap-2 min-w-0">
           <p className="text-sm font-medium truncate max-w-[9rem] hidden sm:block">{operador?.nome}</p>

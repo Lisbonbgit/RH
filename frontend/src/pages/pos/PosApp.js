@@ -97,6 +97,17 @@ function AppInterna({ operador, lojaNome, onSair, onOperadorInvalido, modo }) {
   const [sessaoAberta, setSessaoAberta] = useState(null);
   const [ultimoFecho, setUltimoFecho] = useState(null);
   const [fecharAberto, setFecharAberto] = useState(false);
+  // **O sinal do «Copiar para a venda».** O separador Faturação vive na barra
+  // de cima (`PosMenuCaixa`) e a conta vive no ecrã de baixo (`PosVenda`), que
+  // é quem a lê e a guarda. Copiar uma fatura abre uma conta NOVA no servidor —
+  // e sem este sinal o `PosVenda` continuava a mostrar o ecrã vazio, a
+  // operadora tocava num produto e o `POST /pos/venda` respondia 409 sobre uma
+  // conta que ela não estava a ver: exactamente o beco que o «um posto, uma
+  // conta» veio fechar, reaberto por um lado novo.
+  //
+  // Um CONTADOR e não um booleano: duas cópias seguidas têm de dar dois sinais,
+  // e um booleano que já estava a `true` não muda nada.
+  const [contasCopiadas, setContasCopiadas] = useState(0);
 
   const carregar = useCallback(async (caixaId) => {
     setCarregando(true);
@@ -172,8 +183,13 @@ function AppInterna({ operador, lojaNome, onSair, onOperadorInvalido, modo }) {
         onSair={onSair}
         onFecharCaixa={() => setFecharAberto(true)}
         onMovimentoRegistado={() => {}}
+        onContaCopiada={() => setContasCopiadas((n) => n + 1)}
       />
-      <PosVenda caixa={caixa} onOperadorInvalido={onOperadorInvalido} />
+      <PosVenda
+        caixa={caixa}
+        onOperadorInvalido={onOperadorInvalido}
+        contasCopiadas={contasCopiadas}
+      />
       <PosFecharCaixa
         aberto={fecharAberto}
         onFechar={() => setFecharAberto(false)}
