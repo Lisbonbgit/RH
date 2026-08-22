@@ -1211,6 +1211,17 @@ async def _gravar_documento(
         # rever aquela consulta.
         "tipo": "FS",
         "modo": bruto.get("modo"),
+        # **O talão certificado, guardado com a fatura.** O Vendus devolve-o já
+        # em ESC/POS na resposta da emissão (`vendus/emissao.py`, `output=escpos`)
+        # e isto deitava-o fora: o dicionário era construído campo a campo e
+        # este não estava na lista. Reimprimir o talão de um cliente que voltou
+        # obrigava a ir outra vez ao Vendus — mais uma chamada por reimpressão,
+        # e nada feito com ele em baixo.
+        #
+        # Guardá-lo NÃO o torna a identidade do documento: se o `output` vier
+        # estragado, `_talao_de` devolve `None` e a emissão continua boa — o que
+        # se perde é o papel, nunca o registo da fatura (ver a docstring de lá).
+        "talao_escpos": bruto.get("talao_escpos"),
         "ext_ref": ext_ref,
         "venda_id": venda["id"],
         "loja_id": venda["loja_id"],
