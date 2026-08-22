@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import {
   Receipt, Search, Loader2, HelpCircle, Printer, FileMinus, Copy, ArrowLeft,
@@ -12,8 +12,9 @@ import {
   getDocumentosPos, getDocumentoPos, copiarDocumentoParaVenda, getVendaAberta,
   detalhesErroPos, eurosPos, avisoDoDocumento, momentoDaFaturaPos,
   resumoDosArtigosPos, casaComAPesquisaPos, razaoDeNaoCopiar,
-  MSG_IMPRIMIR_BREVEMENTE, MSG_NOTA_DE_CREDITO_BREVEMENTE,
+  MSG_IMPRIMIR_BREVEMENTE,
 } from '@/lib/pos';
+import PosNotaCredito from './PosNotaCredito';
 
 // O separador **Faturação**, ao lado do «Caixa» — a lista dos documentos já
 // emitidos e a fatura aberta, com as três acções que o dono pediu do print do
@@ -199,7 +200,7 @@ function AccaoBrevemente({ icone: Icone, texto, porque }) {
 }
 
 // A FATURA ABERTA, no desenho do print do Vendus.
-function Fatura({ fatura, contaEmCurso, aCopiar, onCopiar, onVoltar }) {
+function Fatura({ fatura, contaEmCurso, aCopiar, onCopiar, onVoltar, onNotaCredito }) {
   const naoCopiar = razaoDeNaoCopiar({ contaEmCurso, documento: fatura });
   return (
     <div className="space-y-4">
@@ -297,11 +298,25 @@ function Fatura({ fatura, contaEmCurso, aCopiar, onCopiar, onVoltar }) {
           texto="Imprimir"
           porque={MSG_IMPRIMIR_BREVEMENTE}
         />
-        <AccaoBrevemente
-          icone={FileMinus}
-          texto="Nota de Crédito"
-          porque={MSG_NOTA_DE_CREDITO_BREVEMENTE}
-        />
+        <div>
+          <Button
+            variant="outline"
+            className="w-full h-12 justify-start"
+            onClick={onNotaCredito}
+            disabled={fatura.tipo !== 'FS'}
+          >
+            <FileMinus className="h-5 w-5 mr-2" />
+            Nota de Crédito
+          </Button>
+          {/* **Só se credita uma Fatura Simplificada** — quem recusa é o
+              servidor (422), e isto é o ecrã a dizê-lo antes do toque. */}
+          <p className="text-[11px] text-muted-foreground leading-snug mt-1.5">
+            {fatura.tipo === 'FS'
+              ? 'Corrige esta fatura e devolve o dinheiro ao cliente. Emite um '
+                + 'documento fiscal real.'
+              : 'Só se emite uma nota de crédito sobre uma Fatura Simplificada.'}
+          </p>
+        </div>
         <div>
           <Button
             className="w-full h-12 justify-start"
@@ -339,6 +354,19 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
   const [erroFatura, setErroFatura] = useState(null);
   const [contaEmCurso, setContaEmCurso] = useState(null);
   const [aCopiar, setACopiar] = useState(false);
+  // A nota de crédito da fatura aberta. Um booleano e não um id: ela é sempre
+  // da fatura que está à frente, e guardar um id deixava-os poder divergir.
+  const [notaCredito, setNotaCredito] = useState(false);
+  // Sobe de um sempre que a fatura tem de ser relida SEM mudar de fatura —
+  // hoje, depois de uma nota de crédito sair. É um contador e não um
+  // `setAbertaId(null)` seguido de `setAbertaId(id)`: os dois no mesmo tick
+  // agrupam-se num só, o estado não muda, e o efeito NÃO volta a correr — a
+  // fatura ficava a mostrar as quantidades de ANTES da devolução, que é
+  // exactamente a informação com que a operadora decidiria a nota seguinte.
+  const [relerFatura, setRelerFatura] = useState(0);
+  // Qual foi a última fatura desenhada — é o que distingue "mudou de fatura"
+  // (apaga) de "releu a mesma" (não apaga). Ver o efeito mais abaixo.
+  const idAnterior = useRef(null);
   // O instante em que a lista foi lida — é a referência de «hoje» para as
   // horas. Fixado na leitura e não `new Date()` a cada render: senão o "Ontem"
   // de uma fatura mudava sozinho à meia-noite com o painel aberto.
@@ -388,7 +416,17 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
   useEffect(() => {
     if (!abertaId) { setFatura(null); setErroFatura(null); return undefined; }
     let vivo = true;
-    setFatura(null);
+    // **Só se apaga a fatura quando se MUDA de fatura.** Uma RELEITURA (a que
+    // acontece depois de uma nota de crédito sair) mantém a que está no ecrã
+    // até chegar a nova — porque apagá-la desmontava o `PosNotaCredito` que
+    // está por cima dela, e com ele ia embora o ecrã que diz à operadora se o
+    // dinheiro sai da gaveta ou não. Foi visto a acontecer no browser: a nota
+    // saía, o toast passava, e a única instrução que separa a gaveta certa da
+    // errada nunca chegava a ser lida.
+    if (idAnterior.current !== abertaId) {
+      setFatura(null);
+      idAnterior.current = abertaId;
+    }
     setErroFatura(null);
     getDocumentoPos(abertaId)
       .then(({ data }) => { if (vivo) setFatura(data); })
@@ -397,7 +435,7 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
         setErroFatura(detalhesErroPos(error, 'Não foi possível abrir a fatura.').mensagem);
       });
     return () => { vivo = false; };
-  }, [abertaId]);
+  }, [abertaId, relerFatura]);
 
   const copiar = useCallback(async () => {
     if (!fatura || aCopiar) return;
@@ -440,18 +478,20 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
         variant="outline"
         size="lg"
         className="h-11"
-        onClick={() => { setAbertaId(null); setVista('menu'); setAberto(true); }}
+        onClick={() => { setAbertaId(null); setNotaCredito(false); setVista('menu'); setAberto(true); }}
       >
         <Receipt className="h-4 w-4 mr-1" /> Documentos
       </Button>
 
-      <Dialog open={aberto} onOpenChange={(v) => { if (!v) { setAberto(false); setAbertaId(null); setVista('menu'); } }}>
+      <Dialog open={aberto} onOpenChange={(v) => { if (!v) { setAberto(false); setAbertaId(null); setNotaCredito(false); setVista('menu'); } }}>
         <DialogContent className="max-w-3xl max-h-[92vh] overflow-y-auto">
           <DialogHeader>
             {/* O nome diz onde a operadora está: a aba, a opção que escolheu, ou
                 a fatura que abriu. */}
             <DialogTitle>
-              {abertaId ? 'Fatura' : (vista === 'menu' ? 'Documentos' : 'Faturação')}
+              {abertaId
+                ? (notaCredito ? 'Nota de Crédito' : 'Fatura')
+                : (vista === 'menu' ? 'Documentos' : 'Faturação')}
             </DialogTitle>
           </DialogHeader>
 
@@ -488,6 +528,15 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
                 <Loader2 className="h-4 w-4 animate-spin shrink-0" />
                 <span>A abrir a fatura…</span>
               </div>
+            ) : notaCredito ? (
+              <PosNotaCredito
+                documento={fatura}
+                caixaId={caixaId}
+                onFechar={() => setNotaCredito(false)}
+                // Depois de a nota sair, a fatura relê-se: as linhas passam a
+                // mostrar o que já foi creditado, e a nota anterior aparece.
+                onEmitida={() => setRelerFatura((n) => n + 1)}
+              />
             ) : (
               <Fatura
                 fatura={fatura}
@@ -495,6 +544,7 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
                 aCopiar={aCopiar}
                 onCopiar={copiar}
                 onVoltar={() => setAbertaId(null)}
+                onNotaCredito={() => setNotaCredito(true)}
               />
             )
           ) : (

@@ -94,45 +94,57 @@ def _base_em_centimos(total_centimos: int, taxa: int) -> int:
     `(2·num + den) // (2·den)` é `floor(num/den + 0.5)` só com inteiros —
     sem passar pelo float, e portanto sem o arredondamento bancário do
     `round()` (que a 0,5 vai para o par mais próximo, e num mapa de imposto
-    isso é uma escolha que ninguém tomou)."""
-    numerador = total_centimos * 100
+    isso é uma escolha que ninguém tomou).
+
+    **O SINAL trata-se à parte, e é por causa da nota de crédito.** Uma NC
+    entra aqui com o total NEGATIVO (é isso que a torna uma devolução no
+    mapa do turno) e a divisão inteira do Python arredonda para −infinito,
+    não para zero. Fazer a conta sobre o valor ABSOLUTO e repor o sinal no
+    fim garante, por construção, que creditar uma fatura inteira a cancela
+    EXACTAMENTE, ao cêntimo, nas três colunas — em vez de o garantir por
+    acaso.
+
+    **Honestamente: com as taxas de HOJE isto não muda um único resultado.**
+    Mediu-se: para 0 %, 6 %, 13 % e 23 %, e para todos os totais até
+    4 000,00 €, a versão com sinal e a versão ingénua dão o mesmo número. A
+    álgebra diz porquê — as duas só divergem quando `2·base − (100+taxa)` é
+    múltiplo de `2·(100+taxa)`, o que exige um denominador par com o resíduo
+    certo, e 100, 106, 113 e 123 nunca o têm. Fica escrito porque uma
+    mutação que o remova NÃO parte nenhum teste, e sem esta nota o próximo
+    leitor concluiria que o guarda não está coberto em vez de que não é
+    distinguível. Fica na mesma: custa uma multiplicação e deixa de ser
+    preciso repetir esta prova no dia em que aparecer uma taxa nova."""
+    sinal = -1 if total_centimos < 0 else 1
+    numerador = abs(total_centimos) * 100
     denominador = 100 + taxa
-    return (2 * numerador + denominador) // (2 * denominador)
+    return sinal * ((2 * numerador + denominador) // (2 * denominador))
 
 
-def mapa_de_imposto(vendas: List[Dict]) -> List[Dict]:
-    """O mapa de imposto das vendas EMITIDAS de uma sessão.
+def _centimos_por_taxa(itens: List[Dict]) -> Dict[Optional[str], int]:
+    """Quanto vale, em cêntimos, cada taxa DENTRO de um documento.
 
-    Uma linha por taxa: `{"tax_id", "taxa", "documentos", "base", "iva",
-    "total"}`. `documentos` é quantos DOCUMENTOS tocaram essa taxa (um
-    talão com um açaí e uma Coca-Cola conta uma vez em cada uma das duas
-    linhas), e não quantas linhas de artigo — é o número que a contabilista
-    pede e o que o Vendus imprime.
+    À parte de `mapa_de_imposto` porque a mesma redução serve dois sítios: o
+    mapa do turno (uma venda emitida) e o mapa de uma nota de crédito
+    (`centimos_por_taxa_da_nota`, que soma as linhas creditadas). Uma segunda
+    cópia desta soma era a forma óbvia de a nota de crédito deixar de
+    cancelar exactamente a fatura que anula."""
+    por_taxa: Dict[Optional[str], int] = {}
+    for item in itens or []:
+        tax_id = item.get("tax_id")
+        por_taxa[tax_id] = por_taxa.get(tax_id, 0) + _centimos(_liquido_da_linha(item))
+    return por_taxa
 
-    Só `estado == "emitida"`: uma conta aberta não é documento nenhum, e uma
-    cancelada nunca chegou a ser.
 
-    **Um `tax_id` que não conheça** (nada no caminho de hoje o produz —
-    `catalogo.erros_do_produto` e `precos.linha_de_venda` recusam qualquer
-    código fora de NOR/INT/RED/ISE — mas o `produto_tax_id` de uma linha é
-    um retrato gravado, e um retrato antigo pode trazer o que lá estiver)
-    sai com `taxa`, `base` e `iva` a `None` e o `total` preenchido. Não se
-    inventa uma taxa (a regra de ouro de `precos.py`) e não se deixa cair o
-    dinheiro: o ecrã mostra "—" nas colunas do imposto e a linha continua a
-    somar para o total do turno, que é onde alguém dá por ela.
-    """
+def _mapa_dos_documentos(documentos: List[Dict[Optional[str], int]]) -> List[Dict]:
+    """O mapa de imposto de uma lista de DOCUMENTOS, cada um já reduzido a
+    `{tax_id: cêntimos}` — o núcleo partilhado por tudo o que neste módulo
+    produz um mapa.
+
+    Um documento pode vir com cêntimos NEGATIVOS (é uma nota de crédito), e
+    daí em diante nada muda: a base e o IVA de cada documento decompõem-se
+    exactamente como os de uma fatura, com o sinal que o documento tiver."""
     por_taxa: Dict[Optional[str], Dict] = {}
-    for venda in vendas or []:
-        if venda.get("estado") != "emitida":
-            continue
-        # Primeiro agrega DENTRO do documento, e só depois soma ao turno: é
-        # isso que faz `documentos` contar documentos e não linhas.
-        centimos_deste = {}
-        for item in _itens_vendus(venda):
-            tax_id = item.get("tax_id")
-            centimos_deste[tax_id] = (
-                centimos_deste.get(tax_id, 0) + _centimos(_liquido_da_linha(item))
-            )
+    for centimos_deste in documentos:
         for tax_id, centimos in centimos_deste.items():
             linha = por_taxa.get(tax_id)
             if linha is None:
@@ -185,6 +197,86 @@ def mapa_de_imposto(vendas: List[Dict]) -> List[Dict]:
     # ordem em que um mapa de imposto se lê, e determinística.
     saida.sort(key=lambda linha: (linha["taxa"] is None, linha["taxa"] or 0))
     return saida
+
+
+def mapa_da_nota(nota: Dict) -> List[Dict]:
+    """O mapa de imposto de UMA nota de crédito, em POSITIVO — o que o ecrã
+    mostra das linhas seleccionadas (Taxa · Base · IVA · Total), e o que a
+    nota de crédito já emitida mostra quando alguém a abre.
+
+    Positivo porque é assim que uma nota de crédito se lê no papel: ela
+    própria diz o que credita, e é o DOCUMENTO que tem sinal negativo no
+    turno. O sinal vive num sítio só — `centimos_por_taxa_da_nota` — e este
+    mapa é a mesma função com o sinal desfeito, para não haver duas
+    decomposições de IVA a poderem discordar sobre a mesma nota.
+
+    Serve também a PRÉ-VISUALIZAÇÃO, com uma nota ainda por gravar: quem
+    chama monta `{"linhas": [...]}` e recebe o mesmo mapa que a nota emitida
+    vai ter. O ecrã não soma euros nenhuns — nem para pré-visualizar."""
+    return _mapa_dos_documentos([
+        {tax_id: -centimos
+         for tax_id, centimos in centimos_por_taxa_da_nota(nota).items()}
+    ])
+
+
+def centimos_por_taxa_da_nota(nota: Dict) -> Dict[Optional[str], int]:
+    """As linhas creditadas de uma nota de crédito GRAVADA, reduzidas a
+    `{tax_id: cêntimos}` — e já com o sinal NEGATIVO que uma devolução tem
+    no mapa do turno.
+
+    Lê o retrato gravado (`linhas`, com o `tax_id` e o `total` de cada linha
+    creditada) e não recalcula nada a partir da venda: a fatura de origem
+    pode ter sido creditada em duas vezes, e o que esta nota vale é o que
+    ficou escrito nela quando foi emitida — que é também o que foi entregue
+    à Autoridade Tributária."""
+    por_taxa: Dict[Optional[str], int] = {}
+    for linha in nota.get("linhas") or []:
+        tax_id = linha.get("tax_id")
+        por_taxa[tax_id] = por_taxa.get(tax_id, 0) - _centimos(linha.get("total"))
+    return por_taxa
+
+
+def mapa_de_imposto(vendas: List[Dict], notas_credito: Optional[List[Dict]] = None) -> List[Dict]:
+    """O mapa de imposto das vendas EMITIDAS de uma sessão, menos as notas de
+    crédito emitidas nela.
+
+    Uma linha por taxa: `{"tax_id", "taxa", "documentos", "base", "iva",
+    "total"}`. `documentos` é quantos DOCUMENTOS tocaram essa taxa (um
+    talão com um açaí e uma Coca-Cola conta uma vez em cada uma das duas
+    linhas), e não quantas linhas de artigo — é o número que a contabilista
+    pede e o que o Vendus imprime.
+
+    Só `estado == "emitida"`: uma conta aberta não é documento nenhum, e uma
+    cancelada nunca chegou a ser.
+
+    **Um `tax_id` que não conheça** (nada no caminho de hoje o produz —
+    `catalogo.erros_do_produto` e `precos.linha_de_venda` recusam qualquer
+    código fora de NOR/INT/RED/ISE — mas o `produto_tax_id` de uma linha é
+    um retrato gravado, e um retrato antigo pode trazer o que lá estiver)
+    sai com `taxa`, `base` e `iva` a `None` e o `total` preenchido. Não se
+    inventa uma taxa (a regra de ouro de `precos.py`) e não se deixa cair o
+    dinheiro: o ecrã mostra "—" nas colunas do imposto e a linha continua a
+    somar para o total do turno, que é onde alguém dá por ela.
+
+    **As notas de crédito entram aqui, e entram como DOCUMENTOS.** Cada uma é
+    um documento fiscal real do turno, com o sinal ao contrário: conta uma vez
+    na coluna `documentos` da taxa que tocou (é o que o Vendus imprime, e o
+    que a contabilista conta) e subtrai a base, o IVA e o total. Só as
+    EMITIDAS — uma nota cuja emissão ficou por apurar não é documento nenhum
+    até alguém confirmar que saiu, e um Z que a descontasse estava a devolver
+    dinheiro que talvez nunca tenha sido devolvido.
+    """
+    documentos = [
+        _centimos_por_taxa(_itens_vendus(venda))
+        for venda in vendas or []
+        if venda.get("estado") == "emitida"
+    ]
+    documentos.extend(
+        centimos_por_taxa_da_nota(nota)
+        for nota in notas_credito or []
+        if nota.get("estado") == "emitida"
+    )
+    return _mapa_dos_documentos(documentos)
 
 
 def totais_do_mapa(mapa: List[Dict]) -> Dict:

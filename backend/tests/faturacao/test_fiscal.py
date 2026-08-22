@@ -286,7 +286,8 @@ def _unicos_de(coleccao):
     ]
 
 
-def _db(vendas=None, documentos=None, refs=None, tipos_pagamento=None, sessoes=None):
+def _db(vendas=None, documentos=None, refs=None, tipos_pagamento=None, sessoes=None,
+        notas_credito=None):
     # Por omissão, uma sessão ABERTA "sessao-1" — o sessao_id da _venda()
     # por omissão — para os testes que não são sobre a sessão de caixa (a
     # maioria) não terem de a passar sempre à mão (I1: finalizar recusa
@@ -306,6 +307,11 @@ def _db(vendas=None, documentos=None, refs=None, tipos_pagamento=None, sessoes=N
             refs, indices_unicos=_unicos_de("fat_refs_fiscais")),
         COLECOES["tipos_pagamento"]: ColeccaoFalsa(tipos_pagamento),
         COLECOES["sessoes_caixa"]: ColeccaoFalsa(sessoes),
+        # As notas de crédito do turno: o fecho de caixa lê-as para o Z (as
+        # devoluções são dinheiro que saiu) e pergunta se há alguma a meio
+        # antes de assinar. Vazia por omissão, como as outras.
+        COLECOES["notas_credito"]: ColeccaoFalsa(
+            notas_credito, indices_unicos=_unicos_de("fat_notas_credito")),
     })
 
 
@@ -2990,6 +2996,9 @@ def test_fechar_a_caixa_dentro_da_janela_de_validacao_nao_deixa_sair_fatura(monk
         COLECOES["sessoes_caixa"]: ColeccaoFalsa([_sessao_aberta_doc()]),
         COLECOES["caixas"]: ColeccaoFalsa([{"id": "caixa-1", "loja_id": "loja-1"}]),
         COLECOES["movimentos_caixa"]: ColeccaoFalsa([]),
+        # O fecho de caixa pergunta pelas notas de crédito do turno (as
+        # devoluções entram no Z) e por uma a meio, antes de assinar.
+        COLECOES["notas_credito"]: ColeccaoFalsa(None, indices_unicos=["id"]),
     })
     monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
     monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)

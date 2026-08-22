@@ -119,6 +119,18 @@ _MSG_FECHO_COM_EMISSAO_EM_CURSO = (
     "assim presa, é o gestor que a resolve primeiro, na lista de reservas "
     "fiscais presas do backoffice."
 )
+# **A OUTRA emissão fiscal viva desta caixa: uma nota de crédito a meio.**
+# O mesmo estrago do de cima, ao contrário: a devolução sai da gaveta (ou do
+# Multibanco) DEPOIS de o Z estar assinado, e a operadora fica a dever à
+# gaveta um dinheiro que o Z nunca contou. A saída é a mesma — esperar uns
+# segundos — porque uma nota de crédito reservada ou é emitida (e conta) ou
+# rebenta (e a reserva desaparece), tudo dentro de uma chamada ao Vendus.
+_MSG_FECHO_COM_NOTA_DE_CREDITO_EM_CURSO = (
+    "Há uma NOTA DE CRÉDITO desta caixa em curso ou por confirmar — o turno "
+    "não se fecha a meio de uma devolução: o Z sairia sem ela e o dinheiro "
+    "devolvido ficava na gaveta como falta por justificar. Espere alguns "
+    "segundos e feche outra vez."
+)
 # O retrato das contas abertas não estabilizou (ver
 # `_retrato_estavel_das_contas_abertas`). A caixa fica marcada `a_fechar` de
 # propósito: é essa marca que impede escritas NOVAS, e é ela que faz a
@@ -581,8 +593,18 @@ async def _movimentos_que_contam(db, sessao: Dict) -> list:
     ]
 
 
-def _resumo_do_turno(sessao: Dict, movimentos: list, vendas: list) -> Dict:
+def _resumo_do_turno(
+    sessao: Dict, movimentos: list, vendas: list, notas_credito: list = None
+) -> Dict:
     """Os números de um turno — os mesmos para o Ponto de Caixa e para o Z.
+
+    **As notas de crédito do turno entram como o que são: dinheiro que saiu.**
+    Não há aqui um total de devoluções nem uma coluna nova — elas atravessam
+    as MESMAS duas funções por onde as vendas passam (`mapa_de_imposto` e
+    `por_tipo_de_pagamento`), com o sinal ao contrário. É isso que faz a
+    devolução em dinheiro baixar o `esperado` da gaveta e a devolução no
+    Glovo não lhe tocar, sem uma segunda contabilidade a explicar a mesma
+    gaveta.
 
     Recebe o que já foi lido da base de dados e não lê nada: é aritmética
     pura sobre listas, e é a ÚNICA que os dois ecrãs usam. O Ponto de Caixa
@@ -602,10 +624,10 @@ def _resumo_do_turno(sessao: Dict, movimentos: list, vendas: list) -> Dict:
     fechava o ciclo `caixa → mapa_imposto → fiscal → venda → caixa`."""
     from .mapa_imposto import mapa_de_imposto, totais_do_mapa
 
-    mapa = mapa_de_imposto(vendas)
+    mapa = mapa_de_imposto(vendas, notas_credito)
     totais = totais_do_mapa(mapa)
-    vendas_dinheiro = soma_vendas_dinheiro(vendas)
-    pagamentos = por_tipo_de_pagamento(vendas)
+    vendas_dinheiro = soma_vendas_dinheiro(vendas, notas_credito)
+    pagamentos = por_tipo_de_pagamento(vendas, notas_credito)
     # **O que foi FACTURADO e não tem pagamento nenhum por baixo.** Em
     # cêntimos inteiros e do lado do servidor, como tudo o resto.
     #
@@ -643,10 +665,54 @@ def _resumo_do_turno(sessao: Dict, movimentos: list, vendas: list) -> Dict:
         "base_tributavel": totais["base"],
         "iva_total": totais["iva"],
         "total_faturado": totais["total"],
-        "quantos_documentos": sum(
-            1 for v in vendas if v.get("estado") == "emitida"
+        # Documentos FISCAIS do turno, e uma nota de crédito é um deles — é o
+        # que o Vendus conta e o que a contabilista reconcilia. Contá-la
+        # deixava-a de fora do único número do Z que diz quantos papéis saíram.
+        "quantos_documentos": (
+            sum(1 for v in vendas if v.get("estado") == "emitida")
+            + sum(1 for n in notas_credito or [] if n.get("estado") == "emitida")
         ),
     }
+
+
+async def _nota_de_credito_em_curso(db, sessao: Dict) -> Optional[Dict]:
+    """A primeira nota de crédito desta sessão que RESERVOU e ainda não se
+    sabe se saiu — ou `None`, o caso normal.
+
+    É o gémeo de `_venda_com_emissao_viva`, e existe pelo mesmo par
+    (marcar, depois perguntar) que fecha a janela do fecho: a rota da nota de
+    crédito grava a intenção ANTES de falar com o Vendus e só depois relê a
+    sessão, exigindo-a `aberta` (`nota_credito.emitir_nota_credito`). Para
+    qualquer ordem possível, uma das duas partes vê sempre a outra — a
+    intenção nasce antes da marca e é apanhada aqui, ou nasce depois e é a
+    releitura da sessão que a manda abortar sem emitir.
+
+    `estado: "reservada"` e mais nada: uma nota `emitida` já entrou no resumo
+    do turno (é isso que o Z tem de dizer) e uma `incerta` ficou por apurar —
+    essa não trava o fecho, porque não há nada a esperar dela: ninguém sabe se
+    o documento saiu, e prender a caixa de uma loja até alguém ir ao Vendus era
+    a regra 3 do dono ao contrário."""
+    return await db[COLECOES["notas_credito"]].find_one(
+        {"sessao_id": sessao["id"], "estado": "reservada"}, {"_id": 0}
+    )
+
+
+async def _notas_de_credito_do_turno(db, sessao: Dict) -> list:
+    """As notas de crédito EMITIDAS nesta sessão de caixa.
+
+    A sessão é a do turno em que a devolução aconteceu, e não a da fatura de
+    origem: o cliente que volta amanhã é creditado no turno de amanhã, e é da
+    gaveta de amanhã que sai o dinheiro. É por isso que
+    `nota_credito.emitir_nota_credito` grava o `sessao_id` da sessão ABERTA no
+    momento da devolução.
+
+    Uma função e não duas leituras copiadas, pela razão de
+    `_movimentos_que_contam` aqui em cima: o Ponto de Caixa e o Z têm de ver
+    exactamente o mesmo conjunto, ou a operadora confere a gaveta às 15h com
+    um número e às 23h o Z dá-lhe outro."""
+    return await db[COLECOES["notas_credito"]].find(
+        {"sessao_id": sessao["id"], "estado": "emitida"}
+    ).to_list(10000)
 
 
 @router.get("/pos/caixa/ponto")
@@ -685,8 +751,9 @@ async def ponto_de_caixa(
     vendas = await db[COLECOES["vendas"]].find(
         {"sessao_id": sessao["id"], "estado": "emitida"}
     ).to_list(10000)
+    notas_credito = await _notas_de_credito_do_turno(db, sessao)
 
-    resumo = _resumo_do_turno(sessao, movimentos, vendas)
+    resumo = _resumo_do_turno(sessao, movimentos, vendas, notas_credito)
     resumo.update({
         "caixa": {"id": caixa["id"], "nome": caixa.get("nome")},
         "sessao": _sessao_publica(sessao),
@@ -783,6 +850,10 @@ async def fechar_caixa(
             status_code=409,
             detail=_MSG_FECHO_COM_EMISSAO_EM_CURSO % em_emissao.get("id"),
         )
+    if await _nota_de_credito_em_curso(db, sessao) is not None:
+        raise HTTPException(
+            status_code=409, detail=_MSG_FECHO_COM_NOTA_DE_CREDITO_EM_CURSO
+        )
 
     # A MARCA. Condicionada ao estado que acabámos de ler (`aberta` no caso
     # normal, `a_fechar` quando isto é a retoma de um fecho que morreu a
@@ -800,7 +871,11 @@ async def fechar_caixa(
     # sozinha. Uma emissão que tenha ganho a reserva mesmo antes da marca é
     # apanhada aqui; e a partir da marca nenhuma outra consegue emitir.
     em_emissao = await _venda_com_emissao_viva(db, sessao)
-    if em_emissao is not None:
+    nota_em_curso = (
+        None if em_emissao is not None
+        else await _nota_de_credito_em_curso(db, sessao)
+    )
+    if em_emissao is not None or nota_em_curso is not None:
         # Desfaz a marca — condicionada a `a_fechar`, para nunca reabrir uma
         # sessão que outro pedido já tenha fechado entretanto. A caixa fica
         # como estava e a funcionária tenta outra vez daqui a uns segundos.
@@ -810,7 +885,11 @@ async def fechar_caixa(
         )
         raise HTTPException(
             status_code=409,
-            detail=_MSG_FECHO_COM_EMISSAO_EM_CURSO % em_emissao.get("id"),
+            detail=(
+                _MSG_FECHO_COM_EMISSAO_EM_CURSO % em_emissao.get("id")
+                if em_emissao is not None
+                else _MSG_FECHO_COM_NOTA_DE_CREDITO_EM_CURSO
+            ),
         )
 
     # As somas, DEPOIS da marca: a partir daqui nenhuma venda desta sessão
@@ -879,7 +958,13 @@ async def fechar_caixa(
     # `esperado` que a operadora viu às 15h e o que sai no Z às 23h são o
     # mesmo cálculo, e que o desdobramento por tipo de pagamento não pode
     # discordar entre os dois ecrãs.
-    resumo = _resumo_do_turno(sessao, movimentos, vendas)
+    # As devoluções do turno, lidas DEPOIS da marca `a_fechar` como tudo o
+    # resto aqui — e definitivas pela mesma razão que as vendas: uma nota de
+    # crédito exige a sessão ABERTA (`nota_credito.emitir_nota_credito`), e a
+    # partir da marca não há sessão aberta nenhuma para esta caixa.
+    notas_credito = await _notas_de_credito_do_turno(db, sessao)
+
+    resumo = _resumo_do_turno(sessao, movimentos, vendas, notas_credito)
     vendas_dinheiro = resumo["vendas_dinheiro"]
     esperado_valor = resumo["esperado"]
     diferenca_valor = diferenca(esperado_valor, dados.contado)

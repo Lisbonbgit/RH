@@ -409,18 +409,24 @@ def test_a_fatura_aberta_MOSTRA_a_tabela_e_o_mapa_de_imposto(ecra_normal):
     assert "€ 11,64" in fatura
 
 
-def test_a_fatura_aberta_mostra_os_TRES_botoes_e_dois_estao_desligados(ecra_normal):
-    """Imprimir e Nota de Crédito ficam à vista e desligados COM A RAZÃO — a
-    mesma regra do menu Caixa. Copiar para a venda é o único que funciona
-    nesta ronda."""
+def test_a_fatura_aberta_mostra_os_TRES_botoes_e_so_o_imprimir_esta_desligado(ecra_normal):
+    """**Imprimir** fica à vista e desligado COM A RAZÃO — a mesma regra do
+    menu Caixa. **Copiar para a venda** e **Nota de Crédito** funcionam.
+
+    A nota de crédito era um «brevemente» até esta ronda; agora tem ecrã
+    (`PosNotaCredito.js`) e o botão abre-o. Este guarda mudou de lado de
+    propósito: era ele que segurava a frase «a nota de crédito é a ronda
+    seguinte», e essa frase deixou de ser verdade."""
     fatura = ecra_normal["fatura"]
     assert "Imprimir" in fatura and "Nota de Crédito" in fatura
     assert "Copiar para a venda" in fatura
     assert ecra_normal["imprimir_desligado"] == "sim"
-    assert ecra_normal["nc_desligado"] == "sim"
+    assert ecra_normal["nc_desligado"] == "nao"
     assert ecra_normal["copiar_desligado"] == "nao"
     assert "agente de impressão" in fatura
-    assert "nota de crédito é a ronda seguinte" in fatura
+    # E o botão vivo diz o que faz — que é emitir um documento fiscal REAL.
+    assert "documento fiscal real" in fatura.lower()
+    assert "ronda seguinte" not in fatura
 
 
 @pytest.fixture(scope="module")
