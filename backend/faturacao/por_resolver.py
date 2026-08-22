@@ -154,6 +154,16 @@ def _item(venda: Optional[Dict], venda_id: str, motivo: str) -> Dict:
         # nunca ausentes: quem lê não pode ter de adivinhar se a falta da
         # chave quer dizer "não" ou "esta versão não responde a isso".
         "tem_reserva_viva": False,
+        # **A reserva viva está ESTRAGADA: sem `ext_ref`.** `fiscal._reservar`
+        # escreve-a sempre, por isso isto são dados mexidos depois do facto —
+        # e é o que separa uma conta travada NORMAL (que se destranca em
+        # Reservas Fiscais Presas) de uma que não se destranca em ecrã nenhum:
+        # LIBERTAR recusa-a (`fiscal._MSG_LIBERTAR_SEM_EXT_REF`) porque a
+        # confirmação humana que ela exige — «procure esta referência no
+        # Vendus» — não se pode pedir sobre uma referência que não existe.
+        # Quem lê isto (`caixa.arrumar_conta_esquecida` e a lista do gestor)
+        # precisa de o saber para não nomear uma saída que responde 409.
+        "reserva_sem_ext_ref": False,
         "em_curso_no_balcao": False,
     }
 
@@ -324,6 +334,9 @@ async def contas_por_resolver(db, sessao_ids: List[str]) -> List[Dict]:
             # gestor, que é onde ela pertence.
             item = itens[venda_id] = _item(venda, venda_id, MOTIVO_EMISSAO_VIVA)
         item["tem_reserva_viva"] = True
+        # `or`: basta UMA reserva estragada para a conta não se destrancar.
+        item["reserva_sem_ext_ref"] = (
+            item["reserva_sem_ext_ref"] or not reserva.get("ext_ref"))
 
     # Pela ordem em que nasceram, com as que já não têm venda no fim: é a
     # ordem em que uma lista de contas por cobrar se lê, e é determinística.

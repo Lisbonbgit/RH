@@ -118,6 +118,11 @@ class ResultadoUpdateFalso:
         self.modified_count = matched_count
 
 
+class ResultadoDeleteFalso:
+    def __init__(self, deleted_count):
+        self.deleted_count = deleted_count
+
+
 class ColeccaoFalsa:
     def __init__(self, registo, nome, documentos=None):
         self.registo = registo
@@ -140,6 +145,17 @@ class ColeccaoFalsa:
         if alvos:
             alvos[0].update(atualizacao.get("$set", {}))
         return ResultadoUpdateFalso(matched_count=len(alvos))
+
+    async def delete_one(self, filtro):
+        # É por aqui que LIBERTAR apaga a reserva
+        # (`fiscal._libertar_reserva_se_intacta`). Sem ele, a saída que a
+        # recusa NOMEIA não se podia CARREGAR — só citar, que é exactamente
+        # o defeito que este ficheiro deixou de ter.
+        self.registo.append(("delete_one", self.nome, filtro))
+        alvos = [d for d in self._documentos if _corresponde(d, filtro)]
+        if alvos:
+            self._documentos.remove(alvos[0])
+        return ResultadoDeleteFalso(deleted_count=len(alvos[:1]))
 
 
 class DbFalsa:
@@ -546,29 +562,58 @@ def test_arrumar_uma_conta_de_um_turno_A_FECHAR_e_recusado(monkeypatch):
 # As CINCO formas com que uma conta chega a esta lista. O nome de cada uma é o
 # que se lhe chama ao telefone; o que está aqui é como ela fica na base.
 _FAMILIAS = {
-    # (documentos das vendas, reservas, motivo esperado, tem reserva viva)
-    "conta_aberta": (lambda: [_venda()], None, "conta_aberta", False),
+    # (documentos das vendas, reservas, motivo esperado, tem reserva viva,
+    #  a reserva está estragada — sem `ext_ref`)
+    "conta_aberta": (lambda: [_venda()], None, "conta_aberta", False, False),
     "mae_separada_sem_partes": (
         lambda: [_venda(id="parte-1", estado="separada")], None,
-        "mae_separada_sem_partes", False),
+        "mae_separada_sem_partes", False, False),
     "estado_desconhecido": (
         lambda: [_venda(estado="em_conferencia")], None,
-        "estado_desconhecido", False),
+        "estado_desconhecido", False, False),
     "conta_aberta_com_reserva_viva": (
-        lambda: [_venda()], "parte-1", "conta_aberta", True),
+        lambda: [_venda()], "parte-1", "conta_aberta", True, False),
     # A filha que a compensação de `venda._grava_as_partes` apagou: fica só a
     # reserva, sem venda nenhuma por baixo.
-    "reserva_orfa": (lambda: [], "parte-1", "emissao_viva", True),
+    "reserva_orfa": (lambda: [], "parte-1", "emissao_viva", True, False),
+    # **Dados ESTRAGADOS: a reserva viva perdeu a `ext_ref`.** `_reservar`
+    # escreve-a sempre, por isso isto é uma reserva mexida depois do facto —
+    # e é a família que tinha três rotas e zero saídas, PERMANENTEMENTE:
+    # arrumar 409 a mandar às Reservas Fiscais Presas, e lá LIBERTAR 409
+    # (`fiscal._MSG_LIBERTAR_SEM_EXT_REF`, «chame quem trata do sistema») e
+    # RECONCILIAR sem documento nenhum para trazer. Medido com 11,64 €:
+    # `/caixa/contas-esquecidas` mostrava-a como `conta_aberta` com o crachá
+    # «Reserva fiscal por resolver», e o ecrã desenhava-lhe o bloco genérico
+    # «resolva a reserva na lista acima… e volte aqui» — voltar traz a mesma
+    # linha.
+    "reserva_viva_sem_ext_ref": (
+        lambda: [_venda()], "parte-1", "conta_aberta", True, True),
 }
+
+# **As famílias que NÃO podem ter acção executável, e por isso têm nome e
+# texto próprios.** É a regra da ronda anterior — «ou acção executável, ou
+# nome e texto próprios» — aplicada às duas que a cumprem por este lado:
+#
+# - `estado_desconhecido`: cancelar declara «isto nunca foi pago», e sobre um
+#   estado que o sistema não sabe ler não se pode declarar nada;
+# - `reserva_viva_sem_ext_ref`: a única rota que a destrancaria é a que
+#   autoriza uma SEGUNDA Fatura Simplificada, e a confirmação humana que ela
+#   exige — «procure esta referência no Vendus» — não se pode pedir sobre uma
+#   referência que não existe. RECONCILIAR ainda a pode salvar (procura o
+#   documento pela referência que a emissão TERIA usado), e é isso que a
+#   frase tem de nomear; se o Vendus não tiver nada, ela não se resolve em
+#   ecrã nenhum e a frase tem de dizer isso também.
+_SEM_SAIDA_EXECUTAVEL = ("estado_desconhecido", "reserva_viva_sem_ext_ref")
 
 
 def _monta_da_familia(monkeypatch, familia):
-    vendas, com_reserva, _, _ = _FAMILIAS[familia]
+    vendas, com_reserva, _, _, sem_ext_ref = _FAMILIAS[familia]
     refs = None
     if com_reserva:
         refs = [{
             "id": "ref-1",
-            "ext_ref": ext_ref_determinista("loja-1", "sessao-ontem", com_reserva),
+            "ext_ref": None if sem_ext_ref else ext_ref_determinista(
+                "loja-1", "sessao-ontem", com_reserva),
             "venda_id": com_reserva, "documento_id": None,
             "criado_em": "2026-08-14T22:11:00+00:00",
         }]
@@ -584,6 +629,46 @@ def _recusa(gestor=None):
     return None
 
 
+def _leva_ate_ao_fim_pelas_reservas_presas(familia):
+    """**CARREGAR em LIBERTAR, e não só ler que ele lá está.**
+
+    Este helper é a correcção de uma guarda que sobrevivia à remoção da saída
+    que ela própria nomeava: com `raise HTTPException(409)` à cabeça de
+    `fiscal.libertar_reserva_presa` caíam 26 testes em 1363, e nenhum era
+    deste ficheiro — as duas famílias com a saída noutro ecrã
+    (`conta_aberta_com_reserva_viva`, `reserva_orfa`) ficavam VERDES, porque
+    só afirmavam que a linha APARECE em `/fiscal/reservas-presas`.
+
+    «A linha aparece» e «o botão funciona» é exactamente a distinção que
+    custou duas rondas — «uma saída nomeada, zero executáveis». Aqui a
+    família é levada até ao FIM: carrega-se em LIBERTAR pela rota real, e a
+    conta tem de SAIR do conjunto por resolver — sozinha (a reserva órfã
+    deixa de existir) ou pelo botão que fica a seguir (a conta `aberta` passa
+    a arrumar-se). Uma família que fique na lista com todos os botões
+    gastos é o beco que esta regra existe para não haver."""
+    _corre(fiscal_mod.libertar_reserva_presa(
+        "parte-1", fiscal_mod.PedidoLibertarReserva(confirmado_no_vendus=True),
+        gestor=_gestor()))
+    assert _corre(fiscal_mod.listar_reservas_presas()) == [], (
+        "LIBERTAR correu e a reserva continua presa: a família «%s» ficou "
+        "com a saída nomeada gasta e o dinheiro no mesmo sítio." % familia)
+
+    restam = _corre(listar_contas_esquecidas(_=_gestor()))
+    if restam:
+        # A conta continua por resolver POR SI PRÓPRIA (é a `conta_aberta`
+        # que a reserva travava, e não a órfã, que se foi com a reserva). O
+        # botão desta lista tem agora de a resolver mesmo — é ele a saída
+        # que sobra, e é a última.
+        assert [c["id"] for c in restam] == ["parte-1"], restam
+        assert _recusa() is None, (
+            "A família «%s» foi libertada e o botão que sobra continua a "
+            "recusá-la: dinheiro visível, zero acções executáveis."
+            % familia)
+    assert _corre(listar_contas_esquecidas(_=_gestor())) == [], (
+        "A família «%s» passou pelas duas saídas que o sistema lhe nomeia e "
+        "continua por resolver." % familia)
+
+
 @pytest.mark.parametrize("familia", sorted(_FAMILIAS))
 def test_nenhuma_familia_por_resolver_fica_sem_saida(monkeypatch, familia):
     """Para cada família do predicado: ou o botão desta lista a resolve, ou a
@@ -593,7 +678,7 @@ def test_nenhuma_familia_por_resolver_fica_sem_saida(monkeypatch, familia):
     `_MSG_CONTA_ESQUECIDA_JA_RESOLVIDA` — «foi cobrada, cancelada ou repartida
     entretanto. Recarregue a lista.» Sobre uma conta que ESTÁ na lista, ela é
     uma instrução que se contradiz: recarregar traz a mesma linha de volta."""
-    _, _, motivo, trava = _FAMILIAS[familia]
+    _, _, motivo, trava, _ = _FAMILIAS[familia]
     db, _ = _monta_da_familia(monkeypatch, familia)
     lista = _corre(listar_contas_esquecidas(_=_gestor()))
     assert [(c["motivo"], c["reserva_fiscal_por_resolver"]) for c in lista] == [
@@ -607,28 +692,78 @@ def test_nenhuma_familia_por_resolver_fica_sem_saida(monkeypatch, familia):
         "lista» — e recarregar traz a mesma linha de volta. É o beco que esta "
         "regra existe para não haver." % familia)
 
-    if trava:
-        # A saída é NOUTRO ecrã (Reservas Fiscais Presas: Libertar ou
-        # Reconciliar), e a recusa manda-o lá. Tem de estar mesmo lá.
-        assert recusa == _MSG_CONTA_ESQUECIDA_TRAVADA
+    if familia in _SEM_SAIDA_EXECUTAVEL:
+        # **As que NÃO podem ter saída executável**, e por isso deixaram de ser
+        # tratadas como as outras: têm nome e texto próprios, e o que a frase
+        # diz tem de ser verdade sobre esta família — nunca a frase de outra.
+        assert recusa is not None
+        assert "nada foi alterado" in recusa.lower()
+        assert "quem mantém o sistema" in recusa, (
+            "A frase da família «%s» não diz a quem se leva isto: sem isso, o "
+            "gestor fica com dinheiro em ecrã e ninguém a quem o levar."
+            % familia)
+        estado_antes = {
+            "estado_desconhecido": "em_conferencia",
+            "reserva_viva_sem_ext_ref": "aberta",
+        }[familia]
+        assert db[COLECOES["vendas"]]._documentos[0]["estado"] == estado_antes, (
+            "O botão que devia recusar escreveu na mesma.")
+        if familia == "estado_desconhecido":
+            assert "em_conferencia" in recusa, (
+                "A frase não diz QUAL é o estado que o sistema não conhece — "
+                "sem isso, o gestor não tem o que levar a quem mantém o "
+                "sistema.")
+        else:
+            # A frase NÃO pode ser a das outras contas travadas: essa manda-o
+            # «resolva-a primeiro em Reservas Fiscais Presas», e lá esta
+            # família leva 409 em LIBERTAR — o ciclo fecha-se sobre si próprio.
+            assert recusa != _MSG_CONTA_ESQUECIDA_TRAVADA, (
+                "A reserva estragada voltou a receber a frase da conta travada "
+                "normal — e a saída que ela nomeia responde-lhe 409.")
+            assert "ext_ref" in recusa and "Reconciliar" in recusa, (
+                "A frase tem de dizer o que ESTA reserva é (sem referência "
+                "externa) e nomear a única acção que ainda a pode salvar: %r"
+                % recusa)
+            # E a saída que a frase NEGA é mesmo negada, pela rota real.
+            with pytest.raises(HTTPException) as libertar:
+                _corre(fiscal_mod.libertar_reserva_presa(
+                    "parte-1",
+                    fiscal_mod.PedidoLibertarReserva(confirmado_no_vendus=True),
+                    gestor=_gestor()))
+            assert libertar.value.status_code == 409
+            assert libertar.value.detail == fiscal_mod._MSG_LIBERTAR_SEM_EXT_REF
+            # E a lista das reservas presas diz que ela está ESTRAGADA, e não
+            # «órfã» — que é a família ao lado, e essa liberta-se.
+            presa = _corre(fiscal_mod.listar_reservas_presas())[0]
+            assert presa["motivo"] == "sem_ext_ref", presa
+            assert "quem mantém o sistema" in presa["descricao"]
+    elif trava:
+        # A saída é NOUTRO ecrã (Reservas Fiscais Presas: LIBERTAR), e a
+        # recusa manda-o lá. **Não basta a linha APARECER lá: carrega-se no
+        # botão, pela rota real, e leva-se a conta até sair do conjunto.**
         assert "Reservas Fiscais Presas" in recusa
+        if familia == "reserva_orfa":
+            # **A metade falsa da frase.** Para a órfã, RECONCILIAR não pode
+            # existir por construção — ela liga o documento à VENDA, e a venda
+            # já não existe (`fiscal._MSG_RECONCILIAR_SEM_VENDA`, 404). Uma
+            # frase que nomeia duas saídas e só tem uma é meia frase falsa.
+            with pytest.raises(HTTPException) as reconciliar:
+                _corre(fiscal_mod.reconciliar_reserva_presa(
+                    "parte-1", None, gestor=_gestor()))
+            assert reconciliar.value.status_code == 404
+            assert "não há nada para reconciliar" in recusa.lower(), (
+                "A frase da reserva ÓRFÃ voltou a oferecer Reconciliar como "
+                "saída, e essa responde-lhe 404: metade da instrução é falsa. "
+                "%r" % recusa)
+            assert "LIBERTAR" in recusa, (
+                "E deixou de nomear a única saída que ela tem mesmo.")
+        else:
+            assert recusa == _MSG_CONTA_ESQUECIDA_TRAVADA
         assert [r["venda_id"] for r in _corre(fiscal_mod.listar_reservas_presas())] == [
             "parte-1"], (
             "A recusa manda o gestor a Reservas Fiscais Presas e a conta não "
             "está lá — a saída nomeada não existe.")
-    elif motivo == "estado_desconhecido":
-        # **A única que NÃO pode ter saída**, e por isso deixou de ser tratada
-        # como as outras: cancelar declara «isto nunca foi pago», e sobre um
-        # estado que este sistema não sabe ler não se pode declarar nada. Tem
-        # nome e texto próprios — ver
-        # `caixa._MSG_CONTA_ESQUECIDA_ESTADO_DESCONHECIDO`.
-        assert recusa is not None
-        assert "em_conferencia" in recusa, (
-            "A frase não diz QUAL é o estado que o sistema não conhece — sem "
-            "isso, o gestor não tem o que levar a quem mantém o sistema.")
-        assert "nada foi alterado" in recusa.lower()
-        assert db[COLECOES["vendas"]]._documentos[0]["estado"] == "em_conferencia", (
-            "O botão que devia recusar escreveu na mesma.")
+        _leva_ate_ao_fim_pelas_reservas_presas(familia)
     else:
         assert recusa is None, (
             "A família «%s» não tem ninguém no POS que lhe chegue e este botão "
@@ -805,3 +940,43 @@ def test_o_ecra_do_gestor_tem_um_rotulo_para_cada_motivo_do_servidor():
         "normal, e a instrução por baixo passa a ser a errada." % sem_rotulo
     )
 
+
+
+def test_o_ecra_do_gestor_da_nome_proprio_a_reserva_estragada():
+    """A outra metade da decisão «nome e texto próprios», do lado do ecrã.
+
+    A reserva viva SEM `ext_ref` não pode ter botão nenhum (LIBERTAR
+    responde-lhe 409 e «Dar por perdida» também) — e enquanto ela caísse no
+    bloco genérico das contas travadas, o ecrã dizia-lhe «resolva a reserva na
+    lista acima… e volte aqui», e voltar traz a mesma linha. É o ciclo fechado
+    sobre si próprio, outra vez, com outro nome."""
+    ecra = _ECRA_DO_GESTOR.read_text(encoding="utf-8")
+    assert "c.reserva_fiscal_estragada ?" in ecra, (
+        "O ecrã voltou a desenhar o bloco genérico das contas travadas por "
+        "cima de uma reserva que não se destranca em ecrã nenhum.")
+    ramo = ecra[ecra.index("c.reserva_fiscal_estragada ?"):]
+    ramo = ramo[:ramo.index("c.reserva_fiscal_por_resolver ?")]
+    assert "arrumar-esquecida-" not in ramo, (
+        "«Dar por perdida» voltou a ser desenhado a uma família que o servidor "
+        "recusa.")
+    assert "Libertar não serve" in ramo and "Reconciliar" in ramo, (
+        "A frase deixou de dizer qual das duas acções da lista de cima não "
+        "serve, e qual é a que ainda pode salvar esta conta.")
+    assert "quem mantém o sistema" in ramo, (
+        "E deixou de dizer a quem se leva isto quando o Vendus não tem nada.")
+
+
+def test_o_ecra_nao_manda_a_reserva_ORFA_reconciliar():
+    """A órfã não tem venda por baixo, e `reconciliar_reserva_presa` responde
+    404 «não há nada para reconciliar». O bloco das contas travadas nomeava-lhe
+    as duas saídas — metade da instrução é falsa, e é sempre a metade falsa
+    que se experimenta primeiro."""
+    ecra = _ECRA_DO_GESTOR.read_text(encoding="utf-8")
+    ramo = ecra[ecra.index("c.reserva_fiscal_por_resolver ?"):]
+    ramo = ramo[:ramo.index("arrumar-esquecida-")]
+    assert "c.estado_da_venda" in ramo, (
+        "O ecrã voltou a escrever a mesma instrução para a conta que TEM "
+        "venda e para a reserva órfã, que não tem — e para essa, metade dela "
+        "é falsa.")
+    assert "reconciliar não serve" in ramo, (
+        "A frase da órfã deixou de dizer que Reconciliar não serve para ela.")

@@ -719,3 +719,243 @@ def test_a_frase_do_libertar_so_nomeia_saidas_que_existem(monkeypatch):
         _corre(cancelar_venda("conta", operador=op))
     assert cancelar.value.status_code == 409
     assert _corre(venda_aberta("caixa-1", operador=op)) is None
+
+    # **E a saída VERDADEIRA também é exercitada, e não só citada.** Esta
+    # metade faltava, e era a mesma falha das outras três ao contrário:
+    # exercitavam-se as saídas FALSAS (409, 409, `null`) e a boa era só
+    # NOMEADA por um `in a_seguir`. Com o `arrumar` a voltar a exigir
+    # `motivo == "conta_aberta"` caem 5 testes em 1363 e este não estava
+    # entre eles — a frase continuava a apontar para um botão que já não
+    # trabalhava. Uma frase que nomeia uma saída vale o que valer o BOTÃO
+    # dela: carrega-se nele, pela rota real, e a conta tem de sair da lista.
+    from faturacao.caixa import arrumar_conta_esquecida
+
+    assert [c["id"] for c in _corre(_contas_esquecidas(db))] == ["conta"]
+    _corre(arrumar_conta_esquecida(
+        "conta", gestor={"user_id": "g1", "email": "gestor@lojas.pt"}))
+    assert _corre(_contas_esquecidas(db)) == [], (
+        "A frase manda o gestor a «Contas por Resolver», ele carrega em Dar "
+        "por perdida e a conta continua lá: uma saída nomeada, zero "
+        "executáveis.")
+
+
+# --- Os TECTOS e os RECUOS da leitura das reservas -----------------------------
+#
+# Quatro linhas de `por_resolver` que decidem se uma RESERVA VIVA chega, ou não,
+# aos cinco leitores. Mutadas uma a uma, **zero testes caíam em 1363** — e a
+# primeira delas é o único sítio que ainda podia fazer um Z assinado mentir.
+
+
+def _db_de_reservas(monkeypatch, reservas, sessoes=None, vendas=None):
+    """Uma loja com N reservas VIVAS na mesma sessão. `reservas` é a lista de
+    `venda_id`s; cada uma tem a `ext_ref` que `ext_ref_determinista` gera —
+    é pelo PREFIXO dela que o predicado pergunta."""
+    db = _db(
+        [], caixas=[_caixa()],
+        sessoes=[_sessao(estado="aberta")] if sessoes is None else sessoes,
+        vendas=vendas or [], produtos=[_produto()],
+        refs=[{
+            "id": "ref-%s" % venda_id, "venda_id": venda_id,
+            "ext_ref": ext_ref_determinista(_LOJA, _SESSAO, venda_id),
+            "criado_em": "2026-08-21T10:0%d:00+00:00" % (i + 2),
+            "documento_id": None,
+        } for i, venda_id in enumerate(reservas)],
+    )
+    for modulo in (venda_mod, caixa_mod, fiscal_mod):
+        monkeypatch.setattr(modulo, "obter_db", lambda db=db: db)
+    return db
+
+
+def test_o_tecto_das_reservas_nao_corta_dinheiro_do_dialogo_nem_do_Z(monkeypatch):
+    """**`_LIMITE_RESERVAS` é o último sítio que pode fazer um Z assinado
+    mentir, e não tinha uma linha de teste.**
+
+    Três contas de 11,64 € que foram CANCELADAS com a reserva viva por baixo
+    (o desfecho que `caixa._venda_com_emissao_viva` documenta: a operadora
+    cancela, a compensação `_repor_aberta` colide com o índice único do posto
+    e engole o `DuplicateKeyError`). Nenhuma delas entra pelo lado das VENDAS
+    — `cancelada` é terminal —, todas entram pelo lado das RESERVAS, e é o
+    tecto dessa leitura que decide quantas chegam ao diálogo que a operadora
+    lê antes de assinar.
+
+    Medido com `_LIMITE_RESERVAS = 1`: `quantas=1  total=11,64` em vez de
+    `3 / 34,92`. **23,28 € a menos num Z assinado**, sem um único teste
+    vermelho."""
+    db = _db_de_reservas(
+        monkeypatch, ["conta-a", "conta-b", "conta-c"],
+        vendas=[_venda(
+            id=vid, loja_id=_LOJA, caixa_id="caixa-1", sessao_id=_SESSAO,
+            dispositivo_id=_PC, linhas=_LINHAS, estado="cancelada",
+            criada_em="2026-08-21T10:0%d:00+00:00" % i,
+        ) for i, vid in enumerate(("conta-a", "conta-b", "conta-c"))],
+    )
+
+    dialogo = _corre(_contas_abertas_da_sessao(db, _SESSAO))
+
+    assert (dialogo["quantas"], dialogo["total"]) == (3, 34.92), (
+        "O tecto da leitura das reservas voltou a cortar dinheiro do diálogo "
+        "e do Z: %r" % ({k: dialogo[k] for k in ("quantas", "total")},))
+    assert dialogo["total_que_trava"] == 34.92
+    assert sorted(c["id"] for c in dialogo["contas"]) == [
+        "conta-a", "conta-b", "conta-c"]
+
+
+def test_uma_sessao_que_nao_esta_na_base_nao_traz_as_reservas_de_outra_loja(monkeypatch):
+    """**O recuo do prefixo IMPOSSÍVEL.** Sem sessão nenhuma encontrada não há
+    prefixo nenhum para filtrar, e um filtro AUSENTE não é "nada": é
+    `{"documento_id": None}` sozinho, que traz TODAS as reservas por resolver
+    da base — as das outras lojas incluídas.
+
+    Medido com `prefixos or [{"ext_ref": "\\x00"}]` trocado por
+    `if prefixos:`: a pergunta por uma sessão que não existe passa de `[]`
+    para a conta de 11,64 € de OUTRA loja."""
+    from faturacao.db import COLECOES
+    from faturacao.por_resolver import contas_por_resolver
+
+    db = _db_de_reservas(monkeypatch, [], sessoes=[])
+    db[COLECOES["refs_fiscais"]]._documentos.append({
+        "id": "ref-de-outra-loja", "venda_id": "conta-de-outra-loja",
+        "ext_ref": ext_ref_determinista("loja-9", "sessao-9", "conta-de-outra-loja"),
+        "criado_em": "2026-08-21T10:02:00+00:00", "documento_id": None,
+    })
+
+    assert _corre(contas_por_resolver(db, ["sessao-que-nao-esta-na-base"])) == [], (
+        "Uma sessão ausente da base voltou a trazer as reservas por resolver "
+        "de TODA a base — o fecho de uma loja passa a ficar refém da conta "
+        "presa de outra.")
+
+
+def test_uma_sessao_SEM_LOJA_rebenta_em_vez_de_desligar_o_travao_em_silencio(monkeypatch):
+    """**A falha ALTA que existe para NÃO ser silenciosa.** `sessao["loja_id"]`
+    e não `sessao.get("loja_id")`: uma sessão sem loja não existe
+    (`caixa.abrir_caixa` grava-a sempre), e se alguma vez existir é dados
+    estragados.
+
+    Com o `.get`, o prefixo saía `pos-None-…-`, não casava com reserva
+    nenhuma, e a reserva viva de 11,64 € DESAPARECIA dos cinco leitores — o
+    travão do fecho desligava-se sozinho e o Z era assinado por cima de uma
+    Fatura Simplificada que podia estar a nascer. É a forma de falhar que
+    esta linha existe para não ter: rebentar alto é o comportamento
+    ESCOLHIDO, e é isto que o prende."""
+    from faturacao.por_resolver import contas_por_resolver
+
+    db = _db_de_reservas(
+        monkeypatch, ["conta"],
+        sessoes=[{k: v for k, v in _sessao(estado="aberta").items()
+                  if k != "loja_id"}],
+        vendas=[_venda(
+            id="conta", loja_id=_LOJA, caixa_id="caixa-1", sessao_id=_SESSAO,
+            dispositivo_id=_PC, linhas=_LINHAS, estado="cancelada",
+            criada_em="2026-08-21T10:00:00+00:00")],
+    )
+
+    with pytest.raises(KeyError):
+        _corre(contas_por_resolver(db, [_SESSAO]))
+
+
+def test_o_tecto_das_SESSOES_cabe_em_todas_as_que_se_perguntam(monkeypatch):
+    """O balcão pergunta pelas sessões abertas da LOJA (duas ou três caixas,
+    `venda._contas_do_balcao`), e cada uma tem o seu prefixo. Um tecto que
+    corte a leitura das sessões corta os PREFIXOS, e as reservas das sessões
+    que ficaram de fora deixam de existir para o predicado.
+
+    Medido com `.to_list(1)`: das duas reservas órfãs de duas caixas da mesma
+    loja, só a da primeira chega — a segunda desaparece dos cinco leitores."""
+    from faturacao.por_resolver import contas_por_resolver
+
+    db = _db(
+        [], caixas=[_caixa()],
+        sessoes=[_sessao(id="sessao-1", estado="aberta"),
+                 _sessao(id="sessao-2", caixa_id="caixa-2", estado="aberta")],
+        vendas=[], produtos=[_produto()],
+        refs=[{
+            "id": "ref-%d" % i, "venda_id": "orfa-%d" % i,
+            "ext_ref": ext_ref_determinista(_LOJA, "sessao-%d" % i, "orfa-%d" % i),
+            "criado_em": "2026-08-21T10:0%d:00+00:00" % i, "documento_id": None,
+        } for i in (1, 2)],
+    )
+    for modulo in (venda_mod, caixa_mod, fiscal_mod):
+        monkeypatch.setattr(modulo, "obter_db", lambda db=db: db)
+
+    itens = _corre(contas_por_resolver(db, ["sessao-1", "sessao-2"]))
+
+    assert sorted(i["id"] for i in itens) == ["orfa-1", "orfa-2"], (
+        "Uma reserva viva de uma das caixas da loja deixou de existir para o "
+        "predicado: %r" % (itens,))
+
+
+# --- A conta de um POSTO que já não existe, com o turno a decorrer ------------
+
+
+def test_a_conta_de_um_posto_que_morreu_tem_a_saida_certa_escrita(monkeypatch):
+    """**Dois PCs no mesmo balcão é a configuração documentada, e um deles
+    pode morrer com uma conta aberta em cima.**
+
+    Medido com 11,64 € abertos em `pc-que-morreu` e a operadora no
+    `pc-balcao`, turno a decorrer: o diálogo e o Z contam
+    `quantas=1 total=11,64` — o dinheiro APARECE, e isso está certo —, mas
+    `GET /pos/venda/aberta` → `null`, `/pos/venda/repartidas` → `[]`,
+    `/caixa/contas-esquecidas` → `[]`, `arrumar` → 409 a mandá-lo ao balcão e
+    `entregar-ao-gestor` do outro posto → 409. Zero saídas.
+
+    **A saída real é FECHAR O TURNO** — a conta entra no Z como ficando por
+    cobrar, que é o que ela é, e a partir daí arruma-se na lista do gestor —
+    **e era a única que a mensagem não nomeava**: ela dizia «cobra-se ou
+    cancela-se no balcão, por quem está lá», e não está lá ninguém.
+
+    A decisão, escrita: esta família fica com **nome e texto próprios**, e não
+    com uma acção nova. A acção que a resolve JÁ EXISTE e é executável (fechar
+    o turno, depois dar por perdida); inventar uma segunda — o gestor a
+    cancelar à distância a conta de um posto de um turno a decorrer — era
+    reabrir o defeito que a marca `entregue_ao_gestor` veio fechar. O que
+    faltava era a frase dizer a verdade. E aqui ela não é só citada: as duas
+    saídas são CARREGADAS, pelas rotas reais, até a conta sair do conjunto."""
+    from fastapi import HTTPException
+
+    from faturacao.caixa import PedidoFecharCaixa, arrumar_conta_esquecida, fechar_caixa
+    from faturacao.venda import entregar_ao_gestor
+
+    gestor = {"user_id": "u-9", "email": "gestor@lojas.pt"}
+    db = _db(
+        [], caixas=[_caixa()], sessoes=[_sessao(estado="aberta")],
+        produtos=[_produto()],
+        vendas=[_venda(
+            id="conta", loja_id=_LOJA, caixa_id="caixa-1", sessao_id=_SESSAO,
+            dispositivo_id="pc-que-morreu", linhas=_LINHAS,
+            criada_em="2026-08-21T10:00:00+00:00", entregue_ao_gestor_em=None)],
+    )
+    for modulo in (venda_mod, caixa_mod, fiscal_mod):
+        monkeypatch.setattr(modulo, "obter_db", lambda db=db: db)
+    op = _operador(dispositivo_id=_PC)
+
+    # 1) O dinheiro aparece onde tem de aparecer, e não aparece onde não pode.
+    dialogo = _corre(_contas_abertas_da_sessao(db, _SESSAO, dispositivo_id=_PC))
+    assert (dialogo["quantas"], dialogo["total"]) == (1, _TOTAL)
+    assert _corre(venda_aberta("caixa-1", operador=op)) is None
+    assert _corre(contas_repartidas("caixa-1", operador=op)) == []
+    assert _corre(_contas_esquecidas(db)) == []
+
+    # 2) As duas recusas, exercitadas.
+    with pytest.raises(HTTPException) as entregar:
+        _corre(entregar_ao_gestor("conta", operador=op))
+    assert entregar.value.status_code == 409
+    with pytest.raises(HTTPException) as arrumar:
+        _corre(arrumar_conta_esquecida("conta", gestor=gestor))
+    assert arrumar.value.status_code == 409
+    assert "FECHAR O TURNO" in arrumar.value.detail, (
+        "A recusa continua a nomear só «quem está lá» — e nesse posto não "
+        "está ninguém. A saída real (fechar o turno) é a única que a frase "
+        "não diz: %r" % arrumar.value.detail)
+
+    # 3) E a saída nomeada é CARREGADA, até ao fim.
+    z = _corre(fechar_caixa(
+        PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=op))
+    assert z["contas_abertas"]["total"] == _TOTAL, (
+        "O Z deixou de registar os 11,64 € que ficaram por cobrar no posto "
+        "que morreu.")
+    assert [c["id"] for c in _corre(_contas_esquecidas(db))] == ["conta"], (
+        "Fechado o turno, a conta tinha de passar a estar na lista do gestor.")
+    _corre(arrumar_conta_esquecida("conta", gestor=gestor))
+    assert _corre(_contas_esquecidas(db)) == [], (
+        "A saída que a frase nomeia foi percorrida até ao fim e a conta "
+        "continua por resolver.")

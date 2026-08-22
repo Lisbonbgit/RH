@@ -137,6 +137,10 @@ const BADGE_MOTIVO = {
   em_retoma: { texto: 'Em retoma', classe: 'bg-amber-50 text-amber-700 border-amber-200' },
   incerta: { texto: 'Incerta', classe: 'bg-amber-50 text-amber-700 border-amber-200' },
   orfa: { texto: 'Órfã', classe: 'bg-red-50 text-red-700 border-red-200' },
+  // A reserva ESTRAGADA (sem `ext_ref`) não é uma órfã: a órfã liberta-se, e
+  // esta não — LIBERTAR recusa-a, porque a confirmação que ela exige é sobre
+  // a referência que falta. Ver `fiscal.py::_porque_esta_presa`.
+  sem_ext_ref: { texto: 'Reserva estragada', classe: 'bg-slate-100 text-slate-600 border-slate-200' },
 };
 
 const badgeMotivo = (motivo) =>
@@ -945,13 +949,42 @@ export default function FatReservasPresas() {
                           <BotaoCopiar valor={c.id} rotulo="Copiar referência" testid={`copiar-desconhecida-${c.id}`} />
                         </div>
                       </Bloco>
+                    ) : c.reserva_fiscal_estragada ? (
+                      /* A SEGUNDA família sem acção executável. O bloco
+                         genérico de baixo mandava-a «resolva a reserva na
+                         lista acima e volte aqui» — e lá LIBERTAR responde
+                         409 (`fiscal._MSG_LIBERTAR_SEM_EXT_REF`): voltar traz
+                         a mesma linha. Tem nome e texto próprios, e nenhum
+                         botão que devolva 409. */
+                      <Bloco tom="aviso" titulo="Esta reserva está estragada" testid={`esquecida-estragada-${c.id}`}>
+                        <p>
+                          A reserva fiscal desta conta ficou sem referência externa
+                          (<code>ext_ref</code>) — é o campo por onde se procura no Vendus.
+                          <span className="font-medium"> Libertar não serve</span>: libertar exige
+                          que alguém confirme no Vendus que não saiu documento nenhum para a
+                          referência, e sem referência não há o que procurar. O que ainda a pode
+                          salvar é <span className="font-medium">Reconciliar</span>, na lista acima:
+                          essa procura o documento pela referência que a emissão teria usado. Se o
+                          Vendus não tiver nada para esta venda, ela não se resolve em ecrã nenhum —
+                          copie a referência e leve-a a quem mantém o sistema.
+                        </p>
+                        <div className="mt-2">
+                          <BotaoCopiar valor={c.id} rotulo="Copiar referência" testid={`copiar-estragada-${c.id}`} />
+                        </div>
+                      </Bloco>
                     ) : c.reserva_fiscal_por_resolver ? (
                       <Bloco tom="perigo" titulo="Esta resolve-se primeiro em cima">
                         <p>
                           Tem uma reserva fiscal por resolver: pode existir uma Fatura Simplificada
                           real desta venda do lado da Autoridade Tributária. Enquanto não se souber,
                           esta conta não se arruma daqui — resolva a reserva na lista acima
-                          (reconciliar, ou libertar depois de confirmar no Vendus) e volte aqui.
+                          {/* A ÓRFÃ (sem venda na base) não se reconcilia: reconciliar liga o
+                              documento à VENDA, e a venda já não existe — 404. Nomear-lhe as
+                              duas saídas era gastar metade da instrução na metade falsa. */}
+                          {c.estado_da_venda
+                            ? ' (reconciliar, ou libertar depois de confirmar no Vendus)'
+                            : ' (libertar, depois de confirmar no Vendus que não saiu documento nenhum — reconciliar não serve, porque já não há venda nenhuma a que ligar o documento)'}
+                          {' '}e volte aqui.
                         </p>
                       </Bloco>
                     ) : (

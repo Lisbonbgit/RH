@@ -2365,6 +2365,26 @@ def _porque_esta_presa(
     meio") — e são opostos: no primeiro não se toca em nada, no segundo é
     preciso mesmo alguém tratar dela. O que os separa é o relógio da
     RECLAMAÇÃO (`em_retoma_desde`), nunca o da reserva."""
+    # **Primeiro de todos: a reserva ESTRAGADA.** Sem `ext_ref` nenhuma das
+    # duas saídas desta lista lhe serve — LIBERTAR recusa-a
+    # (`_MSG_LIBERTAR_SEM_EXT_REF`) e é a referência que se procuraria no
+    # Vendus —, e por isso ela não pode aparecer como «órfã», que é a família
+    # ao lado e essa liberta-se. Ver `caixa._MSG_CONTA_ESQUECIDA_RESERVA_-
+    # ESTRAGADA`: é a mesma verdade, do lado de lá.
+    if not reserva.get("ext_ref"):
+        return {
+            "motivo": "sem_ext_ref",
+            "descricao": (
+                "Reserva ESTRAGADA: ficou sem referência externa (`ext_ref`), "
+                "que é o campo por onde se procura no Vendus. Libertar não "
+                "serve — libertar exige confirmar no Vendus que não saiu "
+                "documento para a referência, e sem referência não há o que "
+                "procurar. Reconciliar ainda a pode salvar (procura o "
+                "documento pela referência que a emissão teria usado); se o "
+                "Vendus não tiver nada, esta reserva não se resolve em ecrã "
+                "nenhum: leve-a a quem mantém o sistema."
+            ),
+        }
     if reserva.get("em_retoma"):
         reclamada_ha = _retoma_reclamada_ha(reserva, agora)
         if _retoma_em_curso(reserva, agora):

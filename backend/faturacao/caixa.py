@@ -1548,11 +1548,31 @@ _MSG_CONTA_ESQUECIDA_JA_RESOLVIDA = (
     "Esta conta já não está aberta — foi cobrada, cancelada ou repartida "
     "entretanto. Recarregue a lista."
 )
+# **E a saída de quando não está lá ninguém.** A frase dizia só «cobra-se ou
+# cancela-se no balcão, por quem está lá» — e há uma configuração documentada
+# (dois PCs na mesma caixa, `venda.venda_aberta`) em que não está lá ninguém:
+# a conta ficou aberta num POSTO que morreu, foi revogado, ou de onde a
+# operadora saiu. Medido com 11,64 € abertos em `pc-que-morreu` e a operadora
+# no `pc-balcao`, turno a decorrer: o diálogo e o Z contam
+# `quantas=1 total=11,64` (o dinheiro aparece, e isso está certo), mas
+# `GET /pos/venda/aberta` `null`, `/repartidas` `[]`,
+# `/caixa/contas-esquecidas` `[]`, `arrumar` 409 a mandar ao balcão e
+# `entregar-ao-gestor` do outro posto 409. Zero saídas.
+#
+# A saída REAL é fechar o turno — a conta entra no Z como ficando por cobrar,
+# que é o que ela é, e a partir daí está nesta lista e arruma-se aqui —, e era
+# a única que esta frase não nomeava. Não se inventa acção nova: um gestor a
+# cancelar à distância a conta de um posto de um turno a decorrer é o defeito
+# que a marca `entregue_ao_gestor` veio fechar. O que faltava era a verdade
+# escrita.
 _MSG_CONTA_ESQUECIDA_DE_TURNO_ABERTO = (
     "A caixa desta conta está ABERTA neste momento — esta conta é do turno "
     "que está a decorrer e é no POS que ela se resolve: cobra-se ou "
-    "cancela-se no balcão, por quem está lá. Só depois de o turno fechar é "
-    "que ela passa a ser um problema de gestão."
+    "cancela-se NO POSTO ONDE ELA ESTÁ, por quem está lá. E se já não estiver "
+    "ninguém nesse posto (o PC morreu, foi revogado, ou a operadora está "
+    "noutro), a saída é FECHAR O TURNO: a conta entra no Z como ficando por "
+    "cobrar, que é o que ela é, e a partir daí arruma-se aqui. Nada foi "
+    "alterado."
 )
 # O turno DELA está a fechar-se agora. Cancelá-la neste instante tirava-a da
 # lista que o Z está a somar (`_contas_abertas_da_sessao` é lida depois da
@@ -1600,6 +1620,58 @@ _MSG_CONTA_ESQUECIDA_TRAVADA = (
     "primeiro em Reservas Fiscais Presas (reconciliar, ou libertar depois de "
     "confirmar no Vendus que não saiu documento nenhum) e só então é que se "
     "sabe o que fazer a esta conta."
+)
+# **A ÓRFÃ tem UMA saída, e a frase de cima nomeava-lhe duas.** Reconciliar
+# liga o documento do Vendus à VENDA, e a venda desta já não existe (a filha
+# apagada pela compensação de `venda._grava_as_partes`):
+# `fiscal.reconciliar_reserva_presa` responde 404 «não existe nenhuma venda
+# com este id — não há nada para reconciliar». Metade da instrução era falsa,
+# e uma instrução meia-falsa gasta-se na metade errada primeiro.
+_MSG_CONTA_ESQUECIDA_TRAVADA_SEM_VENDA = (
+    "Esta reserva fiscal ficou sem venda nenhuma por baixo — pode ter uma "
+    "Fatura Simplificada real do lado da AT. Não se arruma por aqui, e "
+    "também não há nada para reconciliar (reconciliar liga o documento à "
+    "venda, e a venda já não existe). A saída é LIBERTAR, em Reservas Fiscais "
+    "Presas, depois de confirmar no Vendus que não saiu documento nenhum para "
+    "esta referência."
+)
+# **A SEGUNDA família que não pode ter acção executável** — a primeira é o
+# `estado_desconhecido`, aqui em cima, e a regra é a mesma: ou acção
+# executável, ou nome e texto próprios.
+#
+# A reserva viva SEM `ext_ref` são dados estragados (`fiscal._reservar`
+# escreve-a sempre). Medido com 11,64 € e o turno fechado:
+# `/caixa/contas-esquecidas` mostrava-a como `conta_aberta` com o crachá
+# «Reserva fiscal por resolver» e a frase de cima mandava-a a Reservas
+# Fiscais Presas — e lá LIBERTAR responde 409
+# (`fiscal._MSG_LIBERTAR_SEM_EXT_REF`). Três rotas, zero saídas,
+# permanentemente, com o ecrã a desenhar-lhe «resolva a reserva na lista
+# acima… e volte aqui»: voltar traz a mesma linha.
+#
+# **Porque é que não se lhe dá acção executável.** A única rota que a
+# destrancaria é a que autoriza uma SEGUNDA Fatura Simplificada da mesma
+# venda, e a confirmação humana que ela exige — «abra o Vendus, procure ESTA
+# referência e veja que não há documento» — não se pode pedir sobre uma
+# referência que não existe. Um caminho novo ali, para dados estragados, é
+# exactamente onde uma segunda FS real nasceria.
+#
+# **O que a frase tem de dizer, e diz:** que RECONCILIAR ainda a pode salvar
+# (essa procura o documento pela referência que a emissão TERIA usado,
+# `ext_ref_determinista` — a mesma fórmula), que LIBERTAR não a resolve e
+# porquê, e que se o Vendus não tiver nada esta conta não se resolve em ecrã
+# nenhum: guarda-se a referência e leva-se a quem mantém o sistema.
+_MSG_CONTA_ESQUECIDA_RESERVA_ESTRAGADA = (
+    "Esta conta tem uma reserva fiscal ESTRAGADA: ficou sem referência "
+    "externa (`ext_ref`), que é o campo por onde se procura no Vendus. Não se "
+    "arruma aqui — pode ter uma Fatura Simplificada real do lado da AT — e "
+    "também NÃO se liberta em Reservas Fiscais Presas: libertar exige que "
+    "alguém confirme no Vendus que não saiu documento nenhum para a "
+    "referência, e sem referência não há o que procurar. O que ainda a pode "
+    "salvar é Reconciliar, nessa mesma lista: essa procura o documento pela "
+    "referência que a emissão teria usado e, se ele existir, traz a fatura "
+    "para o sistema. Se o Vendus não tiver nada para esta venda, ela não se "
+    "resolve em ecrã nenhum: guarde a referência desta conta e leve-a a quem "
+    "mantém o sistema. Nada foi alterado."
 )
 
 
@@ -1730,6 +1802,11 @@ async def _contas_esquecidas(db) -> list:
             # uma FS real do lado da AT. Aparece na mesma (o dinheiro não pode
             # ficar invisível), marcada, e o ecrã manda-o ao card de cima.
             "reserva_fiscal_por_resolver": item["tem_reserva_viva"],
+            # E se essa reserva está ESTRAGADA (sem `ext_ref`): sem isto o
+            # ecrã desenhava-lhe o bloco genérico «resolva a reserva na lista
+            # acima e volte aqui», e voltar traz a mesma linha — LIBERTAR
+            # responde-lhe 409. Ver `_MSG_CONTA_ESQUECIDA_RESERVA_ESTRAGADA`.
+            "reserva_fiscal_estragada": item["reserva_sem_ext_ref"],
             # A que chegou aqui pela porta NOVA: a operadora entregou-a, e o
             # turno dela pode ainda estar a decorrer. Sem estas duas chaves, o
             # gestor via uma conta de hoje no meio das esquecidas de ontem sem
@@ -1876,7 +1953,16 @@ async def arrumar_conta_esquecida(
         )
 
     if item["tem_reserva_viva"]:
-        raise HTTPException(status_code=409, detail=_MSG_CONTA_ESQUECIDA_TRAVADA)
+        # As três frases são a MESMA recusa com três verdades diferentes por
+        # baixo, e uma frase que nomeie a saída de outra família é um beco: a
+        # estragada não se liberta, a órfã não se reconcilia.
+        raise HTTPException(status_code=409, detail=(
+            _MSG_CONTA_ESQUECIDA_RESERVA_ESTRAGADA
+            if item["reserva_sem_ext_ref"]
+            else _MSG_CONTA_ESQUECIDA_TRAVADA_SEM_VENDA
+            if item["venda"] is None
+            else _MSG_CONTA_ESQUECIDA_TRAVADA
+        ))
     if item["motivo"] == MOTIVO_ESTADO_DESCONHECIDO:
         raise HTTPException(
             status_code=409,
