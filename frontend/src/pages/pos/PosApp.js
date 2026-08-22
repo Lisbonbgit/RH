@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Loader2, AlertCircle, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import useTituloDoPos from './useTituloDoPos';
 import PosEmparelhar from './PosEmparelhar';
 import PosEntrar from './PosEntrar';
 import PosBloqueado from './PosBloqueado';
@@ -185,6 +186,11 @@ function AppInterna({ operador, lojaNome, onSair, onOperadorInvalido, modo }) {
 }
 
 export default function PosApp() {
+  // O separador do browser diz "Lisbonb - POS" enquanto isto estiver à frente.
+  // Fica aqui, e não no `index.html`, porque aquele título é do portal inteiro
+  // — ver `useTituloDoPos`.
+  useTituloDoPos();
+
   const [dispositivo, setDispositivo] = useState(() => {
     const token = getDeviceToken();
     return token ? { token, lojaId: getLojaId(), lojaNome: getLojaNome() } : null;
