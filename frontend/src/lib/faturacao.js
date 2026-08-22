@@ -1,8 +1,59 @@
-// Wrappers do módulo Faturação. O token vai em axios.defaults.headers.common,
-// posto pelo AuthContext — como em lib/api.js e lib/finance.js.
+// Wrappers do módulo Faturação. O token continua a viver em
+// axios.defaults.headers.common, posto pelo AuthContext — como em lib/api.js e
+// lib/finance.js —, mas as chamadas daqui saem por um cliente próprio, que lho
+// vai buscar a cada pedido e lhes põe um tecto de espera (ver mais abaixo).
 import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL + '/api';
+
+// --- Tectos de espera --------------------------------------------------------
+//
+// **Sem `timeout`, o axios espera PARA SEMPRE**, e não há
+// `axios.defaults.timeout` em lado nenhum deste repositório — só o `lib/pos.js`
+// tinha tectos. Um pedido pendurado (o Wi-Fi a piscar, o servidor a não fechar
+// a ligação) deixa o ecrã que o fez no ESTADO INICIAL, sem erro, sem spinner
+// que acabe e sem nada que diga a quem está a olhar que está a ler uma
+// resposta que nunca chegou.
+//
+// O ecrã onde isso custa mais é o `FatModoDeEmissao`: ele responde à pergunta
+// que o dono fez — «está tudo em teste né? posso fazer faturas aqui normal.» —
+// e um pedido pendurado deixava-o a dizer «não sabemos» para sempre. Com um
+// estado inicial menos cuidadoso, dizia «A emitir faturas reais» para sempre,
+// que é a mentira permanente.
+//
+// Está no CLIENTE e não repetido em cada função, exactamente pela razão do
+// `baseURL` do `lib/pos.js`: para não haver forma de acrescentar amanhã uma
+// chamada nova e voltar a esquecê-lo. São 51 exportações neste ficheiro.
+//
+// 30 s (padrão) — tudo o que só fala com o Mongo. São pedidos de dezenas de
+// milissegundos; 30 s é folga de sobra para um pico de rede ou um arranque
+// frio, e curto o bastante para o gestor perceber que alguma coisa se passou.
+//
+// 120 s (o que espera pelo VENDUS) — três chamadas, e nelas a demora é
+// legítima e não avaria: `metodos-vendus` e `importacao/vendus` fazem leituras
+// PAGINADAS à API do Vendus (`vendus/cliente.py::_paginar`, 100 por página,
+// 20 s de httpx por página), e `reservas/{id}/reconciliar` vai perguntar ao
+// Vendus se a Fatura Simplificada saiu. Erra-se por excesso de propósito:
+// desistir a meio de uma importação não a cancela do outro lado, só tira o
+// ecrã de cima dela.
+export const TIMEOUT_BACKOFFICE_MS = 30000;
+export const TIMEOUT_COM_VENDUS_MS = 120000;
+
+const api = axios.create({ timeout: TIMEOUT_BACKOFFICE_MS });
+
+// **O JWT lido A CADA PEDIDO, e não copiado na criação.** `axios.create()`
+// copia os `defaults` no instante em que corre — e este módulo é importado
+// muito antes do login — e nunca mais volta a olhar para eles. Uma instância
+// que nascesse antes do `AuthContext` pôr o `Authorization` ficava sem ele
+// para sempre, e o backoffice inteiro respondia 401. É por isso que aqui se
+// vai buscar o cabeçalho do axios global no momento do pedido, que é onde o
+// `AuthContext` o põe (e de onde o `logout` o tira).
+api.interceptors.request.use((config) => {
+  const autorizacao = axios.defaults.headers.common.Authorization;
+  config.headers = config.headers || {};
+  if (autorizacao) config.headers.Authorization = autorizacao;
+  return config;
+});
 
 // Traduz o erro do axios numa mensagem amigável e, quando o 422 aponta para
 // um campo, devolve também o nome desse campo. O `detail` de um 422 do
@@ -33,29 +84,29 @@ export const detalhesErro = (error, fallback) => {
 // a mesma rota porque as duas famílias de autenticação deste módulo nunca se
 // misturam (test_protecao_rotas.py).
 export const getModoDeEmissaoDoBackoffice = () =>
-  axios.get(`${API_URL}/faturacao/modo-de-emissao`);
+  api.get(`${API_URL}/faturacao/modo-de-emissao`);
 
 export const getFatDashboard = (comIva = true) =>
-  axios.get(`${API_URL}/faturacao/dashboard`, { params: { com_iva: comIva } });
+  api.get(`${API_URL}/faturacao/dashboard`, { params: { com_iva: comIva } });
 
 // Lojas
-export const getLojas = () => axios.get(`${API_URL}/faturacao/lojas`);
-export const criarLoja = (data) => axios.post(`${API_URL}/faturacao/lojas`, data);
-export const editarLoja = (id, data) => axios.put(`${API_URL}/faturacao/lojas/${id}`, data);
-export const apagarLoja = (id) => axios.delete(`${API_URL}/faturacao/lojas/${id}`);
+export const getLojas = () => api.get(`${API_URL}/faturacao/lojas`);
+export const criarLoja = (data) => api.post(`${API_URL}/faturacao/lojas`, data);
+export const editarLoja = (id, data) => api.put(`${API_URL}/faturacao/lojas/${id}`, data);
+export const apagarLoja = (id) => api.delete(`${API_URL}/faturacao/lojas/${id}`);
 
 // Caixas (de uma loja)
-export const getCaixas = (lojaId) => axios.get(`${API_URL}/faturacao/lojas/${lojaId}/caixas`);
-export const criarCaixa = (lojaId, data) => axios.post(`${API_URL}/faturacao/lojas/${lojaId}/caixas`, data);
-export const editarCaixa = (id, data) => axios.put(`${API_URL}/faturacao/caixas/${id}`, data);
-export const apagarCaixa = (id) => axios.delete(`${API_URL}/faturacao/caixas/${id}`);
+export const getCaixas = (lojaId) => api.get(`${API_URL}/faturacao/lojas/${lojaId}/caixas`);
+export const criarCaixa = (lojaId, data) => api.post(`${API_URL}/faturacao/lojas/${lojaId}/caixas`, data);
+export const editarCaixa = (id, data) => api.put(`${API_URL}/faturacao/caixas/${id}`, data);
+export const apagarCaixa = (id) => api.delete(`${API_URL}/faturacao/caixas/${id}`);
 
 // Tipos de Pagamento
-export const getTiposPagamento = () => axios.get(`${API_URL}/faturacao/tipos-pagamento`);
-export const getCodigosFiscais = () => axios.get(`${API_URL}/faturacao/tipos-pagamento/codigos-fiscais`);
-export const criarTipoPagamento = (data) => axios.post(`${API_URL}/faturacao/tipos-pagamento`, data);
-export const editarTipoPagamento = (id, data) => axios.put(`${API_URL}/faturacao/tipos-pagamento/${id}`, data);
-export const apagarTipoPagamento = (id) => axios.delete(`${API_URL}/faturacao/tipos-pagamento/${id}`);
+export const getTiposPagamento = () => api.get(`${API_URL}/faturacao/tipos-pagamento`);
+export const getCodigosFiscais = () => api.get(`${API_URL}/faturacao/tipos-pagamento/codigos-fiscais`);
+export const criarTipoPagamento = (data) => api.post(`${API_URL}/faturacao/tipos-pagamento`, data);
+export const editarTipoPagamento = (id, data) => api.put(`${API_URL}/faturacao/tipos-pagamento/${id}`, data);
+export const apagarTipoPagamento = (id) => api.delete(`${API_URL}/faturacao/tipos-pagamento/${id}`);
 
 // Os métodos de pagamento da conta Vendus, lidos ao vivo (nunca escrevemos
 // lá — ver o cabeçalho de faturacao/pagamentos.py). É desta lista que sai o
@@ -66,64 +117,70 @@ export const apagarTipoPagamento = (id) => axios.delete(`${API_URL}/faturacao/ti
 // Vai numa chamada à parte do resto do ecrã de propósito: é rede, para uma
 // conta que pode nem estar configurada, e o ecrã tem de continuar a gravar os
 // outros campos quando ela falha.
-export const getMetodosVendus = () => axios.get(`${API_URL}/faturacao/tipos-pagamento/metodos-vendus`);
+export const getMetodosVendus = () =>
+  api.get(`${API_URL}/faturacao/tipos-pagamento/metodos-vendus`,
+    { timeout: TIMEOUT_COM_VENDUS_MS });
 
 // Utilizadores
-export const getUtilizadores = () => axios.get(`${API_URL}/faturacao/utilizadores`);
-export const criarUtilizador = (data) => axios.post(`${API_URL}/faturacao/utilizadores`, data);
-export const editarUtilizador = (id, data) => axios.put(`${API_URL}/faturacao/utilizadores/${id}`, data);
-export const mudarPin = (id, pin) => axios.put(`${API_URL}/faturacao/utilizadores/${id}/pin`, { pin });
-export const mudarEstado = (id, ativo) => axios.put(`${API_URL}/faturacao/utilizadores/${id}/estado`, { ativo });
+export const getUtilizadores = () => api.get(`${API_URL}/faturacao/utilizadores`);
+export const criarUtilizador = (data) => api.post(`${API_URL}/faturacao/utilizadores`, data);
+export const editarUtilizador = (id, data) => api.put(`${API_URL}/faturacao/utilizadores/${id}`, data);
+export const mudarPin = (id, pin) => api.put(`${API_URL}/faturacao/utilizadores/${id}/pin`, { pin });
+export const mudarEstado = (id, ativo) => api.put(`${API_URL}/faturacao/utilizadores/${id}/estado`, { ativo });
 
 // Dispositivos POS (emparelhamento de PCs de loja)
-export const getDispositivosPos = () => axios.get(`${API_URL}/faturacao/dispositivos-pos`);
-export const gerarCodigoDispositivo = (data) => axios.post(`${API_URL}/faturacao/dispositivos-pos`, data);
-export const revogarDispositivo = (id) => axios.delete(`${API_URL}/faturacao/dispositivos-pos/${id}`);
+export const getDispositivosPos = () => api.get(`${API_URL}/faturacao/dispositivos-pos`);
+export const gerarCodigoDispositivo = (data) => api.post(`${API_URL}/faturacao/dispositivos-pos`, data);
+export const revogarDispositivo = (id) => api.delete(`${API_URL}/faturacao/dispositivos-pos/${id}`);
 
 // Motivos de Nota de Crédito
-export const getMotivos = () => axios.get(`${API_URL}/faturacao/motivos-nc`);
-export const criarMotivo = (data) => axios.post(`${API_URL}/faturacao/motivos-nc`, data);
-export const editarMotivo = (id, data) => axios.put(`${API_URL}/faturacao/motivos-nc/${id}`, data);
-export const predefinirMotivo = (id) => axios.put(`${API_URL}/faturacao/motivos-nc/${id}/predefinir`);
-export const apagarMotivo = (id) => axios.delete(`${API_URL}/faturacao/motivos-nc/${id}`);
+export const getMotivos = () => api.get(`${API_URL}/faturacao/motivos-nc`);
+export const criarMotivo = (data) => api.post(`${API_URL}/faturacao/motivos-nc`, data);
+export const editarMotivo = (id, data) => api.put(`${API_URL}/faturacao/motivos-nc/${id}`, data);
+export const predefinirMotivo = (id) => api.put(`${API_URL}/faturacao/motivos-nc/${id}/predefinir`);
+export const apagarMotivo = (id) => api.delete(`${API_URL}/faturacao/motivos-nc/${id}`);
 
 // Categorias
-export const getCategorias = () => axios.get(`${API_URL}/faturacao/categorias`);
-export const criarCategoria = (data) => axios.post(`${API_URL}/faturacao/categorias`, data);
-export const editarCategoria = (id, data) => axios.put(`${API_URL}/faturacao/categorias/${id}`, data);
-export const apagarCategoria = (id) => axios.delete(`${API_URL}/faturacao/categorias/${id}`);
+export const getCategorias = () => api.get(`${API_URL}/faturacao/categorias`);
+export const criarCategoria = (data) => api.post(`${API_URL}/faturacao/categorias`, data);
+export const editarCategoria = (id, data) => api.put(`${API_URL}/faturacao/categorias/${id}`, data);
+export const apagarCategoria = (id) => api.delete(`${API_URL}/faturacao/categorias/${id}`);
 
 // Grupos de personalização (toppings)
-export const getGrupos = () => axios.get(`${API_URL}/faturacao/grupos-personalizacao`);
-export const criarGrupo = (data) => axios.post(`${API_URL}/faturacao/grupos-personalizacao`, data);
-export const editarGrupo = (id, data) => axios.put(`${API_URL}/faturacao/grupos-personalizacao/${id}`, data);
-export const apagarGrupo = (id) => axios.delete(`${API_URL}/faturacao/grupos-personalizacao/${id}`);
+export const getGrupos = () => api.get(`${API_URL}/faturacao/grupos-personalizacao`);
+export const criarGrupo = (data) => api.post(`${API_URL}/faturacao/grupos-personalizacao`, data);
+export const editarGrupo = (id, data) => api.put(`${API_URL}/faturacao/grupos-personalizacao/${id}`, data);
+export const apagarGrupo = (id) => api.delete(`${API_URL}/faturacao/grupos-personalizacao/${id}`);
 
 // Produtos
-export const getProdutos = (params) => axios.get(`${API_URL}/faturacao/produtos`, { params });
-export const getProdutosSemIva = () => axios.get(`${API_URL}/faturacao/produtos/sem-iva`);
-export const criarProduto = (data) => axios.post(`${API_URL}/faturacao/produtos`, data);
-export const editarProduto = (id, data) => axios.put(`${API_URL}/faturacao/produtos/${id}`, data);
-export const apagarProduto = (id) => axios.delete(`${API_URL}/faturacao/produtos/${id}`);
-export const mudarEstadoProduto = (id, ativo) => axios.put(`${API_URL}/faturacao/produtos/${id}/estado`, { ativo });
+export const getProdutos = (params) => api.get(`${API_URL}/faturacao/produtos`, { params });
+export const getProdutosSemIva = () => api.get(`${API_URL}/faturacao/produtos/sem-iva`);
+export const criarProduto = (data) => api.post(`${API_URL}/faturacao/produtos`, data);
+export const editarProduto = (id, data) => api.put(`${API_URL}/faturacao/produtos/${id}`, data);
+export const apagarProduto = (id) => api.delete(`${API_URL}/faturacao/produtos/${id}`);
+export const mudarEstadoProduto = (id, ativo) => api.put(`${API_URL}/faturacao/produtos/${id}/estado`, { ativo });
 
 // Importação do catálogo Vendus
-export const importarVendus = () => axios.post(`${API_URL}/faturacao/importacao/vendus`);
+export const importarVendus = () =>
+  api.post(`${API_URL}/faturacao/importacao/vendus`, undefined,
+    { timeout: TIMEOUT_COM_VENDUS_MS });
 
 // Reservas fiscais presas — a gestão de uma emissão que ficou a meio
 // (backend/faturacao/fiscal.py). Estas três são de GESTOR (token do
 // backoffice), nunca do balcão: o POS não tem, nem pode ter, forma de
 // libertar a sua própria reserva.
-export const getReservasPresas = () => axios.get(`${API_URL}/faturacao/fiscal/reservas-presas`);
+export const getReservasPresas = () => api.get(`${API_URL}/faturacao/fiscal/reservas-presas`);
 
 // Pergunta ao Vendus se a Fatura Simplificada desta venda saiu e, se saiu,
 // grava-a. Não emite nada — por isso é que o pedido não tem (nem pode ter)
 // campo nenhum para o número ou o ATCUD: esses vêm do Vendus ou não vêm de
 // lado nenhum (ver PedidoReconciliarReserva). `nota` é só para o registo.
 export const reconciliarReserva = (vendaId, nota) =>
-  axios.post(`${API_URL}/faturacao/fiscal/reservas/${vendaId}/reconciliar`, {
-    nota: nota || null,
-  });
+  api.post(
+    `${API_URL}/faturacao/fiscal/reservas/${vendaId}/reconciliar`,
+    { nota: nota || null },
+    { timeout: TIMEOUT_COM_VENDUS_MS },
+  );
 
 // Apaga a reserva e destranca a conta. `confirmadoNoVendus` é a declaração do
 // gestor de que abriu o Vendus e viu que NÃO existe lá documento desta venda:
@@ -132,7 +189,7 @@ export const reconciliarReserva = (vendaId, nota) =>
 // libertar a reserva de uma fatura que saiu autoriza uma SEGUNDA Fatura
 // Simplificada da mesma venda, entregue à AT.
 export const libertarReserva = (vendaId, confirmadoNoVendus, nota) =>
-  axios.post(`${API_URL}/faturacao/fiscal/reservas/${vendaId}/libertar`, {
+  api.post(`${API_URL}/faturacao/fiscal/reservas/${vendaId}/libertar`, {
     confirmado_no_vendus: confirmadoNoVendus,
     nota: nota || null,
   });
@@ -151,7 +208,7 @@ export const libertarReserva = (vendaId, confirmadoNoVendus, nota) =>
 // de escrita da venda recusam-lho (`venda.py::_garante_sessao_desta_venda_
 // aberta`), e um ecrã do balcão a mostrá-las era mandá-la fazer uma coisa que
 // o servidor não lhe deixa.
-export const getContasEsquecidas = () => axios.get(`${API_URL}/faturacao/caixa/contas-esquecidas`);
+export const getContasEsquecidas = () => api.get(`${API_URL}/faturacao/caixa/contas-esquecidas`);
 
 // Dá a conta por perdida: passa-a a `cancelada`, com o nome de quem o decidiu.
 //
@@ -163,7 +220,7 @@ export const getContasEsquecidas = () => axios.get(`${API_URL}/faturacao/caixa/c
 // a que já não está aberta, a de um turno AINDA ABERTO (essa é do balcão) e a
 // que tem uma reserva fiscal por resolver (essa é do card de cima).
 export const arrumarContaEsquecida = (vendaId) =>
-  axios.post(`${API_URL}/faturacao/caixa/contas-esquecidas/${vendaId}/arrumar`);
+  api.post(`${API_URL}/faturacao/caixa/contas-esquecidas/${vendaId}/arrumar`);
 
 // Mesmo crivo do backend (precos.py:_tem_mais_de_2_casas_decimais), para o
 // campo dizer "não pode ter mais de 2 casas decimais" ANTES de ir ao

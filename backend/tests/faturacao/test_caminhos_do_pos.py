@@ -146,13 +146,17 @@ def test_o_guarda_apanha_um_prefixo_errado(caminho_partido):
 # caminho errado ali significa o gestor a olhar para um ecrã que responde 404
 # enquanto a loja não consegue fechar a caixa.
 #
-# A forma é outra (`axios.get(`${API_URL}/faturacao/lojas`)`, com o prefixo
+# A forma é outra (`api.get(`${API_URL}/faturacao/lojas`)`, com o prefixo
 # dentro do template literal em vez de num baseURL), por isso a extracção é
 # própria — mas a pergunta que se faz é exactamente a mesma.
+#
+# `api.` e não `axios.`: o ficheiro passou a ter cliente próprio, para o tecto
+# de espera não poder ser esquecido numa chamada nova (ver o cabeçalho de
+# lib/faturacao.js). Este guarda deu por isso — é para isso que existe.
 _FATURACAO_JS = _RAIZ / "frontend" / "src" / "lib" / "faturacao.js"
 
 _RE_CHAMADA_BACKOFFICE = re.compile(
-    r"\baxios\.(get|post|put|delete|patch)\(\s*`\$\{API_URL\}([^`]*)`"
+    r"\bapi\.(get|post|put|delete|patch)\(\s*`\$\{API_URL\}([^`]*)`"
 )
 
 
