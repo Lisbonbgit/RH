@@ -540,7 +540,7 @@ def test_a_conta_entregue_continua_a_travar_o_fecho_e_a_contar_no_z(monkeypatch)
     _travar(db, "venda-1")
     _corre(entregar_ao_gestor("venda-1", operador=_op()))
 
-    presa = _corre(caixa_mod._venda_com_emissao_viva(db, "sessao-1"))
+    presa = _corre(caixa_mod._venda_com_emissao_viva(db, _sessao()))
     assert presa is not None and presa["id"] == "venda-1"
 
     retrato = _corre(caixa_mod._contas_abertas_da_sessao(db, "sessao-1"))

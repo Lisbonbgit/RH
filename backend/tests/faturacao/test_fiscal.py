@@ -18,6 +18,7 @@ intrometer-se — é o suficiente para uma corrida real acontecer no teste, tal
 como aconteceria com dois pedidos HTTP concorrentes num único processo
 uvicorn.
 """
+import re
 import asyncio
 from copy import deepcopy
 
@@ -96,6 +97,11 @@ def _corresponde(item, filtro):
         valores = _valores_no_caminho(item, chave)
         if isinstance(valor, dict) and "$ne" in valor:
             if valor["$ne"] in valores:
+                return False
+        elif isinstance(valor, dict) and "$regex" in valor:
+            # Ver o mesmo ramo em test_venda.py: o travão do fecho pergunta
+            # pelas reservas desta sessão pelo prefixo da `ext_ref`.
+            if not any(re.search(valor["$regex"], str(v or "")) for v in valores):
                 return False
         elif valor not in valores:
             return False

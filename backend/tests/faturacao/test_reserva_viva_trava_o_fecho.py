@@ -35,6 +35,8 @@ travão do fecho deixam de poder discordar sobre a mesma conta.
 Duplo de base de dados no padrão de `test_venda.py`. Nenhum teste liga a uma
 base de dados nem à rede.
 """
+import inspect
+
 import pytest
 from fastapi import HTTPException
 
@@ -47,7 +49,7 @@ from faturacao.caixa import (
     fechar_caixa,
 )
 from faturacao.db import COLECOES
-from faturacao.fiscal import listar_reservas_presas
+from faturacao.fiscal import ext_ref_determinista, listar_reservas_presas
 from faturacao.venda import (
     PedidoJuntarLinha,
     PedidoNovaVenda,
@@ -92,6 +94,12 @@ def _monta(monkeypatch, vendas=None, refs=None):
     return db
 
 
+def crua_nova(db, excepto_id):
+    """O id da OUTRA conta aberta deste posto — a que a corrida abriu."""
+    todas = _corre(db[COLECOES["vendas"]].find({"estado": "aberta"}).to_list(50))
+    return next(v["id"] for v in todas if v["id"] != excepto_id)
+
+
 def _conta(**over):
     # O id por omissão de `_venda()` é `venda-1`, e o de `_reserva()` aponta
     # para ele: os dois construtores vêm de test_venda.py e casam-se de fábrica.
@@ -123,7 +131,7 @@ def test_a_reserva_viva_trava_o_fecho_seja_qual_for_o_estado_da_venda(
     entra pela mesma porta (uma mãe separada com reserva presa da tentativa de
     emissão da conta inteira); e o `emitida` tem de continuar a NÃO travar."""
     db = _monta(monkeypatch, vendas=[_conta(estado=estado)], refs=[_reserva()])
-    encontrada = _corre(_venda_com_emissao_viva(db, "sessao-1"))
+    encontrada = _corre(_venda_com_emissao_viva(db, _sessao()))
 
     assert (encontrada is not None) == trava, (
         "Uma venda %r com reserva fiscal viva %s o fecho. Enquanto a reserva "
@@ -174,7 +182,7 @@ def test_uma_venda_cancelada_SEM_reserva_nao_trava_nada(monkeypatch):
     ninguém pagou é a saída normal do balcão, e uma noite com dez dessas tem de
     fechar na mesma."""
     db = _monta(monkeypatch, vendas=[_conta(estado="cancelada")], refs=[])
-    assert _corre(_venda_com_emissao_viva(db, "sessao-1")) is None
+    assert _corre(_venda_com_emissao_viva(db, _sessao())) is None
 
 
 def test_a_conta_de_outra_sessao_nao_trava_este_fecho(monkeypatch):
@@ -183,8 +191,117 @@ def test_a_conta_de_outra_sessao_nao_trava_este_fecho(monkeypatch):
     db = _monta(
         monkeypatch,
         vendas=[_conta(estado="cancelada", sessao_id="sessao-outra")],
-        refs=[_reserva()])
-    assert _corre(_venda_com_emissao_viva(db, "sessao-1")) is None
+        # A `ext_ref` é a que a produção teria gravado para uma venda dessa
+        # sessão — construída pela MESMA função, nunca escrita à mão: é por ela
+        # que o travão sabe de que sessão é a reserva.
+        refs=[_reserva(ext_ref=ext_ref_determinista(
+            "loja-1", "sessao-outra", "venda-1"))])
+    assert _corre(_venda_com_emissao_viva(db, _sessao())) is None
+
+
+# --- A reserva cuja VENDA já não existe ----------------------------------------
+#
+# A ronda anterior mudou o FILTRO DO ESTADO e manteve a DIRECÇÃO: a leitura
+# partia de `{"sessao_id": …}` em `fat_vendas` e só depois perguntava a
+# `fat_refs_fiscais` por cada venda encontrada. Uma reserva cuja venda já não
+# existe nunca era alcançada — e as vendas são mesmo apagadas: a compensação de
+# `venda._grava_as_partes` faz `delete_one` das filhas em dois caminhos, e as
+# filhas são visíveis em `/pos/venda/repartidas` entre o insert e o travão da
+# mãe, por isso um `finalizar` pode ter reservado numa delas.
+
+
+def _reserva_de_uma_filha_apagada():
+    """A reserva que uma emissão ganhou numa PARTE que a compensação apagou a
+    seguir. A `ext_ref` é a que `fiscal._reservar` teria gravado — construída
+    pela MESMA função, porque é o prefixo dela que diz ao fecho de que sessão é
+    esta reserva."""
+    return _reserva(
+        id="ref-filha", venda_id="filha-2",
+        ext_ref=ext_ref_determinista("loja-1", "sessao-1", "filha-2"))
+
+
+def test_uma_reserva_sem_venda_nenhuma_trava_o_fecho(monkeypatch):
+    """**O controlo e o defeito, lado a lado.** A MESMA reserva: com a venda
+    presente sempre travou; sem a venda, o fecho respondia 200 e assinava o Z
+    por cima de uma Fatura Simplificada que podia estar a nascer.
+
+    O que não se pode fechar por cima é uma EMISSÃO viva. Se a venda dela ainda
+    existe é ortogonal a isso — tal como o estado em que ela ficou."""
+    com_venda = _monta(
+        monkeypatch,
+        vendas=[_conta(id="filha-2", estado="aberta")],
+        refs=[_reserva_de_uma_filha_apagada()])
+    assert _corre(_venda_com_emissao_viva(com_venda, _sessao())) is not None
+
+    sem_venda = _monta(monkeypatch, vendas=[], refs=[_reserva_de_uma_filha_apagada()])
+    encontrada = _corre(_venda_com_emissao_viva(sem_venda, _sessao()))
+    assert encontrada is not None, (
+        "A reserva de uma venda que já não existe não trava o fecho. Medido "
+        "pelas rotas reais: a mesma reserva com a venda presente dá 409 e sem "
+        "a venda dá 200 — com o Z assinado por cima dela.")
+    assert encontrada.get("id") == "filha-2", (
+        "A recusa tem de nomear a conta: é por esse id que o gestor a procura "
+        "em /fiscal/reservas-presas.")
+
+
+def test_o_fecho_recusa_a_reserva_orfa_pela_rota_e_nao_assina_Z(monkeypatch):
+    """A rota inteira: `POST /pos/caixa/fechar` devolve 409 e a sessão fica
+    exactamente como estava — sem marca `a_fechar` pendurada e sem Z."""
+    db = _monta(monkeypatch, vendas=[], refs=[_reserva_de_uma_filha_apagada()])
+
+    with pytest.raises(HTTPException) as e:
+        _corre(fechar_caixa(
+            PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_op()))
+    assert e.value.status_code == 409
+    assert "filha-2" in e.value.detail
+
+    sessao = _corre(db[COLECOES["sessoes_caixa"]].find_one({"id": "sessao-1"}))
+    assert sessao["estado"] == "aberta" and sessao.get("contado") is None
+
+
+def test_uma_reserva_presa_de_uma_sessao_ANTIGA_nao_prende_o_fecho_de_hoje(monkeypatch):
+    """A outra ponta, e a que não se pode partir ao arranjar a de cima: a
+    pergunta continua a ser DESTA sessão.
+
+    Uma reserva presa de anteontem — cuja venda também já não existe — não pode
+    deixar a caixa de hoje por fechar todas as noites até alguém a resolver.
+    Ela é do gestor (`/fiscal/reservas-presas`), e é o prefixo da `ext_ref` que
+    faz essa separação sem precisar da venda para nada."""
+    db = _monta(monkeypatch, vendas=[], refs=[_reserva(
+        id="ref-velha", venda_id="venda-de-anteontem",
+        ext_ref=ext_ref_determinista("loja-1", "sessao-de-anteontem", "venda-de-anteontem"))])
+
+    assert _corre(_venda_com_emissao_viva(db, _sessao())) is None
+    z = _corre(fechar_caixa(
+        PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_op()))
+    assert z["estado"] == "fechada"
+    assert len(_corre(listar_reservas_presas(_={}))) == 1, (
+        "E continua a ser do gestor: se ela desaparecesse também da lista "
+        "dele, ninguém a resolvia nunca.")
+
+
+def test_o_prefixo_da_sessao_sai_da_funcao_que_gera_a_ext_ref():
+    """A fórmula da `ext_ref` tem UMA fonte. O travão pergunta pelo prefixo
+    `pos-{loja}-{sessão}-`, e se ele o escrevesse à mão bastava mudar o formato
+    num sítio para o fecho deixar de encontrar as reservas — em silêncio, e a
+    resposta seria 200."""
+    prefixo = ext_ref_determinista("loja-1", "sessao-1", "")
+    assert ext_ref_determinista("loja-1", "sessao-1", "venda-1").startswith(prefixo)
+    assert not ext_ref_determinista("loja-1", "sessao-2", "venda-1").startswith(prefixo)
+    # Só o CÓDIGO: a docstring e os comentários da função citam o formato de
+    # propósito, e é para continuarem a poder citá-lo.
+    fonte = inspect.getsource(caixa_mod._venda_com_emissao_viva)
+    codigo = "\n".join(
+        linha
+        for linha in fonte.replace(
+            caixa_mod._venda_com_emissao_viva.__doc__ or "", "").split("\n")
+        if not linha.strip().startswith("#")
+    )
+    assert "ext_ref_determinista" in codigo, (
+        "O travão do fecho deixou de construir o prefixo com a função que gera "
+        "a referência — é a segunda cópia do formato que um dia diverge.")
+    assert "pos-" not in codigo, (
+        "O formato da ext_ref voltou a estar escrito à mão dentro do travão.")
 
 
 # --- O DEFEITO INTEIRO, pelas rotas --------------------------------------------
@@ -197,11 +314,14 @@ def test_o_cancelamento_que_colide_deixa_a_conta_visivel_ao_fecho(monkeypatch):
     fecho. Antes: 200 e o Z a 0,00 com 8,99 € de emissão viva por baixo. Agora:
     409, e o Z não se assina enquanto a reserva não estiver resolvida.
 
-    O que aqui NÃO se corrige, e é de propósito: a conta continua a acabar
-    `cancelada` com a reserva viva — o índice único não deixa duas contas em
-    curso no mesmo posto, e a conta nova já lá está. O que muda é que essa
-    conta deixou de ser invisível ao travão do fecho, que é o que a impedia de
-    ser encontrada antes de alguém assinar um Z."""
+    **E o que a ronda seguinte acrescentou.** A conta já não acaba `cancelada`:
+    a compensação deixou de desistir quando o índice recusa (`_repor_aberta`
+    larga a etiqueta do posto e repõe `aberta` na mesma), por isso a frase que
+    a operadora ouve — «a conta NÃO foi cancelada» — passou a ser verdade. O
+    que o índice continua a não deixar são duas contas EM CURSO no mesmo posto:
+    a conta nova fica com a etiqueta, esta fica sem ela, e as duas ficam à
+    vista no ecrã deste PC e no Z. O travão do fecho continua a ser o que
+    impede a assinatura enquanto a reserva viver."""
     db = _monta(monkeypatch)
     a = _corre(abrir_venda(PedidoNovaVenda(caixa_id="caixa-1"), operador=_op()))
     _corre(juntar_linha(
@@ -229,10 +349,24 @@ def test_o_cancelamento_que_colide_deixa_a_conta_visivel_ao_fecho(monkeypatch):
     assert cancelou.value.status_code == 409
 
     crua = _corre(db[COLECOES["vendas"]].find_one({"id": a["id"]}))
-    assert crua["estado"] == "cancelada", (
-        "A reprodução deixou de reproduzir: a compensação conseguiu repor a "
-        "conta `aberta`, e este teste passou a medir outra coisa. Se o índice "
-        "ou a compensação mudaram, é aqui que se descobre.")
+    assert crua["estado"] == "aberta", (
+        "A compensação desistiu outra vez: a conta ficou %r. O 409 diz à "
+        "operadora que a conta NÃO foi cancelada — se ela ficar `cancelada`, a "
+        "frase é mentira e o dinheiro dela sai de todos os conjuntos que "
+        "filtram por `estado: \"aberta\"` (o ecrã, a lista do gestor e o Z)."
+        % crua["estado"])
+    assert "posto_em_curso" not in crua, (
+        "Voltou a `aberta` COM a etiqueta do posto — é a etiqueta que colide, "
+        "e mantê-la era não ter reposto nada.")
+    assert crua.get("cancelada_em") is None and crua.get("cancelada_por") is None, (
+        "A conta voltou a `aberta` com os carimbos do cancelamento colados. "
+        "`_venda_publica` mostra-os ao balcão: a operadora fica com uma conta "
+        "aberta que o ecrã diz ter sido cancelada às 23h04 pela Rafaela. A "
+        "reposição desfaz a escrita INTEIRA, não só o estado.")
+    assert {v["id"] for v in _corre(venda_mod._contas_do_balcao(db, "loja-1", _PC))} == {
+        a["id"], crua_nova(db, a["id"])}, (
+        "O ecrã deste posto tem de mostrar as DUAS: a que sobrou da corrida e a "
+        "do cliente novo.")
     assert len(_corre(listar_reservas_presas(_={}))) == 1
 
     with pytest.raises(HTTPException) as fechou:
@@ -253,10 +387,16 @@ def test_o_travao_do_fecho_e_a_lista_do_gestor_concordam(monkeypatch):
     o gestor vê em `/fiscal/reservas-presas` é o que impede o fecho de assinar
     o Z. Enquanto discordassem, havia contas que apareciam a quem não as podia
     resolver e desapareciam de quem lhes ia passar por cima."""
-    for estado in ("aberta", "cancelada", "separada", "emitida"):
-        db = _monta(monkeypatch, vendas=[_conta(estado=estado)], refs=[_reserva()])
+    for estado in ("aberta", "cancelada", "separada", "emitida", None):
+        # `None` é a venda que já NÃO EXISTE (uma parte apagada pela
+        # compensação): a lista do gestor mostra-a com `estado_da_venda=None`,
+        # e o travão do fecho tem de a ver na mesma.
+        db = _monta(
+            monkeypatch,
+            vendas=[] if estado is None else [_conta(estado=estado)],
+            refs=[_reserva()])
         presa = len(_corre(listar_reservas_presas(_={}))) > 0
-        trava = _corre(_venda_com_emissao_viva(db, "sessao-1")) is not None
+        trava = _corre(_venda_com_emissao_viva(db, _sessao())) is not None
         assert presa == trava, (
             "Com a venda %r: o gestor vê %r e o fecho vê %r — duas respostas "
             "sobre a mesma reserva." % (estado, presa, trava))

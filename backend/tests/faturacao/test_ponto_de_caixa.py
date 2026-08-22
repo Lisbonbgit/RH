@@ -20,6 +20,7 @@ find()/find_one() filtram de facto, e o que se lê é sempre uma cópia funda
 (um duplo que devolvesse o próprio objecto guardado deixa um teste passar
 por aliasing).
 """
+import re
 import asyncio
 from copy import deepcopy
 
@@ -47,6 +48,14 @@ def _corresponde(item, filtro):
     for chave, valor in filtro.items():
         if isinstance(valor, dict) and "$ne" in valor:
             if item.get(chave) == valor["$ne"]:
+                return False
+        # `$regex`, ancorado — é por ele que o travão do fecho pergunta pelas
+        # RESERVAS desta sessão (`caixa._venda_com_emissao_viva`), pelo prefixo
+        # `pos-{loja}-{sessão}-` da `ext_ref`. Um duplo que o ignorasse tratava
+        # o dicionário como um valor a comparar, não casava com reserva
+        # nenhuma, e o travão ficava verde sem nunca travar.
+        elif isinstance(valor, dict) and "$regex" in valor:
+            if not re.search(valor["$regex"], str(item.get(chave) or "")):
                 return False
         elif item.get(chave) != valor:
             return False

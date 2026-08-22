@@ -5,6 +5,7 @@ filtram de facto pelos campos do filtro, para que "caixa já aberta" e "sem
 sessão aberta" provem comportamento real, e não apenas confiem que o Mongo
 filtraria por nós. Nenhum teste liga a uma base de dados nem à rede.
 """
+import re
 import asyncio
 from copy import deepcopy
 
@@ -25,6 +26,7 @@ from faturacao.caixa import (
     registar_movimento,
 )
 from faturacao.db import COLECOES
+from faturacao.fiscal import ext_ref_determinista
 
 
 def _corre(coro):
@@ -48,6 +50,14 @@ def _corresponde(item, filtro):
     for chave, valor in filtro.items():
         if isinstance(valor, dict) and "$ne" in valor:
             if item.get(chave) == valor["$ne"]:
+                return False
+        # `$regex`, ancorado — é por ele que o travão do fecho pergunta pelas
+        # RESERVAS desta sessão (`caixa._venda_com_emissao_viva`), pelo prefixo
+        # `pos-{loja}-{sessão}-` da `ext_ref`. Um duplo que o ignorasse tratava
+        # o dicionário como um valor a comparar, não casava com reserva
+        # nenhuma, e o travão ficava verde sem nunca travar.
+        elif isinstance(valor, dict) and "$regex" in valor:
+            if not re.search(valor["$regex"], str(item.get(chave) or "")):
                 return False
         elif item.get(chave) != valor:
             return False
@@ -934,10 +944,21 @@ def _venda_aberta(**over):
     return v
 
 
-def _reserva_fiscal(**over):
+def _reserva_fiscal(sessao_id="sessao-1", loja_id="loja-1", **over):
+    """Uma reserva como `fiscal._reservar` a insere — e a `ext_ref` construída
+    pela MESMA função da produção (`ext_ref_determinista`), nunca escrita à
+    mão aqui.
+
+    Passou a ter de ser assim: o travão do fecho pergunta pelas reservas DESTA
+    sessão através do prefixo da `ext_ref`
+    (`caixa._venda_com_emissao_viva`), e uma `ext_ref` escrita à mão com a
+    sessão errada é um documento que a produção nunca poderia ter gravado — o
+    teste ficava a medir uma base impossível."""
+    venda_id = over.pop("venda_id", "venda-1")
     r = {
-        "id": "ref-1", "ext_ref": "pos-loja-1-sessao-1-venda-1",
-        "venda_id": "venda-1", "criado_em": "2026-08-18T23:58:00+00:00",
+        "id": "ref-1",
+        "ext_ref": ext_ref_determinista(loja_id, sessao_id, venda_id),
+        "venda_id": venda_id, "criado_em": "2026-08-18T23:58:00+00:00",
     }
     r.update(over)
     return r
@@ -1002,7 +1023,7 @@ def test_fechar_caixa_ignora_a_reserva_de_uma_venda_de_outra_sessao(monkeypatch)
     db = _db_com_reservas(
         registo,
         [_venda_aberta(id="venda-9", sessao_id="sessao-outra")],
-        [_reserva_fiscal(venda_id="venda-9")],
+        [_reserva_fiscal(venda_id="venda-9", sessao_id="sessao-outra")],
     )
     monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
 

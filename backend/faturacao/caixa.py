@@ -36,6 +36,7 @@ módulo fazia — deixa exactamente a janela por onde saiu uma FS real para um
 turno que fechou a seguir.
 """
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Literal, Optional
@@ -756,7 +757,7 @@ async def fechar_caixa(
     # sessão ainda vai mudar o que o Z tem de dizer. Aqui recusa-se sem
     # escrever NADA — a caixa fica exactamente como estava, e a emissão que
     # está a decorrer não é perturbada por uma marca posta e desfeita.
-    em_emissao = await _venda_com_emissao_viva(db, sessao["id"])
+    em_emissao = await _venda_com_emissao_viva(db, sessao)
     if em_emissao is not None:
         raise HTTPException(
             status_code=409,
@@ -778,7 +779,7 @@ async def fechar_caixa(
     # (marcar, depois perguntar) que fecha a janela, e não a pergunta
     # sozinha. Uma emissão que tenha ganho a reserva mesmo antes da marca é
     # apanhada aqui; e a partir da marca nenhuma outra consegue emitir.
-    em_emissao = await _venda_com_emissao_viva(db, sessao["id"])
+    em_emissao = await _venda_com_emissao_viva(db, sessao)
     if em_emissao is not None:
         # Desfaz a marca — condicionada a `a_fechar`, para nunca reabrir uma
         # sessão que outro pedido já tenha fechado entretanto. A caixa fica
@@ -1003,7 +1004,14 @@ async def _largar_o_posto_das_contas_abertas(db, sessao_id: str) -> None:
         )
 
 
-async def _venda_com_emissao_viva(db, sessao_id: str) -> Optional[Dict]:
+# O tecto da leitura das reservas por resolver DESTA sessão (o filtro já é o
+# prefixo da sessão, e não a colecção inteira): um turno tem, no pior dos
+# casos, um punhado delas. Existe pela mesma razão que todos os outros deste
+# módulo — nenhuma leitura sem tecto.
+_LIMITE_RESERVAS_DA_SESSAO = 200
+
+
+async def _venda_com_emissao_viva(db, sessao: Dict) -> Optional[Dict]:
     """A primeira conta desta sessão com uma RESERVA FISCAL VIVA — ou `None`,
     o caso normal.
 
@@ -1051,11 +1059,38 @@ async def _venda_com_emissao_viva(db, sessao_id: str) -> Optional[Dict]:
     de propósito), e uma venda emitida cuja reserva ficou por marcar travaria o
     fecho para sempre.
 
-    A leitura é da sessão (há índice por `sessao_id`) e a pergunta pela reserva
-    é uma por conta não-emitida — nunca um varrimento de `fat_refs_fiscais`,
-    que ao fim de um ano tem centenas de milhares de reservas resolvidas. Um
-    turno tem um punhado de contas não-emitidas: as abertas, as canceladas e as
-    mães separadas.
+    **A pergunta faz-se do lado das RESERVAS, e é aí que ela estava errada
+    outra vez.** A ronda anterior mudou o filtro do estado e manteve a
+    DIRECÇÃO: partia de `{"sessao_id": …}` em `fat_vendas` e só depois
+    perguntava a `fat_refs_fiscais` por cada venda encontrada. Uma reserva cuja
+    venda JÁ NÃO EXISTE nunca era alcançada — e as vendas são mesmo apagadas:
+    `venda.py::_grava_as_partes` faz `delete_one` das filhas em dois caminhos,
+    e as filhas são visíveis em `/pos/venda/repartidas` entre o insert e o
+    travão da mãe, por isso um `finalizar` pode ter reservado numa delas.
+    Medido com controlo, pelas rotas reais: a MESMA reserva com a venda
+    presente dá **409**; sem a venda dá **200, com o Z assinado** por cima de
+    uma Fatura Simplificada que podia estar a nascer. `/fiscal/reservas-presas`
+    mostrava-a (com `estado_da_venda=None`); o fecho não.
+
+    A correcção não precisa de um campo novo: a `ext_ref` é
+    `pos-{loja}-{sessão}-{venda}` (`fiscal.py::ext_ref_determinista`) e **já
+    carrega a sessão**. Pergunta-se por ela, com o prefixo desta sessão — e o
+    prefixo constrói-se com a PRÓPRIA função que a gera, nunca com uma segunda
+    cópia do formato escrita aqui, que era garantir que um dia divergiam.
+    A junção com a venda continua a existir e continua a decidir o mesmo (uma
+    venda `emitida` não trava), mas deixou de ser a PORTA: uma reserva sem
+    venda nenhuma entra na mesma, e trava.
+
+    Uma reserva de uma sessão ANTIGA não entra: o prefixo tem a sessão, e o
+    fecho de hoje não pode ficar refém de uma reserva presa de anteontem — essa
+    é do gestor (`/fiscal/reservas-presas`), e a caixa de hoje fecha na mesma.
+
+    A leitura continua a não ser um varrimento de `fat_refs_fiscais` (que ao
+    fim de um ano tem centenas de milhares de reservas RESOLVIDAS): filtra-se
+    primeiro por `{"documento_id": None}` — o mesmo filtro barato de
+    `listar_reservas_presas` — e pelo prefixo ancorado, que o índice único de
+    `ext_ref` (db.py) serve. O que sobra é o punhado de reservas por resolver
+    DESTA sessão.
 
     **A conta entregue ao gestor conta aqui na mesma**, e é de propósito: a
     marca (`venda.py::entregar_ao_gestor`) diz de quem é a conta, não o que
@@ -1075,15 +1110,33 @@ async def _venda_com_emissao_viva(db, sessao_id: str) -> Optional[Dict]:
     cada lado da marca, e as duas chamadas têm papéis diferentes: a de antes
     evita perturbar uma emissão legítima; a de depois é a que fecha a
     janela."""
-    por_emitir = await db[COLECOES["vendas"]].find(
-        {"sessao_id": sessao_id, "estado": {"$ne": "emitida"}}
-    ).to_list(1000)
-    for venda in por_emitir:
-        reserva = await db[COLECOES["refs_fiscais"]].find_one(
-            {"venda_id": venda.get("id")}
-        )
-        if reserva is not None:
-            return venda
+    # Import local: `fiscal` importa `venda`, que importa este módulo — o ciclo
+    # de sempre deste pacote, resolvido como os outros (ver `_contas_esquecidas`).
+    from .fiscal import ext_ref_determinista
+
+    # O prefixo sai da função que GERA a referência, com o `venda_id` vazio:
+    # "pos-{loja}-{sessão}-". Uma segunda escrita do formato aqui era a fonte
+    # dupla que a docstring de `ext_ref_determinista` existe para impedir.
+    # `["loja_id"]` e não `.get(...)`, de propósito: uma sessão sem loja não
+    # existe (`abrir_caixa` grava-a sempre) e o próprio Z a lê sem recuo
+    # nenhum. Com um `.get`, uma sessão estragada dava o prefixo
+    # "pos-None-…-", não casava com reserva nenhuma, e o travão do fecho
+    # desligava-se em SILÊNCIO — que é a forma de falhar que este travão existe
+    # para não ter. A explodir, explode aqui, antes de a sessão ser marcada.
+    prefixo = ext_ref_determinista(sessao["loja_id"], sessao["id"], "")
+    reservas = await db[COLECOES["refs_fiscais"]].find({
+        "documento_id": None,
+        "ext_ref": {"$regex": "^" + re.escape(prefixo)},
+    }).to_list(_LIMITE_RESERVAS_DA_SESSAO)
+    for reserva in reservas:
+        venda = await db[COLECOES["vendas"]].find_one({"id": reserva.get("venda_id")})
+        if venda is not None and venda.get("estado") == "emitida":
+            continue
+        # A venda pode já não existir (uma filha apagada pela compensação de
+        # `_grava_as_partes`): o que trava o fecho é a EMISSÃO, e ela existe na
+        # mesma. Quem chama só precisa do `id` para a mensagem e para o gestor
+        # a ir procurar a `/fiscal/reservas-presas`, que é onde ela aparece.
+        return venda if venda is not None else {"id": reserva.get("venda_id")}
     return None
 
 

@@ -214,6 +214,32 @@ _MSG_ETIQUETA_PRESA = (
     "Assim que ele o fizer, este posto volta a abrir contas — não é preciso "
     "reiniciar nada."
 )
+# **O MESMO beco, mas com o turno a MEIO de um fecho — e aí a frase de cima é
+# falsa duas vezes.** O turno não está "já fechado" (está `a_fechar`), e o
+# gestor NÃO o consegue arrumar: `caixa.arrumar_conta_esquecida` recusa
+# precisamente com a sessão nesse estado, porque o Z está a somar a lista onde
+# esta conta entra. Medido pelas rotas reais, com a caixa-1 a meio de um fecho
+# e o mesmo PC a atender na caixa-2: `POST /pos/venda` -> 409
+# `_MSG_ETIQUETA_PRESA` («peça ao gestor»), e `POST
+# /caixa/contas-esquecidas/{id}/arrumar` -> 409 («a caixa está a FECHAR o turno
+# neste momento»). As duas saídas nomeadas eram inexecutáveis, e a única que
+# funciona — voltar a carregar em FECHAR CAIXA naquela caixa — não era nomeada
+# por nenhuma delas.
+#
+# Na janela normal de um fecho isto dura milissegundos. **Num fecho que morra a
+# meio — o caso para que `caixa._sessao_por_fechar` existe — é PERMANENTE**, e
+# a etiqueta só é largada depois do Z estar escrito
+# (`caixa._largar_o_posto_das_contas_abertas`). Por isso a recusa passa a
+# escolher-se pelo estado da SESSÃO da conta que tem a etiqueta, e a nomear o
+# gesto que a desfaz. O nome da caixa entra na frase: quem está ao balcão tem
+# de saber QUAL fechar, e o PC pode estar a atender noutra.
+_MSG_ETIQUETA_PRESA_COM_FECHO_A_MEIO = (
+    "Este PC ficou com uma conta de um turno cujo fecho ficou a MEIO — o Z da "
+    "caixa «%s» nunca chegou a sair, e é essa conta que está a impedir a conta "
+    "nova. Resolve-se aqui e agora, sem chamar ninguém: escolha a caixa «%s» "
+    "neste PC e carregue outra vez em FECHAR CAIXA para concluir esse turno. "
+    "Assim que o Z sair, este posto volta a abrir contas."
+)
 # `POST /pos/venda/{id}/entregar-ao-gestor` — as três recusas.
 #
 # Só a TRAVADA se entrega. Uma conta normal cobra-se ou cancela-se, e deixar
@@ -579,19 +605,46 @@ async def _repor_aberta(db, filtro: Dict, atualizacao: Dict) -> None:
     é a única coisa que a operadora precisa de ouvir ("a conta NÃO foi
     cancelada").
 
-    Por isso a colisão regista-se e engole-se: a venda fica no estado em que
-    a compensação a queria pôr menos o `estado`, quem chama levanta o 409 de
-    sempre, e a conta que sobrou aparece na lista do gestor
-    (`/caixa/contas-esquecidas`) e no Z do turno — nunca invisível. É a linha
-    de registo que faz falta se isto acontecer, e não uma correcção
-    silenciosa."""
+    **E a colisão NÃO se engole — esse era o defeito.** A versão anterior
+    apanhava o `DuplicateKeyError`, registava-o e desistia da reposição, com a
+    promessa escrita aqui de que «a conta que sobrou aparece na lista do gestor
+    e no Z do turno — nunca invisível». Medida pelas rotas reais, a promessa era
+    falsa: a venda ficava no estado de que a compensação a queria TIRAR
+    (`separada` na divisão abortada, `cancelada` no cancelamento desfeito), e
+    esse estado não existe para conjunto nenhum — `_contas_do_balcao`,
+    `caixa._contas_esquecidas` e `caixa._contas_abertas_da_sessao` filtram
+    todos por `estado: "aberta"`. Reproduzido: uma conta de **11,64 €** ficava
+    `separada` sem partes nenhumas, a lista do gestor vinha **vazia**, e o
+    `POST /pos/caixa/fechar` respondia 200 com
+    `contas_abertas={quantas:0, total_por_cobrar:0,00}` — 11,64 € apagados de
+    um Z assinado.
+
+    O que colide é a ETIQUETA DO POSTO, e não o `estado`: o índice único
+    parcial só conta as `aberta` que TÊM `posto_em_curso`
+    (`db.py`, `_etiqueta_do_posto`). Por isso a segunda tentativa repõe
+    `aberta` **e larga a etiqueta na mesma escrita** — a mesma coisa que
+    `entregar_ao_gestor` e `caixa._largar_o_posto_das_contas_abertas` fazem, e
+    pela mesma razão: esta conta já não é a conta EM CURSO deste posto (a nova
+    é), mas continua a ser dinheiro por receber. Fora do índice, a reposição
+    não pode voltar a colidir — é o único índice único de `fat_vendas`.
+
+    A partir daqui a conta acaba SEMPRE `aberta`, e é isso que a põe outra vez
+    nos três conjuntos: no ecrã do posto (`_contas_do_balcao` não olha à
+    etiqueta), na lista do gestor quando o turno fechar, e — o que interessa —
+    no `contas_abertas` do Z. O registo continua a ser escrito: isto é um
+    desfecho raro e quem for a ver amanhã tem de encontrar a linha."""
     try:
         await db[COLECOES["vendas"]].update_one(filtro, {"$set": atualizacao})
     except DuplicateKeyError:
+        await db[COLECOES["vendas"]].update_one(
+            filtro,
+            {"$set": atualizacao, "$unset": {"posto_em_curso": ""}},
+        )
         logger.warning(
-            "[faturacao] a venda %s não voltou a `aberta`: este posto já tem "
-            "outra conta em curso (índice `posto_em_curso`). A conta fica como "
-            "está e aparece na lista do gestor; quem chamou recusa na mesma.",
+            "[faturacao] a venda %s voltou a `aberta` SEM a etiqueta do posto: "
+            "este posto já tem outra conta em curso (índice `posto_em_curso`). "
+            "Ela continua no ecrã deste PC, entra no Z do turno como dinheiro "
+            "por cobrar e aparece ao gestor; quem chamou recusa na mesma.",
             filtro.get("id"),
         )
 
@@ -1107,6 +1160,41 @@ def _etiqueta_do_posto(loja_id: str, dispositivo_id: Optional[str]) -> str:
     return "%s|%s" % (loja_id, dispositivo_id)
 
 
+async def _porque_a_etiqueta_esta_presa(db, etiqueta: str) -> str:
+    """A recusa de `abrir_venda` quando o índice diz que o posto está ocupado e
+    a leitura do balcão não encontra nada — escolhida pelo estado da SESSÃO da
+    conta que tem a etiqueta, e não por um palpite.
+
+    São dois becos diferentes com a mesma aparência, e só um deles é do gestor:
+
+    - a sessão dessa conta está **fechada** (ou já não existe): a conta é de um
+      turno arrumado, ninguém no POS lhe chega, e quem a resolve é mesmo o
+      gestor — `_MSG_ETIQUETA_PRESA`, que é a frase de sempre;
+    - a sessão está **`a_fechar`**: o fecho ficou a meio e o Z não saiu. O
+      gestor não a pode arrumar (`caixa.arrumar_conta_esquecida` recusa-a de
+      propósito, o Z está a somá-la), e quem a desbloqueia é quem está ao
+      balcão, carregando outra vez em FECHAR CAIXA naquela caixa —
+      `_MSG_ETIQUETA_PRESA_COM_FECHO_A_MEIO`.
+
+    Três leituras no caminho do ERRO e nenhuma no caminho normal: quem chega
+    aqui já levou um 409 e o que falta é dizer-lhe o que fazer a seguir."""
+    conta = await db[COLECOES["vendas"]].find_one(
+        {"posto_em_curso": etiqueta, "estado": "aberta"}
+    )
+    if not conta:
+        return _MSG_ETIQUETA_PRESA
+    sessao = await db[COLECOES["sessoes_caixa"]].find_one(
+        {"id": conta.get("sessao_id")}
+    )
+    if not sessao or sessao.get("estado") != "a_fechar":
+        return _MSG_ETIQUETA_PRESA
+    caixa = await db[COLECOES["caixas"]].find_one({"id": conta.get("caixa_id")}) or {}
+    # O nome, e o id como recuo: uma caixa apagada da base não pode deixar a
+    # frase a falar de «None» ao balcão.
+    nome = caixa.get("nome") or conta.get("caixa_id") or "que ficou a meio"
+    return _MSG_ETIQUETA_PRESA_COM_FECHO_A_MEIO % (nome, nome)
+
+
 async def _porque_nao_ha_cliente_seguinte(db, conta: Dict, caixa_pedida: str) -> str:
     """A recusa de `abrir_venda`, com a caixa da conta lá dentro quando ela não
     é a caixa em que o ecrã está.
@@ -1244,7 +1332,10 @@ async def abrir_venda(dados: PedidoNovaVenda, operador: Dict = Depends(operador_
                 detail=await _porque_nao_ha_cliente_seguinte(
                     db, ganhou[0], dados.caixa_id),
             )
-        raise HTTPException(status_code=409, detail=_MSG_ETIQUETA_PRESA)
+        raise HTTPException(
+            status_code=409,
+            detail=await _porque_a_etiqueta_esta_presa(db, venda["posto_em_curso"]),
+        )
     return _venda_publica(venda)
 
 
@@ -2176,12 +2267,34 @@ async def _grava_as_partes(
     # Por isso pergunta-se OUTRA VEZ depois de escrever, como o
     # `cancelar_venda` já faz na mesma janela, e compensa-se.
     #
-    # **A ordem da compensação é deliberada: as filhas primeiro, a mãe depois.**
-    # Se o processo morrer entre as duas escritas, uma mãe `separada` sem partes
-    # é uma conta travada que o gestor resolve (e que a emissão em curso vai
-    # marcar `emitida` de qualquer maneira); filhas órfãs vivas são N Faturas
-    # Simplificadas reais a mais. Repõe-se o que se pode perder, nunca o que se
-    # pode duplicar.
+    # **A ordem da compensação é deliberada: as filhas primeiro, a mãe depois**,
+    # e mantém-se depois de esta ronda ter medido o preço dela. Filhas órfãs
+    # vivas são N Faturas Simplificadas REAIS a mais, e uma FS entregue à
+    # Autoridade Tributária não se desfaz; uma mãe por repor é dinheiro por
+    # contar, que um humano ainda arruma. Repõe-se o que se pode perder, nunca
+    # o que se pode duplicar — e repor a mãe PRIMEIRO trocava esta troca ao
+    # contrário: um processo que morresse entre as duas escritas deixava a mãe
+    # `aberta` E as N filhas `aberta`, que é o desfecho de 17,98 € numa conta
+    # de 8,99 € descrito aqui em cima.
+    #
+    # **O que esta ordem custa, medido, e onde é que se paga.** Entre o
+    # `delete_one` da última filha e a reposição da mãe, `_contas_do_balcao`
+    # responde `[]` — o balcão PARECE livre, e um segundo separador que abra
+    # ali a conta do cliente seguinte fica com a etiqueta deste posto. A
+    # reposição colide então com o índice único. O que não se paga mais é a
+    # mãe: `_repor_aberta` deixou de desistir nessa colisão (largou a etiqueta
+    # e repôs `aberta` na mesma), e por isso a mãe volta SEMPRE ao Z e ao ecrã.
+    # Sem isso ela ficava `separada` sem partes — invisível aos três conjuntos
+    # que filtram por `estado: "aberta"` —, e foi assim que 11,64 € saíram de
+    # um Z assinado.
+    #
+    # Fica de fora, por escolha e não por esquecimento, a morte do processo
+    # ENTRE as duas escritas: aí a mãe fica mesmo `separada` sem partes. Não é
+    # invisível a toda a gente — a reserva que provocou esta compensação ainda
+    # está viva e trava o fecho (`caixa.py::_venda_com_emissao_viva`, que desde
+    # esta ronda pergunta do lado das reservas), e a conta aparece em
+    # `/fiscal/reservas-presas` com o estado dela à vista. Quem a arruma é o
+    # gestor, por lá.
     #
     # E a reposição é CONDICIONADA a {"estado": "separada"} — o único estado que
     # a NOSSA escrita pode ter deixado — exactamente pela razão do

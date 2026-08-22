@@ -20,6 +20,7 @@ resolução de rotas — o conflito de caminhos, a existir, é entre venda.py e
 fiscal.py, e essas duas só se encontram no router de faturacao/__init__.py.
 Continua tudo dentro do processo: nenhuma ligação sai daqui.
 """
+import re
 import asyncio
 from copy import deepcopy
 from datetime import datetime
@@ -84,6 +85,14 @@ def _corresponde(item, filtro):
         # com tudo e punha o teste a medir o contrário do que diz.
         elif isinstance(valor, dict) and "$ne" in valor:
             if item.get(chave) == valor["$ne"]:
+                return False
+        # `$regex`, ancorado — é por ele que o travão do fecho pergunta pelas
+        # RESERVAS desta sessão (`caixa._venda_com_emissao_viva`), pelo prefixo
+        # `pos-{loja}-{sessão}-` da `ext_ref`. Um duplo que o ignorasse tratava
+        # o dicionário como um valor a comparar, não casava com reserva
+        # nenhuma, e o travão ficava verde sem nunca travar.
+        elif isinstance(valor, dict) and "$regex" in valor:
+            if not re.search(valor["$regex"], str(item.get(chave) or "")):
                 return False
         elif item.get(chave) != valor:
             return False

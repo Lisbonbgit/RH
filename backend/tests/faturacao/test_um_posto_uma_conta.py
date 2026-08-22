@@ -441,6 +441,78 @@ def test_uma_conta_de_um_turno_FECHADO_nao_tranca_o_posto(monkeypatch):
     assert nova["estado"] == "aberta"
 
 
+def test_a_recusa_do_posto_nomeia_a_saida_que_existe_num_fecho_a_MEIO(monkeypatch):
+    """**O beco que a mensagem não sabia nomear, e é a quarta vez que ele muda
+    de sítio.**
+
+    A caixa-1 ficou em `a_fechar` — um fecho que morreu a meio, que é o caso
+    para que `caixa._sessao_por_fechar` existe. A etiqueta do posto só é
+    largada DEPOIS do Z estar escrito
+    (`caixa._largar_o_posto_das_contas_abertas`), por isso ela ainda lá está; e
+    `_contas_do_balcao` só varre sessões `aberta`, por isso a leitura diz «o
+    balcão está livre» ao mesmo tempo que o índice recusa. O mesmo PC a atender
+    na caixa-2 apanha o 409 mudo.
+
+    Medido, as duas saídas que as mensagens nomeavam eram inexecutáveis: a
+    porta dizia «turno JÁ FECHADO … peça ao gestor», e o gestor respondia 409
+    («a caixa está a FECHAR o turno neste momento» —
+    `caixa.arrumar_conta_esquecida`, e está certo que recuse: o Z está a somar
+    a lista onde esta conta entra). A saída real — voltar a carregar em FECHAR
+    CAIXA naquela caixa — não era nomeada por nenhuma das duas.
+
+    Na janela normal de um fecho isto dura milissegundos. Num fecho que morra a
+    meio é PERMANENTE, e é aí que a frase tem de servir para alguma coisa."""
+    sessoes = [
+        _sessao(id="sessao-1", caixa_id="caixa-1", estado="a_fechar"),
+        _sessao(id="sessao-2", caixa_id="caixa-2"),
+    ]
+    db = _duas_caixas([], vendas=[_conta()], sessoes=sessoes)
+    _liga(db, monkeypatch)
+
+    assert _corre(venda_mod._contas_do_balcao(db, _LOJA, _PC)) == [], (
+        "A reprodução deixou de reproduzir: a leitura do balcão passou a ver a "
+        "conta da sessão em `a_fechar`, e o 409 mudo deixou de acontecer.")
+
+    with pytest.raises(HTTPException) as e:
+        _corre(abrir_venda(PedidoNovaVenda(caixa_id="caixa-2"), operador=_op()))
+    recusa = e.value.detail
+    assert e.value.status_code == 409
+    assert "FECHAR CAIXA" in recusa, (
+        "A recusa não nomeia o gesto que a desfaz. A operadora fica com um PC "
+        "trancado e uma instrução que ninguém consegue executar.")
+    assert "Balcão" in recusa, (
+        "A recusa não diz QUAL caixa fechar — e este PC pode estar a atender "
+        "noutra, como está aqui.")
+    assert "gestor" not in recusa, (
+        "Continua a mandar chamar o gestor, que é exactamente quem NÃO pode "
+        "resolver esta: `arrumar_conta_esquecida` recusa com a sessão a fechar.")
+
+    # E a saída nomeada executa-se mesmo, que é a única prova que conta.
+    _corre(fechar_caixa(
+        PedidoFecharCaixa(caixa_id="caixa-1", contado=50.0), operador=_op()))
+    nova = _corre(abrir_venda(PedidoNovaVenda(caixa_id="caixa-2"), operador=_op()))
+    assert nova["estado"] == "aberta"
+
+
+def test_o_gestor_continua_a_ser_a_saida_quando_o_turno_esta_mesmo_FECHADO(monkeypatch):
+    """A outra metade, e a que a correcção não pode comer: com a sessão
+    `fechada`, a conta é mesmo de um turno arrumado, ninguém no POS lhe chega,
+    e quem a resolve é o gestor. A frase de sempre tem de continuar a sair."""
+    sessoes = [
+        _sessao(id="sessao-1", caixa_id="caixa-1", estado="fechada"),
+        _sessao(id="sessao-2", caixa_id="caixa-2"),
+    ]
+    db = _duas_caixas([], vendas=[_conta()], sessoes=sessoes)
+    _liga(db, monkeypatch)
+
+    with pytest.raises(HTTPException) as e:
+        _corre(abrir_venda(PedidoNovaVenda(caixa_id="caixa-2"), operador=_op()))
+    assert e.value.detail == venda_mod._MSG_ETIQUETA_PRESA, (
+        "A recusa do turno JÁ FECHADO mudou de frase: essa conta é do gestor, "
+        "e mandar a operadora fechar uma caixa que já está fechada é o erro ao "
+        "contrário.")
+
+
 def test_a_conta_de_um_turno_fechado_nao_aparece_no_ecra_do_balcao(monkeypatch):
     """E não volta ao balcão: a pergunta do ecrã é sobre o cliente que está à
     frente, e uma conta de ontem é dinheiro do passado — é do gestor
