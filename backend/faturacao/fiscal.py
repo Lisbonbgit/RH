@@ -2129,6 +2129,27 @@ _MSG_LIBERTAR_A_SEGUIR = (
     "use a reconciliação (Reconciliar), que grava o documento que já existe "
     "e põe a venda como emitida."
 )
+# A conta REPARTIDA (a mãe `separada`): nenhuma das frases acima lhe serve, e
+# esta é a que faltava. Exercitadas as três saídas que a frase de cima promete,
+# sobre uma mãe `separada` de 11,64 €: alterar -> 409 «Esta conta foi
+# dividida…», cancelar -> 409 com a mesma frase, e `GET /pos/venda/aberta` ->
+# `null` (nem chega ao ecrã). Três saídas nomeadas, zero executáveis — e o
+# gestor carregava em LIBERTAR precisamente porque a mensagem do fecho o
+# mandava aqui.
+#
+# Uma mãe com partes resolve-se NAS PARTES; uma mãe SEM partes é uma divisão
+# que morreu a meio e não há como a desfazer no POS. Nos dois casos a conta
+# fica onde o dinheiro dela é contado — no Z do turno e na lista do gestor —, e
+# é lá que ela se arruma.
+_MSG_LIBERTAR_A_SEGUIR_REPARTIDA = (
+    "Esta conta foi REPARTIDA e não volta ao balcão: o POS recusa alterá-la, "
+    "cancelá-la e finalizá-la, e ela nem aparece no ecrã da operadora. Se a "
+    "divisão tiver partes, é em cada PARTE que se cobra; se não tiver "
+    "nenhuma (a divisão morreu a meio), resolva-a aqui, em Contas por "
+    "Resolver — dê-a por perdida se ninguém a pagou. Ela continua a contar "
+    "como dinheiro por receber no Z deste turno. Se afinal aparecer um "
+    "documento no Vendus para esta venda, use a reconciliação (Reconciliar)."
+)
 # A MESMA situação com a caixa já fechada — e aqui `finalizar` é FALSO: a
 # rota começa por `_garante_sessao_da_venda_aberta` e devolve 409 antes de
 # chegar sequer à reserva. Era o caso mais comum de todos (a reserva presa
@@ -2744,10 +2765,16 @@ async def libertar_reserva_presa(
         "presa_ha_segundos": presa_ha_segundos,
         "sessao_estado": sessao.get("estado") if sessao else None,
         "o_que_confirmou": _MSG_LIBERTAR_O_QUE_CONFIRMOU % ext_ref,
-        # A marca da venda manda sobre o estado da sessão: uma conta entregue
-        # não volta ao POS, esteja o turno aberto ou fechado.
+        # **A frase tem de nomear só saídas que existam.** A marca da venda
+        # manda sobre o estado da sessão (uma conta entregue não volta ao POS,
+        # esteja o turno aberto ou fechado), e o ESTADO da venda manda sobre as
+        # duas: uma conta repartida não se altera, não se cancela e não se
+        # finaliza — medido, 409/409/`null` sobre a mãe `separada` de 11,64 €
+        # que a mensagem do fecho mandava libertar.
         "a_seguir": (
-            _MSG_LIBERTAR_A_SEGUIR_ENTREGUE
+            _MSG_LIBERTAR_A_SEGUIR_REPARTIDA
+            if (venda or {}).get("estado") == "separada"
+            else _MSG_LIBERTAR_A_SEGUIR_ENTREGUE
             if (venda or {}).get("entregue_ao_gestor_em")
             else (
                 _MSG_LIBERTAR_A_SEGUIR if sessao_aberta

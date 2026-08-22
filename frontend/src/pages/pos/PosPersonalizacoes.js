@@ -1,5 +1,6 @@
 import React from 'react';
 import { AlertTriangle, X } from 'lucide-react';
+import { numeroPos as euros } from '@/lib/pos';
 
 // O painel das personalizações do POS (Plano 2C, Task 3) — o que se abre em
 // "Editar Personalizações" no diálogo do produto, e logo ao tocar num
@@ -42,8 +43,9 @@ const contagem = (n, singular, plural) => `${n} ${n === 1 ? singular : plural}`;
 
 // O MESMO formato dos outros ecrãs do POS (PosCaixaFechada, PosMenuCaixa,
 // PosFecharCaixa) — duas casas sempre, vírgula decimal de PT-PT.
-const euros = (valor) =>
-  (Number(valor) || 0).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// A formatação de dinheiro vem de `@/lib/pos` e NÃO é escrita aqui: eram oito
+// cópias da mesma linha, e as oito transformavam `undefined`/`null`/`NaN` num
+// "€ 0,00" perfeitamente legível. Ver `numeroPos` lá.
 
 // O que se pede ao grupo, por palavras e não pelos números crus (o mesmo que
 // o backoffice faz em FatPersonalizacoes: quem está ao balcão nunca vê

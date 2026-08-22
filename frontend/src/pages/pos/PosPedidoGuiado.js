@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
+import { numeroPos as euros } from '@/lib/pos';
 import { ehIndicacaoDeServico, errosDeSelecao } from './PosPersonalizacoes';
 
 // O pedido guiado do POS: o pop-up que se abre ao tocar num açaí e que conduz
@@ -42,8 +43,9 @@ const MAX_TEXTO = 120;
 
 // O MESMO formato dos outros ecrãs do POS: duas casas sempre, vírgula decimal
 // de PT-PT.
-const euros = (valor) =>
-  (Number(valor) || 0).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// A formatação de dinheiro vem de `@/lib/pos` e NÃO é escrita aqui: eram oito
+// cópias da mesma linha, e as oito transformavam `undefined`/`null`/`NaN` num
+// "€ 0,00" perfeitamente legível. Ver `numeroPos` lá.
 
 // A mesma leitura permissiva do `PosPersonalizacoes` (é lá que está escrito
 // porquê): um grupo sem os campos, ou com lixo lá dentro, vale 0 — nem obriga,

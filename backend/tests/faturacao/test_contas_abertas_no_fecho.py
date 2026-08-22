@@ -47,6 +47,10 @@ from faturacao.caixa import (
     fechar_caixa,
 )
 from faturacao.db import COLECOES
+# A `ext_ref` das reservas dos cenários sai da função que a GERA, nunca de uma
+# cópia do formato escrita aqui: o predicado único (`por_resolver`) pergunta
+# pelas reservas pelo PREFIXO da sessão.
+from faturacao.fiscal import ext_ref_determinista
 from faturacao.venda import PedidoDividir, dividir_conta
 
 
@@ -61,7 +65,19 @@ def _corresponde(item, filtro):
     if not filtro:
         return True
     for chave, valor in filtro.items():
-        if isinstance(valor, dict) and "$in" in valor:
+        # `$or` e `$nin` — ver o mesmo ramo em test_venda.py. É por eles que
+        # `por_resolver.contas_por_resolver` pergunta pelas RESERVAS de várias
+        # sessões de uma vez e pelas vendas em estado NÃO TERMINAL. Um duplo
+        # que os ignorasse tratava "$or" como um campo do documento (nenhuma
+        # reserva casava) e `$nin` como um valor a comparar (casava com tudo,
+        # `emitida` incluída) — metade do predicado ficava verde sem correr.
+        if chave == "$or":
+            if not any(_corresponde(item, sub) for sub in valor):
+                return False
+        elif isinstance(valor, dict) and "$nin" in valor:
+            if item.get(chave) in valor["$nin"]:
+                return False
+        elif isinstance(valor, dict) and "$in" in valor:
             if item.get(chave) not in valor["$in"]:
                 return False
         # `$ne`, e não é um extra decorativo: é por ele que o travão do fecho
@@ -414,13 +430,16 @@ def test_a_contagem_e_feita_DEPOIS_da_marca_a_fechar(monkeypatch):
         if e[0] == "update_one" and e[1] == "sessoes"
         and e[3].get("$set", {}).get("estado") == "a_fechar"
     )
-    # Pela ORDENAÇÃO, e não pelo filtro: o filtro desta leitura é igual ao de
-    # `_venda_com_emissao_viva` (que corre duas vezes, uma de cada lado da
-    # marca) e no registo não se distinguem. O `.sort("criada_em")` distingue —
-    # é só esta que ordena, e ordena no mesmo instante em que lê.
+    # Pela leitura dos DISPOSITIVOS, e não pelo filtro nem pela ordenação:
+    # desde que o predicado é um só (`por_resolver.contas_por_resolver`), a
+    # leitura das vendas e a ordenação por `criada_em` são EXACTAMENTE as
+    # mesmas no travão do fecho (que corre duas vezes, uma de cada lado da
+    # marca) e no retrato — no registo não se distinguem. `_nome_dos_
+    # dispositivos` só é chamada de dentro de `_contas_abertas_da_sessao`, e é
+    # por isso que é ela a marca de água do retrato.
     leitura_das_abertas = next(
         i for i, e in enumerate(registo)
-        if e[0] == "sort" and e[1] == "vendas" and e[2] == "criada_em"
+        if e[0] == "find" and e[1] == "dispositivos"
     )
     assert leitura_das_abertas > marca, (
         "As contas abertas foram lidas ANTES da marca `a_fechar` — nesse "
@@ -555,7 +574,9 @@ def test_a_conta_com_reserva_fiscal_diz_que_trava_o_fecho(monkeypatch):
             _venda_aberta(id="venda-travada"),
             _venda_aberta(id="venda-normal", criada_em="2026-08-15T09:06:00+00:00"),
         ],
-        refs=[{"venda_id": "venda-travada", "ext_ref": "x", "documento_id": None}],
+        refs=[{"venda_id": "venda-travada",
+               "ext_ref": ext_ref_determinista("loja-1", "sessao-1", "venda-travada"),
+               "documento_id": None}],
     )
 
     resposta = _corre(contas_abertas_da_caixa(caixa_id="caixa-1", operador=_operador()))
@@ -675,7 +696,9 @@ def test_os_dois_subtotais_saem_do_servidor_e_nao_do_browser(monkeypatch):
             _venda_aberta(id="normal-1", criada_em="2026-08-15T09:06:00+00:00"),
             _venda_aberta(id="normal-2", criada_em="2026-08-15T09:07:00+00:00"),
         ],
-        refs=[{"venda_id": "travada", "ext_ref": "x", "documento_id": None}],
+        refs=[{"venda_id": "travada",
+               "ext_ref": ext_ref_determinista("loja-1", "sessao-1", "travada"),
+               "documento_id": None}],
     )
 
     r = _corre(contas_abertas_da_caixa(caixa_id="caixa-1", operador=_operador()))
@@ -730,35 +753,8 @@ def test_uma_conta_sem_valor_nao_estraga_nenhum_dos_subtotais(monkeypatch):
 # é assinado sobre a última leitura.
 
 
-class _CursorQueDeixaAterrarUmaEscrita(CursorFalso):
-    """Um cursor que, DEPOIS de entregar o resultado de um retrato, deixa
-    aterrar a escrita que estava em voo.
-
-    É a única forma de pôr a escrita exactamente onde ela dói: entre duas
-    leituras do fecho. Só conta como retrato a leitura que ordena por
-    `criada_em` — o filtro de `_contas_abertas_da_sessao` é, letra por letra,
-    o de `_venda_com_emissao_viva`, e no registo não se distinguem; a
-    ordenação distingue."""
-
-    def __init__(self, itens, registo, nome, aterrar):
-        super().__init__(itens, registo, nome)
-        self._aterrar = aterrar
-        self._e_um_retrato = False
-
-    def sort(self, campo, direccao=1):
-        if campo == "criada_em" and direccao == 1:
-            self._e_um_retrato = True
-        return super().sort(campo, direccao)
-
-    async def to_list(self, n=None):
-        itens = await super().to_list(n)
-        if self._e_um_retrato:
-            self._aterrar()
-        return itens
-
-
 class _VendasComEscritasEmVoo(ColeccaoFalsa):
-    """As vendas, com uma fila de escritas que aterram uma por cada retrato
+    """As vendas, com uma fila de escritas que aterram uma por cada RETRATO
     tirado — o equivalente, em lock-step, a rotas que passaram a guarda um
     instante antes da marca `a_fechar` e cuja escrita chega a seguir."""
 
@@ -767,16 +763,10 @@ class _VendasComEscritasEmVoo(ColeccaoFalsa):
         self._escritas = list(escritas)
         self.retratos = 0
 
-    def find(self, filtro=None, projecao=None):
-        self.registo.append(("find", self.nome, filtro))
-        itens = [deepcopy(d) for d in self._documentos if _corresponde(d, filtro)]
-
-        def aterrar():
-            self.retratos += 1
-            if self._escritas:
-                self._escritas.pop(0)(self._documentos)
-
-        return _CursorQueDeixaAterrarUmaEscrita(itens, self.registo, self.nome, aterrar)
+    def aterrar(self):
+        self.retratos += 1
+        if self._escritas:
+            self._escritas.pop(0)(self._documentos)
 
 
 def _monta_com_escritas_em_voo(monkeypatch, vendas, escritas):
@@ -788,6 +778,27 @@ def _monta_com_escritas_em_voo(monkeypatch, vendas, escritas):
     monkeypatch.setattr(caixa_mod, "obter_db", lambda: db)
     monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
     _sem_vendus(monkeypatch)
+
+    # **A escrita aterra depois de cada RETRATO — e o retrato é uma CHAMADA a
+    # `_contas_abertas_da_sessao`, não uma leitura das vendas.**
+    #
+    # Era o cursor das vendas que a deixava aterrar, e distinguia o retrato do
+    # travão do fecho pela ordenação (`sort("criada_em", 1)`). Desde que o
+    # predicado é um só (`por_resolver.contas_por_resolver`), as duas leituras
+    # são letra por letra a MESMA — filtro e ordenação — e o duplo deixou de
+    # as distinguir: a escrita passava a aterrar na leitura do travão, ANTES
+    # da marca, e o teste ficava verde a medir outra coisa. Envolver a função
+    # do retrato distingue-as sem depender da forma da consulta, e põe a
+    # escrita exactamente onde ela dói: ENTRE dois retratos.
+    original = caixa_mod._contas_abertas_da_sessao
+
+    async def retrato_com_uma_escrita_a_aterrar(*args, **kwargs):
+        resposta = await original(*args, **kwargs)
+        coleccao.aterrar()
+        return resposta
+
+    monkeypatch.setattr(
+        caixa_mod, "_contas_abertas_da_sessao", retrato_com_uma_escrita_a_aterrar)
     return db, coleccao
 
 
@@ -934,9 +945,14 @@ def test_o_retrato_repetido_nao_desfaz_a_ordem_marca_depois_leitura(monkeypatch)
         if ev[0] == "update_one" and ev[1] == "sessoes"
         and ev[3].get("$set", {}).get("estado") == "a_fechar"
     )
+    # Pela leitura dos DISPOSITIVOS: `_nome_dos_dispositivos` só é chamada de
+    # dentro de `_contas_abertas_da_sessao`, e é por isso que é ela a marca de
+    # água do retrato. A ordenação já não serve — o travão do fecho lê as
+    # vendas com o MESMO filtro e a MESMA ordenação desde que o predicado é um
+    # só (`por_resolver`), e as duas dele correm uma de cada lado da marca.
     retratos = [
         i for i, ev in enumerate(registo)
-        if ev[0] == "sort" and ev[1] == "vendas" and ev[2] == "criada_em"
+        if ev[0] == "find" and ev[1] == "dispositivos"
     ]
     assert len(retratos) >= 2, "O retrato deixou de ser repetido."
     assert min(retratos) > marca, (

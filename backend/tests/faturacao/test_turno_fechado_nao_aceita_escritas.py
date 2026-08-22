@@ -44,6 +44,10 @@ from fastapi import HTTPException
 
 from faturacao import venda as venda_mod
 from faturacao.db import COLECOES
+# A `ext_ref` das reservas dos cenários sai da função que a GERA, nunca de uma
+# cópia do formato escrita aqui: o predicado único (`por_resolver`) pergunta
+# pelas reservas pelo PREFIXO da sessão.
+from faturacao.fiscal import ext_ref_determinista
 from faturacao.venda import (
     PedidoDescontoGlobal,
     PedidoDividir,
@@ -74,7 +78,19 @@ def _corresponde(item, filtro):
     if not filtro:
         return True
     for chave, valor in filtro.items():
-        if isinstance(valor, dict) and "$in" in valor:
+        # `$or` e `$nin` — ver o mesmo ramo em test_venda.py. É por eles que
+        # `por_resolver.contas_por_resolver` pergunta pelas RESERVAS de várias
+        # sessões de uma vez e pelas vendas em estado NÃO TERMINAL. Um duplo
+        # que os ignorasse tratava "$or" como um campo do documento (nenhuma
+        # reserva casava) e `$nin` como um valor a comparar (casava com tudo,
+        # `emitida` incluída) — metade do predicado ficava verde sem correr.
+        if chave == "$or":
+            if not any(_corresponde(item, sub) for sub in valor):
+                return False
+        elif isinstance(valor, dict) and "$nin" in valor:
+            if item.get(chave) in valor["$nin"]:
+                return False
+        elif isinstance(valor, dict) and "$in" in valor:
             if item.get(chave) not in valor["$in"]:
                 return False
         # `$ne`, e não é um extra decorativo: é por ele que o travão do fecho
@@ -407,7 +423,9 @@ def test_a_emissao_por_confirmar_fala_primeiro_do_que_o_turno(monkeypatch):
     pique numa conta nova" mandava-a abrir uma segunda conta por cima de uma
     Fatura Simplificada que pode ter saído mesmo."""
     _monta(monkeypatch, estado_da_sessao="fechada",
-           refs=[{"venda_id": "venda-1", "ext_ref": "x", "documento_id": None}])
+           refs=[{"venda_id": "venda-1",
+                  "ext_ref": ext_ref_determinista("loja-1", "sessao-1", "venda-1"),
+                  "documento_id": None}])
 
     with pytest.raises(HTTPException) as e:
         _corre(_juntar())

@@ -36,7 +36,6 @@ módulo fazia — deixa exactamente a janela por onde saiu uma FS real para um
 turno que fechou a seguir.
 """
 import logging
-import re
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Literal, Optional
@@ -46,6 +45,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .auth import gestor_atual
 from .caixa_math import (
+    _centimos,
     diferenca,
     esperado,
     por_tipo_de_pagamento,
@@ -605,6 +605,21 @@ def _resumo_do_turno(sessao: Dict, movimentos: list, vendas: list) -> Dict:
     mapa = mapa_de_imposto(vendas)
     totais = totais_do_mapa(mapa)
     vendas_dinheiro = soma_vendas_dinheiro(vendas)
+    pagamentos = por_tipo_de_pagamento(vendas)
+    # **O que foi FACTURADO e não tem pagamento nenhum por baixo.** Em
+    # cêntimos inteiros e do lado do servidor, como tudo o resto.
+    #
+    # Medido no ecrã: uma venda emitida SEM `pagamentos` (um documento gravado
+    # por uma versão anterior, uma reconciliação que trouxe o documento do
+    # Vendus sem os pagamentos) não entra em linha nenhuma de
+    # `por_tipo_de_pagamento` — a coluna somava 10,20 € debaixo de um "Total
+    # cobrado 11,35 €". 1,15 € desaparecidos sem uma palavra, e o ecrã não
+    # pode somar a coluna para dar por isso (a aritmética de dinheiro é do
+    # servidor). Com esta linha a coluna volta a somar o rodapé, e o que falta
+    # tem nome.
+    por_registar = round(
+        (_centimos(totais["total"])
+         - sum(_centimos(linha["total"]) for linha in pagamentos)) / 100.0, 2)
     return {
         "fundo": sessao.get("fundo"),
         "vendas_dinheiro": vendas_dinheiro,
@@ -615,7 +630,12 @@ def _resumo_do_turno(sessao: Dict, movimentos: list, vendas: list) -> Dict:
         # multibanco, no Uber Eats, no Bolt, no Glovo. Sem ele ninguém
         # conseguia bater o rolo do terminal de Multibanco nem o extracto do
         # Glovo contra o turno, e o gestor fechava o mês a somar à mão.
-        "pagamentos": por_tipo_de_pagamento(vendas),
+        "pagamentos": pagamentos,
+        # SEMPRE presente, mesmo a 0.0 — a mesma regra do
+        # `emissao_por_confirmar` de `venda.py`: quem desenha não pode ter de
+        # adivinhar se a ausência quer dizer "está tudo cobrado" ou "esta
+        # versão do servidor não sabe responder a isso".
+        "pagamentos_por_registar": por_registar,
         "mapa_imposto": mapa,
         # A última linha da tabela do imposto, do lado do servidor: o ecrã
         # não soma colunas (regra da casa — a aritmética de dinheiro é do
@@ -946,6 +966,7 @@ async def fechar_caixa(
         # número que se recalcula é criar uma segunda verdade para amanhã
         # alguém encontrar diferente da primeira.
         "pagamentos": resumo["pagamentos"],
+        "pagamentos_por_registar": resumo["pagamentos_por_registar"],
         "mapa_imposto": resumo["mapa_imposto"],
         "base_tributavel": resumo["base_tributavel"],
         "iva_total": resumo["iva_total"],
@@ -1072,25 +1093,20 @@ async def _venda_com_emissao_viva(db, sessao: Dict) -> Optional[Dict]:
     uma Fatura Simplificada que podia estar a nascer. `/fiscal/reservas-presas`
     mostrava-a (com `estado_da_venda=None`); o fecho não.
 
-    A correcção não precisa de um campo novo: a `ext_ref` é
-    `pos-{loja}-{sessão}-{venda}` (`fiscal.py::ext_ref_determinista`) e **já
-    carrega a sessão**. Pergunta-se por ela, com o prefixo desta sessão — e o
-    prefixo constrói-se com a PRÓPRIA função que a gera, nunca com uma segunda
-    cópia do formato escrita aqui, que era garantir que um dia divergiam.
-    A junção com a venda continua a existir e continua a decidir o mesmo (uma
-    venda `emitida` não trava), mas deixou de ser a PORTA: uma reserva sem
-    venda nenhuma entra na mesma, e trava.
+    **E, desde esta ronda, quem responde a isso é `por_resolver`.** A pergunta
+    do lado das reservas ESTAVA aqui, escrita uma vez — e era essa a raiz: o
+    diálogo que a operadora lê antes de assinar (`_contas_abertas_da_sessao`)
+    continuava a partir das vendas e não a via. Medido: a mesma reserva órfã
+    dava `travão -> {'id': 'filha-9'}` e `POST /pos/caixa/fechar` **409**, e o
+    diálogo dizia **`quantas=0 total=0,00`**; ela lia «nada por cobrar»,
+    carregava em FECHAR e levava um 409 com um id que não estava em ecrã
+    nenhum. Agora os dois lêem a MESMA função, e a diferença entre eles é só o
+    filtro do fim: este trava, aquele conta.
 
-    Uma reserva de uma sessão ANTIGA não entra: o prefixo tem a sessão, e o
-    fecho de hoje não pode ficar refém de uma reserva presa de anteontem — essa
-    é do gestor (`/fiscal/reservas-presas`), e a caixa de hoje fecha na mesma.
-
-    A leitura continua a não ser um varrimento de `fat_refs_fiscais` (que ao
-    fim de um ano tem centenas de milhares de reservas RESOLVIDAS): filtra-se
-    primeiro por `{"documento_id": None}` — o mesmo filtro barato de
-    `listar_reservas_presas` — e pelo prefixo ancorado, que o índice único de
-    `ext_ref` (db.py) serve. O que sobra é o punhado de reservas por resolver
-    DESTA sessão.
+    Uma reserva de uma sessão ANTIGA não entra (o âmbito é a lista de sessões
+    que se passa, e o prefixo da `ext_ref` já carrega a sessão): o fecho de
+    hoje não pode ficar refém de uma reserva presa de anteontem — essa é do
+    gestor (`/fiscal/reservas-presas`), e a caixa de hoje fecha na mesma.
 
     **A conta entregue ao gestor conta aqui na mesma**, e é de propósito: a
     marca (`venda.py::entregar_ao_gestor`) diz de quem é a conta, não o que
@@ -1110,33 +1126,25 @@ async def _venda_com_emissao_viva(db, sessao: Dict) -> Optional[Dict]:
     cada lado da marca, e as duas chamadas têm papéis diferentes: a de antes
     evita perturbar uma emissão legítima; a de depois é a que fecha a
     janela."""
-    # Import local: `fiscal` importa `venda`, que importa este módulo — o ciclo
-    # de sempre deste pacote, resolvido como os outros (ver `_contas_esquecidas`).
-    from .fiscal import ext_ref_determinista
+    # **O predicado é de `por_resolver.contas_por_resolver`, e já não daqui.**
+    # Import local: `por_resolver` importa `venda` e `fiscal`, que importam
+    # este módulo — o ciclo de sempre deste pacote, resolvido como os outros.
+    #
+    # Este leitor filtra pelo seu FIM e não volta a decidir o que conta: das
+    # contas por resolver desta sessão, as que TRAVAM são as que têm uma
+    # RESERVA VIVA — e só essas. A regra 3 do dono é que o fecho não bloqueia
+    # por dinheiro que ninguém vai pagar; o que não se pode fechar por cima é
+    # uma EMISSÃO viva.
+    from .por_resolver import contas_por_resolver
 
-    # O prefixo sai da função que GERA a referência, com o `venda_id` vazio:
-    # "pos-{loja}-{sessão}-". Uma segunda escrita do formato aqui era a fonte
-    # dupla que a docstring de `ext_ref_determinista` existe para impedir.
-    # `["loja_id"]` e não `.get(...)`, de propósito: uma sessão sem loja não
-    # existe (`abrir_caixa` grava-a sempre) e o próprio Z a lê sem recuo
-    # nenhum. Com um `.get`, uma sessão estragada dava o prefixo
-    # "pos-None-…-", não casava com reserva nenhuma, e o travão do fecho
-    # desligava-se em SILÊNCIO — que é a forma de falhar que este travão existe
-    # para não ter. A explodir, explode aqui, antes de a sessão ser marcada.
-    prefixo = ext_ref_determinista(sessao["loja_id"], sessao["id"], "")
-    reservas = await db[COLECOES["refs_fiscais"]].find({
-        "documento_id": None,
-        "ext_ref": {"$regex": "^" + re.escape(prefixo)},
-    }).to_list(_LIMITE_RESERVAS_DA_SESSAO)
-    for reserva in reservas:
-        venda = await db[COLECOES["vendas"]].find_one({"id": reserva.get("venda_id")})
-        if venda is not None and venda.get("estado") == "emitida":
-            continue
-        # A venda pode já não existir (uma filha apagada pela compensação de
-        # `_grava_as_partes`): o que trava o fecho é a EMISSÃO, e ela existe na
-        # mesma. Quem chama só precisa do `id` para a mensagem e para o gestor
-        # a ir procurar a `/fiscal/reservas-presas`, que é onde ela aparece.
-        return venda if venda is not None else {"id": reserva.get("venda_id")}
+    for item in await contas_por_resolver(db, [sessao["id"]]):
+        if item["tem_reserva_viva"]:
+            # A venda pode já não existir (uma filha apagada pela compensação
+            # de `venda._grava_as_partes`): o que trava o fecho é a EMISSÃO, e
+            # ela existe na mesma. Quem chama só precisa do `id` para a
+            # mensagem e para o gestor a ir procurar a
+            # `/fiscal/reservas-presas`, que é onde ela aparece.
+            return item["venda"] or {"id": item["id"]}
     return None
 
 
@@ -1180,10 +1188,14 @@ async def _contas_abertas_da_sessao(db, sessao_id: str, dispositivo_id=None) -> 
     se no Z e diz-se à operadora ANTES de ela assinar — que é o que
     `GET /pos/caixa/contas-abertas` serve.
 
-    **Não é só sobre partes.** A pergunta é feita a TODAS as contas `aberta`
-    da sessão: a conta que ficou meia-picada quando o cliente desistiu, a
-    conta travada que ficou à espera do gestor, a que a operadora já lhe
-    ENTREGOU (`venda.py::entregar_ao_gestor`) e as partes de quem dividiu.
+    **Não é só sobre partes, nem só sobre as `aberta`.** A pergunta é feita a
+    TUDO o que a sessão tem por resolver (`por_resolver.contas_por_resolver`):
+    a conta que ficou meia-picada quando o cliente desistiu, a conta travada
+    que ficou à espera do gestor, a que a operadora já lhe ENTREGOU
+    (`venda.py::entregar_ao_gestor`), as partes de quem dividiu — e, desde
+    esta ronda, a mãe `separada` SEM PARTES (11,35 € que saíam de um Z
+    assinado) e a RESERVA VIVA cuja venda já não existe (a que o travão do
+    fecho nomeava num 409 e esta lista não tinha).
     Todas são a mesma coisa do ponto de vista do turno — dinheiro que o ecrã
     mostrou e que não entrou em fatura nenhuma. A entregue ao gestor conta
     aqui na mesma, e tem de contar: sair do BALCÃO não é ser cobrada, e o Z é
@@ -1225,21 +1237,30 @@ async def _contas_abertas_da_sessao(db, sessao_id: str, dispositivo_id=None) -> 
     desenha poder comparar sem ter de adivinhar quem está a perguntar (o
     token do POS não viaja para o browser em texto legível).
 
-    O `import` de `venda.py` é LOCAL pela mesma razão do
-    `_verificar_vendas_dinheiro` aqui em baixo: `venda.py` importa deste
-    módulo, e um import no topo fechava o ciclo. E é o `_totais` DELE, não uma
-    soma escrita aqui — o valor de uma conta sai sempre de
+    O `import` de `por_resolver` é LOCAL pela mesma razão do
+    `_verificar_vendas_dinheiro` aqui em baixo: ele importa `venda.py`, que
+    importa deste módulo, e um import no topo fechava o ciclo. E o valor de
+    cada conta vem do `_totais` de `venda.py` (por `por_resolver`), nunca de
+    uma soma escrita aqui — o valor de uma conta sai sempre de
     `precos.linha_de_venda`, em todo o módulo (regra 1 do cabeçalho de
     `venda.py`).
     """
-    from .venda import _totais
+    # **O predicado é de `por_resolver.contas_por_resolver`, e já não daqui** —
+    # é a MESMA função que o travão do fecho lê, e é essa identidade que é a
+    # correcção. Enquanto esta pergunta partisse das VENDAS e o travão das
+    # RESERVAS, havia contas que travavam o fecho sem aparecerem aqui (a
+    # reserva órfã: 409 a nomear `filha-9`, diálogo `quantas=0 total=0,00`) e
+    # dinheiro que não travava nem aparecia (a mãe `separada` sem partes:
+    # 11,35 € e um Z assinado a dizer 0,00 €).
+    #
+    # O que este leitor faz é o SEU fim: contar tudo, com os subtotais que o
+    # ecrã desenha. Não filtra nada — o âmbito é o turno inteiro.
+    from .por_resolver import contas_por_resolver
 
-    abertas = await db[COLECOES["vendas"]].find(
-        {"sessao_id": sessao_id, "estado": "aberta"}
-    ).sort("criada_em", 1).to_list(1000)
+    itens = await contas_por_resolver(db, [sessao_id])
 
     nomes = await _nome_dos_dispositivos(
-        db, [v.get("dispositivo_id") for v in abertas]
+        db, [i["dispositivo_id"] for i in itens]
     )
 
     contas = []
@@ -1248,26 +1269,10 @@ async def _contas_abertas_da_sessao(db, sessao_id: str, dispositivo_id=None) -> 
     total_por_cobrar = 0.0
     total_do_balcao = 0.0
     total_do_gestor = 0.0
-    for venda in abertas:
-        try:
-            valor = _totais(venda)["total"]
-        except Exception as e:  # noqa: BLE001 — o fecho nunca falha por isto
-            # Uma linha que `linha_de_venda` já não sabe avaliar (um produto
-            # que perdeu o IVA no retrato, uma conta gravada por uma versão
-            # anterior) não pode transformar o fecho num 500 — isso mandava a
-            # funcionária fechar outra vez uma caixa que não fechou. A conta
-            # CONTA-SE na mesma, com o valor a `None`: o que não se pode
-            # perder é a existência dela, e "não sabemos quanto vale" é uma
-            # resposta honesta que a operadora consegue levar ao gestor.
-            logger.warning(
-                "[faturacao] não foi possível somar a conta aberta %s da sessão "
-                "%s: %s (entra no Z sem valor).", venda.get("id"), sessao_id, e,
-            )
-            valor = None
-        trava = await db[COLECOES["refs_fiscais"]].find_one(
-            {"venda_id": venda.get("id")}
-        ) is not None
-        entregue = bool(venda.get("entregue_ao_gestor_em"))
+    for item in itens:
+        valor = item["total"]
+        trava = item["tem_reserva_viva"]
+        entregue = bool(item["entregue_ao_gestor_em"])
         if valor is not None:
             total = round(total + valor, 2)
             # Os dois SUBTOTAIS saem daqui, e não de uma soma no browser. É a
@@ -1299,20 +1304,36 @@ async def _contas_abertas_da_sessao(db, sessao_id: str, dispositivo_id=None) -> 
                 else:
                     total_do_balcao = round(total_do_balcao + valor, 2)
         contas.append({
-            "id": venda.get("id"),
+            # `item["id"]` e não `venda["id"]`: uma reserva órfã não tem venda
+            # nenhuma, e o id dela é a única forma de o gestor a ir procurar a
+            # `/fiscal/reservas-presas`. Era essa entrada que o 409 do fecho
+            # nomeava e esta lista não tinha.
+            "id": item["id"],
             "total": valor,
-            "criada_em": venda.get("criada_em"),
+            "criada_em": item["criada_em"],
+            # **PORQUÊ é que esta conta está por resolver** — `conta_aberta`,
+            # `mae_separada_sem_partes`, `emissao_viva` (a reserva sem venda) ou
+            # `estado_desconhecido`. Sem isto o ecrã tinha três coisas
+            # diferentes com o mesmo aspecto, e a operadora recebia a mesma
+            # instrução ("cobre-a ou cancele-a") para uma que não se cobra nem
+            # se cancela. Ver `por_resolver`.
+            "motivo": item["motivo"],
+            # O estado em que a venda ficou, ou `None` quando ela já não
+            # existe. Uma informação, não um buraco: quem lê tem de poder
+            # distinguir "a conta está aberta" de "não há conta nenhuma, só a
+            # reserva".
+            "estado_da_venda": item["estado_da_venda"],
             # Qual delas é uma PARTE de uma conta repartida, e de qual. É o que
             # distingue "faltou cobrar uma pessoa" de "ficou uma conta a meio"
             # — duas conversas diferentes com o gestor no dia seguinte.
-            "conta_mae_id": venda.get("conta_mae_id"),
+            "conta_mae_id": item["conta_mae_id"],
             # De que POSTO é — ver a docstring. Sempre presentes as duas
             # chaves (o nome a `None` quando o PC já foi revogado), pela
             # regra do `emissao_por_confirmar` em venda.py: quem desenha não
             # pode ter de adivinhar se a ausência quer dizer "não se sabe" ou
             # "esta versão do servidor não responde a isso".
-            "dispositivo_id": venda.get("dispositivo_id"),
-            "dispositivo_nome": nomes.get(venda.get("dispositivo_id")),
+            "dispositivo_id": item["dispositivo_id"],
+            "dispositivo_nome": nomes.get(item["dispositivo_id"]),
             # A que IMPEDE o fecho, separada das que não impedem nada.
             "trava_o_fecho": trava,
             # A que JÁ NÃO É DO BALCÃO. O ecrã do fecho lista estas contas e
@@ -1578,23 +1599,36 @@ async def _contas_esquecidas(db) -> list:
     o tecto só morde com centenas de contas abertas ao mesmo tempo, e nessa
     altura o problema já não é este ecrã.
 
-    O valor sai do `_totais` de `venda.py` (import local, o ciclo de sempre) e
-    nunca de uma soma escrita aqui, e uma conta que já não se consegue somar
-    entra na mesma com o valor a `None`: a regra é a de
-    `_contas_abertas_da_sessao` — o que não se pode perder é a EXISTÊNCIA
-    dela, e "não sabemos quanto vale" é uma resposta honesta que o gestor
-    consegue levar a quem lá estava."""
-    from .venda import _totais
+    O valor sai do `_totais` de `venda.py` (por `por_resolver`) e nunca de uma
+    soma escrita aqui, e uma conta que já não se consegue somar entra na mesma
+    com o valor a `None`: a regra é a de `_contas_abertas_da_sessao` — o que
+    não se pode perder é a EXISTÊNCIA dela, e "não sabemos quanto vale" é uma
+    resposta honesta que o gestor consegue levar a quem lá estava."""
+    # **O predicado é de `por_resolver.contas_por_resolver`, e já não daqui** —
+    # a MESMA função do travão, do diálogo e do balcão. Esta lista perguntava
+    # por `{"estado": "aberta"}` e por isso não via nem a mãe `separada` sem
+    # partes nem a reserva órfã: as duas famílias de dinheiro que os outros
+    # leitores viam e esta não. Medido depois de o gestor carregar em LIBERTAR
+    # numa mãe de 11,64 €: `/fiscal/reservas-presas` 0, esta lista 0, o
+    # diálogo 0,00 € e um Z assinado a dizer «por cobrar 0,00 €».
+    #
+    # **O âmbito é TODAS as sessões** (`sessao_ids=None`), e continua a não ser
+    # um varrimento: as duas leituras são as mesmas que esta lista já fazia —
+    # as vendas em estado não terminal (um punhado: as que estão mesmo em curso
+    # agora, mais estas) e as reservas por resolver
+    # (`{"documento_id": None}`, o filtro barato de `listar_reservas_presas`).
+    # Começar pelas SESSÕES é que seria varrer um ano de turnos para encontrar
+    # duas contas.
+    from .por_resolver import contas_por_resolver
 
-    abertas = await db[COLECOES["vendas"]].find(
-        {"estado": "aberta"}
-    ).sort("criada_em", 1).to_list(_LIMITE_CONTAS_ESQUECIDAS)
+    itens = await contas_por_resolver(db, None)
 
     sessoes: Dict = {}
     caixas: Dict = {}
     saida = []
-    for venda in abertas:
-        sessao_id = venda.get("sessao_id")
+    for item in itens:
+        venda = item["venda"] or {}
+        sessao_id = item["sessao_id"]
         if sessao_id not in sessoes:
             sessoes[sessao_id] = await db[COLECOES["sessoes_caixa"]].find_one(
                 {"id": sessao_id}, {"_id": 0}
@@ -1616,8 +1650,16 @@ async def _contas_esquecidas(db) -> list:
         # que estava aqui — «essa conta está no ecrã de alguém neste instante»
         # — deixou de ser verdade para esta família, e é para ela que a lista
         # existe.
-        entregue = bool(venda.get("entregue_ao_gestor_em"))
-        if not entregue and sessao is not None and sessao.get("estado") == "aberta":
+        # **E a mãe `separada` sem partes, e a reserva órfã, entram com o turno
+        # ABERTO.** Pela mesma razão da entrega: não estão no ecrã de ninguém.
+        # A mãe separada não volta ao balcão (`GET /pos/venda/aberta` responde
+        # `null` sobre ela, e `alterar`/`cancelar` respondem 409); a reserva
+        # órfã não tem venda nenhuma para pôr num ecrã. Deixá-las cá fora
+        # enquanto o turno estivesse aberto era repetir, para elas, o buraco
+        # que a entrega já tinha fechado.
+        entregue = bool(item["entregue_ao_gestor_em"])
+        do_ecra_de_alguem = item["motivo"] == "conta_aberta" and not entregue
+        if do_ecra_de_alguem and sessao is not None and sessao.get("estado") == "aberta":
             continue
 
         caixa_id = venda.get("caixa_id")
@@ -1627,21 +1669,18 @@ async def _contas_esquecidas(db) -> list:
             )
         caixa = caixas[caixa_id] or {}
 
-        try:
-            valor = _totais(venda)["total"]
-        except Exception as e:  # noqa: BLE001 — ver a docstring
-            logger.warning(
-                "[faturacao] não foi possível somar a conta esquecida %s: %s "
-                "(entra na lista sem valor).", venda.get("id"), e,
-            )
-            valor = None
-
         saida.append({
-            "id": venda.get("id"),
-            "loja_id": venda.get("loja_id"),
-            "total": valor,
-            "criada_em": venda.get("criada_em"),
-            "conta_mae_id": venda.get("conta_mae_id"),
+            "id": item["id"],
+            "loja_id": item["loja_id"],
+            "total": item["total"],
+            "criada_em": item["criada_em"],
+            "conta_mae_id": item["conta_mae_id"],
+            # PORQUÊ é que está aqui, e em que estado ficou a venda — as
+            # mesmas duas chaves de `_contas_abertas_da_sessao`, e pela mesma
+            # razão: "cobre-a ou dê-a por perdida" não é a instrução certa
+            # para uma reserva sem venda nenhuma. Ver `por_resolver`.
+            "motivo": item["motivo"],
+            "estado_da_venda": item["estado_da_venda"],
             "caixa_id": caixa_id,
             "caixa_nome": caixa.get("nome"),
             "sessao_id": sessao_id,
@@ -1653,20 +1692,18 @@ async def _contas_esquecidas(db) -> list:
             "sessao_fechada_por": (sessao or {}).get("fechada_por"),
             # Quem estava a picar. É por aqui que o gestor sabe a quem
             # perguntar o que aconteceu àquele cliente.
-            "operador_id": venda.get("operador_id"),
-            "dispositivo_id": venda.get("dispositivo_id"),
+            "operador_id": item["operador_id"],
+            "dispositivo_id": item["dispositivo_id"],
             # A que NÃO se arruma por aqui: tem uma reserva fiscal e pode ter
             # uma FS real do lado da AT. Aparece na mesma (o dinheiro não pode
             # ficar invisível), marcada, e o ecrã manda-o ao card de cima.
-            "reserva_fiscal_por_resolver": await db[
-                COLECOES["refs_fiscais"]
-            ].find_one({"venda_id": venda.get("id")}) is not None,
+            "reserva_fiscal_por_resolver": item["tem_reserva_viva"],
             # A que chegou aqui pela porta NOVA: a operadora entregou-a, e o
             # turno dela pode ainda estar a decorrer. Sem estas duas chaves, o
             # gestor via uma conta de hoje no meio das esquecidas de ontem sem
             # perceber porquê — e não sabia a quem perguntar o que aconteceu
             # àquele cliente.
-            "entregue_ao_gestor_em": venda.get("entregue_ao_gestor_em"),
+            "entregue_ao_gestor_em": item["entregue_ao_gestor_em"],
             "entregue_ao_gestor_por": venda.get("entregue_ao_gestor_por"),
         })
     return saida

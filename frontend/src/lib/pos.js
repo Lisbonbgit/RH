@@ -567,8 +567,63 @@ export const finalizarVenda = (vendaId, dados) =>
 // teste em Node — uma cópia no componente ficava fora do alcance dele.
 const centimosPos = (valor) => Math.round((Number(valor) || 0) * 100);
 
-const eurosPos = (valor) =>
-  `€ ${(Number(valor) || 0).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// **O dinheiro que NÃO É UM NÚMERO nunca se desenha como zero.** É a ÚNICA
+// formatação de dinheiro do POS, e é ela que os oito ecrãs importam — havia
+// oito cópias desta linha, todas com o mesmo `(Number(valor) || 0)`, e esse
+// `|| 0` transformava `undefined`, `null`, `NaN`, `''`, `{}` e `'abc'` num
+// "€ 0,00" perfeitamente legível.
+//
+// **Medido, e é o pior desfecho possível:** uma venda emitida sem
+// `pagamentos` deixava a coluna "Por tipo de pagamento" a somar 10,20 €
+// debaixo de um "Total cobrado 11,35 €" — 1,15 € desaparecidos sem uma
+// palavra; e um `resumo` ausente (o servidor não respondeu, o campo mudou de
+// nome) pintava um turno INTEIRO de € 0,00, com "Deve estar na gaveta
+// € 0,00" — a operadora fecha a gaveta com 200 € lá dentro e o ecrã diz-lhe
+// que está certo.
+//
+// Um valor que não é um número finito sai "€ ?": não se parece com um número,
+// não se soma de cabeça e obriga a perguntar. Zero continua a ser "€ 0,00",
+// que é uma resposta e não uma ausência.
+//
+// `null` e `''` são recusados de propósito, apesar de o `Number()` os
+// converter em 0: são exactamente as duas ausências que chegam de uma
+// resposta JSON e de um campo de texto vazio.
+export const numeroPos = (valor) => {
+  const n = typeof valor === 'string' && valor.trim() !== '' ? Number(valor) : valor;
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '?';
+  return n.toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+export const eurosPos = (valor) => `€ ${numeroPos(valor)}`;
+
+// --- As duas perguntas do resumo do turno, executáveis ------------------------
+//
+// Vivem aqui, e não escritas dentro do JSX do `PosResumoDoTurno`, por uma razão
+// medida: uma condição escrita no meio de uma tabela não se corre em lado
+// nenhum, e um guarda que só procure o TEXTO da frase fica verde com a condição
+// desligada (`false && …`). Os ecrãs do POS desenham-se sem servidor nenhum, e
+// dois defeitos foram a produção exactamente assim.
+
+// **A linha do mapa cuja taxa o servidor não reconheceu.** Ela vem com `base` e
+// `iva` a `null` e o `total` preenchido — e é por isso que a última linha da
+// tabela deixa de fechar: base + IVA não dá o total. Medido ao balcão:
+// «XPTO (?) | 1 | — | — | € 1,15» e o rodapé a somar 9,03 + 1,17 contra um
+// total de 11,35, sem uma palavra. Lê-se como um total partido.
+export const temTaxaDesconhecida = (mapa) =>
+  (mapa || []).some((linha) => linha?.taxa === null || linha?.taxa === undefined);
+
+// **O que foi facturado e não tem pagamento nenhum por baixo.** O número vem
+// SOMADO do servidor (`pagamentos_por_registar`): o ecrã nunca soma colunas de
+// dinheiro. Uma venda emitida sem `pagamentos` deixava a coluna a somar 10,20 €
+// debaixo de um "Total cobrado 11,35 €" — 1,15 € desaparecidos sem uma palavra.
+//
+// `> 0` e não a verdade genérica: `0` é o caso normal (está tudo cobrado) e não
+// desenha linha nenhuma; e um valor que não seja um número não pode ligar uma
+// linha de dinheiro em branco.
+export const haPagamentosPorRegistar = (resumo) =>
+  typeof resumo?.pagamentos_por_registar === 'number'
+  && Number.isFinite(resumo.pagamentos_por_registar)
+  && resumo.pagamentos_por_registar !== 0;
 
 // --- A conta repartida, vista de fora ----------------------------------------
 //

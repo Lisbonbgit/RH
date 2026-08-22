@@ -467,6 +467,9 @@ def _grelha_do_ecra(casos, tmp_path: Path):
     guiao.write_text(
         "\n".join([
             _corpo_da_seta(lib, _LINHA_CENTIMOS, _LIB_POS),
+            _corpo_da_funcao(
+                lib, "export const numeroPos = (valor) =>", _LIB_POS
+            ).replace("export ", "", 1),
             _corpo_da_seta(lib, _LINHA_EUROS, _LIB_POS),
             _corpo_da_seta(lib, _LINHA_CONTA_TRAVADA, _LIB_POS).replace("export ", "", 1),
             _corpo_da_seta(lib, _LINHA_TRAVADA, _LIB_POS).replace("export ", "", 1),

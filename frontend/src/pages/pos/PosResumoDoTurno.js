@@ -1,4 +1,5 @@
 import React from 'react';
+import { eurosPos, haPagamentosPorRegistar, temTaxaDesconhecida } from '@/lib/pos';
 
 // Os números de um turno, desenhados uma única vez.
 //
@@ -16,11 +17,10 @@ import React from 'react';
 // recalculado "para conferir" — um segundo cálculo no browser é uma segunda
 // verdade, e a que apareceria por baixo da tabela seria a errada.
 
-export const euros = (valor) =>
-  `€ ${(Number(valor) || 0).toLocaleString('pt-PT', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+// A formatação vem de `@/lib/pos` (`eurosPos`) e NÃO é escrita aqui — eram
+// oito cópias da mesma linha e as oito pintavam `undefined` de "€ 0,00". Fica
+// reexportada porque o `PosFecharCaixa` a importa deste ficheiro há muito.
+export const euros = eurosPos;
 
 export function LinhaValor({ label, valor, destaque }) {
   return (
@@ -85,6 +85,29 @@ const Cel = ({ children, r, forte }) => (
 export default function PosResumoDoTurno({ resumo }) {
   const pagamentos = resumo?.pagamentos || [];
   const mapa = resumo?.mapa_imposto || [];
+  // Uma taxa que o servidor não reconheceu tem `base` e `iva` a `null` e o
+  // `total` preenchido — e é por isso que a última linha da tabela deixa de
+  // fechar: base + IVA não dá o total. Ao balcão lia-se como um total partido
+  // ("9,03 + 1,17 contra 11,35") sem uma palavra que o explicasse.
+  const comTaxaDesconhecida = temTaxaDesconhecida(mapa);
+  const porRegistar = haPagamentosPorRegistar(resumo);
+
+  // **Um resumo ausente não se desenha como um turno de zeros.** Medido: com
+  // `resumo` a `undefined` (o servidor não respondeu, o campo mudou de nome), o
+  // bloco pintava um turno inteiro e perfeitamente legível de € 0,00 —
+  // "Vendas em dinheiro + € 0,00", "Deve estar na gaveta € 0,00" — e a
+  // funcionária fecha a gaveta com 200 € lá dentro a acreditar que está certo.
+  // O `euros` defende-se hoje (sai "€ ?"), mas uma tabela inteira de "€ ?" não
+  // é uma resposta: a resposta é dizer que não há números.
+  if (!resumo) {
+    return (
+      <p className="text-sm text-muted-foreground py-2">
+        Os números deste turno não vieram do servidor. Não são zero — não se
+        sabem. Recarregue o ecrã; se continuar assim, NÃO feche a caixa por
+        aqui e chame o gestor.
+      </p>
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -101,7 +124,7 @@ export default function PosResumoDoTurno({ resumo }) {
       </Seccao>
 
       <Seccao titulo="Por tipo de pagamento">
-        {pagamentos.length === 0 ? (
+        {pagamentos.length === 0 && !porRegistar ? (
           <Vazio>Ainda não foi cobrada nenhuma conta neste turno.</Vazio>
         ) : (
           <Tabela cabecalho={[['Tipo'], ['N.º', 'r'], ['Total', 'r']]}>
@@ -112,6 +135,20 @@ export default function PosResumoDoTurno({ resumo }) {
                 <Cel r forte>{euros(linha.total)}</Cel>
               </tr>
             ))}
+            {/* **O que foi facturado e não tem pagamento nenhum por baixo.**
+                Uma venda emitida sem `pagamentos` não entra em linha nenhuma
+                da tabela, e a coluna somava 10,20 € debaixo de um "Total
+                cobrado 11,35 €" — 1,15 € desaparecidos sem uma palavra. O
+                número vem SOMADO do servidor (`pagamentos_por_registar`): o
+                ecrã nunca soma colunas de dinheiro. Só aparece quando existe,
+                e quando aparece a coluna volta a dar o rodapé. */}
+            {porRegistar && (
+              <tr className="text-amber-600 dark:text-amber-500">
+                <Cel>Sem tipo de pagamento registado</Cel>
+                <Cel r />
+                <Cel r forte>{euros(resumo.pagamentos_por_registar)}</Cel>
+              </tr>
+            )}
             {/* A coluna do N.º fica VAZIA nesta linha, de propósito: ela
                 conta pagamentos (uma conta paga metade em dinheiro e metade
                 em multibanco conta uma vez em cada linha) e o total é o de
@@ -166,6 +203,18 @@ export default function PosResumoDoTurno({ resumo }) {
               <Cel r forte>{euros(resumo?.total_faturado)}</Cel>
             </tr>
           </Tabela>
+        )}
+        {/* Sem esta frase, a linha do Total ficava com duas colunas que não
+            somam a terceira e nada que o dissesse. Dito por extenso, deixa de
+            ser um total partido e passa a ser uma conta por resolver com o
+            gestor. */}
+        {comTaxaDesconhecida && (
+          <p className="text-xs text-amber-600 dark:text-amber-500 pt-1">
+            Há uma linha com uma taxa de IVA que este sistema não reconhece: o
+            total dela conta para o turno, mas a base e o IVA não se sabem —
+            por isso a Base e o IVA do Total NÃO somam o Total. Mostre isto ao
+            gestor.
+          </p>
         )}
       </Seccao>
     </div>

@@ -46,6 +46,10 @@ from faturacao.caixa import (
     listar_contas_esquecidas,
 )
 from faturacao.db import COLECOES
+# A `ext_ref` das reservas dos cenários sai da função que a GERA, nunca de uma
+# cópia do formato escrita aqui: o predicado único (`por_resolver`) pergunta
+# pelas reservas pelo PREFIXO da sessão.
+from faturacao.fiscal import ext_ref_determinista
 
 
 def _corre(coro):
@@ -59,7 +63,19 @@ def _corresponde(item, filtro):
     if not filtro:
         return True
     for chave, valor in filtro.items():
-        if isinstance(valor, dict) and "$in" in valor:
+        # `$or` e `$nin` — ver o mesmo ramo em test_venda.py. É por eles que
+        # `por_resolver.contas_por_resolver` pergunta pelas RESERVAS de várias
+        # sessões de uma vez e pelas vendas em estado NÃO TERMINAL. Um duplo
+        # que os ignorasse tratava "$or" como um campo do documento (nenhuma
+        # reserva casava) e `$nin` como um valor a comparar (casava com tudo,
+        # `emitida` incluída) — metade do predicado ficava verde sem correr.
+        if chave == "$or":
+            if not any(_corresponde(item, sub) for sub in valor):
+                return False
+        elif isinstance(valor, dict) and "$nin" in valor:
+            if item.get(chave) in valor["$nin"]:
+                return False
+        elif isinstance(valor, dict) and "$in" in valor:
             if item.get(chave) not in valor["$in"]:
                 return False
         # `$ne`, e não é um extra decorativo: é por ele que o travão do fecho
@@ -249,14 +265,36 @@ def test_uma_conta_cuja_sessao_desapareceu_tambem_aparece(monkeypatch):
 
 
 def test_as_contas_ja_resolvidas_nao_aparecem(monkeypatch):
-    """Uma conta emitida, cancelada ou separada não tem nada por receber."""
+    """Uma conta emitida ou cancelada não tem nada por receber. Uma mãe
+    `separada` COM partes também não: o dinheiro dela mudou-se para as filhas,
+    e são elas que aparecem enquanto estiverem por cobrar."""
     _monta(monkeypatch, vendas=[
         _venda(id="emitida", estado="emitida"),
         _venda(id="cancelada", estado="cancelada"),
         _venda(id="mae", estado="separada"),
+        _venda(id="filha", conta_mae_id="mae", estado="emitida"),
     ])
 
     assert _corre(listar_contas_esquecidas(_=_gestor())) == []
+
+
+def test_uma_mae_separada_SEM_PARTES_nao_pode_ficar_calada(monkeypatch):
+    """**11,64 € saíam de um Z assinado por aqui.** Uma mãe `separada` sem
+    partes nenhumas é um estado que não devia existir (as filhas nascem antes
+    de a mãe travar, `venda._grava_as_partes`, e um processo que morra entre as
+    duas escritas deixa-a assim) — e enquanto todos os leitores filtrassem por
+    `estado: "aberta"` ela não aparecia a NINGUÉM: nem no balcão, nem nesta
+    lista, nem no diálogo do fecho, nem no Z.
+
+    Não é reparada — ninguém sabe quais eram as partes que ela devia ter ——
+    mas também não fica calada: aparece aqui, com o motivo escrito."""
+    _monta(monkeypatch, vendas=[_venda(id="mae", estado="separada")])
+
+    lista = _corre(listar_contas_esquecidas(_=_gestor()))
+    assert [(c["id"], c["motivo"], c["estado_da_venda"]) for c in lista] == [
+        ("mae", "mae_separada_sem_partes", "separada")], (
+        "Uma mãe `separada` sem partes voltou a não aparecer em lado nenhum.")
+    assert lista[0]["total"] == 7.05
 
 
 def test_cada_conta_diz_onde_ficou_e_com_quem(monkeypatch):
@@ -368,7 +406,10 @@ def test_arrumar_uma_conta_com_reserva_fiscal_e_recusado(monkeypatch):
     era apagar do nosso sistema uma venda ligada a um documento que continua
     a existir lá fora."""
     db, _ = _monta(monkeypatch, vendas=[_venda()],
-                   refs=[{"venda_id": "parte-1", "ext_ref": "x", "documento_id": None}])
+                   refs=[{"venda_id": "parte-1",
+                          "ext_ref": ext_ref_determinista(
+                              "loja-1", "sessao-ontem", "parte-1"),
+                          "documento_id": None}])
 
     with pytest.raises(HTTPException) as e:
         _corre(arrumar_conta_esquecida("parte-1", gestor=_gestor()))
@@ -382,7 +423,10 @@ def test_a_conta_travada_aparece_na_mesma_na_lista_marcada(monkeypatch):
     """Recusar a acção não é escondê-la: o dinheiro não pode ficar invisível.
     Aparece marcada, e o ecrã manda-o ao card de cima."""
     _monta(monkeypatch, vendas=[_venda()],
-           refs=[{"venda_id": "parte-1", "ext_ref": "x", "documento_id": None}])
+           refs=[{"venda_id": "parte-1",
+                          "ext_ref": ext_ref_determinista(
+                              "loja-1", "sessao-ontem", "parte-1"),
+                          "documento_id": None}])
 
     lista = _corre(listar_contas_esquecidas(_=_gestor()))
     assert lista[0]["reserva_fiscal_por_resolver"] is True

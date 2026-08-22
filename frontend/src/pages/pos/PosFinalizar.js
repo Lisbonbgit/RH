@@ -10,7 +10,10 @@ import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible';
 import PosCampoValor, { TecladoNumerico, comVirgula } from './PosCampoValor';
-import { contaTravada, duvidaPorApurar, detalhesErroPos, temMaisDe2CasasDecimaisPos } from '@/lib/pos';
+import {
+  contaTravada, duvidaPorApurar, detalhesErroPos, eurosPos as euros,
+  temMaisDe2CasasDecimaisPos,
+} from '@/lib/pos';
 
 // O ecrã de finalizar (Plano 2C, Task 4): três cartões — Total, Cliente e
 // Pagamento — depois Mais Opções recolhido, e em baixo o valor recebido, o
@@ -27,8 +30,9 @@ import { contaTravada, duvidaPorApurar, detalhesErroPos, temMaisDe2CasasDecimais
 // espaço que lhe derem (h-full) e nunca assume que é a página inteira — quem
 // decide se isto ocupa o painel da direita ou o ecrã todo é o pai.
 
-const euros = (valor) =>
-  `€ ${(Number(valor) || 0).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// A formatação de dinheiro vem de `@/lib/pos` e NÃO é escrita aqui: eram oito
+// cópias da mesma linha, e as oito transformavam `undefined`/`null`/`NaN` num
+// "€ 0,00" perfeitamente legível. Ver `numeroPos` lá.
 
 // Dinheiro compara-se em CÊNTIMOS INTEIROS, nunca com `===` sobre vírgula
 // flutuante: em JS 0.1 + 0.2 dá 0.30000000000000004, e uma soma de pagamentos

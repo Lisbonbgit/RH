@@ -9,7 +9,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
 } from '@/components/ui/alert-dialog';
 import { resumoDoPedido } from './PosPedidoGuiado';
-import { contasDaLinha, repartirCentimos } from '@/lib/pos';
+import { contasDaLinha, eurosPos as euros, repartirCentimos } from '@/lib/pos';
 
 // Dividir e separar a conta (Plano 2D, Task 5): três amigos, dois açaís e uma
 // Coca-Cola — ou dividem por igual, ou cada um paga o que consumiu, e cada um
@@ -32,8 +32,9 @@ import { contasDaLinha, repartirCentimos } from '@/lib/pos';
 // servidor a repartir de outra maneira é uma promessa que a fatura desmente à
 // frente do cliente.
 
-const euros = (valor) =>
-  `€ ${(Number(valor) || 0).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// A formatação de dinheiro vem de `@/lib/pos` e NÃO é escrita aqui: eram oito
+// cópias da mesma linha, e as oito transformavam `undefined`/`null`/`NaN` num
+// "€ 0,00" perfeitamente legível. Ver `numeroPos` lá.
 
 // O dinheiro conta-se em CÊNTIMOS INTEIROS, do princípio ao fim. É a mesma
 // razão do cabeçalho de `reparticao.py`: `round()` sobre a representação

@@ -7,7 +7,7 @@ import PosCampoValor from './PosCampoValor';
 import PosPersonalizacoes, {
   ehIndicacaoDeServico, errosDeSelecao, resumoDaSelecao,
 } from './PosPersonalizacoes';
-import { arredondarComoOServidor, temMaisDe2CasasDecimaisPos } from '@/lib/pos';
+import { arredondarComoOServidor, eurosPos as euros, temMaisDe2CasasDecimaisPos } from '@/lib/pos';
 
 // Os códigos são os do Vendus (`_TAXAS` em faturacao/precos.py). A operadora vê
 // a PERCENTAGEM — é o que ela sabe de cor do balcão — mas o que viaja para o
@@ -23,8 +23,9 @@ const TAXAS_IVA = [
   { codigo: 'ISE', etiqueta: '0%' },
 ];
 
-const euros = (valor) =>
-  `€ ${(Number(valor) || 0).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// A formatação de dinheiro vem de `@/lib/pos` e NÃO é escrita aqui: eram oito
+// cópias da mesma linha, e as oito transformavam `undefined`/`null`/`NaN` num
+// "€ 0,00" perfeitamente legível. Ver `numeroPos` lá.
 
 // Arredonda a 2 casas a CADA passo, como o servidor faz em
 // `precos.linha_de_venda` e `venda.py::_totais` — não uma vez no fim.

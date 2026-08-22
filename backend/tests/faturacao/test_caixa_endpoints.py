@@ -48,7 +48,22 @@ def _corresponde(item, filtro):
     if not filtro:
         return True
     for chave, valor in filtro.items():
-        if isinstance(valor, dict) and "$ne" in valor:
+        # `$or` e `$nin` — ver o mesmo ramo em test_venda.py. É por eles que
+        # `por_resolver.contas_por_resolver` pergunta pelas RESERVAS de várias
+        # sessões de uma vez e pelas vendas em estado NÃO TERMINAL. Um duplo
+        # que os ignorasse tratava "$or" como um campo do documento (nenhuma
+        # reserva casava) e `$nin` como um valor a comparar (casava com tudo,
+        # `emitida` incluída) — metade do predicado ficava verde sem correr.
+        if chave == "$or":
+            if not any(_corresponde(item, sub) for sub in valor):
+                return False
+        elif isinstance(valor, dict) and "$nin" in valor:
+            if item.get(chave) in valor["$nin"]:
+                return False
+        elif isinstance(valor, dict) and "$in" in valor:
+            if item.get(chave) not in valor["$in"]:
+                return False
+        elif isinstance(valor, dict) and "$ne" in valor:
             if item.get(chave) == valor["$ne"]:
                 return False
         # `$regex`, ancorado — é por ele que o travão do fecho pergunta pelas

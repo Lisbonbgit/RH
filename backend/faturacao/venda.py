@@ -1104,9 +1104,13 @@ async def _contas_do_balcao(db, loja_id: str, dispositivo_id: Optional[str]) -> 
       gravadas antes desta marca são, por definição, contas do balcão, e por
       isso isto dispensou migração.
 
-    As PARTES de uma conta dividida entram sem uma regra à parte: `_nova_parte`
-    herda-lhes a sessão e o dispositivo da mãe, e uma conta dividida só acaba
-    quando todas as partes estiverem cobradas ou canceladas.
+    As PARTES de uma conta dividida entram: `_nova_parte` herda-lhes a sessão e
+    o dispositivo da mãe, e uma conta dividida só acaba quando todas as partes
+    estiverem cobradas ou canceladas. **Mas só depois de a mãe estar
+    `separada`** — as filhas nascem antes de a mãe travar (`_grava_as_partes`)
+    e, enquanto a mãe não virou, elas não existem para ninguém. Ver
+    `por_resolver._mae_ja_travou`: é essa pergunta que fecha a janela em que o
+    ecrã mostrava uma PARTE de 3,78 € onde estava uma conta de 11,35 €.
 
     Uma loja tem duas ou três caixas com uma sessão aberta cada, por isso a
     primeira leitura são dois ou três documentos (há índice por `loja_id`); a
@@ -1118,6 +1122,8 @@ async def _contas_do_balcao(db, loja_id: str, dispositivo_id: Optional[str]) -> 
     por isso não há aqui o remendo que a versão anterior tinha para uma sessão
     sem esse campo — um remendo que, além de proteger de nada, era o único
     sítio por onde o âmbito voltava a entrar como argumento."""
+    from .por_resolver import contas_por_resolver
+
     sessoes = await (
         db[COLECOES["sessoes_caixa"]]
         .find({"loja_id": loja_id, "estado": "aberta"}, {"_id": 0, "id": 1})
@@ -1126,17 +1132,22 @@ async def _contas_do_balcao(db, loja_id: str, dispositivo_id: Optional[str]) -> 
     sessao_ids = [s["id"] for s in sessoes if s.get("id")]
     if not sessao_ids:
         return []
-    return await (
-        db[COLECOES["vendas"]]
-        .find({
-            "sessao_id": {"$in": sessao_ids},
-            "estado": "aberta",
-            "dispositivo_id": dispositivo_id,
-            "entregue_ao_gestor_em": None,
-        })
-        .sort("criada_em", -1)
-        .to_list(1000)
-    )
+    # **O predicado é de `por_resolver.contas_por_resolver` e já não daqui** —
+    # ver o cabeçalho desse ficheiro. Isto filtra pelo FIM do balcão e não
+    # volta a decidir o que conta: as que estão EM CURSO (o `estado: "aberta"`,
+    # a marca do gestor e, desde esta ronda, a mãe que ainda não travou) e as
+    # deste POSTO. `em_curso_no_balcao` já traz as três decisões lá dentro.
+    #
+    # Uma reserva órfã (sem venda) não tem `dispositivo_id` e cai neste filtro,
+    # como tem de cair: o balcão pergunta pelo cliente que está à frente, e
+    # essa é do gestor (`/fiscal/reservas-presas`).
+    itens = await contas_por_resolver(db, sessao_ids)
+    # A mais recente primeiro — a que a operadora tem à frente é sempre a
+    # última que abriu.
+    return [
+        i["venda"] for i in reversed(itens)
+        if i["em_curso_no_balcao"] and i["dispositivo_id"] == dispositivo_id
+    ]
 
 
 def _etiqueta_do_posto(loja_id: str, dispositivo_id: Optional[str]) -> str:
@@ -2289,12 +2300,25 @@ async def _grava_as_partes(
     # um Z assinado.
     #
     # Fica de fora, por escolha e não por esquecimento, a morte do processo
-    # ENTRE as duas escritas: aí a mãe fica mesmo `separada` sem partes. Não é
-    # invisível a toda a gente — a reserva que provocou esta compensação ainda
-    # está viva e trava o fecho (`caixa.py::_venda_com_emissao_viva`, que desde
-    # esta ronda pergunta do lado das reservas), e a conta aparece em
-    # `/fiscal/reservas-presas` com o estado dela à vista. Quem a arruma é o
-    # gestor, por lá.
+    # ENTRE as duas escritas: aí a mãe fica mesmo `separada` sem partes.
+    #
+    # **E até esta ronda essa mitigação estava escrita aqui e era FALSA no
+    # segundo passo.** Dizia-se: a reserva ainda está viva, trava o fecho e a
+    # conta aparece em `/fiscal/reservas-presas`; quem a arruma é o gestor, por
+    # lá. A primeira metade era verdade. A segunda era o gatilho: o gestor
+    # carregava em LIBERTAR — a única saída que a lista lhe oferece — e a
+    # partir daí a conta desaparecia de TODOS os conjuntos ao mesmo tempo.
+    # Medido, sobre uma mãe de 11,64 €: `libertada: True`, balcão `null`,
+    # `/caixa/contas-esquecidas` 0, `/fiscal/reservas-presas` 0, o diálogo do
+    # fecho `quantas=0 total=0,00`, e o `POST /pos/caixa/fechar` a responder
+    # **200 com o Z assinado a dizer «por cobrar 0,00 €»**. O remédio que o
+    # sistema nomeia era o gatilho.
+    #
+    # Já não é: uma mãe `separada` SEM PARTES é, por si só, uma conta por
+    # resolver (`por_resolver.contas_por_resolver`) — não depende da reserva
+    # para ser vista. Libertar a reserva deixa de a tirar do último conjunto
+    # que a via: ela continua no diálogo, no Z e na lista do gestor, com o
+    # motivo escrito, e é lá que se arruma.
     #
     # E a reposição é CONDICIONADA a {"estado": "separada"} — o único estado que
     # a NOSSA escrita pode ter deixado — exactamente pela razão do

@@ -94,8 +94,23 @@ def _corresponde(item, filtro):
     if not filtro:
         return True
     for chave, valor in filtro.items():
+        # `$or` — ver o mesmo ramo em test_venda.py: é por ele que
+        # `por_resolver.contas_por_resolver` pergunta pelas reservas de várias
+        # sessões de uma vez.
+        if chave == "$or":
+            if not any(_corresponde(item, sub) for sub in valor):
+                return False
+            continue
         valores = _valores_no_caminho(item, chave)
-        if isinstance(valor, dict) and "$ne" in valor:
+        # `$nin` — os estados NÃO TERMINAIS de uma venda. Um duplo que o
+        # ignorasse casava com tudo, `emitida` incluída.
+        if isinstance(valor, dict) and "$nin" in valor:
+            if any(v in valor["$nin"] for v in valores):
+                return False
+        elif isinstance(valor, dict) and "$in" in valor:
+            if not any(v in valor["$in"] for v in valores):
+                return False
+        elif isinstance(valor, dict) and "$ne" in valor:
             if valor["$ne"] in valores:
                 return False
         elif isinstance(valor, dict) and "$regex" in valor:
@@ -187,7 +202,12 @@ class ColeccaoFalsa:
         self._indices_unicos = indices_unicos or []
         self.chamadas_insert = 0
 
-    def find(self, filtro=None):
+    def find(self, filtro=None, projecao=None):
+        # A projecção é ACEITE e IGNORADA, como nos outros duplos: o que
+        # impede um `_id` de sair numa resposta é a construção campo a campo do
+        # código de produção, não a projecção do find. Aceitá-la é preciso —
+        # `por_resolver._sessoes` passa-a, e sem este parâmetro o duplo
+        # rebentava com um TypeError a meio de um fecho.
         return CursorFalso(
             [_como_o_motor(d) for d in self._documentos if _corresponde(d, filtro)]
         )

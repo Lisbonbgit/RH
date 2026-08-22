@@ -50,6 +50,14 @@ isso o líquido de cada linha é o total com imposto. A base tira-se dele:
 total EXACTAMENTE, por construção e não por sorte, e a soma das bases mais
 a soma dos IVAs dá o total dos documentos do turno ao cêntimo.
 
+**E a decomposição faz-se DOCUMENTO A DOCUMENTO.** Fazia-se uma vez só, no
+fim, sobre o total do turno por taxa — e dava outro número. Medido em 40
+turnos simulados de 180 documentos: coincidiu em 3, com diferenças de −14 a
++6 cêntimos (num turno de 4 439,72 €, base 3 754,12 € contra 3 754,26 €). O
+número que a AT vê e que a contabilista reconcilia é o do DOCUMENTO; um Z
+que arredonde ao nível do turno não bate com a soma dos talões, e é o Z que
+está errado. O meio-cêntimo arredonda onde a declaração é feita.
+
 Tudo em cêntimos inteiros, e a divisão da base é em aritmética inteira com
 o meio-cêntimo para cima (`(2·num + den) // (2·den)`): `round()` sobre
 floats faz arredondamento bancário sobre a representação binária, e este é
@@ -128,9 +136,33 @@ def mapa_de_imposto(vendas: List[Dict]) -> List[Dict]:
         for tax_id, centimos in centimos_deste.items():
             linha = por_taxa.get(tax_id)
             if linha is None:
-                linha = por_taxa[tax_id] = {"centimos": 0, "documentos": 0}
+                linha = por_taxa[tax_id] = {
+                    "centimos": 0, "base": 0, "iva": 0, "documentos": 0}
             linha["centimos"] += centimos
             linha["documentos"] += 1
+            # **A BASE E O IVA SOMAM-SE DOCUMENTO A DOCUMENTO**, e não uma vez
+            # no fim sobre o total do turno. É a mesma decomposição, feita ao
+            # nível em que a declaração é feita: a AT vê documentos, a
+            # contabilista reconcilia documentos, e o meio-cêntimo de cada um
+            # deles arredonda no documento — não uma vez sobre a soma de 180.
+            #
+            # **Medido, com 40 turnos simulados de 180 documentos cada:** a
+            # soma do turno e a soma documento a documento coincidiram em 3.
+            # Diferenças de −14 a +6 cêntimos; num turno de 4 439,72 € o Z
+            # dizia base 3 754,12 € e a soma por documento dava 3 754,26 €.
+            # Nenhum dos dois números estava «errado» — mas só um deles é o
+            # que a contabilista consegue reconstituir a partir dos talões, e
+            # é esse que tem de sair no Z.
+            #
+            # A propriedade que já estava certa não se toca: o IVA é o RESTO
+            # (`total − base`), nunca uma segunda multiplicação, e agora é o
+            # resto DE CADA DOCUMENTO. `base + iva == total` continua exacto
+            # por construção — em cada documento, e portanto na soma.
+            taxa_desta = _TAXA_DO_CODIGO.get(tax_id)
+            if taxa_desta is not None:
+                base_deste = _base_em_centimos(centimos, taxa_desta)
+                linha["base"] += base_deste
+                linha["iva"] += centimos - base_deste
 
     saida = []
     for tax_id, linha in por_taxa.items():
@@ -139,11 +171,8 @@ def mapa_de_imposto(vendas: List[Dict]) -> List[Dict]:
         if taxa is None:
             base_centimos = iva_centimos = None
         else:
-            base_centimos = _base_em_centimos(total_centimos, taxa)
-            # O IVA é o RESTO, nunca uma segunda multiplicação: é isto que
-            # garante `base + iva == total` ao cêntimo, sem depender de os
-            # dois arredondamentos caírem do mesmo lado.
-            iva_centimos = total_centimos - base_centimos
+            base_centimos = linha["base"]
+            iva_centimos = linha["iva"]
         saida.append({
             "tax_id": tax_id,
             "taxa": taxa,

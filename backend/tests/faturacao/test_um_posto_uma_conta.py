@@ -636,6 +636,9 @@ def _grelha_morta(venda, partes, tmp_path):
     guiao = tmp_path / "grelha.js"
     guiao.write_text("\n".join([
         _corpo_da_seta(lib, "const centimosPos = (valor) =>", _LIB_POS),
+        _corpo_da_funcao(
+            lib, "export const numeroPos = (valor) =>", _LIB_POS
+        ).replace("export ", "", 1),
         _corpo_da_seta(lib, "const eurosPos = (valor) =>", _LIB_POS),
         _corpo_da_seta(
             lib, "export const contaTravada = (venda) =>", _LIB_POS

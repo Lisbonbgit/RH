@@ -26,6 +26,7 @@ import {
   ehTimeoutPos, TIMEOUT_PADRAO_MS, entregarContaAoGestor,
   razaoDeNaoComecar, razaoDaGrelhaMorta, MSG_CONTA_TRAVADA_CURTA,
   contaDeOutraCaixa,
+  eurosPos as euros,
 } from '@/lib/pos';
 
 // O ecrã de venda do POS (Plano 2C, Tasks 3 e 4, dos prints do Vendus): a
@@ -81,8 +82,9 @@ const SEGUNDOS_ENTRE_PERGUNTAS = Math.round(MS_ENTRE_PERGUNTAS / 1000);
 // A explicação inteira — o que se passa, o que ela pode fazer AGORA e o que o
 // gestor tem de fazer — vive na `FaixaContaTravada`, que fica à vista no
 // painel da conta enquanto isto durar.
-const euros = (valor) =>
-  `€ ${(Number(valor) || 0).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// A formatação de dinheiro vem de `@/lib/pos` e NÃO é escrita aqui: eram oito
+// cópias da mesma linha, e as oito transformavam `undefined`/`null`/`NaN` num
+// "€ 0,00" perfeitamente legível. Ver `numeroPos` lá.
 
 // O dinheiro compara-se em CÊNTIMOS INTEIROS, nunca em vírgula flutuante — a
 // mesma regra do PosFinalizar, e aqui serve para somar o que falta receber das

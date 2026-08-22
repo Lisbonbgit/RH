@@ -66,6 +66,21 @@ const destePosto = (conta, contas) => conta.dispositivo_id === contas.dispositiv
 // então) não se inventa nenhum — "outro posto" é a verdade que se sabe.
 const nomeDoPosto = (conta) => conta.dispositivo_nome || 'outro posto';
 
+// **A conta que o BALCÃO não consegue tocar.** O servidor manda o estado em que
+// a venda ficou (`estado_da_venda`) e o motivo por que ela está por resolver
+// (`motivo`, ver `por_resolver.py`). Uma que não esteja `aberta` — uma mãe
+// `separada` a quem a divisão morreu a meio, um estado que o servidor ainda não
+// conhece — não se cobra nem se cancela no POS: as escritas respondem 409 e ela
+// não aparece em ecrã nenhum de onde se lhe possa pegar. Mandar a operadora
+// "cobrá-la ou cancelá-la" era pedir-lhe o que a rota recusa, que é o beco que
+// esta ronda inteira persegue.
+//
+// A comparação é com `!= null` primeiro, e é deliberado: uma resposta de um
+// servidor anterior a este campo não pode passar a dizer que NENHUMA das contas
+// se cobra — era a mesma frase errada, só que ao contrário.
+const foraDoAlcanceDoBalcao = (c) =>
+  c.estado_da_venda != null && c.estado_da_venda !== 'aberta';
+
 function ListaDeContas({ contas, linhas, mostrarPosto }) {
   return (
     <ul className="space-y-1 pl-6">
@@ -79,6 +94,15 @@ function ListaDeContas({ contas, linhas, mostrarPosto }) {
                 Drive-Thru"), que foi como isto apareceu no browser. */}
             {c.conta_mae_id && (
               <span className="ml-1 font-sans italic break-normal">(parte de uma conta repartida)</span>
+            )}
+            {/* A que não se cobra nem se cancela aqui, marcada na própria
+                linha — como a parte de uma conta repartida. */}
+            {foraDoAlcanceDoBalcao(c) && (
+              <span className="ml-1 font-sans italic break-normal">
+                {c.motivo === 'mae_separada_sem_partes'
+                  ? '(conta repartida sem partes — não se cobra no balcão)'
+                  : '(não se cobra no balcão)'}
+              </span>
             )}
             {/* De que posto é. Só quando há mesmo mais do que um em jogo —
                 numa loja com um PC só, dizer "neste posto" em todas as
@@ -136,6 +160,7 @@ function ContasPorCobrar({ contas, momento }) {
   const porCobrar = todas.filter(
     (c) => c.trava_o_fecho !== true && c.entregue_ao_gestor !== true);
   const noutroPosto = porCobrar.filter((c) => !destePosto(c, contas));
+  const foraDoAlcance = porCobrar.filter(foraDoAlcanceDoBalcao);
   // O euro desta caixa vem SOMADO DO SERVIDOR (`total_por_cobrar`), e não de
   // um `reduce` sobre a lista: é a regra 1 do cabeçalho do PosVenda — o ecrã
   // nunca soma dinheiro. Somar aqui juntava-lhe ainda os erros da vírgula
@@ -218,6 +243,19 @@ function ContasPorCobrar({ contas, momento }) {
                   : 'As deste PC ainda dá para cobrar ou cancelar aqui, antes de fechar; as que dizem outro posto só se resolvem no PC onde foram abertas — este ecrã não lhes chega. O Z regista o que ficar.'))
               : 'Quem as resolve agora é o gestor, no backoffice — aparecem na mesma lista das reservas fiscais presas, já com o turno em que ficaram.'}
           </p>
+          {/* E a ressalva, quando há alguma que ela não consegue tocar: a
+              instrução de cima ("cobre-as ou cancele-as") não vale para essas,
+              e dizê-lo é a diferença entre uma tentativa e um telefonema. */}
+          {antes && foraDoAlcance.length > 0 && (
+            <p className="mt-1">
+              {foraDoAlcance.length === porCobrar.length
+                ? 'Nenhuma delas se cobra nem se cancela no balcão'
+                : 'As marcadas «não se cobra no balcão» não se cobram nem se cancelam aqui'}
+              {' — o POS recusa, e elas não aparecem em ecrã nenhum de onde lhes '}
+              {'possa pegar. Ficam registadas neste Z como dinheiro por receber e '}
+              {'é o gestor que as resolve, no backoffice (Contas por Resolver).'}
+            </p>
+          )}
           {/* A referência de cada uma, à vista e seleccionável: é o que a
               operadora diz ao gestor, e é por ela que ele as encontra. As que
               nasceram de uma conta repartida dizem-no — "faltou cobrar uma

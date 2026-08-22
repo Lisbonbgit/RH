@@ -290,11 +290,19 @@ def test_o_prefixo_da_sessao_sai_da_funcao_que_gera_a_ext_ref():
     assert not ext_ref_determinista("loja-1", "sessao-2", "venda-1").startswith(prefixo)
     # Só o CÓDIGO: a docstring e os comentários da função citam o formato de
     # propósito, e é para continuarem a poder citá-lo.
-    fonte = inspect.getsource(caixa_mod._venda_com_emissao_viva)
+    #
+    # A pergunta mudou de casa nesta ronda: quem constrói o prefixo é agora
+    # `por_resolver.contas_por_resolver`, o predicado único que o travão do
+    # fecho, o diálogo, o balcão e o gestor partilham. O guarda segue-a para lá
+    # — o que ele prende é o prefixo sair da função que o GERA, esteja ele onde
+    # estiver.
+    from faturacao import por_resolver as por_resolver_mod
+
+    fonte = inspect.getsource(por_resolver_mod.contas_por_resolver)
     codigo = "\n".join(
         linha
         for linha in fonte.replace(
-            caixa_mod._venda_com_emissao_viva.__doc__ or "", "").split("\n")
+            por_resolver_mod.contas_por_resolver.__doc__ or "", "").split("\n")
         if not linha.strip().startswith("#")
     )
     assert "ext_ref_determinista" in codigo, (
@@ -302,6 +310,20 @@ def test_o_prefixo_da_sessao_sai_da_funcao_que_gera_a_ext_ref():
         "a referência — é a segunda cópia do formato que um dia diverge.")
     assert "pos-" not in codigo, (
         "O formato da ext_ref voltou a estar escrito à mão dentro do travão.")
+    # E o travão continua a NÃO ter uma pergunta própria pelas reservas: se
+    # voltasse a ter, voltava a poder discordar do diálogo que a operadora lê.
+    fonte_do_travao = inspect.getsource(caixa_mod._venda_com_emissao_viva)
+    # Só o CÓDIGO, outra vez: a docstring do travão fala de `fat_refs_fiscais`
+    # de propósito, e é para continuar a poder falar.
+    codigo_do_travao = "\n".join(
+        linha
+        for linha in fonte_do_travao.replace(
+            caixa_mod._venda_com_emissao_viva.__doc__ or "", "").split("\n")
+        if not linha.strip().startswith("#")
+    )
+    assert "refs_fiscais" not in codigo_do_travao, (
+        "O travão do fecho voltou a ter a SUA pergunta pelas reservas — é a "
+        "sexta ronda a começar.")
 
 
 # --- O DEFEITO INTEIRO, pelas rotas --------------------------------------------

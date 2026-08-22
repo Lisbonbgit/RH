@@ -76,7 +76,15 @@ def _corresponde(item, filtro):
     if not filtro:
         return True
     for chave, valor in filtro.items():
-        if isinstance(valor, dict) and "$in" in valor:
+        # `$or`, e é por ele que `por_resolver.contas_por_resolver` pergunta
+        # pelas reservas de VÁRIAS sessões de uma vez (o balcão varre as
+        # sessões abertas da loja). Um duplo que o ignorasse tratava a chave
+        # "$or" como um campo do documento, não casava com reserva nenhuma, e
+        # metade do predicado ficava verde sem nunca correr.
+        if chave == "$or":
+            if not any(_corresponde(item, sub) for sub in valor):
+                return False
+        elif isinstance(valor, dict) and "$in" in valor:
             if item.get(chave) not in valor["$in"]:
                 return False
         # `$ne`, e não é um extra decorativo: é por ele que o travão do fecho
@@ -85,6 +93,14 @@ def _corresponde(item, filtro):
         # com tudo e punha o teste a medir o contrário do que diz.
         elif isinstance(valor, dict) and "$ne" in valor:
             if item.get(chave) == valor["$ne"]:
+                return False
+        # `$nin` — o filtro dos estados NÃO TERMINAIS de
+        # `por_resolver.ESTADOS_TERMINAIS`. É `$nin` e não `$in` de propósito
+        # (um estado novo cai do lado de CONTAR), e um duplo que o ignorasse
+        # casava com tudo, incluindo as `emitida`: o Z passava a contar como
+        # "por cobrar" as contas que já eram fatura.
+        elif isinstance(valor, dict) and "$nin" in valor:
+            if item.get(chave) in valor["$nin"]:
                 return False
         # `$regex`, ancorado — é por ele que o travão do fecho pergunta pelas
         # RESERVAS desta sessão (`caixa._venda_com_emissao_viva`), pelo prefixo

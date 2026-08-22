@@ -50,6 +50,7 @@ from .test_arredondamento_do_ecra import (
 
 _ASSINATURA_CENT = "export const arredondarComoOServidor = (valor) =>"
 _ASSINATURA_CENTIMOS_POS = "const centimosPos = (valor) =>"
+_ASSINATURA_NUMERO_POS = "export const numeroPos = (valor) =>"
 _ASSINATURA_EUROS_POS = "const eurosPos = (valor) =>"
 _ASSINATURA_COMECAR = "export const razaoDeNaoComecar = (porCobrar) =>"
 _ASSINATURA_CASAS = "export const temMaisDe2CasasDecimaisPos = (valor) =>"
@@ -221,6 +222,9 @@ def _guiao_da_frase(porCobrar, mutacao=None):
         centimos = centimos.replace(antes, depois)
     return "\n".join([
         centimos,
+        # `numeroPos` vem com ele: `eurosPos` passou a ser uma casca à volta
+        # dela, e é lá que está a defesa contra o `undefined` pintado de zero.
+        _sem_export(_corpo_da_funcao(lib, _ASSINATURA_NUMERO_POS, _LIB_POS)),
         _corpo_da_seta(lib, _ASSINATURA_EUROS_POS, _LIB_POS),
         _sem_export(_corpo_da_funcao(lib, _ASSINATURA_COMECAR, _LIB_POS)),
         "const casos = %s;" % json.dumps(porCobrar),
