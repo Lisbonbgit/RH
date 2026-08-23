@@ -1117,7 +1117,7 @@ async def fechar_caixa(
     # Construído campo a campo (não `dict(sessao)`): sessao vem de find_one
     # sem projecção e, em Mongo real, traria _id — nunca deixar isso vazar
     # para uma resposta JSON.
-    return {
+    z = {
         "id": sessao["id"],
         "caixa_id": sessao["caixa_id"],
         "loja_id": sessao["loja_id"],
@@ -1166,6 +1166,28 @@ async def fechar_caixa(
         "contas_abertas": contas_abertas,
         "verificacao_vendus": verificacao_vendus,
     }
+
+    # **O Z em papel** — depois de o Z estar ESCRITO na sessão, nunca antes.
+    # Um papel que não corresponda ao que ficou gravado é a pior espécie de
+    # papel que esta loja pode produzir: é o que a funcionária assina e leva.
+    #
+    # Enfileirado, não impresso aqui: quem imprime é o programa da loja, que
+    # vai buscar o trabalho (ver `impressao.py`). E embrulhado como tudo o
+    # resto que corre depois do fecho estar feito — o fecho JÁ ACONTECEU, e
+    # nem uma excepção inesperada pode transformá-lo num 500 no ecrã, que
+    # mandava a funcionária fechar outra vez uma caixa já fechada (regra 3 do
+    # dono). Sem papel, o Z continua todo no ecrã e gravado na sessão.
+    #
+    # O import é LOCAL, como o de `mapa_imposto` em `_resumo_do_turno` e pela
+    # mesma razão: `impressao` importa `talao`, e um import no topo do
+    # ficheiro trazia mais um módulo para dentro do ciclo deste pacote.
+    try:
+        from .impressao import enfileirar_z
+        await enfileirar_z(db, z, dispositivo_id=operador.get("dispositivo_id"))
+    except Exception as e:  # noqa: BLE001 — o fecho nunca pode falhar por causa do papel
+        logger.warning("[faturacao] o Z fechou mas não foi para a fila de impressão: %s", e)
+
+    return z
 
 
 async def _largar_o_posto_das_contas_abertas(db, sessao_id: str) -> None:

@@ -302,7 +302,8 @@ def _fatura(**over):
 
 
 def _cenario(*, documentos, fatura, conta_aberta, ha_mais=False, limite=200,
-             abrir_fatura=True):
+             abrir_fatura=True, estado_impressao=None, clicar_imprimir=False,
+             rede_cai_depois=False):
     """Monta o `PosFaturacao` a sério, carrega no botão «Faturação», abre a
     primeira fatura da lista, e devolve o que ficou LEGÍVEL no ecrã em cada
     passo."""
@@ -316,6 +317,23 @@ def _cenario(*, documentos, fatura, conta_aberta, ha_mais=False, limite=200,
         % json.dumps(fatura),
         "RESPOSTAS_POS['/pos/venda/aberta'] = () => ({ data: %s });"
         % json.dumps(conta_aberta),
+        # **O estado da impressão vem do SERVIDOR**, como no balcão: é o
+        # próprio ecrã que o vai buscar (`useEstadoDaImpressao`). Sem resposta
+        # nenhuma configurada, o pedido rebenta — que é exactamente o vão em
+        # que o ecrã ainda não sabe se há programa a ouvir, e tem de desligar
+        # os botões na mesma.
+        ("RESPOSTAS_POS['/pos/impressao/estado'] = () => ({ data: %s });"
+         % json.dumps(estado_impressao)) if estado_impressao is not None else "",
+        # **A rede a cair DEPOIS de já se saber.** A primeira resposta chega, a
+        # segunda rebenta — é o soluço de dois segundos na rede da loja a meio
+        # de uma venda, e o que se quer provar é que ele não apaga o que já se
+        # sabia nem desliga os botões todos do balcão.
+        ("let __voltas = 0;"
+         "RESPOSTAS_POS['/pos/impressao/estado'] = () => {"
+         "  __voltas += 1;"
+         "  if (__voltas > 1) throw new Error('Network Error');"
+         "  return { data: %s };"
+         "};" % json.dumps(estado_impressao)) if rede_cai_depois else "",
         "(async () => {",
         "  const alvo = document.getElementById('raiz');",
         "  const raiz = createRoot(alvo);",
@@ -350,6 +368,15 @@ def _cenario(*, documentos, fatura, conta_aberta, ha_mais=False, limite=200,
         "    const nc = [...alvo.querySelectorAll('button')].find(",
         "      (b) => (b.textContent || '').includes('Nota de Crédito'));",
         "    saida.nc_desligado = nc ? nc.getAttribute('data-desligado') : 'sem-botao';",
+        "    if (%s && imprimir) {" % ("true" if clicar_imprimir else "false"),
+        "      await act(async () => { imprimir.click(); });",
+        "      await act(async () => {});",
+        "      saida.depois_de_imprimir = textoVisivel(alvo);",
+        "      const outra = [...alvo.querySelectorAll('button')].find(",
+        "        (b) => (b.textContent || '').includes('Imprimir'));",
+        "      saida.imprimir_desligado_depois = outra",
+        "        ? outra.getAttribute('data-desligado') : 'sem-botao';",
+        "    }",
         "  }",
         "  saida.pedidos = pedidos.map((p) => p.url);",
         "  process.stdout.write(JSON.stringify(saida));",
@@ -409,24 +436,103 @@ def test_a_fatura_aberta_MOSTRA_a_tabela_e_o_mapa_de_imposto(ecra_normal):
     assert "€ 11,64" in fatura
 
 
-def test_a_fatura_aberta_mostra_os_TRES_botoes_e_so_o_imprimir_esta_desligado(ecra_normal):
-    """**Imprimir** fica à vista e desligado COM A RAZÃO — a mesma regra do
-    menu Caixa. **Copiar para a venda** e **Nota de Crédito** funcionam.
+def test_a_fatura_aberta_mostra_os_TRES_botoes(ecra_normal):
+    """**Copiar para a venda** e **Nota de Crédito** funcionam.
 
-    A nota de crédito era um «brevemente» até esta ronda; agora tem ecrã
-    (`PosNotaCredito.js`) e o botão abre-o. Este guarda mudou de lado de
-    propósito: era ele que segurava a frase «a nota de crédito é a ronda
-    seguinte», e essa frase deixou de ser verdade."""
+    O **Imprimir** desta fatura está desligado, mas já não por não existir
+    programa nenhum: esta fatura de exemplo tem `tem_talao: false` — foi
+    emitida antes de o talão certificado passar a ser guardado, e não há papel
+    para reimprimir daqui. O documento fiscal continua bom, e é isso que o
+    ecrã diz. (Os quatro estados do botão estão logo a seguir.)"""
     fatura = ecra_normal["fatura"]
     assert "Imprimir" in fatura and "Nota de Crédito" in fatura
     assert "Copiar para a venda" in fatura
     assert ecra_normal["imprimir_desligado"] == "sim"
     assert ecra_normal["nc_desligado"] == "nao"
     assert ecra_normal["copiar_desligado"] == "nao"
-    assert "agente de impressão" in fatura
     # E o botão vivo diz o que faz — que é emitir um documento fiscal REAL.
     assert "documento fiscal real" in fatura.lower()
     assert "ronda seguinte" not in fatura
+    assert "Brevemente" not in fatura
+
+
+# --- O botão de IMPRIMIR, nos quatro estados em que ele pode estar -----------
+#
+# **A prova de que o botão está mesmo ligado à decisão**, e não só de que a
+# decisão está certa (isso mede-se em `pos.impressao.test.js`). O ecrã é
+# montado a sério, o botão é procurado no DOM e o que se lê é o que a
+# operadora leria.
+
+
+@pytest.fixture(scope="module")
+def ecra_com_programa(tmp_path_factory):
+    return _montar_no_node(
+        _cenario(documentos=[_documento()], fatura=_fatura(tem_talao=True),
+                 conta_aberta=None,
+                 estado_impressao={"ha_programa": True, "por_sair": 0, "falhados": 0},
+                 clicar_imprimir=True),
+        tmp_path_factory.mktemp("fat-imp-sim"), "faturacao-imp-sim.js")
+
+
+@pytest.fixture(scope="module")
+def ecra_sem_programa(tmp_path_factory):
+    return _montar_no_node(
+        _cenario(documentos=[_documento()], fatura=_fatura(tem_talao=True),
+                 conta_aberta=None,
+                 estado_impressao={"ha_programa": False, "por_sair": 0, "falhados": 2}),
+        tmp_path_factory.mktemp("fat-imp-nao"), "faturacao-imp-nao.js")
+
+
+@pytest.fixture(scope="module")
+def ecra_impressao_por_saber(tmp_path_factory):
+    return _montar_no_node(
+        _cenario(documentos=[_documento()], fatura=_fatura(tem_talao=True),
+                 conta_aberta=None, estado_impressao=None),
+        tmp_path_factory.mktemp("fat-imp-vao"), "faturacao-imp-vao.js")
+
+
+def test_COM_programa_a_ouvir_o_imprimir_esta_VIVO_e_pede_a_segunda_via(ecra_com_programa):
+    """E o toque manda mesmo o pedido ao servidor — é isto que separa um botão
+    ligado de um botão bonito."""
+    # E PERGUNTOU. Um ecrã que decidisse isto sem perguntar estava a adivinhar
+    # se a loja tem programa de impressão instalado.
+    assert any(u.endswith("/pos/impressao/estado")
+               for u in ecra_com_programa["pedidos"])
+    assert ecra_com_programa["imprimir_desligado"] == "nao"
+    assert any(u.endswith("/pos/documentos/doc-1/imprimir")
+               for u in ecra_com_programa["pedidos"])
+
+
+def test_SEM_programa_a_ouvir_o_imprimir_esta_MORTO_e_a_razao_LE_SE(ecra_sem_programa):
+    """**A razão de existir de tudo isto.** Uma loja onde ninguém instalou o
+    programa não pode ter um botão que parece funcionar: o toque entrava na
+    fila, caducava meia hora depois e ninguém sabia de nada — a operadora dava
+    o cliente por servido e o papel nunca existiu.
+
+    E a razão é LIDA, não escondida num `title` que ninguém abre com pressa em
+    cima."""
+    assert ecra_sem_programa["imprimir_desligado"] == "sim"
+    fatura = ecra_sem_programa["fatura"]
+    assert "Não há nenhum programa de impressão a responder nesta loja" in fatura
+    # O pedido nunca chega a sair.
+    assert not any("imprimir" in u for u in ecra_sem_programa["pedidos"])
+
+
+def test_enquanto_NAO_SE_SABE_o_botao_tambem_esta_morto(ecra_impressao_por_saber):
+    """Entre abrir o ecrã e a primeira resposta há um vão de um segundo. Um
+    botão que funcionasse nesse vão numa loja sem programa é exactamente o
+    engano que isto existe para não deixar acontecer."""
+    assert ecra_impressao_por_saber["imprimir_desligado"] == "sim"
+    assert "A perguntar se o programa de impressão" in ecra_impressao_por_saber["fatura"]
+
+
+def test_uma_fatura_SEM_talao_guardado_diz_que_nao_ha_papel(ecra_normal):
+    """O documento fiscal continua bom — o que não há é o talão. Dizê-lo por
+    extenso vale mais do que um botão morto e mudo, que manda a operadora
+    carregar três vezes e chamar o gestor."""
+    fatura = ecra_normal["fatura"]
+    assert "não há papel para reimprimir daqui" in fatura
+    assert "documento fiscal está bom" in fatura
 
 
 @pytest.fixture(scope="module")
@@ -758,3 +864,30 @@ def test_a_copia_PEDE_ao_servidor_e_a_conta_APARECE_no_balcao(copia_no_balcao):
     assert "Açaí Regular" in depois
     assert "€ 10,20" in depois
     assert "Não existem produtos associados" not in depois
+
+
+@pytest.fixture(scope="module")
+def ecra_com_a_rede_a_cair_depois(tmp_path_factory):
+    return _montar_no_node(
+        _cenario(documentos=[_documento()], fatura=_fatura(tem_talao=True),
+                 conta_aberta=None,
+                 estado_impressao={"ha_programa": True, "por_sair": 0, "falhados": 0},
+                 clicar_imprimir=True, rede_cai_depois=True),
+        tmp_path_factory.mktemp("fat-imp-rede"), "faturacao-imp-rede.js")
+
+
+def test_um_SOLUCO_da_rede_nao_desliga_os_botoes_do_balcao(ecra_com_a_rede_a_cair_depois):
+    """A primeira resposta chegou e disse que há programa. A relê-la — a que
+    corre logo a seguir a cada impressão — a rede caiu.
+
+    O botão **fica vivo**. Uma falha de dois segundos na rede da loja não pode
+    desligar os botões todos do balcão a meio de uma venda: o que estava a
+    funcionar continua a parecer que funciona até haver uma resposta que diga
+    o contrário. E se o programa tiver mesmo morrido, a resposta seguinte
+    di-lo."""
+    ecra = ecra_com_a_rede_a_cair_depois
+    assert ecra["imprimir_desligado"] == "nao"
+    # A segunda pergunta chegou mesmo a ser feita e chegou mesmo a rebentar.
+    assert sum(1 for u in ecra["pedidos"] if u.endswith("/pos/impressao/estado")) >= 2
+    assert ecra["imprimir_desligado_depois"] == "nao"
+    assert "A perguntar se o programa de impressão" not in ecra["depois_de_imprimir"]

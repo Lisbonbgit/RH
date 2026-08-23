@@ -99,6 +99,15 @@ router.include_router(_documentos)
 from .nota_credito import router as _nota_credito
 router.include_router(_nota_credito)
 
+# A FILA DE IMPRESSÃO e as rotas do programa da loja. Entra por último de
+# propósito: é o único módulo que ninguém mais importa por dentro (o
+# `fiscal.py` e o `caixa.py` importam-no LOCALMENTE, dentro da função que
+# enfileira, para não fechar o ciclo `impressao → talao → ...`), e é o único
+# cuja avaria não pode travar nada — sem ele o POS vende e emite na mesma, só
+# não sai papel.
+from .impressao import router as _impressao
+router.include_router(_impressao)
+
 
 async def arrancar():
     """Chamado pelo server.py no arranque.
