@@ -1,6 +1,7 @@
 import React from 'react';
 import {
-  eurosPos, haPagamentosPorRegistar, temTaxaDesconhecida, gavetaAbaixoDoFundo,
+  eurosPos, eurosComSinal, haPagamentosPorRegistar, temTaxaDesconhecida,
+  tirouDaGavetaAMais, haDevolucoesAcimaDoRecebido,
 } from '@/lib/pos';
 
 // Os números de um turno, desenhados uma única vez.
@@ -23,6 +24,9 @@ import {
 // oito cópias da mesma linha e as oito pintavam `undefined` de "€ 0,00". Fica
 // reexportada porque o `PosFecharCaixa` a importa deste ficheiro há muito.
 export const euros = eurosPos;
+// E o irmão que põe o sinal do próprio valor — «+ € -15,40» era o que a linha
+// das vendas em dinheiro dizia com o `+` escrito à mão.
+export const comSinal = eurosComSinal;
 
 export function LinhaValor({ label, valor, destaque }) {
   return (
@@ -93,9 +97,11 @@ export default function PosResumoDoTurno({ resumo }) {
   // ("9,03 + 1,17 contra 11,35") sem uma palavra que o explicasse.
   const comTaxaDesconhecida = temTaxaDesconhecida(mapa);
   const porRegistar = haPagamentosPorRegistar(resumo);
-  // **A gaveta abaixo do fundo** — a decisão vive em `lib/pos.js`, como todas
-  // as deste ecrã, e o número vem somado do servidor.
-  const abaixoDoFundo = gavetaAbaixoDoFundo(resumo);
+  // **O que saiu da gaveta a mais, e o porquê** — DUAS perguntas e dois
+  // predicados, e não um a mandar no outro. As decisões vivem em `lib/pos.js`,
+  // como todas as deste ecrã, e os números vêm somados do servidor.
+  const tirouAMais = tirouDaGavetaAMais(resumo);
+  const devolucoesAcima = haDevolucoesAcimaDoRecebido(resumo);
 
   // **Um resumo ausente não se desenha como um turno de zeros.** Medido: com
   // `resumo` a `undefined` (o servidor não respondeu, o campo mudou de nome), o
@@ -119,7 +125,12 @@ export default function PosResumoDoTurno({ resumo }) {
       <Seccao titulo="Movimentos do turno">
         <div className="divide-y">
           <LinhaValor label="Abertura (fundo de maneio)" valor={euros(resumo?.fundo)} />
-          <LinhaValor label="Vendas em dinheiro" valor={`+ ${euros(resumo?.vendas_dinheiro)}`} />
+          {/* O sinal sai do VALOR: as vendas em dinheiro do turno são as
+              faturas MENOS as devoluções, e podem ficar negativas. Com o `+`
+              escrito à mão lia-se «+ € -15,40» — um mais colado a um número
+              negativo, na única linha que mostra o vazamento quando mais nada
+              o mostra. */}
+          <LinhaValor label="Vendas em dinheiro" valor={comSinal(resumo?.vendas_dinheiro)} />
           <LinhaValor label="Entradas" valor={`+ ${euros(resumo?.entradas)}`} />
           {/* O sinal está escrito, e não subentendido: é a única forma de a
               coluna se ler de cima a baixo e dar o total que está no fim. */}
@@ -127,28 +138,43 @@ export default function PosResumoDoTurno({ resumo }) {
           <LinhaValor label="Deve estar na gaveta" valor={euros(resumo?.esperado)} destaque />
         </div>
         {/* **O aviso que faltava, e é o que impede a gaveta de bater certo
-            estando errada.** Um esperado abaixo do fundo de maneio é uma
-            impossibilidade contabilística: um turno só pode tirar da gaveta o
-            que lá pôs. Medido no servidor — fatura de 24,14 € paga 5,00 em
-            dinheiro + 19,14 em Multibanco, açaí de 20,40 € devolvido em
-            DINHEIRO → o esperado caía de 50,00 para 34,60 €, e a operadora
-            contava 34,60 €, batia certo, e ia para casa.
+            estando errada.** Um turno só pode tirar da gaveta o que lá pôs.
+            Medido no servidor — fatura de 24,14 € paga 5,00 em dinheiro +
+            19,14 em Multibanco, açaí de 20,40 € devolvido em DINHEIRO → as
+            vendas em dinheiro caíam para −15,40 €, e a operadora contava a
+            gaveta, batia certo, e ia para casa.
 
-            E diz PORQUÊ, quando se sabe: `devolucoes_acima_do_recebido` é o
-            leitor do `acima_do_recebido` que a nota de crédito grava e que
-            até agora não era lido em lado nenhum. */}
-        {abaixoDoFundo && (
+            **A frase NÃO diz «abaixo do fundo»**, e a versão anterior dizia:
+            com uma sangria de 30,00 € para o cofre em cima disto, a gaveta
+            fecha 45,40 € abaixo do fundo e não 15,40 — o número estava certo
+            e a frase mentia sobre ele. O que este número é: quanto saiu da
+            gaveta ALÉM do que as vendas do turno lá puseram. */}
+        {tirouAMais && (
           <p
             className="text-xs text-amber-600 dark:text-amber-500 pt-1"
-            data-testid="gaveta-abaixo-do-fundo"
+            data-testid="tirado-da-gaveta-a-mais"
           >
-            A gaveta deve fechar {euros(resumo.gaveta_abaixo_do_fundo)} ABAIXO do
-            fundo de maneio com que abriu.
-            {resumo.devolucoes_acima_do_recebido > 0
-              ? ` Saíram ${euros(resumo.devolucoes_acima_do_recebido)} em devoluções por um meio de pagamento que essas faturas não receberam.`
-              : ''}
-            {' '}Isto não é uma diferença de contagem — conte a gaveta na
-            mesma e mostre isto ao gestor.
+            Saíram {euros(resumo.tirado_da_gaveta_a_mais)} da gaveta a mais do
+            que as vendas deste turno lá puseram. Isto não é uma diferença de
+            contagem — conte a gaveta na mesma e mostre isto ao gestor.
+          </p>
+        )}
+        {/* **E o porquê, no seu PRÓPRIO predicado.**
+            `devolucoes_acima_do_recebido` é o leitor do `acima_do_recebido`
+            que a nota de crédito grava. Esta frase esteve pendurada no aviso
+            de cima e desaparecia com ele — com um reforço de troco na gaveta o
+            servidor calculava 15,40 € e o ecrã não escrevia nada, e o campo
+            voltava a ser só de escrita. São duas perguntas: um turno pode ter
+            a gaveta certa e ainda assim ter devolvido por um meio que aquela
+            fatura não recebeu. */}
+        {devolucoesAcima && (
+          <p
+            className="text-xs text-amber-600 dark:text-amber-500 pt-1"
+            data-testid="devolucoes-acima-do-recebido"
+          >
+            Saíram {euros(resumo.devolucoes_acima_do_recebido)} em devoluções
+            por um meio de pagamento que essas faturas não receberam. Mostre
+            isto ao gestor.
           </p>
         )}
       </Seccao>

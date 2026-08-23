@@ -46,12 +46,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .auth import gestor_atual
 from .caixa_math import (
     _centimos,
-    diferenca,
-    abaixo_do_fundo,
     devolucoes_acima_do_recebido,
+    diferenca,
     esperado,
     por_tipo_de_pagamento,
     soma_vendas_dinheiro,
+    tirado_da_gaveta_a_mais,
     total_por_tipo,
 )
 from .db import COLECOES, obter_db
@@ -660,22 +660,29 @@ def _resumo_do_turno(
         "entradas": total_por_tipo(movimentos, "entrada"),
         "saidas": total_por_tipo(movimentos, "saida"),
         "esperado": esperado_do_turno,
-        # **A GAVETA ABAIXO DO FUNDO, e o porquê ao lado.** Um turno só pode
-        # tirar da gaveta o que lá pôs; um esperado abaixo do fundo de maneio
-        # é uma impossibilidade contabilística, e este resumo deixava-a passar
-        # em silêncio. Medido: fatura de 24,14 € paga 5,00 em dinheiro + 19,14
-        # em Multibanco, açaí de 20,40 € devolvido em DINHEIRO → esperado
-        # 34,60 € com fundo de 50,00. A operadora conta a gaveta, encontra
-        # 34,60 €, bate certo — e saíram 15,40 € que aquele turno não recebeu.
+        # **O QUE SAIU DA GAVETA A MAIS, e o porquê ao lado.** Um turno só
+        # pode tirar da gaveta o que lá pôs, e isso lê-se nas VENDAS EM
+        # DINHEIRO — não no `esperado`. Medido: fatura de 24,14 € paga 5,00 em
+        # dinheiro + 19,14 em Multibanco, açaí de 20,40 € devolvido em
+        # DINHEIRO → `vendas_dinheiro` −15,40 €. A operadora conta a gaveta,
+        # bate certo — e saíram 15,40 € que aquele turno não recebeu.
+        #
+        # **Contra o `esperado` isto falhava nos dois sentidos**, e os dois
+        # foram medidos aqui: um reforço de troco de 20,00 € apagava o aviso
+        # (esperado 54,60 €, aviso 0,00 — o vazamento intacto), e uma sangria
+        # de 30,00 € para o cofre acendia-o sem devolução nenhuma (esperado
+        # 44,14 €, aviso 5,86 €). Os movimentos de caixa são rotina e têm rota
+        # própria; as vendas em dinheiro nenhum deles consegue mexer.
         #
         # Os dois SEMPRE presentes, mesmo a zero, pela regra do
         # `pagamentos_por_registar` aqui em baixo.
-        "gaveta_abaixo_do_fundo": abaixo_do_fundo(
-            sessao.get("fundo"), esperado_do_turno),
+        "tirado_da_gaveta_a_mais": tirado_da_gaveta_a_mais(vendas_dinheiro),
         # E o LEITOR de `nota_credito.devolucao.acima_do_recebido`, que até
         # aqui era um campo só de escrita: é ele que transforma «faltam
         # 15,40 €» em «devolveram-se 15,40 € por um meio que estas faturas não
-        # receberam».
+        # receberam». **Pergunta PRÓPRIA**, e não um adorno do de cima: um
+        # turno pode ter a gaveta bem e ainda assim ter devolvido por um meio
+        # que a fatura não recebeu (ver `caixa_math`).
         "devolucoes_acima_do_recebido": devolucoes_acima_do_recebido(notas_credito),
         # O desdobramento que o Z não tinha: quanto entrou em dinheiro, em
         # multibanco, no Uber Eats, no Bolt, no Glovo. Sem ele ninguém
@@ -1066,11 +1073,11 @@ async def fechar_caixa(
         "contado": dados.contado,
         "esperado": esperado_valor,
         "diferenca": diferenca_valor,
-        # **A gaveta abaixo do fundo, e o porquê.** No Z como no Ponto de
+        # **O que saiu da gaveta a mais, e o porquê.** No Z como no Ponto de
         # Caixa: é o MESMO componente a desenhar os dois, e um número que a
         # operadora vê às 15h e não encontra no papel que assina às 23h é pior
         # do que não existir.
-        "gaveta_abaixo_do_fundo": resumo["gaveta_abaixo_do_fundo"],
+        "tirado_da_gaveta_a_mais": resumo["tirado_da_gaveta_a_mais"],
         "devolucoes_acima_do_recebido": resumo["devolucoes_acima_do_recebido"],
         # O desdobramento por tipo de pagamento e o mapa de imposto do turno
         # — as duas coisas que o Z não dizia.

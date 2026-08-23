@@ -186,7 +186,7 @@ def test_soma_vendas_dinheiro_venda_sem_pagamentos_nao_rebenta():
 # A operadora conta a gaveta às 23h, encontra 34,60 € e bate certo — com
 # 15,40 € que aquele turno nunca lá pôs.
 
-from faturacao.caixa_math import abaixo_do_fundo, devolucoes_acima_do_recebido
+from faturacao.caixa_math import devolucoes_acima_do_recebido, tirado_da_gaveta_a_mais
 
 
 def _nota_devolvida(valor, acima=0.0, estado="emitida", tipo_fiscal="NU"):
@@ -198,22 +198,37 @@ def _nota_devolvida(valor, acima=0.0, estado="emitida", tipo_fiscal="NU"):
     }
 
 
-def test_abaixo_do_fundo_diz_quanto_falta_a_gaveta_para_o_fundo():
-    """50,00 de fundo, 34,60 esperado: **15,40 € abaixo**, que é exactamente o
-    que a devolução tirou da gaveta e a venda nunca lá pôs."""
-    assert abaixo_do_fundo(50.00, 34.60) == 15.40
+def test_tirado_da_gaveta_a_mais_diz_quanto_saiu_alem_do_que_entrou():
+    """Vendas em dinheiro **−15,40 €**: saíram 15,40 € da gaveta que aquele
+    turno nunca lá pôs — a fatura recebeu 5,00 em dinheiro e a devolução
+    levou 20,40."""
+    assert tirado_da_gaveta_a_mais(-15.40) == 15.40
 
 
-def test_abaixo_do_fundo_e_ZERO_num_turno_normal():
+def test_tirado_da_gaveta_a_mais_e_ZERO_num_turno_normal():
     """O controlo: um aviso que estivesse sempre lá não era aviso nenhum."""
-    assert abaixo_do_fundo(50.00, 61.29) == 0.0
-    assert abaixo_do_fundo(50.00, 50.00) == 0.0
+    assert tirado_da_gaveta_a_mais(24.14) == 0.0
+    assert tirado_da_gaveta_a_mais(0.0) == 0.0
+    assert tirado_da_gaveta_a_mais(None) == 0.0
 
 
-def test_abaixo_do_fundo_conta_em_CENTIMOS_INTEIROS():
+def test_tirado_da_gaveta_a_mais_conta_em_CENTIMOS_INTEIROS():
     """0,29 + 1,15 + 10,20 em vírgula flutuante dá 11,639999999999999 — e este
     número aparece a dizer a uma operadora que a gaveta está mal."""
-    assert abaixo_do_fundo(50.00, 50.00 - 11.64) == 11.64
+    assert tirado_da_gaveta_a_mais(-(0.29 + 1.15 + 10.20)) == 11.64
+
+
+def test_tirado_da_gaveta_a_mais_NAO_pergunta_pelo_fundo_nem_pelo_esperado():
+    """**O oitavo defeito, na assinatura.** A versão anterior era
+    `abaixo_do_fundo(fundo, esperado)` — e o `esperado` inclui os movimentos de
+    caixa, o que a fazia falhar nos dois sentidos (ver os dois cenários em
+    `test_ponto_de_caixa.py`). O invariante é sobre as VENDAS EM DINHEIRO, e é
+    por isso que esta função só tem um argumento: não há por onde um movimento
+    lhe entrar."""
+    import inspect
+
+    assert list(inspect.signature(tirado_da_gaveta_a_mais).parameters) == [
+        "vendas_dinheiro"]
 
 
 def test_devolucoes_acima_do_recebido_SOMA_o_campo_que_ninguem_lia():

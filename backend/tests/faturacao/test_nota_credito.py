@@ -15,7 +15,7 @@ Os valores expõem o cêntimo de propósito (0,29 · 1,15 · 10,20): a 8,50 e a
 0,30 quase toda a aritmética de IVA parece certa.
 """
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -540,13 +540,27 @@ def test_o_toque_repetido_devolve_o_NUMERO_e_o_ATCUD_da_nota_que_saiu(monkeypatc
     assert segunda["devolucao"]["valor"] == 20.40
 
 
-def test_a_intencao_PRESA_responde_espere_e_nao_ja_foi_creditado(monkeypatch):
+def _ha_segundos(segundos):
+    """Um `criada_em` a uma distância CONHECIDA do relógio de agora.
+
+    Uma data fixa escrita à mão não serve para medir esta janela: ela afasta-se
+    do presente todos os dias, e o guarda deixa de saber distinguir 5 minutos
+    de um dia inteiro (foi assim que uma mutação que punha o relógio em 24 h
+    sobreviveu)."""
+    return (datetime.now(timezone.utc) - timedelta(seconds=segundos)).isoformat()
+
+
+def test_a_intencao_PRESA_HA_SEGUNDOS_responde_espere_e_nao_ja_foi_creditado(monkeypatch):
     """O pior ramo: a intenção ficou `reservada` e **nada** foi enviado à AT.
 
     Antes: o mesmo toque levava 422 «já foi creditado (2)» — uma frase que
     mente, sobre uma nota que não creditou nada, e que deixava a fatura
-    increditável por qualquer caminho com a caixa trancada."""
-    db = _db_nc(notas=[_intencao_presa()])
+    increditável por qualquer caminho com a caixa trancada.
+
+    **Reservou AGORA**, e é isso que faz «espere alguns segundos» ser verdade:
+    a emissão pode estar a falar com o Vendus neste instante. É o CONTROLO do
+    teste a seguir."""
+    db = _db_nc(notas=[_intencao_presa(criada_em=_ha_segundos(2))])
     monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
 
     with pytest.raises(HTTPException) as erro:
@@ -557,6 +571,75 @@ def test_a_intencao_PRESA_responde_espere_e_nao_ja_foi_creditado(monkeypatch):
     assert "já está a ser emitida" in erro.value.detail
     assert "já foi creditado" not in erro.value.detail
     assert VendusNCFalso.instancias == []
+
+
+def test_o_MESMO_BOTAO_numa_nota_presa_HA_HORAS_nomeia_o_gestor(monkeypatch):
+    """**Quem insiste no mesmo botão nunca sabia que é o gestor que destrava.**
+
+    Ao balcão, insistir no mesmo botão é o que se faz quando a rede pisca —
+    logo é precisamente quem mais precisa da saída que nunca a lia. A resposta
+    a este toque não olhava para a idade da intenção: uma `reservada` presa há
+    HORAS respondia «Espere alguns segundos: se ela sair, aparece aqui
+    sozinha» **para sempre**, e nunca nomeava o gestor. Uma janela NOVA sobre
+    a mesma nota já dizia onde ir.
+
+    O relógio é o mesmo de `_nota_presa` (`_SEGUNDOS_DE_EMISSAO_NORMAL`), e é
+    por isso que a frase manda a um sítio que já a deixa entrar: passada esta
+    janela é também a partir dela que as rotas do gestor lhe mexem."""
+    db = _db_nc(notas=[_intencao_presa(criada_em=_ha_segundos(2 * 3600))])
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as erro:
+        _corre(emitir_nota_credito(
+            "doc-1", _pedido(linhas=[{"indice": 1, "quantidade": 2}]),
+            operador=_operador()))
+    assert erro.value.status_code == 409
+    assert "Reservas Fiscais Presas" in erro.value.detail
+    assert "Notas de Crédito Presas" in erro.value.detail
+    assert "NÃO devolva o dinheiro" in erro.value.detail
+    # E não a frase que nunca mais vai ser verdade.
+    assert "Espere alguns segundos" not in erro.value.detail
+    assert "já foi creditado" not in erro.value.detail
+    assert VendusNCFalso.instancias == []
+
+
+@pytest.mark.parametrize("desvio,espera_o_gestor", [(-1, False), (+1, True)])
+def test_a_JANELA_de_uma_emissao_normal_e_a_fronteira_das_duas_frases(
+        monkeypatch, desvio, espera_o_gestor):
+    """A fronteira medida no próprio relógio, e não numa data escrita à mão:
+    um segundo antes de `_SEGUNDOS_DE_EMISSAO_NORMAL` a emissão ainda pode
+    estar a falar com o Vendus; um segundo depois já não, e a saída é o
+    gestor. É o mesmo relógio que as rotas dele usam para aceitar mexer-lhe."""
+    idade = nc_mod._SEGUNDOS_DE_EMISSAO_NORMAL + desvio
+    db = _db_nc(notas=[_intencao_presa(criada_em=_ha_segundos(idade))])
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as erro:
+        _corre(emitir_nota_credito(
+            "doc-1", _pedido(linhas=[{"indice": 1, "quantidade": 2}]),
+            operador=_operador()))
+    assert erro.value.status_code == 409
+    assert ("Notas de Crédito Presas" in erro.value.detail) is espera_o_gestor
+    assert ("Espere alguns segundos" in erro.value.detail) is not espera_o_gestor
+
+
+def test_a_saida_que_o_mesmo_botao_nomeia_e_a_MESMA_da_janela_nova(monkeypatch):
+    """As duas metades da mesma mentira mandam agora ao mesmo sítio — era
+    exactamente a divergência que fazia o segundo toque ser um beco."""
+    db = _db_nc(notas=[_intencao_presa(criada_em=_ha_segundos(2 * 3600))])
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as mesmo_botao:
+        _corre(emitir_nota_credito(
+            "doc-1", _pedido(linhas=[{"indice": 1, "quantidade": 2}]),
+            operador=_operador()))
+    with pytest.raises(HTTPException) as janela_nova:
+        _corre(emitir_nota_credito(
+            "doc-1", _pedido(intencao_id="99999999-9999-4999-8999-999999999999",
+                             linhas=[{"indice": 1, "quantidade": 2}]),
+            operador=_operador()))
+    for erro in (mesmo_botao, janela_nova):
+        assert "Faturação → Reservas Fiscais Presas" in erro.value.detail
 
 
 def test_uma_JANELA_NOVA_travada_por_uma_nota_PRESA_ouve_a_verdade(monkeypatch):
@@ -894,6 +977,40 @@ def test_o_id_do_produto_no_vendus_nunca_sai_para_o_ecra(monkeypatch):
     saida = _corre(preparar_nota_credito("doc-1", operador=_operador()))
     for linha in saida["linhas"]:
         assert "id_vendus" not in linha
+
+
+def test_o_id_do_vendus_tambem_nao_sai_pela_PRE_VISUALIZACAO(monkeypatch):
+    """**A irmã que o deixava sair.** São as TRÊS rotas do mesmo ecrã, e só a
+    de cima escondia o campo — a pré-visualização devolvia-o a cada caixa que
+    a operadora marcava. A inconsistência entre as duas é o que tornava fácil
+    alguém passar a depender dele."""
+    db = _db_nc()
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+    saida = _corre(pre_visualizar_nota_credito(
+        "doc-1",
+        PedidoPreVisualizar(linhas=[
+            {"indice": 1, "quantidade": 1}, {"indice": 3, "quantidade": 1}]),
+        operador=_operador()))
+    assert saida["linhas"]
+    for linha in saida["linhas"]:
+        assert "id_vendus" not in linha
+    # E o dinheiro continua todo lá: esconder o id não pode comer uma linha.
+    assert saida["total"] == 11.35
+
+
+def test_o_id_do_vendus_tambem_nao_sai_na_RESPOSTA_DA_EMISSAO(monkeypatch):
+    """A terceira, e é a que a operadora tem à frente depois de a nota sair —
+    as MESMAS linhas que a pré-visualização mostrou."""
+    db = _db_nc()
+    saida = _emitir(db, monkeypatch, _pedido(linhas=[{"indice": 1, "quantidade": 2}]))
+    assert saida["linhas"]
+    for linha in saida["linhas"]:
+        assert "id_vendus" not in linha
+    assert saida["total_das_linhas"] == 20.40
+    # E o que FOI ao Vendus levou-o na mesma: é ele que impede o Vendus de
+    # criar um artigo novo a cada documento.
+    enviadas = VendusNCFalso.instancias[0].chamadas_criar[0]["linhas"]
+    assert all(li.get("id") for li in enviadas)
 
 
 # --- 6. O DINHEIRO DO TURNO: a devolução segue o meio de pagamento ---------

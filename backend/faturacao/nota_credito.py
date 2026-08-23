@@ -182,6 +182,12 @@ _MSG_EMISSAO_EM_CURSO = (
     "carrega duas vezes. Espere alguns segundos: se ela sair, aparece aqui "
     "sozinha; nada é emitido duas vezes."
 )
+_MSG_NOTA_PRESA_HA_MUITO = (
+    "Esta nota de crédito ficou PRESA: reservou há mais de %d minutos e nunca "
+    "chegou a sair. Carregar outra vez não a destrava, e nada é emitido duas "
+    "vezes. NÃO devolva o dinheiro — quem a resolve é o gestor, no backoffice: "
+    "Faturação → Reservas Fiscais Presas, no cartão «Notas de Crédito Presas»."
+)
 _MSG_CREDITO_TOMADO_ENTRETANTO = (
     "Outra nota de crédito desta fatura foi emitida neste instante — esta NÃO "
     "saiu e nada foi enviado à Autoridade Tributária. Feche esta janela e abra "
@@ -821,6 +827,24 @@ async def _fatura_creditavel(db, documento_id: str, loja_id: str):
     return documento, venda
 
 
+def _sem_id_vendus(linhas: List[Dict]) -> List[Dict]:
+    """As linhas como o BALCÃO as pode ver: sem o id do artigo no Vendus.
+
+    É configuração interna da ligação ao Vendus e o balcão não tem nada que a
+    ver — a mesma regra do `vendus_payment_method_id` em
+    `pos_catalogo.tipos_pagamento_do_pos`, que só deixa sair o booleano.
+
+    Vive aqui, numa função só, porque são TRÊS as rotas do mesmo ecrã que o
+    têm de esconder e só uma o escondia: a `preparar_nota_credito` filtrava-o,
+    a `pre_visualizar_nota_credito` devolvia-o a cada mudança da selecção e a
+    resposta da emissão devolvia-o outra vez. Três cópias da mesma regra é
+    como duas ficam para trás."""
+    return [
+        {chave: valor for chave, valor in linha.items() if chave != "id_vendus"}
+        for linha in linhas
+    ]
+
+
 def _resumo_da_nota(linhas: List[Dict]) -> Dict:
     """O dinheiro de uma selecção de linhas: o mapa de imposto (Taxa · Base ·
     IVA · Total), o subtotal e o total.
@@ -837,7 +861,10 @@ def _resumo_da_nota(linhas: List[Dict]) -> Dict:
     mapa = mapa_da_nota({"linhas": linhas})
     totais = totais_do_mapa(mapa)
     return {
-        "linhas": linhas,
+        # **Sem o `id_vendus`, tal como a irmã `preparar_nota_credito`.** As
+        # duas respondem ao MESMO ecrã, e só uma delas o escondia: era a
+        # inconsistência que tornava fácil alguém passar a depender dele.
+        "linhas": _sem_id_vendus(linhas),
         "mapa_imposto": mapa,
         "totais_imposto": totais,
         "subtotal": totais["base"],
@@ -870,14 +897,8 @@ async def preparar_nota_credito(
         # Sem isto o ecrã não podia mostrar nada, e a operadora escolhia o
         # meio da devolução às cegas — ver `pagamentos_da_fatura`.
         "pagamentos": pagamentos_da_fatura(venda, notas),
-        # O `id_vendus` de cada linha fica DE FORA: é configuração interna
-        # da ligação ao Vendus e o balcão não tem nada que a ver — a mesma
-        # regra do `vendus_payment_method_id` em
-        # `pos_catalogo.tipos_pagamento_do_pos`, que só deixa sair o booleano.
-        "linhas": [
-            {chave: valor for chave, valor in linha.items() if chave != "id_vendus"}
-            for linha in linhas_creditaveis(venda, notas)
-        ],
+        # O `id_vendus` de cada linha fica DE FORA — ver `_sem_id_vendus`.
+        "linhas": _sem_id_vendus(linhas_creditaveis(venda, notas)),
         # As notas de crédito que esta fatura já tem — a operadora tem de
         # saber que o cliente já cá veio, e com que documento. Uma que ficou
         # por apurar aparece com o estado à vista: é a única forma de alguém
@@ -1089,7 +1110,10 @@ def _resposta_da_nota(nota: Dict, documento: Dict) -> Dict:
         "numero_origem": nota.get("numero_origem"),
         "motivo": nota.get("motivo"),
         "devolucao": nota.get("devolucao"),
-        "linhas": nota.get("linhas"),
+        # Sem o `id_vendus`, como as outras duas rotas do mesmo ecrã — é a
+        # MESMA lista de linhas que a pré-visualização mostrou, e o balcão não
+        # passa a ver o id do artigo no Vendus só porque a nota saiu.
+        "linhas": _sem_id_vendus(nota.get("linhas") or []),
         "mapa_imposto": mapa,
         "totais_imposto": totais_do_mapa(mapa),
         "total": total_documento,
@@ -1343,6 +1367,30 @@ async def _resposta_de_quem_repetiu(
         # que a deixou assim — NÃO devolva o dinheiro, chame o gestor.
         raise HTTPException(status_code=503, detail=_MSG_DESFECHO_INCERTO)
     if existente.get("estado") != "emitida":
+        # **«Espere alguns segundos» deixa de ser verdade a partir de certa
+        # hora.** A intenção fica `reservada` sempre que a rota morre entre o
+        # `insert_one` e o `$set` final (um reinício, um deploy a meio, o 409
+        # da corrida do crédito) — e daí em diante ninguém a destrava sozinha.
+        #
+        # Ao balcão, insistir no MESMO botão é o que se faz quando a rede
+        # pisca; era exactamente quem mais precisava da saída que nunca a lia.
+        # Uma janela NOVA sobre a mesma nota já dizia a quem chamar
+        # (`_MSG_CREDITO_POR_APURAR`, pelo travão do crédito) e o segundo toque
+        # respondia «espere alguns segundos» para sempre.
+        #
+        # O relógio é o mesmo de `_nota_presa`, e é essa a razão de ser este e
+        # não outro: passada esta janela é também a partir dela que as rotas do
+        # gestor aceitam mexer-lhe — a frase manda-a a um sítio que já a deixa
+        # entrar.
+        presa_ha_segundos = _segundos_desde(
+            existente.get("criada_em"), datetime.now(timezone.utc))
+        if (presa_ha_segundos is not None
+                and presa_ha_segundos >= _SEGUNDOS_DE_EMISSAO_NORMAL):
+            raise HTTPException(
+                status_code=409,
+                detail=_MSG_NOTA_PRESA_HA_MUITO % int(
+                    _SEGUNDOS_DE_EMISSAO_NORMAL // 60),
+            )
         raise HTTPException(status_code=409, detail=_MSG_EMISSAO_EM_CURSO)
     documento_nc = await db[COLECOES["documentos"]].find_one(
         {"id": existente.get("documento_nc_id")}, {"_id": 0})

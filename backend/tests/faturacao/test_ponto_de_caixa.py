@@ -489,16 +489,21 @@ def test_a_sessao_que_ficou_a_meio_de_um_fecho_ainda_se_confere(monkeypatch):
     assert ponto["esperado"] == 81.04
 
 
-# --- A GAVETA ABAIXO DO FUNDO -------------------------------------------------
+# --- O QUE SAIU DA GAVETA A MAIS ----------------------------------------------
 #
 # **`devolucao.acima_do_recebido` era um campo só de escrita** — gravado em
 # `nota_credito.py` com o comentário «o gestor encontra isso depois», e sem um
 # único leitor em todo o repositório. Medido pela função REAL do resumo:
 # fatura de 24,14 € paga 5,00 em dinheiro + 19,14 em Multibanco, açaí de
 # 20,40 € devolvido em DINHEIRO → `fundo=50,00 vendas_dinheiro=−15,40
-# esperado=34,60`. **15,40 € abaixo do fundo**, e o resumo do turno não tinha
-# nenhum campo que o dissesse: nem o esperado abaixo do fundo, nem as vendas
-# em dinheiro negativas.
+# esperado=34,60`. **Saíram 15,40 € da gaveta que aquele turno não recebeu**,
+# e o resumo do turno não tinha nenhum campo que o dissesse.
+#
+# **E o primeiro guarda mediu isso pelo número errado.** Comparava o `fundo`
+# com o `esperado` — e o `esperado` inclui os movimentos de caixa, por isso
+# falhava nos DOIS sentidos. Os dois estão medidos aqui em baixo, com
+# movimentos lá dentro: nenhum dos guardas da ronda anterior punha uma entrada
+# ou uma saída no resumo, e é por isso que ninguém deu por nada.
 
 
 def _turno_com_devolucao_maior_do_que_a_gaveta():
@@ -523,7 +528,7 @@ def _turno_com_devolucao_maior_do_que_a_gaveta():
     return venda, nota
 
 
-def test_o_resumo_DIZ_quanto_a_gaveta_ficou_abaixo_do_fundo():
+def test_o_resumo_DIZ_quanto_dinheiro_saiu_da_gaveta_a_mais():
     """O número que faltava, no MESMO sítio em que a gaveta se lê — o Ponto de
     Caixa e o Z partilham este resumo, e é isso que impede a conferência das
     15h de dizer uma coisa e o fecho das 23h outra."""
@@ -532,7 +537,7 @@ def test_o_resumo_DIZ_quanto_a_gaveta_ficou_abaixo_do_fundo():
                                         [venda], [nota])
     assert resumo["vendas_dinheiro"] == -15.40
     assert resumo["esperado"] == 34.60
-    assert resumo["gaveta_abaixo_do_fundo"] == 15.40
+    assert resumo["tirado_da_gaveta_a_mais"] == 15.40
 
 
 def test_o_resumo_DIZ_tambem_PORQUE_e_que_ela_ficou_abaixo():
@@ -548,8 +553,118 @@ def test_o_resumo_DIZ_tambem_PORQUE_e_que_ela_ficou_abaixo():
 def test_num_turno_NORMAL_os_dois_numeros_sao_ZERO_e_nao_desaparecem():
     """O controlo, e a regra do `pagamentos_por_registar`: SEMPRE presentes,
     mesmo a zero. Quem desenha não pode ter de adivinhar se a ausência quer
-    dizer «está tudo bem» ou «esta versão do servidor não sabe responder»."""
+    dizer «está tudo bem» ou «esta versão do servidor não sabe responder».
+
+    E este turno TEM movimentos (`_movimentos`: uma entrada de 20,00 e uma
+    saída de 5,00) — o caso normal de uma caixa também os tem."""
     resumo = caixa_mod._resumo_do_turno(
         {"id": "sessao-1", "fundo": 50.00}, _movimentos(), _turno(), [])
-    assert resumo["gaveta_abaixo_do_fundo"] == 0.0
+    assert resumo["entradas"] == 20.0 and resumo["saidas"] == 5.0
+    assert resumo["tirado_da_gaveta_a_mais"] == 0.0
     assert resumo["devolucoes_acima_do_recebido"] == 0.0
+
+
+# --- Os dois sentidos do OITAVO defeito, com MOVIMENTOS lá dentro -------------
+
+
+def _com_movimentos(movimentos, vendas=None, notas=None):
+    venda, nota = _turno_com_devolucao_maior_do_que_a_gaveta()
+    return caixa_mod._resumo_do_turno(
+        {"id": "sessao-1", "fundo": 50.00}, movimentos,
+        [venda] if vendas is None else vendas,
+        [nota] if notas is None else notas)
+
+
+def test_um_REFORCO_DE_TROCO_nao_apaga_o_aviso_do_dinheiro_que_saiu():
+    """**O falso negativo — o vazamento mascarado.**
+
+    A MESMA devolução de 20,40 € em dinheiro sobre a fatura que só recebeu
+    5,00 € em dinheiro, mais um reforço de troco de 20,00 € na gaveta. Medido
+    contra o `esperado`: 50,00 − 15,40 + 20,00 = **54,60 €**, acima do fundo,
+    e o aviso apagava-se — com os 15,40 € ainda de fora. Bastava uma entrada
+    de 15,40 € para o calar.
+
+    O que não muda com movimento nenhum são as VENDAS EM DINHEIRO."""
+    resumo = _com_movimentos([{"id": "m1", "tipo": "entrada", "valor": 20.00}])
+    assert resumo["vendas_dinheiro"] == -15.40
+    assert resumo["esperado"] == 54.60          # ACIMA do fundo de 50,00
+    assert resumo["tirado_da_gaveta_a_mais"] == 15.40
+    assert resumo["devolucoes_acima_do_recebido"] == 15.40
+
+
+@pytest.mark.parametrize("entrada", [0.0, 5.00, 15.39, 15.40, 15.41, 16.00, 100.00])
+def test_NENHUM_reforco_de_troco_cala_o_aviso(entrada):
+    """A varredura: o número é o mesmo com a gaveta reforçada em 0 ou em 100 €.
+    Contra o `esperado` a série era 15,40 / 10,40 / 0,01 / 0,00 / 0,00 / 0,00 /
+    0,00 — e o dinheiro que saiu era o mesmo em todas."""
+    resumo = _com_movimentos([{"id": "m1", "tipo": "entrada", "valor": entrada}])
+    assert resumo["tirado_da_gaveta_a_mais"] == 15.40
+
+
+@pytest.mark.parametrize("saida,esperado_valor", [
+    (0.0, 74.14), (10.00, 64.14), (30.00, 44.14), (60.00, 14.14), (100.00, -25.86),
+])
+def test_uma_SANGRIA_para_o_cofre_nao_acende_aviso_nenhum(saida, esperado_valor):
+    """**O falso positivo — a sangria normal.**
+
+    Sem nota de crédito nenhuma: fundo 50,00, 24,14 € vendidos em dinheiro e
+    uma saída para o cofre. Contra o `esperado` a série era 0,00 / 0,00 / 5,86
+    / 35,86 / 75,86 — e a frase mandava a operadora «mostrar isto ao gestor»
+    por ter feito o depósito diário. Sangrias e pagamentos a fornecedor em
+    dinheiro têm rota e ecrã próprios (`POST /pos/caixa/movimento`): numa loja
+    com depósito diário isto acendia todas as noites, e a noite em que
+    acendesse pela razão verdadeira era visualmente igual às outras."""
+    venda = _venda(
+        "v-dinheiro",
+        [_linha("Açaí Regular", 10.20, ACAI, quantidade=2),
+         _linha("Água", 0.29, ACAI),
+         _linha("Coca-Cola", 1.15, REFRI, quantidade=3)],
+        [_pagamento(valor=24.14)],
+    )
+    resumo = _com_movimentos(
+        [{"id": "m1", "tipo": "saida", "valor": saida}], vendas=[venda], notas=[])
+    assert resumo["vendas_dinheiro"] == 24.14
+    assert resumo["esperado"] == esperado_valor
+    assert resumo["tirado_da_gaveta_a_mais"] == 0.0
+
+
+def test_uma_SANGRIA_por_cima_do_vazamento_nao_muda_o_numero_que_saiu():
+    """Os dois ao mesmo tempo, que é o turno real: a devolução que fura a
+    gaveta E o depósito do dia. O que saiu a mais continua a ser 15,40 € — e
+    é por isso que a frase do ecrã não pode dizer «abaixo do fundo»: a gaveta
+    fecha 45,40 € abaixo dele."""
+    resumo = _com_movimentos([{"id": "m1", "tipo": "saida", "valor": 30.00}])
+    assert resumo["esperado"] == 4.60           # 45,40 abaixo do fundo
+    assert resumo["tirado_da_gaveta_a_mais"] == 15.40
+
+
+def test_o_PORQUE_aparece_mesmo_com_a_gaveta_do_turno_em_ordem():
+    """**A outra metade de menor 1**, do lado do servidor: as duas perguntas
+    são independentes. Duas faturas — uma de 100,00 € paga em dinheiro, outra
+    de 11,29 € paga 5,00 em dinheiro + 6,29 em Multibanco — e o açaí de 9,85 €
+    devolvido em DINHEIRO. A gaveta do turno está bem (+95,15 €) e ainda assim
+    saíram 4,85 € por um meio que aquela fatura não recebeu."""
+    grande = _venda("v-grande", [_linha("Caixa de açaí", 100.00, ACAI)],
+                    [_pagamento(valor=100.00)])
+    pequena = _venda(
+        "v-pequena", [_linha("Açaí Regular", 9.85, ACAI), _linha("Água", 1.44, REFRI)],
+        [_pagamento(valor=5.00),
+         _pagamento(tipo_pagamento_id="tipo-mb", nome="Multibanco",
+                    tipo_fiscal="CD", valor=6.29)])
+    nota = {
+        "estado": "emitida",
+        "linhas": [{"indice": 1, "titulo": "Açaí Regular", "tax_id": ACAI,
+                    "quantidade": 1, "preco_unitario": 9.85, "total": 9.85}],
+        "total": 9.85,
+        "devolucao": {"tipo_pagamento_id": "tipo-dinheiro", "nome": "Dinheiro",
+                      "tipo_fiscal": "NU", "valor": 9.85,
+                      "acima_do_recebido": 4.85},
+    }
+    resumo = caixa_mod._resumo_do_turno(
+        {"id": "sessao-1", "fundo": 50.00},
+        [{"id": "m1", "tipo": "entrada", "valor": 20.00},
+         {"id": "m2", "tipo": "saida", "valor": 5.00}],
+        [grande, pequena], [nota])
+    assert resumo["vendas_dinheiro"] == 95.15
+    assert resumo["tirado_da_gaveta_a_mais"] == 0.0
+    assert resumo["devolucoes_acima_do_recebido"] == 4.85

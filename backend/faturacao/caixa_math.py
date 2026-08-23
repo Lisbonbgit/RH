@@ -34,25 +34,41 @@ def esperado(fundo: float, vendas_dinheiro: float, movimentos: List[Dict]) -> fl
     return round(float(fundo or 0) + float(vendas_dinheiro or 0) + total_movimentos(movimentos), 2)
 
 
-def abaixo_do_fundo(fundo: float, esperado_valor: float) -> float:
-    """Quanto é que o que DEVE estar na gaveta ficou abaixo do fundo de maneio
-    que entrou de manhã — `0.00` no turno normal.
+def tirado_da_gaveta_a_mais(vendas_dinheiro: float) -> float:
+    """Quanto é que saiu da gaveta ALÉM do que as vendas deste turno lá
+    puseram — `0.00` no turno normal.
 
-    **Um esperado abaixo do fundo é uma impossibilidade contabilística que
-    este módulo deixava passar em silêncio.** Um turno só pode tirar da gaveta
-    o que lá pôs; se o esperado desce abaixo do fundo, saiu dinheiro que
-    aquele turno nunca lá meteu. Medido pelas rotas reais: fatura de 24,14 €
-    paga 5,00 em dinheiro + 19,14 em Multibanco, açaí de 20,40 € devolvido em
-    DINHEIRO → `vendas_dinheiro` **−15,40 €** e esperado **34,60 €** com fundo
-    de 50,00. A operadora conta a gaveta, encontra 34,60 €, bate certo — e
-    saíram 15,40 € que aquele turno não recebeu.
+    **Um turno só pode tirar da gaveta o que lá pôs**, e isso lê-se nas VENDAS
+    EM DINHEIRO: o dinheiro das faturas menos o das devoluções
+    (`soma_vendas_dinheiro`). Se essa soma fica negativa, saiu da gaveta
+    dinheiro que aquele turno nunca recebeu. Medido pelas rotas reais: fatura
+    de 24,14 € paga 5,00 em dinheiro + 19,14 em Multibanco, açaí de 20,40 €
+    devolvido em DINHEIRO → `vendas_dinheiro` **−15,40 €**. A operadora conta
+    a gaveta, bate certo — e saíram 15,40 € que aquele turno não recebeu.
+
+    **NÃO é `fundo − esperado`, e essa era a versão anterior desta função.**
+    O `esperado` inclui os movimentos de caixa, e por isso falhava nos dois
+    sentidos, medidos os dois por `_resumo_do_turno`:
+
+    - **mascarado**: os mesmos −15,40 € com um reforço de troco de 20,00 €
+      dão `esperado` 54,60 € e aviso **0,00** — o vazamento continua lá e o
+      ecrã fica sem uma palavra. Bastava uma entrada de 15,40 € para o apagar;
+    - **falso positivo**: sem devolução nenhuma, vendas em dinheiro de 24,14 €
+      e uma saída de 30,00 € para o cofre davam aviso **5,86 €**. Sangrias e
+      pagamentos a fornecedor em dinheiro são rotina (têm rota e ecrã
+      próprios, `POST /pos/caixa/movimento`): numa loja com depósito diário
+      isto acendia todas as noites, e a noite em que acendesse pela razão
+      verdadeira era igual às outras.
+
+    Nenhum movimento de caixa mexe nas vendas em dinheiro — é isso que torna
+    este número impossível de mascarar e impossível de acender por engano.
 
     Não é uma recusa (uma devolução legítima tem de poder acontecer, e o
     `nota_credito.pagamentos_da_fatura` explica porque é que recusar por meio
     de pagamento fecha a porta sem abrir outra): é o NÚMERO, para ele aparecer
     no Ponto de Caixa e no Z ao lado da gaveta, em vez de não aparecer em
     lado nenhum. Em cêntimos inteiros, como todo o dinheiro da casa."""
-    return max(0, _centimos(fundo) - _centimos(esperado_valor)) / 100.0
+    return max(0, -_centimos(vendas_dinheiro)) / 100.0
 
 
 def devolucoes_acima_do_recebido(notas_credito: List[Dict] = None) -> float:
@@ -60,8 +76,19 @@ def devolucoes_acima_do_recebido(notas_credito: List[Dict] = None) -> float:
 
     Quanto é que as devoluções deste turno passaram o que as faturas delas
     tinham recebido NAQUELE meio de pagamento — `0.00` no caso normal. É a
-    EXPLICAÇÃO da gaveta abaixo do fundo, e é por isso que anda ao lado dela:
-    sem este número, «faltam 15,40 €» é uma acusação, e com ele é uma frase.
+    EXPLICAÇÃO do que saiu da gaveta a mais, e é por isso que anda ao lado
+    dela: sem este número, «faltam 15,40 €» é uma acusação, e com ele é uma
+    frase.
+
+    **E tem PREDICADO PRÓPRIO no ecrã**, e não o do
+    `tirado_da_gaveta_a_mais`: são duas perguntas diferentes e podem
+    responder-se ao contrário uma da outra. Um turno com uma fatura de 100,00 €
+    paga em dinheiro e outra de 11,29 € paga 5,00 em dinheiro + 6,29 em
+    Multibanco, creditada em DINHEIRO por 9,85 €, tem `vendas_dinheiro`
+    +95,15 € (a gaveta do turno está bem) e 4,85 € devolvidos por um meio que
+    aquela fatura não recebeu. Encostar esta frase ao aviso da gaveta fazia-a
+    desaparecer com ele — e este campo voltava a ser só de escrita, que é
+    exactamente o defeito que ele veio fechar.
 
     O campo era gravado com o comentário «o gestor encontra isso depois» — e
     um `grep` em todo o repositório dava só a escrita. Ele não encontrava:

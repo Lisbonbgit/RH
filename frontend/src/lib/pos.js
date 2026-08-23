@@ -596,6 +596,25 @@ export const numeroPos = (valor) => {
 
 export const eurosPos = (valor) => `€ ${numeroPos(valor)}`;
 
+// **Um valor de dinheiro COM O SINAL QUE ELE TEM** — e não com um `+` escrito
+// à mão por cima dele.
+//
+// Medido no ecrã do turno: com uma devolução em dinheiro maior do que a fatura
+// recebeu, a linha lia-se «Vendas em dinheiro **+ € -15,40**» — um mais colado
+// a um número negativo. É a linha onde o vazamento aparece primeiro, e com
+// pressa lê-se ao contrário. O `−` é o mesmo traço da linha das "Saídas", e a
+// magnitude vai formatada como qualquer outro euro.
+//
+// O que não é um número finito continua a sair "€ ?" pelo `numeroPos`, com o
+// `+` à frente: um sinal inventado sobre uma ausência seria pior do que a
+// ausência.
+export const eurosComSinal = (valor) => {
+  const n = typeof valor === 'string' && valor.trim() !== '' ? Number(valor) : valor;
+  return typeof n === 'number' && Number.isFinite(n) && n < 0
+    ? `− ${eurosPos(-n)}`
+    : `+ ${eurosPos(n)}`;
+};
+
 // --- As duas perguntas do resumo do turno, executáveis ------------------------
 //
 // Vivem aqui, e não escritas dentro do JSX do `PosResumoDoTurno`, por uma razão
@@ -625,26 +644,52 @@ export const haPagamentosPorRegistar = (resumo) =>
   && Number.isFinite(resumo.pagamentos_por_registar)
   && resumo.pagamentos_por_registar !== 0;
 
-// **A GAVETA ABAIXO DO FUNDO.** Um turno só pode tirar da gaveta o que lá pôs:
-// se o que deve estar na gaveta cair abaixo do fundo de maneio que entrou de
-// manhã, saiu dinheiro que aquele turno nunca recebeu. Medido no servidor:
-// fatura de 24,14 € paga 5,00 em dinheiro + 19,14 em Multibanco, açaí de
-// 20,40 € devolvido em DINHEIRO → esperado 34,60 € com fundo de 50,00. A
-// operadora contava a gaveta, encontrava 34,60 €, batia certo — e tinham
-// saído 15,40 € que aquele turno não pôs lá.
+// **O QUE SAIU DA GAVETA A MAIS.** Um turno só pode tirar da gaveta o que lá
+// pôs, e isso lê-se nas VENDAS EM DINHEIRO do turno: as faturas menos as
+// devoluções. Medido no servidor: fatura de 24,14 € paga 5,00 em dinheiro +
+// 19,14 em Multibanco, açaí de 20,40 € devolvido em DINHEIRO →
+// `vendas_dinheiro` −15,40 €. A operadora contava a gaveta, batia certo — e
+// tinham saído 15,40 € que aquele turno não pôs lá.
 //
-// Os dois números vêm SOMADOS do servidor (`gaveta_abaixo_do_fundo` e
-// `devolucoes_acima_do_recebido`, em `caixa_math`): este ecrã não subtrai
-// euros para descobrir se há um aviso — comparar `fundo` com `esperado` aqui
-// era uma segunda aritmética de dinheiro no browser, e a regra da casa é que
-// não há nenhuma.
+// **Não é «o esperado abaixo do fundo», e essa era a versão anterior desta
+// pergunta.** O esperado inclui os movimentos de caixa, e por isso ela falhava
+// nos dois sentidos — medidos os dois em `caixa._resumo_do_turno`: um reforço
+// de troco de 20,00 € apagava o aviso com o vazamento intacto, e uma sangria
+// de 30,00 € para o cofre acendia-o sem devolução nenhuma. Sangrias e
+// pagamentos a fornecedor em dinheiro são rotina numa loja com depósito
+// diário: o aviso acendia todas as noites, e a noite verdadeira era igual às
+// outras.
+//
+// O número vem SOMADO do servidor (`tirado_da_gaveta_a_mais`, em
+// `caixa_math`): este ecrã não subtrai euros para descobrir se há um aviso —
+// comparar campos aqui era uma segunda aritmética de dinheiro no browser, e a
+// regra da casa é que não há nenhuma.
 //
 // `> 0` e não a verdade genérica, pela mesma razão do `haPagamentosPorRegistar`
 // aqui em cima: zero é o caso normal e não desenha aviso nenhum.
-export const gavetaAbaixoDoFundo = (resumo) =>
-  typeof resumo?.gaveta_abaixo_do_fundo === 'number'
-  && Number.isFinite(resumo.gaveta_abaixo_do_fundo)
-  && resumo.gaveta_abaixo_do_fundo > 0;
+export const tirouDaGavetaAMais = (resumo) =>
+  typeof resumo?.tirado_da_gaveta_a_mais === 'number'
+  && Number.isFinite(resumo.tirado_da_gaveta_a_mais)
+  && resumo.tirado_da_gaveta_a_mais > 0;
+
+// **E o PORQUÊ, que é uma pergunta PRÓPRIA e não um adorno do aviso de cima.**
+//
+// `devolucoes_acima_do_recebido` é o leitor de
+// `nota_credito.devolucao.acima_do_recebido` — quanto é que as devoluções do
+// turno passaram o que aquelas faturas receberam NAQUELE meio de pagamento.
+// A frase que o anuncia estava pendurada no predicado da gaveta, e por isso
+// desaparecia com ele: com um reforço de troco na gaveta o servidor calculava
+// 15,40 € e o ecrã não escrevia nada. O campo voltava a ser só de escrita, que
+// é exactamente o defeito que ele veio fechar.
+//
+// E as duas respostas podem divergir com toda a legitimidade: um turno com uma
+// fatura de 100,00 € em dinheiro e outra paga 5,00 em dinheiro + 6,29 em
+// Multibanco, creditada em DINHEIRO por 9,85 €, tem a gaveta do turno bem
+// (+95,15 €) e 4,85 € devolvidos por um meio que aquela fatura não recebeu.
+export const haDevolucoesAcimaDoRecebido = (resumo) =>
+  typeof resumo?.devolucoes_acima_do_recebido === 'number'
+  && Number.isFinite(resumo.devolucoes_acima_do_recebido)
+  && resumo.devolucoes_acima_do_recebido > 0;
 
 // --- A conta repartida, vista de fora ----------------------------------------
 //
