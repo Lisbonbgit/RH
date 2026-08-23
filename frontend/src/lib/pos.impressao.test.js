@@ -13,6 +13,7 @@
 import {
   razaoDeNaoImprimir,
   avisoDaFilaDeImpressao,
+  haFalhadosPorVer,
   MSG_IMPRESSAO_SEM_PROGRAMA,
   MSG_IMPRESSAO_POR_SABER,
   MSG_IMPRESSAO_A_ENVIAR,
@@ -83,5 +84,19 @@ describe('avisoDaFilaDeImpressao', () => {
     // paciência; o que a operadora precisa de saber é que um se perdeu.
     expect(avisoDaFilaDeImpressao({ ...COM_PROGRAMA, por_sair: 2, falhados: 1 }))
       .toMatch(/não chegou a sair/);
+  });
+});
+
+describe('haFalhadosPorVer', () => {
+  test('só há o que dar por visto quando há papéis falhados', () => {
+    // É esta condição que decide se o botão «Já vi» aparece. Sem ele, o aviso
+    // ficava no ecrã sete dias — até o TTL do Mongo apagar o trabalho — e um
+    // aviso que não se desliga é um aviso que se aprende a ignorar.
+    expect(haFalhadosPorVer({ ...COM_PROGRAMA, falhados: 1 })).toBe(true);
+    expect(haFalhadosPorVer({ ...COM_PROGRAMA, falhados: 3 })).toBe(true);
+    expect(haFalhadosPorVer(COM_PROGRAMA)).toBe(false);
+    expect(haFalhadosPorVer({ ...COM_PROGRAMA, por_sair: 2 })).toBe(false);
+    expect(haFalhadosPorVer(null)).toBe(false);
+    expect(haFalhadosPorVer(undefined)).toBe(false);
   });
 });

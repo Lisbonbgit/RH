@@ -28,7 +28,6 @@ demasiado à vista. Vai ser o contrário.
    a desenhar.
 """
 import logging
-import os
 import queue
 import sys
 import threading
@@ -340,11 +339,18 @@ class DialogoDefinicoes(tk.Toplevel):
 
 
 def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        filename=os.path.join(os.path.dirname(nucleo.caminho_das_definicoes()), "agente.log"),
-    )
+    try:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(message)s",
+            filename=nucleo.caminho_do_log(),
+        )
+    except Exception:  # noqa: BLE001
+        # O log é conveniência; a impressão da loja não é. Um ficheiro que não
+        # se consegue abrir (pasta sem permissões, disco cheio, a pen ainda
+        # montada) não pode ser a razão de um `.exe` sem consola não fazer
+        # RIGOROSAMENTE NADA ao duplo clique. Arranca-se sem ficheiro de log.
+        logging.basicConfig(level=logging.INFO)
     definicoes = nucleo.ler_definicoes()
     agente = Agente(definicoes)
 

@@ -1148,6 +1148,7 @@ export const razaoDeNaoCopiar = ({ contaEmCurso, documento }) => {
 
 export const getEstadoImpressao = () => api.get('/pos/impressao/estado');
 export const abrirGavetaPos = () => api.post('/pos/impressao/gaveta');
+export const darFalhadosPorVistos = () => api.post('/pos/impressao/falhados/visto');
 export const imprimirPedidoPos = (vendaId) =>
   api.post(`/pos/venda/${vendaId}/imprimir-pedido`);
 export const imprimirSegundaViaPos = (documentoId) =>
@@ -1204,6 +1205,18 @@ export const avisoDaFilaDeImpressao = (estado) => {
   }
   return null;
 };
+
+// **Há papéis falhados por dar por vistos?** — a condição do botão que
+// desliga o aviso, escrita aqui e não no meio do JSX pela razão de sempre
+// neste ficheiro: uma condição dentro de um botão não se corre em lado
+// nenhum.
+//
+// O aviso dos papéis que não saíram só desaparecia ao fim de SETE DIAS (o TTL
+// do Mongo sobre `fat_trabalhos_impressao`) e não havia nada que o tirasse do
+// ecrã. A operadora reimprimia o papel pelo separador Faturação, resolvia o
+// assunto, e continuava a ver a mesma frase a semana inteira — que é a
+// maneira de ensinar uma loja a não olhar para os avisos.
+export const haFalhadosPorVer = (estado) => Number(estado?.falhados || 0) > 0;
 
 // --- A NOTA DE CRÉDITO -------------------------------------------------------
 //

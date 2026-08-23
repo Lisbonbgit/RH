@@ -166,6 +166,17 @@ Isto é o que confirma que a cadeia toda funciona, e não só a impressora:
   espera no servidor e saem quando a ligação voltar.
 - No POS, por baixo do botão **Abrir Gaveta**, aparece um aviso quando há
   papéis à espera ou quando algum não chegou mesmo a sair.
+- Esse aviso **desliga-se em «Já vi os papéis que falharam»**, no mesmo menu,
+  depois de os reimprimir pelo separador Faturação. Não apaga nem resolve
+  nada: só tira o aviso do ecrã. Sem isso ele ficava lá **sete dias**, e um
+  aviso que não se desliga é um aviso que se aprende a ignorar.
+
+### Se a impressora ficar sem papel
+
+O programa insiste **cinco minutos** — tempo de alguém dar por isso e pôr um
+rolo. Posto o rolo, o papel sai sozinho e não é preciso fazer nada. Passados
+os cinco minutos desiste, e o aviso acima diz quantos papéis ficaram por sair:
+reimprimem-se pelo separador **Faturação**.
 
 ### Se ninguém abriu o programa
 

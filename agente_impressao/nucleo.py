@@ -84,6 +84,16 @@ FALHAS_ATE_AVISAR = 3
 
 _TIMEOUT_SEGUNDOS = 20
 
+# ONDE o módulo de faturação está montado no servidor (`faturacao/__init__.py`:
+# `APIRouter(prefix="/api/faturacao")`). Escrito UMA vez, e é aqui: as rotas do
+# POS declaram-se como `/pos/...` dentro do módulo, e é assim que elas se leem
+# em `impressao.py`. Um caminho absoluto copiado para dentro de cada método era
+# a terceira vez que este repositório escrevia o prefixo à mão — as duas
+# primeiras puseram o POS inteiro a responder 404 «Not Found» em inglês à
+# funcionária. Há um guarda que confronta os cinco caminhos deste ficheiro com
+# as rotas a sério do FastAPI: `backend/tests/faturacao/test_caminhos_do_pos.py`.
+PREFIXO_DO_MODULO = "/api/faturacao"
+
 MSG_SEM_SERVIDOR = (
     "SEM LIGAÇÃO AO SERVIDOR — nada está a sair em papel.\n"
     "Veja a internet da loja. Os talões não se perdem: ficam à espera no "
@@ -113,6 +123,21 @@ def caminho_das_definicoes() -> str:
     servem."""
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
     return os.path.join(base, "AgenteImpressaoLacai", "definicoes.json")
+
+
+def caminho_do_log() -> str:
+    """O `agente.log` deste PC — **com a pasta já criada**.
+
+    A pasta só nascia ao GRAVAR as definições. Na primeira vez que alguém faz
+    duplo clique no `.exe` de um PC novo (passo 4 do INSTALAR-IMPRESSAO.md)
+    ela ainda não existe, e o `logging.basicConfig` do arranque rebentava com
+    `FileNotFoundError` antes de a janela chegar a abrir. Com `console=False`
+    no `.exe` (ver `agente.spec`) isso não é um erro no ecrã: é **nada** —
+    sem janela, sem mensagem, sem log. Quem foi à loja ficava ali parado a
+    olhar para um duplo clique que não fazia rigorosamente nada."""
+    pasta = os.path.dirname(caminho_das_definicoes())
+    os.makedirs(pasta, exist_ok=True)
+    return os.path.join(pasta, "agente.log")
 
 
 def ler_definicoes(caminho: Optional[str] = None) -> Dict:
@@ -193,7 +218,7 @@ class Servidor:
             raise ErroDoServidor("O endereço do servidor não está configurado.")
         dados = json.dumps(corpo or {}).encode("utf-8")
         pedido = urllib.request.Request(
-            self.url + caminho, data=dados, method=metodo,
+            self.url + PREFIXO_DO_MODULO + caminho, data=dados, method=metodo,
             headers={"Content-Type": "application/json"},
         )
         if self.device_token:
@@ -214,7 +239,7 @@ class Servidor:
         """Troca o código que o gestor gerou no backoffice por um token deste
         PC. É a mesma rota e o mesmo código que o POS usa no browser
         (`faturacao/pos_auth.emparelhar`) — de uso único e válido 15 minutos."""
-        return self._falar("/api/pos/emparelhar", {"codigo": codigo.strip().upper()})
+        return self._falar("/pos/emparelhar", {"codigo": codigo.strip().upper()})
 
     def pagina_de_teste(self, papel: str) -> bytes:
         """Os bytes da página de teste, construídos pelo SERVIDOR.
@@ -227,19 +252,19 @@ class Servidor:
         diagnosticar."""
         import base64
         resposta = self._falar(
-            "/api/pos/impressao/pagina-de-teste", {"impressora": papel})
+            "/pos/impressao/pagina-de-teste", {"impressora": papel})
         return base64.b64decode(resposta.get("bytes_b64") or "")
 
     def recolher(self) -> List[Dict]:
-        return self._falar("/api/pos/impressao/recolher").get("trabalhos") or []
+        return self._falar("/pos/impressao/recolher").get("trabalhos") or []
 
     def impresso(self, trabalho_id: str, recibo: str) -> None:
         self._falar(
-            "/api/pos/impressao/trabalhos/%s/impresso" % trabalho_id, {"recibo": recibo})
+            "/pos/impressao/trabalhos/%s/impresso" % trabalho_id, {"recibo": recibo})
 
     def falhou(self, trabalho_id: str, recibo: str, erro: str) -> None:
         self._falar(
-            "/api/pos/impressao/trabalhos/%s/falhou" % trabalho_id,
+            "/pos/impressao/trabalhos/%s/falhou" % trabalho_id,
             {"recibo": recibo, "erro": erro[:500]},
         )
 

@@ -202,3 +202,100 @@ def test_todas_as_chamadas_do_backoffice_apontam_para_rotas_que_existem():
         "Estas chamadas do backoffice apontam para caminhos que o servidor não "
         "serve: %s" % ", ".join(sorted(orfas))
     )
+
+
+# --- O PROGRAMA DE IMPRESSÃO DA LOJA, pela terceira vez -----------------------
+#
+# Mesma classe de defeito, terceira vítima: o `agente_impressao/nucleo.py`
+# nasceu a montar `/api/pos/...` — o caminho do defeito original — e o módulo
+# está montado em `/api/faturacao`. Os cinco pedidos do programa da loja
+# respondiam 404: não emparelhava, não ia buscar trabalho, e nem a página de
+# teste saía (logo nem a impressora se conseguia diagnosticar).
+#
+# **Este guarda não lê o ficheiro: CORRE-O.** Os dois guardas de cima leem
+# JavaScript como texto porque não há forma de executar o frontend aqui — mas
+# o programa da loja é Python e importa-se. Chama-se cada um dos cinco métodos
+# com um `abrir` de mentira e lê-se o `full_url` que o `urllib` recebeu, que é
+# o endereço a sério e não uma cópia dele.
+#
+# É essa a diferença que interessa: o teste que já existia afirmava
+# `pedido.full_url == 'https://.../api/pos/impressao/recolher'` — a constante
+# que o próprio código escreve. Um teste assim NUNCA pode falhar pelo valor do
+# caminho; só confrontá-lo com o `router` apanha isto.
+from agente_impressao import nucleo  # noqa: E402
+
+_SERVIDOR_DE_MENTIRA = "https://lisbonb.com"
+
+
+class _RespostaVazia:
+    """`{}` — o que basta a todos os cinco métodos para não rebentarem."""
+
+    def read(self):
+        return b"{}"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+def _chamadas_do_programa_de_impressao():
+    """(verbo, caminho) de cada pedido que o programa da loja MONTA MESMO.
+
+    O id do trabalho vai como `{id}` de propósito: o `_normaliza` reduz-o à
+    mesma forma `{}` que o FastAPI declara em `{trabalho_id}`."""
+    vistos = []
+
+    def abrir(pedido, timeout):
+        vistos.append((pedido.get_method(), pedido.full_url))
+        return _RespostaVazia()
+
+    servidor = nucleo.Servidor(_SERVIDOR_DE_MENTIRA, "um-token", abrir=abrir)
+    servidor.emparelhar("ABCD")
+    servidor.pagina_de_teste(nucleo.CAIXA)
+    servidor.recolher()
+    servidor.impresso("{id}", "um-recibo")
+    servidor.falhou("{id}", "um-recibo", "sem papel")
+
+    return [
+        (verbo, url[len(_SERVIDOR_DE_MENTIRA):])
+        for verbo, url in vistos
+    ]
+
+
+def test_o_programa_de_impressao_faz_as_cinco_chamadas():
+    """Rede de segurança do próprio guarda: se um método deixar de passar pelo
+    `_falar` (ou for acrescentado outro), a lista muda e o teste abaixo deixa
+    de cobrir o que julga cobrir."""
+    assert len(_chamadas_do_programa_de_impressao()) == 5
+
+
+def test_todas_as_chamadas_do_programa_de_impressao_apontam_para_rotas_que_existem():
+    existentes = _caminhos_do_backend()
+    orfas = [
+        "%s %s" % (verbo, caminho)
+        for verbo, caminho in _chamadas_do_programa_de_impressao()
+        if _normaliza(caminho) not in existentes
+    ]
+    assert orfas == [], (
+        "O programa de impressão da loja pede caminhos que o servidor não "
+        "serve — em produção respondem 404 e NADA sai em papel: %s"
+        % ", ".join(sorted(orfas))
+    )
+
+
+def test_o_guarda_do_programa_de_impressao_apanha_o_prefixo_errado():
+    """Prova por mutação, aqui dentro: tirado o `/faturacao` — que é
+    exactamente o defeito que este guarda veio corrigir — nenhuma das cinco
+    chamadas casa com rota nenhuma."""
+    existentes = _caminhos_do_backend()
+    casam = [
+        caminho
+        for _verbo, caminho in _chamadas_do_programa_de_impressao()
+        if _normaliza(caminho.replace("/api/faturacao", "/api", 1)) in existentes
+    ]
+    assert casam == [], (
+        "Sem o '/faturacao' estas chamadas ainda casavam com rotas reais (%s) "
+        "— o guarda não distingue o prefixo certo do errado." % casam
+    )

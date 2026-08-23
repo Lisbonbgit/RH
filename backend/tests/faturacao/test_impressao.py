@@ -53,6 +53,7 @@ from faturacao.impressao import (
     imprimir_segunda_via,
     marcar_falhou,
     marcar_impresso,
+    marcar_falhados_vistos,
     pagina_de_teste,
     PedidoPaginaDeTeste,
     recolher,
@@ -497,6 +498,18 @@ def test_dentro_do_arrendamento_o_trabalho_NAO_volta_a_ser_entregue(monkeypatch)
     assert _recolher(db, monkeypatch, quase)["trabalhos"] == []
 
 
+def _queixar_se(db, monkeypatch, entregue, momento):
+    """O programa da loja diz que não conseguiu imprimir. É o caminho a sério
+    da impressora sem papel — e o que faz o limite de tentativas contar em
+    segundos e não em minutos: o trabalho volta à fila NO INSTANTE."""
+    _relogio(monkeypatch, momento)
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+    return _corre(marcar_falhou(
+        entregue["id"],
+        PedidoFalhou(recibo=entregue["recibo"], erro="Sem papel"),
+        dispositivo=_dispositivo()))
+
+
 def test_mas_NAO_infinitamente(monkeypatch):
     """Uma impressora avariada com um trabalho a repetir-se para sempre não
     produz papel nenhum: produz uma fila que cresce toda a noite e vomita
@@ -504,9 +517,17 @@ def test_mas_NAO_infinitamente(monkeypatch):
 
     O limite não tira ao cliente a hipótese de ter o papel — o talão fica
     guardado com a fatura e reimprime-se num toque. O que tira é a repetição
-    cega."""
+    cega.
+
+    **A validade ilegível é o que põe este limite à prova**, e não é um truque
+    de teste: o tecto normal de um trabalho é a VALIDADE (30 minutos), e com
+    ela o limite de tentativas nunca chega a ser preciso pelo arrendamento. Um
+    trabalho cuja data não se percebe — gravado por uma versão antiga, ou
+    estragado — não caduca nunca (é a escolha do módulo: papel a mais, não a
+    menos), e aí este limite é a última rede que existe."""
     db = _db()
     _por_na_fila(db, monkeypatch)
+    _fila(db)[0]["validade_ate"] = "não é uma data"
     momento = _T0
     for _ in range(imp._MAX_TENTATIVAS):
         assert len(_recolher(db, monkeypatch, momento)["trabalhos"]) == 1
@@ -522,9 +543,10 @@ def test_e_o_que_desistiu_e_VISIVEL(monkeypatch):
     db = _db(dispositivos=[_dispositivo()], trabalhos=[])
     _por_na_fila(db, monkeypatch)
     momento = _T0
-    for _ in range(imp._MAX_TENTATIVAS + 1):
-        _recolher(db, monkeypatch, momento)
-        momento = momento + timedelta(seconds=imp._ARRENDAMENTO_SEGUNDOS + 1)
+    for _ in range(imp._MAX_TENTATIVAS):
+        (entregue,) = _recolher(db, monkeypatch, momento)["trabalhos"]
+        _queixar_se(db, monkeypatch, entregue, momento)
+        momento = momento + timedelta(seconds=3)
     _relogio(monkeypatch, momento)
     monkeypatch.setattr(imp, "obter_db", lambda: db)
     estado = _corre(estado_da_impressao(operador=_operador()))
@@ -557,13 +579,11 @@ def test_falhar_a_ULTIMA_tentativa_desiste(monkeypatch):
     _por_na_fila(db, monkeypatch)
     momento = _T0
     for _ in range(imp._MAX_TENTATIVAS - 1):
-        _recolher(db, monkeypatch, momento)
-        momento = momento + timedelta(seconds=imp._ARRENDAMENTO_SEGUNDOS + 1)
+        (entregue,) = _recolher(db, monkeypatch, momento)["trabalhos"]
+        _queixar_se(db, monkeypatch, entregue, momento)
+        momento = momento + timedelta(seconds=3)
     (entregue,) = _recolher(db, monkeypatch, momento)["trabalhos"]
-    monkeypatch.setattr(imp, "obter_db", lambda: db)
-    _corre(marcar_falhou(
-        entregue["id"], PedidoFalhou(recibo=entregue["recibo"], erro="Sem papel"),
-        dispositivo=_dispositivo()))
+    _queixar_se(db, monkeypatch, entregue, momento)
     assert _fila(db)[0]["estado"] == FALHADO
 
 
@@ -800,3 +820,282 @@ def test_sem_loja_gravada_a_pagina_sai_na_mesma(monkeypatch):
     db = _db(lojas=[])
     saiu = base64.b64decode(_pagina(db, monkeypatch)["bytes_b64"])
     assert b"loja-1" in saiu
+
+
+# --- 6b. E o que ficou de ontem RESERVADO ------------------------------------
+#
+# O caminho que faltava, e é o da vida real: o PC da loja desliga-se com o
+# trabalho JÁ ENTREGUE. O trabalho fica RESERVADO; ninguém o confirma; o
+# arrendamento expira. Os guardas do bloco 6 acima só percorrem trabalhos
+# PENDENTES — e um trabalho que volta de RESERVADO a PENDENTE era entregue na
+# MESMA chamada, sem se voltar a olhar para a validade.
+
+
+def test_os_taloes_de_ontem_RESERVADOS_tambem_nao_saem_de_manha(monkeypatch):
+    """O PC foi abaixo com o talão nas mãos. De manhã ele não pode sair na
+    mesma: são os mesmos vinte talões da noite, com o mesmo estrago — só que
+    por outro caminho."""
+    db = _db()
+    _por_na_fila(db, monkeypatch, momento=_T0)
+    (entregue,) = _recolher(db, monkeypatch)["trabalhos"]
+    assert _fila(db)[0]["estado"] == RESERVADO, "o PC recebeu-o e desligou-se"
+
+    amanha = _T0 + timedelta(hours=14)
+    assert _recolher(db, monkeypatch, amanha)["trabalhos"] == [], (
+        "O talão de ontem à noite saiu de manhã: voltou de RESERVADO a "
+        "PENDENTE e foi entregue na mesma chamada, sem ninguém olhar para a "
+        "validade.")
+    assert _fila(db)[0]["estado"] == CADUCADO
+    assert entregue  # o id que saiu na primeira entrega
+
+
+def test_a_GAVETA_reservada_tambem_caduca_aos_dois_minutos(monkeypatch):
+    """**Aqui a validade não é cortesia, é segurança.** Uma gaveta entregue a
+    um PC que se desligou não pode voltar a ser entregue cinco minutos depois:
+    é a gaveta do dinheiro a abrir sem ninguém à frente dela.
+
+    Este teste percorre os minutos um a um porque é assim que o defeito se
+    vê. Ao minuto 2 a entrega ainda é legítima — é o INSTANTE da validade, e a
+    comparação é `validade < agora`, a mesma do caminho PENDENTE. Os minutos 3
+    e 4 é que eram a gaveta a abrir sozinha, e eram entregues."""
+    db = _db()
+    _por_na_fila(db, monkeypatch, chave="g", tipo=GAVETA, dados=escpos.abrir_gaveta())
+
+    entregas = []
+    for minuto in range(5):
+        momento = _T0 + timedelta(minutes=minuto)
+        if _recolher(db, monkeypatch, momento)["trabalhos"]:
+            entregas.append(minuto)
+
+    assert entregas == [0, 1, 2], (
+        "A gaveta foi entregue nos minutos %s — a validade são 2 minutos e "
+        "depois disso já não há ninguém à frente dela." % entregas)
+    assert _fila(db)[0]["estado"] == CADUCADO
+
+
+class _CursorEngasgado:
+    """Leu num instante; entrega o que leu só quando o portão abrir.
+
+    É o servidor a engasgar-se ENTRE o ler e o escrever — o intervalo em que
+    as escritas condicionais deste módulo ganham ou perdem, e que o duplo, a
+    ceder de operação em operação, nunca produz sozinho: as duas voltas andam
+    em passo certo e nunca se cruzam nos pontos que interessam."""
+
+    def __init__(self, cursor, chegou, portao):
+        self._cursor = cursor
+        self._chegou = chegou
+        self._portao = portao
+
+    def sort(self, *args, **kwargs):
+        self._cursor.sort(*args, **kwargs)
+        return self
+
+    async def to_list(self, n=None):
+        itens = await self._cursor.to_list(n)
+        self._chegou.set()
+        await self._portao.wait()
+        return itens
+
+
+def _engasgar_a_leitura(monkeypatch, db, filtro_do_estado):
+    """A PRIMEIRA leitura da fila cujo filtro procure este `estado` fica presa
+    até o portão abrir. Devolve `(chegou, portao)`: o `chegou` é o que torna
+    isto determinista — o teste espera por ele em vez de contar `sleep(0)`, e
+    sem essa espera a ordem das duas voltas depende de quantos `await` cada
+    uma tem pelo caminho (e um deles trancava a outra para sempre)."""
+    coleccao = db[COLECOES["trabalhos_impressao"]]
+    find_original = coleccao.find
+    chegou, portao = asyncio.Event(), asyncio.Event()
+    usado = []
+
+    def find_engasgado(filtro=None, projecao=None):
+        cursor = find_original(filtro, projecao)
+        if not usado and (filtro or {}).get("estado") == filtro_do_estado:
+            usado.append(True)
+            return _CursorEngasgado(cursor, chegou, portao)
+        return cursor
+
+    monkeypatch.setattr(coleccao, "find", find_engasgado)
+    return chegou, portao
+
+
+def test_uma_arrumacao_LENTA_nao_devolve_a_fila_um_talao_ja_entregue(monkeypatch):
+    """O `recibo` na condição de `_arrumar_a_fila`, e é isto que ele guarda.
+
+    Uma volta da fila LÊ a fila e ESCREVE a seguir. Entre as duas coisas o
+    servidor pode engasgar-se — e nesse intervalo o outro programa arrumou o
+    mesmo trabalho, levou-o, e está a imprimi-lo. A escrita atrasada chega com
+    uma fotografia velha: sem o `recibo` na condição, o estado `RESERVADO`
+    ainda casa (só que é a reserva DE OUTRO), o trabalho volta à fila e sai
+    segunda vez enquanto o primeiro papel ainda está a sair.
+
+    O engasgo é encenado à mão (o `portao`) porque é a única forma de o
+    provar: com o duplo a ceder o event loop de operação em operação, as duas
+    voltas andam em passo certo e nunca se cruzam neste ponto — e uma corrida
+    que nunca acontece deixa a linha por defender. Tirada a comparação do
+    `recibo`, este teste fica vermelho e mais nenhum."""
+    db = _db(ceder=True)
+    _por_na_fila(db, monkeypatch)
+    (primeira,) = _recolher(db, monkeypatch)["trabalhos"]
+
+    _relogio(monkeypatch, _T0 + timedelta(seconds=imp._ARRENDAMENTO_SEGUNDOS + 1))
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+
+    chegou, portao = _engasgar_a_leitura(
+        monkeypatch, db, {"$in": [PENDENTE, RESERVADO]})
+
+    async def cenario():
+        lenta = asyncio.ensure_future(recolher(dispositivo=_dispositivo(id="pc-1")))
+        await chegou.wait()  # leu a fila (o trabalho é do primeiro recibo)
+        outra = await recolher(dispositivo=_dispositivo(id="pc-2"))
+        portao.set()
+        return outra, await lenta
+
+    depressa, atrasada = _corre(cenario())
+    saidos = len(depressa["trabalhos"]) + len(atrasada["trabalhos"])
+    assert saidos == 1, (
+        "O mesmo talão foi entregue %d vezes: a arrumação atrasada devolveu à "
+        "fila um trabalho que já era de outro programa." % saidos)
+    assert _fila(db)[0]["estado"] == RESERVADO
+    assert _fila(db)[0]["recibo"] != primeira["recibo"]
+
+
+def test_uma_ENTREGA_atrasada_nao_apaga_a_contagem_das_tentativas(monkeypatch):
+    """As `tentativas` na condição da entrega, e é isto que elas guardam.
+
+    A entrega lê os candidatos e escreve a seguir. Se se engasgar no meio, o
+    trabalho pode ter sido entregue a OUTRO programa e ter voltado à fila
+    entretanto — e a escrita atrasada chega com a contagem velha. Sem as
+    `tentativas` na condição, ela casa na mesma: a contagem volta atrás e o
+    trabalho é entregue outra vez.
+
+    Uma contagem que se perde é o limite de tentativas a deixar de existir, e
+    o limite é o que impede a impressora avariada de acumular a noite inteira
+    e vomitar tudo de manhã."""
+    db = _db(ceder=True)
+    _por_na_fila(db, monkeypatch)
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+    _relogio(monkeypatch, _T0)
+
+    chegou, portao = _engasgar_a_leitura(monkeypatch, db, PENDENTE)
+
+    async def cenario():
+        lenta = asyncio.ensure_future(recolher(dispositivo=_dispositivo(id="pc-1")))
+        await chegou.wait()  # leu os candidatos: PENDENTE, tentativas=0
+
+        # Entretanto o outro programa leva-o, e o arrendamento expira.
+        depressa = await recolher(dispositivo=_dispositivo(id="pc-2"))
+        await imp._arrumar_a_fila(
+            db, "loja-1", _T0 + timedelta(seconds=imp._ARRENDAMENTO_SEGUNDOS + 1))
+
+        portao.set()
+        return depressa, await lenta
+
+    depressa, atrasada = _corre(cenario())
+    assert len(depressa["trabalhos"]) == 1
+    assert atrasada["trabalhos"] == [], (
+        "A entrega atrasada levou um trabalho que já não era o que ela leu.")
+    trabalho = _fila(db)[0]
+    assert trabalho["estado"] == PENDENTE
+    assert trabalho["tentativas"] == 1, (
+        "A contagem das tentativas voltou atrás (%s) — o limite deixa de "
+        "existir e a fila repete para sempre." % trabalho["tentativas"])
+
+
+def test_insiste_CINCO_MINUTOS_com_a_impressora_sem_papel(monkeypatch):
+    """O número do limite, medido em TEMPO — que é a unidade da promessa.
+
+    Os testes do limite acima percorrem `range(imp._MAX_TENTATIVAS)`: usam a
+    própria constante, e por isso nenhum deles pode falhar pelo VALOR dela.
+    Este mede o que a documentação prometeu à loja — «cinco minutos para pôr
+    papel» — encenando exactamente o que acontece: o programa diz que falhou,
+    o trabalho volta à fila NO INSTANTE, e ele volta a perguntar 3 segundos
+    depois. Com cinco tentativas isto dava QUINZE SEGUNDOS."""
+    db = _db()
+    _por_na_fila(db, monkeypatch)
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+
+    momento = _T0
+    entregas = 0
+    while entregas < 500:
+        trabalhos = _recolher(db, monkeypatch, momento)["trabalhos"]
+        if not trabalhos:
+            break
+        entregas += 1
+        (entregue,) = trabalhos
+        _relogio(monkeypatch, momento)
+        monkeypatch.setattr(imp, "obter_db", lambda: db)
+        _corre(marcar_falhou(
+            entregue["id"],
+            PedidoFalhou(recibo=entregue["recibo"], erro="Sem papel"),
+            dispositivo=_dispositivo()))
+        momento = momento + timedelta(seconds=3)
+
+    insistiu = (momento - _T0).total_seconds()
+    assert 280 <= insistiu <= 320, (
+        "A fila insistiu %d segundos com a impressora sem papel — a promessa "
+        "à loja são cinco minutos (300 s)." % insistiu)
+    assert _fila(db)[0]["estado"] == FALHADO
+
+
+# --- 10. O aviso que se pode desligar ----------------------------------------
+
+
+def _falhar_ate_desistir(db, monkeypatch):
+    """Deixa UM trabalho em `falhado`, pelo caminho da impressora sem papel."""
+    _por_na_fila(db, monkeypatch, chave="k-%d" % len(_fila(db)))
+    momento = _T0
+    for _ in range(imp._MAX_TENTATIVAS):
+        entregues = _recolher(db, monkeypatch, momento)["trabalhos"]
+        if not entregues:
+            break
+        _queixar_se(db, monkeypatch, entregues[0], momento)
+        momento = momento + timedelta(seconds=3)
+    return momento
+
+
+def test_o_aviso_dos_papeis_que_nao_sairam_DESLIGA_SE(monkeypatch):
+    """Sem isto, o aviso ficava no ecrã do balcão SETE DIAS — até o TTL do
+    Mongo apagar o trabalho — e não havia nada em lado nenhum que o tirasse de
+    lá. A operadora reimprimia o papel, resolvia o assunto, e continuava a ver
+    a mesma frase a semana inteira. Um aviso que não se desliga é um aviso que
+    se aprende a ignorar."""
+    db = _db(dispositivos=[_dispositivo()])
+    momento = _falhar_ate_desistir(db, monkeypatch)
+    _relogio(monkeypatch, momento)
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+    assert _corre(estado_da_impressao(operador=_operador()))["falhados"] == 1
+
+    assert _corre(marcar_falhados_vistos(operador=_operador()))["vistos"] == 1
+    assert _corre(estado_da_impressao(operador=_operador()))["falhados"] == 0
+
+
+def test_dar_por_visto_NAO_apaga_nem_resolve_nada(monkeypatch):
+    """O papel continua por sair e continua a reimprimir-se pelo separador
+    Faturação: o que se desligou foi o aviso, não o problema."""
+    db = _db(dispositivos=[_dispositivo()])
+    momento = _falhar_ate_desistir(db, monkeypatch)
+    _relogio(monkeypatch, momento)
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+    _corre(marcar_falhados_vistos(operador=_operador()))
+
+    trabalho = _fila(db)[0]
+    assert trabalho["estado"] == FALHADO
+    assert trabalho["erro"] == "Sem papel"
+    assert trabalho["bytes_b64"]
+
+
+def test_um_papel_que_falhe_DEPOIS_volta_a_avisar(monkeypatch):
+    """Dar por visto é sobre os papéis que se viram, não sobre os que hão-de
+    vir — senão o primeiro toque calava a impressora para sempre."""
+    db = _db(dispositivos=[_dispositivo()])
+    momento = _falhar_ate_desistir(db, monkeypatch)
+    _relogio(monkeypatch, momento)
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+    _corre(marcar_falhados_vistos(operador=_operador()))
+    assert _corre(estado_da_impressao(operador=_operador()))["falhados"] == 0
+
+    _falhar_ate_desistir(db, monkeypatch)
+    _relogio(monkeypatch, momento)
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+    assert _corre(estado_da_impressao(operador=_operador()))["falhados"] == 1

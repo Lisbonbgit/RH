@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import {
   Wallet, Info, BanknoteArrowDown, BanknoteArrowUp, Store, DoorOpen, GraduationCap, Lock, LogOut,
-  Loader2, HelpCircle,
+  Loader2, HelpCircle, Check,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -20,7 +20,7 @@ import useEstadoDaImpressao from './useEstadoDaImpressao';
 import {
   registarMovimento, getPontoDeCaixa, detalhesErroPos, eurosPos,
   temMaisDe2CasasDecimaisPos, abrirGavetaPos, razaoDeNaoImprimir,
-  avisoDaFilaDeImpressao,
+  avisoDaFilaDeImpressao, haFalhadosPorVer, darFalhadosPorVistos,
 } from '@/lib/pos';
 
 const formatarData = (isoString) => {
@@ -207,6 +207,28 @@ export default function PosMenuCaixa({
     estado: estadoImpressao, aImprimir: aAbrirGaveta,
   });
   const avisoDaFila = avisoDaFilaDeImpressao(estadoImpressao);
+  const [aDarPorVisto, setADarPorVisto] = useState(false);
+
+  // **«Já vi»** — o que desliga o aviso dos papéis que não saíram.
+  //
+  // Não apaga nem resolve nada: o papel continua a reimprimir-se pelo
+  // separador Faturação. O que tira é o AVISO, depois de a pessoa o ler — e
+  // era a única coisa que não tinha maneira de sair do ecrã antes de o TTL de
+  // 7 dias do Mongo apagar o trabalho.
+  const darPorVisto = useCallback(async () => {
+    if (aDarPorVisto) return;
+    setADarPorVisto(true);
+    try {
+      await darFalhadosPorVistos();
+    } catch (error) {
+      const { mensagem } = detalhesErroPos(
+        error, 'Não foi possível dar o aviso por visto.');
+      toast.error(mensagem);
+    } finally {
+      setADarPorVisto(false);
+      recarregarImpressao();
+    }
+  }, [aDarPorVisto, recarregarImpressao]);
 
   // Não diz "a gaveta abriu": diz que o pedido foi para a fila. Quem abre a
   // gaveta é a impressora da loja, e este ecrã não a vê. O impulso vale DOIS
@@ -298,6 +320,15 @@ export default function PosMenuCaixa({
               <p className="px-2 pb-1 text-[10px] text-muted-foreground leading-snug">
                 {avisoDaFila}
               </p>
+            )}
+            {haFalhadosPorVer(estadoImpressao) && (
+              <DropdownMenuItem
+                disabled={aDarPorVisto}
+                onSelect={(e) => { e.preventDefault(); darPorVisto(); }}
+              >
+                <Check className="h-4 w-4 mr-2" /> Já vi os papéis que falharam
+                {aDarPorVisto && <Loader2 className="ml-auto h-3.5 w-3.5 animate-spin" />}
+              </DropdownMenuItem>
             )}
             <DropdownMenuItem disabled className="opacity-60">
               <GraduationCap className="h-4 w-4 mr-2" /> Modo de Formação

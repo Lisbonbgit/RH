@@ -52,8 +52,16 @@ não levam o mesmo talão.
 ## E não pode ficar preso para sempre
 
 Um trabalho entregue e nunca confirmado volta à fila ao fim de
-`_ARRENDAMENTO_SEGUNDOS` — mas só até `_MAX_TENTATIVAS`. Depois disso fica
-`falhado` e PÁRA.
+`_ARRENDAMENTO_SEGUNDOS` — mas só até a VALIDADE passar (30 minutos; 2 na
+gaveta), e nunca mais do que `_MAX_TENTATIVAS` entregas. Depois disso fica
+`caducado` ou `falhado`, e PÁRA.
+
+**Os dois tectos não são o mesmo, e é a validade que trava o caso da noite:**
+um PC que se desliga com o trabalho nas mãos não devolve nada e não se queixa
+de nada, por isso quem o há-de parar é o relógio. O `_MAX_TENTATIVAS` trava o
+outro caso — o programa VIVO, a dizer de 3 em 3 segundos que a impressora não
+tem papel — e é por isso que o seu valor se lê em segundos: cem tentativas
+são os cinco minutos que a loja precisa para pôr um rolo (ver a constante).
 
 O limite é obrigatório e a razão é a mesma frase que decidiu o resto: uma
 impressora avariada com um trabalho a repetir-se para sempre não produz papel
@@ -148,10 +156,23 @@ CADUCADO = "caducado"
 # muito menos do que a paciência de quem está à espera do papel.
 _ARRENDAMENTO_SEGUNDOS = 60
 
-# Quantas vezes um trabalho pode ser entregue antes de a fila desistir. Ver a
-# docstring do módulo: o limite existe para não haver duzentos talões a sair
-# de madrugada, e não custa ao cliente o papel (que se reimprime).
-_MAX_TENTATIVAS = 5
+# Quantas vezes um trabalho pode ser entregue antes de a fila desistir.
+#
+# CEM, e o número sai de uma conta em vez de um palpite. Quando o programa da
+# loja diz que NÃO CONSEGUIU imprimir, o trabalho volta à fila no INSTANTE
+# (ver `marcar_falhou`) e ele volta a perguntar de 3 em 3 segundos
+# (`agente_impressao/nucleo.INTERVALO_SEGUNDOS`). Cinco tentativas eram, por
+# isso, **quinze segundos** de impressora sem papel — menos do que a operadora
+# leva a levantar os olhos, quanto mais a ir buscar um rolo. Cem são os cinco
+# minutos que a documentação sempre prometeu, e que é o tempo de uma pessoa
+# resolver aquilo sem o cliente ficar sem talão.
+#
+# **O que impede os duzentos talões de madrugada não é este número**, e é
+# importante não confiar nele para isso: é a VALIDADE (30 minutos, 2 na
+# gaveta), que desde a correcção de `_arrumar_a_fila` também deita fora o
+# trabalho que ficou entregue a um PC que se desligou. Este número é o tecto
+# do outro caso — o programa vivo, a queixar-se de 3 em 3 segundos.
+_MAX_TENTATIVAS = 100
 
 # A VALIDADE de cada tipo, em minutos. A gaveta é o caso especial, e é o único
 # — ver a docstring do módulo.
@@ -297,6 +318,12 @@ async def enfileirar(
         "reservado_por": None,
         "terminado_em": None,
         "erro": None,
+        # QUANDO alguém deu o aviso deste papel por visto no ecrã do balcão.
+        # SEMPRE presente e a `None` (a mesma razão das `tentativas`): a marcação
+        # é uma escrita condicionada a `visto_em: None`, e no Mongo um campo
+        # ausente casa com uma igualdade a `None` — mas o duplo dos testes e a
+        # leitura de quem vier a seguir ficam mais claros com ele escrito.
+        "visto_em": None,
     }
     try:
         await db[COLECOES["trabalhos_impressao"]].insert_one(dict(trabalho))
@@ -419,8 +446,23 @@ async def _arrumar_a_fila(db, loja_id: str, agora: datetime) -> None:
                 agora - reservado_em
             ).total_seconds() < _ARRENDAMENTO_SEGUNDOS:
                 continue
+            # A VALIDADE também aqui, e não só no caminho PENDENTE lá em
+            # baixo: um trabalho que volta de RESERVADO a PENDENTE é entregue
+            # NESTA MESMA chamada (o `continue` abaixo salta a verificação), e
+            # sem isto os talões de ontem à noite — os que o PC recebeu antes
+            # de se desligar — saíam todos de manhã. Na gaveta é pior do que
+            # papel: dois minutos de validade são segurança, não cortesia, e um
+            # impulso entregue meia hora depois abre a gaveta do dinheiro sem
+            # ninguém à frente dela.
+            validade = _quando(trabalho.get("validade_ate"))
             tentativas = trabalho.get("tentativas") or 0
-            if tentativas >= _MAX_TENTATIVAS:
+            if validade is not None and validade < agora:
+                novo = {
+                    "estado": CADUCADO,
+                    "terminado_em": _iso(agora),
+                    "erro": _MSG_CADUCOU,
+                }
+            elif tentativas >= _MAX_TENTATIVAS:
                 novo = {
                     "estado": FALHADO,
                     "terminado_em": _iso(agora),
@@ -674,8 +716,43 @@ async def estado_da_impressao(operador: Dict = Depends(operador_atual)) -> dict:
         "ha_programa": ultima_recolha is not None,
         "ultima_recolha_em": ultima_recolha,
         "por_sair": por_sair,
-        "falhados": sum(1 for t in trabalhos if t.get("estado") == FALHADO),
+        # Os FALHADOS só contam enquanto ninguém os deu por vistos. Sem isto o
+        # aviso ficava no ecrã SETE DIAS — até o TTL do Mongo apagar o
+        # trabalho — sem forma nenhuma de o tirar de lá: a operadora
+        # reimprimia o papel pelo separador Faturação, resolvia o assunto, e
+        # continuava a ver a mesma frase vermelha a semana inteira. Um aviso
+        # que não se pode desligar depois de resolvido é um aviso que se
+        # aprende a ignorar — e o dia em que ele estiver a dizer a verdade é o
+        # dia em que ninguém olha para ele.
+        "falhados": sum(
+            1 for t in trabalhos
+            if t.get("estado") == FALHADO and not t.get("visto_em")
+        ),
     }
+
+
+@router.post("/pos/impressao/falhados/visto")
+async def marcar_falhados_vistos(operador: Dict = Depends(operador_atual)) -> dict:
+    """«Já vi» — o botão que desliga o aviso dos papéis que não saíram.
+
+    **Não apaga nada e não resolve nada**: o trabalho continua `falhado`, com
+    o erro escrito, e o papel continua a reimprimir-se pelo separador
+    Faturação. O que isto tira é o AVISO, depois de a pessoa o ter lido — que
+    era a única coisa que não tinha maneira de sair do ecrã antes de o TTL de
+    7 dias apagar o trabalho.
+
+    É por LOJA e não por trabalho: o aviso é um número («3 papéis não
+    chegaram a sair»), quem carrega está a responder a esse número, e três
+    toques para desligar um aviso são dois toques a mais ao balcão.
+
+    Condicionada a `visto_em: None` para não reescrever o instante de quem já
+    tinha sido visto — um segundo toque não mexe no que o primeiro marcou."""
+    db = obter_db()
+    resultado = await db[COLECOES["trabalhos_impressao"]].update_many(
+        {"loja_id": operador["loja_id"], "estado": FALHADO, "visto_em": None},
+        {"$set": {"visto_em": _iso(_agora())}},
+    )
+    return {"vistos": resultado.matched_count}
 
 
 class PedidoPaginaDeTeste(BaseModel):

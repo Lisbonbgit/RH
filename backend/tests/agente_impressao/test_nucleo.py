@@ -11,6 +11,7 @@ frente de uma TM-m30 ou de uma TP8002. Está dito no relatório e está dito na
 docstring daquele ficheiro.
 """
 import json
+import logging
 
 import pytest
 
@@ -279,6 +280,19 @@ def test_uma_falha_isolada_NAO_grita():
     assert nucleo.ha_problema(_DEFINICOES, 1) is False
 
 
+def test_grita_a_TERCEIRA_falha_seguida_e_nao_antes():
+    """O número escrito à mão, e é de propósito: os testes à volta usam
+    `nucleo.FALHAS_ATE_AVISAR`, por isso nenhum deles pode falhar pelo valor
+    dela. Posta a 99999, a suite ficava verde e a janela nunca gritava — um
+    programa de impressão silenciosamente morto, que é o desfecho que este
+    programa existe para não ter. Posta a 1, gritava a cada soluço da rede e
+    ensinava a operadora a fechá-lo."""
+    assert nucleo.ha_problema(_DEFINICOES, 2) is False, (
+        "Dois soluços da rede não são uma avaria.")
+    assert nucleo.ha_problema(_DEFINICOES, 3) is True, (
+        "Três falhas seguidas (uns dez segundos) já é alguém que tem de saber.")
+
+
 def test_falhas_seguidas_GRITAM():
     """Um programa de impressão silenciosamente morto é pior do que nenhum."""
     texto = nucleo.estado_legivel(_DEFINICOES, nucleo.FALHAS_ATE_AVISAR, "timed out")
@@ -353,7 +367,13 @@ def test_o_token_do_dispositivo_vai_no_cabecalho_certo():
     nucleo.Servidor("https://lisbonb.com/", "abc123", abrir=abrir).recolher()
     (pedido,) = vistos
     assert pedido.get_header("X-device-token") == "abc123"
-    assert pedido.full_url == "https://lisbonb.com/api/pos/impressao/recolher"
+
+    # O CAMINHO não se afirma aqui, e é de propósito: este ficheiro só tem
+    # acesso ao que o próprio `nucleo.py` escreve, e uma afirmação assim
+    # («o caminho é o caminho») nunca pode falhar pelo valor dele — foi
+    # exactamente por isso que os cinco endereços viveram meses a apontar
+    # para rotas que não existiam. Quem os confronta com a tabela de rotas a
+    # sério do FastAPI é `backend/tests/faturacao/test_caminhos_do_pos.py`.
 
 
 def test_um_endereco_com_barra_a_mais_nao_parte_o_caminho():
@@ -366,7 +386,12 @@ def test_um_endereco_com_barra_a_mais_nao_parte_o_caminho():
         return RespostaFalsa({"trabalhos": []})
 
     nucleo.Servidor("https://lisbonb.com///", "t", abrir=abrir).recolher()
-    assert vistos == ["https://lisbonb.com/api/pos/impressao/recolher"]
+    (url,) = vistos
+    # A propriedade é UMA: não sobra barra nenhuma. O caminho em si é
+    # verificado contra as rotas reais noutro sítio (ver o teste acima).
+    assert url.startswith("https://lisbonb.com/")
+    assert "//" not in url[len("https://"):], (
+        "O endereço ficou com uma barra a mais: %s" % url)
 
 
 def test_sem_endereco_configurado_queixa_se_em_vez_de_rebentar_com_urllib():
@@ -399,3 +424,22 @@ def test_o_servidor_a_responder_lixo_e_um_erro_do_servidor_e_nao_um_crash():
     with pytest.raises(nucleo.ErroDoServidor):
         nucleo.Servidor(
             "https://lisbonb.com", "t", abrir=lambda p, t: RespostaEmHtml()).recolher()
+
+
+def test_o_PRIMEIRO_duplo_clique_num_PC_NOVO_consegue_abrir_o_log(tmp_path, monkeypatch):
+    """O passo 4 do manual: copiar o `.exe` para o PC e fazer duplo clique.
+
+    A pasta `%APPDATA%\\AgenteImpressaoLacai` só nasce quando se GRAVAM as
+    definições — e no primeiro arranque ainda não há definições nenhumas. O
+    `logging.basicConfig` do arranque rebentava ali com `FileNotFoundError`, e
+    com `console=False` no `.exe` isso não dá erro nenhum: não acontece
+    **nada**. Quem foi à loja ficava a olhar para um duplo clique sem
+    resposta.
+
+    A prova é abrir o ficheiro do MESMO modo que o `logging` o abre — um teste
+    que só olhasse para a string do caminho passava com a pasta inexistente,
+    que é exactamente o defeito."""
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    assert not (tmp_path / "Roaming").exists(), "o PC é novo: não há nada lá"
+
+    logging.FileHandler(nucleo.caminho_do_log(), encoding="utf-8").close()
