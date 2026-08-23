@@ -28,6 +28,7 @@ from faturacao.db import COLECOES
 from faturacao.mapa_imposto import mapa_de_imposto, mapa_da_nota, totais_do_mapa
 from faturacao.nota_credito import (
     NotaDeCreditoInvalida,
+    _centimos,
     escolher_linhas,
     emitir_nota_credito,
     ext_ref_da_intencao,
@@ -1624,6 +1625,79 @@ def test_NENHUMA_parcial_de_metades_deixa_a_AT_ao_lado_do_que_gravamos():
                                         _liquido_como_o_vendus(item)))
                 notas.append({"linhas": escolhidas, "estado": "emitida"})
     assert divergentes == []
+
+def test_NENHUMA_fraccao_deixa_a_AT_ao_lado_do_que_gravamos():
+    """**A varredura das metades, alargada ao resto das fracções e às linhas
+    COM desconto** — que é onde os dois mecanismos se cruzam.
+
+    A varredura acima só mede metades de linhas sem desconto. Uma conta
+    repartida por três, por quatro ou por cinco produz as outras fracções, e
+    uma fatura com desconto produz uma linha em que o preço tem de SUBIR (para
+    o bruto chegar ao acumulado) e a percentagem tem de DESCONTAR (para o
+    bruto voltar a descer até ele) na mesma linha. Medido: nos preços de 1
+    cêntimo a 3,99 €, isso acontece em 5 linhas com desconto e em 400 sem —
+    raro, e por isso mesmo o sítio onde uma regressão passava despercebida.
+
+    864 sequências, cada uma a creditar a linha inteira em fatias de 1/n. Por
+    fatia compara-se o cêntimo que GRAVAMOS com o que a AT vai calcular; no
+    fim, a soma das fatias com o líquido da linha."""
+    divergentes = []
+    for preco in (0.05, 0.25, 0.29, 0.55, 0.75, 1.15, 1.25, 2.45,
+                  3.33, 5.05, 7.77, 10.20):
+        for quantidade in (1, 2, 3, 4):
+            for fatias_por_unidade in (2, 3, 4, 5, 8, 10):
+                for desconto in (None, 10, 33):
+                    venda = _venda_faturada(linhas=[_linha_agua(
+                        produto_preco=preco, quantidade=quantidade,
+                        desconto_pct=desconto)])
+                    esperado = _centimos(
+                        linhas_creditaveis(venda, [])[0]["total"])
+                    fatia = round(1.0 / fatias_por_unidade, 5)
+                    notas, somado = [], 0
+                    for _ in range(quantidade * fatias_por_unidade):
+                        escolhidas = escolher_linhas(
+                            linhas_creditaveis(venda, notas),
+                            [{"indice": 1, "quantidade": fatia}])
+                        gravado = _centimos(escolhidas[0]["total"])
+                        item = itens_vendus_da_nota(escolhidas, "FS 1")[0]
+                        na_at = _centimos(_liquido_como_o_vendus(item))
+                        if na_at != gravado:
+                            divergentes.append(
+                                (preco, quantidade, fatia, desconto,
+                                 gravado, na_at))
+                        somado += gravado
+                        notas.append({"linhas": escolhidas, "estado": "emitida"})
+                    if somado != esperado:
+                        divergentes.append(
+                            (preco, quantidade, fatia, desconto,
+                             "soma", somado, esperado))
+    assert divergentes == []
+
+
+def test_a_GAVETA_sai_pelos_MESMOS_centimos_que_a_AT_recebe(monkeypatch):
+    """**Os três números, na rota real e de uma só vez.** Uma meia Coca-Cola
+    de 1,15 €: o que a nota GRAVA (`total`), o que sai da GAVETA
+    (`devolucao.valor`, que é o que o Ponto de Caixa e o Z descontam) e o que
+    a AT recebe (a linha que foi mesmo entregue ao cliente do Vendus) têm de
+    ser o MESMO número — 0,58 €.
+
+    Os testes acima medem-no nas funções de cálculo. Este mede-o na rota, e é
+    o único que prova que o preço corrigido chega ao PAYLOAD: entre
+    `escolher_linhas` e o Vendus há `itens_vendus_da_nota`, e uma nota gravada
+    com o cêntimo certo e enviada com o preço da fatura era exactamente o
+    defeito."""
+    db = _db_nc()
+    resposta = _emitir(db, monkeypatch, _pedido(
+        linhas=[{"indice": 3, "quantidade": 0.5}]))
+
+    gravado = _centimos(resposta["total_das_linhas"])
+    gaveta = _centimos(resposta["devolucao"]["valor"])
+    enviadas = VendusNCFalso.instancias[-1].chamadas_criar[0]["linhas"]
+    na_at = _centimos(_liquido_como_o_vendus(enviadas[0]))
+
+    assert gravado == 58
+    assert gaveta == 58
+    assert na_at == 58
 
 
 def test_o_PRECO_que_vai_ao_Vendus_so_sobe_quando_o_centimo_o_obriga():
