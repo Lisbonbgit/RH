@@ -3,6 +3,7 @@
 // lib/finance.js —, mas as chamadas daqui saem por um cliente próprio, que lho
 // vai buscar a cada pedido e lhes põe um tecto de espera (ver mais abaixo).
 import axios from 'axios';
+import { urlDaFoto } from './fotos';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL + '/api';
 
@@ -159,6 +160,26 @@ export const criarProduto = (data) => api.post(`${API_URL}/faturacao/produtos`, 
 export const editarProduto = (id, data) => api.put(`${API_URL}/faturacao/produtos/${id}`, data);
 export const apagarProduto = (id) => api.delete(`${API_URL}/faturacao/produtos/${id}`);
 export const mudarEstadoProduto = (id, ativo) => api.put(`${API_URL}/faturacao/produtos/${id}/estado`, { ativo });
+
+// A FOTO de um produto carregada do computador do dono. Sai por `multipart`
+// (é um ficheiro), e por isso não leva o `Content-Type: application/json` que
+// o axios poria sozinho — deixa-se o browser escolher a fronteira do
+// `FormData`, que é a única forma de o servidor conseguir separar as partes.
+//
+// A imagem já vai REDUZIDA pelo ecrã (`lib/fotos.js::reduzirImagem`, 640 px no
+// lado maior): a grelha do POS carrega dezenas destas de uma vez num PC de
+// loja. Quem RECUSA o que for grande de mais é o servidor (`fotos.py`, tecto
+// de 512 KB) — este lado é a comodidade, não a garantia.
+export const carregarFotoProduto = (ficheiro) => {
+  const corpo = new FormData();
+  corpo.append('ficheiro', ficheiro, ficheiro.name || 'foto');
+  return api.post(`${API_URL}/faturacao/produtos/fotos`, corpo);
+};
+
+// O endereço a pôr num `<img>` — ver `lib/fotos.js`. A mesma regra que o POS
+// usa, e não uma cópia dela.
+export const urlDaFotoProduto = (valor) =>
+  urlDaFoto(valor, process.env.REACT_APP_BACKEND_URL);
 
 // Importação do catálogo Vendus
 export const importarVendus = () =>

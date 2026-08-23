@@ -9,8 +9,17 @@ Duas famílias de rotas, dois mecanismos, nunca misturados:
   administrador com sessão aberta no backoffice não pode vender sem se
   identificar com o PIN, senão a venda entra na caixa sem dono.
 
-Duas excepções, as duas únicas rotas sem qualquer uma das guardas acima:
+TRÊS excepções, as únicas rotas sem qualquer uma das guardas acima:
 - `/api/faturacao/saude` — não toca em nada, propositadamente pública.
+- `/api/faturacao/produtos/fotos/{nome}` — serve a foto de um produto, e é
+  pública **por necessidade, não por esquecimento**: um `<img src="…">` não
+  leva cabeçalho `Authorization` nenhum, nem o JWT do backoffice nem o token
+  do dispositivo do POS. Ou a rota é pública, ou as fotos não aparecem em ecrã
+  nenhum. O que fica exposto é a fotografia de um açaí, atrás de um nome de
+  ficheiro que é um UUID gerado por nós (não se adivinha e não se enumera — a
+  rota só responde a nomes com essa forma exacta, tudo o resto é 404). O
+  CARREGAMENTO — `POST /api/faturacao/produtos/fotos` — continua a exigir
+  `gestor_atual`, e é ele que o teste de cima cobre.
 - `/api/faturacao/pos/emparelhar` — é o próprio bootstrap da cadeia de
   autenticação do POS: o dispositivo ainda não tem nenhum token nesse
   momento, por isso não pode depender de `dispositivo_atual` nem de
@@ -28,7 +37,10 @@ from faturacao import router
 from faturacao.auth import gestor_atual
 from faturacao.pos_auth import dispositivo_atual, operador_atual
 
-ROTAS_PUBLICAS = {"/api/faturacao/saude"}
+ROTAS_PUBLICAS = {
+    "/api/faturacao/saude",
+    "/api/faturacao/produtos/fotos/{nome}",
+}
 ROTAS_BOOTSTRAP_POS = {"/api/faturacao/pos/emparelhar"}
 PREFIXO_POS = "/api/faturacao/pos/"
 

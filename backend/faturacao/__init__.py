@@ -47,6 +47,19 @@ router.include_router(_motivos)
 from .catalogo import router as _catalogo
 router.include_router(_catalogo)
 
+# As fotos dos produtos: carregar uma do computador do dono, e servi-la.
+#
+# As rotas vivem debaixo de `/produtos/` e o catálogo já lá tem
+# `/produtos/{produto_id}` — o FastAPI resolve pela ORDEM de registo, por isso
+# o cruzamento merece ser visto e não presumido: `POST /produtos/fotos` não
+# colide (a única POST do catálogo é em `/produtos`) e `GET
+# /produtos/fotos/{nome}` tem DOIS segmentos, que nenhuma rota do catálogo
+# apanha. Quem mexer nestes caminhos tem `test_fotos_dos_produtos.py::
+# test_as_rotas_das_fotos_nao_sao_TAPADAS_pelas_do_catalogo` a resolvê-los
+# contra o router a sério.
+from .fotos import router as _fotos
+router.include_router(_fotos)
+
 from .importacao import router as _importacao
 router.include_router(_importacao)
 

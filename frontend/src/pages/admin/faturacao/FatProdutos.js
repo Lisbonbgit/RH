@@ -2,8 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   getProdutos, getProdutosSemIva, criarProduto, editarProduto, apagarProduto, mudarEstadoProduto,
   getCategorias, getGrupos, importarVendus,
+  carregarFotoProduto, urlDaFotoProduto,
   detalhesErro, temMaisDe2CasasDecimais,
 } from '../../../lib/faturacao';
+import { reduzirImagem, TIPOS_ACEITES } from '../../../lib/fotos';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
@@ -25,6 +27,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../../components/ui/table';
 import {
   Package, Plus, Pencil, Trash2, AlertTriangle, RefreshCw, Search, X, Link2,
+  ImagePlus, Loader2, ImageOff,
 } from 'lucide-react';
 import PageHeader from '../../../components/PageHeader';
 import { toast } from 'sonner';
@@ -54,6 +57,9 @@ export default function FatProdutos() {
   const [semIva, setSemIva] = useState([]);
   const [loading, setLoading] = useState(true);
   const [togglingId, setTogglingId] = useState(null);
+
+  const [aCarregarFoto, setACarregarFoto] = useState(false);
+  const inputFoto = useRef(null);
 
   const [filtroTexto, setFiltroTexto] = useState('');
   const [filtroCategoria, setFiltroCategoria] = useState('');
@@ -131,6 +137,39 @@ export default function FatProdutos() {
     });
     setFieldErrors({});
     setDialogOpen(true);
+  };
+
+  // **O carregamento da foto acontece AQUI, e não no Gravar.** O ficheiro sobe
+  // assim que é escolhido e o que fica no formulário é o ENDEREÇO que o
+  // servidor devolveu — a partir daí é um `foto_url` como qualquer outro, e o
+  // Gravar não tem de saber que houve um ficheiro. É também o que deixa a
+  // pré-visualização mostrar a foto REAL, servida pelo servidor, e não um
+  // `blob:` local que desaparece ao fechar o diálogo.
+  //
+  // Uma foto carregada e o produto não gravado a seguir deixa um ficheiro
+  // órfão no disco. É o preço desta ordem, e é pequeno (uma imagem de 60 KB);
+  // a alternativa — segurar o ficheiro até ao Gravar — obrigava o formulário a
+  // carregar o `File` inteiro e a tratar o erro do envio no meio do erro da
+  // gravação, com o dono à espera.
+  const escolherFoto = async (ficheiro) => {
+    if (!ficheiro) return;
+    setACarregarFoto(true);
+    try {
+      const reduzida = await reduzirImagem(ficheiro);
+      const { data } = await carregarFotoProduto(reduzida);
+      setForm((prev) => ({ ...prev, foto_url: data.foto_url }));
+      toast.success('Foto carregada');
+    } catch (error) {
+      // A frase do servidor, e não uma nossa: é ele que sabe se recusou por
+      // tamanho ou por não ser uma imagem, e as duas pedem coisas diferentes.
+      toast.error(detalhesErro(error, 'Não foi possível carregar a foto.').mensagem);
+    } finally {
+      setACarregarFoto(false);
+      // O mesmo ficheiro escolhido duas vezes seguidas não dispara `onChange`
+      // se o valor do campo não for limpo — e a segunda tentativa, depois de
+      // um erro, é exactamente o que a pessoa faz a seguir.
+      if (inputFoto.current) inputFoto.current.value = '';
+    }
   };
 
   const toggleGrupo = (id) => {
@@ -355,6 +394,10 @@ export default function FatProdutos() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    {/* A coluna que responde à pergunta do dono («ainda não
+                        consigo colocar as imagens») de relance: quais é que já
+                        têm foto e quais é que ainda não têm. */}
+                    <TableHead className="w-14">Foto</TableHead>
                     <TableHead>Nome</TableHead>
                     <TableHead>Categoria</TableHead>
                     <TableHead>Preço</TableHead>
@@ -373,6 +416,21 @@ export default function FatProdutos() {
                         data-testid={`produto-row-${produto.id}`}
                         className={semIvaProduto ? 'bg-red-50/60 hover:bg-red-50' : undefined}
                       >
+                        <TableCell>
+                          <div className="h-10 w-10 rounded-md border overflow-hidden bg-muted flex items-center justify-center">
+                            {urlDaFotoProduto(produto.foto_url) ? (
+                              <img
+                                src={urlDaFotoProduto(produto.foto_url)}
+                                alt=""
+                                loading="lazy"
+                                decoding="async"
+                                className="h-full w-full object-cover"
+                              />
+                            ) : (
+                              <ImageOff className="h-4 w-4 text-muted-foreground/50" />
+                            )}
+                          </div>
+                        </TableCell>
                         <TableCell className="font-medium">
                           <div className="flex items-center gap-2">
                             {produto.nome}
@@ -514,15 +572,88 @@ export default function FatProdutos() {
                 </div>
               </div>
 
+              {/* **A FOTO.** O pedido do dono: «em produtos no backoffice ainda
+                  não consigo colocar as imagens dos produtos … as que você não
+                  conseguir [do Vendus] deixe no backoffice a opção de fazer
+                  upload.»
+
+                  O caminho normal passa a ser o FICHEIRO do computador; o
+                  endereço continua a existir para quem o queira (uma foto que
+                  já viva noutro sítio), mas em segundo plano, que é onde
+                  pertence — colar um endereço não é o que alguém faz com uma
+                  fotografia que tirou ao açaí.
+
+                  A imagem é reduzida AQUI antes de sair (640 px no lado maior,
+                  WebP): a grelha do POS carrega dezenas destas de uma vez num
+                  PC de loja. Quem RECUSA o que for grande de mais, ou o que
+                  não for uma imagem, é o servidor — e a frase que ele devolve
+                  é a que aparece. */}
               <div className="space-y-2">
-                <Label htmlFor="produto-foto">URL da foto (opcional)</Label>
-                <Input
-                  id="produto-foto"
-                  value={form.foto_url}
-                  onChange={(e) => setForm({ ...form, foto_url: e.target.value })}
-                  placeholder="https://..."
-                  data-testid="produto-foto-input"
-                />
+                <Label>Foto do produto (opcional)</Label>
+                <div className="flex items-start gap-3">
+                  <div className="h-20 w-20 shrink-0 rounded-lg border overflow-hidden bg-muted flex items-center justify-center">
+                    {urlDaFotoProduto(form.foto_url) ? (
+                      <img
+                        src={urlDaFotoProduto(form.foto_url)}
+                        alt=""
+                        className="h-full w-full object-cover"
+                        data-testid="produto-foto-previsualizacao"
+                      />
+                    ) : (
+                      <ImageOff className="h-6 w-6 text-muted-foreground/50" />
+                    )}
+                  </div>
+                  <div className="space-y-2 min-w-0 flex-1">
+                    <input
+                      ref={inputFoto}
+                      type="file"
+                      accept={TIPOS_ACEITES}
+                      className="hidden"
+                      onChange={(e) => escolherFoto(e.target.files?.[0])}
+                      data-testid="produto-foto-ficheiro"
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={aCarregarFoto}
+                        onClick={() => inputFoto.current?.click()}
+                        data-testid="produto-foto-escolher"
+                      >
+                        {aCarregarFoto
+                          ? <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          : <ImagePlus className="h-4 w-4 mr-2" />}
+                        {aCarregarFoto
+                          ? 'A enviar a foto…'
+                          : (form.foto_url ? 'Trocar a foto' : 'Escolher ficheiro')}
+                      </Button>
+                      {form.foto_url && !aCarregarFoto && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setForm((prev) => ({ ...prev, foto_url: '' }))}
+                          data-testid="produto-foto-remover"
+                        >
+                          <X className="h-4 w-4 mr-1" /> Remover
+                        </Button>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      JPEG, PNG ou WebP. A imagem é reduzida antes de ser
+                      enviada — a grelha do POS carrega dezenas de fotos de uma
+                      vez no PC da loja.
+                    </p>
+                    <Input
+                      id="produto-foto"
+                      value={form.foto_url}
+                      onChange={(e) => setForm({ ...form, foto_url: e.target.value })}
+                      placeholder="ou cole aqui um endereço https://..."
+                      data-testid="produto-foto-input"
+                    />
+                  </div>
+                </div>
               </div>
 
               <div className="space-y-2">

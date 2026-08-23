@@ -26,6 +26,7 @@ import {
   ehTimeoutPos, TIMEOUT_PADRAO_MS, entregarContaAoGestor,
   razaoDeNaoComecar, razaoDaGrelhaMorta, MSG_CONTA_TRAVADA_CURTA,
   contaDeOutraCaixa,
+  urlDaFotoPos,
   eurosPos as euros,
 } from '@/lib/pos';
 
@@ -240,10 +241,16 @@ const tipoDoErroDeEmissao = (status, mensagem, relida) => {
 
 function Foto({ url, alt }) {
   const [partida, setPartida] = useState(false);
+  // **O endereço resolve-se, não se usa cru.** As fotos vêm de duas origens e
+  // com duas formas: a do Vendus é absoluta, a que o dono carregou é relativa
+  // (`/api/faturacao/produtos/fotos/…`), e o que não for nenhuma das duas —
+  // um `javascript:`, um `//outro-sitio.pt/x.png` — não se desenha de todo.
+  // A regra vive em `lib/fotos.js` e é a mesma que o backoffice usa.
+  const endereco = urlDaFotoPos(url);
   // Um `foto_url` que já não responde (a imagem foi apagada do servidor)
   // desenhava o ícone de imagem partida do browser dentro do cartão. O
   // onError troca-o pelo mesmo espaço de reserva de quem nunca teve foto.
-  if (!url || partida) {
+  if (!endereco || partida) {
     return (
       <div className="w-full h-full flex items-center justify-center bg-muted">
         <ImageOff className="h-7 w-7 text-muted-foreground/50" />
@@ -252,9 +259,18 @@ function Foto({ url, alt }) {
   }
   return (
     <img
-      src={url}
+      src={endereco}
       alt={alt || ''}
       onError={() => setPartida(true)}
+      // **A grelha tem dezenas destes mosaicos, num PC de loja.** Sem o
+      // `lazy`, abrir o ecrã de venda pede as fotos TODAS de uma vez, as que
+      // se veem e as que estao dez ecras abaixo — e o PC do balcao passa
+      // esse tempo a nao responder ao dedo. Com ele, o browser pede as que
+      // estao a vista e vai buscando o resto a medida que se rola. O
+      // `decoding=async` tira a descodificacao do caminho do desenho, que e
+      // o outro sitio onde uma foto grande prende o ecra.
+      loading="lazy"
+      decoding="async"
       className="w-full h-full object-cover"
     />
   );

@@ -12,6 +12,7 @@
 // como default no arranque, para uma troca de dispositivo ou operador a meio
 // da sessão do browser ser sempre respeitada no pedido seguinte.
 import axios from 'axios';
+import { urlDaFoto } from './fotos';
 
 // O /faturacao FAZ PARTE do baseURL, e não de cada caminho. O módulo está
 // montado em /api/faturacao (faturacao/__init__.py: APIRouter(prefix=...)),
@@ -645,6 +646,14 @@ export const gavetaAbaixoDeZero = (resumo) => {
   const n = resumo?.esperado;
   return typeof n === 'number' && Number.isFinite(n) && n < 0;
 };
+
+// **O `src` da foto de um produto, no POS.** A regra vive em `lib/fotos.js`
+// (o backoffice usa a mesma, e uma cópia aqui era a nona cópia da mesma linha
+// que este módulo já teve em oito ecrãs). A base é a do backend, para a foto
+// nossa — que é gravada com um endereço RELATIVO — continuar a desenhar-se num
+// embrulho onde a API viva noutro anfitrião.
+export const urlDaFotoPos = (valor) =>
+  urlDaFoto(valor, process.env.REACT_APP_BACKEND_URL);
 
 export const temTaxaDesconhecida = (mapa) =>
   (mapa || []).some((linha) => linha?.taxa === null || linha?.taxa === undefined);

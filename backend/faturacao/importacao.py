@@ -36,11 +36,20 @@ Idempotência — o que uma reimportação faz a cada colecção, e porquê:
   duplicar. Um produto novo é CRIADO; um já existente (por `vendus_ref` ou
   ligado agora por nome) é ACTUALIZADO nos campos que vêm do Vendus —
   nome, preço, tax_id, categoria — porque o Vendus é a fonte de verdade
-  para o que o dono mudou LÁ. `foto_url`, `grupos_personalizacao` e
-  `ativo` são PRESERVADOS: nunca vieram do Vendus, são configuração feita
-  aqui no backoffice (uma foto carregada, os toppings associados, um
-  produto desligado à mão) — uma reimportação não pode apagar isso nem
-  reactivar/desligar um produto à revelia do que o dono decidiu aqui.
+  para o que o dono mudou LÁ. `grupos_personalizacao` e `ativo` são
+  PRESERVADOS: nunca vieram do Vendus, são configuração feita aqui no
+  backoffice (os toppings associados, um produto desligado à mão) — uma
+  reimportação não pode apagar isso nem reactivar/desligar um produto à
+  revelia do que o dono decidiu aqui.
+
+- A FOTO deixou de estar nessa lista e passou a ter uma regra de
+  PRECEDÊNCIA própria, porque o dono pediu as duas coisas ao mesmo tempo:
+  «pode pegar as imagens do vendus» e «as que você não conseguir deixe no
+  backoffice a opção de fazer upload». Em resumo: quem AGIU aqui ganha a um
+  automatismo, e uma reimportação nunca APAGA uma foto. O quadro completo,
+  linha a linha, está em `fotos.foto_da_reimportacao` — e as fotos
+  carregadas aqui ficam no NOSSO servidor, nunca no Vendus (`fotos.py`
+  explica porquê).
 """
 import asyncio
 import logging
@@ -54,6 +63,7 @@ from pydantic import ValidationError
 from .auth import gestor_atual
 from .catalogo import CategoriaEntrada, ProdutoEntrada, _CODIGOS_IVA_VALIDOS
 from .db import COLECOES, obter_db
+from .fotos import foto_da_reimportacao
 from .precos import _tem_mais_de_2_casas_decimais, tax_id_de_taxa
 from .vendus.cliente import ClienteVendus, VendusErro, obter_conta
 
@@ -95,6 +105,57 @@ def _extrair_preco(produto_vendus: dict) -> Optional[float]:
     if _tem_mais_de_2_casas_decimais(valor):
         return None
     return valor
+
+
+# O endereço das fotos do Vendus vem RELATIVO — `/foto/b906f77_m.png` — e é o
+# detalhe que uma leitura à pressa da documentação deixa passar: um
+# `<img src="/foto/b906f77_m.png">` no nosso domínio pede a foto ao NOSSO
+# servidor, leva um 404 e desenha o ícone de imagem partida em cada mosaico da
+# grelha. Absolutiza-se contra este anfitrião, que é o mesmo da `BASE_URL` do
+# cliente (`https://www.vendus.pt/ws/v1.1/`).
+_ANFITRIAO_VENDUS = "https://www.vendus.pt"
+
+
+def _extrair_foto(produto_vendus: dict) -> Optional[str]:
+    """O endereço da foto de um produto do Vendus — `None` quando não tem.
+
+    **Confirmado na documentação oficial da API v1.1**
+    (https://www.vendus.pt/ws/v1.1/products.doc, campo a campo): na RESPOSTA,
+    `images` é um `array` («Images List») e cada item traz `xs` («Small Image
+    Url», exemplo `/foto/b906f77_xs.png`) e `m` («Medium Image Url», exemplo
+    `/foto/b906f77_m.png`). No PEDIDO existe um campo `image` («Either an url or
+    a base64 encoded string») — que este módulo NÃO usa: o cliente do Vendus
+    daqui é só de leitura (ver `vendus/cliente.py`).
+
+    **Não foi feita uma chamada real** — não há chave Vendus neste repositório
+    — e por isso o leitor não confia na forma: aceita a lista documentada e
+    também um objecto solto, aguenta o campo ausente, vazio ou com itens que
+    não são dicionários, e recusa tudo o que não termine num endereço `http`
+    ou `https`. Essa última recusa não é zelo: o que sai daqui vai para um
+    `src` de `<img>` no ecrã do balcão, e um `javascript:` nesse atributo é uma
+    porta aberta por uma fonte externa.
+
+    **Prefere o `m` ao `xs`.** A grelha do POS desenha mosaicos 4:3 e o
+    diálogo do produto mostra a mesma foto — o `xs` é a miniatura da lista do
+    Vendus e, esticada no mosaico, lê-se desfocada. Sem `m`, serve o `xs`
+    (desfocada é melhor do que nenhuma); o que não se faz é adivinhar o nome do
+    ficheiro médio a partir do pequeno."""
+    imagens = produto_vendus.get("images")
+    if isinstance(imagens, dict):
+        imagens = [imagens]
+    for item in imagens or []:
+        if not isinstance(item, dict):
+            continue
+        for chave in ("m", "xs"):
+            bruto = item.get(chave)
+            if not isinstance(bruto, str) or not bruto.strip():
+                continue
+            endereco = bruto.strip()
+            if endereco.startswith("http://") or endereco.startswith("https://"):
+                return endereco
+            if endereco.startswith("/") and not endereco.startswith("//"):
+                return _ANFITRIAO_VENDUS + endereco
+    return None
 
 
 def _extrair_tax_id(produto_vendus: dict) -> Optional[str]:
@@ -218,6 +279,7 @@ async def _sincronizar_produtos(
         categoria_id = mapa_categorias.get(categoria_vendus_id)
         preco = _extrair_preco(p)
         tax_id = _extrair_tax_id(p)
+        foto = _extrair_foto(p)
 
         if not categoria_id:
             problemas.append("'%s' (ref %s): categoria do Vendus desconhecida" % (nome, vid))
@@ -250,26 +312,37 @@ async def _sincronizar_produtos(
             if existente is None:
                 dados = ProdutoEntrada(
                     nome=nome, categoria_id=categoria_id, preco=preco, tax_id=tax_id,
-                    vendus_ref=vid,
+                    foto_url=foto, vendus_ref=vid,
                 )
                 novo = dados.model_dump()
                 novo["id"] = str(uuid.uuid4())
+                novo["foto_origem"] = "vendus" if foto else None
                 await db[COLECOES["produtos"]].insert_one(dict(novo))
                 criados += 1
             else:
                 # Reimportação (ou ligação por nome): nome/preço/tax_id/
                 # categoria vêm do Vendus (é o que o dono mudou lá);
-                # foto_url/grupos_personalizacao/ativo são só nossos e têm
-                # de sobreviver.
+                # grupos_personalizacao/ativo são só nossos e têm de
+                # sobreviver.
+                #
+                # **A FOTO deixou de ser "só nossa" e passou a ter uma regra
+                # de precedência** — o dono pediu as duas coisas («pode pegar
+                # as imagens do vendus» e «as que você não conseguir deixe no
+                # backoffice a opção de fazer upload»), e as duas juntas
+                # obrigam a decidir quem ganha. Quem AGIU aqui ganha a um
+                # automatismo, e uma reimportação NUNCA apaga uma foto: o
+                # quadro completo está em `fotos.foto_da_reimportacao`.
+                foto_url, foto_origem = foto_da_reimportacao(existente, foto)
                 dados = ProdutoEntrada(
                     nome=nome, categoria_id=categoria_id, preco=preco, tax_id=tax_id,
-                    foto_url=existente.get("foto_url"),
+                    foto_url=foto_url,
                     grupos_personalizacao=existente.get("grupos_personalizacao") or [],
                     ativo=existente.get("ativo", True),
                     vendus_ref=vid,
                 )
                 await db[COLECOES["produtos"]].update_one(
-                    {"id": existente["id"]}, {"$set": dados.model_dump()}
+                    {"id": existente["id"]},
+                    {"$set": dict(dados.model_dump(), foto_origem=foto_origem)},
                 )
                 atualizados += 1
                 if ligado_agora:

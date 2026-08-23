@@ -7,7 +7,9 @@ import PosCampoValor from './PosCampoValor';
 import PosPersonalizacoes, {
   ehIndicacaoDeServico, errosDeSelecao, resumoDaSelecao,
 } from './PosPersonalizacoes';
-import { arredondarComoOServidor, eurosPos as euros, temMaisDe2CasasDecimaisPos } from '@/lib/pos';
+import {
+  arredondarComoOServidor, eurosPos as euros, temMaisDe2CasasDecimaisPos, urlDaFotoPos,
+} from '@/lib/pos';
 
 // Os códigos são os do Vendus (`_TAXAS` em faturacao/precos.py). A operadora vê
 // a PERCENTAGEM — é o que ela sabe de cor do balcão — mas o que viaja para o
@@ -476,8 +478,16 @@ export default function PosDialogoProduto({
         >
           <ArrowLeft className="h-6 w-6" />
         </Button>
-        {produto?.foto_url && (
-          <img src={produto.foto_url} alt="" className="h-12 w-12 rounded-lg object-cover shrink-0" />
+        {/* O mesmo resolvedor da grelha (`lib/fotos.js`): a do Vendus é
+            absoluta, a que o dono carregou é relativa, e o que não for
+            nenhuma das duas não se desenha. */}
+        {urlDaFotoPos(produto?.foto_url) && (
+          <img
+            src={urlDaFotoPos(produto.foto_url)}
+            alt=""
+            decoding="async"
+            className="h-12 w-12 rounded-lg object-cover shrink-0"
+          />
         )}
         <div className="min-w-0">
           <p className="font-heading font-bold text-lg leading-tight truncate">{nome}</p>

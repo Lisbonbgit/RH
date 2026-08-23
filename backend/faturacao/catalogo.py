@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .auth import gestor_atual
 from .db import COLECOES, obter_db
+from .fotos import origem_de_uma_gravacao_do_backoffice
 from .precos import _CODIGOS_IVA_VALIDOS, _tem_mais_de_2_casas_decimais, erros_do_produto
 
 router = APIRouter()
@@ -361,6 +362,11 @@ async def criar_produto(dados: ProdutoEntrada, _: dict = Depends(gestor_atual)) 
     await _valida_referencias(db, dados.categoria_id, dados.grupos_personalizacao)
     produto = dados.model_dump()
     produto["id"] = str(uuid.uuid4())
+    # De onde veio a foto, gravado ao lado dela — é este campo que decide, na
+    # reimportação seguinte, se o Vendus lhe pode tocar. Um produto criado
+    # aqui com foto tem uma foto NOSSA, por definição: não há mais ninguém a
+    # criar produtos por esta porta. Ver `fotos.py`.
+    produto["foto_origem"] = origem_de_uma_gravacao_do_backoffice(dados.foto_url, None)
     await db[COLECOES["produtos"]].insert_one(dict(produto))
     return produto
 
@@ -399,6 +405,18 @@ async def editar_produto(
     # toca.
     if "vendus_ref" not in dados.model_fields_set:
         alteracoes.pop("vendus_ref", None)
+
+    # **A ORIGEM DA FOTO calcula-se contra o que está GRAVADO**, e por isso o
+    # produto lê-se ANTES de se escrever. A regra fácil — «tudo o que passa
+    # pelo backoffice é nosso» — tinha uma consequência que não se quer:
+    # corrigir o NOME de um produto congelava a foto que tinha vindo do
+    # Vendus, e o dono deixava de receber aqui as trocas que fizesse lá. O que
+    # marca a foto como nossa é MEXER-LHE. Ver `fotos.py`.
+    existente = await db[COLECOES["produtos"]].find_one({"id": produto_id}, {"_id": 0})
+    if existente is None:
+        raise HTTPException(status_code=404, detail="Produto não encontrado")
+    alteracoes["foto_origem"] = origem_de_uma_gravacao_do_backoffice(
+        dados.foto_url, existente)
 
     r = await db[COLECOES["produtos"]].update_one({"id": produto_id}, {"$set": alteracoes})
     if r.matched_count == 0:
