@@ -1274,12 +1274,30 @@ export const razaoDeNaoEmitirNotaCredito = ({ linhas, motivo, tipoPagamentoId, a
 // mesmas linhas não se creditam duas vezes). O que ele faz é mandar os
 // pagamentos da fatura, e é esta frase que os põe à frente da operadora ANTES
 // do toque — em euros, com o número que vai faltar à gaveta.
+//
+// **O emparelhamento é o do servidor** (`nota_credito._e_o_mesmo_meio`), e é a
+// segunda metade dele que faltava aqui: uma linha COM id casa pelo id; uma
+// linha SEM id casa pelo NOME, aparado e sem distinguir maiúsculas. Medido —
+// fatura paga `{nome: Dinheiro, tipo_fiscal: NU, valor: 20,40}` **sem
+// `tipo_pagamento_id`** (gravada por uma versão anterior, ou trazida do Vendus
+// por uma reconciliação): devolver 10,20 € em dinheiro pintava esta caixa a
+// VERMELHO antes de a operadora tocar em nada, com «só tem € 0,00 por devolver
+// em Dinheiro» sobre uma fatura que recebeu 20,40 € em dinheiro.
 export const avisoDoMeioDeDevolucaoPos = ({ tipo, pagamentos, total }) => {
   if (!tipo) return null;
-  const linha = (pagamentos || []).find(
-    (p) => p.tipo_pagamento_id === tipo.id);
-  const disponivel = Number(linha?.disponivel || 0);
+  const mesmoNome = (a, b) => {
+    const x = String(a || '').trim().toLowerCase();
+    return x !== '' && x === String(b || '').trim().toLowerCase();
+  };
+  const casa = (p) => (p?.tipo_pagamento_id
+    ? p.tipo_pagamento_id === tipo.id
+    : mesmoNome(p?.nome, tipo.nome));
+  // SOMA as linhas que casam, como o servidor: parar na primeira deixava
+  // metade do dinheiro de fora quando a reconciliação traz o mesmo meio em
+  // duas linhas.
   const centimos = (v) => Math.round(Number(v || 0) * 100);
+  const disponivel = (pagamentos || []).filter(casa)
+    .reduce((soma, p) => soma + centimos(p?.disponivel), 0) / 100;
   const excesso = centimos(total) - centimos(disponivel);
   if (excesso <= 0) return null;
   const meio = tipo.nome || 'este meio';

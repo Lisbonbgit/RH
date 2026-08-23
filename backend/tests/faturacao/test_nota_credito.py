@@ -1747,7 +1747,12 @@ def test_uma_devolucao_que_CABE_no_meio_nao_marca_nada(monkeypatch):
 
 def test_devolver_por_um_meio_que_a_fatura_NUNCA_usou_marca_o_valor_TODO():
     pagamentos = nc_mod.pagamentos_da_fatura(_venda_mista(), [])
-    assert nc_mod.acima_do_recebido(pagamentos, "tipo-mb", 9.85) == 9.85
+    # O TIPO inteiro (id + nome), e não só o id: o emparelhamento precisa do
+    # nome para as faturas cujo pagamento não tem id nenhum — ver
+    # `nota_credito._e_o_mesmo_meio` e
+    # `test_o_pagamento_sem_id_emparelha_pelo_nome.py`.
+    assert nc_mod.acima_do_recebido(
+        pagamentos, {"id": "tipo-mb", "nome": "Multibanco"}, 9.85) == 9.85
 
 
 def test_um_TECTO_por_meio_de_pagamento_fechava_a_porta_sem_abrir_outra():
@@ -1771,7 +1776,8 @@ def test_um_TECTO_por_meio_de_pagamento_fechava_a_porta_sem_abrir_outra():
     pagamentos = nc_mod.pagamentos_da_fatura(venda, [])
     devolucao = 10.20
     assert all(
-        nc_mod.acima_do_recebido(pagamentos, p["tipo_pagamento_id"], devolucao) > 0
+        nc_mod.acima_do_recebido(pagamentos, {"id": p["tipo_pagamento_id"],
+                                              "nome": p["nome"]}, devolucao) > 0
         for p in pagamentos
     )
 

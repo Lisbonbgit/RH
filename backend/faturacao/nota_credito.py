@@ -407,21 +407,64 @@ def pagamentos_da_fatura(venda: Optional[Dict], notas: List[Dict]) -> List[Dict]
     return saida
 
 
+def _e_o_mesmo_meio(linha: Dict, tipo: Optional[Dict]) -> bool:
+    """**A linha de pagamento da fatura e o tipo escolhido são o mesmo meio?**
+
+    A regra é a da chave de `pagamentos_da_fatura` aqui em cima
+    (`tipo_pagamento_id or nome`), dita uma vez para não haver duas:
+
+    - a linha COM id casa pelo ID, e só por ele — dois tipos de pagamento
+      diferentes podem partilhar o nome, e o id é a resposta exacta;
+    - a linha SEM id casa pelo NOME, porque não há mais nada com que a casar.
+
+    **Sem a segunda metade, uma devolução perfeitamente coberta acendia os
+    dois avisos.** Medido: fatura paga `{nome: Dinheiro, tipo_fiscal: NU,
+    valor: 20,40}` **sem `tipo_pagamento_id`** (um documento gravado por uma
+    versão anterior, ou trazido do Vendus por uma reconciliação); devolver
+    10,20 € em dinheiro dava `acima_do_recebido = 10,20` — a devolução inteira
+    gravada no documento fiscal como descoberta, lida depois pelo Ponto de
+    Caixa e pelo Z (`caixa_math.devolucoes_acima_do_recebido`) — e o ecrã
+    pintava a caixa vermelha antes do toque. `pagamentos_da_fatura` e
+    `caixa_math.por_tipo_de_pagamento` já se defendiam deste caso pela chave;
+    quem emparelhava depois é que não.
+
+    O nome compara-se APARADO e sem distinguir maiúsculas: um " dinheiro " que
+    veio do Vendus com um espaço a mais é o mesmo meio, e o contrário mandava a
+    operadora justificar uma devolução coberta por causa de um espaço. Duas
+    ausências não fazem uma identidade — uma linha sem id e sem nome não casa
+    com nada."""
+    id_da_linha = linha.get("tipo_pagamento_id")
+    if id_da_linha:
+        return id_da_linha == (tipo or {}).get("id")
+    nome_da_linha = (linha.get("nome") or "").strip().casefold()
+    nome_do_tipo = ((tipo or {}).get("nome") or "").strip().casefold()
+    return bool(nome_da_linha) and nome_da_linha == nome_do_tipo
+
+
 def acima_do_recebido(
-    pagamentos: List[Dict], tipo_pagamento_id: str, total: float
+    pagamentos: List[Dict], tipo: Optional[Dict], total: float
 ) -> float:
     """Quanto desta devolução passa o que a fatura ainda tem naquele meio —
     `0.0` no caso normal.
+
+    `tipo` é o tipo de pagamento ESCOLHIDO (o documento de
+    `fat_tipos_pagamento`: `{id, nome, tipo_fiscal}`), e não só o id — o
+    emparelhamento precisa do nome para as faturas cujo pagamento não tem id
+    nenhum. Ver `_e_o_mesmo_meio`.
 
     Em cêntimos inteiros e do lado do servidor, como tudo o que é dinheiro
     neste módulo. Um meio que a fatura não usou dá `disponivel` zero, e a
     devolução inteira fica acima do recebido — que é exactamente o que ela
     é."""
-    disponivel = 0
-    for linha in pagamentos or []:
-        if linha.get("tipo_pagamento_id") == tipo_pagamento_id:
-            disponivel = _centimos(linha.get("disponivel"))
-            break
+    # SOMA as linhas que casam, em vez de parar na primeira: `Dinheiro` e
+    # ` dinheiro ` chegam de uma reconciliação como duas linhas (a chave de
+    # `pagamentos_da_fatura` agrupa pelo nome tal e qual), e parar na primeira
+    # deixava metade do dinheiro recebido de fora da conta.
+    disponivel = sum(
+        _centimos(linha.get("disponivel"))
+        for linha in pagamentos or []
+        if _e_o_mesmo_meio(linha, tipo)
+    )
     return max(0, _centimos(total) - disponivel) / 100.0
 
 
@@ -1267,8 +1310,12 @@ async def emitir_nota_credito(
             # `pagamentos_da_fatura` para o porquê): é o facto gravado, para
             # o gestor o encontrar depois em vez de encontrar uma gaveta
             # abaixo do fundo sem explicação nenhuma.
+            # O TIPO inteiro, e não só o `id`: uma fatura cujo pagamento não
+            # tem `tipo_pagamento_id` só se emparelha pelo NOME, e passar aqui
+            # o id sozinho dava 10,20 € de devolução coberta gravados como
+            # descobertos (ver `_e_o_mesmo_meio`).
             "acima_do_recebido": acima_do_recebido(
-                pagamentos_da_fatura(venda, notas), tipo["id"], total),
+                pagamentos_da_fatura(venda, notas), tipo, total),
         },
         "ext_ref": ext_ref_da_intencao(
             operador["loja_id"], sessao["id"], dados.intencao_id),
