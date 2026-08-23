@@ -82,7 +82,7 @@ _COMPONENTES = "\n".join([
 
 _LINHA_ACAI = {
     "indice": 1, "titulo": "Açaí Regular", "tax_id": "INT",
-    "quantidade": 2, "creditado": 0, "disponivel": 2,
+    "quantidade": 2, "creditado": 0, "disponivel": 2, "por_apurar": 0,
     "preco_unitario": 9.85, "desconto_percentagem": None, "total": 19.70,
 }
 # Uma linha JÁ CREDITADA POR INTEIRO numa nota anterior: fica na lista (some-la
@@ -90,9 +90,12 @@ _LINHA_ACAI = {
 # a fatura não era aquela), mas morta.
 _LINHA_COLA = {
     "indice": 2, "titulo": "Coca-Cola", "tax_id": "NOR",
-    "quantidade": 1, "creditado": 1, "disponivel": 0,
+    "quantidade": 1, "creditado": 1, "disponivel": 0, "por_apurar": 0,
     "preco_unitario": 1.15, "desconto_percentagem": None, "total": 1.15,
 }
+# A MESMA linha morta, mas travada por uma nota que ficou PRESA: nada foi
+# creditado, ninguém sabe se o documento saiu, e quem a destranca é o gestor.
+_LINHA_COLA_PRESA = dict(_LINHA_COLA, creditado=1, por_apurar=1)
 
 _PREPARACAO = {
     "documento": {
@@ -124,6 +127,17 @@ _TIPOS = [
 
 _RESUMO_9_85 = {
     "linhas": [], "subtotal": 8.72, "total": 9.85,
+    "mapa_imposto": [{"tax_id": "INT", "taxa": 13, "documentos": 1,
+                      "base": 8.72, "iva": 1.13, "total": 9.85}],
+    "totais_imposto": {"base": 8.72, "iva": 1.13, "total": 9.85},
+}
+# **O TOTAL que o browser NÃO consegue inventar.** O subtotal é 8,72, a linha
+# do mapa soma 9,85, e a linha da fatura que está marcada vale 19,70 — o
+# `total` é 10,20, que não é nenhum deles. É o instrumento do guarda do TOTAL:
+# qualquer soma feita no browser (as linhas escolhidas, as linhas do mapa, o
+# subtotal) dá outro número, e o ecrã tem de mostrar exactamente este.
+_RESUMO_SO_DO_SERVIDOR = {
+    "linhas": [], "subtotal": 8.72, "total": 10.20,
     "mapa_imposto": [{"tax_id": "INT", "taxa": 13, "documentos": 1,
                       "base": 8.72, "iva": 1.13, "total": 9.85}],
     "totais_imposto": {"base": 8.72, "iva": 1.13, "total": 9.85},
@@ -205,6 +219,7 @@ _GUIAO = "\n".join([
     "const TIPOS = %s;" % _j(_TIPOS),
     "const RESUMO = %s;" % _j(_RESUMO_9_85),
     "const RESUMO_ZERO = %s;" % _j(_RESUMO_ZERO),
+    "const RESUMO_SO_DO_SERVIDOR = %s;" % _j(_RESUMO_SO_DO_SERVIDOR),
     "const EMITIDA = %s;" % _j(_EMITIDA),
     "const BASE = {",
     "  'GET /pos/documentos/doc-1/nota-credito': () => ({ data: PREPARACAO }),",
@@ -357,6 +372,17 @@ _GUIAO = "\n".join([
     "  await ecra.fechar();",
     "}",
     "",
+    # --- 6-B) a mesma linha morta, mas por uma nota PRESA -------------------
+    "{",
+    "  const presa = Object.assign({}, PREPARACAO, {",
+    "    linhas: [%s, %s] });" % (_j(_LINHA_ACAI), _j(_LINHA_COLA_PRESA)),
+    "  const ecra = await abrir(comBase({",
+    "    'GET /pos/documentos/doc-1/nota-credito': () => ({ data: presa }),",
+    "  }));",
+    "  saida.por_apurar = ecra.ver();",
+    "  await ecra.fechar();",
+    "}",
+    "",
     # --- 7) a nota emitida ---------------------------------------------------
     "async function emitir(resposta) {",
     "  const ecra = await abrir(comBase({",
@@ -385,6 +411,25 @@ _GUIAO = "\n".join([
     "    '/pos/documentos/doc-1/nota-credito/pre-visualizar': () => ({ data: RESUMO_ZERO }),",
     "  }));",
     "  saida.dinheiro_do_servidor_zero = ecra.ver();",
+    "  await ecra.fechar();",
+    "}",
+    "",
+    # --- 9) o TOTAL grande, o número que decide o toque em EMITIR ----------
+    "{",
+    "  const ecra = await abrir(comBase({",
+    "    '/pos/documentos/doc-1/nota-credito/pre-visualizar':",
+    "      () => ({ data: RESUMO_SO_DO_SERVIDOR }),",
+    "  }));",
+    "  await act(async () => {",
+    "    porRotulo(ecra.alvo, 'Creditar Açaí Regular').click();",
+    "  });",
+    "  await act(async () => {});",
+    "  saida.total_grande = {",
+    # O nó do TOTAL, lido pelo que se VÊ dentro dele — não o `textContent` do
+    # ecrã inteiro, onde qualquer «10,20» de outra linha passava por este.
+    "    no_ecra: textoVisivel(ecra.alvo.querySelector('[data-testid=\"nc-total\"]')),",
+    "    visivel: ecra.ver(),",
+    "  };",
     "  await ecra.fechar();",
     "}",
     "",
@@ -562,6 +607,25 @@ def test_a_linha_que_AINDA_DA_continua_viva(ecra):
     assert ecra["pronto"]["desligado"] == "nao"
 
 
+def test_uma_linha_travada_por_uma_nota_PRESA_nao_diz_que_ja_foi_creditada(ecra):
+    """**A frase que mentia.** Uma intenção que reservou e ficou pendurada não
+    creditou nada — e a linha morta dizia «Já creditado por inteiro numa nota
+    anterior», que manda a operadora concluir que o cliente já cá veio. São
+    duas conversas diferentes: uma é com o cliente, a outra é com o gestor."""
+    visivel = ecra["por_apurar"]
+    assert "Já creditado por inteiro" not in visivel
+    assert (
+        "Preso numa nota de crédito por apurar — ninguém sabe se ela saiu. "
+        "Chame o gestor." in visivel
+    )
+
+
+def test_a_linha_creditada_por_uma_nota_que_SAIU_continua_a_dizer_ja_creditado(ecra):
+    """O controlo: quando a nota anterior saiu mesmo, a frase é a de sempre."""
+    assert "Já creditado por inteiro numa nota anterior." in ecra["ja_creditada"]["visivel"]
+    assert "Chame o gestor" not in ecra["ja_creditada"]["visivel"]
+
+
 def test_as_NOTAS_ANTERIORES_desta_fatura_estao_a_vista(ecra):
     """A operadora tem de saber que o cliente já cá veio, e com que documento
     — senão credita a fatura outra vez e leva com a recusa do servidor sem
@@ -611,6 +675,33 @@ def test_o_TOTAL_do_ecra_e_o_que_o_SERVIDOR_somou(ecra):
         "crédito entregue à Autoridade Tributária."
         in ecra["pronto"]["visivel"]
     )
+
+
+def test_o_TOTAL_GRANDE_e_o_do_SERVIDOR_e_nao_uma_soma_deste_ecra(ecra):
+    """**O número de euros que a operadora lê antes de carregar em EMITIR**, e
+    o único deste ecrã que não tinha guarda nenhum: trocá-lo por uma soma
+    feita no browser deixava a suite inteira verde.
+
+    O instrumento é um resumo em que o total do servidor (10,20 €) não é
+    nenhuma das somas que o browser podia fazer — nem a linha marcada
+    (19,70 €), nem a linha do mapa (9,85 €), nem o subtotal (8,72 €). O que
+    aparece no rectângulo âmbar tem de ser o do servidor, e mais nenhum.
+
+    Vale o que custou saber: um browser a somar euros ao lado de um servidor a
+    somar cêntimos é a divergência garantida — e aqui ela sai num documento
+    fiscal REAL entregue à Autoridade Tributária, com a gaveta aberta pelo
+    número errado."""
+    assert ecra["total_grande"]["no_ecra"] == "Total € 10,20"
+    # E nenhuma das somas do browser aparece onde o total se lê.
+    assert "19,70" not in ecra["total_grande"]["no_ecra"]
+    assert "8,72" not in ecra["total_grande"]["no_ecra"]
+
+
+def test_o_TOTAL_GRANDE_e_MESMO_o_que_se_ve_e_nao_so_o_que_esta_no_DOM(ecra):
+    """O controlo do de cima contra o modo de falhar deste módulo: uma classe
+    (`flex` → `hidden`) apaga um bloco inteiro do balcão sem mexer numa
+    palavra do ficheiro. O total tem de estar no que a operadora LÊ."""
+    assert "Total € 10,20" in ecra["total_grande"]["visivel"]
 
 
 def test_o_MAPA_DE_IMPOSTO_das_linhas_escolhidas_vem_do_servidor(ecra):

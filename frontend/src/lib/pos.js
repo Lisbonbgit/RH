@@ -625,6 +625,27 @@ export const haPagamentosPorRegistar = (resumo) =>
   && Number.isFinite(resumo.pagamentos_por_registar)
   && resumo.pagamentos_por_registar !== 0;
 
+// **A GAVETA ABAIXO DO FUNDO.** Um turno só pode tirar da gaveta o que lá pôs:
+// se o que deve estar na gaveta cair abaixo do fundo de maneio que entrou de
+// manhã, saiu dinheiro que aquele turno nunca recebeu. Medido no servidor:
+// fatura de 24,14 € paga 5,00 em dinheiro + 19,14 em Multibanco, açaí de
+// 20,40 € devolvido em DINHEIRO → esperado 34,60 € com fundo de 50,00. A
+// operadora contava a gaveta, encontrava 34,60 €, batia certo — e tinham
+// saído 15,40 € que aquele turno não pôs lá.
+//
+// Os dois números vêm SOMADOS do servidor (`gaveta_abaixo_do_fundo` e
+// `devolucoes_acima_do_recebido`, em `caixa_math`): este ecrã não subtrai
+// euros para descobrir se há um aviso — comparar `fundo` com `esperado` aqui
+// era uma segunda aritmética de dinheiro no browser, e a regra da casa é que
+// não há nenhuma.
+//
+// `> 0` e não a verdade genérica, pela mesma razão do `haPagamentosPorRegistar`
+// aqui em cima: zero é o caso normal e não desenha aviso nenhum.
+export const gavetaAbaixoDoFundo = (resumo) =>
+  typeof resumo?.gaveta_abaixo_do_fundo === 'number'
+  && Number.isFinite(resumo.gaveta_abaixo_do_fundo)
+  && resumo.gaveta_abaixo_do_fundo > 0;
+
 // --- A conta repartida, vista de fora ----------------------------------------
 //
 // Duas perguntas que o PosVenda faz em quatro sítios — a nota do painel do
@@ -1130,6 +1151,24 @@ export const linhasDaNotaPos = (linhas, escolhas) =>
 // concluía que a fatura não era aquela) mas com a caixa morta e o porquê à
 // vista.
 export const linhaDaNotaCreditavel = (linha) => Number(linha?.disponivel || 0) > 0;
+
+// **E o PORQUÊ da linha morta não pode mentir.** «Já creditado» e «por apurar»
+// são coisas diferentes e mandam chamar pessoas diferentes: a primeira é uma
+// nota que SAIU (o cliente já cá veio), a segunda é uma nota que reservou e
+// ficou pendurada — pode não ter creditado nada, e quem a destranca é o
+// gestor, no backoffice. O servidor manda `por_apurar` por linha; sem esta
+// distinção, uma fatura travada por uma nota presa dizia à operadora que o
+// artigo «já foi creditado» quando não tinha sido creditado nada.
+export const MSG_LINHA_JA_CREDITADA = 'Já creditado por inteiro numa nota anterior.';
+export const MSG_LINHA_POR_APURAR =
+  'Preso numa nota de crédito por apurar — ninguém sabe se ela saiu. Chame o gestor.';
+
+export const razaoDeLinhaMortaPos = (linha) => {
+  if (linhaDaNotaCreditavel(linha)) return null;
+  return Number(linha?.por_apurar || 0) > 0
+    ? MSG_LINHA_POR_APURAR
+    : MSG_LINHA_JA_CREDITADA;
+};
 
 export const MSG_NC_SEM_LINHAS =
   'Marque os artigos que vai devolver — e a quantidade de cada um.';

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   getReservasPresas, reconciliarReserva, libertarReserva, getLojas, detalhesErro,
   getContasEsquecidas, arrumarContaEsquecida,
+  getNotasCreditoPresas, libertarNotaCreditoPresa, marcarNotaCreditoPorApurar,
 } from '../../../lib/faturacao';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
@@ -18,7 +19,7 @@ import {
 } from '../../../components/ui/alert-dialog';
 import {
   ShieldAlert, RefreshCw, Copy, Check, CheckCircle2, AlertTriangle, Clock,
-  FileSearch, Unlock, Store, Loader2, Wallet, Ban,
+  FileSearch, Unlock, Store, Loader2, Wallet, Ban, FileMinus, HelpCircle,
 } from 'lucide-react';
 import PageHeader from '../../../components/PageHeader';
 import { toast } from 'sonner';
@@ -249,6 +250,17 @@ export default function FatReservasPresas() {
   // emergência das reservas presas é a razão de ser deste ecrã e não pode
   // ficar inacessível porque a segunda pergunta falhou — a mesma regra que
   // este ficheiro já aplica às lojas.
+  // As NOTAS DE CRÉDITO presas. Estado PRÓPRIO e chamada à parte, pela mesma
+  // regra que este ficheiro já aplica às lojas e às contas esquecidas: a lista
+  // das reservas fiscais é a razão de ser deste ecrã e não pode ficar
+  // inacessível porque a terceira pergunta falhou.
+  const [notasPresas, setNotasPresas] = useState([]);
+  const [erroNotasPresas, setErroNotasPresas] = useState(null);
+  const [alvoNotaLibertar, setAlvoNotaLibertar] = useState(null);
+  const [confirmouNotaNoVendus, setConfirmouNotaNoVendus] = useState(false);
+  const [notaDeLibertarNota, setNotaDeLibertarNota] = useState('');
+  const [aMexerNaNota, setAMexerNaNota] = useState(null);
+
   const [esquecidas, setEsquecidas] = useState([]);
   const [erroEsquecidas, setErroEsquecidas] = useState(null);
   const [alvoArrumar, setAlvoArrumar] = useState(null);
@@ -279,6 +291,20 @@ export default function FatReservasPresas() {
       setLojasPorId(Object.fromEntries((data || []).map((l) => [l.id, l])));
     } catch (error) {
       setLojasPorId({});
+    }
+    // As notas de crédito presas — a MESMA pergunta para o outro documento, e
+    // à parte pela mesma razão. Se falhar, diz-se que não se sabe: uma lista
+    // vazia aqui lia-se como "não há nenhuma presa" e mandava o gestor
+    // procurar o problema noutro sítio, com a caixa da loja na mesma trancada.
+    try {
+      const { data } = await getNotasCreditoPresas();
+      setNotasPresas(Array.isArray(data) ? data : []);
+      setErroNotasPresas(null);
+    } catch (error) {
+      const { mensagem } = detalhesErro(
+        error, 'Não foi possível carregar as notas de crédito presas.');
+      setErroNotasPresas(mensagem);
+      setNotasPresas([]);
     }
     // E as contas por cobrar de turnos fechados, também à parte e pela mesma
     // razão. Se falhar, diz-se que não se sabe — nunca se desenha uma lista
@@ -320,6 +346,70 @@ export default function FatReservasPresas() {
       await carregar();
     } finally {
       setAArrumar(false);
+    }
+  };
+
+  // --- As duas saídas de uma NOTA DE CRÉDITO presa --------------------------
+  //
+  // POR APURAR não pede confirmação nenhuma (é a direcção que nunca faz
+  // estrago) e LIBERTAR pede-a com todas as letras — o mesmo desenho do
+  // LIBERTAR das reservas fiscais aqui em cima, e pela mesma razão de fundo:
+  // libertar uma nota que SAIU autoriza uma segunda nota de crédito real da
+  // mesma devolução.
+  const executarNotaPorApurar = async (nota) => {
+    setAMexerNaNota(nota.id);
+    try {
+      const { data } = await marcarNotaCreditoPorApurar(nota.id, null);
+      setResultado({
+        tipo: 'sucesso',
+        titulo: 'Nota de crédito marcada por apurar',
+        blocos: [{ tom: 'aviso', titulo: 'O que ficou a valer', texto: data.a_seguir }],
+        repetir: null,
+      });
+      toast.success('Nota marcada por apurar — o fecho desta caixa já não a espera');
+      await carregar();
+    } catch (error) {
+      // Nenhuma das recusas desta rota se resolve repetindo: ou a nota mudou
+      // de estado, ou ela pode estar a falar com o Vendus neste instante.
+      mostrarErro(error, 'Não foi possível marcar esta nota por apurar.', null);
+      await carregar();
+    } finally {
+      setAMexerNaNota(null);
+    }
+  };
+
+  const executarLibertarNota = async () => {
+    const nota = alvoNotaLibertar;
+    // Cinto e suspensórios, como no LIBERTAR de cima: `confirmado_no_vendus`
+    // NUNCA sai daqui a `true` por outra via que não seja o gestor ter
+    // carimbado a caixa. Um `true` fixo transformava o 422 do servidor — a
+    // última rede — em decoração.
+    if (!confirmouNotaNoVendus) return;
+    setAMexerNaNota(nota.id);
+    try {
+      const { data } = await libertarNotaCreditoPresa(
+        nota.id, true, notaDeLibertarNota.trim());
+      setAlvoNotaLibertar(null);
+      setResultado({
+        tipo: 'sucesso',
+        titulo: 'Nota de crédito libertada',
+        blocos: [
+          { tom: 'aviso', titulo: 'O que declarou', texto: data.o_que_confirmou },
+          { tom: 'neutro', titulo: 'O que se segue', texto: data.a_seguir },
+        ],
+        repetir: null,
+      });
+      toast.success('Intenção apagada — a fatura volta a deixar creditar estas linhas');
+      await carregar();
+    } catch (error) {
+      // Sem "tentar outra vez", em caso nenhum: se falhou, o mundo pode ter
+      // mudado debaixo da declaração que o gestor acabou de assinar (a nota
+      // pode ter saído entretanto). Recarregar e voltar a decidir.
+      mostrarErro(error, 'Não foi possível libertar esta nota de crédito.', null);
+      setAlvoNotaLibertar(null);
+      await carregar();
+    } finally {
+      setAMexerNaNota(null);
     }
   };
 
@@ -557,7 +647,7 @@ export default function FatReservasPresas() {
       <PageHeader
         icon={ShieldAlert}
         title="Reservas Fiscais Presas"
-        subtitle="O que ficou pendurado: emissões a meio, e contas por cobrar de turnos já fechados"
+        subtitle="O que ficou pendurado: emissões a meio, notas de crédito por confirmar, e contas por cobrar de turnos já fechados"
       >
         <Button variant="outline" onClick={carregar} disabled={loading} data-testid="atualizar-reservas-btn">
           <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
@@ -754,6 +844,195 @@ export default function FatReservasPresas() {
                 );
               })}
             </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* --- NOTAS DE CRÉDITO PRESAS -----------------------------------------
+          **O ecrã que a mensagem do fecho já prometia, e que não existia.**
+          `caixa.py::_MSG_FECHO_COM_NOTA_DE_CREDITO_EM_CURSO` manda o gestor
+          «à lista de notas de crédito presas do backoffice»; as três rotas
+          existiam desde o primeiro dia (`nota_credito.py`), as guardas delas
+          seguravam, e não havia cliente nenhum em todo o repositório. Com UM
+          PC por loja, a única saída era um POST à mão com um JWT.
+
+          **Porque é que é um card AQUI, e não um ecrã irmão.** É o mesmo
+          género de problema das reservas fiscais presas — ficou a meio, não
+          se resolve sozinho, e alguém tem de ir perguntar ao Vendus —, é o
+          ecrã a que o gestor JÁ vem quando a loja telefona a dizer que a
+          caixa não fecha, e sobretudo **as duas listas cruzam-se**: o mesmo
+          turno pode estar trancado pelas duas ao mesmo tempo. Em páginas
+          diferentes, ele resolve uma, tenta fechar, leva outro 409, e vai à
+          procura da segunda. Lado a lado, leem-se como UMA resposta à
+          pergunta «porque é que esta caixa não fecha?». É o mesmo argumento
+          que já pôs aqui o card das contas por cobrar, escrito lá em baixo.
+
+          Fica ANTES desse: uma nota presa tranca o fecho de HOJE, e uma conta
+          esquecida é de um turno que já fechou. */}
+      <Card data-testid="notas-credito-presas-card">
+        <CardContent className="p-5 space-y-4">
+          <div className="flex items-center gap-2">
+            <FileMinus className="h-5 w-5 text-muted-foreground shrink-0" />
+            <h3 className="font-semibold">
+              Notas de Crédito Presas
+              {notasPresas.length > 0 ? ` (${notasPresas.length})` : ''}
+            </h3>
+          </div>
+
+          {erroNotasPresas ? (
+            /* Nunca uma lista vazia quando a pergunta falhou: aqui isso lia-se
+               como «não há nenhuma presa», e mandava o gestor procurar o
+               problema noutro sítio com a caixa na mesma trancada. */
+            <Bloco tom="aviso" titulo="Não foi possível carregar esta lista" testid="notas-presas-erro">
+              <p>{erroNotasPresas}</p>
+            </Bloco>
+          ) : notasPresas.length === 0 ? (
+            <p className="text-sm text-muted-foreground" data-testid="notas-presas-vazio">
+              Nenhuma nota de crédito presa. É assim que deve estar: todas as
+              devoluções fecharam a emissão. Esta lista ganha linhas quando uma
+              nota de crédito reserva e o processo morre antes de gravar o
+              documento — um reinício do servidor, um deploy a meio de uma
+              devolução. Enquanto houver uma, a caixa dessa loja NÃO FECHA.
+            </p>
+          ) : (
+            <>
+              <p className="text-sm text-muted-foreground" data-testid="notas-presas-resumo">
+                {plural(notasPresas.length, 'nota de crédito reservou', 'notas de crédito reservaram')}
+                {' '}e não se sabe se chegou a sair para a Autoridade Tributária.
+                Enquanto estiverem assim, o fecho da caixa dessas lojas é recusado.
+                Procure a referência externa no Vendus e escolha a saída que o que
+                lá encontrar mandar.
+              </p>
+
+              <div className="space-y-3">
+                {notasPresas.map((n) => {
+                  const emVoo = !!n.emissao_talvez_a_decorrer;
+                  const aMexer = aMexerNaNota === n.id;
+                  return (
+                    <div
+                      key={n.id}
+                      className={`rounded-xl border p-4 space-y-3 ${emVoo ? 'bg-muted/30' : 'bg-card'}`}
+                      data-testid={`nota-presa-${n.id}`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+                          <span className="flex items-center gap-1.5 font-semibold">
+                            <Store className="h-4 w-4 text-muted-foreground shrink-0" />
+                            {nomeLoja(n)}
+                          </span>
+                          <span className="text-lg font-bold" data-testid={`nota-presa-total-${n.id}`}>
+                            {fmtEUR(n.total) || (
+                              <span className="text-base font-medium text-muted-foreground">
+                                valor indisponível
+                              </span>
+                            )}
+                          </span>
+                          {/* O meio por onde o dinheiro ia voltar. Decide se
+                              há ou não dinheiro em falta na gaveta enquanto
+                              isto não se resolve — e é a primeira pergunta de
+                              quem está do outro lado do telefone. */}
+                          {n.devolucao?.nome && (
+                            <Badge
+                              variant="outline"
+                              className={n.devolucao.tipo_fiscal === 'NU'
+                                ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                : 'bg-muted text-muted-foreground border-border'}
+                              data-testid={`nota-presa-meio-${n.id}`}
+                            >
+                              Devolução em {n.devolucao.nome}
+                            </Badge>
+                          )}
+                        </div>
+                        <span className="flex items-center gap-1.5 text-sm text-muted-foreground shrink-0" data-testid={`nota-presa-idade-${n.id}`}>
+                          <Clock className="h-3.5 w-3.5" />
+                          {duracaoHumana(n.presa_ha_segundos)
+                            ? `presa há ${duracaoHumana(n.presa_ha_segundos)}`
+                            : 'há quanto tempo, não se sabe'}
+                        </span>
+                      </div>
+
+                      <p className="text-sm">
+                        Nota de crédito da fatura{' '}
+                        <span className="font-medium">{n.numero_origem || '—'}</span>
+                        {n.motivo ? ` — ${n.motivo}` : ''}
+                      </p>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs uppercase tracking-wide text-muted-foreground">Referência no Vendus</span>
+                        <code className="rounded bg-muted px-2 py-1 text-xs font-mono select-all" data-testid={`nota-presa-extref-${n.id}`}>
+                          {n.ext_ref || '— (nota sem referência)'}
+                        </code>
+                        {n.ext_ref && <BotaoCopiar valor={n.ext_ref} testid={`copiar-extref-nota-${n.id}`} />}
+                      </div>
+
+                      <p className="text-xs text-muted-foreground">
+                        Devolução {n.id}
+                        {n.operador?.nome ? ` · operadora ${n.operador.nome}` : ''}
+                        {n.caixa_id ? ` · caixa ${n.caixa_id}` : ''}
+                        {n.sessao_id ? ` · turno ${n.sessao_id}` : ''}
+                        {formatarData(n.criada_em) ? ` · reservada a ${formatarData(n.criada_em)}` : ''}
+                      </p>
+
+                      {/* As saídas, ditas pelo SERVIDOR — é lá que elas são
+                          decididas, e uma segunda cópia aqui divergia dela. */}
+                      <Bloco tom="neutro" testid={`nota-presa-saidas-${n.id}`}>
+                        <p>{n.saidas}</p>
+                      </Bloco>
+
+                      {emVoo ? (
+                        /* Quem decide é o SERVIDOR (`emissao_talvez_a_decorrer`),
+                           nunca o relógio do browser: as duas rotas recusam-na
+                           com 409, e um ecrã que a convidasse ao toque era um
+                           ecrã a mentir. */
+                        <Bloco tom="neutro" titulo="Não é para mexer" testid={`nota-presa-em-voo-${n.id}`}>
+                          <p>
+                            Esta nota reservou agora mesmo e pode estar a falar com o
+                            Vendus neste instante. Volte a esta lista dentro de alguns
+                            minutos e carregue em <span className="font-medium">Atualizar</span>.
+                          </p>
+                        </Bloco>
+                      ) : (
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          {/* A SEGURA primeiro e cheia, como o Reconciliar da
+                              lista de cima: é a que nunca pode fazer estrago,
+                              e por isso é a de menos passos — não pede
+                              confirmação nenhuma. */}
+                          <Button
+                            type="button"
+                            onClick={() => executarNotaPorApurar(n)}
+                            disabled={aMexer}
+                            data-testid={`nc-por-apurar-${n.id}`}
+                          >
+                            {aMexer
+                              ? <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                              : <HelpCircle className="h-4 w-4 mr-2" />}
+                            Marcar por apurar
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            onClick={() => {
+                              setConfirmouNotaNoVendus(false);
+                              setNotaDeLibertarNota('');
+                              setAlvoNotaLibertar(n);
+                            }}
+                            disabled={aMexer}
+                            data-testid={`nc-libertar-${n.id}`}
+                          >
+                            <Unlock className="h-4 w-4 mr-2" />
+                            Libertar a nota
+                          </Button>
+                          <span className="text-xs text-muted-foreground">
+                            Só liberte depois de ver, no Vendus, que ela não está lá.
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
@@ -1181,6 +1460,121 @@ export default function FatReservasPresas() {
             >
               {aLibertar ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Unlock className="h-4 w-4 mr-2" />}
               {aLibertar ? 'A libertar...' : 'Libertar reserva'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Libertar uma NOTA DE CRÉDITO presa — o mesmo desenho do LIBERTAR de
+          cima, e pela mesma família de razões. O que muda é o estrago: lá
+          autoriza-se uma segunda Fatura Simplificada da mesma venda, aqui uma
+          segunda NOTA DE CRÉDITO da mesma devolução — dois documentos
+          entregues à AT a devolver o mesmo dinheiro, e a gaveta descontada
+          duas vezes. */}
+      <Dialog
+        open={!!alvoNotaLibertar}
+        onOpenChange={(o) => { if (!o && !aMexerNaNota) setAlvoNotaLibertar(null); }}
+      >
+        <DialogContent data-testid="nc-libertar-dialog" className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="text-destructive">Libertar a nota de crédito presa</DialogTitle>
+            <DialogDescription>
+              {alvoNotaLibertar
+                ? `${nomeLoja(alvoNotaLibertar)} · ${fmtEUR(alvoNotaLibertar.total) || 'valor indisponível'} · fatura ${alvoNotaLibertar.numero_origem || '—'}`
+                : ''}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <Bloco tom="perigo" titulo="O que isto autoriza">
+              <p>
+                Libertar apaga a intenção: a fatura volta a deixar creditar aquelas
+                linhas. Se a nota de crédito JÁ saiu no Vendus, a próxima devolução
+                entrega à AT uma <span className="font-semibold">segunda nota de crédito real da
+                mesma devolução</span> — dois documentos a devolver o mesmo dinheiro,
+                e a gaveta descontada duas vezes.
+              </p>
+            </Bloco>
+
+            <div className="space-y-2">
+              <p className="text-sm font-semibold">Antes de continuar, no Vendus:</p>
+              <ol className="text-sm space-y-2 list-decimal list-inside">
+                <li>Abra o Vendus.</li>
+                <li className="space-y-1">
+                  <span>Procure esta referência externa:</span>
+                  <span className="flex flex-wrap items-center gap-2 mt-1">
+                    <code className="rounded bg-muted px-2 py-1 text-xs font-mono select-all" data-testid="nc-libertar-extref">
+                      {alvoNotaLibertar?.ext_ref}
+                    </code>
+                    {alvoNotaLibertar?.ext_ref && (
+                      <BotaoCopiar valor={alvoNotaLibertar.ext_ref} testid="copiar-extref-nc-libertar" />
+                    )}
+                  </span>
+                </li>
+                <li>
+                  Confirme que <span className="font-semibold">não existe lá nenhuma nota de
+                  crédito</span> com essa referência.
+                </li>
+              </ol>
+            </div>
+
+            <Bloco tom="neutro" titulo="Não tem a certeza?">
+              <p>
+                Use <span className="font-medium">Marcar por apurar</span>. A nota continua a
+                travar novo crédito destas linhas, continua a NÃO descontar a gaveta, e
+                deixa de travar o fecho da caixa — a loja fecha o turno hoje e isto
+                resolve-se com tempo. É a saída que nunca faz estrago.
+              </p>
+            </Bloco>
+
+            {/* A declaração. É ela — e só ela — que põe
+                `confirmado_no_vendus=true` no pedido. */}
+            <div className="flex items-start gap-3 rounded-lg border border-destructive/40 p-3">
+              <Checkbox
+                id="nc-confirmou-no-vendus"
+                checked={confirmouNotaNoVendus}
+                onCheckedChange={(v) => setConfirmouNotaNoVendus(v === true)}
+                className="mt-0.5 border-destructive data-[state=checked]:bg-destructive"
+                data-testid="nc-confirmou-no-vendus-checkbox"
+              />
+              <Label htmlFor="nc-confirmou-no-vendus" className="text-sm font-normal leading-relaxed cursor-pointer">
+                Declaro que abri o Vendus, procurei a referência{' '}
+                <span className="font-mono font-medium">{alvoNotaLibertar?.ext_ref}</span> e vi que
+                {' '}<span className="font-semibold">NÃO existe lá nenhuma nota de crédito com essa referência</span>.
+              </Label>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="nc-nota-libertar">Nota (opcional)</Label>
+              <Textarea
+                id="nc-nota-libertar"
+                value={notaDeLibertarNota}
+                onChange={(e) => setNotaDeLibertarNota(e.target.value)}
+                placeholder="O que viu no Vendus — fica no registo, com o seu nome."
+                maxLength={300}
+                data-testid="nc-nota-libertar-input"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setAlvoNotaLibertar(null)}
+              disabled={!!aMexerNaNota}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={executarLibertarNota}
+              disabled={!!aMexerNaNota || !confirmouNotaNoVendus}
+              data-testid="nc-libertar-confirmar"
+            >
+              {aMexerNaNota ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Unlock className="h-4 w-4 mr-2" />}
+              {aMexerNaNota ? 'A libertar...' : 'Libertar a nota'}
             </Button>
           </DialogFooter>
         </DialogContent>

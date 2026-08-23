@@ -1,5 +1,7 @@
 import React from 'react';
-import { eurosPos, haPagamentosPorRegistar, temTaxaDesconhecida } from '@/lib/pos';
+import {
+  eurosPos, haPagamentosPorRegistar, temTaxaDesconhecida, gavetaAbaixoDoFundo,
+} from '@/lib/pos';
 
 // Os números de um turno, desenhados uma única vez.
 //
@@ -91,6 +93,9 @@ export default function PosResumoDoTurno({ resumo }) {
   // ("9,03 + 1,17 contra 11,35") sem uma palavra que o explicasse.
   const comTaxaDesconhecida = temTaxaDesconhecida(mapa);
   const porRegistar = haPagamentosPorRegistar(resumo);
+  // **A gaveta abaixo do fundo** — a decisão vive em `lib/pos.js`, como todas
+  // as deste ecrã, e o número vem somado do servidor.
+  const abaixoDoFundo = gavetaAbaixoDoFundo(resumo);
 
   // **Um resumo ausente não se desenha como um turno de zeros.** Medido: com
   // `resumo` a `undefined` (o servidor não respondeu, o campo mudou de nome), o
@@ -121,6 +126,31 @@ export default function PosResumoDoTurno({ resumo }) {
           <LinhaValor label="Saídas" valor={`− ${euros(resumo?.saidas)}`} />
           <LinhaValor label="Deve estar na gaveta" valor={euros(resumo?.esperado)} destaque />
         </div>
+        {/* **O aviso que faltava, e é o que impede a gaveta de bater certo
+            estando errada.** Um esperado abaixo do fundo de maneio é uma
+            impossibilidade contabilística: um turno só pode tirar da gaveta o
+            que lá pôs. Medido no servidor — fatura de 24,14 € paga 5,00 em
+            dinheiro + 19,14 em Multibanco, açaí de 20,40 € devolvido em
+            DINHEIRO → o esperado caía de 50,00 para 34,60 €, e a operadora
+            contava 34,60 €, batia certo, e ia para casa.
+
+            E diz PORQUÊ, quando se sabe: `devolucoes_acima_do_recebido` é o
+            leitor do `acima_do_recebido` que a nota de crédito grava e que
+            até agora não era lido em lado nenhum. */}
+        {abaixoDoFundo && (
+          <p
+            className="text-xs text-amber-600 dark:text-amber-500 pt-1"
+            data-testid="gaveta-abaixo-do-fundo"
+          >
+            A gaveta deve fechar {euros(resumo.gaveta_abaixo_do_fundo)} ABAIXO do
+            fundo de maneio com que abriu.
+            {resumo.devolucoes_acima_do_recebido > 0
+              ? ` Saíram ${euros(resumo.devolucoes_acima_do_recebido)} em devoluções por um meio de pagamento que essas faturas não receberam.`
+              : ''}
+            {' '}Isto não é uma diferença de contagem — conte a gaveta na
+            mesma e mostre isto ao gestor.
+          </p>
+        )}
       </Seccao>
 
       <Seccao titulo="Por tipo de pagamento">

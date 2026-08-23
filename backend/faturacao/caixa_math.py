@@ -34,6 +34,51 @@ def esperado(fundo: float, vendas_dinheiro: float, movimentos: List[Dict]) -> fl
     return round(float(fundo or 0) + float(vendas_dinheiro or 0) + total_movimentos(movimentos), 2)
 
 
+def abaixo_do_fundo(fundo: float, esperado_valor: float) -> float:
+    """Quanto é que o que DEVE estar na gaveta ficou abaixo do fundo de maneio
+    que entrou de manhã — `0.00` no turno normal.
+
+    **Um esperado abaixo do fundo é uma impossibilidade contabilística que
+    este módulo deixava passar em silêncio.** Um turno só pode tirar da gaveta
+    o que lá pôs; se o esperado desce abaixo do fundo, saiu dinheiro que
+    aquele turno nunca lá meteu. Medido pelas rotas reais: fatura de 24,14 €
+    paga 5,00 em dinheiro + 19,14 em Multibanco, açaí de 20,40 € devolvido em
+    DINHEIRO → `vendas_dinheiro` **−15,40 €** e esperado **34,60 €** com fundo
+    de 50,00. A operadora conta a gaveta, encontra 34,60 €, bate certo — e
+    saíram 15,40 € que aquele turno não recebeu.
+
+    Não é uma recusa (uma devolução legítima tem de poder acontecer, e o
+    `nota_credito.pagamentos_da_fatura` explica porque é que recusar por meio
+    de pagamento fecha a porta sem abrir outra): é o NÚMERO, para ele aparecer
+    no Ponto de Caixa e no Z ao lado da gaveta, em vez de não aparecer em
+    lado nenhum. Em cêntimos inteiros, como todo o dinheiro da casa."""
+    return max(0, _centimos(fundo) - _centimos(esperado_valor)) / 100.0
+
+
+def devolucoes_acima_do_recebido(notas_credito: List[Dict] = None) -> float:
+    """**O leitor que faltava a `nota_credito.devolucao.acima_do_recebido`.**
+
+    Quanto é que as devoluções deste turno passaram o que as faturas delas
+    tinham recebido NAQUELE meio de pagamento — `0.00` no caso normal. É a
+    EXPLICAÇÃO da gaveta abaixo do fundo, e é por isso que anda ao lado dela:
+    sem este número, «faltam 15,40 €» é uma acusação, e com ele é uma frase.
+
+    O campo era gravado com o comentário «o gestor encontra isso depois» — e
+    um `grep` em todo o repositório dava só a escrita. Ele não encontrava:
+    não havia leitor nenhum, em ecrã nenhum.
+
+    Só as `emitida`, a mesma regra de `por_tipo_de_pagamento` e pela mesma
+    razão: uma nota por apurar não devolveu nada a ninguém."""
+    return round(
+        sum(
+            _centimos((nota.get("devolucao") or {}).get("acima_do_recebido"))
+            for nota in notas_credito or []
+            if nota.get("estado") == "emitida"
+        ) / 100.0,
+        2,
+    )
+
+
 def diferenca(esperado_valor: float, contado: float) -> float:
     """contado - esperado: positivo é sobra na gaveta, negativo é falta. É
     este número que a funcionária tem de explicar quando não bate — por

@@ -169,3 +169,75 @@ def test_soma_vendas_dinheiro_venda_sem_pagamentos_nao_rebenta():
     venda_sem_pagamentos = _venda()
     del venda_sem_pagamentos["pagamentos"]
     assert soma_vendas_dinheiro([venda_sem_pagamentos]) == 0.0
+
+
+# --- A GAVETA ABAIXO DO FUNDO, e o campo que ninguém lia -----------------------
+#
+# **`devolucao.acima_do_recebido` era um campo só de escrita.** Gravado em
+# `nota_credito.py` com o comentário «o gestor encontra isso depois» — e um
+# `grep` em todo o repositório dava só a escrita e os testes. Ninguém o lia,
+# em lado nenhum.
+#
+# Medido pelas rotas reais: fatura de 24,14 € paga **5,00 em dinheiro + 19,14
+# em Multibanco**, açaí de 20,40 € devolvido em **DINHEIRO** →
+# `vendas_dinheiro` **−15,40 €** e o esperado da gaveta **34,60 €** com fundo
+# de 50,00. **15,40 € abaixo do fundo**, e nenhum campo do resumo do turno o
+# dizia: nem o esperado abaixo do fundo, nem as vendas em dinheiro negativas.
+# A operadora conta a gaveta às 23h, encontra 34,60 € e bate certo — com
+# 15,40 € que aquele turno nunca lá pôs.
+
+from faturacao.caixa_math import abaixo_do_fundo, devolucoes_acima_do_recebido
+
+
+def _nota_devolvida(valor, acima=0.0, estado="emitida", tipo_fiscal="NU"):
+    return {
+        "estado": estado,
+        "devolucao": {"tipo_pagamento_id": "t-nu", "nome": "Dinheiro",
+                      "tipo_fiscal": tipo_fiscal, "valor": valor,
+                      "acima_do_recebido": acima},
+    }
+
+
+def test_abaixo_do_fundo_diz_quanto_falta_a_gaveta_para_o_fundo():
+    """50,00 de fundo, 34,60 esperado: **15,40 € abaixo**, que é exactamente o
+    que a devolução tirou da gaveta e a venda nunca lá pôs."""
+    assert abaixo_do_fundo(50.00, 34.60) == 15.40
+
+
+def test_abaixo_do_fundo_e_ZERO_num_turno_normal():
+    """O controlo: um aviso que estivesse sempre lá não era aviso nenhum."""
+    assert abaixo_do_fundo(50.00, 61.29) == 0.0
+    assert abaixo_do_fundo(50.00, 50.00) == 0.0
+
+
+def test_abaixo_do_fundo_conta_em_CENTIMOS_INTEIROS():
+    """0,29 + 1,15 + 10,20 em vírgula flutuante dá 11,639999999999999 — e este
+    número aparece a dizer a uma operadora que a gaveta está mal."""
+    assert abaixo_do_fundo(50.00, 50.00 - 11.64) == 11.64
+
+
+def test_devolucoes_acima_do_recebido_SOMA_o_campo_que_ninguem_lia():
+    """O leitor que faltava. Duas devoluções, 15,40 € e 0,29 € para lá do que
+    aquelas faturas receberam naqueles meios."""
+    notas = [_nota_devolvida(20.40, acima=15.40), _nota_devolvida(0.29, acima=0.29)]
+    assert devolucoes_acima_do_recebido(notas) == 15.69
+
+
+def test_devolucoes_acima_do_recebido_ignora_a_que_nao_saiu():
+    """Só a `emitida`, a mesma regra de `por_tipo_de_pagamento`: uma nota por
+    apurar não devolveu nada a ninguém e não pode explicar gaveta nenhuma."""
+    notas = [_nota_devolvida(20.40, acima=15.40, estado="incerta"),
+             _nota_devolvida(20.40, acima=15.40, estado="reservada")]
+    assert devolucoes_acima_do_recebido(notas) == 0.0
+
+
+def test_devolucoes_acima_do_recebido_e_ZERO_quando_cabe_tudo():
+    assert devolucoes_acima_do_recebido([_nota_devolvida(9.85)]) == 0.0
+    assert devolucoes_acima_do_recebido([]) == 0.0
+
+
+def test_uma_nota_gravada_ANTES_deste_campo_nao_rebenta_o_fecho():
+    """Defensivo, e é o caso real das notas já gravadas: sem o campo, soma
+    zero — nunca uma excepção no meio de um fecho de caixa."""
+    nota = {"estado": "emitida", "devolucao": {"valor": 9.85}}
+    assert devolucoes_acima_do_recebido([nota]) == 0.0

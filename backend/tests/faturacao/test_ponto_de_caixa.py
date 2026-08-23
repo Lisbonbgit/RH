@@ -487,3 +487,69 @@ def test_a_sessao_que_ficou_a_meio_de_um_fecho_ainda_se_confere(monkeypatch):
 
     ponto = _corre(ponto_de_caixa(caixa_id="caixa-1", operador=_operador()))
     assert ponto["esperado"] == 81.04
+
+
+# --- A GAVETA ABAIXO DO FUNDO -------------------------------------------------
+#
+# **`devolucao.acima_do_recebido` era um campo só de escrita** — gravado em
+# `nota_credito.py` com o comentário «o gestor encontra isso depois», e sem um
+# único leitor em todo o repositório. Medido pela função REAL do resumo:
+# fatura de 24,14 € paga 5,00 em dinheiro + 19,14 em Multibanco, açaí de
+# 20,40 € devolvido em DINHEIRO → `fundo=50,00 vendas_dinheiro=−15,40
+# esperado=34,60`. **15,40 € abaixo do fundo**, e o resumo do turno não tinha
+# nenhum campo que o dissesse: nem o esperado abaixo do fundo, nem as vendas
+# em dinheiro negativas.
+
+
+def _turno_com_devolucao_maior_do_que_a_gaveta():
+    venda = _venda(
+        "v-mista",
+        [_linha("Açaí Regular", 10.20, ACAI, quantidade=2),
+         _linha("Água", 0.29, ACAI),
+         _linha("Coca-Cola", 1.15, REFRI, quantidade=3)],
+        [_pagamento(valor=5.00),
+         _pagamento(tipo_pagamento_id="tipo-mb", nome="Multibanco",
+                    tipo_fiscal="CD", valor=19.14)],
+    )
+    nota = {
+        "estado": "emitida",
+        "linhas": [{"indice": 1, "titulo": "Açaí Regular", "tax_id": ACAI,
+                    "quantidade": 2, "preco_unitario": 10.20, "total": 20.40}],
+        "total": 20.40,
+        "devolucao": {"tipo_pagamento_id": "tipo-dinheiro", "nome": "Dinheiro",
+                      "tipo_fiscal": "NU", "valor": 20.40,
+                      "acima_do_recebido": 15.40},
+    }
+    return venda, nota
+
+
+def test_o_resumo_DIZ_quanto_a_gaveta_ficou_abaixo_do_fundo():
+    """O número que faltava, no MESMO sítio em que a gaveta se lê — o Ponto de
+    Caixa e o Z partilham este resumo, e é isso que impede a conferência das
+    15h de dizer uma coisa e o fecho das 23h outra."""
+    venda, nota = _turno_com_devolucao_maior_do_que_a_gaveta()
+    resumo = caixa_mod._resumo_do_turno({"id": "sessao-1", "fundo": 50.00}, [],
+                                        [venda], [nota])
+    assert resumo["vendas_dinheiro"] == -15.40
+    assert resumo["esperado"] == 34.60
+    assert resumo["gaveta_abaixo_do_fundo"] == 15.40
+
+
+def test_o_resumo_DIZ_tambem_PORQUE_e_que_ela_ficou_abaixo():
+    """O leitor de `acima_do_recebido`, e é ele que faz a diferença entre uma
+    acusação («faltam 15,40 €») e uma frase («devolveram-se 15,40 € em
+    dinheiro que estas faturas não receberam em dinheiro»)."""
+    venda, nota = _turno_com_devolucao_maior_do_que_a_gaveta()
+    resumo = caixa_mod._resumo_do_turno({"id": "sessao-1", "fundo": 50.00}, [],
+                                        [venda], [nota])
+    assert resumo["devolucoes_acima_do_recebido"] == 15.40
+
+
+def test_num_turno_NORMAL_os_dois_numeros_sao_ZERO_e_nao_desaparecem():
+    """O controlo, e a regra do `pagamentos_por_registar`: SEMPRE presentes,
+    mesmo a zero. Quem desenha não pode ter de adivinhar se a ausência quer
+    dizer «está tudo bem» ou «esta versão do servidor não sabe responder»."""
+    resumo = caixa_mod._resumo_do_turno(
+        {"id": "sessao-1", "fundo": 50.00}, _movimentos(), _turno(), [])
+    assert resumo["gaveta_abaixo_do_fundo"] == 0.0
+    assert resumo["devolucoes_acima_do_recebido"] == 0.0

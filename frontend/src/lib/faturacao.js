@@ -194,6 +194,48 @@ export const libertarReserva = (vendaId, confirmadoNoVendus, nota) =>
     nota: nota || null,
   });
 
+// --- Notas de crédito PRESAS -------------------------------------------------
+//
+// O gémeo das reservas fiscais presas, para o OUTRO documento: uma intenção de
+// nota de crédito que reservou e ficou `reservada` porque a rota morreu entre
+// o `insert_one` e o `$set` final (um reinício, um deploy a meio, o 409 da
+// corrida do crédito). Enquanto lá estiver, `caixa._nota_de_credito_em_curso`
+// recusa o fecho daquela caixa — com a frase «espere alguns segundos», que
+// para uma nota presa nunca chega a ser verdade.
+//
+// **As três rotas existiam desde o primeiro dia e NÃO tinham cliente nenhum
+// em todo o repositório.** A mensagem do fecho mandava o gestor à «lista de
+// notas de crédito presas do backoffice» — e essa lista não existia. Com UM
+// PC por loja, a única saída era um POST à mão com um JWT.
+//
+// De GESTOR, nunca do balcão (`gestor_atual`, o token do backoffice — não o
+// PIN da operadora): resolver isto é ir ao Vendus ver se o documento saiu.
+export const getNotasCreditoPresas = () =>
+  api.get(`${API_URL}/faturacao/fiscal/notas-credito-presas`);
+
+// A saída SEGURA: marca a nota `incerta`. Ela continua a travar novo crédito
+// das mesmas linhas (não se credita por cima do que talvez já tenha saído),
+// continua a NÃO descontar a gaveta (não se devolve dinheiro que talvez não
+// tenha saído), e deixa de travar o fecho. Não pede confirmação nenhuma, e é
+// de propósito: esta direcção não pode fazer estrago.
+export const marcarNotaCreditoPorApurar = (intencaoId, nota) =>
+  api.post(`${API_URL}/faturacao/fiscal/notas-credito/${intencaoId}/por-apurar`, {
+    nota: nota || null,
+  });
+
+// Apaga a intenção. `confirmadoNoVendus` é a declaração do gestor de que abriu
+// o Vendus e viu que NÃO existe lá nota de crédito nenhuma com aquela
+// referência: sem ela o servidor recusa com 422, e é de propósito que ela
+// viaja como argumento obrigatório desta função em vez de um `true` fixo aqui
+// dentro — libertar uma nota que SAIU é autorizar uma segunda nota de crédito
+// real da mesma devolução, dois documentos entregues à AT a devolver o mesmo
+// dinheiro.
+export const libertarNotaCreditoPresa = (intencaoId, confirmadoNoVendus, nota) =>
+  api.post(`${API_URL}/faturacao/fiscal/notas-credito/${intencaoId}/libertar`, {
+    confirmado_no_vendus: confirmadoNoVendus,
+    nota: nota || null,
+  });
+
 // --- Contas por cobrar de turnos JÁ FECHADOS ---------------------------------
 //
 // As que sobreviveram ao Z. Medido: 14,10 € divididos por 2, ninguém cobrado,

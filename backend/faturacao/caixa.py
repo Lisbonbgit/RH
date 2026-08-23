@@ -47,6 +47,8 @@ from .auth import gestor_atual
 from .caixa_math import (
     _centimos,
     diferenca,
+    abaixo_do_fundo,
+    devolucoes_acima_do_recebido,
     esperado,
     por_tipo_de_pagamento,
     soma_vendas_dinheiro,
@@ -137,7 +139,8 @@ _MSG_FECHO_COM_NOTA_DE_CREDITO_EM_CURSO = (
     "não se fecha a meio de uma devolução: o Z sairia sem ela e o dinheiro "
     "devolvido ficava na gaveta como falta por justificar. Espere alguns "
     "segundos e feche outra vez. Se ela ficar assim presa, é o gestor que a "
-    "resolve primeiro, na lista de notas de crédito presas do backoffice."
+    "resolve primeiro, no backoffice: Faturação → Reservas Fiscais Presas, no "
+    "cartão «Notas de Crédito Presas»."
 )
 # O retrato das contas abertas não estabilizou (ver
 # `_retrato_estavel_das_contas_abertas`). A caixa fica marcada `a_fechar` de
@@ -650,12 +653,30 @@ def _resumo_do_turno(
     por_registar = round(
         (_centimos(totais["total"])
          - sum(_centimos(linha["total"]) for linha in pagamentos)) / 100.0, 2)
+    esperado_do_turno = esperado(sessao.get("fundo"), vendas_dinheiro, movimentos)
     return {
         "fundo": sessao.get("fundo"),
         "vendas_dinheiro": vendas_dinheiro,
         "entradas": total_por_tipo(movimentos, "entrada"),
         "saidas": total_por_tipo(movimentos, "saida"),
-        "esperado": esperado(sessao.get("fundo"), vendas_dinheiro, movimentos),
+        "esperado": esperado_do_turno,
+        # **A GAVETA ABAIXO DO FUNDO, e o porquê ao lado.** Um turno só pode
+        # tirar da gaveta o que lá pôs; um esperado abaixo do fundo de maneio
+        # é uma impossibilidade contabilística, e este resumo deixava-a passar
+        # em silêncio. Medido: fatura de 24,14 € paga 5,00 em dinheiro + 19,14
+        # em Multibanco, açaí de 20,40 € devolvido em DINHEIRO → esperado
+        # 34,60 € com fundo de 50,00. A operadora conta a gaveta, encontra
+        # 34,60 €, bate certo — e saíram 15,40 € que aquele turno não recebeu.
+        #
+        # Os dois SEMPRE presentes, mesmo a zero, pela regra do
+        # `pagamentos_por_registar` aqui em baixo.
+        "gaveta_abaixo_do_fundo": abaixo_do_fundo(
+            sessao.get("fundo"), esperado_do_turno),
+        # E o LEITOR de `nota_credito.devolucao.acima_do_recebido`, que até
+        # aqui era um campo só de escrita: é ele que transforma «faltam
+        # 15,40 €» em «devolveram-se 15,40 € por um meio que estas faturas não
+        # receberam».
+        "devolucoes_acima_do_recebido": devolucoes_acima_do_recebido(notas_credito),
         # O desdobramento que o Z não tinha: quanto entrou em dinheiro, em
         # multibanco, no Uber Eats, no Bolt, no Glovo. Sem ele ninguém
         # conseguia bater o rolo do terminal de Multibanco nem o extracto do
@@ -1045,6 +1066,12 @@ async def fechar_caixa(
         "contado": dados.contado,
         "esperado": esperado_valor,
         "diferenca": diferenca_valor,
+        # **A gaveta abaixo do fundo, e o porquê.** No Z como no Ponto de
+        # Caixa: é o MESMO componente a desenhar os dois, e um número que a
+        # operadora vê às 15h e não encontra no papel que assina às 23h é pior
+        # do que não existir.
+        "gaveta_abaixo_do_fundo": resumo["gaveta_abaixo_do_fundo"],
+        "devolucoes_acima_do_recebido": resumo["devolucoes_acima_do_recebido"],
         # O desdobramento por tipo de pagamento e o mapa de imposto do turno
         # — as duas coisas que o Z não dizia.
         #

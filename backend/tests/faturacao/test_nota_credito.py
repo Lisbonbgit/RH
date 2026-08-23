@@ -230,6 +230,31 @@ def _pedido(**over):
     return PedidoNotaCredito(**p)
 
 
+def _intencao_presa(**over):
+    """Uma intenção que RESERVOU e ficou por lá — o estado em que a rota morre
+    entre o `insert_one` e o `$set` final (um reinício, um deploy a meio, o 409
+    da corrida do crédito). **Nada foi enviado à AT**, e é isso que torna a
+    frase «já foi creditado» uma mentira."""
+    n = {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "loja_id": "loja-1", "caixa_id": "caixa-1", "sessao_id": "sessao-1",
+        "documento_id": "doc-1", "venda_id": "venda-1",
+        "numero_origem": "FS 05P2026/1824",
+        "motivo": "Cliente devolveu o açaí.",
+        "linhas": [{"indice": 1, "titulo": "Açaí Regular", "tax_id": "INT",
+                    "quantidade": 2, "preco_unitario": 10.20, "total": 20.40}],
+        "total": 20.40,
+        "devolucao": {"tipo_pagamento_id": "tipo-dinheiro", "nome": "Dinheiro",
+                      "tipo_fiscal": "NU", "valor": 20.40},
+        "ext_ref": ("pos-loja-1-sessao-1-nc-"
+                    "11111111-1111-4111-8111-111111111111"),
+        "estado": "reservada",
+        "criada_em": "2026-08-22T10:00:00+00:00",
+    }
+    n.update(over)
+    return n
+
+
 def _emitir(db, monkeypatch, pedido=None, documento_id="doc-1", operador=None):
     monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
     return _corre(emitir_nota_credito(
@@ -469,10 +494,18 @@ def test_a_referencia_mantem_o_prefixo_que_a_reconciliacao_do_fecho_procura():
 def test_o_duplo_toque_no_botao_emite_uma_so_nota_de_credito(monkeypatch):
     """O mesmo `intencao_id` duas vezes: o índice único de
     `fat_notas_credito.id` apanha a segunda ANTES de ela falar com o Vendus.
-    Uma NC a dobrar é um documento fiscal a mais entregue à AT."""
+    Uma NC a dobrar é um documento fiscal a mais entregue à AT.
+
+    **A LINHA INTEIRA, e é isso que faz este guarda valer.** Com o `_pedido()`
+    por omissão (1 de 2) este teste esteve verde pela razão errada durante uma
+    ronda inteira: sobrava 1 por creditar, a segunda chamada passava o travão
+    e só então batia no índice único. Com a linha creditada por INTEIRO — que
+    é o que o ecrã propõe ao marcar o artigo — o travão vê `disponivel: 0` e,
+    se a pergunta «esta intenção já foi resolvida?» não vier primeiro, a
+    operadora leva 422 «já foi creditado» por uma nota que ACABOU DE SAIR."""
     db = _db_nc()
     monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
-    pedido = _pedido()
+    pedido = _pedido(linhas=[{"indice": 1, "quantidade": 2}])
 
     primeira = _corre(emitir_nota_credito("doc-1", pedido, operador=_operador()))
     segunda = _corre(emitir_nota_credito("doc-1", pedido, operador=_operador()))
@@ -481,6 +514,105 @@ def test_o_duplo_toque_no_botao_emite_uma_so_nota_de_credito(monkeypatch):
     assert len(VendusNCFalso.instancias[0].chamadas_criar) == 1
     assert primeira["numero"] == segunda["numero"] == "NC 05P2026/12"
     assert db[COLECOES["notas_credito"]].chamadas_insert == 1
+
+
+def test_o_toque_repetido_devolve_o_NUMERO_e_o_ATCUD_da_nota_que_saiu(monkeypatch):
+    """**O SÉTIMO defeito, e é o que faz a operadora não entregar o dinheiro.**
+
+    Ao balcão: a rede pisca, ela carrega outra vez, a nota JÁ FOI para a AT.
+    O que ela tem de ler é o documento — número, ATCUD e a instrução de
+    entregar o dinheiro —, e não um erro vermelho.
+
+    Medido antes da correcção, pelas rotas reais e com a linha creditada por
+    inteiro: 1.ª chamada NC 05P2026/12 emitida; 2.ª, MESMA intenção, 422
+    «Açaí Regular já foi creditado (2) — desta fatura ainda só se pode
+    creditar 0 de 2»."""
+    db = _db_nc()
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+    pedido = _pedido(linhas=[{"indice": 1, "quantidade": 2}])
+
+    primeira = _corre(emitir_nota_credito("doc-1", pedido, operador=_operador()))
+    segunda = _corre(emitir_nota_credito("doc-1", pedido, operador=_operador()))
+
+    assert segunda["numero"] == primeira["numero"] == "NC 05P2026/12"
+    assert segunda["atcud"] == primeira["atcud"] == "ATCUD-NC-12"
+    assert segunda["total"] == primeira["total"]
+    assert segunda["devolucao"]["valor"] == 20.40
+
+
+def test_a_intencao_PRESA_responde_espere_e_nao_ja_foi_creditado(monkeypatch):
+    """O pior ramo: a intenção ficou `reservada` e **nada** foi enviado à AT.
+
+    Antes: o mesmo toque levava 422 «já foi creditado (2)» — uma frase que
+    mente, sobre uma nota que não creditou nada, e que deixava a fatura
+    increditável por qualquer caminho com a caixa trancada."""
+    db = _db_nc(notas=[_intencao_presa()])
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as erro:
+        _corre(emitir_nota_credito(
+            "doc-1", _pedido(linhas=[{"indice": 1, "quantidade": 2}]),
+            operador=_operador()))
+    assert erro.value.status_code == 409
+    assert "já está a ser emitida" in erro.value.detail
+    assert "já foi creditado" not in erro.value.detail
+    assert VendusNCFalso.instancias == []
+
+
+def test_uma_JANELA_NOVA_travada_por_uma_nota_PRESA_ouve_a_verdade(monkeypatch):
+    """A outra metade da mesma mentira: outra intenção, outra janela. O travão
+    recusa — e bem, porque a presa pode ter saído —, mas a frase não pode
+    dizer «já foi creditado» quando ninguém sabe se foi. Diz o que é, e diz a
+    quem chamar."""
+    db = _db_nc(notas=[_intencao_presa()])
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as erro:
+        _corre(emitir_nota_credito(
+            "doc-1", _pedido(intencao_id="99999999-9999-4999-8999-999999999999",
+                             linhas=[{"indice": 1, "quantidade": 2}]),
+            operador=_operador()))
+    assert erro.value.status_code == 422
+    assert "POR APURAR" in erro.value.detail
+    assert "Notas de Crédito Presas" in erro.value.detail
+    assert "já foi creditado" not in erro.value.detail
+
+
+def test_uma_linha_creditada_por_uma_nota_EMITIDA_continua_a_dizer_ja_creditado(monkeypatch):
+    """O CONTROLO do de cima: uma frase de «por apurar» que estivesse sempre
+    lá não distinguia nada. Aqui a nota anterior saiu mesmo, e a recusa é a
+    normal."""
+    db = _db_nc()
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+    _corre(emitir_nota_credito(
+        "doc-1", _pedido(linhas=[{"indice": 1, "quantidade": 2}]),
+        operador=_operador()))
+
+    with pytest.raises(HTTPException) as erro:
+        _corre(emitir_nota_credito(
+            "doc-1", _pedido(intencao_id="99999999-9999-4999-8999-999999999999",
+                             linhas=[{"indice": 1, "quantidade": 2}]),
+            operador=_operador()))
+    assert erro.value.status_code == 422
+    assert "já foi creditado" in erro.value.detail
+    assert "POR APURAR" not in erro.value.detail
+
+
+def test_uma_intencao_INCERTA_repetida_manda_chamar_o_gestor(monkeypatch):
+    """Uma intenção que ficou por apurar não é «espere alguns segundos»: não
+    há nada a esperar dela, e a operadora NÃO pode devolver o dinheiro. A
+    resposta é a mesma que ela leu na tentativa que a deixou assim."""
+    db = _db_nc(notas=[_intencao_presa(estado="incerta")])
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as erro:
+        _corre(emitir_nota_credito(
+            "doc-1", _pedido(linhas=[{"indice": 1, "quantidade": 2}]),
+            operador=_operador()))
+    # 503 e a MESMA frase de `_MSG_DESFECHO_INCERTO`: é o que ela leu na
+    # tentativa que deixou a intenção assim, e é a única resposta certa.
+    assert erro.value.status_code == 503
+    assert "NÃO devolva o dinheiro" in erro.value.detail
 
 
 def test_dois_toques_CONCORRENTES_emitem_uma_so_nota_de_credito(monkeypatch):
@@ -1308,6 +1440,119 @@ def test_o_desconto_que_vai_ao_VENDUS_reproduz_o_centimo_que_gravamos():
                       "total": total_das_linhas(escolhidas)})
 
 
+# --- 11-B. A PARCIAL FRACCIONÁRIA e o cêntimo que a AT não via ---------------
+#
+# **A nossa soma fechava e a fatia que não somava estava do lado do Vendus.**
+# A meia Coca-Cola de 1,15 €: ia `qty=0.5 gross=1.15 discount_percentage=None`,
+# nós gravávamos **0,58** (o acumulado, que é o que faz as parciais somarem a
+# linha), o Vendus calculava `round(0.5 × 1,15, 2) = 0,57` — e **a gaveta era
+# descontada pelo nosso 0,58**. Um a três cêntimos por nota, sempre com a AT a
+# MENOS, e o ecrã só gritava (`total_divergente`) depois de o documento real já
+# lá estar.
+#
+# Medido nas rotas de cálculo, em 2660 parciais de metades (preços de 0,01 a
+# 3,99, linhas de 1 a 4 unidades): **340 divergiam, todas em −0,01 €**.
+#
+# A causa: `fiscal._percentagem_que_reproduz` só sabe DESCONTAR (`max(0.0, …)`)
+# e o meio-cêntimo do acumulado sobe (`parte_acumulada` arredonda o meio para
+# CIMA, em inteiros) onde `round(0.5 × 1,15, 2)` desce. Nenhuma regra de
+# arredondamento fecha isto: seis meias unidades de um artigo de 0,25 € têm de
+# somar 0,75 €, e seis vezes o tecto de 0,12 € são 0,72 € — o tecto é o
+# problema, não o arredondamento.
+
+
+def _liquido_como_o_vendus(item):
+    """A conta que o Vendus faz do lado dele, linha a linha — a MESMA fórmula
+    de `mapa_imposto._liquido_da_linha` e do oráculo de `test_fiscal`:
+    `round(qty × gross_price, 2)`, e sobre isso `× (1 − pct/100)`.
+
+    Escrita aqui de propósito, e não importada: é o ORÁCULO deste guarda. Se
+    fosse a nossa função, o teste comparava o código com ele próprio."""
+    bruto = round(item["qty"] * item["gross_price"], 2)
+    pct = item.get("discount_percentage") or 0.0
+    return round(bruto * (1 - pct / 100.0), 2)
+
+
+def test_a_MEIA_COCA_COLA_de_1_15_chega_a_AT_pelos_mesmos_centimos_da_gaveta():
+    """**O defeito, na fatura deste ficheiro.** A linha 3 é Coca-Cola 1,15 × 3;
+    metade de uma vale 0,575 €. Nós gravamos 0,58 (é o acumulado que faz as
+    seis metades somarem 3,45) e a gaveta é descontada por 0,58 — logo o
+    documento entregue à AT tem de dizer 0,58, e não 0,57."""
+    escolhidas = escolher_linhas(
+        linhas_creditaveis(_venda_faturada(), []),
+        [{"indice": 3, "quantidade": 0.5}])
+    assert escolhidas[0]["total"] == 0.58
+    itens = itens_vendus_da_nota(escolhidas, "FS 05P2026/1824")
+    assert _liquido_como_o_vendus(itens[0]) == 0.58
+
+
+def test_NENHUMA_parcial_de_metades_deixa_a_AT_ao_lado_do_que_gravamos():
+    """A varredura que mediu o defeito, agora como guarda: 2660 parciais de
+    metades. Antes: 340 divergentes, todas com a AT um cêntimo abaixo. Não é
+    «poucas»: é ZERO, porque cada uma delas é um documento fiscal real."""
+    divergentes = []
+    for centimos in range(1, 400, 3):
+        preco = centimos / 100.0
+        for quantidade in (1, 2, 3, 4):
+            venda = _venda_faturada(linhas=[_linha_agua(
+                produto_preco=preco, quantidade=quantidade)])
+            notas = []
+            for _ in range(quantidade * 2):
+                escolhidas = escolher_linhas(
+                    linhas_creditaveis(venda, notas),
+                    [{"indice": 1, "quantidade": 0.5}])
+                item = itens_vendus_da_nota(escolhidas, "FS 1")[0]
+                if _liquido_como_o_vendus(item) != escolhidas[0]["total"]:
+                    divergentes.append((preco, quantidade, escolhidas[0]["total"],
+                                        _liquido_como_o_vendus(item)))
+                notas.append({"linhas": escolhidas, "estado": "emitida"})
+    assert divergentes == []
+
+
+def test_o_PRECO_que_vai_ao_Vendus_so_sobe_quando_o_centimo_o_obriga():
+    """**O controlo, e é o que impede a correcção de ser um preço inventado.**
+    A linha inteira, e a metade de um preço PAR, não mexem no preço nenhum: o
+    documento diz o mesmo preço unitário da fatura, que é o caso normal.
+
+    Onde ele sobe, sobe o MÍNIMO — um cêntimo — e é isso que põe o produto
+    fora da fronteira do meio-cêntimo: `0,5 × 1,16 = 0,58` exacto, sem
+    arredondamento nenhum pelo meio, e por isso o mesmo número em qualquer
+    motor que faça esta conta."""
+    inteira = escolher_linhas(
+        linhas_creditaveis(_venda_faturada(), []),
+        [{"indice": 3, "quantidade": 3}])
+    assert inteira[0]["preco_unitario_vendus"] == 1.15
+
+    venda_par = _venda_faturada(linhas=[_linha_agua(produto_preco=1.10, quantidade=2)])
+    metade_par = escolher_linhas(
+        linhas_creditaveis(venda_par, []), [{"indice": 1, "quantidade": 0.5}])
+    assert metade_par[0]["preco_unitario_vendus"] == 1.10
+
+    metade_impar = escolher_linhas(
+        linhas_creditaveis(_venda_faturada(), []),
+        [{"indice": 3, "quantidade": 0.5}])
+    assert metade_impar[0]["preco_unitario_vendus"] == 1.16
+    # E o que o ECRÃ mostra continua a ser o preço da FATURA — é esse que a
+    # operadora tem à frente e o que o cliente pagou.
+    assert metade_impar[0]["preco_unitario"] == 1.15
+
+
+def test_um_centimo_IRREPRODUZIVEL_e_recusado_ANTES_de_ir_a_AT(monkeypatch):
+    """A última rede, e a razão de ela existir: o ecrã já gritava
+    `total_divergente`, mas só DEPOIS de o documento real estar na AT. Se
+    alguma parcial não se conseguir reproduzir, a rota recusa — a operadora
+    lê o porquê e a fatura fica exactamente como estava.
+
+    Aqui o instrumento é o preço travado no valor da fatura (o tecto da
+    subida a zero), que é o mundo em que o defeito existia."""
+    monkeypatch.setattr(nc_mod, "_MAXIMO_DE_CENTIMOS_A_SUBIR", 0)
+    with pytest.raises(NotaDeCreditoInvalida) as erro:
+        escolher_linhas(linhas_creditaveis(_venda_faturada(), []),
+                        [{"indice": 3, "quantidade": 0.5}])
+    assert "0,58" in str(erro.value)
+    assert "não se emite" in str(erro.value)
+
+
 def test_creditar_a_fatura_INTEIRA_de_uma_vez_continua_a_devolver_o_liquido():
     """O controlo do repartidor: nas contas normais — a esmagadora maioria —
     o número não muda."""
@@ -1564,8 +1809,15 @@ def test_resolver_uma_nota_que_JA_NAO_esta_presa_nao_faz_nada(monkeypatch):
 def test_a_mensagem_do_fecho_NOMEIA_a_saida_que_existe():
     """Sem a última frase, a loja lia «espere alguns segundos», esperava, e
     levava 409 outra vez, sem fim — com UM PC por loja, o turno não fechava e
-    ninguém tinha botão."""
-    assert "notas de crédito presas" in caixa_mod._MSG_FECHO_COM_NOTA_DE_CREDITO_EM_CURSO
+    ninguém tinha botão.
+
+    **E a morada tem de ser a REAL.** Ela dizia «na lista de notas de crédito
+    presas do backoffice» — uma lista que não existia em ecrã nenhum. Agora
+    nomeia o caminho que o gestor percorre com o rato: Faturação → Reservas
+    Fiscais Presas, e o cartão lá dentro."""
+    mensagem = caixa_mod._MSG_FECHO_COM_NOTA_DE_CREDITO_EM_CURSO
+    assert "Reservas Fiscais Presas" in mensagem
+    assert "Notas de Crédito Presas" in mensagem
 
 
 def test_as_rotas_da_nota_presa_sao_de_GESTAO_e_existem():

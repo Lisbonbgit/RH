@@ -9,6 +9,7 @@ import {
   getTiposPagamentoPos, detalhesErroPos, eurosPos,
   quantidadeDaNotaPos, linhasDaNotaPos, linhaDaNotaCreditavel,
   razaoDeNaoEmitirNotaCredito, efeitoNaGavetaPos, avisoDoMeioDeDevolucaoPos,
+  razaoDeLinhaMortaPos,
 } from '@/lib/pos';
 
 // O ecrã da **NOTA DE CRÉDITO**, no desenho do print do POS do Vendus que o
@@ -106,11 +107,14 @@ function ArtigosDaNota({ linhas, escolhas, onLinha, onTodas }) {
             />
             <span className="break-words">
               {linha.titulo}
-              {/* **A linha já creditada explica-se.** Sem esta frase, a caixa
-                  morta lê-se como uma avaria do ecrã. */}
+              {/* **A linha morta explica-se, e pela razão CERTA.** Sem esta
+                  frase a caixa morta lê-se como uma avaria do ecrã — e com a
+                  frase errada é pior: «já creditado» sobre uma nota que ficou
+                  PRESA diz que o cliente já cá veio quando não veio ninguém.
+                  A decisão vive em `lib/pos.js`. */}
               {!podeCreditar && (
                 <span className="block text-xs text-destructive">
-                  Já creditado por inteiro numa nota anterior.
+                  {razaoDeLinhaMortaPos(linha)}
                 </span>
               )}
             </span>
@@ -178,7 +182,15 @@ function DinheiroDaNota({ resumo, aSomar }) {
           <span className="text-muted-foreground uppercase tracking-wide text-xs">Subtotal</span>
           <span className="tabular-nums font-medium">{eurosPos(resumo?.subtotal ?? 0)}</span>
         </div>
-        <div className="flex items-baseline justify-between gap-3 bg-amber-500 text-black px-4 py-3 rounded-lg">
+        {/* **O número de euros que a operadora lê antes de carregar em
+            EMITIR.** Tem marca própria porque é o único valor deste ecrã que
+            um guarda tem de poder ler ISOLADO: no texto do ecrã inteiro,
+            qualquer «10,20» de outra linha passava por este, e trocar este
+            número por uma soma feita no browser deixava a suite verde. */}
+        <div
+          className="flex items-baseline justify-between gap-3 bg-amber-500 text-black px-4 py-3 rounded-lg"
+          data-testid="nc-total"
+        >
           <span className="text-sm font-semibold uppercase tracking-wide">Total</span>
           <span className="font-heading font-bold text-2xl tabular-nums">
             {aSomar ? '…' : eurosPos(resumo?.total ?? 0)}

@@ -151,6 +151,20 @@ _MSG_JA_CREDITADO = (
     "«%s» já foi creditado%s — desta fatura ainda só se pode creditar %s de "
     "%s. Uma nota de crédito não pode devolver mais do que a fatura cobrou."
 )
+_MSG_CREDITO_POR_APURAR = (
+    "«%s» tem %s numa nota de crédito desta fatura que ficou POR APURAR — "
+    "ninguém sabe se ela chegou a sair para a Autoridade Tributária, e não se "
+    "credita por cima do que talvez já tenha sido creditado. Desta fatura "
+    "ainda só se pode creditar %s de %s. Quem destrava isto é o gestor, no "
+    "backoffice: Faturação → Reservas Fiscais Presas, no cartão «Notas de "
+    "Crédito Presas»."
+)
+_MSG_CENTIMO_IRREPRODUZIVEL = (
+    "Não se consegue pôr «%s» numa nota de crédito por %s sem que o documento "
+    "entregue à Autoridade Tributária diga outro valor — e um documento que "
+    "diga um número enquanto a gaveta é aberta por outro não se emite. "
+    "Credite a linha inteira, ou uma quantidade certa dela."
+)
 _MSG_TOTAL_NAO_POSITIVO = (
     "O total a creditar tem de ser positivo — confirme as quantidades."
 )
@@ -239,6 +253,21 @@ def ja_creditado_por_linha(notas: List[Dict]) -> Dict[int, int]:
     return ja
 
 
+def por_apurar_por_linha(notas: List[Dict]) -> Dict[int, int]:
+    """Quanto de cada linha está travado por uma nota que **não se sabe se
+    saiu** — as `reservada` e as `incerta`, e só essas.
+
+    É o subconjunto de `ja_creditado_por_linha` que torna a frase «já foi
+    creditado» uma MENTIRA: uma intenção presa não creditou coisa nenhuma, e
+    uma incerta talvez não tenha creditado nada. O travão é o mesmo (não se
+    credita por cima do que talvez tenha saído), o que muda é o que a
+    operadora lê — e, com ele, a quem ela chama."""
+    return ja_creditado_por_linha([
+        nota for nota in notas or []
+        if nota.get("estado") in ("incerta", "reservada")
+    ])
+
+
 def linhas_creditaveis(venda: Optional[Dict], notas: List[Dict]) -> List[Dict]:
     """As linhas da fatura como o ecrã da nota de crédito as mostra: Produto ·
     Qtd. (editável, com o MÁXIMO à vista) · Preço/Uni. · Total.
@@ -255,6 +284,7 @@ def linhas_creditaveis(venda: Optional[Dict], notas: List[Dict]) -> List[Dict]:
     e concluía que a fatura não era aquela."""
     itens = _itens_vendus(venda or {})
     ja = ja_creditado_por_linha(notas)
+    por_apurar = por_apurar_por_linha(notas)
     creditaveis = []
     for posicao, item in enumerate(itens, start=1):
         original = _quantidade_em_inteiros(item.get("qty"))
@@ -265,6 +295,12 @@ def linhas_creditaveis(venda: Optional[Dict], notas: List[Dict]) -> List[Dict]:
             "tax_id": item.get("tax_id"),
             "quantidade": item.get("qty"),
             "creditado": _quantidade_legivel(creditado),
+            # A fatia do `creditado` que está travada por uma nota que ainda
+            # não se sabe se saiu. Vai para o ecrã porque a linha morta tem de
+            # se explicar pela razão CERTA: «já creditado» e «por apurar» são
+            # coisas diferentes e mandam chamar pessoas diferentes.
+            "por_apurar": _quantidade_legivel(
+                min(por_apurar.get(posicao, 0), original)),
             "disponivel": _quantidade_legivel(max(0, original - creditado)),
             "preco_unitario": item.get("gross_price"),
             # O desconto da linha na FATURA — próprio dela mais a fatia do
@@ -383,6 +419,70 @@ def acima_do_recebido(
     return max(0, _centimos(total) - disponivel) / 100.0
 
 
+# Quanto é que o preço unitário enviado ao Vendus pode subir para o bruto dele
+# CHEGAR ao cêntimo do acumulado. Um euro por unidade é muito acima de tudo o
+# que se mediu (o pior caso da varredura foram 5 cêntimos, e só em fatias de
+# 0,1 — nas metades, terços e quartos, que é o que uma conta repartida produz,
+# é sempre exactamente 1 cêntimo). Não é um número operacional: é o travão que
+# faz a rota RECUSAR em vez de inventar um preço absurdo.
+_MAXIMO_DE_CENTIMOS_A_SUBIR = 100
+
+
+def _preco_que_alcanca(quantidade: float, preco_unitario, alvo: float) -> float:
+    """O preço unitário a mandar ao Vendus para o bruto DELE chegar ao alvo —
+    o preço da fatura no caso normal, e um cêntimo acima quando o meio-cêntimo
+    o obriga.
+
+    **Porque é que o preço é o único lever.** O Vendus calcula
+    `round(qty × gross_price, 2)` e só depois desconta; a `discount_percentage`
+    só sabe DESCONTAR (`fiscal._percentagem_que_reproduz` fecha em
+    `max(0.0, …)`), por isso `round(qty × preço, 2)` é um TECTO. O acumulado
+    (`reparticao.parte_acumulada`) tem de arredondar o meio-cêntimo para cima
+    em alguma das parciais, senão a soma delas não dá a linha — e aí o alvo
+    fica um cêntimo acima do tecto. Medido: metade de uma Coca-Cola de 1,15 €
+    dava 0,58 do nosso lado e **0,57 do lado da AT**, com a gaveta descontada
+    pelo nosso 0,58.
+
+    **Nenhuma regra de arredondamento resolve isto**, e é isso que fecha as
+    alternativas: seis meias unidades de um artigo de 0,25 € têm de somar
+    0,75 €, e seis vezes o tecto de 0,12 € são 0,72 €. O que está a faltar é
+    tecto, não é arredondamento — e o tecto é o preço.
+
+    **O que se perde, dito por extenso.** Numa parcial fraccionária o
+    documento pode mostrar um preço unitário um cêntimo acima do da fatura
+    (`0,5 × 1,16 = 0,58` em vez de `0,5 × 1,15`). A quantidade creditada é a
+    verdadeira, o total é o verdadeiro, e a linha continua a apontar para a
+    linha exacta da fatura (`reference_document`). A alternativa era o total
+    do documento discordar do dinheiro que sai da gaveta — e essa foi a que se
+    recusou. A outra alternativa, recusar a devolução de meia unidade, fechava
+    a porta a uma devolução legítima de uma conta repartida com o cliente à
+    frente.
+
+    Sobe de cêntimo em cêntimo — o MÍNIMO que chega, e nunca por uma divisão
+    que introduzisse um preço com mais casas do que o resto do módulo usa."""
+    preco = float(preco_unitario or 0)
+    if preco <= 0 or quantidade <= 0:
+        return preco
+    alvo_centimos = _centimos(alvo)
+    centimos = _centimos(preco)
+    for _ in range(_MAXIMO_DE_CENTIMOS_A_SUBIR + 1):
+        if _centimos(round(quantidade * (centimos / 100.0), 2)) >= alvo_centimos:
+            return centimos / 100.0
+        centimos += 1
+    # Fora do travão: devolve-se o preço da fatura e é a verificação de
+    # `escolher_linhas` que recusa a parcial — nunca se emite um documento que
+    # já se sabe que vai dizer outro número.
+    return preco
+
+
+def _reproduz_o_centimo(bruto: float, percentagem: float, alvo: float) -> bool:
+    """A conta que o Vendus vai fazer, feita AQUI primeiro: `round(bruto ×
+    (1 − pct/100), 2)` — a mesma fórmula de `mapa_imposto._liquido_da_linha` e
+    do oráculo de `test_fiscal`. Dá o cêntimo que a gaveta vai perder, ou não
+    se emite nada."""
+    return _centimos(round(bruto * (1 - percentagem / 100.0), 2)) == _centimos(alvo)
+
+
 class NotaDeCreditoInvalida(Exception):
     """O pedido da operadora não pode virar nota de crédito nenhuma — e a
     mensagem diz porquê, em português de balcão. Vira 422 na rota."""
@@ -430,11 +530,25 @@ def escolher_linhas(creditaveis: List[Dict], escolhas: List[Dict]) -> List[Dict]
         disponivel = _quantidade_em_inteiros(linha["disponivel"])
         if pedida > disponivel:
             creditado = _quantidade_em_inteiros(linha["creditado"])
+            original = _quantidade_em_inteiros(linha["quantidade"])
+            # **Uma nota PRESA não creditou nada, e a frase não pode dizer que
+            # sim.** Medido: com a intenção `reservada` e NADA enviado à AT, a
+            # recusa lia-se «já foi creditado (2)» — a fatura increditável por
+            # qualquer caminho, a caixa trancada, e ninguém a saber que quem
+            # destrava aquilo é o gestor.
+            travado = _quantidade_em_inteiros(linha.get("por_apurar"))
+            if travado > 0:
+                raise NotaDeCreditoInvalida(_MSG_CREDITO_POR_APURAR % (
+                    linha.get("titulo"),
+                    _numero_legivel(travado),
+                    _numero_legivel(disponivel),
+                    _numero_legivel(original),
+                ))
             raise NotaDeCreditoInvalida(_MSG_JA_CREDITADO % (
                 linha.get("titulo"),
                 "" if creditado == 0 else " (%s)" % _numero_legivel(creditado),
                 _numero_legivel(disponivel),
-                _numero_legivel(_quantidade_em_inteiros(linha["quantidade"])),
+                _numero_legivel(original),
             ))
 
         quantidade = _quantidade_legivel(pedida)
@@ -469,14 +583,35 @@ def escolher_linhas(creditaveis: List[Dict], escolhas: List[Dict]) -> List[Dict]
         # para fechar o cêntimo do desconto global (`fiscal._itens_vendus`),
         # e o desconto próprio da linha já vem lá dentro: o alvo é o líquido,
         # não o bruto.
-        bruto = round(quantidade * (linha["preco_unitario"] or 0), 2)
+        # **E o PREÇO que vai ao Vendus é o que deixa esse cêntimo ser
+        # alcançável** — ver `_preco_que_alcanca`. No caso normal é o preço da
+        # fatura, tal e qual; numa parcial fraccionária cujo acumulado caiu
+        # acima do tecto de `round(qty × preço, 2)` sobe um cêntimo, que é o
+        # mínimo, e é isso que tira o produto de cima da fronteira do
+        # meio-cêntimo.
+        preco_vendus = _preco_que_alcanca(quantidade, linha["preco_unitario"], total)
+        bruto = round(quantidade * preco_vendus, 2)
+        percentagem = _percentagem_que_reproduz(bruto, total)
+        # **A verificação, e ela é ANTES de a AT ver seja o que for.** O ecrã
+        # já tinha `total_divergente` — mas isso é um grito depois de o
+        # documento real estar entregue. Aqui a conta que o Vendus vai fazer
+        # faz-se primeiro: se não der o cêntimo que a gaveta vai perder, não
+        # se emite nada.
+        if not _reproduz_o_centimo(bruto, percentagem, total):
+            raise NotaDeCreditoInvalida(_MSG_CENTIMO_IRREPRODUZIVEL % (
+                linha.get("titulo"),
+                ("%.2f" % total).replace(".", ",") + " €",
+            ))
         escolhidas.append({
             "indice": indice,
             "titulo": linha.get("titulo"),
             "tax_id": linha.get("tax_id"),
             "quantidade": quantidade,
+            # O preço da FATURA — é este que o ecrã mostra e o que o cliente
+            # pagou. O que vai no `gross_price` da nota é o de baixo.
             "preco_unitario": linha["preco_unitario"],
-            "desconto_percentagem": _percentagem_que_reproduz(bruto, total),
+            "preco_unitario_vendus": preco_vendus,
+            "desconto_percentagem": percentagem,
             "id_vendus": linha.get("id_vendus"),
             "total": total,
         })
@@ -527,7 +662,10 @@ def itens_vendus_da_nota(linhas: List[Dict], numero_original: str) -> List[Dict]
         item = {
             "title": linha.get("titulo"),
             "qty": linha["quantidade"],
-            "gross_price": linha["preco_unitario"],
+            # O preço que REPRODUZ o cêntimo gravado — o da fatura no caso
+            # normal (ver `_preco_que_alcanca`). O `.get` com recuo é para as
+            # notas gravadas antes deste campo existir.
+            "gross_price": linha.get("preco_unitario_vendus") or linha["preco_unitario"],
             "tax_id": linha.get("tax_id"),
             "reference_document": {
                 "document_number": numero_original,
@@ -583,6 +721,13 @@ class PedidoNotaCredito(BaseModel):
         if not str(v).strip():
             raise ValueError(_MSG_MOTIVO_EM_FALTA)
         return str(v).strip()
+
+
+async def _intencao_ja_gravada(db, intencao_id: str) -> Optional[Dict]:
+    """A intenção com este id, se já existir — a pergunta que a rota faz ANTES
+    do travão do que já foi creditado (ver `emitir_nota_credito`)."""
+    return await db[COLECOES["notas_credito"]].find_one(
+        {"id": intencao_id}, {"_id": 0})
 
 
 async def _notas_do_documento(db, documento_id: str) -> List[Dict]:
@@ -1000,6 +1145,31 @@ async def emitir_nota_credito(
     db = obter_db()
     documento, venda = await _fatura_creditavel(db, documento_id, operador["loja_id"])
 
+    # **«ESTA INTENÇÃO JÁ FOI RESOLVIDA?» — e esta pergunta vem ANTES do
+    # travão do que já foi creditado.**
+    #
+    # Uma retentativa da MESMA intenção não é um crédito novo: é a mesma nota
+    # a ser perguntada outra vez, e a resposta é o documento que saiu. Sem
+    # esta pergunta aqui, a resposta idempotente estava morta exactamente no
+    # caso NORMAL — o ecrã propõe a linha inteira ao marcar o artigo, a nota
+    # emitida faz `disponivel` cair a zero, e a segunda chegada da mesma
+    # intenção morria em `escolher_linhas` sem nunca chegar ao `insert_one`.
+    # Medido pelas rotas reais, com a linha creditada por inteiro: 1.ª chamada
+    # NC 05P2026/12 emitida; 2.ª, mesma intenção, **422 «Açaí Regular já foi
+    # creditado (2) — desta fatura ainda só se pode creditar 0 de 2»**. Ao
+    # balcão isso é a rede a piscar, a operadora a carregar outra vez, a nota
+    # já na AT, e um erro vermelho sem número, sem ATCUD e sem a instrução de
+    # entregar o dinheiro.
+    #
+    # **Isto NÃO substitui o `insert_one`**, que continua a ser a reserva
+    # atómica: esta leitura é ler-verificar-agir e não trava corrida nenhuma.
+    # O que ela fecha é a janela em que a intenção JÁ está gravada — que é
+    # todo o tempo depois da primeira chamada, e é o caso da retentativa.
+    repetida = await _intencao_ja_gravada(db, dados.intencao_id)
+    if repetida is not None:
+        return await _resposta_de_quem_repetiu(
+            db, dados.intencao_id, documento, repetida)
+
     caixa = await _obter_caixa_da_loja(db, dados.caixa_id, operador["loja_id"])
     # A devolução acontece no turno de AGORA e não no da fatura: o cliente que
     # volta amanhã é creditado amanhã, e é da gaveta de amanhã que sai o
@@ -1143,7 +1313,9 @@ async def emitir_nota_credito(
     return _resposta_da_nota(nota, documento_nc)
 
 
-async def _resposta_de_quem_repetiu(db, intencao_id: str, documento: Dict) -> Dict:
+async def _resposta_de_quem_repetiu(
+    db, intencao_id: str, documento: Dict, existente: Optional[Dict] = None
+) -> Dict:
     """O segundo toque no mesmo botão.
 
     A intenção já existe — ou porque a primeira ainda está a falar com o
@@ -1155,8 +1327,9 @@ async def _resposta_de_quem_repetiu(db, intencao_id: str, documento: Dict) -> Di
     identificador repetido devolvia a nota de crédito de OUTRA fatura (ou de
     outra loja) a quem perguntasse — dados de uma devolução que não é dele, e
     um ecrã a dizer que a devolução foi feita quando não foi."""
-    existente = await db[COLECOES["notas_credito"]].find_one(
-        {"id": intencao_id}, {"_id": 0})
+    if existente is None:
+        existente = await db[COLECOES["notas_credito"]].find_one(
+            {"id": intencao_id}, {"_id": 0})
     if existente is None:
         # Corrida rara: a intenção existia no instante do insert e já não
         # existe (uma libertação por erro provado). Nada saiu — a operadora
@@ -1164,6 +1337,11 @@ async def _resposta_de_quem_repetiu(db, intencao_id: str, documento: Dict) -> Di
         raise HTTPException(status_code=409, detail=_MSG_EMISSAO_EM_CURSO)
     if existente.get("documento_id") != documento.get("id"):
         raise HTTPException(status_code=409, detail=_MSG_INTENCAO_DE_OUTRA_FATURA)
+    if existente.get("estado") == "incerta":
+        # Uma intenção por apurar não é «espere alguns segundos»: não há nada
+        # a esperar dela. A operadora tem de ler o mesmo que leu na tentativa
+        # que a deixou assim — NÃO devolva o dinheiro, chame o gestor.
+        raise HTTPException(status_code=503, detail=_MSG_DESFECHO_INCERTO)
     if existente.get("estado") != "emitida":
         raise HTTPException(status_code=409, detail=_MSG_EMISSAO_EM_CURSO)
     documento_nc = await db[COLECOES["documentos"]].find_one(
