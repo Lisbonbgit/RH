@@ -151,7 +151,7 @@ _ARRENDAMENTO_SEGUNDOS = 60
 # Quantas vezes um trabalho pode ser entregue antes de a fila desistir. Ver a
 # docstring do módulo: o limite existe para não haver duzentos talões a sair
 # de madrugada, e não custa ao cliente o papel (que se reimprime).
-_MAX_TENTATIVAS = 10 ** 9
+_MAX_TENTATIVAS = 5
 
 # A VALIDADE de cada tipo, em minutos. A gaveta é o caso especial, e é o único
 # — ver a docstring do módulo.
@@ -676,6 +676,44 @@ async def estado_da_impressao(operador: Dict = Depends(operador_atual)) -> dict:
         "por_sair": por_sair,
         "falhados": sum(1 for t in trabalhos if t.get("estado") == FALHADO),
     }
+
+
+class PedidoPaginaDeTeste(BaseModel):
+    impressora: str = Field(default=CAIXA)
+
+
+@router.post("/pos/impressao/pagina-de-teste")
+async def pagina_de_teste(
+    dados: PedidoPaginaDeTeste, dispositivo: Dict = Depends(dispositivo_atual)
+) -> dict:
+    """Os bytes da página de teste, para o programa da loja os mandar
+    DIRECTAMENTE à impressora — sem passar pela fila.
+
+    **É o único teste que existe para a metade Windows deste sistema**, e é
+    por isso que não passa pela fila: a fila prova que o servidor sabe o que
+    tem a imprimir, e o que esta página tem de provar é o ÚLTIMO salto — que
+    estes bytes entram naquela impressora em cru, e não desenhados. Se saísse
+    da fila e não aparecesse papel, ficavam três suspeitos em vez de um.
+
+    **Os bytes vêm daqui e não do programa da loja** para não haver duas
+    cópias do ESC/POS. Os dois números que se afinam quando uma impressora
+    discorda (`escpos._CORTAR` e `escpos._TABELA_DE_CARACTERES`) vivem numa
+    constante só, e uma cópia dentro do `.exe` fazia com que afinar um deles
+    corrigisse os talões e não a página que os devia diagnosticar — ou o
+    contrário, que é pior.
+
+    Só precisa do DISPOSITIVO: quem carrega neste botão está à frente do PC
+    da loja, no programa de impressão, e ali não há operador nenhum com PIN
+    dado. É a mesma autorização que a recolha usa.
+    """
+    impressora = dados.impressora if dados.impressora in _IMPRESSORAS else CAIXA
+    db = obter_db()
+    loja = await db[COLECOES["lojas"]].find_one({"id": dispositivo["loja_id"]})
+    bytes_da_pagina = escpos.pagina_de_teste(
+        impressora,
+        loja=(loja or {}).get("nome") or dispositivo["loja_id"],
+    )
+    return {"bytes_b64": base64.b64encode(bytes_da_pagina).decode("ascii")}
 
 
 @router.post("/pos/impressao/gaveta")

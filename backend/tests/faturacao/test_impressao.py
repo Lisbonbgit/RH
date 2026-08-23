@@ -53,6 +53,8 @@ from faturacao.impressao import (
     imprimir_segunda_via,
     marcar_falhou,
     marcar_impresso,
+    pagina_de_teste,
+    PedidoPaginaDeTeste,
     recolher,
 )
 
@@ -75,7 +77,8 @@ def _chave_do_trabalho(doc):
     return doc.get("chave")
 
 
-def _db(trabalhos=None, dispositivos=None, vendas=None, documentos=None, ceder=False):
+def _db(trabalhos=None, dispositivos=None, vendas=None, documentos=None,
+        lojas=None, ceder=False):
     registo = []
     return DbFalsa({
         COLECOES["trabalhos_impressao"]: ColeccaoFalsa(
@@ -83,6 +86,7 @@ def _db(trabalhos=None, dispositivos=None, vendas=None, documentos=None, ceder=F
         COLECOES["dispositivos"]: ColeccaoFalsa(registo, dispositivos, ceder=ceder),
         COLECOES["vendas"]: ColeccaoFalsa(registo, vendas, ceder=ceder),
         COLECOES["documentos"]: ColeccaoFalsa(registo, documentos, ceder=ceder),
+        COLECOES["lojas"]: ColeccaoFalsa(registo, lojas, ceder=ceder),
     })
 
 
@@ -736,3 +740,63 @@ def test_nao_se_reimprime_a_fatura_de_OUTRA_loja(monkeypatch):
     with pytest.raises(HTTPException) as erro:
         _corre(imprimir_segunda_via("doc-1", operador=_operador()))
     assert erro.value.status_code == 404
+
+
+# --- 9. A PÁGINA DE TESTE -----------------------------------------------------
+#
+# **É o único teste que existe para a metade Windows deste sistema.** Num Mac
+# não há forma de provar que os bytes entram na impressora; esta página é a
+# prova, e sai do servidor para não haver duas cópias do ESC/POS.
+
+
+def _pagina(db, monkeypatch, impressora=CAIXA, dispositivo=None):
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+    return _corre(pagina_de_teste(
+        PedidoPaginaDeTeste(impressora=impressora),
+        dispositivo=dispositivo or _dispositivo(),
+    ))
+
+
+def test_a_pagina_de_teste_NAO_passa_pela_fila(monkeypatch):
+    """O que esta página tem de provar é o ÚLTIMO salto — que estes bytes
+    entram naquela impressora em cru. Se saísse da fila e não aparecesse
+    papel, ficavam três suspeitos em vez de um."""
+    db = _db(lojas=[{"id": "loja-1", "nome": "Colombo"}])
+    resposta = _pagina(db, monkeypatch)
+    assert _fila(db) == []
+    assert base64.b64decode(resposta["bytes_b64"])
+
+
+def test_a_pagina_de_teste_e_a_MESMA_que_o_escpos_constroi(monkeypatch):
+    """Byte a byte. Uma cópia dentro do `.exe` fazia com que afinar a tabela
+    de caracteres corrigisse os talões e não a página que os devia
+    diagnosticar."""
+    db = _db(lojas=[{"id": "loja-1", "nome": "Colombo"}])
+    resposta = _pagina(db, monkeypatch)
+    assert base64.b64decode(resposta["bytes_b64"]) == escpos.pagina_de_teste(
+        CAIXA, loja="Colombo")
+
+
+def test_a_pagina_diz_QUAL_das_duas_impressoras_e(monkeypatch):
+    """É a diferença entre «não imprimiu» e «imprimiu na impressora da
+    cozinha»."""
+    db = _db(lojas=[{"id": "loja-1", "nome": "Colombo"}])
+    saiu = base64.b64decode(_pagina(db, monkeypatch, COZINHA)["bytes_b64"])
+    assert b"cozinha" in saiu
+    assert b"caixa" not in saiu
+
+
+def test_uma_impressora_inventada_cai_na_CAIXA_em_vez_de_rebentar(monkeypatch):
+    """Este botão é o que uma pessoa carrega quando NADA está a funcionar. Um
+    500 aqui tirava-lhe a única ferramenta de diagnóstico que tem."""
+    db = _db(lojas=[{"id": "loja-1", "nome": "Colombo"}])
+    saiu = base64.b64decode(_pagina(db, monkeypatch, "gaveta")["bytes_b64"])
+    assert saiu == escpos.pagina_de_teste(CAIXA, loja="Colombo")
+
+
+def test_sem_loja_gravada_a_pagina_sai_na_mesma(monkeypatch):
+    """Uma loja apagada não pode tirar a página de diagnóstico ao PC — sai com
+    o id em vez do nome, que ainda diz a quem está à frente onde ela aponta."""
+    db = _db(lojas=[])
+    saiu = base64.b64decode(_pagina(db, monkeypatch)["bytes_b64"])
+    assert b"loja-1" in saiu

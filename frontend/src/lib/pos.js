@@ -1132,13 +1132,78 @@ export const razaoDeNaoCopiar = ({ contaEmCurso, documento }) => {
   return null;
 };
 
-// A frase do botão de imprimir: fica à vista e desligado, COM A RAZÃO — a
-// mesma regra que o menu Caixa já usa na gaveta e no modo de formação, e o
-// PosVenda no "Imprimir Pedido". (O da nota de crédito saiu daqui: ela deixou
-// de ser "brevemente" e passou a ter ecrã — `PosNotaCredito.js`.)
-export const MSG_IMPRIMIR_BREVEMENTE =
-  'O talão volta a sair na impressora quando o agente de impressão da loja existir — '
-  + 'ainda não existe.';
+// --- A IMPRESSÃO -------------------------------------------------------------
+//
+// Os três botões que estavam "Brevemente" — «Abrir Gaveta» no menu Caixa,
+// «Imprimir Pedido» no ecrã da venda e «Imprimir» dentro de uma fatura —
+// passam a pôr trabalho na fila do servidor (`faturacao/impressao.py`). Quem
+// imprime é o programa da loja (`agente_impressao/`), que VAI BUSCAR o
+// trabalho; este ecrã nunca fala com impressora nenhuma.
+//
+// **E é por isso que o estado existe.** Uma loja onde ninguém instalou o
+// programa não pode ter um botão que parece funcionar: o toque entrava na
+// fila, caducava meia hora depois e ninguém sabia de nada — a operadora dava
+// o cliente por servido e o papel nunca existiu. `GET /pos/impressao/estado`
+// responde «há programa a ouvir?», e é isso que desliga os botões.
+
+export const getEstadoImpressao = () => api.get('/pos/impressao/estado');
+export const abrirGavetaPos = () => api.post('/pos/impressao/gaveta');
+export const imprimirPedidoPos = (vendaId) =>
+  api.post(`/pos/venda/${vendaId}/imprimir-pedido`);
+export const imprimirSegundaViaPos = (documentoId) =>
+  api.post(`/pos/documentos/${documentoId}/imprimir`);
+
+export const MSG_IMPRESSAO_SEM_PROGRAMA =
+  'Não há nenhum programa de impressão a responder nesta loja. Nada vai sair '
+  + 'em papel até alguém o abrir no PC do balcão — ver INSTALAR-IMPRESSAO.md.';
+
+export const MSG_IMPRESSAO_POR_SABER =
+  'A perguntar se o programa de impressão desta loja está a responder…';
+
+export const MSG_IMPRESSAO_A_ENVIAR =
+  'A pôr na fila da impressora… não carregue outra vez.';
+
+// **Porque é que um botão de imprimir está desligado — ou `null` quando não
+// está.** Escrito aqui e não dentro do JSX pela razão de sempre neste
+// ficheiro: uma condição no meio de um botão não se corre em lado nenhum, e um
+// guarda que procure o TEXTO da frase fica verde com a condição desligada por
+// trás dela.
+//
+// O estado `undefined`/`null` é o "ainda não sei", e desliga na mesma: entre
+// abrir o ecrã e a primeira resposta há um vão de um segundo, e um botão que
+// funcione nesse vão numa loja sem programa é exactamente o engano que isto
+// existe para não deixar acontecer.
+export const razaoDeNaoImprimir = ({ estado, aImprimir } = {}) => {
+  if (aImprimir) return MSG_IMPRESSAO_A_ENVIAR;
+  if (!estado) return MSG_IMPRESSAO_POR_SABER;
+  if (!estado.ha_programa) return MSG_IMPRESSAO_SEM_PROGRAMA;
+  return null;
+};
+
+// **O que ficou por sair, dito por extenso — ou `null` quando não há nada a
+// dizer.** Uma fila que desiste em silêncio é pior do que uma fila que
+// insiste: o servidor desiste de um trabalho ao fim de algumas tentativas
+// (`impressao._MAX_TENTATIVAS`) e é ESTA frase que impede isso de ser um
+// segredo entre o servidor e o log.
+export const avisoDaFilaDeImpressao = (estado) => {
+  if (!estado) return null;
+  const falhados = Number(estado.falhados || 0);
+  if (falhados > 0) {
+    return falhados === 1
+      ? 'Um papel não chegou a sair na impressora. Reimprima-o pelo separador '
+        + 'Faturação depois de ver o papel e a ligação da impressora.'
+      : `${falhados} papéis não chegaram a sair na impressora. Reimprima-os `
+        + 'pelo separador Faturação depois de ver o papel e a ligação da '
+        + 'impressora.';
+  }
+  const porSair = Number(estado.por_sair || 0);
+  if (porSair > 0) {
+    return porSair === 1
+      ? 'Há um papel à espera da impressora.'
+      : `Há ${porSair} papéis à espera da impressora.`;
+  }
+  return null;
+};
 
 // --- A NOTA DE CRÉDITO -------------------------------------------------------
 //

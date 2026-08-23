@@ -12,9 +12,10 @@ import {
   getDocumentosPos, getDocumentoPos, copiarDocumentoParaVenda, getVendaAberta,
   detalhesErroPos, eurosPos, avisoDoDocumento, momentoDaFaturaPos,
   resumoDosArtigosPos, casaComAPesquisaPos, razaoDeNaoCopiar,
-  MSG_IMPRIMIR_BREVEMENTE,
+  imprimirSegundaViaPos, razaoDeNaoImprimir, avisoDaFilaDeImpressao,
 } from '@/lib/pos';
 import PosNotaCredito from './PosNotaCredito';
+import useEstadoDaImpressao from './useEstadoDaImpressao';
 
 // O separador **Faturação**, ao lado do «Caixa» — a lista dos documentos já
 // emitidos e a fatura aberta, com as três acções que o dono pediu do print do
@@ -183,24 +184,51 @@ function MapaDeImposto({ mapa, totais }) {
   );
 }
 
-// Um botão da coluna da direita que ainda não faz nada: à vista, desligado e
-// com a razão por baixo. A mesma regra do menu Caixa (Abrir Gaveta, Modo de
-// Formação) e do "Imprimir Pedido" do PosVenda.
-function AccaoBrevemente({ icone: Icone, texto, porque }) {
+// **A SEGUNDA VIA do talão do cliente.**
+//
+// Não volta ao Vendus: os bytes são os do talão certificado que ficou guardado
+// com a fatura (`fat_documentos.talao_escpos`) — o MESMO papel que saiu da
+// primeira vez, com o mesmo ATCUD e o mesmo QR.
+//
+// Desligado quando não há programa de impressão a ouvir na loja, e a dizer
+// porquê. A decisão está em `razaoDeNaoImprimir` (lib/pos.js) e não aqui: uma
+// condição escrita dentro de um botão não se corre em teste nenhum.
+function AccaoImprimir({ fatura, estado, onImprimir, aImprimir }) {
+  // `tem_talao` vem do servidor (`documentos.obter_documento`): uma fatura
+  // emitida antes de o talão certificado passar a ser guardado não tem papel
+  // para dar daqui. O documento fiscal continua bom — o que não há é o talão.
+  const semTalao = fatura.tem_talao === false;
+  const razao = semTalao
+    ? 'Esta fatura foi emitida antes de o talão passar a ser guardado — não há '
+      + 'papel para reimprimir daqui. O documento fiscal está bom.'
+    : razaoDeNaoImprimir({ estado, aImprimir });
   return (
     <div>
-      <Button variant="outline" className="w-full h-12 justify-start" disabled>
-        <Icone className="h-5 w-5 mr-2" />
-        {texto}
-        <span className="ml-auto text-[10px] uppercase tracking-wide">Brevemente</span>
+      <Button
+        variant="outline"
+        className="w-full h-12 justify-start"
+        onClick={onImprimir}
+        disabled={!!razao}
+      >
+        {aImprimir
+          ? <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+          : <Printer className="h-5 w-5 mr-2" />}
+        Imprimir
       </Button>
-      <p className="text-[11px] text-muted-foreground leading-snug mt-1.5">{porque}</p>
+      <p className="text-[11px] text-muted-foreground leading-snug mt-1.5">
+        {razao
+          || 'Volta a mandar para a impressora do balcão o mesmo talão que saiu '
+             + 'da primeira vez — com o mesmo Código AT e o mesmo QR.'}
+      </p>
     </div>
   );
 }
 
 // A FATURA ABERTA, no desenho do print do Vendus.
-function Fatura({ fatura, contaEmCurso, aCopiar, onCopiar, onVoltar, onNotaCredito }) {
+function Fatura({
+  fatura, contaEmCurso, aCopiar, onCopiar, onVoltar, onNotaCredito,
+  estadoImpressao, onImprimir, aImprimir,
+}) {
   const naoCopiar = razaoDeNaoCopiar({ contaEmCurso, documento: fatura });
   return (
     <div className="space-y-4">
@@ -293,10 +321,11 @@ function Fatura({ fatura, contaEmCurso, aCopiar, onCopiar, onVoltar, onNotaCredi
 
       {/* A coluna de acções do print — só as três que o dono pediu. */}
       <div className="space-y-3">
-        <AccaoBrevemente
-          icone={Printer}
-          texto="Imprimir"
-          porque={MSG_IMPRIMIR_BREVEMENTE}
+        <AccaoImprimir
+          fatura={fatura}
+          estado={estadoImpressao}
+          onImprimir={onImprimir}
+          aImprimir={aImprimir}
         />
         <div>
           <Button
@@ -354,6 +383,15 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
   const [erroFatura, setErroFatura] = useState(null);
   const [contaEmCurso, setContaEmCurso] = useState(null);
   const [aCopiar, setACopiar] = useState(false);
+  const [aImprimir, setAImprimir] = useState(false);
+  // **Há programa de impressão a ouvir nesta loja?** Perguntado aqui e não
+  // recebido de cima: já esteve perguntado uma vez no `PosApp` e descido por
+  // props, e isso deixava um buraco que nenhum teste tapava — bastava alguém
+  // esquecer a prop num dos ramos para o «Imprimir» ficar morto para sempre,
+  // com o ecrã a dizer «a perguntar…» o dia inteiro. Só pergunta enquanto o
+  // separador está aberto: fechado, não há botão nenhum a decidir.
+  const { estado: estadoImpressao, recarregar: recarregarImpressao } =
+    useEstadoDaImpressao(aberto);
   // A nota de crédito da fatura aberta. Um booleano e não um id: ela é sempre
   // da fatura que está à frente, e guardar um id deixava-os poder divergir.
   const [notaCredito, setNotaCredito] = useState(false);
@@ -466,6 +504,28 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
     }
   }, [fatura, aCopiar, caixaId, onContaCopiada, lerContaEmCurso]);
 
+  // **A segunda via.** Põe o trabalho na fila do servidor e diz-o — nunca diz
+  // "impresso", que é uma afirmação sobre uma impressora que este ecrã não vê.
+  // Quem imprime é o programa da loja, e o que ele conseguir ou não fazer
+  // aparece no aviso da fila (`avisoDaFilaDeImpressao`) na volta seguinte.
+  const imprimir = useCallback(async () => {
+    if (!fatura || aImprimir) return;
+    setAImprimir(true);
+    try {
+      await imprimirSegundaViaPos(fatura.id);
+      toast.success('Talão na fila da impressora do balcão.');
+    } catch (error) {
+      const { mensagem } = detalhesErroPos(
+        error, 'Não foi possível mandar este talão para a impressora.');
+      toast.error(mensagem);
+    } finally {
+      setAImprimir(false);
+      // Relê o estado: se o programa da loja morreu entretanto, o botão passa
+      // a estar desligado com a razão à vista em vez de convidar ao mesmo toque.
+      recarregarImpressao();
+    }
+  }, [fatura, aImprimir, recarregarImpressao]);
+
   const documentos = (lista?.documentos || []).filter((d) => casaComAPesquisaPos(d, pesquisa));
 
   return (
@@ -545,6 +605,9 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
                 onCopiar={copiar}
                 onVoltar={() => setAbertaId(null)}
                 onNotaCredito={() => setNotaCredito(true)}
+                estadoImpressao={estadoImpressao}
+                onImprimir={imprimir}
+                aImprimir={aImprimir}
               />
             )
           ) : (

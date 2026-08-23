@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import {
   Wallet, Info, BanknoteArrowDown, BanknoteArrowUp, Store, DoorOpen, GraduationCap, Lock, LogOut,
@@ -16,9 +16,11 @@ import PosCampoValor from './PosCampoValor';
 import PosFaixaModo from './PosFaixaModo';
 import PosResumoDoTurno from './PosResumoDoTurno';
 import PosFaturacao from './PosFaturacao';
+import useEstadoDaImpressao from './useEstadoDaImpressao';
 import {
   registarMovimento, getPontoDeCaixa, detalhesErroPos, eurosPos,
-  temMaisDe2CasasDecimaisPos,
+  temMaisDe2CasasDecimaisPos, abrirGavetaPos, razaoDeNaoImprimir,
+  avisoDaFilaDeImpressao,
 } from '@/lib/pos';
 
 const formatarData = (isoString) => {
@@ -192,6 +194,39 @@ export default function PosMenuCaixa({
   onContaCopiada,
 }) {
   const [dialogoMovimento, setDialogoMovimento] = useState(null); // 'entrada' | 'saida' | null
+  const [aAbrirGaveta, setAAbrirGaveta] = useState(false);
+  // **Cada ecrã com botões de imprimir pergunta o seu estado.** Já esteve
+  // perguntado uma vez no `PosApp` e descido por props, e isso deixava um
+  // buraco que nenhum teste tapava: bastava alguém esquecer a prop num dos
+  // ramos para os botões ficarem mortos para sempre, com o ecrã a dizer «a
+  // perguntar…» o dia inteiro. Três pedidos a um endpoint que devolve quatro
+  // números, de 20 em 20 segundos, custam menos do que essa avaria.
+  const { estado: estadoImpressao, recarregar: recarregarImpressao } =
+    useEstadoDaImpressao();
+  const razaoDeNaoAbrirGaveta = razaoDeNaoImprimir({
+    estado: estadoImpressao, aImprimir: aAbrirGaveta,
+  });
+  const avisoDaFila = avisoDaFilaDeImpressao(estadoImpressao);
+
+  // Não diz "a gaveta abriu": diz que o pedido foi para a fila. Quem abre a
+  // gaveta é a impressora da loja, e este ecrã não a vê. O impulso vale DOIS
+  // minutos (`impressao._VALIDADE_MINUTOS`) — um que chegasse dez minutos
+  // atrasado abria a gaveta do dinheiro com ninguém à frente dela.
+  const abrirGaveta = useCallback(async () => {
+    if (aAbrirGaveta) return;
+    setAAbrirGaveta(true);
+    try {
+      await abrirGavetaPos();
+      toast.success('Pedido de abertura enviado à impressora do balcão.');
+    } catch (error) {
+      const { mensagem } = detalhesErroPos(
+        error, 'Não foi possível pedir a abertura da gaveta.');
+      toast.error(mensagem);
+    } finally {
+      setAAbrirGaveta(false);
+      recarregarImpressao();
+    }
+  }, [aAbrirGaveta, recarregarImpressao]);
   const [estadoAberto, setEstadoAberto] = useState(false);
   const [pontoAberto, setPontoAberto] = useState(false);
 
@@ -240,10 +275,30 @@ export default function PosMenuCaixa({
             <DropdownMenuItem onSelect={() => setPontoAberto(true)}>
               <Store className="h-4 w-4 mr-2" /> Ponto de Caixa
             </DropdownMenuItem>
-            <DropdownMenuItem disabled className="opacity-60">
+            {/* **A gaveta abre PELA IMPRESSORA** — é um impulso ESC/POS pelo
+                cabo da gaveta, não um aparelho à parte (é assim que está
+                montado nas lojas). Por isso passa pela mesma fila que o papel:
+                sem programa de impressão a ouvir, não abre — e diz-se, em vez
+                de a operadora ficar a carregar num botão morto. */}
+            <DropdownMenuItem
+              disabled={!!razaoDeNaoAbrirGaveta}
+              onSelect={(e) => { e.preventDefault(); abrirGaveta(); }}
+              className={razaoDeNaoAbrirGaveta ? 'opacity-60' : undefined}
+              title={razaoDeNaoAbrirGaveta || undefined}
+            >
               <DoorOpen className="h-4 w-4 mr-2" /> Abrir Gaveta
-              <span className="ml-auto text-[10px] text-muted-foreground">Brevemente</span>
+              {aAbrirGaveta && <Loader2 className="ml-auto h-3.5 w-3.5 animate-spin" />}
             </DropdownMenuItem>
+            {razaoDeNaoAbrirGaveta && (
+              <p className="px-2 pb-1 text-[10px] text-muted-foreground leading-snug">
+                {razaoDeNaoAbrirGaveta}
+              </p>
+            )}
+            {avisoDaFila && (
+              <p className="px-2 pb-1 text-[10px] text-muted-foreground leading-snug">
+                {avisoDaFila}
+              </p>
+            )}
             <DropdownMenuItem disabled className="opacity-60">
               <GraduationCap className="h-4 w-4 mr-2" /> Modo de Formação
               <span className="ml-auto text-[10px] text-muted-foreground">Brevemente</span>

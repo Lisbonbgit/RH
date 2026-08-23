@@ -1,0 +1,12 @@
+# O que é preciso para COMPILAR o .exe, num PC Windows.
+#
+# O programa em si depende de UMA coisa fora da biblioteca padrão: o pywin32,
+# que é o que dá acesso ao spooler do Windows (`win32print`). Tudo o resto —
+# a janela (tkinter), os pedidos ao servidor (urllib), o ficheiro de
+# definições (json) — vem com o Python.
+#
+# Menos dependências não é modéstia: é para que daqui a dois anos, quando
+# alguém tiver de voltar a compilar isto, não haja cinco bibliotecas
+# desactualizadas entre ele e um .exe que funciona.
+pywin32>=306
+pyinstaller>=6.0

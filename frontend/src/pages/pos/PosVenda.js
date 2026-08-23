@@ -17,6 +17,7 @@ import PosDialogoProduto from './PosDialogoProduto';
 import PosFinalizar from './PosFinalizar';
 import PosPedidoGuiado, { resumoDoPedido } from './PosPedidoGuiado';
 import PosReparticao from './PosReparticao';
+import useEstadoDaImpressao from './useEstadoDaImpressao';
 import {
   getCatalogoPos, getTiposPagamentoPos, getVendaAberta, obterVenda, abrirVenda, juntarLinha,
   editarLinha, removerLinha, aplicarDescontoGlobal, cancelarVenda, finalizarVenda,
@@ -25,7 +26,7 @@ import {
   contaTravada, duvidaPorApurar, detalhesErroPos, semRespostaPos,
   ehTimeoutPos, TIMEOUT_PADRAO_MS, entregarContaAoGestor,
   razaoDeNaoComecar, razaoDaGrelhaMorta, MSG_CONTA_TRAVADA_CURTA,
-  contaDeOutraCaixa,
+  contaDeOutraCaixa, imprimirPedidoPos, razaoDeNaoImprimir,
   eurosPos as euros,
 } from '@/lib/pos';
 
@@ -593,6 +594,7 @@ function PainelConta({
   partesPorCobrar,
   onPerguntar, onLargar, onVoltarAsPartes, onTocarLinha,
   onFinalizar, onCancelar,
+  razaoDeNaoImprimirPedido, onImprimirPedido, aImprimirPedido,
 }) {
   const linhas = venda?.linhas || [];
   const totais = venda?.totais || {};
@@ -711,19 +713,33 @@ function PainelConta({
       </div>
 
       <div className="shrink-0 px-3 pt-3">
-        {/* O agente de impressão da loja é o Plano 3 e ainda não existe. O
-            botão fica à vista e desligado COM A RAZÃO — a mesma regra que o
-            menu Caixa já usa na gaveta e no modo de formação. Um "Imprimir"
-            que não imprime nada fazia a operadora carregar três vezes e dar
-            o cliente por servido sem pedido nenhum na cozinha. */}
-        <Button variant="outline" className="w-full h-12 justify-start" disabled>
-          <Printer className="h-5 w-5 mr-2" />
+        {/* **A ficha da cozinha, ANTES de a conta ser finalizada** — é o que a
+            operadora usa quando o cliente pede para começarem a fazer o copo
+            enquanto ele decide o resto.
+
+            Desligado quando não há programa de impressão a ouvir na loja, e a
+            dizer porquê: um "Imprimir" que não imprime nada fazia a operadora
+            carregar três vezes e dar o cliente por servido sem pedido nenhum
+            na cozinha. A decisão está em `razaoDeNaoImprimir` (lib/pos.js), e
+            não aqui, porque uma condição dentro de um botão não se corre em
+            teste nenhum. */}
+        <Button
+          variant="outline"
+          className="w-full h-12 justify-start"
+          onClick={onImprimirPedido}
+          disabled={!venda || !!razaoDeNaoImprimirPedido}
+        >
+          {aImprimirPedido
+            ? <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+            : <Printer className="h-5 w-5 mr-2" />}
           Imprimir Pedido
-          <span className="ml-auto text-[10px] uppercase tracking-wide">Brevemente</span>
         </Button>
         <p className="text-[11px] text-muted-foreground leading-snug mt-1.5">
-          O pedido passa a sair na impressora quando o agente de impressão da loja existir —
-          ainda não existe.
+          {razaoDeNaoImprimirPedido
+            || (!venda
+              ? 'Não há conta nenhuma à frente para mandar à cozinha.'
+              : 'Manda a ficha desta conta para a impressora da cozinha, sem a '
+                + 'finalizar.')}
         </p>
       </div>
 
@@ -872,6 +888,36 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
   const [documentoRecuperado, setDocumentoRecuperado] = useState(false);
   const [erroEmissao, setErroEmissao] = useState(null);
   const [aConfirmarCancelar, setAConfirmarCancelar] = useState(false);
+  const [aImprimirPedido, setAImprimirPedido] = useState(false);
+  // Ver a nota igual no PosMenuCaixa: cada ecrã pergunta o seu.
+  const { estado: estadoImpressao, recarregar: recarregarImpressao } =
+    useEstadoDaImpressao();
+  const razaoDeNaoImprimirPedido = razaoDeNaoImprimir({
+    estado: estadoImpressao, aImprimir: aImprimirPedido,
+  });
+
+  // **A ficha da cozinha, sem finalizar a conta.** Põe o trabalho na fila do
+  // servidor — não diz "impresso", que é uma afirmação sobre uma impressora
+  // que este ecrã não vê. Quem imprime é o programa da loja.
+  //
+  // Não trava a conta nem toca em dinheiro nenhum: é papel. Duas vezes no
+  // botão são duas fichas, de propósito (o servidor usa chave nova de cada
+  // vez) — a ficha caiu, molhou-se, a cozinha perdeu-a.
+  const imprimirPedido = useCallback(async () => {
+    if (!venda || aImprimirPedido) return;
+    setAImprimirPedido(true);
+    try {
+      await imprimirPedidoPos(venda.id);
+      toast.success('Pedido na fila da impressora da cozinha.');
+    } catch (error) {
+      const { mensagem } = detalhesErroPos(
+        error, 'Não foi possível mandar este pedido para a cozinha.');
+      toast.error(mensagem);
+    } finally {
+      setAImprimirPedido(false);
+      recarregarImpressao();
+    }
+  }, [venda, aImprimirPedido, recarregarImpressao]);
 
   // As contas TRAVADAS que ela largou para servir o cliente seguinte —
   // `[{ id, total, peloServidor }]`, o mínimo para a nota do painel poder dizer
@@ -2371,6 +2417,9 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
               setVista('finalizar');
             }}
             onCancelar={() => setAConfirmarCancelar(true)}
+            razaoDeNaoImprimirPedido={razaoDeNaoImprimirPedido}
+            onImprimirPedido={imprimirPedido}
+            aImprimirPedido={aImprimirPedido}
           />
         )}
       </aside>
