@@ -628,6 +628,24 @@ export const eurosComSinal = (valor) => {
 // tabela deixa de fechar: base + IVA não dá o total. Medido ao balcão:
 // «XPTO (?) | 1 | — | — | € 1,15» e o rodapé a somar 9,03 + 1,17 contra um
 // total de 11,35, sem uma palavra. Lê-se como um total partido.
+// **A gaveta que o servidor diz estar ABAIXO DE ZERO.** É rara e é a leitura
+// mais perigosa do Z, porque a linha que vem a seguir mente sozinha: com
+// `esperado` a −25,86 € e a gaveta contada a 0,00, a `diferenca` é **+25,86 €**
+// e desenha-se exactamente como uma SOBRA.
+//
+// Um movimento já não lá chega — o servidor recusa a saída que tira mais do que
+// está na gaveta (`caixa.py::registar_movimento`). O que ainda lá chega é uma
+// DEVOLUÇÃO em dinheiro maior do que as vendas em dinheiro do turno, e essa não
+// se recusa: é um documento fiscal (ver `nota_credito.pagamentos_da_fatura`).
+//
+// `null` e um campo ausente NÃO são negativos — «não veio» não pode acender um
+// aviso sobre dinheiro (o `Number(null)` é 0 e o `Number(undefined)` é NaN, e
+// os dois caem fora por `Number.isFinite`).
+export const gavetaAbaixoDeZero = (resumo) => {
+  const n = resumo?.esperado;
+  return typeof n === 'number' && Number.isFinite(n) && n < 0;
+};
+
 export const temTaxaDesconhecida = (mapa) =>
   (mapa || []).some((linha) => linha?.taxa === null || linha?.taxa === undefined);
 

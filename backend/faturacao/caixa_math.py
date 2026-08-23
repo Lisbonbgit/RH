@@ -71,6 +71,37 @@ def tirado_da_gaveta_a_mais(vendas_dinheiro: float) -> float:
     return max(0, -_centimos(vendas_dinheiro)) / 100.0
 
 
+def acima_do_que_ha_na_gaveta(na_gaveta: float, saida: float) -> float:
+    """**Quanto é que uma saída de dinheiro passa o que está na gaveta** —
+    `0.00` quando cabe.
+
+    Um turno não pode tirar da gaveta mais do que lá está, e até aqui podia:
+    `PedidoMovimento.valor` só exigia `gt=0` e 2 casas decimais. Medido nas
+    funções reais do fecho — fundo 50,00 €, vendas em dinheiro 24,14 €, uma
+    saída de **100,00 €** (o `100` onde ia `10,00`):
+
+        esperado(50,00 · 24,14 · saída 100,00) = **−25,86**
+        diferenca(−25,86 · contado 0,00)       = **+25,86**
+
+    e o Z que a operadora assina lê «Deve estar na gaveta € -25,86 … Contado
+    na gaveta € 0,00 … Diferença + € 25,86». **Uma gaveta vazia assinada como
+    SOBRA.** Com 1000,00 em vez de 100,00 são 925,86 € de sobra.
+
+    **Porque é este o limite, e não um tecto em euros.** Um tecto é um número
+    inventado: o depósito de uma sexta-feira é maior do que o de uma terça, e
+    uma configuração que estorva levanta-se e nunca mais lá volta. Este limite
+    sai de um facto do próprio turno — o que está mesmo na gaveta — e por isso
+    aperta exactamente quando tem de apertar. Um segundo par de olhos também
+    não é opção: é UM PC e UMA operadora por loja, a segunda pessoa não
+    existe.
+
+    Em cêntimos INTEIROS, como todo o dinheiro da casa: `74.14 - 74.14` em
+    vírgula flutuante não dá zero de forma fiável, e um cêntimo fantasma aqui
+    recusava um depósito legítimo de tudo o que lá está.
+    """
+    return max(0, _centimos(saida) - _centimos(na_gaveta)) / 100.0
+
+
 def devolucoes_acima_do_recebido(notas_credito: List[Dict] = None) -> float:
     """**O leitor que faltava a `nota_credito.devolucao.acima_do_recebido`.**
 

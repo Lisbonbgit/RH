@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   eurosPos, eurosComSinal, haPagamentosPorRegistar, temTaxaDesconhecida,
-  tirouDaGavetaAMais, haDevolucoesAcimaDoRecebido,
+  tirouDaGavetaAMais, haDevolucoesAcimaDoRecebido, gavetaAbaixoDeZero,
 } from '@/lib/pos';
 
 // Os números de um turno, desenhados uma única vez.
@@ -102,6 +102,10 @@ export default function PosResumoDoTurno({ resumo }) {
   // como todas as deste ecrã, e os números vêm somados do servidor.
   const tirouAMais = tirouDaGavetaAMais(resumo);
   const devolucoesAcima = haDevolucoesAcimaDoRecebido(resumo);
+  // **O esperado da gaveta abaixo de zero** — a leitura mais perigosa deste
+  // ecrã, e a que não tem nada a ver com as duas de cima: aqui não é «saiu
+  // dinheiro a mais», é «a linha da DIFERENÇA vai mentir a seguir».
+  const gavetaNegativa = gavetaAbaixoDeZero(resumo);
 
   // **Um resumo ausente não se desenha como um turno de zeros.** Medido: com
   // `resumo` a `undefined` (o servidor não respondeu, o campo mudou de nome), o
@@ -137,6 +141,32 @@ export default function PosResumoDoTurno({ resumo }) {
           <LinhaValor label="Saídas" valor={`− ${euros(resumo?.saidas)}`} />
           <LinhaValor label="Deve estar na gaveta" valor={euros(resumo?.esperado)} destaque />
         </div>
+        {/* **Uma gaveta que "deve" ter menos de zero, e a linha que mente por
+            baixo dela.** Com `esperado` a −25,86 € e a gaveta contada a 0,00,
+            a diferença do Z é +25,86 € — desenhada exactamente como uma
+            SOBRA, no papel que a operadora assina. A soma dela é
+            «Deve estar na gaveta € -25,86 · Contado € 0,00 · Diferença
+            + € 25,86», e lida com pressa é uma gaveta em ordem.
+
+            A porta por onde isto entrava mais depressa — uma sangria mal
+            digitada — está fechada no servidor (`caixa.py` recusa uma saída
+            maior do que o que está na gaveta). A que fica aberta é uma
+            DEVOLUÇÃO em dinheiro maior do que as vendas em dinheiro do
+            turno, e essa não se recusa: é um documento fiscal. Por isso a
+            frase, e por isso ela fala da DIFERENÇA e não do que saiu — as
+            duas de baixo já falam disso, e nenhuma delas avisa que o número
+            seguinte se lê ao contrário. */}
+        {gavetaNegativa && (
+          <p
+            className="text-xs text-destructive pt-1"
+            data-testid="gaveta-abaixo-de-zero"
+          >
+            A gaveta deve fechar ABAIXO DE ZERO: saiu mais dinheiro do que este
+            turno lá pôs. Uma diferença positiva no fecho NÃO é sobra — é o que
+            falta para a gaveta chegar a zero. Conte a gaveta na mesma e mostre
+            isto ao gestor.
+          </p>
+        )}
         {/* **O aviso que faltava, e é o que impede a gaveta de bater certo
             estando errada.** Um turno só pode tirar da gaveta o que lá pôs.
             Medido no servidor — fatura de 24,14 € paga 5,00 em dinheiro +

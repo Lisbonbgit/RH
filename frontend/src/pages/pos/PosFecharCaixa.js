@@ -9,7 +9,7 @@ import PosCampoValor from './PosCampoValor';
 // duas cópias do mesmo desenho, e o Z e o Ponto de Caixa mostram agora os
 // mesmos números lado a lado: dois desenhos a divergir seriam a mesma
 // informação a parecer duas coisas diferentes.
-import PosResumoDoTurno, { euros, LinhaValor } from './PosResumoDoTurno';
+import PosResumoDoTurno, { euros, comSinal, LinhaValor } from './PosResumoDoTurno';
 import {
   fecharCaixa, getContasAbertasDaCaixa, detalhesErroPos, temMaisDe2CasasDecimaisPos,
 } from '@/lib/pos';
@@ -423,9 +423,25 @@ export default function PosFecharCaixa({ aberto, onFechar, caixa, sessao, onFech
 
             <div className="divide-y">
               <LinhaValor label="Contado na gaveta" valor={euros(resultado.contado)} destaque />
+              {/* **O sinal sai do VALOR, como em toda a janela.** Esta linha
+                  escrevia-o à mão — um `+` colado ao euro quando o número era
+                  positivo — e era a única linha de dinheiro do POS a fazê-lo. Isso
+                  punha TRÊS convenções no mesmo Z: «Vendas em dinheiro − €
+                  15,40» (o traço à frente, do `eurosComSinal`), «Diferença +€
+                  10,20» (o mais colado) e «Diferença € -4,60» (o menos por
+                  DENTRO do número, com o hífen do teclado que o
+                  `toLocaleString` desce). E é precisamente a linha onde a
+                  operadora decide se justifica uma FALTA ou uma SOBRA, a
+                  última que lê antes de assinar: com pressa, «€ -4,60» lê-se
+                  «€ 4,60».
+
+                  O zero fica «+ € 0,00», a mesma convenção das "Entradas" e
+                  das "Vendas em dinheiro" a zero duas linhas acima — nada
+                  falta e nada sobra. Inventar aqui um quarto desenho só para
+                  o zero era voltar ao princípio. */}
               <LinhaValor
                 label="Diferença"
-                valor={`${resultado.diferenca > 0 ? '+' : ''}${euros(resultado.diferenca)}`}
+                valor={comSinal(resultado.diferenca)}
                 destaque
               />
             </div>

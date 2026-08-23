@@ -37,12 +37,45 @@ function DialogoMovimento({ tipo, aberto, onFechar, caixaId, onRegistado }) {
   const [valor, setValor] = useState('');
   const [motivo, setMotivo] = useState('');
   const [aEnviar, setAEnviar] = useState(false);
+  // Quanto está na gaveta AGORA — `null` enquanto se pergunta, `{ esperado }`
+  // depois, `{ erro }` se a pergunta falhou. Os três distintos de propósito:
+  // "não se sabe" e "está vazia" não podem ter o mesmo aspecto num ecrã que
+  // autoriza tirar dinheiro.
+  const [naGaveta, setNaGaveta] = useState(null);
   const motivoObrigatorio = tipo === 'saida';
   const titulo = tipo === 'entrada' ? 'Entrada de Dinheiro' : 'Saída de Dinheiro';
 
   useEffect(() => {
     if (aberto) { setValor(''); setMotivo(''); }
   }, [aberto]);
+
+  // **O número que evita o engano tem de estar à frente dela ENQUANTO
+  // escreve.** O servidor recusa a saída que tira mais do que está na gaveta
+  // (`caixa.py::registar_movimento`), e essa recusa é a defesa — mas chega
+  // depois do toque, e uma recusa sem contexto lê-se como uma avaria. Aqui
+  // está o mesmo número que o Ponto de Caixa mostra, vindo SOMADO do servidor
+  // (`GET /pos/caixa/ponto`, só leitura): o browser não faz aritmética de
+  // dinheiro, e por isso o ecrã não desconta o que ela está a escrever — diz
+  // o que lá está, e a conta é dela.
+  //
+  // **Só nas SAÍDAS.** Uma entrada não pode passar limite nenhum, e perguntar
+  // à toa é um pedido por cada troco reforçado.
+  useEffect(() => {
+    if (!aberto || tipo !== 'saida' || !caixaId) return undefined;
+    let vivo = true;
+    setNaGaveta(null);
+    getPontoDeCaixa(caixaId)
+      .then(({ data }) => { if (vivo) setNaGaveta({ esperado: data?.esperado }); })
+      .catch((error) => {
+        if (!vivo) return;
+        setNaGaveta({
+          erro: detalhesErroPos(
+            error, 'Não foi possível saber quanto está na gaveta.',
+          ).mensagem,
+        });
+      });
+    return () => { vivo = false; };
+  }, [aberto, tipo, caixaId]);
 
   const podeSubmeter =
     valor !== '' && !temMaisDe2CasasDecimaisPos(valor) && Number(valor) > 0 &&
@@ -74,6 +107,27 @@ function DialogoMovimento({ tipo, aberto, onFechar, caixaId, onRegistado }) {
       <DialogContent>
         <DialogHeader><DialogTitle>{titulo}</DialogTitle></DialogHeader>
         <div className="space-y-4 py-2">
+          {/* Por CIMA do campo, e não por baixo: é para ser lido antes de o
+              dedo escrever o primeiro algarismo. */}
+          {motivoObrigatorio && (
+            <div className="flex items-start gap-2 rounded-lg bg-muted p-3 text-sm text-muted-foreground">
+              {naGaveta === null ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin shrink-0 mt-0.5" />
+                  <span>A ver quanto está na gaveta…</span>
+                </>
+              ) : (
+                <>
+                  <HelpCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>
+                    {naGaveta.erro
+                      ? `${naGaveta.erro} O servidor recusa uma saída maior do que o que lá está — se esta for recusada, é por isso.`
+                      : `Na gaveta estão ${eurosPos(naGaveta.esperado)} (fundo + vendas em dinheiro + entradas − saídas deste turno). O servidor recusa uma saída maior do que isto.`}
+                  </span>
+                </>
+              )}
+            </div>
+          )}
           <PosCampoValor id={`valor-${tipo}`} label="Valor" valor={valor} onChange={setValor} autoFocus disabled={aEnviar} />
           <div className="space-y-1.5">
             <Label htmlFor={`motivo-${tipo}`}>Motivo{motivoObrigatorio ? '' : ' (opcional)'}</Label>

@@ -46,6 +46,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .auth import gestor_atual
 from .caixa_math import (
     _centimos,
+    acima_do_que_ha_na_gaveta,
     devolucoes_acima_do_recebido,
     diferenca,
     esperado,
@@ -108,6 +109,18 @@ _MSG_MOVIMENTO_NAO_REGISTADO = (
     "estado no instante exacto em que ele ia entrar. Ele NÃO entrou em "
     "nenhum Z e nada ficou registado — veja o ecrã da caixa e registe-o "
     "outra vez na sessão que lá estiver."
+)
+# **A saída que tira da gaveta mais do que lá está.** Ver
+# `caixa_math.acima_do_que_ha_na_gaveta` para o defeito medido e para a razão
+# de o limite ser este e não um tecto em euros. A mensagem diz os TRÊS
+# números — o que há, o que se pediu, o que falta — porque uma recusa que só
+# diga "não é possível" manda a operadora tentar outra vez com o mesmo valor.
+_MSG_SAIDA_MAIOR_DO_QUE_A_GAVETA = (
+    "Não é possível tirar %.2f €: na gaveta há %.2f € (fundo de maneio + "
+    "vendas em dinheiro + entradas − saídas deste turno) e faltam %.2f €. "
+    "Confirme o valor — um zero a mais numa sangria põe o Z a acusar uma "
+    "SOBRA numa gaveta vazia. Se o dinheiro saiu mesmo assim, não registe "
+    "aqui: conte a gaveta e chame o gestor."
 )
 _MSG_FECHO_EM_CONFLITO = (
     "Esta sessão já foi fechada por outro pedido — o Z já foi emitido, "
@@ -478,6 +491,29 @@ async def _porque_o_movimento_nao_entrou(db, sessao_id: str) -> str:
     return _MSG_MOVIMENTO_NAO_REGISTADO
 
 
+async def _dinheiro_na_gaveta(db, sessao: Dict) -> float:
+    """Quanto está na gaveta desta sessão NESTE instante — o mesmo `esperado`
+    que o Ponto de Caixa mostra às 15h e o Z assina às 23h, pela MESMA função.
+
+    Não há aqui uma segunda soma da gaveta: são as três leituras do
+    `ponto_de_caixa` (movimentos confirmados, vendas emitidas, notas de
+    crédito emitidas) a alimentar o `caixa_math.esperado`. Uma soma paralela
+    "para validar a saída" acabaria por discordar da do Z, e a discordância
+    apareceria numa recusa ao balcão sem ninguém saber qual das duas está
+    certa.
+
+    É uma leitura a mais na rota do movimento, e vale a pena: um movimento de
+    caixa acontece meia dúzia de vezes por turno, e sem esta pergunta não há
+    forma de saber se a saída cabe."""
+    movimentos = await _movimentos_que_contam(db, sessao)
+    vendas = await db[COLECOES["vendas"]].find(
+        {"sessao_id": sessao["id"], "estado": "emitida"}
+    ).to_list(10000)
+    notas_credito = await _notas_de_credito_do_turno(db, sessao)
+    return esperado(
+        sessao.get("fundo"), soma_vendas_dinheiro(vendas, notas_credito), movimentos)
+
+
 @router.post("/pos/caixa/movimento", status_code=201)
 async def registar_movimento(
     dados: PedidoMovimento, operador: Dict = Depends(operador_atual)
@@ -485,6 +521,30 @@ async def registar_movimento(
     db = obter_db()
     await _obter_caixa_da_loja(db, dados.caixa_id, operador["loja_id"])
     sessao = await _sessao_aberta(db, dados.caixa_id)
+
+    # **UM TURNO NÃO TIRA DA GAVETA MAIS DO QUE LÁ ESTÁ.** A saída de 100,00 €
+    # onde ia 10,00 punha o `esperado` em −25,86 €, e a gaveta contada a zero
+    # fechava com uma DIFERENÇA POSITIVA de 25,86 € — uma gaveta vazia
+    # assinada como sobra, no Z. Ver `caixa_math.acima_do_que_ha_na_gaveta`
+    # para os números medidos e para a razão de o limite ser este.
+    #
+    # Só as SAÍDAS: uma entrada exagerada acusa uma falta enorme no Z, que é
+    # visível e obriga a explicar — o defeito era o contrário.
+    #
+    # A leitura é de AGORA e a escrita vem a seguir; entre as duas cabe, em
+    # teoria, outra saída do mesmo turno. Ao balcão isso não existe (é um PC e
+    # uma operadora por loja), e o pior caso de uma corrida assim é a gaveta
+    # ficar negativa pela diferença das duas — que é o que este guarda já
+    # tornou impossível de acontecer com UM movimento, que é como ele acontece.
+    if dados.tipo == "saida":
+        na_gaveta = await _dinheiro_na_gaveta(db, sessao)
+        a_mais = acima_do_que_ha_na_gaveta(na_gaveta, dados.valor)
+        if a_mais > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=_MSG_SAIDA_MAIOR_DO_QUE_A_GAVETA
+                % (dados.valor, na_gaveta, a_mais),
+            )
 
     movimento = {
         "id": str(uuid.uuid4()),
