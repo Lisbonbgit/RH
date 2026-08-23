@@ -243,3 +243,54 @@ def test_existe_indice_esparso_de_conta_mae_id_em_fat_vendas():
     ]
     assert len(de_vendas) == 1
     assert de_vendas[0].get("sparse") is True
+
+
+def test_existe_indice_unico_sobre_a_chave_do_trabalho_de_impressao():
+    """**A idempotência da fila de impressão** (`impressao.py::enfileirar`).
+
+    A emissão da Fatura Simplificada é idempotente por desenho: uma segunda
+    tentativa da mesma venda (um retry do POS, a retoma de uma reserva
+    incerta, a reconciliação de uma reserva presa) encontra o documento já
+    gravado e devolve-o tal e qual. Sem este índice, essa segunda passagem
+    enfileirava um SEGUNDO talão do mesmo cliente e uma SEGUNDA ficha da
+    mesma cozinha — e a operadora ficava com dois papéis iguais na mão sem
+    perceber qual era qual.
+
+    É este índice, e não uma leitura antes de inserir, que decide a corrida
+    real — mesmo raciocínio do único de `fat_refs_fiscais.ext_ref`."""
+    de_trabalhos = [
+        opcoes
+        for (coleccao, chaves, opcoes) in INDICES
+        if coleccao == "fat_trabalhos_impressao" and chaves == [("chave", 1)]
+    ]
+    assert len(de_trabalhos) == 1
+    assert de_trabalhos[0].get("unique") is True
+
+
+def test_a_pergunta_do_programa_da_loja_tem_indice_e_traz_a_ORDEM():
+    """`impressao.recolher` corre em CICLO, de poucos em poucos segundos, em
+    cinco lojas ao mesmo tempo, o dia inteiro: `{loja_id, estado}` ordenado
+    por `criado_em`. Sem índice era um varrimento completo da colecção a cada
+    volta.
+
+    E o `criado_em` faz parte da CHAVE, não é um extra: é ele que serve a
+    ordenação sem uma passagem à parte — e a ordem é a que faz a cozinha
+    receber os pedidos pela ordem em que foram feitos."""
+    assert ("fat_trabalhos_impressao",
+            [("loja_id", 1), ("estado", 1), ("criado_em", 1)], {}) in INDICES
+
+
+def test_a_fila_de_impressao_apaga_se_sozinha_e_e_a_UNICA_que_o_faz():
+    """O TTL. Esta colecção guarda os BYTES de cada talão de cinco lojas; sem
+    ele crescia para sempre. Nada de fiscal se perde — o documento e o talão
+    certificado ficam em `fat_documentos`.
+
+    E é a única: um TTL em `fat_documentos`, `fat_vendas` ou
+    `fat_refs_fiscais` apagava registo fiscal, e a reserva de uma venda
+    emitida é o que sustenta a idempotência da emissão para sempre."""
+    com_ttl = [
+        (coleccao, chaves)
+        for (coleccao, chaves, opcoes) in INDICES
+        if "expireAfterSeconds" in opcoes
+    ]
+    assert com_ttl == [("fat_trabalhos_impressao", [("apagar_depois_de", 1)])]

@@ -2023,6 +2023,36 @@ async def finalizar(
             raise HTTPException(status_code=502, detail="Vendus indisponível: %s" % e)
 
     venda_actualizada = await db[COLECOES["vendas"]].find_one({"id": venda_id})
+
+    # **O PAPEL — depois de o documento fiscal existir, e nunca antes.**
+    #
+    # Duas linhas de trabalho para a fila de impressão (`impressao.py`): o
+    # talão certificado do cliente na impressora do balcão e o pedido na da
+    # cozinha. É o único ponto em que esta rota toca no assunto, e é
+    # deliberadamente o último: o talão é CONSEQUÊNCIA da fatura, nunca
+    # condição dela.
+    #
+    # Nada aqui pode falhar para fora — `impressao.enfileirar` engole tudo o
+    # que lhe aconteça (ver a docstring de lá) e este `try` é a segunda rede,
+    # para o caso de rebentar antes de lá chegar. Uma emissão bem sucedida,
+    # com uma Fatura Simplificada REAL já entregue à Autoridade Tributária, a
+    # devolver 500 por causa do papel era o pior desfecho possível: o ecrã lê
+    # um 500 como "não saiu nada" e convida a operadora a emitir outra vez.
+    #
+    # O import é LOCAL pela mesma razão que os de `caixa.py` e do
+    # `_verificar_vendas_dinheiro` aqui em cima: mantém o núcleo fiscal a não
+    # depender, à importação, de um módulo cuja avaria não pode travar uma
+    # venda.
+    try:
+        from .impressao import enfileirar_venda_emitida
+        await enfileirar_venda_emitida(db, venda_actualizada or venda, documento)
+    except Exception as e:  # noqa: BLE001 — perde-se o papel, nunca o registo
+        logger.error(
+            "[faturacao] a fatura %s saiu mas não foi possível pôr o papel na "
+            "fila de impressão: %s. O documento fiscal está gravado e "
+            "reimprime-se pelo separador Faturação.", venda_id, e,
+        )
+
     resposta = _venda_publica(venda_actualizada)
     resposta["pagamentos"] = venda_actualizada.get("pagamentos", [])
     resposta["cliente_nif"] = venda_actualizada.get("cliente_nif")

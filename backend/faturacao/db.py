@@ -62,6 +62,19 @@ COLECOES = {
     # documento de origem tornava a segunda impossível de emitir. O `id` é o
     # da intenção (índice único abaixo) e a referência externa deriva dele.
     "notas_credito": "fat_notas_credito",
+    # A FILA DE IMPRESSÃO (`faturacao/impressao.py`): o que tem de sair em
+    # papel na loja e ainda não saiu. Um documento por PAPEL — o talão do
+    # cliente, o pedido da cozinha, o Z, a segunda via — mais o impulso que
+    # abre a gaveta, que não é papel nenhum mas sai pelo mesmo caminho.
+    #
+    # **Não é um registo fiscal e não substitui nenhum.** O documento fiscal
+    # vive em `fat_documentos` para sempre; isto é o papel, e o papel
+    # reimprime-se. É por isso que esta colecção tem um índice TTL (abaixo) e
+    # nenhuma outra do módulo tem: ao fim de uma semana, um trabalho já
+    # impresso não responde a pergunta nenhuma que `fat_documentos` não
+    # responda melhor, e sem o TTL a colecção guardava os BYTES de cada talão
+    # de cinco lojas para sempre.
+    "trabalhos_impressao": "fat_trabalhos_impressao",
 }
 
 _cliente = None  # type: Optional[AsyncIOMotorClient]
@@ -294,6 +307,41 @@ INDICES = [
     # (`caixa._notas_de_credito_do_turno`), e a nota em curso que trava o
     # fecho (`caixa._nota_de_credito_em_curso`).
     ("fat_notas_credito", [("sessao_id", 1)], {}),
+    # **A IDEMPOTÊNCIA DA FILA DE IMPRESSÃO** (`impressao.py::enfileirar`), e
+    # a mesma forma de garantia que `fat_refs_fiscais.ext_ref` dá à emissão:
+    # o que já está na fila não entra outra vez.
+    #
+    # A emissão da Fatura Simplificada é idempotente por desenho — uma
+    # segunda tentativa da mesma venda encontra o documento já gravado e
+    # devolve-o tal e qual (`fiscal._gravar_documento`). Sem este índice,
+    # essa segunda tentativa (um retry do POS, uma retoma de reserva incerta,
+    # a reconciliação de uma reserva presa) enfileirava um SEGUNDO talão do
+    # mesmo cliente e uma SEGUNDA ficha da mesma cozinha, e a operadora
+    # ficava com dois papéis iguais sem perceber qual era qual.
+    #
+    # A chave é escolhida por quem enfileira, e é aí que se decide o que pode
+    # repetir: `talao:{documento_id}` e `pedido:{venda_id}` são fixos (a mesma
+    # venda nunca produz dois), e a segunda via, a gaveta e o pedido pedido à
+    # mão trazem um uuid novo de propósito — ali, dois toques no botão são
+    # duas coisas.
+    ("fat_trabalhos_impressao", [("chave", 1)], {"unique": True}),
+    # A pergunta do programa da loja, e a única que corre em ciclo: "o que é
+    # que esta loja tem à espera?", pela ordem de chegada
+    # (`impressao.recolher`). Com poucos segundos entre cada pergunta, isto
+    # sem índice era um varrimento completo da colecção a cada volta, em
+    # cinco lojas ao mesmo tempo, o dia inteiro.
+    ("fat_trabalhos_impressao", [("loja_id", 1), ("estado", 1), ("criado_em", 1)], {}),
+    # **O TTL — a única colecção do módulo que se apaga sozinha.** O campo é
+    # uma DATA a sério (e não a string ISO que o resto do módulo grava): o
+    # Mongo só sabe expirar documentos por um campo do tipo Date, e um índice
+    # TTL sobre uma string não apaga nada — nem dá erro, o que é pior.
+    # `expireAfterSeconds: 0` quer dizer "apaga quando a data que lá está
+    # passar", e é `impressao.enfileirar` que a põe a uma semana de distância.
+    #
+    # Sete dias é para uma pessoa poder ir ver o que aconteceu ao papel de
+    # ontem ou da semana passada. Nada de fiscal se perde aqui — os
+    # documentos ficam em `fat_documentos`, e o talão certificado com eles.
+    ("fat_trabalhos_impressao", [("apagar_depois_de", 1)], {"expireAfterSeconds": 0}),
 ]
 
 
