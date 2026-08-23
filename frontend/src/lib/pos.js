@@ -1066,13 +1066,134 @@ export const razaoDeNaoCopiar = ({ contaEmCurso, documento }) => {
   return null;
 };
 
-// A frase do botão de imprimir, e a do da nota de crédito: os dois ficam à
-// vista e desligados, COM A RAZÃO — a mesma regra que o menu Caixa já usa na
-// gaveta e no modo de formação, e o PosVenda no "Imprimir Pedido".
+// A frase do botão de imprimir: fica à vista e desligado, COM A RAZÃO — a
+// mesma regra que o menu Caixa já usa na gaveta e no modo de formação, e o
+// PosVenda no "Imprimir Pedido". (O da nota de crédito saiu daqui: ela deixou
+// de ser "brevemente" e passou a ter ecrã — `PosNotaCredito.js`.)
 export const MSG_IMPRIMIR_BREVEMENTE =
   'O talão volta a sair na impressora quando o agente de impressão da loja existir — '
   + 'ainda não existe.';
 
-export const MSG_NOTA_DE_CREDITO_BREVEMENTE =
-  'A nota de crédito é a ronda seguinte. Até lá, um documento errado corrige-se no '
-  + 'Vendus e avisa-se o gestor.';
+// --- A NOTA DE CRÉDITO -------------------------------------------------------
+//
+// O ecrã que corrige uma Fatura Simplificada já entregue à AT, e devolve o
+// dinheiro. As três rotas de `faturacao/nota_credito.py`, e as decisões do ecrã
+// aqui em baixo — aqui, e não dentro do JSX, pela razão de sempre neste
+// ficheiro: uma condição escrita no meio de um botão não se corre em lado
+// nenhum, e um guarda que procure o TEXTO da frase fica verde com a condição
+// desligada por trás dela.
+
+// O que a fatura ainda deixa creditar, linha a linha.
+export const getNotaCreditoPos = (documentoId) =>
+  api.get(`/pos/documentos/${documentoId}/nota-credito`);
+
+// **O dinheiro das linhas escolhidas, somado pelo SERVIDOR.** Chamada a cada
+// mudança da selecção. Existe porque a alternativa era este ficheiro somar
+// euros ao lado de um servidor a somar cêntimos — e o número que divergisse ia
+// parar a uma nota de crédito real.
+export const preVisualizarNotaCreditoPos = (documentoId, linhas) =>
+  api.post(`/pos/documentos/${documentoId}/nota-credito/pre-visualizar`, { linhas });
+
+export const emitirNotaCreditoPos = (documentoId, corpo) =>
+  api.post(`/pos/documentos/${documentoId}/nota-credito`, corpo);
+
+// **A quantidade que a operadora escreveu, presa ao que a linha ainda tem.**
+//
+// Devolve sempre um número — nunca `NaN`, nunca `undefined`: é ele que vai no
+// pedido, e um `NaN` a caminho do servidor voltava como um 422 de validação de
+// tipo em vez da frase que diz o que fazer. O tecto é o `disponivel` que o
+// servidor mandou; quem RECUSA continua a ser a rota (o travão é dele), e isto
+// é só o campo a não deixar escrever um número que já se sabe recusado.
+export const quantidadeDaNotaPos = (escrito, disponivel) => {
+  const tecto = Number.isFinite(Number(disponivel)) ? Number(disponivel) : 0;
+  const texto = String(escrito ?? '').replace(',', '.').trim();
+  if (texto === '') return 0;
+  const n = Number(texto);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n > tecto ? tecto : n;
+};
+
+// As linhas seleccionadas no formato do pedido — as marcadas, com quantidade
+// positiva. Uma linha marcada com zero não vai: o servidor recusava-a com
+// «a quantidade tem de ser maior do que zero» e a operadora não saberia qual.
+export const linhasDaNotaPos = (linhas, escolhas) =>
+  (linhas || [])
+    .filter((li) => (escolhas || {})[li.indice]?.marcada)
+    .map((li) => ({
+      indice: li.indice,
+      quantidade: quantidadeDaNotaPos(escolhas[li.indice].quantidade, li.disponivel),
+    }))
+    .filter((li) => li.quantidade > 0);
+
+// **Uma linha já toda creditada NÃO se marca.** Fica na lista (some-la era pior:
+// a operadora procurava o artigo que o cliente traz na mão, não o encontrava, e
+// concluía que a fatura não era aquela) mas com a caixa morta e o porquê à
+// vista.
+export const linhaDaNotaCreditavel = (linha) => Number(linha?.disponivel || 0) > 0;
+
+export const MSG_NC_SEM_LINHAS =
+  'Marque os artigos que vai devolver — e a quantidade de cada um.';
+
+// O motivo não é uma formalidade nossa: a lei obriga a que uma nota de crédito
+// diga o que rectifica e porquê, e a API do Vendus recusa o documento sem ele.
+export const MSG_NC_SEM_MOTIVO =
+  'Escreva o motivo: a lei obriga a que a nota de crédito diga porque é que '
+  + 'corrige a fatura, e é isso que sai impresso.';
+
+// **A devolução segue o meio de pagamento** — a decisão do dono. Em dinheiro sai
+// da gaveta e o fecho conta-a; por Multibanco, Uber, Bolt ou Glovo fica
+// registada nesse meio e a gaveta não mexe.
+export const MSG_NC_SEM_DEVOLUCAO =
+  'Escolha por onde é que o dinheiro volta ao cliente — é isso que decide se '
+  + 'sai da gaveta ou do outro meio.';
+
+// **Porque é que «Emitir Nota de Crédito» está desligado — ou `null` quando não
+// está.** A ordem é a do dedo: primeiro o que falta escolher, depois o que falta
+// escrever.
+export const razaoDeNaoEmitirNotaCredito = ({ linhas, motivo, tipoPagamentoId, aEmitir }) => {
+  if (aEmitir) return 'A emitir a nota de crédito… não carregue outra vez.';
+  if ((linhas || []).length === 0) return MSG_NC_SEM_LINHAS;
+  if (!String(motivo || '').trim()) return MSG_NC_SEM_MOTIVO;
+  if (!tipoPagamentoId) return MSG_NC_SEM_DEVOLUCAO;
+  return null;
+};
+
+// **O que esta fatura RECEBEU no meio escolhido, quando não chega para a
+// devolução — ou `null` quando chega.**
+//
+// A regra do dono é «a devolução segue o meio de pagamento», e até aqui nada
+// no sistema a confrontava: uma fatura de 11,29 € paga 5,00 em dinheiro +
+// 6,29 em Multibanco deixava devolver os 9,85 € do açaí EM DINHEIRO, e o
+// esperado da gaveta caía de 55,00 para 45,15 € — abaixo do fundo inicial,
+// sem uma palavra em lado nenhum.
+//
+// O servidor não recusa (ver `nota_credito.pagamentos_da_fatura`: recusar por
+// meio fecha a porta sem abrir outra, porque uma nota credita LINHAS e as
+// mesmas linhas não se creditam duas vezes). O que ele faz é mandar os
+// pagamentos da fatura, e é esta frase que os põe à frente da operadora ANTES
+// do toque — em euros, com o número que vai faltar à gaveta.
+export const avisoDoMeioDeDevolucaoPos = ({ tipo, pagamentos, total }) => {
+  if (!tipo) return null;
+  const linha = (pagamentos || []).find(
+    (p) => p.tipo_pagamento_id === tipo.id);
+  const disponivel = Number(linha?.disponivel || 0);
+  const centimos = (v) => Math.round(Number(v || 0) * 100);
+  const excesso = centimos(total) - centimos(disponivel);
+  if (excesso <= 0) return null;
+  const meio = tipo.nome || 'este meio';
+  return `Esta fatura só tem ${eurosPos(disponivel)} por devolver em ${meio} `
+    + `e vai devolver ${eurosPos(total)}: saem ${eurosPos(excesso / 100)} `
+    + `${tipo.tipo_fiscal === 'NU' ? 'da gaveta' : `de ${meio}`} que esta `
+    + 'venda não pôs lá.';
+};
+
+// A frase por baixo do meio de devolução escolhido, e é o que a operadora
+// precisa de ler ANTES de emitir: o que vai acontecer à gaveta dela. O
+// `tipo_fiscal` vem do servidor com o tipo de pagamento — 'NU' é numerário.
+export const efeitoNaGavetaPos = (tipo) => {
+  if (!tipo) return null;
+  return tipo.tipo_fiscal === 'NU'
+    ? 'Sai da gaveta — entregue o dinheiro ao cliente. O fecho desta caixa já '
+      + 'conta com esta devolução.'
+    : `Fica registada em ${tipo.nome || 'este meio'} — não tire dinheiro da gaveta.`;
+};

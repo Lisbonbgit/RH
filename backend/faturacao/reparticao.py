@@ -97,3 +97,48 @@ def quantidade_para(valor_centimos: int, preco: float) -> float:
         "repartir esta linha perderia um cêntimo."
         % (CASAS_DA_QUANTIDADE, alvo, preco)
     )
+
+
+def parte_acumulada(
+    total_centimos: int, quantidade_total: int, quantidade_ate_aqui: int
+) -> int:
+    """Quanto vale, em cêntimos, **a primeira `quantidade_ate_aqui` de uma
+    linha** que vale `total_centimos` por `quantidade_total` — o repartidor
+    das notas de crédito PARCIAIS.
+
+    As quantidades vêm nos inteiros que valem a 5 casas decimais
+    (`nota_credito._quantidade_em_inteiros`), nunca em vírgula flutuante.
+
+    ## Porque não `repartir_centimos` nem `_distribuir_centimos`
+
+    Os dois repartem um total por partes que se conhecem TODAS ao mesmo
+    tempo — as pessoas de uma conta dividida, as linhas de um desconto
+    global. Uma fatura creditada em parciais não é isso: a segunda parcial
+    pode ser amanhã, e quem a calcula já não tem a primeira à frente para
+    lhe compensar o cêntimo. O que se reparte aqui reparte-se **no tempo**,
+    e a única forma de a soma fechar é cada parcial ser a DIFERENÇA de dois
+    acumulados — `parte_acumulada(…, antes + pedida) − parte_acumulada(…,
+    antes)`. Telescopa: creditada a linha inteira, em quantas vezes for, a
+    soma é `parte_acumulada(L, Q, Q) − parte_acumulada(L, Q, 0)`, que é
+    exactamente `L`.
+
+    O arredondamento é o meio-cêntimo para CIMA em aritmética inteira —
+    `(2·num + den) // (2·den)`, o mesmo idioma de
+    `mapa_imposto._base_em_centimos`, e pela mesma razão: `round()` sobre
+    floats faz arredondamento bancário sobre a representação binária.
+
+    **O que isto corrige, medido.** Uma linha de 10 × 0,05 € (0,50 €)
+    creditada em 100 fatias de 0,1 devolvia **1,00 € — o dobro**: cada
+    fatia valia `round(0,1 × 0,05, 2) = 0,01 €` por si só, e cem cêntimos
+    são um euro. Com o acumulado, as mesmas 100 fatias devolvem 0,50 €. E
+    em 4986 faturas ao acaso creditadas em duas parciais fraccionárias, a
+    soma devolvida diferia da fatura em 1279 delas (441 a mais, 838 a
+    menos, até 0,03 €); passa a zero.
+    """
+    if quantidade_total <= 0:
+        return 0
+    ate_aqui = max(0, min(int(quantidade_ate_aqui), int(quantidade_total)))
+    numerador = int(total_centimos) * ate_aqui
+    denominador = int(quantidade_total)
+    sinal = -1 if numerador < 0 else 1
+    return sinal * ((2 * abs(numerador) + denominador) // (2 * denominador))

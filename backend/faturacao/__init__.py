@@ -13,7 +13,9 @@ from .db import (  # noqa: F401
     COLECOES,
     criar_indices,
     indice_idempotencia_presente,
+    indice_notas_credito_presente,
     marcar_indice_idempotencia,
+    marcar_indice_notas_credito,
     obter_db,
 )
 
@@ -76,6 +78,14 @@ router.include_router(_modo)
 from .documentos import router as _documentos
 router.include_router(_documentos)
 
+# A nota de crédito, dentro de uma fatura do separador acima. Depois de
+# `documentos` porque é de lá que importa o âmbito da loja (`_documento_da_loja`)
+# e as linhas da fatura, e depois de `fiscal` porque partilha com ele a forma da
+# emissão (reservar antes de falar com o Vendus, verificar por referência
+# externa depois de um timeout).
+from .nota_credito import router as _nota_credito
+router.include_router(_nota_credito)
+
 
 async def arrancar():
     """Chamado pelo server.py no arranque.
@@ -130,6 +140,29 @@ async def arrancar():
             )
             indice_ok = False
         marcar_indice_idempotencia(indice_ok)
+        # A segunda reserva atómica do módulo, confirmada com o mesmo
+        # critério e dentro do mesmo limite de tempo: sem o único de
+        # `fat_notas_credito.id`, o duplo-toque no botão «Emitir Nota de
+        # Crédito» entrega DUAS notas reais à AT — e a rota recusa-se a
+        # emitir até isto estar confirmado (`nota_credito.py`).
+        try:
+            indice_nc_ok = await asyncio.wait_for(
+                indice_notas_credito_presente(db), timeout=LIMITE_INDICES_SEGUNDOS
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "[faturacao] verificação do índice das notas de crédito "
+                "excedeu %ss — tratada como ausente",
+                LIMITE_INDICES_SEGUNDOS,
+            )
+            indice_nc_ok = False
+        marcar_indice_notas_credito(indice_nc_ok)
+        if not indice_nc_ok:
+            logger.error(
+                "[faturacao] índice único de fat_notas_credito.id não "
+                "confirmado — o POS vai recusar emitir notas de crédito "
+                "até isto ser corrigido (ver faturacao.nota_credito)."
+            )
         if not indice_ok:
             logger.error(
                 "[faturacao] índice único de fat_refs_fiscais.ext_ref não "
@@ -138,6 +171,7 @@ async def arrancar():
             )
     except Exception as e:  # noqa: BLE001 — nada pode propagar daqui, ver docstring acima
         marcar_indice_idempotencia(False)
+        marcar_indice_notas_credito(False)
         logger.error("[faturacao] arranque do módulo falhou: %s", e)
 
 

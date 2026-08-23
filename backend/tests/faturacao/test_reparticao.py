@@ -1,5 +1,6 @@
 import pytest
-from faturacao.reparticao import quantidade_para, repartir_centimos
+from faturacao.reparticao import (
+    parte_acumulada, quantidade_para, repartir_centimos)
 
 
 def test_as_partes_somam_sempre_o_total():
@@ -107,3 +108,89 @@ def test_a_quantidade_recusa_quando_nenhum_candidato_bate_certo():
     verificação em si)."""
     with pytest.raises(ValueError):
         quantidade_para(1352, 1000.37)
+
+
+# --- `parte_acumulada`: as parciais de uma nota de crédito somam a linha ------
+#
+# A propriedade que faltava, e o defeito que ela fecha: creditar uma linha em
+# várias vezes devolvia mais (ou menos) do que a linha valia, porque cada
+# parcial arredondava o seu próprio meio-cêntimo para cima.
+
+
+def test_as_parciais_de_uma_linha_somam_sempre_a_LINHA():
+    """**A regra que não se negoceia, agora no tempo.** Uma linha creditada em
+    quantas parciais forem, por que ordem for, devolve exactamente o que a
+    fatura cobrou.
+
+    Sem isto, medido pelas rotas reais: uma linha de 10 × 0,05 € (0,50 €)
+    creditada em 100 fatias de 0,1 devolvia **1,00 €, o dobro** — e a regra
+    valia para qualquer preço."""
+    for total in range(0, 400, 7):
+        for quantidade in (1, 2, 3, 10):
+            unidades = quantidade * 100000  # 5 casas decimais, como o POS
+            for fatias in (1, 2, 3, 4, 7, 100):
+                cortes = [
+                    (unidades * i) // fatias for i in range(fatias + 1)]
+                partes = [
+                    parte_acumulada(total, unidades, cortes[i + 1])
+                    - parte_acumulada(total, unidades, cortes[i])
+                    for i in range(fatias)
+                ]
+                assert sum(partes) == total, (total, quantidade, fatias, partes)
+
+
+def test_a_linha_de_dez_a_cinco_centimos_em_cem_fatias_devolve_meio_euro():
+    """O caso nomeado, à letra: 10 × 0,05 € creditados em 100 fatias de 0,1."""
+    unidades = 10 * 100000
+    devolvido = 0
+    for i in range(100):
+        antes = (unidades * i) // 100
+        depois = (unidades * (i + 1)) // 100
+        devolvido += (parte_acumulada(50, unidades, depois)
+                      - parte_acumulada(50, unidades, antes))
+    assert devolvido == 50
+
+
+def test_a_parte_acumulada_nunca_ANDA_PARA_TRAS():
+    """Monotonia — é ela que garante que nenhuma parcial sai negativa. Uma
+    parcial negativa era uma nota de crédito a COBRAR ao cliente."""
+    unidades = 200000
+    anterior = 0
+    for ate_aqui in range(0, unidades + 1, 137):
+        agora = parte_acumulada(1029, unidades, ate_aqui)
+        assert agora >= anterior
+        anterior = agora
+
+
+def test_creditar_a_linha_INTEIRA_de_uma_vez_da_o_total_da_linha():
+    """Os dois extremos, que são o que faz a soma telescopar."""
+    assert parte_acumulada(1029, 200000, 0) == 0
+    assert parte_acumulada(1029, 200000, 200000) == 1029
+
+
+def test_uma_quantidade_acima_do_total_nao_devolve_mais_do_que_a_linha():
+    """A guarda do tecto, aqui também: nenhuma aritmética a jusante pode
+    produzir mais do que a linha vale."""
+    assert parte_acumulada(1029, 200000, 999999) == 1029
+
+
+def test_uma_linha_sem_quantidade_nao_rebenta_e_nao_devolve_nada():
+    assert parte_acumulada(1029, 0, 5) == 0
+
+
+def test_a_fatia_e_o_centimo_MAIS_PROXIMO_da_parte_dela_e_nunca_o_de_baixo():
+    """O meio-cêntimo arredonda para CIMA, e é a escolha que se toma — a mesma
+    de `mapa_imposto._base_em_centimos`, e pela mesma razão: `round()` sobre
+    floats faz arredondamento bancário sobre a representação binária, e a
+    truncatura empurra sistematicamente a primeira fatia para baixo.
+
+    Medido: metade de uma linha de 0,29 € vale 0,145 €. Com o meio-cêntimo
+    para cima a primeira metade devolve 0,15 € e a segunda 0,14 €; com
+    truncatura devolvia 0,14 € e 0,15 €. **A soma fecha nos dois casos** — por
+    isso a soma sozinha não prende esta decisão, e sem este teste ela ficava
+    por escrever no sítio onde se vê."""
+    metade = 100000  # 1 de 2, a 5 casas decimais
+    assert parte_acumulada(29, 200000, metade) == 15
+    assert parte_acumulada(29, 200000, 200000) - 15 == 14
+    # E o caso simétrico, que é o que a truncatura acertaria por acaso.
+    assert parte_acumulada(30, 200000, metade) == 15

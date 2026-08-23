@@ -42,10 +42,19 @@ def diferenca(esperado_valor: float, contado: float) -> float:
     return round(float(contado or 0) - float(esperado_valor or 0), 2)
 
 
-def soma_vendas_dinheiro(vendas: List[Dict]) -> float:
+def soma_vendas_dinheiro(vendas: List[Dict], notas_credito: List[Dict] = None) -> float:
     """A parte em DINHEIRO das vendas emitidas de uma sessão (Task 4 do
     Plano 2B, spec §6/§7.6) — é isto que entra no `vendas_dinheiro` de
     `esperado`, acima.
+
+    **E MENOS o que saiu da gaveta em devoluções.** Uma nota de crédito
+    devolvida em dinheiro é dinheiro que a operadora tirou da gaveta e pôs na
+    mão do cliente; se não entrasse aqui, a gaveta fechava a acusar uma falta
+    que ninguém sabia explicar — que é exactamente o buraco que a nota de
+    crédito veio tapar. Uma devolução por Multibanco, Uber, Bolt ou Glovo NÃO
+    passa por este filtro (o `tipo_fiscal` dela não é `NU`) e não mexe na
+    gaveta: fica na linha do meio de pagamento dela, negativa, no
+    desdobramento aqui em baixo.
 
     Só conta vendas `estado == "emitida"` (uma venda aberta ou cancelada
     nunca foi facturada, não pode contar para a gaveta) e, dentro de cada
@@ -68,7 +77,7 @@ def soma_vendas_dinheiro(vendas: List[Dict]) -> float:
     return round(
         sum(
             linha["total"]
-            for linha in por_tipo_de_pagamento(vendas)
+            for linha in por_tipo_de_pagamento(vendas, notas_credito)
             if linha["tipo_fiscal"] == "NU"
         ),
         2,
@@ -86,9 +95,22 @@ def _centimos(valor) -> int:
     return int(round(float(valor or 0) * 100))
 
 
-def por_tipo_de_pagamento(vendas: List[Dict]) -> List[Dict]:
+def por_tipo_de_pagamento(vendas: List[Dict], notas_credito: List[Dict] = None) -> List[Dict]:
     """Quanto entrou em CADA tipo de pagamento nas vendas emitidas de uma
-    sessão — dinheiro, multibanco, Uber Eats, Bolt, Glovo.
+    sessão — dinheiro, multibanco, Uber Eats, Bolt, Glovo — **menos o que
+    saiu por devoluções**.
+
+    **O dinheiro segue o meio de pagamento**, que é a decisão do dono: uma
+    nota de crédito devolvida em dinheiro sai da gaveta, uma devolvida no
+    Glovo fica no Glovo, e a gaveta não mexe. Aqui isso é uma única regra e
+    não um caso especial: a devolução é um valor NEGATIVO na linha do meio
+    de pagamento por onde foi devolvida, e tudo o que lê esta tabela — o
+    `soma_vendas_dinheiro` aqui em cima (e logo o `esperado` da gaveta), o
+    Ponto de Caixa e o Z — passa a contá-la sem uma linha nova.
+
+    **Não há aqui uma segunda contabilidade das devoluções**, de propósito:
+    a nota de crédito não tem uma coluna própria nem um total à parte no
+    fecho. Se tivesse, haveria dois números a explicar a mesma gaveta.
 
     É a pergunta que o Z não sabia responder: ele dava o total em dinheiro
     (`soma_vendas_dinheiro`) e mais nada, e ao fechar ninguém conseguia
@@ -131,6 +153,33 @@ def por_tipo_de_pagamento(vendas: List[Dict]) -> List[Dict]:
                 }
             linha["centimos"] += _centimos(pagamento.get("valor"))
             linha["quantos"] += 1
+
+    # As devoluções, pela MESMA porta e com o sinal ao contrário. Só as
+    # `emitida`: uma nota de crédito cuja emissão ficou por apurar não
+    # devolveu nada a ninguém, e descontá-la da gaveta era mandar a operadora
+    # justificar uma falta que talvez não exista.
+    #
+    # O `devolucao` é o retrato do tipo de pagamento gravado no instante em
+    # que a nota saiu (nome, `tipo_fiscal`, id) — a mesma regra dos
+    # pagamentos aqui em cima, e pela mesma razão: renomear o "Glovo" para
+    # "Glovo PT" amanhã não pode reescrever o Z de ontem.
+    for nota in notas_credito or []:
+        if nota.get("estado") != "emitida":
+            continue
+        devolucao = nota.get("devolucao") or {}
+        chave = devolucao.get("tipo_pagamento_id") or devolucao.get("nome")
+        linha = linhas.get(chave)
+        if linha is None:
+            linha = linhas[chave] = {
+                "tipo_pagamento_id": devolucao.get("tipo_pagamento_id"),
+                "nome": devolucao.get("nome"),
+                "tipo_fiscal": devolucao.get("tipo_fiscal"),
+                "centimos": 0,
+                "quantos": 0,
+            }
+        linha["centimos"] -= _centimos(devolucao.get("valor"))
+        linha["quantos"] += 1
+
     saida = [
         {
             "tipo_pagamento_id": linha["tipo_pagamento_id"],

@@ -549,9 +549,20 @@ def _preambulo_de_montagem() -> str:
         "const RESPOSTAS_POS = {};",
         "const RESPOSTAS_GESTAO = {};",
         "const pedidos = [];",
-        "function responder(url) {",
-        "  const tabela = String(url).includes('/pos/') ? RESPOSTAS_POS : RESPOSTAS_GESTAO;",
-        "  const chave = Object.keys(tabela).find((c) => String(url).endsWith(c));",
+        # A chave pode nomear o MÉTODO (`'POST /pos/…'`) ou só o caminho.
+        # Sem isso, um ecrã que faz GET e POST no MESMO caminho — a nota de
+        # crédito faz: `GET …/nota-credito` prepara e `POST …/nota-credito`
+        # emite — não tinha como fabricar duas respostas diferentes. As chaves
+        # sem espaço continuam a casar como sempre casaram.
+        "function responder(config) {",
+        "  const url = String(config.url);",
+        "  const metodo = String(config.metodo || '').toUpperCase();",
+        "  const tabela = url.includes('/pos/') ? RESPOSTAS_POS : RESPOSTAS_GESTAO;",
+        "  const casa = (c) => (c.includes(' ')",
+        "    ? (c.split(' ')[0] === metodo && url.endsWith(c.split(' ')[1]))",
+        "    : url.endsWith(c));",
+        "  const chave = Object.keys(tabela).find((c) => c.includes(' ') && casa(c))",
+        "    || Object.keys(tabela).find((c) => !c.includes(' ') && casa(c));",
         "  if (!chave) {",
         "    const e = new Error('pedido nao fabricado: ' + url);",
         "    e.response = { status: 404 };",
@@ -591,10 +602,15 @@ def _preambulo_de_montagem() -> str:
         "        url: (base.baseURL || '') + url,",
         "        headers: Object.assign({}, (base.headers && base.headers.common) || {}),",
         "        timeout: (opcoes && opcoes.timeout !== undefined) ? opcoes.timeout : base.timeout,",
+        # O CORPO do pedido, que faltava. «Por qual axios perguntou» e «com que
+        # cabeçalhos» não chegam para um ecrã cujo defeito é MANDAR o número
+        # errado: o tecto da quantidade da nota de crédito prova-se no
+        # `{ linhas: [...] }` que sai, não no caminho.
+        "        corpo: SEM_CORPO.has(metodo) ? undefined : resto[0],",
         "      };",
         "      for (const fn of interceptores) config = fn(config) || config;",
         "      pedidos.push(config);",
-        "      return responder(config.url);",
+        "      return responder(config);",
         "    };",
         "  }",
         "  return inst;",

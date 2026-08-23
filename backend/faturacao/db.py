@@ -55,6 +55,13 @@ COLECOES = {
     # representa UMA tentativa de emissão, não um documento fiscal em si
     # (isso é fat_documentos).
     "refs_fiscais": "fat_refs_fiscais",
+    # A INTENÇÃO de uma nota de crédito (faturacao/nota_credito.py), gravada
+    # ANTES de qualquer pedido ao Vendus e com identidade PRÓPRIA — é ela, e
+    # não a fatura de origem, que serve de reserva atómica: contra a mesma
+    # fatura pode haver várias notas de crédito parciais, e uma reserva por
+    # documento de origem tornava a segunda impossível de emitir. O `id` é o
+    # da intenção (índice único abaixo) e a referência externa deriva dele.
+    "notas_credito": "fat_notas_credito",
 }
 
 _cliente = None  # type: Optional[AsyncIOMotorClient]
@@ -266,6 +273,27 @@ INDICES = [
     # passo que um índice esparso indexava só as resolvidas — as 365 mil que
     # a listagem NÃO quer ver.
     ("fat_refs_fiscais", [("documento_id", 1)], {}),
+    # **A RESERVA ATÓMICA da nota de crédito** (`nota_credito.py`), e a
+    # mesma garantia que `fat_refs_fiscais.ext_ref` dá à Fatura Simplificada:
+    # o duplo-toque no botão «Emitir Nota de Crédito» insere DUAS vezes a
+    # mesma intenção, e a segunda apanha `DuplicateKeyError` antes de falar
+    # com o Vendus. Uma NC a dobrar é um documento fiscal a mais entregue à
+    # AT, tão caro como uma fatura a dobrar.
+    #
+    # ÚNICO sobre o `id`, que é o id da INTENÇÃO gerado pelo ecrã e repetido
+    # em cada retentativa do mesmo toque — e não sobre o documento de origem:
+    # contra a mesma fatura pode haver várias notas parciais, e um único
+    # sobre a origem recusava a segunda para sempre (é o que o POS da
+    # Pizzaria faz, e é por isso que lá só existe a NC TOTAL).
+    ("fat_notas_credito", [("id", 1)], {"unique": True}),
+    # O TRAVÃO do que já foi creditado: "quanto desta fatura já saiu?" — a
+    # pergunta que `nota_credito.linhas_creditaveis` faz antes de deixar
+    # creditar mais.
+    ("fat_notas_credito", [("documento_id", 1)], {}),
+    # O Ponto de Caixa e o Z: as devoluções DESTE turno
+    # (`caixa._notas_de_credito_do_turno`), e a nota em curso que trava o
+    # fecho (`caixa._nota_de_credito_em_curso`).
+    ("fat_notas_credito", [("sessao_id", 1)], {}),
 ]
 
 
@@ -294,22 +322,42 @@ async def criar_indices(db):
 _indice_idempotencia_ok = None  # type: Optional[bool]  # None = ainda não confirmado
 
 
-async def indice_idempotencia_presente(db) -> bool:
-    """Lê os índices REAIS de `fat_refs_fiscais` e confirma que existe um
-    único sobre `ext_ref` — não assume nada a partir de `criar_indices` ter
-    corrido sem excepção. Qualquer falha a ler os índices (Atlas em baixo,
-    por exemplo) conta como AUSENTE, nunca como "não consegui verificar,
-    assumo que está lá"."""
+async def _tem_indice_unico(db, coleccao: str, campo: str) -> bool:
+    """Lê os índices REAIS de uma colecção e diz se existe um ÚNICO sobre
+    aquele campo — nunca assume nada a partir de `criar_indices` ter corrido
+    sem excepção. Qualquer falha a ler (Atlas em baixo, por exemplo) conta
+    como AUSENTE, nunca como "não consegui verificar, assumo que está lá".
+
+    Uma função e não duas cópias: são duas as reservas atómicas do módulo (a
+    da Fatura Simplificada, em `fat_refs_fiscais.ext_ref`, e a da nota de
+    crédito, em `fat_notas_credito.id`) e as duas têm de ser confirmadas com
+    o MESMO critério — uma segunda cópia deste laço divergia da primeira no
+    dia em que uma delas fosse corrigida."""
     try:
-        indices = await db[COLECOES["refs_fiscais"]].index_information()
+        indices = await db[coleccao].index_information()
     except Exception as e:  # noqa: BLE001 — falha na verificação = ausente
-        logger.error("[faturacao] não foi possível confirmar o índice de idempotência: %s", e)
+        logger.error(
+            "[faturacao] não foi possível confirmar o índice único de %s.%s: %s",
+            coleccao, campo, e,
+        )
         return False
     for detalhes in indices.values():
-        chave = list(detalhes.get("key") or [])
-        if chave == [("ext_ref", 1)] and detalhes.get("unique"):
+        if list(detalhes.get("key") or []) == [(campo, 1)] and detalhes.get("unique"):
             return True
     return False
+
+
+async def indice_idempotencia_presente(db) -> bool:
+    """O índice único de `fat_refs_fiscais.ext_ref` — a garantia central da
+    idempotência da Fatura Simplificada."""
+    return await _tem_indice_unico(db, COLECOES["refs_fiscais"], "ext_ref")
+
+
+async def indice_notas_credito_presente(db) -> bool:
+    """O índice único de `fat_notas_credito.id` — a mesma garantia para a
+    nota de crédito, que é o que impede o duplo-toque no botão «Emitir Nota
+    de Crédito» de entregar DUAS notas reais à AT."""
+    return await _tem_indice_unico(db, COLECOES["notas_credito"], "id")
 
 
 def marcar_indice_idempotencia(ok: Optional[bool]) -> None:
@@ -327,3 +375,22 @@ def indice_idempotencia_confirmado() -> bool:
     OK"). É esta função que `fiscal.finalizar` consulta antes de tocar na
     reserva atómica."""
     return _indice_idempotencia_ok is True
+
+
+_indice_notas_credito_ok = None  # type: Optional[bool]  # None = ainda não confirmado
+
+
+def marcar_indice_notas_credito(ok: Optional[bool]) -> None:
+    """O gémeo de `marcar_indice_idempotencia`, para a reserva atómica da
+    nota de crédito."""
+    global _indice_notas_credito_ok
+    _indice_notas_credito_ok = ok
+
+
+def indice_notas_credito_confirmado() -> bool:
+    """`True` só depois de `arrancar()` confirmar que o índice único de
+    `fat_notas_credito.id` existe. `nota_credito.emitir_nota_credito`
+    consulta-o antes de gravar a intenção: sem ele, dois toques no botão
+    inserem as duas intenções e saem DUAS notas de crédito reais da mesma
+    fatura — o mesmo estrago da fatura a dobrar, com o sinal ao contrário."""
+    return _indice_notas_credito_ok is True

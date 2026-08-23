@@ -134,6 +134,23 @@ class RegisterIdInvalido(VendusErro):
     docstring do módulo)."""
 
 
+class NotaDeCreditoSemMotivo(VendusErro):
+    """Uma nota de crédito sem motivo — recusada ANTES de qualquer pedido à
+    rede, como o `register_id` errado e o modo em falta.
+
+    O motivo não é uma formalidade nossa: a API do Vendus exige `notes` numa
+    NC («You also have to specify notes stating the reason for issuing the
+    credit note») e a lei portuguesa exige que uma nota de crédito diga o que
+    rectifica e porquê. Sem ele o Vendus recusaria o documento — mas a recusa
+    chegaria à operadora como um 4xx opaco à frente do cliente, e é por isso
+    que se recusa aqui, com uma frase que diz o que falta.
+
+    É `VendusErro` (e `VendusHTTPErro` não): entra na lista curta de
+    `fiscal._ERROS_COM_PROVA_DE_QUE_NADA_SAIU` pela mesma porta dos outros
+    dois erros de pré-voo — a prova de que nada saiu é que o pedido não
+    chegou a existir."""
+
+
 class VendusModoInvalido(VendusErro):
     """`VENDUS_MODE` não está definido como 'tests' nem 'normal' — a emissão
     recusa-se ANTES de qualquer pedido à rede.
@@ -305,6 +322,94 @@ class ClienteEmissaoVendus:
         except Exception as e:  # noqa: BLE001 — ver o comentário acima: a fronteira
             raise _resposta_ilegivel(
                 resposta, external_reference, "ao ler o documento criado", e
+            ) from e
+
+    def criar_nota_credito(
+        self,
+        linhas: List[Dict],
+        pagamentos: List[Dict],
+        external_reference: str,
+        register_id: int,
+        motivo: str,
+    ) -> Dict:
+        """`POST documents/` com `type=NC` — a Nota de Crédito, o documento
+        que corrige uma fatura já entregue à Autoridade Tributária. Mesma
+        forma, mesmas defesas e mesmo formato de saída de
+        `criar_fatura_simplificada` (ver lá): a fronteira do 2xx, o
+        `register_id` comparado antes de sair para a rede, o `mode`
+        obrigatório, e o talão já em ESC/POS.
+
+        **O que é PRÓPRIO da NC, e está confirmado na documentação oficial
+        do Vendus** (`https://www.vendus.pt/ws/v1.1/documents.doc`, secção
+        *Credit Notes*, lida a 22/08/2026 — citada à letra):
+
+            «When creating a NC, you must specify `reference_document` for
+            each item, passing `document_number` and `document_row` which
+            unequivocally identifies an existing line on the original
+            invoice, along with `id` and `qty`. You also have to specify
+            `notes` stating the reason for issuing the credit note.»
+
+        Daí as duas diferenças no corpo: cada linha leva um
+        `reference_document` (`{document_number, document_row}`) — que é
+        quem CHAMA que monta, porque é ele que sabe de que fatura e de que
+        linha se trata — e o documento leva `notes` com o motivo. O motivo
+        NÃO é decorativo: é exigido pela lei portuguesa (a NC tem de dizer
+        porque rectifica) e pela API, e por isso é recusado aqui se vier
+        vazio, ANTES de qualquer pedido à rede — a mesma regra do
+        `register_id`.
+
+        **O que NÃO se confirmou, e por isso não se inventou.** Não há chave
+        de API nesta máquina: nada disto foi exercido ao vivo. Em concreto
+        (a) o `document_row` de cada linha é assumido como a POSIÇÃO da
+        linha no documento original, 1 a N pela ordem em que foi enviada —
+        é o que "a row number of the document where the product is" quer
+        dizer, e não há na resposta do `GET documents/` nenhum campo que
+        devolva esse número para o confirmar; e (b) as linhas vão com
+        `gross_price`, `tax_id` e desconto como foram na fatura, e não só
+        com `id`+`qty`. A alternativa a (b) era deixar o Vendus buscar o
+        preço ao PRODUTO — que pode ter mudado desde a fatura, e creditaria
+        um valor diferente do que o cliente pagou. Quem chama compara o
+        total devolvido com o que calculou e assinala a divergência em vez
+        de a esconder (`nota_credito.py`).
+        """
+        esperado = _register_id_configurado()
+        if esperado is None or register_id != esperado:
+            raise RegisterIdInvalido(
+                "register_id %r não bate com o único configurado "
+                "(VENDUS_REGISTER_ID=%r) — emissão da nota de crédito "
+                "recusada antes de sair para a rede." % (register_id, esperado)
+            )
+        if not (motivo or "").strip():
+            raise NotaDeCreditoSemMotivo(
+                "Uma nota de crédito tem de dizer PORQUÊ: o campo `notes` é "
+                "exigido pela API do Vendus e pela lei. Recusada antes de "
+                "sair para a rede (external_reference=%s)." % external_reference
+            )
+        modo = _modo_configurado()
+
+        corpo: Dict[str, Any] = {
+            "type": "NC",
+            "register_id": register_id,
+            "items": linhas,
+            "payments": pagamentos,
+            "external_reference": external_reference,
+            "notes": motivo.strip(),
+            "output": "escpos",
+            "mode": modo,
+        }
+
+        resposta = self._pedir_com_retentativas("documents/", corpo)
+        # A MESMA fronteira da Fatura Simplificada: a partir do 2xx o
+        # documento fiscal JÁ EXISTE do lado da AT, e tudo o que falhe a
+        # seguir sai TIPADO — nunca um erro cru que quem chama confundiria
+        # com "o Vendus recusou e não criou nada".
+        try:
+            return _documento_da_criacao(resposta, external_reference, modo)
+        except VendusErro:
+            raise
+        except Exception as e:  # noqa: BLE001 — ver o comentário acima: a fronteira
+            raise _resposta_ilegivel(
+                resposta, external_reference, "ao ler a nota de crédito criada", e
             ) from e
 
     def procurar_por_referencia_externa(self, external_reference: str, register_id: int) -> Optional[Dict]:
