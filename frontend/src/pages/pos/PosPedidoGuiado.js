@@ -30,11 +30,15 @@ import { ehIndicacaoDeServico, errosDeSelecao } from './PosPersonalizacoes';
 // de cada dose entra no preço unitário em `precos.linha_de_venda`).
 
 // Quanto tempo o dedo tem de ficar em cima para apagar uma opção por inteiro.
-// Dois segundos é longo o bastante para não acontecer por engano com o polegar
-// apressado, e curto o bastante para se aguentar — mas só funciona porque o
-// botão MOSTRA o tempo a correr (a barra que enche por baixo). Sem sinal
-// nenhum, solta-se antes do fim e conclui-se que o gesto não existe.
-const MS_ATE_APAGAR = 2000;
+// UM segundo, por pedido do dono depois de o usar ao balcão: dois eram longos
+// de mais para quem tem fila à frente, e a barra que enche por baixo torna o
+// gesto visível o suficiente para um segundo chegar. Continua a ser longo o
+// bastante para não acontecer com o polegar apressado — um toque de apagar é
+// da ordem dos 100 ms.
+//
+// Sem a barra, isto não funcionava a nenhum tempo: solta-se antes do fim e
+// conclui-se que o gesto não existe.
+const MS_ATE_APAGAR = 1000;
 
 // O limite dos caracteres do `RespostaTexto.texto` (venda.py). Está aqui para
 // o campo não deixar escrever o que o servidor vai recusar com um 422 depois
@@ -396,8 +400,8 @@ export default function PosPedidoGuiado({ produto, grupos, linha, aGravar, onGra
   const apagarOpcao = (opcao) => {
     setAvisar(true);
     // Apaga a opção POR INTEIRO, todas as doses de uma vez: é o que o gesto
-    // promete ("carregue 2 segundos para apagar"), e tirar uma dose de cada
-    // vez obrigava a três carregares de dois segundos para desfazer um
+    // promete ("carregue 1 segundo para apagar"), e tirar uma dose de cada
+    // vez obrigava a três carregares para desfazer um
     // engano.
     setOpcoes((atuais) => atuais.filter((o) => !(o.grupo_id === grupo.id && o.id === opcao.id)));
   };
@@ -588,7 +592,7 @@ export default function PosPedidoGuiado({ produto, grupos, linha, aGravar, onGra
                 <p className="text-xs text-muted-foreground">
                   {max === 1
                     ? 'Toque para escolher — tocar noutra troca.'
-                    : 'Toque para juntar outra dose · carregue 2 segundos para apagar.'}
+                    : 'Toque para juntar outra dose · carregue 1 segundo para apagar.'}
                 </p>
               )}
 
