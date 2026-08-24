@@ -229,13 +229,22 @@ def _quando(valor: Optional[str]) -> Optional[datetime]:
     """Lê um instante gravado. Ilegível conta como AUSENTE, nunca como
     "agora": um `validade_ate` que não se percebe não pode ser lido como
     "ainda é válido para sempre" nem como "caducou já" por acidente — quem
-    chama decide, e os dois sítios que decidem estão escritos."""
+    chama decide, e os dois sítios que decidem estão escritos.
+
+    **Sem fuso também conta como ilegível**, e é aqui que se resolve para os
+    cinco chamadores de uma vez: `'2026-08-22T19:00:00'` PERCEBE-SE — o
+    `fromisoformat` aceita-a de bom grado —, mas comparar um instante sem fuso
+    com um que tem fuso levanta `TypeError` três linhas à frente. Uma linha
+    má na colecção derrubava a rota que faz sair o papel: 500 em todas as
+    perguntas seguintes, a loja inteira sem imprimir, e o ecrã que devia
+    explicar porquê a rebentar também."""
     if not valor:
         return None
     try:
-        return datetime.fromisoformat(valor)
+        lido = datetime.fromisoformat(valor)
     except (TypeError, ValueError):
         return None
+    return lido if lido.tzinfo is not None else None
 
 
 # --- Criar trabalho -----------------------------------------------------------

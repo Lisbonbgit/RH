@@ -232,6 +232,43 @@ def test_emparelhar_com_codigo_expirado_e_recusado_401(monkeypatch):
     assert excinfo.value.status_code == 401
 
 
+@pytest.mark.parametrize("expira_em", [
+    # SEM FUSO. Percebe-se (o `fromisoformat` aceita-a), e é isso que a torna
+    # perigosa: compará-la com um instante que tem fuso levanta `TypeError`.
+    "2026-08-22T19:00:00",
+    # Estragada de todo, e `None` — um campo que uma versão anterior não
+    # escrevia.
+    "não é uma data",
+    None,
+])
+def test_emparelhar_com_uma_data_de_expiracao_ILEGIVEL_e_recusado_401(
+    monkeypatch, expira_em,
+):
+    """O emparelhamento é o **passo 5 do manual de instalação**, e um 500 aqui
+    é a instalação da loja a parar sem ninguém saber porquê.
+
+    A direcção segura é a contrária à da fila de impressão: ali um campo
+    ilegível não deita papel fora, aqui um `expira_em` que não se perceba
+    conta como EXPIRADO. Um código cuja validade não se consegue ler não pode
+    ser trocado por um token deste PC."""
+    registo = []
+    db = _db(registo, lojas=[{"id": "loja-1", "nome": "Belém"}])
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+    resultado_codigo = _corre(gerar_codigo_emparelhamento(PedidoCodigo(loja_id="loja-1"), _={}))
+
+    dispositivos = db[COLECOES["dispositivos"]]
+    if expira_em is None:
+        dispositivos._documentos[0].pop("expira_em", None)
+    else:
+        dispositivos._documentos[0]["expira_em"] = expira_em
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(emparelhar(PedidoEmparelhar(codigo=resultado_codigo["codigo"])))
+    assert excinfo.value.status_code == 401
+    assert dispositivos._documentos[0]["estado"] == "pendente", (
+        "O código ficou trocado apesar de a validade não se conseguir ler.")
+
+
 def test_emparelhar_com_codigo_ja_usado_e_recusado_401(monkeypatch):
     """Uso único: o mesmo código não pode ser trocado duas vezes."""
     registo = []

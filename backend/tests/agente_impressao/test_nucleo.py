@@ -260,6 +260,21 @@ def test_com_falhas_espera_cada_vez_mais_ate_um_tecto():
     assert esperas[-1] == nucleo.ESPERA_MAXIMA_SEGUNDOS
 
 
+def test_pergunta_de_TRES_em_TRES_segundos_e_nunca_espera_mais_de_um_minuto():
+    """**Os dois números à mão, e é de propósito** — o mesmo que se fez ao
+    `FALHAS_ATE_AVISAR`: os testes acima comparam as constantes consigo
+    próprias e por isso nenhum deles pode falhar pelo VALOR delas.
+
+    Posto a 30 s, tudo fica verde e o talão do cliente sai meio minuto depois
+    de ele pagar; e os «cinco minutos para pôr papel» que o servidor promete
+    (`impressao._MAX_TENTATIVAS`) — uma conta feita com estes 3 segundos —
+    passam a cinquenta. O tecto é curto pela mesma razão: o que interessa é
+    voltar depressa ao normal assim que a linha voltar, não poupar pedidos a
+    um servidor que já não os está a receber."""
+    assert nucleo.espera_apos_falhas(0) == 3
+    assert max(nucleo.espera_apos_falhas(n) for n in range(1, 20)) == 60
+
+
 # --- 5. O QUE A JANELA DIZ ---------------------------------------------------
 
 

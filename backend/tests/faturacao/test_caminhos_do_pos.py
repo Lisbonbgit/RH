@@ -69,7 +69,18 @@ def _ler_pos_js() -> str:
 
 
 def _caminhos_do_backend():
-    return {_normaliza(route.path) for route in router.routes}
+    """(VERBO, forma do caminho) de cada rota que o servidor serve mesmo.
+
+    O verbo faz parte, e não é detalhe: uma chamada com o caminho certo e o
+    método errado responde **405** e não 404 — mas do lado do balcão é
+    exactamente o mesmo desfecho, que é papel nenhum a sair. Um guarda que só
+    comparasse caminhos deixava passar `GET /pos/impressao/recolher` sem
+    piscar."""
+    return {
+        (metodo, _normaliza(route.path))
+        for route in router.routes
+        for metodo in getattr(route, "methods", ())
+    }
 
 
 def test_base_url_do_pos_inclui_o_prefixo_do_modulo():
@@ -104,7 +115,7 @@ def test_todas_as_chamadas_do_pos_apontam_para_rotas_que_existem():
     orfas = []
     for verbo, _aspas, caminho in _RE_CHAMADA.findall(conteudo):
         completo = _normaliza(prefixo + caminho)
-        if completo not in existentes:
+        if (verbo.upper(), completo) not in existentes:
             orfas.append("%s %s" % (verbo.upper(), completo))
 
     assert orfas == [], (
@@ -127,8 +138,8 @@ def test_o_guarda_apanha_um_prefixo_errado(caminho_partido):
     existentes = _caminhos_do_backend()
     casam = [
         caminho
-        for _verbo, _aspas, caminho in _RE_CHAMADA.findall(conteudo)
-        if _normaliza(caminho_partido + caminho) in existentes
+        for verbo, _aspas, caminho in _RE_CHAMADA.findall(conteudo)
+        if (verbo.upper(), _normaliza(caminho_partido + caminho)) in existentes
     ]
     assert casam == [], (
         "Com o prefixo '%s' estas chamadas ainda casavam com rotas reais (%s) "
@@ -195,7 +206,7 @@ def test_todas_as_chamadas_do_backoffice_apontam_para_rotas_que_existem():
         # vive no baseURL. Duas convenções diferentes no mesmo repositório, o
         # que é precisamente o tipo de coisa que produz o defeito original.
         completo = _normaliza("/api" + _sem_query(caminho))
-        if completo not in existentes:
+        if (verbo.upper(), completo) not in existentes:
             orfas.append("%s %s" % (verbo.upper(), completo))
 
     assert orfas == [], (
@@ -276,7 +287,7 @@ def test_todas_as_chamadas_do_programa_de_impressao_apontam_para_rotas_que_exist
     orfas = [
         "%s %s" % (verbo, caminho)
         for verbo, caminho in _chamadas_do_programa_de_impressao()
-        if _normaliza(caminho) not in existentes
+        if (verbo, _normaliza(caminho)) not in existentes
     ]
     assert orfas == [], (
         "O programa de impressão da loja pede caminhos que o servidor não "
@@ -292,10 +303,31 @@ def test_o_guarda_do_programa_de_impressao_apanha_o_prefixo_errado():
     existentes = _caminhos_do_backend()
     casam = [
         caminho
-        for _verbo, caminho in _chamadas_do_programa_de_impressao()
-        if _normaliza(caminho.replace("/api/faturacao", "/api", 1)) in existentes
+        for verbo, caminho in _chamadas_do_programa_de_impressao()
+        if (verbo, _normaliza(caminho.replace("/api/faturacao", "/api", 1))) in existentes
     ]
     assert casam == [], (
         "Sem o '/faturacao' estas chamadas ainda casavam com rotas reais (%s) "
         "— o guarda não distingue o prefixo certo do errado." % casam
+    )
+
+
+def test_o_guarda_do_programa_de_impressao_apanha_o_VERBO_errado():
+    """A outra metade da mesma pergunta, e a que faltava: o caminho certo com
+    o método errado.
+
+    As cinco rotas do programa da loja são todas POST. Trocado o verbo — um
+    `metodo="GET"` no `_falar`, ou um `@router.get` do lado de cá — o caminho
+    continua a existir e o guarda de cima ficava verde; em produção o servidor
+    responde **405** e não sai papel nenhum, que é o mesmo desfecho do 404 que
+    este ficheiro veio corrigir."""
+    existentes = _caminhos_do_backend()
+    casam = [
+        caminho
+        for verbo, caminho in _chamadas_do_programa_de_impressao()
+        if ("GET" if verbo == "POST" else "POST", _normaliza(caminho)) in existentes
+    ]
+    assert casam == [], (
+        "Com o verbo trocado estas chamadas ainda casavam com rotas reais (%s) "
+        "— o guarda não olha ao método e um 405 passa-lhe ao lado." % casam
     )

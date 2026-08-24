@@ -152,6 +152,23 @@ async def gerar_codigo_emparelhamento(dados: PedidoCodigo, _: dict = Depends(ges
     return {"codigo": codigo, "expira_em": doc["expira_em"]}
 
 
+def _expirou(valor) -> bool:
+    """Um `expira_em` que não se consiga ler conta como EXPIRADO.
+
+    Sem isto, uma data gravada mal responde **500** ao passo 5 do manual de
+    instalação — e uma data SEM FUSO percebe-se (o `fromisoformat` aceita-a)
+    mas rebenta na comparação, que é a forma mais silenciosa de falhar.
+
+    A direcção é a contrária à da fila de impressão (`impressao._quando`, onde
+    ilegível NÃO deita papel fora): um código cuja validade não se percebe não
+    pode ser trocado por um token deste PC."""
+    try:
+        quando = datetime.fromisoformat(valor)
+    except (TypeError, ValueError):
+        return True
+    return quando.tzinfo is None or quando < _agora()
+
+
 @router.post("/pos/emparelhar")
 async def emparelhar(dados: PedidoEmparelhar) -> dict:
     """Troca um código de emparelhamento válido por um token de dispositivo.
@@ -168,7 +185,7 @@ async def emparelhar(dados: PedidoEmparelhar) -> dict:
     disp = await db[COLECOES["dispositivos"]].find_one(
         {"codigo_hash": _hash_token(codigo_normalizado), "estado": "pendente"}
     )
-    if not disp or datetime.fromisoformat(disp["expira_em"]) < _agora():
+    if not disp or _expirou(disp.get("expira_em")):
         raise HTTPException(status_code=401, detail=_MSG_CODIGO_INVALIDO)
 
     token = secrets.token_urlsafe(32)

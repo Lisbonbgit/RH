@@ -345,6 +345,11 @@ def test_a_entrega_tem_TECTO(monkeypatch):
                      chave="k%d" % i)
     entregues = _recolher(db, monkeypatch, _T0 + timedelta(minutes=1))["trabalhos"]
     assert len(entregues) == imp._QUANTOS_DE_CADA_VEZ
+    # O tecto medido em números escritos à mão, e não contra a própria
+    # constante: posta a 1, o PC da loja passa a precisar de uma volta inteira
+    # por talão; posta aos milhares, uma fila acumulada devolve megabytes de
+    # ESC/POS de uma assentada — e nenhuma das duas era apanhada por aqui.
+    assert 2 <= imp._QUANTOS_DE_CADA_VEZ <= 20
 
 
 def test_cada_loja_so_leva_o_seu_papel(monkeypatch):
@@ -490,12 +495,21 @@ def test_o_programa_morre_depois_de_buscar_e_o_talao_SAI_OUTRA_VEZ(monkeypatch):
 def test_dentro_do_arrendamento_o_trabalho_NAO_volta_a_ser_entregue(monkeypatch):
     """A outra metade: enquanto o programa ainda pode estar a imprimir, ninguém
     lho tira. Sem isto, uma volta da fila de 2 em 2 segundos entregava o mesmo
-    talão trinta vezes por minuto."""
+    talão trinta vezes por minuto.
+
+    **Os segundos à mão, pela mesma razão do `_AGENTE_VIVO_SEGUNDOS`:** um
+    teste feito com `imp._ARRENDAMENTO_SEGUNDOS - 1` nunca pode falhar pelo
+    valor da constante, e posta a 1 segundo ficava toda a suite verde com a
+    fila a entregar o mesmo talão de 3 em 3 segundos ao programa que já o está
+    a imprimir — o "duas vezes" a deixar de ser a excepção e a passar a ser o
+    normal."""
     db = _db()
     _por_na_fila(db, monkeypatch)
     _recolher(db, monkeypatch)
-    quase = _T0 + timedelta(seconds=imp._ARRENDAMENTO_SEGUNDOS - 1)
-    assert _recolher(db, monkeypatch, quase)["trabalhos"] == []
+    for segundos in (3, 30):
+        assert _recolher(db, monkeypatch, _T0 + timedelta(seconds=segundos))["trabalhos"] == [], (
+            "Ao fim de %d segundos o talão foi entregue a um SEGUNDO programa "
+            "— o primeiro ainda o pode estar a imprimir." % segundos)
 
 
 def _queixar_se(db, monkeypatch, entregue, momento):
@@ -587,6 +601,42 @@ def test_falhar_a_ULTIMA_tentativa_desiste(monkeypatch):
     assert _fila(db)[0]["estado"] == FALHADO
 
 
+def test_uma_QUEIXA_atrasada_de_um_trabalho_ja_entregue_a_OUTRO_e_recusada(
+    monkeypatch,
+):
+    """A irmã do `test_uma_confirmacao_ATRASADA_...`, pela MESMA linha e pela
+    mesma razão — e a única das três rotas que estava sem guarda.
+
+    O programa recebeu o talão, a impressora encravou, a queixa ficou presa na
+    rede. O arrendamento expirou, o trabalho foi entregue **outra vez** e está
+    a ser impresso neste instante — e é agora que a queixa velha chega.
+
+    Sem o `recibo` na condição da escrita ela é ACEITE: atira para pendente um
+    trabalho que outro programa tem nas mãos, a confirmação do dono actual
+    leva 409, e o **mesmo talão sai duas vezes**. Na gaveta, é a gaveta do
+    dinheiro a abrir duas vezes, com o cliente à frente dela."""
+    db = _db()
+    _por_na_fila(db, monkeypatch)
+    (primeira,) = _recolher(db, monkeypatch)["trabalhos"]
+    depois = _T0 + timedelta(seconds=90)
+    (segunda,) = _recolher(db, monkeypatch, depois)["trabalhos"]
+    assert segunda["recibo"] != primeira["recibo"]
+
+    with pytest.raises(HTTPException) as erro:
+        _queixar_se(db, monkeypatch, primeira, depois)
+    assert erro.value.status_code == 409
+
+    assert _fila(db)[0]["estado"] == RESERVADO, (
+        "A queixa velha atirou de volta à fila um trabalho que OUTRO programa "
+        "tem nas mãos — o mesmo talão vai sair duas vezes.")
+    assert _fila(db)[0]["recibo"] == segunda["recibo"]
+
+    # E a prova de que quem o tem nas mãos continua a poder fechá-lo: sem o
+    # `recibo` na condição, era esta confirmação que levava 409.
+    _confirmar(db, monkeypatch, segunda["id"], segunda["recibo"])
+    assert _fila(db)[0]["estado"] == IMPRESSO
+
+
 # --- 6. O que ficou de ontem --------------------------------------------------
 
 
@@ -661,11 +711,24 @@ def test_com_o_programa_a_perguntar_o_ecra_sabe_que_ha(monkeypatch):
 
 def test_um_programa_que_se_CALOU_deixa_de_contar(monkeypatch):
     """O PC desligou-se, o serviço morreu, alguém fechou o programa. Um botão
-    que continuasse a parecer bom era a mesma mentira, com mais um passo."""
+    que continuasse a parecer bom era a mesma mentira, com mais um passo.
+
+    **Os dois números estão escritos à mão, e é de propósito** — o mesmo que
+    já se fez ao `_MAX_TENTATIVAS` e ao `nucleo.FALHAS_ATE_AVISAR`. Este teste
+    era `imp._AGENTE_VIVO_SEGUNDOS + 1`, e por isso NUNCA podia falhar pelo
+    valor da constante: posta a 99999, ficava verde — e o POS dizia «há
+    programa de impressão a responder nesta loja» vinte e sete horas depois de
+    o PC estar desligado, que é ao certo a mentira que a docstring desta rota
+    diz existir para impedir. Posta a 5, um soluço de rede apagava os botões
+    de impressão a meio de uma venda."""
     db = _db(dispositivos=[_dispositivo()])
     _recolher(db, monkeypatch, _T0)
-    tarde = _T0 + timedelta(seconds=imp._AGENTE_VIVO_SEGUNDOS + 1)
-    assert _estado(db, monkeypatch, tarde)["ha_programa"] is False
+    assert _estado(db, monkeypatch, _T0 + timedelta(seconds=60))["ha_programa"] is True, (
+        "Um minuto sem perguntar é um pico de rede, não um PC desligado — e um "
+        "botão que se apaga sozinho a meio de uma venda não se volta a usar.")
+    assert _estado(db, monkeypatch, _T0 + timedelta(minutes=5))["ha_programa"] is False, (
+        "Cinco minutos calado é o programa morto. Um botão que continue a "
+        "parecer bom deixa a operadora a dar o cliente por servido sem papel.")
 
 
 def test_o_que_esta_por_sair_conta_se_e_o_que_ja_caducou_nao(monkeypatch):
@@ -1099,3 +1162,52 @@ def test_um_papel_que_falhe_DEPOIS_volta_a_avisar(monkeypatch):
     _relogio(monkeypatch, momento)
     monkeypatch.setattr(imp, "obter_db", lambda: db)
     assert _corre(estado_da_impressao(operador=_operador()))["falhados"] == 1
+
+
+# --- 11. Uma data mal gravada não pára a loja de imprimir ---------------------
+#
+# O `_quando` promete que um instante que não se perceba conta como AUSENTE e
+# nunca como "agora". Uma data SEM FUSO percebe-se — `fromisoformat` aceita-a
+# de bom grado — e é aí que a promessa se parte: ela atravessa o guarda e vai
+# comparar-se três linhas à frente com um instante que tem fuso,
+# `TypeError: can't compare offset-naive and offset-aware datetimes`.
+#
+# **É o pior estrago deste módulo.** Uma linha má na colecção e a rota que faz
+# sair o papel responde 500 a TODAS as perguntas seguintes: a loja inteira
+# deixa de imprimir, e o ecrã que devia explicar porquê rebenta também. Hoje
+# não é alcançável (tudo o que se grava passa por `_iso(_agora())`) — mas o
+# guarda existe precisamente para um valor gravado mau não fazer mal.
+
+
+def test_uma_data_SEM_FUSO_conta_como_ausente_como_a_docstring_promete():
+    """Os cinco chamadores passam todos por aqui: é uma linha só."""
+    assert imp._quando("2026-08-22T19:00:00") is None
+    # E o que TEM fuso continua a ler-se, senão o guarda apagava tudo.
+    assert imp._quando(_T0.isoformat()) == _T0
+
+
+def test_uma_VALIDADE_sem_fuso_nao_derruba_a_recolha(monkeypatch):
+    """`validade_ate` mau: sem isto, a loja inteira deixa de imprimir."""
+    db = _db()
+    _por_na_fila(db, monkeypatch)
+    _fila(db)[0]["validade_ate"] = "2026-08-22T19:30:00"
+    # Ilegível não caduca — o mesmo que já valia para "não é uma data".
+    assert len(_recolher(db, monkeypatch)["trabalhos"]) == 1
+
+
+def test_um_ARRENDAMENTO_sem_fuso_nao_derruba_a_recolha(monkeypatch):
+    """`reservado_em` mau, pelo caminho RESERVADO do `_arrumar_a_fila`."""
+    db = _db()
+    _por_na_fila(db, monkeypatch)
+    _recolher(db, monkeypatch)
+    _fila(db)[0]["reservado_em"] = "2026-08-22T19:00:00"
+    # Sem instante legível o arrendamento conta como ACABADO: volta à fila e
+    # sai. Papel a mais em vez de um trabalho preso para sempre.
+    assert len(_recolher(db, monkeypatch, _T0 + timedelta(seconds=1))["trabalhos"]) == 1
+
+
+def test_uma_RECOLHA_sem_fuso_nao_derruba_o_ECRA(monkeypatch):
+    """`ultima_recolha_em` mau: é o ecrã que devia explicar a avaria a
+    rebentar por cima dela."""
+    db = _db(dispositivos=[_dispositivo(ultima_recolha_em="2026-08-22T19:00:00")])
+    assert _estado(db, monkeypatch)["ha_programa"] is False
