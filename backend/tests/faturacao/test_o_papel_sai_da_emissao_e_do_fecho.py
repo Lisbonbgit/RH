@@ -22,6 +22,7 @@ from faturacao import impressao as imp
 from faturacao.db import COLECOES
 
 from . import test_fiscal as tf
+from . import test_nota_credito as tnc
 from .test_venda import ColeccaoFalsa, DbFalsa, _corre
 
 
@@ -150,6 +151,100 @@ def test_um_RETRY_da_mesma_emissao_nao_faz_um_segundo_talao(monkeypatch):
     db._coleccoes[COLECOES["vendas"]]._documentos[0]["estado"] = "aberta"
     _finalizar(db, monkeypatch)
     assert len(_fila(db)) == 1
+
+
+# --- A devolução --------------------------------------------------------------
+#
+# A NOTA DE CRÉDITO é um documento fiscal REAL como a Fatura Simplificada, e o
+# cliente que devolve leva papel para casa exactamente como o que compra.
+# Aqui não se chama `enfileirar_nota_emitida`: chama-se a ROTA
+# (`nota_credito.emitir_nota_credito`), com os duplos do `test_nota_credito`,
+# e olha-se para a fila no fim — que é a única coisa que apanha o defeito que
+# isto vem fechar (`nota_credito.py` não tinha UMA chamada à impressão).
+
+
+def _db_de_nota():
+    db = tnc._db_nc()
+    db._coleccoes[COLECOES["trabalhos_impressao"]] = ColeccaoFalsa(
+        [], [], unico=_chave_do_trabalho)
+    return db
+
+
+def _emitir_nota(db, monkeypatch):
+    db_mod.marcar_indice_notas_credito(True)
+    tf._configura_vendus_env(monkeypatch)
+    monkeypatch.setattr(tnc.nc_mod, "ClienteEmissaoVendus", tnc.VendusNCFalso)
+    tnc.VendusNCFalso.instancias.clear()
+    tnc.VendusNCFalso.emitidos = 0
+    monkeypatch.setattr(tnc.nc_mod, "obter_db", lambda: db)
+    try:
+        return _corre(tnc.emitir_nota_credito(
+            "doc-1", tnc._pedido(), operador=tnc._operador()))
+    finally:
+        db_mod.marcar_indice_notas_credito(None)
+
+
+def test_EMITIR_uma_NOTA_DE_CREDITO_poe_UM_papel_na_fila_e_e_o_do_CLIENTE(monkeypatch):
+    """**O cliente que devolve não pode sair da loja sem nada em papel.**
+
+    Medido antes desta correcção, pelas rotas reais: emitir a fatura punha
+    UM papel na fila, emitir a nota de crédito por cima punha ZERO —
+    `nota_credito.py` não tinha uma única chamada a `impressao.enfileirar`. E
+    o passo 8.6 do INSTALAR-IMPRESSAO.md manda o dono emitir uma nota de
+    crédito: ele ficava à espera de papel que não vinha.
+
+    **UM, e é o do balcão.** A ficha da cozinha não sai daqui pela mesma
+    razão que não sai da fatura: quem manda para a cozinha é o staff, pelo
+    botão."""
+    db = _db_de_nota()
+    resultado = _emitir_nota(db, monkeypatch)
+    assert resultado["atcud"] == "ATCUD-NC-12"
+
+    (trabalho,) = _fila(db)
+    assert trabalho["impressora"] == imp.CAIXA
+    assert trabalho["tipo"] == imp.TALAO
+    assert trabalho["loja_id"] == "loja-1"
+    assert trabalho["estado"] == imp.PENDENTE
+    assert imp.COZINHA not in [t["impressora"] for t in _fila(db)]
+
+
+def test_o_papel_da_nota_e_o_talao_CERTIFICADO_e_fica_GUARDADO_com_ela(monkeypatch):
+    """As duas metades do mesmo defeito, e a segunda era a que fechava a
+    última porta: `_gravar_documento_da_nota` construía o documento campo a
+    campo SEM `talao_escpos` — que o Vendus devolve na mesma
+    (`vendus/emissao._documento_da_criacao`, `output=escpos`). Sem ele, o
+    botão «Imprimir» do separador Faturação respondia 422 sobre uma nota
+    acabada de sair: «não tem o talão certificado guardado»."""
+    db = _db_de_nota()
+    _emitir_nota(db, monkeypatch)
+    nota = [d for d in db._coleccoes[COLECOES["documentos"]]._documentos
+            if d.get("tipo") == "NC"][0]
+    assert nota["talao_escpos"] == tnc._bruto_nc()["talao_escpos"]
+    (trabalho,) = _fila(db)
+    assert base64.b64decode(trabalho["bytes_b64"]) == nota["talao_escpos"]
+
+    # E o botão «Imprimir» da Faturação já dá papel em vez de 422.
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+    segunda = _corre(imp.imprimir_segunda_via(
+        nota["id"], operador={"operador_id": "op-1", "nome": "Rafaela",
+                              "loja_id": "loja-1", "dispositivo_id": "pc-1"}))
+    assert segunda["aceite"] is True
+
+
+def test_a_NOTA_CONTINUA_BOA_quando_a_fila_de_impressao_rebenta(monkeypatch):
+    """A mesma promessa da fatura, e aqui vale ainda mais: um 500 sobre uma NC
+    REAL já entregue à AT convida a operadora a devolver o dinheiro outra
+    vez."""
+    db = _db_de_nota()
+
+    class Explode:
+        async def insert_one(self, doc):
+            raise RuntimeError("Atlas em baixo")
+
+    db._coleccoes[COLECOES["trabalhos_impressao"]] = Explode()
+    resultado = _emitir_nota(db, monkeypatch)
+    assert resultado["atcud"] == "ATCUD-NC-12"
+    assert resultado["numero"] == "NC 05P2026/12"
 
 
 # --- O fecho ------------------------------------------------------------------

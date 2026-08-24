@@ -1040,6 +1040,14 @@ async def _gravar_documento_da_nota(
         "total_liquido": bruto.get("total_liquido"),
         "tipo": "NC",
         "modo": bruto.get("modo"),
+        # **O talão certificado, guardado com a nota** — a mesma linha que
+        # `fiscal._gravar_documento` tem para a Fatura Simplificada, e que
+        # aqui faltava: o Vendus devolve-o na mesma
+        # (`vendus/emissao._documento_da_criacao`, `output=escpos`) e este
+        # dicionário, construído campo a campo, deitava-o fora. Sem ele o
+        # botão «Imprimir» do separador Faturação respondia 422 sobre uma
+        # nota acabada de emitir — «não tem o talão certificado guardado».
+        "talao_escpos": bruto.get("talao_escpos"),
         "ext_ref": nota["ext_ref"],
         "loja_id": nota["loja_id"],
         "emitido_em": bruto.get("emitido_em") or _agora(),
@@ -1381,6 +1389,35 @@ async def emitir_nota_credito(
             "emitido_em": documento_nc.get("emitido_em"),
         }},
     )
+    # **O PAPEL DO CLIENTE**, e é o último passo desta rota pela mesma razão
+    # que é o último do `fiscal.finalizar`: o talão é CONSEQUÊNCIA do
+    # documento fiscal, nunca condição dele. Um cliente que devolve sai da
+    # loja com o papel da nota de crédito na mão — sem isto saía sem nada,
+    # que é o que o passo 8.6 do INSTALAR-IMPRESSAO.md manda experimentar.
+    #
+    # **A ficha da cozinha não sai daqui**, como não sai da fatura: quem a
+    # manda imprimir é o staff, pelo botão «Imprimir Pedido».
+    #
+    # Nada aqui pode falhar para fora — `impressao.enfileirar` engole tudo
+    # (ver a docstring de lá) e este `try` é a segunda rede. Uma nota de
+    # crédito REAL já entregue à Autoridade Tributária a devolver 500 por
+    # causa do papel era o pior desfecho possível: o ecrã lê o 500 como «não
+    # saiu nada» e convida a operadora a devolver o dinheiro outra vez.
+    #
+    # O import é LOCAL pela mesma razão do `fiscal.py`: o núcleo fiscal não
+    # depende, à importação, de um módulo cuja avaria não pode travar uma
+    # devolução.
+    try:
+        from .impressao import enfileirar_nota_emitida
+        await enfileirar_nota_emitida(
+            db, nota, documento_nc, operador.get("dispositivo_id"))
+    except Exception as e:  # noqa: BLE001 — perde-se o papel, nunca o registo
+        logger.error(
+            "[faturacao] a nota de crédito %s saiu mas não foi possível pôr o "
+            "papel na fila de impressão: %s. O documento fiscal está gravado e "
+            "reimprime-se pelo separador Faturação.", nota["id"], e,
+        )
+
     return _resposta_da_nota(nota, documento_nc)
 
 

@@ -788,6 +788,52 @@ def test_o_imprimir_pedido_manda_a_ficha_para_a_COZINHA(monkeypatch):
     assert "RAFAELA".encode("cp858") in saiu
 
 
+def test_o_imprimir_pedido_numa_conta_VAZIA_nao_poe_PAPEL_EM_BRANCO_na_fila(monkeypatch):
+    """**A guarda do `enfileirar` não apanha este, e é por isso que existe
+    outra.**
+
+    «Um trabalho sem bytes não é um trabalho» não chega aqui: o CABEÇALHO tem
+    bytes. Medido — uma venda com `linhas: []` devolvia `aceite=True` e punha
+    na fila 96 bytes com «PEDIDO COZINHA / #AZIA 10:05 / ====» e mais nada. É
+    a mesma frase que o módulo já escreveu para o talão vazio: era papel em
+    branco a sair e a operadora a pensar que o sistema imprimiu.
+
+    E basta tocar no botão antes de picar o primeiro copo — o ecrã só o
+    desligava por não haver programa a ouvir."""
+    db = _db(vendas=[_venda(estado="aberta", linhas=[])])
+    _relogio(monkeypatch, _T0)
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(imprimir_pedido("venda-1", operador=_operador()))
+    assert excinfo.value.status_code == 422
+    assert _fila(db) == []
+
+
+def test_uma_quantidade_IMPOSSIVEL_ja_gravada_nao_rebenta_o_botao(monkeypatch):
+    """**A ficha inteira desaparecia por causa de uma linha.**
+
+    `imprimir_pedido` não tem `try` nenhum: um `nan` gravado na quantidade
+    (que a API aceitava — ver `test_venda`) levantava `ValueError` dentro do
+    `talao._quantidade`, dava 500 no ecrã, e aquela conta nunca mais mandava
+    ficha à cozinha. A entrada está fechada, mas as linhas que já entraram
+    continuam gravadas.
+
+    O papel sai, com `?` na quantidade que não se sabe e o resto do pedido
+    todo lá dentro."""
+    venda = _venda(estado="aberta")
+    venda["linhas"] = [
+        dict(venda["linhas"][0], quantidade=float("nan")),
+        {"produto_nome": "Café Expresso", "quantidade": 2},
+    ]
+    db = _db(vendas=[venda])
+    _relogio(monkeypatch, _T0)
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+    assert _corre(imprimir_pedido("venda-1", operador=_operador()))["aceite"]
+    saiu = base64.b64decode(_fila(db)[0]["bytes_b64"]).decode("cp858")
+    assert "? Açaí Regular" in saiu
+    assert "2 Café Expresso" in saiu
+
+
 def test_a_ficha_sai_com_a_conta_ABERTA_e_sem_documento_nenhum(monkeypatch):
     """**É como um balcão trabalha:** pica-se, manda-se para a cozinha,
     cobra-se no fim. O cliente ainda está a decidir o resto do pedido e o

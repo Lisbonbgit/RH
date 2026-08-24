@@ -1208,6 +1208,25 @@ export const razaoDeNaoImprimir = ({ estado, aImprimir } = {}) => {
   return null;
 };
 
+export const MSG_PEDIDO_SEM_LINHAS =
+  'Esta conta ainda não tem nada picado — não há ficha nenhuma para mandar à '
+  + 'cozinha.';
+
+// **O mesmo, para a ficha da COZINHA — que tem uma razão a mais.** Uma conta
+// sem uma única linha picada mandava para a fila um papel com o cabeçalho e
+// mais nada («PEDIDO COZINHA / #AZIA 10:05 / ===='), e o ecrã dizia que tinha
+// imprimido. Basta tocar no botão antes de picar o primeiro copo.
+//
+// O servidor recusa-a na mesma (`impressao.imprimir_pedido`, 422) e é ele a
+// porta a sério; isto é para a operadora ler a razão em vez de um erro.
+//
+// A ordem não é indiferente: o programa em falta é o problema maior, e tapa
+// este — não vale a pena dizer «pique alguma coisa» a quem não tem
+// impressora nenhuma a ouvir.
+export const razaoDeNaoImprimirPedido = ({ venda, estado, aImprimir } = {}) =>
+  razaoDeNaoImprimir({ estado, aImprimir })
+  || (venda && !(venda.linhas || []).length ? MSG_PEDIDO_SEM_LINHAS : null);
+
 // **O que ficou por sair, dito por extenso — ou `null` quando não há nada a
 // dizer.** Uma fila que desiste em silêncio é pior do que uma fila que
 // insiste: o servidor desiste de um trabalho ao fim de algumas tentativas

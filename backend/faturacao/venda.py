@@ -35,6 +35,7 @@ import logging
 import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -294,6 +295,15 @@ def _recusa_quantidade_impossivel(v):
     """
     if v is None:
         return v
+    # **`nan` e `inf` passavam por aqui**, e é a API que os deixa entrar: o
+    # `json.loads` do FastAPI lê os literais `NaN`/`Infinity` do corpo, e
+    # nenhum dos dois crivos abaixo lhes toca — `nan <= 0` é `False`, e
+    # `repr(nan).partition(".")[2]` é `""`, zero casas decimais. Ficava
+    # `nan` gravado na linha, e a partir daí o botão «Imprimir Pedido»
+    # rebentava com 500 e aquela conta nunca mais mandava ficha à cozinha
+    # (ver `talao._quantidade`). Recusa-se à entrada, que é onde custa menos.
+    if not isfinite(v):
+        raise ValueError("A quantidade tem de ser um número.")
     if v <= 0:
         raise ValueError("A quantidade tem de ser maior do que zero.")
     casas = repr(float(v)).partition(".")[2]

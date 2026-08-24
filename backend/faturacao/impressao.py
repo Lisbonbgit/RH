@@ -210,6 +210,10 @@ _MSG_DESISTIU = (
 _MSG_CADUCOU = "Passou a validade sem chegar a ser impresso."
 _MSG_VENDA_INEXISTENTE = "Não existe nenhuma conta com este id nesta loja."
 _MSG_DOCUMENTO_INEXISTENTE = "Não existe nenhum documento com este id nesta loja."
+_MSG_CONTA_SEM_LINHAS = (
+    "Esta conta ainda não tem nada picado — não há ficha nenhuma para mandar "
+    "à cozinha. Pique o pedido e carregue outra vez."
+)
 _MSG_DOCUMENTO_SEM_TALAO = (
     "Esta fatura não tem o talão certificado guardado — foi emitida antes de o "
     "sistema o passar a guardar, ou o Vendus devolveu-o ilegível. O documento "
@@ -355,6 +359,24 @@ async def enfileirar(
 # --- Os dois pontos onde o POS enfileira sozinho ------------------------------
 
 
+def _talao_guardado(documento: Dict) -> bytes:
+    """Os bytes ESC/POS do talão CERTIFICADO que ficou guardado com o
+    documento (`fat_documentos.talao_escpos`) — `b""` se não houver nenhum.
+
+    Um documento relido do Mongo pode trazer o talão como texto (foi gravado
+    assim por uma versão anterior). Aceita-se, mas nunca se adivinha a
+    codificação: latin-1 é a única que nunca falha byte nenhum e devolve
+    exactamente os 256 valores originais.
+
+    Escrito UMA vez para os três sítios que precisam do mesmo papel — a
+    fatura, a nota de crédito e a segunda via. Eram duas cópias, e a terceira
+    ia ser a que se esquecia do `latin-1`."""
+    talao = documento.get("talao_escpos")
+    if isinstance(talao, str):
+        talao = talao.encode("latin-1", errors="ignore")
+    return bytes(talao or b"")
+
+
 async def enfileirar_venda_emitida(db, venda: Dict, documento: Dict) -> None:
     """Uma venda acabou de virar Fatura Simplificada: sai o talão do cliente
     na impressora do balcão. **E mais nada.**
@@ -376,23 +398,53 @@ async def enfileirar_venda_emitida(db, venda: Dict, documento: Dict) -> None:
 
     Chamado de dentro do `finalizar` e nunca levanta nada — a chamada passa
     por `enfileirar`, que engole tudo."""
-    talao = documento.get("talao_escpos")
-    if isinstance(talao, str):
-        # Um documento relido do Mongo pode trazer o talão como texto (foi
-        # gravado assim por uma versão anterior). Aceita-se, mas nunca se
-        # adivinha a codificação: latin-1 é a única que nunca falha byte
-        # nenhum e devolve exactamente os 256 valores originais.
-        talao = talao.encode("latin-1", errors="ignore")
     await enfileirar(
         db,
         loja_id=venda["loja_id"],
         dispositivo_id=venda.get("dispositivo_id"),
         impressora=CAIXA,
         tipo=TALAO,
-        dados=talao or b"",
+        dados=_talao_guardado(documento),
         # O DOCUMENTO, não a venda: é o documento que é o papel. Uma retoma
         # que grave o mesmo documento outra vez cai na mesma chave e não
         # duplica nada.
+        chave="talao:%s" % documento.get("id"),
+    )
+
+
+async def enfileirar_nota_emitida(
+    db, nota: Dict, documento: Dict, dispositivo_id: Optional[str] = None
+) -> None:
+    """Uma devolução acabou de virar Nota de Crédito: sai o talão do cliente
+    na impressora do balcão. **E mais nada.**
+
+    **O cliente que devolve tem direito ao papel exactamente como o que
+    compra**: a NC é o documento fiscal que corrige a fatura dele, e é o que
+    ele leva para casa. Isto não existia — medido pelas rotas reais, emitir a
+    fatura punha UM papel na fila e emitir a nota de crédito por cima punha
+    ZERO. E o botão «Imprimir» do separador Faturação também não a salvava,
+    porque o talão certificado nem sequer era guardado com o documento
+    (`nota_credito._gravar_documento_da_nota`): respondia 422, «não tem o
+    talão certificado guardado». O cliente saía da loja com a devolução feita
+    e nada na mão.
+
+    **A ficha da cozinha NÃO sai daqui**, pela mesma razão que não sai da
+    fatura (ver `enfileirar_venda_emitida`): quem manda para a cozinha é o
+    staff, pelo botão.
+
+    A `chave` é a do DOCUMENTO, como na fatura — uma retoma que reencontre a
+    mesma nota já gravada (`_gravar_documento_da_nota` devolve a existente)
+    cai na mesma chave e não faz sair um segundo papel.
+
+    Chamado de dentro do `emitir_nota_credito` e nunca levanta nada — a
+    chamada passa por `enfileirar`, que engole tudo."""
+    await enfileirar(
+        db,
+        loja_id=nota["loja_id"],
+        dispositivo_id=dispositivo_id,
+        impressora=CAIXA,
+        tipo=TALAO,
+        dados=_talao_guardado(documento),
         chave="talao:%s" % documento.get("id"),
     )
 
@@ -839,13 +891,23 @@ async def imprimir_pedido(
     aqui toca em dinheiro nem em documento fiscal nenhum.
 
     **Chave nova de cada vez**, como a gaveta: quem carrega duas vezes quer
-    duas fichas."""
+    duas fichas.
+
+    **Uma conta VAZIA não é uma ficha, e é aqui que se recusa.** A guarda do
+    `enfileirar` («um trabalho sem bytes não é um trabalho») não a apanha,
+    porque o cabeçalho tem bytes: saía «PEDIDO COZINHA / #AZIA 10:05 / ====»
+    e mais nada, com `aceite=True` a dizer à operadora que o sistema
+    imprimiu. É a mesma frase que este módulo já escreveu para o talão
+    vazio — era papel em branco a sair —, e basta tocar no botão antes de
+    picar o primeiro copo. A porta fecha-se no servidor e não só no ecrã."""
     db = obter_db()
     venda = await db[COLECOES["vendas"]].find_one(
         {"id": venda_id, "loja_id": operador["loja_id"]}
     )
     if not venda:
         raise HTTPException(status_code=404, detail=_MSG_VENDA_INEXISTENTE)
+    if not venda.get("linhas"):
+        raise HTTPException(status_code=422, detail=_MSG_CONTA_SEM_LINHAS)
     trabalho_id = await enfileirar(
         db,
         loja_id=venda["loja_id"],
@@ -881,9 +943,7 @@ async def imprimir_segunda_via(
     )
     if not documento:
         raise HTTPException(status_code=404, detail=_MSG_DOCUMENTO_INEXISTENTE)
-    talao = documento.get("talao_escpos")
-    if isinstance(talao, str):
-        talao = talao.encode("latin-1", errors="ignore")
+    talao = _talao_guardado(documento)
     if not talao:
         raise HTTPException(status_code=422, detail=_MSG_DOCUMENTO_SEM_TALAO)
     trabalho_id = await enfileirar(
@@ -892,7 +952,7 @@ async def imprimir_segunda_via(
         dispositivo_id=operador.get("dispositivo_id"),
         impressora=CAIXA,
         tipo=SEGUNDA_VIA,
-        dados=bytes(talao),
+        dados=talao,
         chave="segunda-via:%s" % uuid.uuid4(),
     )
     return {"trabalho_id": trabalho_id, "aceite": trabalho_id is not None}

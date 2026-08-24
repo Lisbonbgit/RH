@@ -500,3 +500,75 @@ def test_o_Z_traz_QUEM_e_QUANDO_porque_o_papel_le_se_um_mes_depois():
 
 def test_o_Z_tem_onde_assinar():
     assert "Assinatura" in relatorio_z(_z())
+
+
+def test_NaN_e_INFINITO_nao_apagam_a_ficha_da_cozinha():
+    """O buraco que ficou do `None`, e que era o mesmo estrago.
+
+    O `try` do `_quantidade` só apanhava o `float(bruto)`; a linha seguinte
+    — `q == int(q)` — levanta `ValueError` com `nan` e `OverflowError` com
+    `inf`. Medido pela rota real: `POST /pos/venda/{id}/linhas` com o corpo
+    `{"produto_id":"prod-1","quantidade":NaN}` era ACEITE (o `json.loads` do
+    FastAPI lê o literal), e a partir daí o botão «Imprimir Pedido» dava 500
+    no ecrã — aquela conta nunca mais mandava ficha à cozinha, com o resto do
+    pedido lá dentro.
+
+    A porta está fechada nos DOIS sítios: `venda._recusa_quantidade_impossivel`
+    já não deixa entrar (ver o teste de lá), e isto é o que salva as linhas
+    que entraram antes.
+
+    `?` e nunca `1`: escrever um número onde não se sabe manda fazer um copo
+    a menos."""
+    venda = {"linhas": [
+        {"produto_nome": "Açaí Regular", "quantidade": float("nan")},
+        {"produto_nome": "Açaí Large", "quantidade": float("inf")},
+        {"produto_nome": "Café Expresso", "quantidade": 2},
+    ]}
+    texto = [l["texto"] for l in _analisar(pedido_da_cozinha(venda))]
+    assert "? Açaí Regular" in texto
+    assert "? Açaí Large" in texto
+    # A ficha INTEIRA sai — era isto que se perdia, e não só a linha.
+    assert "2 Café Expresso" in texto
+
+
+def test_uma_linha_que_DOBRA_continua_RECUADA_e_nao_na_coluna_zero():
+    """**O erro que a docstring do `_partir` diz que este ficheiro existe para
+    evitar**, e que estava a acontecer em dois dos cinco passos da ficha.
+
+    Medido numa ficha de dois copos: «Toppings gratis: 2x Granola, Leite» /
+    «condensado», e «Observações: sem granola por cima, muito» / «frio» — as
+    duas continuações começavam na COLUNA 0, logo por cima de «Toppings:»,
+    onde parecem um artigo novo. O bloco dos toppings (passo 4) já passava
+    `recuo`; os passos 3 e 5 não.
+
+    O recuo é o que distingue «isto é a continuação de cima» de «isto é
+    coisa nova» num papel lido de relance e à distância de um braço."""
+    venda = {"linhas": [{
+        "produto_nome": "Açaí Regular", "quantidade": 1,
+        "respostas_texto": [
+            {"grupo_id": "g-nome", "nome_grupo": "Nome", "texto": "Rafaela"},
+            {"grupo_id": "g-obs", "nome_grupo": "Observações",
+             "texto": "sem granola por cima, muito frio"},
+        ],
+        "opcoes": [
+            {"id": "t1", "grupo_id": "g2", "nome_grupo": "Toppings gratis",
+             "nome": "Granola", "preco": 0, "sai_na_fatura": False},
+            {"id": "t2", "grupo_id": "g2", "nome_grupo": "Toppings gratis",
+             "nome": "Granola", "preco": 0, "sai_na_fatura": False},
+            {"id": "t3", "grupo_id": "g2", "nome_grupo": "Toppings gratis",
+             "nome": "Leite condensado", "preco": 0, "sai_na_fatura": False},
+            {"id": "t4", "grupo_id": "g3", "nome_grupo": "Toppings",
+             "nome": "Nutella", "preco": 0.95},
+        ],
+    }]}
+    texto = [l["texto"] for l in _analisar(pedido_da_cozinha(venda))]
+
+    # 3. a indicação de serviço que dobra
+    assert "Toppings gratis: 2x Granola, Leite" in texto
+    assert "   condensado" in texto
+    assert "condensado" not in texto
+
+    # 5. a observação que dobra
+    assert "Observações: sem granola por cima, muito" in texto
+    assert "   frio" in texto
+    assert "frio" not in texto

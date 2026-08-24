@@ -73,6 +73,7 @@ descaracterizar, porque são o que a cozinha lê.
 """
 import textwrap
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -133,7 +134,13 @@ def _bloco(
     Os comandos abrem na PRIMEIRA linha e fecham na ÚLTIMA, e não uma vez por
     linha: o corpo e o negrito atravessam a mudança de linha na impressora, e
     repeti-los era gastar bytes para dizer o mesmo. Fechar é que não é
-    opcional — ver o comentário das constantes."""
+    opcional — ver o comentário das constantes.
+
+    **`recuo` não é enfeite, e quem chama tem de o passar.** Uma continuação
+    encostada à coluna 0 é exactamente o erro que este ficheiro existe para
+    evitar (ver `_partir`): medido numa ficha de dois copos, «Toppings
+    gratis: 2x Granola, Leite» dobrava e o «condensado» aparecia por cima de
+    «Toppings:», onde parece um artigo novo."""
     linhas = _partir(texto, colunas, recuo)
     if corpo:
         linhas[0] = corpo + linhas[0]
@@ -167,10 +174,22 @@ def _quantidade(bruto) -> str:
 
     **O que não se sabe sai como `?` e nunca como `1`.** É a mesma regra do
     `_euros` do Z aqui em baixo: escrever um número onde não se sabe é a
-    mentira mais fácil de imprimir, e esta mandava fazer um copo a menos."""
+    mentira mais fácil de imprimir, e esta mandava fazer um copo a menos.
+
+    **`nan` e `inf` são desse lado, e eram o buraco que faltava tapar.** O
+    `try` só apanhava o `float(bruto)`, e a linha seguinte (`q == int(q)`)
+    levanta `ValueError` com `nan` e `OverflowError` com `inf` — o mesmo
+    estrago do `None` a meio fechar: quem carregou no botão via um erro no
+    ecrã e a cozinha ficava sem papel, com o resto do pedido lá dentro, e
+    aquela conta nunca mais mandava ficha nenhuma. O diálogo do POS manda
+    sempre um inteiro ≥ 1, mas a API aceita o literal `NaN` do JSON — a
+    porta fecha-se nos dois sítios (ver `venda._recusa_quantidade_impossivel`
+    para o outro)."""
     try:
         q = float(bruto)
     except (TypeError, ValueError):
+        return "?"
+    if not isfinite(q):
         return "?"
     if q == int(q):
         return "%d" % int(q)
@@ -355,7 +374,7 @@ def _ficha_do_artigo(linha: Dict) -> List[str]:
             nome if n == 1 else "%dx %s" % (n, nome)
             for nome, n in _contar(opcoes_do_grupo).items())
         saida += _bloco("%s: %s" % (titulo, respondido) if titulo else respondido,
-                        negrito=True)
+                        negrito=True, recuo="   ")
 
     # 4. Tudo o resto que se escolheu, grupo a grupo, com as doses à frente.
     #    O título por cima e as doses recuadas: é o que faz um grupo de
@@ -380,7 +399,8 @@ def _ficha_do_artigo(linha: Dict) -> List[str]:
     for resposta in respostas[1:]:
         titulo = (resposta.get("nome_grupo") or "").strip()
         texto = resposta["texto"]
-        saida += _bloco("%s: %s" % (titulo, texto) if titulo else texto, negrito=True)
+        saida += _bloco("%s: %s" % (titulo, texto) if titulo else texto,
+                        negrito=True, recuo="   ")
 
     return saida
 

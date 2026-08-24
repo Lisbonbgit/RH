@@ -26,7 +26,8 @@ import {
   contaTravada, duvidaPorApurar, detalhesErroPos, semRespostaPos,
   ehTimeoutPos, TIMEOUT_PADRAO_MS, entregarContaAoGestor,
   razaoDeNaoComecar, razaoDaGrelhaMorta, MSG_CONTA_TRAVADA_CURTA,
-  contaDeOutraCaixa, imprimirPedidoPos, razaoDeNaoImprimir,
+  contaDeOutraCaixa, imprimirPedidoPos,
+  razaoDeNaoImprimirPedido as razaoDeNaoImprimirPedidoLib,
   urlDaFotoPos,
   eurosPos as euros,
 } from '@/lib/pos';
@@ -736,9 +737,10 @@ function PainelConta({
             Desligado quando não há programa de impressão a ouvir na loja, e a
             dizer porquê: um "Imprimir" que não imprime nada fazia a operadora
             carregar três vezes e dar o cliente por servido sem pedido nenhum
-            na cozinha. A decisão está em `razaoDeNaoImprimir` (lib/pos.js), e
-            não aqui, porque uma condição dentro de um botão não se corre em
-            teste nenhum. */}
+            na cozinha. E desligado numa conta ainda VAZIA, que era papel em
+            branco a sair. A decisão está em `razaoDeNaoImprimirPedido`
+            (lib/pos.js), e não aqui, porque uma condição dentro de um botão
+            não se corre em teste nenhum. */}
         <Button
           variant="outline"
           className="w-full h-12 justify-start"
@@ -909,8 +911,8 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
   // Ver a nota igual no PosMenuCaixa: cada ecrã pergunta o seu.
   const { estado: estadoImpressao, recarregar: recarregarImpressao } =
     useEstadoDaImpressao();
-  const razaoDeNaoImprimirPedido = razaoDeNaoImprimir({
-    estado: estadoImpressao, aImprimir: aImprimirPedido,
+  const razaoDeNaoImprimirPedido = razaoDeNaoImprimirPedidoLib({
+    venda, estado: estadoImpressao, aImprimir: aImprimirPedido,
   });
 
   // **A ficha da cozinha, sem finalizar a conta.** Põe o trabalho na fila do

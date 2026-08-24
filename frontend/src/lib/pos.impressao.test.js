@@ -12,6 +12,8 @@
  */
 import {
   razaoDeNaoImprimir,
+  razaoDeNaoImprimirPedido,
+  MSG_PEDIDO_SEM_LINHAS,
   avisoDaFilaDeImpressao,
   haFalhadosPorVer,
   MSG_IMPRESSAO_SEM_PROGRAMA,
@@ -53,6 +55,40 @@ describe('razaoDeNaoImprimir', () => {
     expect(razaoDeNaoImprimir({
       estado: { ...COM_PROGRAMA, ha_programa: false }, aImprimir: true,
     })).toBe(MSG_IMPRESSAO_A_ENVIAR);
+  });
+});
+
+describe('razaoDeNaoImprimirPedido', () => {
+  // A ficha da COZINHA tem uma razão a mais do que os outros papéis: uma
+  // conta ainda sem nada picado mandava para a fila o cabeçalho e mais nada
+  // («PEDIDO COZINHA / #AZIA 10:05 / ===='), com o ecrã a dizer que tinha
+  // imprimido. Basta tocar no botão antes de picar o primeiro copo.
+  test('uma conta VAZIA desliga o botão e diz porquê', () => {
+    expect(razaoDeNaoImprimirPedido({
+      venda: { id: 'venda-1', linhas: [] }, estado: COM_PROGRAMA,
+    })).toBe(MSG_PEDIDO_SEM_LINHAS);
+  });
+
+  test('com um copo picado, o botão funciona', () => {
+    expect(razaoDeNaoImprimirPedido({
+      venda: { id: 'venda-1', linhas: [{ produto_nome: 'Açaí' }] },
+      estado: COM_PROGRAMA,
+    })).toBeNull();
+  });
+
+  test('SEM programa a ouvir vence a conta vazia — é o problema maior', () => {
+    // Não vale a pena dizer «pique alguma coisa» a quem não tem impressora
+    // nenhuma a ouvir.
+    expect(razaoDeNaoImprimirPedido({
+      venda: { id: 'venda-1', linhas: [] },
+      estado: { ...COM_PROGRAMA, ha_programa: false },
+    })).toBe(MSG_IMPRESSAO_SEM_PROGRAMA);
+  });
+
+  test('sem venda nenhuma, continua a valer o guarda de sempre', () => {
+    // O botão já está desligado por `!venda` no ecrã; aqui o que importa é
+    // não inventar a frase da conta vazia quando não há conta.
+    expect(razaoDeNaoImprimirPedido({ estado: COM_PROGRAMA })).toBeNull();
   });
 });
 

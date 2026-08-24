@@ -20,6 +20,7 @@ resolução de rotas — o conflito de caminhos, a existir, é entre venda.py e
 fiscal.py, e essas duas só se encontram no router de faturacao/__init__.py.
 Continua tudo dentro do processo: nenhuma ligação sai daqui.
 """
+import json
 import re
 import asyncio
 from copy import deepcopy
@@ -841,6 +842,33 @@ def test_a_quantidade_recusa_zero_e_negativos():
     for q in (0, -1):
         with pytest.raises(ValidationError):
             venda_mod.PedidoJuntarLinha(produto_id="p1", quantidade=q)
+
+
+def test_a_quantidade_recusa_NaN_e_INFINITY_do_corpo_do_pedido():
+    """**O JSON traz o literal, e os dois crivos deixavam-no passar.**
+
+    O `json.loads` do FastAPI lê `NaN` e `Infinity` do corpo do pedido — não
+    é JSON de norma, é a extensão que o Python aceita por omissão — e nenhum
+    dos dois crivos lhes tocava: `nan <= 0` é `False`, e
+    `repr(nan).partition(".")[2]` é `""`, zero casas decimais. Ficava `nan`
+    GRAVADO na linha, e a partir daí o botão «Imprimir Pedido» dava 500 no
+    ecrã e aquela conta nunca mais mandava ficha à cozinha
+    (`talao._quantidade`).
+
+    Não é alcançável pelo diálogo do POS (que manda sempre um inteiro ≥ 1),
+    mas é pela API — e uma quantidade que não é um número não é só papel:
+    é o que vai à linha da fatura e ao Vendus.
+
+    O corpo vai por `json.loads` de propósito, e não `float("nan")` escrito
+    à mão: é o caminho que a rota real percorre."""
+    for corpo in ('{"produto_id":"prod-1","quantidade":NaN}',
+                  '{"produto_id":"prod-1","quantidade":Infinity}',
+                  '{"produto_id":"prod-1","quantidade":-Infinity}'):
+        with pytest.raises(ValidationError):
+            venda_mod.PedidoJuntarLinha(**json.loads(corpo))
+        with pytest.raises(ValidationError):
+            venda_mod.PedidoEditarLinha(
+                **{k: v for k, v in json.loads(corpo).items() if k != "produto_id"})
 
 
 def test_a_quantidade_inteira_continua_a_ser_inteira():
