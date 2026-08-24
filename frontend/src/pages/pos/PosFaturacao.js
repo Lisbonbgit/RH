@@ -7,6 +7,9 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+} from '@/components/ui/dropdown-menu';
 import { Separator } from '@/components/ui/separator';
 import {
   getDocumentosPos, getDocumentoPos, copiarDocumentoParaVenda, getVendaAberta,
@@ -531,17 +534,33 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
   return (
     <>
       {/* **DOCUMENTOS é a aba, FATURAÇÃO é a opção lá dentro** — pedido do dono.
-          Isto começou por ser um botão «Faturação» que abria a lista de uma vez:
-          comia o nível do meio e não deixava sítio para as opções que ainda
-          faltam. */}
-      <Button
-        variant="outline"
-        size="lg"
-        className="h-11"
-        onClick={() => { setAbertaId(null); setNotaCredito(false); setVista('menu'); setAberto(true); }}
-      >
-        <Receipt className="h-4 w-4 mr-1" /> Documentos
-      </Button>
+          E abre com um MENU SUSPENSO, igual ao «Caixa» ao lado, porque foi o que
+          ele pediu depois de ver os dois lado a lado.
+
+          Eu tinha escolhido botões grandes dentro do painel, por um motivo que
+          continua verdadeiro — um menu do Radix vive fora do painel e não se
+          abre com um toque simples, o que o deixa fora do alcance das guardas
+          que montam o ecrã. A consistência com a barra ganha na mesma: duas
+          abas lado a lado que abrem de maneiras diferentes fazem parar quem
+          está a servir. O que se perde em prova ganha-se em não hesitar, e o
+          `Caixa` já vivia com essa troca. A decisão de QUE opções há continua
+          em `lib/pos.js`, onde um teste lhe chega. */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="lg" className="h-11">
+            <Receipt className="h-4 w-4 mr-1" /> Documentos
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="center" className="w-72">
+          <DropdownMenuItem
+            onSelect={() => {
+              setAbertaId(null); setNotaCredito(false); setVista('lista'); setAberto(true);
+            }}
+          >
+            <Receipt className="h-4 w-4 mr-2" /> Faturação
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
 
       <Dialog open={aberto} onOpenChange={(v) => { if (!v) { setAberto(false); setAbertaId(null); setNotaCredito(false); setVista('menu'); } }}>
         <DialogContent className="max-w-3xl max-h-[92vh] overflow-y-auto">
@@ -551,31 +570,9 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
             <DialogTitle>
               {abertaId
                 ? (notaCredito ? 'Nota de Crédito' : 'Fatura')
-                : (vista === 'menu' ? 'Documentos' : 'Faturação')}
+                : 'Faturação'}
             </DialogTitle>
           </DialogHeader>
-
-          {/* **As opções em botões grandes, e não num menu suspenso.** Dois
-              motivos, e o segundo é o que decidiu: um menu suspenso do Radix
-              vive fora deste painel e não se abre com um toque simples, o que o
-              deixava fora do alcance das guardas — e neste módulo já se viu um
-              ecrã inteiro partir-se com a suite verde. O primeiro é o dedo: quem
-              está ao balcão com fila à frente acerta num botão de 56px, não num
-              item de menu. */}
-          {!abertaId && vista === 'menu' && (
-            <div className="flex flex-col gap-3 py-2">
-              <Button
-                variant="outline"
-                className="w-full h-14 justify-start text-base"
-                onClick={() => setVista('lista')}
-              >
-                <Receipt className="h-5 w-5 mr-3" /> Faturação
-                <span className="ml-auto text-xs text-muted-foreground font-normal">
-                  As faturas já emitidas nesta caixa
-                </span>
-              </Button>
-            </div>
-          )}
 
           {abertaId ? (
             erroFatura ? (

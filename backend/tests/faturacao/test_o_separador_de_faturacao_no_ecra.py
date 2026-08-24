@@ -252,11 +252,18 @@ _COMPONENTES = "\n".join([
     "  ? React.createElement('div', { 'data-dialogo': 'aberto' }, props.children)",
     "  : null);",
     "const Div = (props) => React.createElement('div', null, props.children);",
+    # O item de um menu suspenso é um BOTÃO, e o que o dispara é o `onSelect`.
+    # Caído no `Div` genérico, ficava um pedaço de texto que nenhum toque
+    # alcança — e o guarda que julgava estar a abrir a Faturação media um ecrã
+    # fechado. É a aba «Documentos» a abrir como o «Caixa» ao lado.
+    "const ItemDeMenu = (props) => React.createElement(",
+    "  'button', { onClick: props.onSelect }, props.children);",
     "global.__componentes = new Proxy({}, { get: (_, nome) => {",
     "  if (nome === '__esModule') return true;",
     "  if (nome === 'Button') return Botao;",
     "  if (nome === 'Input') return Campo;",
     "  if (nome === 'Dialog') return Caixa;",
+    "  if (nome === 'DropdownMenuItem') return ItemDeMenu;",
     "  return Div;",
     "} });",
 ])
@@ -396,10 +403,11 @@ def test_o_painel_so_abre_depois_de_alguem_CARREGAR(ecra_normal):
     fatura em ecrã nenhum. É o que faz o resto deste ficheiro medir alguma
     coisa — se o painel estivesse sempre desenhado, todos os guardas a seguir
     ficavam verdes sem que ninguém o tivesse aberto."""
-    # A ABA chama-se «Documentos»; «Faturação» é a opção lá dentro, e por isso
-    # não se lê na barra antes do toque.
+    # A ABA chama-se «Documentos» e «Faturação» é a opção lá dentro. Não se
+    # afirma aqui que a opção está escondida antes do toque: quem a esconde é o
+    # menu suspenso a sério, e o arnês substitui-o por uma caixa que desenha
+    # sempre os filhos. Afirmá-lo seria medir o substituto, não o ecrã.
     assert "Documentos" in ecra_normal["fechado"]
-    assert "Faturação" not in ecra_normal["fechado"]
     assert "FS 05P2026/1824" not in ecra_normal["fechado"]
 
 
