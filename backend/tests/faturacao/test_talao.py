@@ -261,6 +261,66 @@ def test_opcao_PAGA_de_grupo_escondido_vai_com_a_dose_e_nao_ao_servico():
     assert "1x Extra caramelo" not in texto
 
 
+def test_um_topping_GRATIS_de_grupo_escondido_nao_perde_a_DOSE():
+    """A outra metade do defeito de cima, e esta perde-se sem custar um euro
+    — que é exactamente porque ninguém dava por ela.
+
+    O backoffice deixa configurar um grupo de TOPPINGS GRÁTIS com o
+    interruptor `sai_na_fatura` desligado (`catalogo.py`: o interruptor é por
+    GRUPO). Essas opções respondem "sim" a `_e_indicacao_de_servico` — preço
+    zero e interruptor desligado — e as indicações de serviço eram
+    deduplicadas com `dict.fromkeys`: duas doses de «Granola» saíam como
+    «Toppings gratis: Granola», uma vez e sem dose. **A cozinha punha uma
+    colher onde o cliente pediu duas.**
+
+    E o que a dose NÃO pode fazer é encher o resto de ruído: uma pergunta de
+    serviço respondida uma vez — que é o caso de todas elas — continua a sair
+    «Consumir em loja: Levar», e nunca «1x Levar»."""
+    venda = {"linhas": [{
+        "produto_nome": "Açaí Small", "quantidade": 1,
+        "opcoes": [
+            {"id": "o0", "grupo_id": "g1", "nome": "Levar", "preco": 0,
+             "nome_grupo": "Consumir em loja", "sai_na_fatura": False},
+            {"id": "o1", "grupo_id": "g2", "nome": "Granola", "preco": 0,
+             "nome_grupo": "Toppings gratis", "sai_na_fatura": False},
+            {"id": "o1", "grupo_id": "g2", "nome": "Granola", "preco": 0,
+             "nome_grupo": "Toppings gratis", "sai_na_fatura": False},
+        ],
+    }]}
+    texto = [l["texto"] for l in _analisar(pedido_da_cozinha(venda))]
+    assert "Toppings gratis: 2x Granola" in texto
+    assert "Consumir em loja: Levar" in texto
+    assert "Consumir em loja: 1x Levar" not in texto
+
+
+def test_a_quantidade_de_uma_PARTE_nao_imprime_ZERO_e_um_None_nao_apaga_a_ficha():
+    """Três casos, e dois deles saíam do balcão hoje com o `"%d"` do papel.
+
+    - **`0.3333`** — a quantidade de uma conta REPARTIDA, derivada do valor em
+      cêntimos (`venda._partes_de_uma_linha`, `reparticao.quantidade_para`).
+      Com `%d` imprimia «0 Açaí Regular»: a cozinha lê zero e não faz copo
+      nenhum.
+    - **`None`** — que `venda._linha_vendus` aceita e deixa gravado.
+      Com `%d` levantava `TypeError: %d format: a number is required`, e a
+      ficha INTEIRA desaparecia: quem carregou no botão via um erro e a
+      cozinha ficava sem papel, com o resto do pedido lá dentro.
+    - **`2`** — o caso normal, que continua a sair «2» e nunca «2,0».
+
+    Uma quantidade que não se sabe sai como `?` e nunca como `1`: é a mesma
+    regra do `_euros` do Z — escrever um número onde não se sabe é a mentira
+    mais fácil de imprimir, e aqui ela mandava fazer um copo a menos."""
+    venda = {"linhas": [
+        {"produto_nome": "Açaí Regular", "quantidade": 0.3333},
+        {"produto_nome": "Açaí Regular", "quantidade": None},
+        {"produto_nome": "Açaí Regular", "quantidade": 2},
+    ]}
+    texto = [l["texto"] for l in _analisar(pedido_da_cozinha(venda))]
+    assert "0,3333 Açaí Regular" in texto
+    assert "? Açaí Regular" in texto
+    assert "2 Açaí Regular" in texto
+    assert "0 Açaí Regular" not in texto
+
+
 def test_uma_linha_sem_nome_nem_opcoes_sai_na_mesma():
     texto = [l["texto"] for l in
              _analisar(pedido_da_cozinha({"linhas": [

@@ -2026,11 +2026,15 @@ async def finalizar(
 
     # **O PAPEL — depois de o documento fiscal existir, e nunca antes.**
     #
-    # Duas linhas de trabalho para a fila de impressão (`impressao.py`): o
-    # talão certificado do cliente na impressora do balcão e o pedido na da
-    # cozinha. É o único ponto em que esta rota toca no assunto, e é
-    # deliberadamente o último: o talão é CONSEQUÊNCIA da fatura, nunca
-    # condição dela.
+    # UM trabalho para a fila de impressão (`impressao.py`): o talão
+    # certificado do cliente, na impressora do balcão. É o único ponto em que
+    # esta rota toca no assunto, e é deliberadamente o último: o talão é
+    # CONSEQUÊNCIA da fatura, nunca condição dela.
+    #
+    # **A ficha da cozinha não sai daqui**, e não é esquecimento: quem a manda
+    # imprimir é o staff, pelo botão «Imprimir Pedido» do ecrã da venda
+    # (`impressao.imprimir_pedido`), antes de haver fatura nenhuma. Enfileirá-la
+    # aqui fazia uma conta dividida por três mandar três fichas do mesmo copo.
     #
     # Nada aqui pode falhar para fora — `impressao.enfileirar` engole tudo o
     # que lhe aconteça (ver a docstring de lá) e este `try` é a segunda rede,

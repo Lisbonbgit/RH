@@ -108,6 +108,7 @@ O que sair da impressora diz tudo:
 | Uma página com **PÁGINA DE TESTE** em cima, os acentos certos («Açaí, ção») e cada linha a caber numa linha | **Está tudo bem.** | Nada. Passe ao passo 7. |
 | Uma folha com **letras e sinais soltos** (coisas como `ESC @ ESC t`) | O Windows está a **desenhar** os comandos em vez de os mandar em cru. | Ver **«Se sair lixo»**, mais abaixo. |
 | A página sai, mas **os acentos estão trocados** (sai «A?a?» em vez de «Açaí») | Aquela impressora usa outra tabela de letras. | Avisar quem programa — muda-se **um número** no sistema. |
+| A página sai, mas as três linhas da **hierarquia** saem todas iguais às outras (a que diz «CORPO DUPLO» não sai maior, a do negrito não sai mais escura, a do meio não vai ao meio) | Aquela impressora ignora esses comandos. | Avisar quem programa — **a ficha da cozinha vai sair toda no mesmo tamanho** e é preciso decidir o que fazer. |
 | A página sai mas **o papel não corta** | Aquela impressora usa outro comando de corte. | Avisar quem programa — muda-se **um número** no sistema. |
 | A linha dos números **dá a volta** e continua por baixo | O papel é de 58 mm, não de 80 mm. | Avisar quem programa. |
 | **Não sai nada** e o programa diz que não conseguiu | Papel, cabo, impressora desligada, ou é outra impressora. | Ver o rolo e o cabo; confirmar que escolheu a impressora certa. |
@@ -146,8 +147,15 @@ Reiniciar o PC e confirmar que o programa aparece sozinho na barra de tarefas.
 Isto é o que confirma que a cadeia toda funciona, e não só a impressora:
 
 1. Abrir o POS no browser, entrar com o PIN.
-2. Fazer uma conta pequena e **Finalizar**.
-3. **Tem de sair o talão no balcão e a ficha na cozinha**, em poucos segundos.
+2. Fazer uma conta pequena e, **antes de cobrar**, carregar em **«Imprimir
+   Pedido»**: **tem de sair a ficha na cozinha**, com a conta ainda aberta. É
+   assim que a loja trabalha — pica-se, manda-se para a cozinha, cobra-se no
+   fim — e o botão pode ser carregado outra vez sempre que o papel encravar ou
+   a ficha se perder.
+3. **Finalizar** a conta: **tem de sair o talão do cliente no balcão**, em
+   poucos segundos. **A cozinha não recebe nada aqui**, e não é avaria: a
+   ficha da cozinha é sempre do botão do passo 2 — senão uma conta dividida
+   por três mandava três fichas do mesmo copo.
 4. No menu **Caixa → Abrir Gaveta**: a gaveta tem de abrir.
 5. No separador **Faturação**, abrir essa fatura e carregar em **Imprimir**:
    tem de sair a segunda via, igual à primeira.

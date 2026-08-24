@@ -357,21 +357,25 @@ async def enfileirar(
 
 async def enfileirar_venda_emitida(db, venda: Dict, documento: Dict) -> None:
     """Uma venda acabou de virar Fatura Simplificada: sai o talão do cliente
-    NA CAIXA e o pedido NA COZINHA.
+    na impressora do balcão. **E mais nada.**
 
-    **Dois trabalhos e não um**, porque são dois papéis em duas impressoras
-    diferentes — e porque assim a cozinha continua a receber a ficha quando a
-    impressora do balcão está sem papel, e vice-versa. Um trabalho só, com os
-    dois lá dentro, fazia uma avaria de um lado calar o outro.
+    **A ficha da cozinha NÃO sai daqui**, e a razão é do dono: «não tem nada
+    a ver com fatura — o staff é o único que faz a impressão do pedido». A
+    ficha sai quando alguém carrega em «Imprimir Pedido» (`imprimir_pedido`),
+    que é como um balcão trabalha: pica-se, manda-se para a cozinha, cobra-se
+    no fim. Duas coisas caem por terra com isto, e as duas eram defeitos:
+
+    - uma conta dividida por três mandava TRÊS fichas do mesmo copo, porque
+      cada parte é uma venda que finaliza;
+    - a cozinha só recebia a ficha DEPOIS de a conta estar paga, quando o que
+      a loja precisa é do contrário.
 
     O talão do cliente vai **tal e qual veio do Vendus**: são bytes ESC/POS
     certificados, guardados com a fatura (`fiscal._gravar_documento`), e não
-    se lhes acrescenta nem se lhes tira nada. O pedido da cozinha é que é
-    nosso, e o texto dele já estava escrito e testado há muito
-    (`talao.pedido_da_cozinha`).
+    se lhes acrescenta nem se lhes tira nada.
 
-    Chamado de dentro do `finalizar` e nunca levanta nada — as duas chamadas
-    passam por `enfileirar`, que engole tudo."""
+    Chamado de dentro do `finalizar` e nunca levanta nada — a chamada passa
+    por `enfileirar`, que engole tudo."""
     talao = documento.get("talao_escpos")
     if isinstance(talao, str):
         # Um documento relido do Mongo pode trazer o talão como texto (foi
@@ -390,15 +394,6 @@ async def enfileirar_venda_emitida(db, venda: Dict, documento: Dict) -> None:
         # que grave o mesmo documento outra vez cai na mesma chave e não
         # duplica nada.
         chave="talao:%s" % documento.get("id"),
-    )
-    await enfileirar(
-        db,
-        loja_id=venda["loja_id"],
-        dispositivo_id=venda.get("dispositivo_id"),
-        impressora=COZINHA,
-        tipo=PEDIDO,
-        dados=escpos.documento(pedido_da_cozinha(venda)),
-        chave="pedido:%s" % venda["id"],
     )
 
 

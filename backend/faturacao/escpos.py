@@ -79,6 +79,32 @@ _LINHAS_ANTES_DO_CORTE = 5
 # pino (`m`) ou o cabo, nunca a duração.
 _GAVETA = b"\x1bp\x00\x19\xfa"
 
+# --- Os comandos que fazem a HIERARQUIA de um talão ---------------------------
+#
+# Definidos aqui e só aqui, e usados por `talao.py` a partir daqui: são o que
+# a ficha da cozinha usa para o nome do cliente ser maior do que tudo, e são
+# o que a `pagina_de_teste` experimenta. Duas cópias — uma para imprimir e
+# outra para diagnosticar — davam a pior das respostas possíveis: a página a
+# dizer que a impressora obedece a um byte que os talões não mandam.
+#
+# São `str` e não `bytes` porque viajam DENTRO do texto, como caracteres de
+# controlo (`_texto` codifica-os em cp858, que deixa tudo abaixo de 0x80
+# exactamente como está). Cada comando que se liga tem o par que o desliga, e
+# desligar não é opcional: um corpo duplo deixado ligado pinta o talão
+# seguinte — e o seguinte pode ser a Fatura Simplificada certificada de um
+# cliente.
+#
+# **São o terceiro candidato a falhar numa impressora que não seja a Epson**,
+# e é por isso que a página de teste os manda: uma impressora que os ignore
+# não dá erro nenhum, imprime o texto e cala-se.
+DUPLO = "\x1d!\x11"        # GS ! 17 — dobro em largura E em altura
+ALTO = "\x1d!\x01"         # GS ! 1  — dobro só em altura (não gasta colunas)
+CORPO_NORMAL = "\x1d!\x00"  # GS ! 0
+NEGRITO = "\x1bE\x01"      # ESC E 1
+SEM_NEGRITO = "\x1bE\x00"  # ESC E 0
+CENTRADO = "\x1ba\x01"     # ESC a 1
+A_ESQUERDA = "\x1ba\x00"   # ESC a 0
+
 
 def _texto(conteudo: str) -> bytes:
     """O texto codificado para a impressora.
@@ -97,14 +123,18 @@ def _texto(conteudo: str) -> bytes:
 
 
 def documento(conteudo: str) -> bytes:
-    """Um talão de texto simples: reiniciar, escolher a tabela, escrever,
-    avançar, cortar.
+    """Um talão: reiniciar, escolher a tabela, escrever, avançar, cortar.
 
-    Sem negrito, sem tamanho duplo, sem centrar. Não é modéstia: cada
-    comando destes é mais uma coisa que uma das duas impressoras pode não
-    obedecer, e um pedido de cozinha ilegível é pior do que um pedido feio.
-    Quando o dono quiser o nome do cliente maior, isso acrescenta-se AQUI e a
-    página de teste diz num clique se aquela impressora obedece.
+    **O negrito, o corpo duplo e o alinhamento vão DENTRO do `conteudo`**, e
+    não em parâmetros desta função: quem os liga e os desliga é quem escreve
+    o texto (`talao.py`), linha a linha, com as constantes daqui de cima. Esta
+    função não lhes toca — passa o texto tal e qual, e o `ESC @` do princípio
+    garante que nenhum deles chega ligado de um trabalho anterior.
+
+    Cada um destes comandos é mais uma coisa que uma das duas impressoras
+    pode não obedecer — e é por isso que a `pagina_de_teste` os manda também:
+    ela responde num clique, à frente da impressora, antes de a cozinha
+    receber a primeira ficha plana.
     """
     return (
         _INICIAR
@@ -145,6 +175,13 @@ def pagina_de_teste(
     - **o nome da impressora e da loja** — é o que diz se a configuração
       aponta ao sítio certo, e é a diferença entre "não imprimiu" e "imprimiu
       na impressora da cozinha";
+    - **a HIERARQUIA** — corpo duplo, negrito e centrado, uma linha cada. É
+      nestes três comandos que assenta a ficha da cozinha inteira (o nome do
+      cliente maior do que tudo, o serviço destacado, o cabeçalho ao meio), e
+      uma impressora que os ignore não dá erro: imprime o texto e cala-se.
+      Sem estas linhas, a página dizia que estava tudo bem e a primeira ficha
+      saía toda plana — que é a reclamação do dono que a hierarquia existe
+      para resolver;
     - **o corte** — se a página sair mas o papel não cortar, é `_CORTAR`.
 
     E o pior desfecho de todos tem resposta própria: se em vez desta página
@@ -171,6 +208,16 @@ def pagina_de_teste(
         "Largura (42 colunas, 80mm):",
         "123456789012345678901234567890123456789012",
         "..........|.........|.........|.........|",
+        "",
+        # As três linhas da hierarquia da ficha da cozinha. Cada uma DIZ o que
+        # devia parecer: quem está à frente do papel compara-a com esta linha
+        # de texto normal e responde sozinho, sem ninguém a quem perguntar. O
+        # corpo duplo gasta o dobro das colunas — 21, e não 42 —, por isso a
+        # frase dele é curta de propósito.
+        "Hierarquia (a ficha da cozinha usa-a):",
+        DUPLO + "CORPO DUPLO" + CORPO_NORMAL,
+        NEGRITO + "Esta linha e' a negrito." + SEM_NEGRITO,
+        CENTRADO + "Esta linha vai ao meio." + A_ESQUERDA,
         "",
         "Se leu isto tudo em UMA linha cada,",
         "a impressora esta' bem configurada.",

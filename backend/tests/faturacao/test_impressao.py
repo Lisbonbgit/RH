@@ -226,16 +226,35 @@ def test_o_MONGO_EM_BAIXO_nao_rebenta_para_fora(monkeypatch):
 # --- 2. O que a emissão enfileira ---------------------------------------------
 
 
-def test_uma_venda_emitida_faz_sair_DOIS_papeis_em_DUAS_impressoras(monkeypatch):
-    """Dois trabalhos e não um: assim a cozinha continua a receber a ficha
-    quando a impressora do balcão está sem papel, e vice-versa."""
+def test_uma_venda_emitida_faz_sair_UM_papel_so_e_e_o_do_CLIENTE(monkeypatch):
+    """Emitir a fatura é dar o papel ao CLIENTE, e mais nada.
+
+    «Não tem nada a ver com fatura. O staff é o único que faz a impressão do
+    pedido» — o dono. A ficha da cozinha sai pelo botão «Imprimir Pedido»
+    (`imprimir_pedido`), e sai quando o staff quiser: antes de haver fatura,
+    com a conta ainda aberta, e as vezes que forem precisas."""
     db = _db()
     _relogio(monkeypatch, _T0)
     _corre(enfileirar_venda_emitida(db, _venda(), _documento()))
-    por_impressora = {t["impressora"]: t for t in _fila(db)}
-    assert set(por_impressora) == {CAIXA, COZINHA}
-    assert por_impressora[CAIXA]["tipo"] == imp.TALAO
-    assert por_impressora[COZINHA]["tipo"] == imp.PEDIDO
+    (trabalho,) = _fila(db)
+    assert trabalho["impressora"] == CAIXA
+    assert trabalho["tipo"] == imp.TALAO
+
+
+def test_uma_conta_dividida_por_TRES_nao_manda_TRES_fichas_a_cozinha(monkeypatch):
+    """Cada parte é uma venda que finaliza — e é por isso que a ficha não
+    podia continuar agarrada à emissão: três partes eram três fichas do MESMO
+    copo, e a cozinha fazia três açaís para uma pessoa (ou, no melhor caso,
+    deitava dois papéis fora e deixava de confiar no que sai)."""
+    db = _db()
+    _relogio(monkeypatch, _T0)
+    for parte in ("a", "b", "c"):
+        _corre(enfileirar_venda_emitida(
+            db,
+            _venda(id="venda-1%s" % parte, conta_mae_id="venda-1"),
+            _documento(id="doc-1%s" % parte),
+        ))
+    assert [t["impressora"] for t in _fila(db)] == [CAIXA, CAIXA, CAIXA]
 
 
 def test_o_talao_do_cliente_vai_TAL_E_QUAL_veio_do_vendus(monkeypatch):
@@ -249,21 +268,6 @@ def test_o_talao_do_cliente_vai_TAL_E_QUAL_veio_do_vendus(monkeypatch):
     assert base64.b64decode(talao["bytes_b64"]) == _TALAO_DO_VENDUS
 
 
-def test_o_pedido_da_cozinha_leva_o_texto_que_o_dono_ditou(monkeypatch):
-    """O texto é o de `talao.pedido_da_cozinha`, e não uma segunda escrita
-    dele: o nome em maiúsculas, o serviço, as doses à frente do topping."""
-    from faturacao.talao import pedido_da_cozinha
-
-    db = _db()
-    _relogio(monkeypatch, _T0)
-    venda = _venda()
-    _corre(enfileirar_venda_emitida(db, venda, _documento()))
-    pedido = [t for t in _fila(db) if t["impressora"] == COZINHA][0]
-    saiu = base64.b64decode(pedido["bytes_b64"])
-    assert saiu == escpos.documento(pedido_da_cozinha(venda))
-    assert "RAFAELA".encode("cp858") in saiu
-
-
 def test_a_MESMA_emissao_a_passar_duas_vezes_nao_faz_dois_taloes(monkeypatch):
     """O retry do POS, a retoma de uma reserva incerta, a reconciliação de uma
     reserva presa — os três chegam ao mesmo documento e passam por aqui."""
@@ -271,7 +275,7 @@ def test_a_MESMA_emissao_a_passar_duas_vezes_nao_faz_dois_taloes(monkeypatch):
     _relogio(monkeypatch, _T0)
     _corre(enfileirar_venda_emitida(db, _venda(), _documento()))
     _corre(enfileirar_venda_emitida(db, _venda(), _documento()))
-    assert len(_fila(db)) == 2
+    assert len(_fila(db)) == 1
 
 
 def test_uma_fatura_SEM_talao_guardado_nao_enfileira_papel_em_branco(monkeypatch):
@@ -280,7 +284,7 @@ def test_uma_fatura_SEM_talao_guardado_nao_enfileira_papel_em_branco(monkeypatch
     db = _db()
     _relogio(monkeypatch, _T0)
     _corre(enfileirar_venda_emitida(db, _venda(), _documento(talao_escpos=b"")))
-    assert [t["impressora"] for t in _fila(db)] == [COZINHA]
+    assert _fila(db) == []
 
 
 def test_o_Z_enfileira_uma_vez_so_por_fecho(monkeypatch):
@@ -768,6 +772,8 @@ def test_dois_toques_na_gaveta_sao_dois_pedidos(monkeypatch):
 
 
 def test_o_imprimir_pedido_manda_a_ficha_para_a_COZINHA(monkeypatch):
+    """E leva o texto de `talao.pedido_da_cozinha`, e não uma segunda escrita
+    dele: o nome em maiúsculas, o serviço, as doses à frente do topping."""
     from faturacao.talao import pedido_da_cozinha
 
     venda = _venda(estado="aberta")
@@ -777,8 +783,41 @@ def test_o_imprimir_pedido_manda_a_ficha_para_a_COZINHA(monkeypatch):
     _corre(imprimir_pedido("venda-1", operador=_operador()))
     (trabalho,) = _fila(db)
     assert trabalho["impressora"] == COZINHA
-    assert base64.b64decode(trabalho["bytes_b64"]) == escpos.documento(
-        pedido_da_cozinha(venda))
+    saiu = base64.b64decode(trabalho["bytes_b64"])
+    assert saiu == escpos.documento(pedido_da_cozinha(venda))
+    assert "RAFAELA".encode("cp858") in saiu
+
+
+def test_a_ficha_sai_com_a_conta_ABERTA_e_sem_documento_nenhum(monkeypatch):
+    """**É como um balcão trabalha:** pica-se, manda-se para a cozinha,
+    cobra-se no fim. O cliente ainda está a decidir o resto do pedido e o
+    copo já está a ser feito.
+
+    Este caminho não pode exigir fatura, nem documento, nem estado nenhum: a
+    fila não sabe de dinheiro, e a única coisa que este botão produz é papel.
+    A base de dados aqui não tem UM documento — se a rota fosse buscar
+    algum, este teste apanhava-o."""
+    db = _db(vendas=[_venda(estado="aberta")], documentos=[])
+    _relogio(monkeypatch, _T0)
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+    resposta = _corre(imprimir_pedido("venda-1", operador=_operador()))
+    assert resposta["aceite"] is True
+    (trabalho,) = _fila(db)
+    assert trabalho["impressora"] == COZINHA
+    assert trabalho["tipo"] == imp.PEDIDO
+
+
+def test_a_ficha_da_cozinha_sai_as_VEZES_QUE_FOREM_PRECISAS(monkeypatch):
+    """O dono confirmou-o: no balcão o papel encrava e a cozinha perde a
+    ficha. O botão fica sempre disponível e não se desliga depois da
+    primeira — três toques são três fichas, e cada uma entra na fila com
+    chave própria (é o `uuid` de `imprimir_pedido`, e é de propósito)."""
+    db = _db(vendas=[_venda(estado="aberta")])
+    _relogio(monkeypatch, _T0)
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+    for _ in range(3):
+        assert _corre(imprimir_pedido("venda-1", operador=_operador()))["aceite"]
+    assert [t["impressora"] for t in _fila(db)] == [COZINHA, COZINHA, COZINHA]
 
 
 def test_nao_se_imprime_o_pedido_de_uma_conta_de_OUTRA_loja(monkeypatch):

@@ -45,7 +45,16 @@ não repetir:
   que o gestor tenha configurado para SAIR NA FATURA não passa por
   `_e_indicacao_de_servico` — descia aos toppings, "Sem colher" misturado com
   a Nutella e sem nada a dizer de onde vinha. Agora desce na mesma, mas sob o
-  título "Talheres:", e lê-se.
+  título "Talheres:", e lê-se;
+- e a DOSE perdia-se num grupo de toppings GRÁTIS com o interruptor
+  `sai_na_fatura` desligado: essas opções sobem às indicações de serviço (é
+  tudo o que `_e_indicacao_de_servico` sabe perguntar) e eram deduplicadas —
+  duas "Granola" saíam uma vez, e a cozinha punha uma colher onde o cliente
+  pediu duas. Nenhuma das duas metades da ficha deduplica seja o que for.
+
+**E a QUANTIDADE também é dado, não enfeite.** Uma parte de uma conta
+repartida traz `0.3333`, e o papel imprimia-a com `"%d"` — «0 Açaí Regular»,
+que é a cozinha a não fazer copo nenhum (ver `_quantidade`).
 
 **O título do grupo aparece em todo o lado menos no nome do copo.** Aí é
 ruído: "Nome:" gastava 5 das 21 colunas do corpo duplo para dizer o que o
@@ -67,6 +76,11 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from .escpos import (
+    ALTO, A_ESQUERDA, CENTRADO, CORPO_NORMAL, DUPLO, NEGRITO, SEM_NEGRITO,
+)
+from .reparticao import CASAS_DA_QUANTIDADE
+
 # 80 mm de papel. Em corpo normal cabem 42 colunas; em corpo DUPLO (dobro em
 # largura) cabe metade, 21. Uma linha que dê a volta numa ficha de cozinha faz
 # ler o topping errado — a linha de baixo aparece encostada à esquerda, por
@@ -82,18 +96,17 @@ _LISBOA = ZoneInfo("Europe/Lisbon")
 
 # --- Os comandos ESC/POS que fazem a hierarquia -------------------------------
 #
+# `DUPLO`, `ALTO`, `NEGRITO`, `CENTRADO` e os pares que os desligam vêm de
+# `escpos.py`, onde estão definidos UMA vez só. É de propósito: é a
+# `escpos.pagina_de_teste` que os experimenta à frente da impressora, e uma
+# segunda cópia aqui fazia esse botão diagnosticar bytes diferentes dos que
+# os talões mandam — a pior resposta que ele podia dar.
+#
 # Vão dentro do texto, como caracteres de controlo, e `escpos.documento`
 # entrega-os à impressora sem lhes tocar (`cp858` deixa os bytes abaixo de
 # 0x80 exactamente como estão). O `escpos.documento` começa por `ESC @`, que
 # apaga tudo isto — mas cada comando aberto aqui é FECHADO aqui, porque uma
 # linha que ficasse com o corpo duplo ligado pintava o resto do talão.
-_DUPLO = "\x1d!\x11"        # GS ! 17 — dobro em largura E em altura
-_ALTO = "\x1d!\x01"         # GS ! 1  — dobro só em altura (não gasta colunas)
-_CORPO_NORMAL = "\x1d!\x00"  # GS ! 0
-_NEGRITO = "\x1bE\x01"      # ESC E 1
-_SEM_NEGRITO = "\x1bE\x00"  # ESC E 0
-_CENTRADO = "\x1ba\x01"     # ESC a 1
-_A_ESQUERDA = "\x1ba\x00"   # ESC a 0
 
 
 def _partir(texto: str, colunas: int = _LARGURA, recuo: str = "") -> List[str]:
@@ -124,28 +137,67 @@ def _bloco(
     linhas = _partir(texto, colunas, recuo)
     if corpo:
         linhas[0] = corpo + linhas[0]
-        linhas[-1] = linhas[-1] + _CORPO_NORMAL
+        linhas[-1] = linhas[-1] + CORPO_NORMAL
     if negrito:
-        linhas[0] = _NEGRITO + linhas[0]
-        linhas[-1] = linhas[-1] + _SEM_NEGRITO
+        linhas[0] = NEGRITO + linhas[0]
+        linhas[-1] = linhas[-1] + SEM_NEGRITO
     return linhas
+
+
+def _quantidade(bruto) -> str:
+    """A quantidade como a cozinha a lê: `2`, `0,3333`, ou `?`.
+
+    O papel imprimia isto com `"%d"`, e o `"%d"` mentia de duas maneiras
+    diferentes — as duas medidas nesta loja:
+
+    - uma quantidade FRACCIONÁRIA saía a ZERO. As partes de uma conta
+      repartida derivam a quantidade do valor em cêntimos
+      (`venda._partes_de_uma_linha` → `reparticao.quantidade_para`), e um
+      terço de um açaí é `0.3333`: a cozinha lia «0 Açaí Regular» e não fazia
+      copo nenhum;
+    - uma quantidade a `None` — que `venda._linha_vendus` aceita e deixa
+      gravada — levantava `TypeError`, e o que se perdia não era a linha, era
+      a FICHA INTEIRA: quem carregou no botão via um erro no ecrã e a cozinha
+      ficava sem papel, com o resto do pedido lá dentro.
+
+    As casas decimais são as mesmas com que a quantidade foi GRAVADA
+    (`reparticao.CASAS_DA_QUANTIDADE`) e os zeros à direita caem, para o caso
+    normal — o esmagador — continuar a ser um número inteiro e limpo: «2», e
+    nunca «2,00000».
+
+    **O que não se sabe sai como `?` e nunca como `1`.** É a mesma regra do
+    `_euros` do Z aqui em baixo: escrever um número onde não se sabe é a
+    mentira mais fácil de imprimir, e esta mandava fazer um copo a menos."""
+    try:
+        q = float(bruto)
+    except (TypeError, ValueError):
+        return "?"
+    if q == int(q):
+        return "%d" % int(q)
+    return ("%.*f" % (CASAS_DA_QUANTIDADE, q)).rstrip("0").rstrip(".").replace(".", ",")
+
+
+def _contar(opcoes: List[Dict]) -> Dict[str, int]:
+    """Quantas vezes cada opção foi escolhida, pela ordem da primeira escolha
+    (um `dict` mantém a ordem de inserção desde o Python 3.7).
+
+    **Contadas UMA vez para as duas metades da ficha.** As doses dos toppings
+    e as respostas de serviço saem em formatos diferentes mas da mesma
+    contagem — e foi terem sido duas contagens que deixou uma delas a
+    deduplicar com `dict.fromkeys` e a deitar fora a dose."""
+    contagem: Dict[str, int] = {}
+    for o in opcoes or []:
+        nome = o.get("nome")
+        if nome:
+            contagem[nome] = contagem.get(nome, 0) + 1
+    return contagem
 
 
 def _doses(opcoes: List[Dict]) -> List[str]:
     """As opções agregadas, pela ordem da primeira escolha. Mesma regra do
     título da fatura (`precos._descricao_das_opcoes`), outro formato: aqui a
     dose vem À FRENTE, que é como uma ficha de cozinha se lê."""
-    contagem = {}
-    ordem = []
-    for o in opcoes or []:
-        nome = o.get("nome")
-        if not nome:
-            continue
-        if nome not in contagem:
-            ordem.append(nome)
-            contagem[nome] = 0
-        contagem[nome] += 1
-    return ["%dx %s" % (contagem[n], n) for n in ordem]
+    return ["%dx %s" % (n, nome) for nome, n in _contar(opcoes).items()]
 
 
 def _e_indicacao_de_servico(opcao: Dict) -> bool:
@@ -165,9 +217,12 @@ def _e_indicacao_de_servico(opcao: Dict) -> bool:
     cozinha punha UMA colher onde o cliente pagou DUAS, e a fatura, essa,
     cobrava as duas ("Extra caramelo 2×").
 
-    **O que esta pergunta NÃO decide é se a resposta aparece.** Ela decide só
-    o DESTAQUE: as indicações de serviço saem a negrito, logo por baixo do
-    artigo, porque mudam o que se faz ao copo. Uma pergunta de serviço que o
+    **O que esta pergunta NÃO decide é se a resposta aparece, nem a dose com
+    que aparece.** Ela decide só o DESTAQUE: as indicações de serviço saem a
+    negrito, logo por baixo do artigo, porque mudam o que se faz ao copo. O
+    que cá cai continua a ser CONTADO (`_contar`) — um grupo de toppings
+    grátis com o interruptor desligado responde "sim" aqui, e a cozinha tem de
+    ver as duas doses de "Granola" na mesma. Uma pergunta de serviço que o
     gestor tenha configurado para sair na fatura responde "não" aqui e desce
     aos toppings — mas desce com o título do grupo dela por cima, e por isso
     continua a ler-se."""
@@ -251,11 +306,11 @@ def _cabecalho(venda: Dict) -> List[str]:
     e não é único no universo — é único no turno, que é o que basta para
     alguém gritar "o F2C está pronto" por cima do barulho da loja. O `id`
     inteiro (um uuid) não se lê em voz alta nem cabe no papel."""
-    linhas = _bloco("PEDIDO COZINHA", _ALTO, negrito=True)
+    linhas = _bloco("PEDIDO COZINHA", ALTO, negrito=True)
     marca = "#%s" % (str(venda.get("id") or "").upper()[-4:] or "?")
     linhas.append(("%s  %s" % (marca, _hora_de(venda.get("criada_em")))).strip())
-    linhas[0] = _CENTRADO + linhas[0]
-    linhas[-1] = linhas[-1] + _A_ESQUERDA
+    linhas[0] = CENTRADO + linhas[0]
+    linhas[-1] = linhas[-1] + A_ESQUERDA
     return linhas + ["=" * _LARGURA]
 
 
@@ -269,13 +324,14 @@ def _ficha_do_artigo(linha: Dict) -> List[str]:
     #    grupo à frente: "Nome:" gastava 5 das 21 colunas para dizer o que o
     #    tamanho da letra já diz.
     if respostas:
-        saida += _bloco(respostas[0]["texto"].upper(), _DUPLO, _LARGURA_DUPLA,
+        saida += _bloco(respostas[0]["texto"].upper(), DUPLO, _LARGURA_DUPLA,
                         negrito=True)
 
     # 2. A quantidade e o produto, em corpo ALTO — a seguir em tamanho, e sem
     #    gastar colunas nenhumas (o dobro é só na altura).
     saida += _bloco(
-        "%d %s" % (linha.get("quantidade", 1), linha.get("produto_nome") or "?"), _ALTO)
+        "%s %s" % (_quantidade(linha.get("quantidade", 1)),
+                   linha.get("produto_nome") or "?"), ALTO)
 
     opcoes = linha.get("opcoes") or []
 
@@ -283,9 +339,21 @@ def _ficha_do_artigo(linha: Dict) -> List[str]:
     #    porque mudam o que se faz ao copo. Uma linha por GRUPO respondido,
     #    com o título à frente: "Comer aqui" sozinho adivinha-se, "Consumir em
     #    loja: Comer aqui" lê-se.
+    #
+    #    **E com a DOSE, quando ela for mais do que uma.** Aqui caem também os
+    #    grupos de TOPPINGS GRÁTIS que o gestor configurou com o interruptor
+    #    `sai_na_fatura` desligado (preço zero + interruptor desligado é tudo o
+    #    que `_e_indicacao_de_servico` sabe perguntar). Estavam a ser
+    #    deduplicados com `dict.fromkeys`: duas doses de «Granola» saíam uma
+    #    vez, e a cozinha punha uma colher onde o cliente pediu duas. Uma
+    #    resposta dada UMA vez — que é o caso de todas as perguntas de serviço
+    #    a sério — sai sem dose nenhuma: «1x Levar» era ruído numa linha que
+    #    existe para se ler de relance.
     for titulo, opcoes_do_grupo in _grupos(
             o for o in opcoes if _e_indicacao_de_servico(o) and o.get("nome")):
-        respondido = ", ".join(dict.fromkeys(o["nome"] for o in opcoes_do_grupo))
+        respondido = ", ".join(
+            nome if n == 1 else "%dx %s" % (n, nome)
+            for nome, n in _contar(opcoes_do_grupo).items())
         saida += _bloco("%s: %s" % (titulo, respondido) if titulo else respondido,
                         negrito=True)
 

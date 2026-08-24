@@ -125,6 +125,44 @@ def test_a_pagina_de_teste_mede_a_LARGURA_do_papel():
     assert regua in saiu
 
 
+def test_a_pagina_de_teste_EXPERIMENTA_a_hierarquia_da_ficha_da_cozinha():
+    """**A pergunta que faltava, e é a que vai a 5 lojas com duas impressoras
+    diferentes.**
+
+    A ficha da cozinha inteira assenta em três comandos — `GS !` para o corpo,
+    `ESC E` para o negrito, `ESC a` para o alinhamento (ver `talao.py`) — e a
+    página de teste não mandava nenhum deles: dizia que os acentos, a largura
+    e o corte estavam bem, e a primeira ficha saía na mesma toda plana, que é
+    exactamente a reclamação do dono que a hierarquia existe para resolver.
+
+    Uma impressora que ignore estes comandos imprime o texto e cala-se — não
+    dá erro nenhum. Por isso as três linhas dizem POR EXTENSO o que deviam
+    parecer: quem está à frente do papel compara-as com as de cima e responde
+    sozinho, sem ninguém a quem perguntar.
+
+    Os bytes estão aqui em literal, e não vindos das constantes do módulo,
+    pela mesma razão do resto do ficheiro: uma comparação contra a constante
+    ficava verde com o comando trocado."""
+    saiu = _pagina()
+    assert b"\x1d!\x11" in saiu   # GS ! 17 — corpo duplo, o nome no copo
+    assert b"\x1bE\x01" in saiu   # ESC E 1 — negrito, as respostas de serviço
+    assert b"\x1ba\x01" in saiu   # ESC a 1 — centrado, o cabeçalho
+
+
+def test_a_pagina_de_teste_DESLIGA_tudo_o_que_ligou():
+    """Um comando que fique ligado no fim desta página pinta o TALÃO SEGUINTE
+    — e o seguinte é a Fatura Simplificada de um cliente, que sai da caixa em
+    bytes certificados a que ninguém pode tocar.
+
+    (`escpos.documento` começa sempre por `ESC @`, que apaga tudo; isto é o
+    cinto por cima dos suspensórios, e é barato.)"""
+    saiu = _pagina()
+    for ligar, desligar in ((b"\x1d!\x11", b"\x1d!\x00"),
+                            (b"\x1bE\x01", b"\x1bE\x00"),
+                            (b"\x1ba\x01", b"\x1ba\x00")):
+        assert saiu.rindex(desligar) > saiu.rindex(ligar), ligar
+
+
 def test_a_pagina_de_teste_tambem_CORTA():
     """Se a página sair mas o papel não cortar, o candidato é um byte só."""
     assert _pagina().endswith(b"\x1dV\x42\x00")

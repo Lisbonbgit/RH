@@ -755,7 +755,8 @@ function PainelConta({
             || (!venda
               ? 'Não há conta nenhuma à frente para mandar à cozinha.'
               : 'Manda a ficha desta conta para a impressora da cozinha, sem a '
-                + 'finalizar.')}
+                + 'finalizar. É por aqui que a cozinha recebe o pedido: '
+                + 'finalizar a conta manda o talão ao cliente e mais nada.')}
         </p>
       </div>
 

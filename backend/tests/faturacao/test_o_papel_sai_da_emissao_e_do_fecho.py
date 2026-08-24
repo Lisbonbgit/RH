@@ -77,23 +77,31 @@ def _db_de_venda():
     ))
 
 
-def test_FINALIZAR_uma_venda_poe_o_talao_e_o_pedido_na_fila(monkeypatch):
+def test_FINALIZAR_uma_venda_poe_UM_papel_na_fila_e_e_o_do_CLIENTE(monkeypatch):
     """O caminho inteiro: a rota que a operadora toca, o Vendus a devolver o
-    documento, e os dois papéis na fila da loja.
+    documento, e o papel na fila da loja. **Um, e não dois.**
 
-    Apagar as duas linhas do `finalizar` que enfileiram deixa todo o
-    `test_impressao.py` verde — a fila continua perfeita, e o balcão fica sem
-    um único papel."""
+    O dono corrigiu o pressuposto de que esta rota partia: «não tem nada a
+    ver com fatura, o staff é o único que faz a impressão do pedido». A ficha
+    da cozinha sai quando alguém carrega em «Imprimir Pedido»
+    (`impressao.imprimir_pedido`) — que é como um balcão trabalha: pica-se,
+    manda-se para a cozinha, cobra-se no fim. Emitir a fatura já não manda
+    papel nenhum à cozinha; se mandasse, uma conta dividida por três mandava
+    três fichas do mesmo copo.
+
+    Apagar a linha do `finalizar` que enfileira deixa todo o
+    `test_impressao.py` verde — a fila continua perfeita, e o cliente fica
+    sem o documento em papel que a lei lhe deve."""
     db = _db_de_venda()
     resultado = _finalizar(db, monkeypatch)
     assert resultado["estado"] == "emitida"
 
-    por_impressora = {t["impressora"]: t for t in _fila(db)}
-    assert set(por_impressora) == {imp.CAIXA, imp.COZINHA}
-    assert por_impressora[imp.CAIXA]["tipo"] == imp.TALAO
-    assert por_impressora[imp.COZINHA]["tipo"] == imp.PEDIDO
-    assert por_impressora[imp.CAIXA]["loja_id"] == "loja-1"
-    assert por_impressora[imp.CAIXA]["estado"] == imp.PENDENTE
+    (trabalho,) = _fila(db)
+    assert trabalho["impressora"] == imp.CAIXA
+    assert trabalho["tipo"] == imp.TALAO
+    assert trabalho["loja_id"] == "loja-1"
+    assert trabalho["estado"] == imp.PENDENTE
+    assert imp.COZINHA not in [t["impressora"] for t in _fila(db)]
 
 
 def test_o_papel_do_cliente_e_o_talao_CERTIFICADO_que_o_vendus_devolveu(monkeypatch):
@@ -141,7 +149,7 @@ def test_um_RETRY_da_mesma_emissao_nao_faz_um_segundo_talao(monkeypatch):
     # retrato de um retry que chega depois de a fatura já ter saído.
     db._coleccoes[COLECOES["vendas"]]._documentos[0]["estado"] = "aberta"
     _finalizar(db, monkeypatch)
-    assert len(_fila(db)) == 2
+    assert len(_fila(db)) == 1
 
 
 # --- O fecho ------------------------------------------------------------------
