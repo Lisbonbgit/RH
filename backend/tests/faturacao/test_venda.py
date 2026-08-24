@@ -886,6 +886,52 @@ def test_juntar_linha_carimba_o_sai_na_fatura_de_cada_opcao(monkeypatch):
     assert resultado["linhas"][0]["opcoes"][0]["sai_na_fatura"] is False
 
 
+def test_juntar_linha_carimba_tambem_o_NOME_DO_GRUPO_de_cada_opcao(monkeypatch):
+    """A PERGUNTA e não só a resposta.
+
+    A ficha da cozinha imprimia "Levar" e quem a lia não sabia a que grupo
+    pertencia — "Consumir na loja: Levar" lê-se, "Levar" adivinha-se. O nome
+    do grupo tem de VIAJAR na opção: `talao.pedido_da_cozinha` é pura e não
+    tem base de dados nenhuma para o ir buscar, e o grupo pode mudar de nome
+    ou desaparecer entre a venda e a reimpressão. Mesmo retrato do
+    `produto_nome` da linha e do `nome_grupo` que as `respostas_texto` já
+    guardavam."""
+    registo = []
+    grupo = {
+        "id": "g1", "nome": "Consumir na loja", "sai_na_fatura": False,
+        "opcoes": [{"id": "o1", "nome": "Levar", "preco": 0}],
+    }
+    db = _db(registo, vendas=[_venda()], produtos=[_produto()], grupos=[grupo])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(juntar_linha(
+        "venda-1", PedidoJuntarLinha(
+            produto_id="prod-1", quantidade=1,
+            opcoes=[{"id": "o1", "grupo_id": "g1", "nome": "Levar", "preco": 0}],
+        ), operador=_operador()
+    ))
+    assert resultado["linhas"][0]["opcoes"][0]["nome_grupo"] == "Consumir na loja"
+
+
+def test_uma_opcao_de_um_grupo_que_ja_nao_existe_fica_sem_titulo_e_nao_rebenta(monkeypatch):
+    """O grupo pode ter sido apagado entre a configuração e a venda. Sem
+    título, a ficha da cozinha imprime a resposta sozinha — que é como
+    imprimia antes de o título existir — e a venda faz-se na mesma. Recusar a
+    linha aqui era deixar a operadora com o cliente à frente sem poder
+    cobrar."""
+    registo = []
+    db = _db(registo, vendas=[_venda()], produtos=[_produto()], grupos=[])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(juntar_linha(
+        "venda-1", PedidoJuntarLinha(
+            produto_id="prod-1", quantidade=1,
+            opcoes=[{"id": "o1", "grupo_id": "g-apagado", "nome": "Levar", "preco": 0}],
+        ), operador=_operador()
+    ))
+    assert resultado["linhas"][0]["opcoes"][0]["nome_grupo"] is None
+
+
 # --- Alterar quantidade / editar linha --------------------------------------
 
 

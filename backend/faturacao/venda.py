@@ -1500,15 +1500,30 @@ async def _carimbar_sai_na_fatura(
     ids = [o.get("grupo_id") for o in opcoes if o.get("grupo_id") and falta_carimbo(o)]
     if ids:
         for g in await db[COLECOES["grupos_personalizacao"]].find(
-            {"id": {"$in": ids}}, {"_id": 0, "id": 1, "sai_na_fatura": 1}
+            {"id": {"$in": ids}}, {"_id": 0, "id": 1, "sai_na_fatura": 1, "nome": 1}
         ).to_list(len(ids)):
-            grupos_da_linha[g["id"]] = g.get("sai_na_fatura", True)
+            grupos_da_linha[g["id"]] = (g.get("sai_na_fatura", True), g.get("nome"))
 
     carimbadas = []
     for o in opcoes:
         o = dict(o)
         if falta_carimbo(o):
-            o["sai_na_fatura"] = grupos_da_linha.get(o.get("grupo_id"), True)
+            sai, nome_grupo = grupos_da_linha.get(o.get("grupo_id"), (True, None))
+            o["sai_na_fatura"] = sai
+            # **A PERGUNTA, e não só a resposta.** O segundo campo do mesmo
+            # retrato, e pela mesma razão: a ficha da cozinha imprime "Comer
+            # aqui" e quem a lê não sabe a que grupo pertence — "Consumir em
+            # loja: Comer aqui" lê-se, "Comer aqui" adivinha-se. O nome viaja
+            # com a opção porque `talao.pedido_da_cozinha` é PURA e não tem
+            # base de dados nenhuma para o ir buscar, e porque o grupo pode
+            # mudar de nome ou desaparecer entre a venda e a reimpressão — é
+            # o mesmo raciocínio do `nome_grupo` que as `respostas_texto` já
+            # guardavam e do `produto_nome` da linha.
+            #
+            # As linhas gravadas antes disto não o têm: `talao._grupos` lê
+            # `None` e imprime as respostas sem título, exactamente como
+            # imprimia. Nada rebenta e nada se perde.
+            o["nome_grupo"] = nome_grupo
         # Senão fica o carimbo que a opção já trazia, tal e qual — é o
         # retrato do dia em que a linha nasceu.
         carimbadas.append(o)

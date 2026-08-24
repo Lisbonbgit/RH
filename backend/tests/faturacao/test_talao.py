@@ -1,31 +1,236 @@
 """O texto do pedido da cozinha — lógica pura, sem I/O.
 
-O agente de impressão (Plano 3) ainda não existe; isto só constrói o texto
-que ele vai imprimir, para não haver nada a mexer aqui quando ele chegar.
+O agente de impressão já imprime este texto numa loja a sério: o que se muda
+aqui sai em papel na cozinha.
+
+## Como se prende a FORMA e não só as palavras
+
+Uma ficha de cozinha vive da hierarquia — o nome do cliente maior do que
+tudo, o artigo a seguir, o serviço destacado — e a hierarquia é feita de
+comandos ESC/POS, que são bytes de controlo invisíveis no meio do texto. Um
+teste que só procure «MARIA» no papel passa com o talão plano que o dono
+reclamou.
+
+`_analisar` desmonta o papel como a impressora o lê: devolve, por linha, o
+texto limpo E o estado em que ela vai imprimi-lo (corpo, negrito,
+alinhamento). É isso que permite afirmar «o nome sai em corpo duplo» e «esta
+linha não passa das colunas do corpo dela» — e é isso que fica vermelho
+quando se apaga um comando.
 """
 from faturacao.talao import pedido_da_cozinha
 
 
-def test_o_pedido_sai_no_formato_que_o_dono_escreveu():
+def _analisar(papel):
+    """As linhas do papel, cada uma com o estado da impressora ao imprimi-la:
+    `{"texto", "corpo", "negrito", "centrado"}`.
+
+    O estado ATRAVESSA as mudanças de linha, como na impressora a sério: um
+    `GS !` aberto numa linha continua ligado na seguinte até alguém o
+    desligar (é por isso que `escpos.documento` começa sempre por `ESC @`).
+    O `corpo` de uma linha é o maior que esteve ligado enquanto ela era
+    escrita — o que interessa para saber quantas colunas ela ocupa."""
+    lidas = []
+    corpo, negrito, centrado = 0, False, False
+    for bruto in papel.split("\n"):
+        texto, corpo_da_linha, negrito_da_linha, centrado_da_linha = "", 0, False, False
+        i = 0
+        while i < len(bruto):
+            c, seguinte = bruto[i], bruto[i + 1:i + 2]
+            if c == "\x1d" and seguinte == "!":
+                corpo = ord(bruto[i + 2]); i += 3
+            elif c == "\x1b" and seguinte == "E":
+                negrito = bool(ord(bruto[i + 2])); i += 3
+            elif c == "\x1b" and seguinte == "a":
+                centrado = ord(bruto[i + 2]) == 1; i += 3
+            else:
+                texto += c; i += 1
+                corpo_da_linha = max(corpo_da_linha, corpo)
+                negrito_da_linha = negrito_da_linha or negrito
+                centrado_da_linha = centrado_da_linha or centrado
+        lidas.append({"texto": texto, "corpo": corpo_da_linha,
+                      "negrito": negrito_da_linha, "centrado": centrado_da_linha})
+    return lidas
+
+
+def _sem_comandos(papel):
+    return "\n".join(l["texto"] for l in _analisar(papel))
+
+
+def _duplo(linha):
+    """Dobro em LARGURA — é a metade do `GS ! n` que gasta colunas."""
+    return bool(linha["corpo"] & 0xF0)
+
+
+def _alto(linha):
+    """Dobro em ALTURA — o que faz um artigo saltar à vista sem gastar
+    colunas nenhumas."""
+    return bool(linha["corpo"] & 0x0F)
+
+
+
+def test_NENHUMA_resposta_dada_ao_balcao_pode_faltar_na_ficha():
+    """A ficha da cozinha é o REGISTO do que foi pedido ao balcão.
+
+    Dois buracos, ambos silenciosos, ambos medidos no código anterior:
+
+    - `_nome_no_copo` devolvia só a PRIMEIRA resposta de texto. Um copo com
+      dois grupos de texto — «Nome» e «Observações» — perdia o segundo, e
+      ninguém dava por isso: o papel saía bonito, sem a observação.
+    - as respostas saíam sem a pergunta que as originou, e um grupo que o
+      gestor tenha configurado para SAIR NA FATURA não passa por
+      `_e_indicacao_de_servico` — caía nos toppings, «Sem colher» misturado
+      com a Nutella e sem nada a dizer de onde vinha.
+
+    O critério é binário: tudo o que o sistema perguntou e a operadora
+    respondeu aparece."""
     venda = {"linhas": [{
-        "produto_nome": "Açaí Small", "quantidade": 1,
-        "respostas_texto": [{"grupo_id": "g0", "nome_grupo": "Nome", "texto": "Maria"}],
+        "produto_nome": "Açaí Large", "quantidade": 1,
+        "respostas_texto": [
+            {"grupo_id": "g-nome", "nome_grupo": "Nome", "texto": "Maria"},
+            {"grupo_id": "g-obs", "nome_grupo": "Observações", "texto": "sem granola"},
+        ],
         "opcoes": [
-            {"id": "o0", "grupo_id": "g1", "nome": "Levar", "preco": 0, "sai_na_fatura": False},
-            {"id": "o1", "grupo_id": "g2", "nome": "Leite condensado", "preco": 0},
-            {"id": "o2", "grupo_id": "g2", "nome": "Nutella", "preco": 0.95},
-            {"id": "o2", "grupo_id": "g2", "nome": "Nutella", "preco": 0.95},
+            {"id": "o1", "grupo_id": "g-servico", "nome": "Comer aqui", "preco": 0,
+             "nome_grupo": "Consumir em loja", "sai_na_fatura": False},
+            # A SEGUNDA pergunta de serviço, esta configurada para sair na
+            # fatura: `_e_indicacao_de_servico` diz que não é serviço, e por
+            # isso ela desce aos toppings — mas continua a ter de aparecer, e
+            # com o título que a explica.
+            {"id": "o2", "grupo_id": "g-colher", "nome": "Sem colher", "preco": 0,
+             "nome_grupo": "Talheres"},
+            {"id": "o3", "grupo_id": "g-top", "nome": "Nutella", "preco": 0.95,
+             "nome_grupo": "Toppings"},
+            {"id": "o3", "grupo_id": "g-top", "nome": "Nutella", "preco": 0.95,
+             "nome_grupo": "Toppings"},
+            {"id": "o4", "grupo_id": "g-top", "nome": "Leite condensado", "preco": 0,
+             "nome_grupo": "Toppings"},
         ],
     }]}
-    assert pedido_da_cozinha(venda) == (
-        "Pedido\n"
-        "\n"
-        "1 Açaí Small — MARIA\n"
-        "Levar\n"
-        "\n"
-        "1x Leite condensado\n"
-        "2x Nutella\n"
-    )
+    papel = _sem_comandos(pedido_da_cozinha(venda))
+
+    assert "MARIA" in papel                      # a primeira resposta de texto
+    assert "Observações: sem granola" in papel   # a SEGUNDA, que se perdia
+    assert "Consumir em loja: Comer aqui" in papel
+    assert "Talheres" in papel and "Sem colher" in papel
+    assert "2x Nutella" in papel
+    assert "1x Leite condensado" in papel
+
+
+def test_a_HIERARQUIA_de_leitura_esta_no_papel_e_nao_so_as_palavras():
+    """O dono imprimiu a primeira versão e disse: «está muito pequeno as
+    letras, está saindo tipo sem título, está tudo no mesmo tamanho, não está
+    parecendo um papel para a cozinha fazer os pedidos».
+
+    Quem lê está de costas para o balcão, com as mãos ocupadas e o papel à
+    distância de um braço. Este teste afirma a ORDEM DE IMPORTÂNCIA — o
+    cabeçalho por cima, o nome maior do que tudo, o artigo a seguir, o serviço
+    destacado, os toppings sob o artigo certo — e não o texto: é a
+    formatação que o dono reclamou, e uma frase encontrada no meio do papel
+    não prende formatação nenhuma."""
+    venda = {
+        "id": "3b91c0de-0000-4000-8000-00000000f2c4",
+        "criada_em": "2026-08-24T20:47:00+00:00",
+        "linhas": [{
+            "produto_nome": "Açaí Small", "quantidade": 1,
+            "respostas_texto": [{"grupo_id": "g0", "nome_grupo": "Nome", "texto": "Maria"}],
+            "opcoes": [
+                {"id": "o0", "grupo_id": "g1", "nome": "Levar", "preco": 0,
+                 "nome_grupo": "Consumir em loja", "sai_na_fatura": False},
+                {"id": "o1", "grupo_id": "g2", "nome": "Leite condensado", "preco": 0,
+                 "nome_grupo": "Toppings"},
+                {"id": "o2", "grupo_id": "g2", "nome": "Nutella", "preco": 0.95,
+                 "nome_grupo": "Toppings"},
+                {"id": "o2", "grupo_id": "g2", "nome": "Nutella", "preco": 0.95,
+                 "nome_grupo": "Toppings"},
+            ],
+        }],
+    }
+    papel = _analisar(pedido_da_cozinha(venda))
+    texto = [l["texto"] for l in papel]
+
+    # O cabeçalho: o que é, centrado e em corpo maior do que o normal, com a
+    # hora de LISBOA (a venda está gravada em UTC) e um número curto para se
+    # falar dele em voz alta.
+    titulo = papel[texto.index("PEDIDO COZINHA")]
+    assert _alto(titulo) and titulo["negrito"] and titulo["centrado"]
+    assert "#F2C4" in "\n".join(texto)
+    assert "21:47" in "\n".join(texto)  # 20:47 UTC são 21:47 na parede da loja
+
+    # 1. O NOME é o maior elemento do talão — o único em corpo DUPLO.
+    nome = papel[texto.index("MARIA")]
+    assert _duplo(nome) and nome["negrito"]
+    assert [l["texto"] for l in papel if _duplo(l)] == ["MARIA"]
+
+    # 2. O artigo abre com a quantidade e o produto, e vem a seguir em
+    #    tamanho: alto, mas não duplo (não gasta colunas).
+    artigo = papel[texto.index("1 Açaí Small")]
+    assert _alto(artigo) and not _duplo(artigo)
+    assert texto.index("1 Açaí Small") > texto.index("MARIA")
+
+    # 3. A resposta de serviço vem destacada e COM A PERGUNTA — muda o que se
+    #    faz ao copo.
+    servico = papel[texto.index("Consumir em loja: Levar")]
+    assert servico["negrito"]
+    assert texto.index("Consumir em loja: Levar") > texto.index("1 Açaí Small")
+
+    # 4. Os toppings, com as doses, sob o grupo a que pertencem e depois de
+    #    tudo o resto.
+    assert texto.index("Toppings:") > texto.index("Consumir em loja: Levar")
+    assert texto[texto.index("Toppings:") + 1:texto.index("Toppings:") + 3] == [
+        "  1x Leite condensado", "  2x Nutella",
+    ]
+
+    # E o que é destaque tem de ser POUCO: um talão todo a negrito e todo
+    # centrado é outra vez um talão sem hierarquia nenhuma. Os toppings leem-se
+    # em corpo normal, e o corpo do talão é encostado à esquerda — só o
+    # cabeçalho é que vai ao meio.
+    assert not papel[texto.index("  2x Nutella")]["negrito"]
+    assert papel[texto.index("  2x Nutella")]["corpo"] == 0
+    assert not papel[texto.index("1 Açaí Small")]["centrado"]
+
+
+def test_nenhuma_linha_passa_das_colunas_do_CORPO_DE_LETRA_dela():
+    """42 colunas em corpo normal, 21 em corpo duplo. Uma linha que dê a volta
+    numa ficha de cozinha faz ler o topping errado: a sobra aparece encostada
+    à esquerda, por baixo, onde parece pertencer ao artigo seguinte."""
+    venda = {
+        "id": "3b91c0de-0000-4000-8000-00000000f2c4",
+        "criada_em": "2026-08-24T20:47:00+00:00",
+        "linhas": [{
+            "produto_nome": "Açaí Extra Large com granola da casa e fruta da época",
+            "quantidade": 3,
+            "respostas_texto": [
+                {"grupo_id": "g0", "nome_grupo": "Nome", "texto": "Maria da Conceição Rodrigues"},
+                {"grupo_id": "g9", "nome_grupo": "Observações do cliente",
+                 "texto": "tirar a granola toda e pôr o leite condensado à parte, por favor"},
+            ],
+            "opcoes": [
+                {"id": "o0", "grupo_id": "g1", "nome": "Comer aqui na esplanada de fora",
+                 "preco": 0, "nome_grupo": "Consumir em loja ou levar para fora",
+                 "sai_na_fatura": False},
+                {"id": "o1", "grupo_id": "g2", "preco": 0.95,
+                 "nome": "Manteiga de amendoim com pedaços de amendoim torrado",
+                 "nome_grupo": "Toppings extra que se pagam à parte"},
+            ],
+        }],
+    }
+    for linha in _analisar(pedido_da_cozinha(venda)):
+        colunas = 21 if _duplo(linha) else 42
+        assert len(linha["texto"]) <= colunas, (linha["texto"], colunas)
+
+
+def test_um_artigo_fica_SEPARADO_do_seguinte_porque_a_cozinha_troca_copos():
+    """Colados, a Nutella do segundo copo lê-se como sendo do primeiro."""
+    venda = {"linhas": [
+        {"produto_nome": "Açaí Small", "quantidade": 1,
+         "respostas_texto": [{"grupo_id": "g0", "nome_grupo": "Nome", "texto": "Maria"}]},
+        {"produto_nome": "Açaí Large", "quantidade": 1,
+         "respostas_texto": [{"grupo_id": "g0", "nome_grupo": "Nome", "texto": "João"}]},
+    ]}
+    texto = [l["texto"] for l in _analisar(pedido_da_cozinha(venda))]
+    separador = "-" * 42
+    assert separador in texto
+    assert texto.index("MARIA") < texto.index(separador) < texto.index("JOÃO")
 
 
 def test_opcao_PAGA_de_grupo_escondido_vai_com_a_dose_e_nao_ao_servico():
@@ -42,36 +247,51 @@ def test_opcao_PAGA_de_grupo_escondido_vai_com_a_dose_e_nao_ao_servico():
     venda = {"linhas": [{
         "produto_nome": "Açaí Small", "quantidade": 1,
         "opcoes": [
-            {"id": "o0", "grupo_id": "g1", "nome": "Levar", "preco": 0, "sai_na_fatura": False},
+            {"id": "o0", "grupo_id": "g1", "nome": "Levar", "preco": 0,
+             "nome_grupo": "Consumir em loja", "sai_na_fatura": False},
             {"id": "o1", "grupo_id": "g2", "nome": "Extra caramelo", "preco": 0.5,
-             "sai_na_fatura": False},
+             "nome_grupo": "Toppings", "sai_na_fatura": False},
             {"id": "o1", "grupo_id": "g2", "nome": "Extra caramelo", "preco": 0.5,
-             "sai_na_fatura": False},
+             "nome_grupo": "Toppings", "sai_na_fatura": False},
         ],
     }]}
-    assert pedido_da_cozinha(venda) == (
-        "Pedido\n"
-        "\n"
-        "1 Açaí Small\n"
-        "Levar\n"
-        "\n"
-        "2x Extra caramelo\n"
-    )
+    texto = [l["texto"] for l in _analisar(pedido_da_cozinha(venda))]
+    assert "  2x Extra caramelo" in texto
+    assert "Consumir em loja: Levar" in texto
+    assert "1x Extra caramelo" not in texto
 
 
 def test_uma_linha_sem_nome_nem_opcoes_sai_na_mesma():
-    venda = {"linhas": [{"produto_nome": "Café Expresso", "quantidade": 2}]}
-    assert pedido_da_cozinha(venda) == "Pedido\n\n2 Café Expresso\n"
+    texto = [l["texto"] for l in
+             _analisar(pedido_da_cozinha({"linhas": [
+                 {"produto_nome": "Café Expresso", "quantidade": 2}]}))]
+    assert "2 Café Expresso" in texto
 
 
-def test_duas_linhas_ficam_separadas():
-    venda = {"linhas": [
-        {"produto_nome": "Café Expresso", "quantidade": 1},
-        {"produto_nome": "Água 50cl", "quantidade": 1},
-    ]}
-    assert pedido_da_cozinha(venda) == (
-        "Pedido\n\n1 Café Expresso\n\n1 Água 50cl\n"
-    )
+def test_uma_linha_GRAVADA_ANTES_do_carimbo_do_titulo_sai_sem_titulo_e_inteira():
+    """As contas que já estavam abertas não têm `nome_grupo` nas opções. O
+    título vem a `None`, as respostas saem sem ele — exactamente como saíam —
+    e nada se perde. Uma ficha que rebentasse aqui era a cozinha sem papel."""
+    venda = {"linhas": [{
+        "produto_nome": "Açaí Small", "quantidade": 1,
+        "respostas_texto": [{"grupo_id": "g0", "texto": "Maria"}],
+        "opcoes": [
+            {"id": "o0", "grupo_id": "g1", "nome": "Levar", "preco": 0,
+             "sai_na_fatura": False},
+            {"id": "o1", "grupo_id": "g2", "nome": "Nutella", "preco": 0.95},
+        ],
+    }]}
+    texto = [l["texto"] for l in _analisar(pedido_da_cozinha(venda))]
+    assert "MARIA" in texto and "Levar" in texto and "1x Nutella" in texto
+
+
+def test_uma_venda_SEM_hora_nao_inventa_uma():
+    """Uma ficha sem hora lê-se na mesma; uma ficha com a hora errada manda a
+    cozinha discutir com o balcão sobre qual dos pedidos é o antigo."""
+    papel = pedido_da_cozinha({"id": "abcd", "criada_em": "nao e' uma data",
+                               "linhas": []})
+    assert "#ABCD" in _sem_comandos(papel)
+    assert ":" not in _sem_comandos(papel)
 
 
 # --- O relatório Z, em papel --------------------------------------------------
