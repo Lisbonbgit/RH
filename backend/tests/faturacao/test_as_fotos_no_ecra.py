@@ -139,7 +139,14 @@ _COMPONENTES = "\n".join([
     "const Caixa = (props) => (props.open",
     "  ? React.createElement('div', { 'data-dialogo': 'aberto' }, props.children)",
     "  : null);",
-    "const Div = (props) => React.createElement('div', null, props.children);",
+    # O `Div` é o que substitui TUDO o que não é Botão/Campo/Diálogo — e
+    # passou a reencaminhar o `onClick` e o `data-testid`. Sem isso, uma
+    # linha de tabela clicável (o ecrã de Documentos do backoffice) montava
+    # muda: o teste não lhe podia tocar, e a única prova possível era ler o
+    # ficheiro — que é exactamente o que estes testes existem para não ser.
+    "const Div = (props) => React.createElement('div', {",
+    "  onClick: props.onClick, 'data-testid': props['data-testid'],",
+    "}, props.children);",
     "global.__componentes = new Proxy({}, { get: (_, nome) => {",
     "  if (nome === '__esModule') return true;",
     "  if (nome === 'Button') return Botao;",

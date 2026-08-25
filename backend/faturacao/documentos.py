@@ -68,6 +68,8 @@ docstring dessa função.
 """
 import base64
 import logging
+import re
+from datetime import date
 from typing import Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -76,6 +78,8 @@ from pydantic import BaseModel, Field
 from .db import COLECOES, obter_db
 from .fiscal import _itens_vendus
 from .mapa_imposto import _liquido_da_linha, mapa_de_imposto, totais_do_mapa
+from .auth import gestor_atual
+from .periodos import janela_de_datas
 from .pos_auth import operador_atual
 
 logger = logging.getLogger(__name__)
@@ -338,6 +342,18 @@ async def obter_documento(
     """
     db = obter_db()
     documento = await _documento_da_loja(db, documento_id, operador["loja_id"])
+    return await _detalhe_do_documento(db, documento)
+
+
+async def _detalhe_do_documento(db, documento: Dict) -> dict:
+    """A fatura aberta, sem decidir QUEM a pode ver — isso é de quem chama.
+
+    Vive à parte desde que o backoffice ganhou o seu próprio ecrã de
+    Documentos: o POS lê pela loja do token do operador, a gestão lê qualquer
+    loja com o JWT do portal, e o que os dois mostram tem de ser EXACTAMENTE a
+    mesma fatura. Duas montagens da mesma fatura acabam a dizer números
+    diferentes, e a primeira vez que isso acontecer é o dono a perguntar qual
+    delas está certa."""
     venda = await db[COLECOES["vendas"]].find_one({"id": documento.get("venda_id")})
 
     linhas = _linhas_da_fatura(venda)
@@ -383,6 +399,171 @@ async def obter_documento(
         # quando o agente existir. Ver `talao_do_documento`.
         "tem_talao": bool(documento.get("talao_escpos")),
     }
+
+
+# --- O ecrã de Documentos do BACKOFFICE ---------------------------------------
+#
+# **Porque não se reaproveitam as rotas do POS.** As de cima respondem à
+# pergunta do balcão — «onde está a fatura daquele cliente?» — e por isso o
+# âmbito delas é a loja do TOKEN, sem filtro nenhum e com um tecto pequeno. A
+# do gestor é outra pergunta: «o que é que se emitiu, em que loja, naquele
+# intervalo?». Loja passa a FILTRO, entram datas e pesquisa, e o tecto dá lugar
+# a paginação. Uma rota a servir as duas acabava com um `âmbito` a viajar por
+# argumento — que é exactamente o que a docstring de `listar_documentos` recusa.
+#
+# O que NÃO muda é a fatura: o detalhe sai do mesmo `_detalhe_do_documento`.
+
+_POR_PAGINA = 50
+# Tecto do que se soma para o resumo. Uma loja faz ~200 documentos por dia, por
+# isso isto são uns 25 dias de uma loja ou uma semana das cinco. Passando daí,
+# o resumo diz que está truncado em vez de mentir com um número parcial.
+_TECTO_DO_RESUMO = 5000
+_TIPOS = {"FS", "NC"}
+
+
+def _regex_literal(texto: str) -> Dict:
+    """Uma pesquisa por texto que é MESMO por texto. Sem isto, um `(` escrito
+    na caixa de pesquisa é um regex inválido e a rota devolve 500 — e um `.*`
+    devolvia a lista toda como se fosse um resultado."""
+    return {"$regex": re.escape(texto), "$options": "i"}
+
+
+async def _filtro_dos_documentos(
+    db, de: Optional[str], ate: Optional[str], loja_id: Optional[str],
+    tipo: Optional[str], q: Optional[str],
+) -> Dict:
+    filtro: Dict = {}
+    if de or ate:
+        if not (de and ate):
+            raise HTTPException(
+                status_code=422,
+                detail="Escolha as duas datas do intervalo, ou nenhuma.")
+        try:
+            janela = janela_de_datas(date.fromisoformat(de), date.fromisoformat(ate))
+        except ValueError as erro:
+            raise HTTPException(status_code=422, detail=str(erro))
+        # **As fronteiras são as de LISBOA, convertidas para UTC** — é o que o
+        # `periodos.janela_de_datas` devolve. Filtrar pela data em cru punha a
+        # venda das 00h30 no dia anterior (o `emitido_em` é UTC), e o dia 1 do
+        # mês aparecia sempre a menos.
+        filtro["emitido_em"] = {
+            "$gte": janela.inicio.isoformat(), "$lt": janela.fim.isoformat()}
+    if loja_id:
+        filtro["loja_id"] = loja_id
+    if tipo:
+        if tipo not in _TIPOS:
+            raise HTTPException(status_code=422, detail="Tipo desconhecido: %s" % tipo)
+        filtro["tipo"] = tipo
+    if q:
+        procurado = q.strip()
+        # **O NIF não está no documento, está na VENDA** — e é por isso que a
+        # pesquisa vai buscar primeiro as vendas com aquele NIF e só depois
+        # procura os documentos delas. Procura-se pelas duas coisas ao mesmo
+        # tempo (número OU NIF) em vez de adivinhar qual é qual pelo formato:
+        # quem escreve na caixa não sabe que são dois campos diferentes.
+        vendas = await (
+            db[COLECOES["vendas"]]
+            .find({"cliente_nif": _regex_literal(procurado)}, {"id": 1, "_id": 0})
+            .to_list(_TECTO_DO_RESUMO)
+        )
+        alternativas = [{"numero": _regex_literal(procurado)}]
+        if vendas:
+            alternativas.append({"venda_id": {"$in": [v["id"] for v in vendas]}})
+        filtro["$or"] = alternativas
+    return filtro
+
+
+def _resumo(documentos: List[Dict]) -> Dict:
+    """Quantos e quanto — com as NOTAS DE CRÉDITO A SUBTRAIR.
+
+    É a regra desta casa e não uma opção: uma NC devolve dinheiro, e somá-la
+    como positiva faz o resumo declarar o dobro do que entrou. As contagens
+    vão separadas, como no rodapé dos relatórios do Vendus: um documento de
+    venda e uma rectificação não se somam no mesmo número."""
+    faturas = [d for d in documentos if d.get("tipo") != "NC"]
+    notas = [d for d in documentos if d.get("tipo") == "NC"]
+    centimos = (
+        sum(_centimos(d.get("total") or 0) for d in faturas)
+        - sum(_centimos(d.get("total") or 0) for d in notas)
+    )
+    return {
+        "faturas": len(faturas),
+        "notas_credito": len(notas),
+        "total": centimos / 100.0,
+    }
+
+
+@router.get("/documentos")
+async def documentos_do_backoffice(
+    de: Optional[str] = None,
+    ate: Optional[str] = None,
+    loja_id: Optional[str] = None,
+    tipo: Optional[str] = None,
+    q: Optional[str] = None,
+    pagina: int = 1,
+    _: dict = Depends(gestor_atual),
+) -> dict:
+    """As faturas e notas de crédito de TODAS as lojas, filtradas.
+
+    `de`/`ate` são datas (AAAA-MM-DD) e o `ate` está INCLUÍDO — quem escolhe
+    "1 a 25" quer o dia 25 inteiro.
+
+    O resumo soma o conjunto FILTRADO (não a página), porque a pergunta é
+    "quanto se faturou naquele intervalo" e não "quanto vale esta página".
+    Acima de `_TECTO_DO_RESUMO` documentos ele vem `truncado: true` e o ecrã
+    tem de o dizer: um total parcial apresentado como total é pior do que não
+    haver total nenhum.
+    """
+    db = obter_db()
+    filtro = await _filtro_dos_documentos(db, de, ate, loja_id, tipo, q)
+    pagina = max(1, pagina)
+
+    total = await db[COLECOES["documentos"]].count_documents(filtro)
+    documentos = await (
+        db[COLECOES["documentos"]]
+        .find(filtro, {"_id": 0})
+        .sort("emitido_em", -1)
+        .skip((pagina - 1) * _POR_PAGINA)
+        .to_list(_POR_PAGINA)
+    )
+    para_o_resumo = await (
+        db[COLECOES["documentos"]]
+        .find(filtro, {"_id": 0, "total": 1, "tipo": 1})
+        .to_list(_TECTO_DO_RESUMO)
+    )
+
+    vendas = await _vendas_por_id(
+        db, [d["venda_id"] for d in documentos if d.get("venda_id")]
+    )
+    return {
+        # A lista do backoffice leva DUAS coisas a mais do que a do POS, e as
+        # duas por a pergunta ser outra: a LOJA (lá é sempre a mesma, aqui é
+        # uma coluna) e o NIF do cliente, que está na venda e é por onde o
+        # gestor procura a fatura de uma empresa.
+        "documentos": [
+            dict(_documento_na_lista(d, vendas.get(d.get("venda_id"))),
+                 loja_id=d.get("loja_id"),
+                 cliente_nif=(vendas.get(d.get("venda_id")) or {}).get("cliente_nif"))
+            for d in documentos
+        ],
+        "total": total,
+        "pagina": pagina,
+        "por_pagina": _POR_PAGINA,
+        "resumo": dict(_resumo(para_o_resumo), truncado=len(para_o_resumo) >= _TECTO_DO_RESUMO),
+    }
+
+
+@router.get("/documentos/{documento_id}")
+async def documento_do_backoffice(
+    documento_id: str, _: dict = Depends(gestor_atual)
+) -> dict:
+    """A MESMA fatura que o POS mostra — mesmo montador, sem o âmbito da loja
+    (o gestor vê todas)."""
+    db = obter_db()
+    documento = await db[COLECOES["documentos"]].find_one({"id": documento_id})
+    if not documento:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+    return await _detalhe_do_documento(db, documento)
 
 
 @router.get("/pos/documentos/{documento_id}/talao")
