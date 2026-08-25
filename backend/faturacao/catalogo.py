@@ -388,6 +388,15 @@ class ProdutoEntrada(BaseModel):
     # fazia o produto desaparecer da grelha sem ninguém perceber porquê.
     subcategoria_id: Optional[str] = None
     preco: float = Field(ge=0, allow_inf_nan=False)
+    # **O que ESTE artigo custa a fazer** — opcional, e é o que acende as
+    # colunas "Custos" e "Resultado" dos relatórios. Sem ele o relatório mostra
+    # "—" nessas células: um zero ali fazia o lucro parecer total, que é a
+    # mentira mais cara que um relatório pode contar.
+    #
+    # É um número escrito à mão, e é assumidamente o degrau antes da ficha
+    # técnica (a receita por ingrediente, que há-de calcular isto sozinha). O
+    # campo fica o mesmo; o que muda é quem o preenche.
+    preco_custo: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     tax_id: str
     foto_url: Optional[str] = None
     grupos_personalizacao: List[str] = Field(default_factory=list)

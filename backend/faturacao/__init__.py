@@ -69,6 +69,9 @@ router.include_router(_dashboard)
 from .clientes import router as _clientes
 router.include_router(_clientes)
 
+from .relatorios import router as _relatorios
+router.include_router(_relatorios)
+
 from .pos_auth import router as _pos_auth
 router.include_router(_pos_auth)
 
