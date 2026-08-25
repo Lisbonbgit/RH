@@ -281,7 +281,7 @@ class ColeccaoFalsa:
                 alvo.pop(campo, None)
         return ResultadoUpdateFalso(matched_count=len(alvos))
 
-    async def update_one(self, filtro, atualizacao):
+    async def update_one(self, filtro, atualizacao, upsert=False):
         """`$set` e `$unset`, e a colisão do índice único.
 
         O `$unset` faz falta desde que existe a etiqueta `posto_em_curso`: é
@@ -295,6 +295,15 @@ class ColeccaoFalsa:
         `DuplicateKeyError` que existe para apanhar."""
         self.registo.append(("update_one", filtro, atualizacao))
         alvos = [d for d in self._documentos if _corresponde(d, filtro)]
+        # `upsert` — entrou com a ficha do cliente (`fat_clientes`), que se
+        # grava por NIF sem haver "criar" à parte. Sem isto o duplo aceitava o
+        # argumento e não inseria nada: o teste via a chamada sair e a ficha
+        # nunca existia.
+        if not alvos and upsert:
+            novo = dict(filtro)
+            novo.update(atualizacao.get("$set") or {})
+            self._documentos.append(novo)
+            return ResultadoUpdateFalso(matched_count=0)
         if alvos:
             proposto = deepcopy(alvos[0])
             proposto.update(atualizacao.get("$set", {}))

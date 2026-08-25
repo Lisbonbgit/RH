@@ -1234,6 +1234,17 @@ async def _gravar_documento(
         "ext_ref": ext_ref,
         "venda_id": venda["id"],
         "loja_id": venda["loja_id"],
+        # **O NIF de quem pediu a fatura, GRAVADO NO DOCUMENTO** e não só na
+        # venda. É uma cópia de propósito: sem ela, listar os clientes ou somar
+        # as vendas por cliente obriga a ler as vendas TODAS para descobrir a
+        # que NIF pertence cada documento — uma junção por linha, cada vez que
+        # alguém abre o ecrã. Com ela, a pergunta responde-se no documento, que
+        # é onde o dinheiro está.
+        #
+        # A venda continua a ser a fonte: isto escreve-se a partir dela, no
+        # instante da emissão, e nunca se edita depois. `None` na esmagadora
+        # maioria — que é o Consumidor Final.
+        "cliente_nif": venda.get("cliente_nif"),
         "emitido_em": emitido_em,
     }
     try:

@@ -51,6 +51,7 @@ import FatDashboard from './pages/admin/faturacao/FatDashboard';
 import FatProdutos from './pages/admin/faturacao/FatProdutos';
 import FatCategorias from './pages/admin/faturacao/FatCategorias';
 import FatDocumentos from './pages/admin/faturacao/FatDocumentos';
+import FatClientes from './pages/admin/faturacao/FatClientes';
 import FatPersonalizacoes from './pages/admin/faturacao/FatPersonalizacoes';
 import FatLojas from './pages/admin/faturacao/FatLojas';
 import FatPagamentos from './pages/admin/faturacao/FatPagamentos';
@@ -237,7 +238,7 @@ function AppRoutes() {
             conta e impede a loja de fechar a caixa. */}
         <Route path="faturacao/reservas-presas" element={<FatReservasPresas />} />
         <Route path="faturacao/taloes-desconto" element={<ComingSoon icon={Percent} title="Talões de Desconto" subtitle="Faturação · Gestão" />} />
-        <Route path="faturacao/clientes" element={<ComingSoon icon={Users} title="Clientes" subtitle="Faturação · Gestão" note="Fichas de cliente e NIF para as faturas." />} />
+        <Route path="faturacao/clientes" element={<FatClientes />} />
         <Route path="faturacao/relatorios" element={<ComingSoon icon={BarChart3} title="Relatórios" subtitle="Faturação · Gestão" note="Movimentos de caixa, produtos, categorias, lojas, utilizadores, diário, por hora, dias da semana e mensal." />} />
         <Route path="faturacao/compras" element={<ComingSoon icon={Truck} title="Compras" subtitle="Faturação · Gestão" note="Entrada de mercadoria a partir das faturas de compra que já existem no Financeiro." />} />
 

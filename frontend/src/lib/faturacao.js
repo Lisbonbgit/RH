@@ -147,6 +147,14 @@ export const criarCategoria = (data) => api.post(`${API_URL}/faturacao/categoria
 export const editarCategoria = (id, data) => api.put(`${API_URL}/faturacao/categorias/${id}`, data);
 export const apagarCategoria = (id) => api.delete(`${API_URL}/faturacao/categorias/${id}`);
 
+// Clientes — quem já pediu fatura com NIF. A lista deriva das COMPRAS (não há
+// "criar cliente"); o que se grava por NIF é só o nome e o contacto.
+export const getClientes = (q) => api.get(
+  `${API_URL}/faturacao/clientes`, q ? { params: { q } } : undefined);
+export const getCliente = (nif) => api.get(`${API_URL}/faturacao/clientes/${nif}`);
+export const gravarCliente = (nif, data) => api.put(
+  `${API_URL}/faturacao/clientes/${nif}`, data);
+
 // Documentos — as faturas e notas de crédito emitidas, de TODAS as lojas. São
 // rotas próprias do backoffice: as do POS (`/pos/documentos`) respondem à
 // pergunta do balcão (a loja do token, sem filtros) e recusam o JWT do portal.
