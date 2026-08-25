@@ -4,7 +4,7 @@ FATURA cobra.
 Porque este ficheiro existe. O POS mostra, antes de dividir, quanto vai pagar
 cada pessoa — é o número que a operadora lê em voz alta com o cliente à
 frente. Essa previsão é feita em JavaScript (`lib/pos.js::contasDaLinha` e
-`PosReparticao::fatiasDaLinha`) e a repartição verdadeira é feita em Python
+`lib/pos.js::fatiasDaLinha`) e a repartição verdadeira é feita em Python
 (`venda.py::_partes_de_uma_linha`), e as duas só valem alguma coisa enquanto
 disserem o mesmo.
 
@@ -38,13 +38,18 @@ from faturacao.venda import _bruto_da_linha, _centimos, _desconto_da_linha, _lin
 # backend/tests/faturacao/este_ficheiro.py -> raiz do repositório
 _RAIZ = Path(__file__).resolve().parents[3]
 _LIB_POS = _RAIZ / "frontend" / "src" / "lib" / "pos.js"
-_REPARTICAO = _RAIZ / "frontend" / "src" / "pages" / "pos" / "PosReparticao.js"
 
 _ASSINATURA_CENT = "export const arredondarComoOServidor = (valor) =>"
 _ASSINATURA_CONTAS = "export const contasDaLinha = (linha) =>"
 _ASSINATURA_REPARTIR = "export const repartirCentimos = (totalCentimos, partes) =>"
-_ASSINATURA_CENTIMOS = "const centimos = (valor) =>"
-_ASSINATURA_FATIAS = "const fatiasDaLinha = (linha, partes) =>"
+# **Mudaram de casa e o guarda foi atrás delas.** Viviam no `PosReparticao.js`
+# (o ecrã da previsão) e passaram para `lib/pos.js` quando o dividir deixou de
+# ter ecrã próprio: agora quem mostra o valor por pessoa é o stepper do
+# `PosFinalizar`, e quem mostra o que esta pessoa leva é a barra do `PosVenda`.
+# São mais leitores da MESMA conta — mais razão para ela ser uma só, e para o
+# que este ficheiro compara com o servidor ser exactamente a que eles lêem.
+_ASSINATURA_CENTIMOS = "export const centimos = (valor) =>"
+_ASSINATURA_FATIAS = "export const fatiasDaLinha = (linha, partes) =>"
 
 # O `cent` de antes da correcção. Vive aqui, e só aqui, para a prova por
 # mutação do fim do ficheiro: é o ÚNICO sítio do repositório onde esta linha
@@ -141,15 +146,14 @@ def _codigo_do_ecra(cent: str = None) -> str:
     `cent` permite trocar SÓ o arredondamento — é o que a prova por mutação
     usa para voltar a pôr lá o de antes e ver este guarda ficar vermelho."""
     lib = _ler(_LIB_POS)
-    reparticao = _ler(_REPARTICAO)
     return "\n".join([
         cent if cent is not None else "%s\nconst cent = arredondarComoOServidor;"
         % _corpo_da_funcao(lib, _ASSINATURA_CENT, _LIB_POS).replace("export ", "", 1),
         # `export` fora: isto corre como um guião solto, não como módulo.
         _corpo_da_funcao(lib, _ASSINATURA_CONTAS, _LIB_POS).replace("export ", "", 1),
         _corpo_da_funcao(lib, _ASSINATURA_REPARTIR, _LIB_POS).replace("export ", "", 1),
-        _corpo_da_seta(reparticao, _ASSINATURA_CENTIMOS, _REPARTICAO),
-        _corpo_da_funcao(reparticao, _ASSINATURA_FATIAS, _REPARTICAO),
+        _corpo_da_seta(lib, _ASSINATURA_CENTIMOS, _LIB_POS).replace("export ", "", 1),
+        _corpo_da_funcao(lib, _ASSINATURA_FATIAS, _LIB_POS).replace("export ", "", 1),
     ])
 
 
@@ -568,4 +572,112 @@ def test_a_malha_da_ordem_apanha_mesmo_uma_ordem_trocada(tmp_path):
         "Com a ordem trocada, nenhum caso divergiu — a malha de casos deixou "
         "de conter opções com quantidade acima de 1, e o guarda de cima está a "
         "verificar o vazio."
+    )
+
+
+# --- A previsão do SEPARAR contra o que o servidor cobra mesmo ----------------
+#
+# O ecrã novo mostra, na barra de baixo, **o que esta pessoa leva** enquanto a
+# operadora toca nos artigos dela — e o número que ela lê em voz alta ao
+# cliente tem de ser o da fatura que sai a seguir. É a mesma promessa do resto
+# deste ficheiro, num sítio novo: a primeira versão da barra fazia uma regra de
+# três sobre o total da linha (`total × unidades / quantidade`) e desviava-se
+# com um desconto pelo meio.
+#
+# Aqui não se compara com uma cópia da conta do servidor: corre-se a rota
+# `separar_uma_parte` A SÉRIO, com o duplo de base de dados, e compara-se o
+# total que ela gravou na parte com o que o ecrã tinha previsto.
+
+_ASSINATURA_PREVISAO_SEPARAR = "export const previsaoDoSeparar = (mae, atribuicao) =>"
+_ASSINATURA_PESO = "export const repartirPorPeso = (totalCentimos, pesos) =>"
+_ASSINATURA_ATRIBUIDAS = "export const atribuidas = (mapa, linhaId) =>"
+
+
+def _previsao_do_separar_no_ecra(mae, atribuicao, tmp_path: Path):
+    lib = _ler(_LIB_POS)
+    guiao = tmp_path / "previsao-separar.js"
+    guiao.write_text("\n".join([
+        _corpo_da_funcao(lib, _ASSINATURA_CENT, _LIB_POS).replace("export ", "", 1),
+        # O `contasDaLinha` chama-lhe `cent` — o mesmo apelido do
+        # `_codigo_do_ecra` lá em cima, e pela mesma razão.
+        "const cent = arredondarComoOServidor;",
+        _corpo_da_funcao(lib, _ASSINATURA_CONTAS, _LIB_POS).replace("export ", "", 1),
+        _corpo_da_seta(lib, _ASSINATURA_CENTIMOS, _LIB_POS).replace("export ", "", 1),
+        _corpo_da_funcao(lib, _ASSINATURA_PESO, _LIB_POS).replace("export ", "", 1),
+        _corpo_da_seta(lib, _ASSINATURA_ATRIBUIDAS, _LIB_POS).replace("export ", "", 1),
+        _corpo_da_funcao(lib, _ASSINATURA_PREVISAO_SEPARAR, _LIB_POS).replace("export ", "", 1),
+        "const mae = %s;" % json.dumps(mae, ensure_ascii=False),
+        "const atribuicao = %s;" % json.dumps(atribuicao),
+        "process.stdout.write(JSON.stringify("
+        "  previsaoDoSeparar(mae, atribuicao).map((p) => p.totalCentimos)));",
+    ]), encoding="utf-8")
+    resultado = subprocess.run(
+        [_node(), str(guiao)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if resultado.returncode != 0:
+        pytest.fail("O JavaScript do ecrã não correu:\n%s"
+                    % resultado.stderr.decode("utf-8", "replace"))
+    return json.loads(resultado.stdout.decode("utf-8"))
+
+
+@pytest.mark.parametrize("nome, linhas, global_pct, global_eur, leva", [
+    ("dois artigos limpos", [
+        {"preco": 3.80, "quantidade": 1}, {"preco": 8.99, "quantidade": 1}], None, None,
+        {"l0": 1}),
+    ("desconto de linha em %", [
+        {"preco": 7.15, "quantidade": 2, "desconto_pct": 10},
+        {"preco": 1.15, "quantidade": 1}], None, None, {"l0": 1}),
+    ("desconto de linha em €", [
+        {"preco": 8.99, "quantidade": 2, "desconto_eur": 3.00},
+        {"preco": 1.15, "quantidade": 1}], None, None, {"l0": 1}),
+    ("desconto global em %", [
+        {"preco": 3.80, "quantidade": 1}, {"preco": 8.99, "quantidade": 1}], 10, None,
+        {"l0": 1}),
+    ("desconto global em €", [
+        {"preco": 3.80, "quantidade": 1}, {"preco": 8.99, "quantidade": 1}], None, 3.00,
+        {"l0": 1}),
+    ("cêntimos indivisíveis", [
+        {"preco": 0.05, "quantidade": 1}, {"preco": 0.05, "quantidade": 1},
+        {"preco": 0.05, "quantidade": 1}], None, None, {"l0": 1, "l1": 1}),
+])
+def test_o_que_a_barra_promete_e_o_que_a_parte_cobra(
+    nome, linhas, global_pct, global_eur, leva, monkeypatch, tmp_path
+):
+    from fastapi import HTTPException  # noqa: F401  (o erro real sobe como falha)
+
+    from faturacao import venda as venda_mod
+    from faturacao.venda import PedidoSepararUmaParte, _venda_publica, separar_uma_parte
+
+    from .test_venda import _corre, _db, _linha as _linha_de_venda, _operador, _venda
+
+    docs = [_linha_de_venda(
+        id="l%d" % i, produto_nome="Artigo %d" % i, produto_preco=li["preco"],
+        quantidade=li["quantidade"], desconto_pct=li.get("desconto_pct"),
+        desconto_eur=li.get("desconto_eur"),
+    ) for i, li in enumerate(linhas)]
+    conta = _venda(linhas=docs, desconto_global_pct=global_pct,
+                   desconto_global_eur=global_eur)
+
+    # O ECRÃ: o que a barra escreve enquanto ela toca nos artigos desta pessoa.
+    # O complemento vai junto porque o desconto GLOBAL se reparte pelos dois
+    # lados — é assim que a barra o chama, e é assim que o servidor o faz.
+    atribuicao = {li["id"]: leva[li["id"]] for li in docs if li["id"] in leva}
+    complemento = {
+        li["id"]: int(li["quantidade"]) - leva.get(li["id"], 0)
+        for li in docs if int(li["quantidade"]) - leva.get(li["id"], 0) > 0
+    }
+    previsto = _previsao_do_separar_no_ecra(
+        _venda_publica(conta), [atribuicao, complemento], tmp_path)[0]
+
+    # O SERVIDOR: a rota a sério, com o duplo de base de dados.
+    db = _db([], vendas=[conta])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    r = _corre(separar_uma_parte("venda-1", PedidoSepararUmaParte(linhas=[
+        {"linha_id": lid, "quantidade": q} for lid, q in atribuicao.items()
+    ]), operador=_operador()))
+    cobrado = _centimos(r["parte"]["totais"]["total"])
+
+    assert previsto == cobrado, (
+        "%s: a barra promete %d cêntimos e a parte cobra %d. É o número que a "
+        "operadora lê em voz alta com o cliente à frente."
+        % (nome, previsto, cobrado)
     )

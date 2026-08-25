@@ -13,7 +13,7 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/component
 import PosCampoValor, { TecladoNumerico, comVirgula } from './PosCampoValor';
 import {
   contaTravada, duvidaPorApurar, detalhesErroPos, eurosPos as euros,
-  temMaisDe2CasasDecimaisPos, avisoDoDocumento,
+  temMaisDe2CasasDecimaisPos, avisoDoDocumento, previsaoDoDividir,
 } from '@/lib/pos';
 
 // O ecrã de finalizar (Plano 2C, Task 4): três cartões — Total, Cliente e
@@ -1378,8 +1378,16 @@ export default function PosFinalizar({
                     <Plus className="h-5 w-5" />
                   </Button>
                 </div>
+                {/* O valor da PRIMEIRA pessoa — que é quem vai pagar a
+                    seguir — e vindo da MESMA conta que o servidor faz
+                    (`previsaoDoDividir`, em lib/pos.js: reparte-se o bruto e o
+                    desconto de CADA linha por N, nunca o total de uma vez).
+                    Dividir o total aqui parecia igual e não é: com duas linhas
+                    de 0,05 € por quatro pessoas dá um cêntimo de diferença, e
+                    esse cêntimo é uma promessa que a fatura desmente à frente
+                    do cliente. */}
                 <span className="text-sm text-muted-foreground tabular-nums">
-                  {euros(Math.ceil(Math.round(total * 100) / pessoas) / 100)} por pessoa
+                  {euros((previsaoDoDividir(venda, pessoas)[0]?.totalCentimos || 0) / 100)} por pessoa
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-2.5 mt-3">

@@ -24,7 +24,7 @@ import {
   editarLinha, removerLinha, aplicarDescontoGlobal, cancelarVenda, finalizarVenda,
   separarParte,
   dividirConta, separarConta, contasDaLinha, partesAbertas, ehUmaDasPartes,
-  proximaParteACobrar,
+  proximaParteACobrar, previsaoDoSeparar,
   getContasRepartidas, reparticaoDoServidor, unidadesDaConta, CASAS_DA_QUANTIDADE_POS,
   contaTravada, duvidaPorApurar, detalhesErroPos, semRespostaPos,
   ehTimeoutPos, TIMEOUT_PADRAO_MS, entregarContaAoGestor,
@@ -670,15 +670,22 @@ function LinhaDaConta({ linha, onTocar, onRemover, travada, separando = null }) 
 // aqui na mesma porque a operadora precisa de saber o que está a montar antes
 // de carregar — e porque uma diferença de um cêntimo entre os dois é
 // exactamente o género de coisa que se quer VER.
-function BarraDeSeparar({ linhas, separando, aSepararParte, onCobrar, onSair }) {
-  const centimosDaPessoa = linhas.reduce((soma, linha) => {
-    const unidades = separando[linha.id] || 0;
-    if (!unidades) return soma;
-    const quantidade = Number(linha.quantidade) || 0;
-    if (quantidade <= 0) return soma;
-    const { total } = contasDaLinha(linha);
-    return soma + Math.round((centimos(total) * unidades) / quantidade);
-  }, 0);
+function BarraDeSeparar({ venda, separando, aSepararParte, onCobrar, onSair }) {
+  // A MESMA conta que o servidor vai fazer (`previsaoDoSeparar`, em lib/pos.js
+  // — a mesma ordem de contas do `venda.py::separar_uma_parte`), e não uma
+  // regra de três à parte: o desconto de linha reparte-se pelas unidades e o
+  // GLOBAL pelo peso de cada lado, por isso a previsão tem de conhecer os dois
+  // lados. Daí passar-se também o COMPLEMENTO — o que fica na conta — mesmo
+  // que só se mostre o primeiro. Uma proporção do total da linha parecia igual
+  // e desviava-se um cêntimo com desconto pelo meio: o valor que a operadora
+  // lê em voz alta e o da fatura têm de ser o mesmo número.
+  const linhas = venda?.linhas || [];
+  const complemento = {};
+  linhas.forEach((linha) => {
+    const sobra = Math.floor(Number(linha.quantidade) || 0) - (separando[linha.id] || 0);
+    if (sobra > 0) complemento[linha.id] = sobra;
+  });
+  const centimosDaPessoa = previsaoDoSeparar(venda, [separando, complemento])[0].totalCentimos;
   const escolheu = Object.values(separando).some((q) => q > 0);
 
   return (
@@ -881,7 +888,7 @@ function PainelConta({
 
       {separando ? (
         <BarraDeSeparar
-          linhas={linhas}
+          venda={venda}
           separando={separando}
           aSepararParte={aSepararParte}
           onCobrar={onCobrarPessoa}
@@ -2079,11 +2086,11 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
   // partes dessa gente desapareciam do ecrã. Com a recusa, `partes` a `null`
   // quer dizer sempre o que parece — uma escolha que ainda não fez nada a
   // ninguém.
-  const sairDaReparticao = useCallback(() => {
-    if (reparticao?.partes) { setVista('conta'); return; }
-    setReparticao(null);
-    setVista('finalizar');
-  }, [reparticao]);
+  // A lista das partes só existe DEPOIS de a conta estar repartida (o ecrã de
+  // previsão deixou de existir quando o dividir passou a ser um toque), por
+  // isso daqui volta-se sempre ao balcão — e a repartição fica de pé, com a
+  // nota do painel a dizer o que falta receber.
+  const sairDaReparticao = useCallback(() => setVista('conta'), []);
 
   // Todas as partes resolvidas (cobradas ou canceladas): a conta acabou, e só
   // agora é que há cliente seguinte. É o botão "Nova Venda" do ecrã das partes.
@@ -2525,14 +2532,10 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
     return (
       <div className="flex-1 min-h-0 bg-card">
         <PosReparticao
-          mae={reparticao.mae}
           modo={reparticao.modo}
-          partes={reparticao.partes}
-          aRepartir={aRepartir}
+          partes={reparticao.partes || []}
           aCancelarParte={aCancelarParte}
-          onModo={(modo) => setReparticao((r) => (r ? { ...r, modo } : r))}
           onVoltar={sairDaReparticao}
-          onRepartir={repartir}
           onCobrarParte={cobrarParte}
           onCancelarParte={cancelarParte}
           onTerminar={terminarReparticao}
