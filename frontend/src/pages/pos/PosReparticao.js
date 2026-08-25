@@ -7,6 +7,7 @@ import {
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle,
   AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
 } from '@/components/ui/alert-dialog';
+import { resumoDoPedido } from './PosPedidoGuiado';
 import { centimos, contasDaLinha, eurosPos as euros } from '@/lib/pos';
 
 // **As partes por cobrar de uma conta repartida.** Quem falta pagar, quanto
