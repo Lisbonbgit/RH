@@ -125,6 +125,8 @@ def dividir(tmp_path_factory):
     cenario = _arranque("\n".join([
         "RESPOSTAS_POS['/pos/venda/aberta'] = () => ({ data: %s });"
         % json.dumps(_conta("v-1", [_L_COOKIE, _L_ACAI]), ensure_ascii=False),
+        "RESPOSTAS_POS['POST /pos/venda/v-1/desfazer-divisao'] = () => ({ data: %s });"
+        % json.dumps(_conta("v-1", [_L_COOKIE, _L_ACAI]), ensure_ascii=False),
         "RESPOSTAS_POS['POST /pos/venda/v-1/dividir'] = () => ({ data: %s });"
         % json.dumps({
             "modo": "dividir",
@@ -185,11 +187,19 @@ def test_a_seta_de_voltar_sai_do_pagamento_em_vez_de_cobrar_a_pessoa_seguinte(di
     # morta, e a nota diz o que falta receber com o caminho de volta às partes.
     assert "Cobrar as partes" not in dividir["depoisDaSeta"], \
         dividir["depoisDaSeta"][:400]
-    assert "Produto" in dividir["depoisDaSeta"], dividir["depoisDaSeta"][:400]
-    assert "Faltam cobrar" in dividir["depoisDaSeta"] or "falta cobrar" in dividir["depoisDaSeta"], (
-        "o balcão tem de dizer que ficou dinheiro por receber: %s"
-        % dividir["depoisDaSeta"][:400]
+    # **E a divisão fica DESFEITA**, que é a terceira e última forma que esta
+    # seta teve de estar errada: primeiro andava em ciclo entre as pessoas,
+    # depois aterrava na lista das partes, e nas duas o dono ficava preso —
+    # com a grelha apagada e um artigo por acrescentar. A regra dele: a seta
+    # desfaz a divisão e a conta volta inteira; para dividir outra vez,
+    # Finalizar e dividir de novo.
+    assert any(p.endswith("/pos/venda/v-1/desfazer-divisao")
+               for p in dividir["pedidos"]), dividir["pedidos"]
+    assert "Faltam cobrar" not in dividir["depoisDaSeta"], dividir["depoisDaSeta"][:400]
+    assert _COOKIE in dividir["depoisDaSeta"] and _ACAI in dividir["depoisDaSeta"], (
+        "a conta tem de voltar com os artigos todos: %s" % dividir["depoisDaSeta"][:400]
     )
+    assert "€ 12,79" in dividir["depoisDaSeta"], dividir["depoisDaSeta"][:400]
 
 
 def test_a_seguir_ao_toque_ja_se_esta_a_cobrar_a_primeira_pessoa(dividir):

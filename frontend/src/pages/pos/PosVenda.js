@@ -24,7 +24,7 @@ import {
   editarLinha, removerLinha, aplicarDescontoGlobal, cancelarVenda, finalizarVenda,
   separarParte,
   dividirConta, separarConta, contasDaLinha, partesAbertas, ehUmaDasPartes,
-  proximaParteACobrar, previsaoDoSeparar,
+  proximaParteACobrar, previsaoDoSeparar, desfazerDivisao,
   getContasRepartidas, reparticaoDoServidor, unidadesDaConta, CASAS_DA_QUANTIDADE_POS,
   contaTravada, duvidaPorApurar, detalhesErroPos, semRespostaPos,
   ehTimeoutPos, TIMEOUT_PADRAO_MS, entregarContaAoGestor,
@@ -2046,6 +2046,31 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
     });
   }, [aSepararParte, separando, executar, cobrarParte, operadorInvalido, recarregarVenda]);
 
+  // **A seta de voltar desfaz a divisão** e devolve a conta inteira, pronta a
+  // receber mais artigos — a regra que o dono deu depois de ficar preso com a
+  // grelha apagada e um artigo por acrescentar: «se eu estiver na página da
+  // divisão e clicar na seta, automaticamente é cancelada a divisão; se quiser
+  // dividir outra vez, clico em Finalizar e divido de novo».
+  //
+  // Quem recusa é o servidor, e só num caso: alguma parte já ter fatura (ou
+  // estar a emitir). Aí não se finge que sim — diz-se porquê e vai-se para a
+  // lista das partes, que é onde isso se resolve.
+  const desfazerADivisao = useCallback((maeId) => executar(async () => {
+    if (!maeId) return;
+    try {
+      const { data } = await desfazerDivisao(maeId);
+      setReparticao(null);
+      aplicarVenda(data);
+      setVista('conta');
+      toast.success('Divisão desfeita — a conta está inteira outra vez.');
+    } catch (error) {
+      if (error?.response?.status === 401) { operadorInvalido(); return; }
+      toast.error(detalhesErroPos(
+        error, 'Não foi possível desfazer a divisão.').mensagem);
+      setVista('reparticao');
+    }
+  }), [executar, aplicarVenda, operadorInvalido]);
+
   // A saída para quem não paga. É o `cancelarVenda` de sempre, sobre uma venda
   // normal — e o ecrã diz o que isso significa antes de o fazer (o diálogo do
   // PosReparticao): os artigos desta parte saem sem fatura e sem dinheiro.
@@ -2319,6 +2344,10 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
       const seguinte = documento ? proximaParteACobrar(partesDaConta, daFrente?.id) : null;
       aplicarVenda(null);
       if (seguinte) { cobrarParte(seguinte); return; }
+      // A SETA (não há documento nenhum acabado de sair): desfaz-se a divisão
+      // e a conta volta inteira. É o `desfazerADivisao` que decide para onde
+      // se vai, porque só a resposta do servidor sabe se ela se desfez.
+      if (!documento) { desfazerADivisao(daFrente?.conta_mae_id); return; }
       // **Sem ninguém à espera, volta-se ao BALCÃO** — e não à lista das
       // partes, que era o que a seta fazia e o dono corrigiu: «quero que volte
       // para a página de produto». A lista deixa de ser um sítio por onde se
@@ -2346,7 +2375,7 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
     }
     setVista('conta');
   }, [documento, aplicarVenda, mostrarDocumento, erroEmissao, reparticao,
-      cobrarParte, recarregarVenda]);
+      cobrarParte, recarregarVenda, desfazerADivisao]);
 
   // --- O que está no diálogo do produto ---------------------------------------
 

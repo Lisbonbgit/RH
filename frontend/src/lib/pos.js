@@ -1041,6 +1041,13 @@ export const separarConta = (vendaId, partes) =>
 // devolve `{ parte, conta }` — a parte para cobrar já a seguir, e a conta com
 // o que sobrou, que continua a ser a conta em curso do posto. É o balcão a
 // sério, e foi o que o dono pediu ao ver o POS do Vendus.
+// **Desfazer a divisão.** A seta de voltar do ecrã de pagamento de uma parte
+// devolve a conta inteira, com os artigos todos — e é a única saída que não
+// obriga a repicar a venda do zero. O servidor recusa (409) se alguma parte já
+// tiver fatura, e o ecrã diz porquê.
+export const desfazerDivisao = (vendaId) =>
+  api.post(`/pos/venda/${vendaId}/desfazer-divisao`);
+
 export const separarParte = (vendaId, linhas) =>
   api.post(`/pos/venda/${vendaId}/separar-parte`, { linhas });
 
