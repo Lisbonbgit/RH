@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner';
 import {
   AlertCircle, Ban, ChevronLeft, ChevronRight, EyeOff, ImageOff, Loader2, MoreHorizontal,
-  PauseCircle, Printer, RefreshCw, Search, ShieldAlert, ShoppingCart, Trash2, Undo2, Users, X,
+  Minus, PauseCircle, Printer, RefreshCw, Search, ShieldAlert, ShoppingCart, Trash2, Undo2,
+  Users, X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -21,7 +22,9 @@ import useEstadoDaImpressao from './useEstadoDaImpressao';
 import {
   getCatalogoPos, getTiposPagamentoPos, getVendaAberta, obterVenda, abrirVenda, juntarLinha,
   editarLinha, removerLinha, aplicarDescontoGlobal, cancelarVenda, finalizarVenda,
+  separarParte,
   dividirConta, separarConta, contasDaLinha, partesAbertas, ehUmaDasPartes,
+  proximaParteACobrar,
   getContasRepartidas, reparticaoDoServidor, unidadesDaConta, CASAS_DA_QUANTIDADE_POS,
   contaTravada, duvidaPorApurar, detalhesErroPos, semRespostaPos,
   ehTimeoutPos, TIMEOUT_PADRAO_MS, entregarContaAoGestor,
@@ -568,7 +571,7 @@ function AvisoPartesPorCobrar({ porCobrar, deQuantas, faltaCentimos, onVoltar })
   );
 }
 
-function LinhaDaConta({ linha, onTocar, onRemover, travada }) {
+function LinhaDaConta({ linha, onTocar, onRemover, travada, separando = null }) {
   const { unitario, total, desconto } = contasDaLinha(linha);
   // O pedido em duas frases: o serviço e o nome numa (`Levar · Maria`), as
   // escolhas com as doses noutra (`Nutella 2× · Leite condensado 1×`). É o que
@@ -607,7 +610,19 @@ function LinhaDaConta({ linha, onTocar, onRemover, travada }) {
         }`}
       >
         <div className="min-w-0">
-          <p className="font-medium leading-tight">{linha.produto_nome}</p>
+          <p className="font-medium leading-tight flex items-center gap-2">
+            {/* A SEPARAR: quantas unidades desta linha já são desta pessoa. A
+                pastilha só existe neste modo — fora dele não há "esta pessoa"
+                nenhuma e um número ali era um número sem dono. */}
+            {separando !== null && (
+              <span className={`shrink-0 min-w-[2rem] text-center rounded-md px-1.5 py-0.5 text-sm tabular-nums ${
+                separando > 0 ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
+              }`}>
+                {separando}
+              </span>
+            )}
+            {linha.produto_nome}
+          </p>
           {servico && <p className="text-xs text-muted-foreground leading-snug mt-0.5">{servico}</p>}
           {escolhas && <p className="text-xs text-muted-foreground leading-snug mt-0.5">{escolhas}</p>}
           <p className="text-xs text-muted-foreground mt-0.5 tabular-nums">
@@ -627,21 +642,83 @@ function LinhaDaConta({ linha, onTocar, onRemover, travada }) {
         <button
           type="button"
           onClick={() => onRemover(linha)}
-          title="Remover da conta"
-          aria-label={`Remover ${linha.produto_nome} da conta`}
-          className="my-2 flex items-center justify-center rounded-md text-destructive/70 hover:bg-destructive/10 hover:text-destructive active:scale-95 transition"
+          disabled={separando !== null && separando <= 0}
+          title={separando !== null ? 'Tirar uma unidade desta pessoa' : 'Remover da conta'}
+          aria-label={separando !== null
+            ? `Tirar ${linha.produto_nome} desta pessoa`
+            : `Remover ${linha.produto_nome} da conta`}
+          className={`my-2 flex items-center justify-center rounded-md active:scale-95 transition ${
+            separando !== null
+              ? 'text-muted-foreground hover:bg-accent disabled:opacity-30'
+              : 'text-destructive/70 hover:bg-destructive/10 hover:text-destructive'
+          }`}
         >
-          <X className="h-5 w-5" />
+          {separando !== null ? <Minus className="h-5 w-5" /> : <X className="h-5 w-5" />}
         </button>
       )}
     </div>
   );
 }
 
+// A barra de baixo enquanto se separa a conta: o que ESTA pessoa leva, e o
+// botão que a cobra. Substitui o Total/FINALIZAR de propósito — enquanto se
+// separa não existe "finalizar a conta": existe cobrar uma pessoa e continuar.
+//
+// O valor é uma PREVISÃO deste ecrã (a fatia de cada linha à proporção das
+// unidades escolhidas) e não a verdade: quem faz a conta ao cêntimo é o
+// servidor, e é o número dele que aparece a seguir no ecrã de pagamento. Está
+// aqui na mesma porque a operadora precisa de saber o que está a montar antes
+// de carregar — e porque uma diferença de um cêntimo entre os dois é
+// exactamente o género de coisa que se quer VER.
+function BarraDeSeparar({ linhas, separando, aSepararParte, onCobrar, onSair }) {
+  const centimosDaPessoa = linhas.reduce((soma, linha) => {
+    const unidades = separando[linha.id] || 0;
+    if (!unidades) return soma;
+    const quantidade = Number(linha.quantidade) || 0;
+    if (quantidade <= 0) return soma;
+    const { total } = contasDaLinha(linha);
+    return soma + Math.round((centimos(total) * unidades) / quantidade);
+  }, 0);
+  const escolheu = Object.values(separando).some((q) => q > 0);
+
+  return (
+    <div className="shrink-0 mt-3 border-t">
+      <div className="bg-primary text-primary-foreground px-4 py-3">
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-sm font-semibold uppercase tracking-wide">Esta pessoa leva</span>
+          <span className="font-heading font-bold text-4xl tabular-nums">
+            {euros(centimosDaPessoa / 100)}
+          </span>
+        </div>
+        <p className="text-xs text-primary-foreground/80 text-right mt-0.5">
+          Toque nos produtos que são desta pessoa.
+        </p>
+      </div>
+      <div className="p-3 grid grid-cols-[auto_1fr] gap-2">
+        <Button variant="outline" className="h-16 px-4" onClick={onSair} disabled={aSepararParte}>
+          Sair
+        </Button>
+        <Button
+          className="h-16 text-lg font-heading font-bold"
+          disabled={!escolheu || aSepararParte}
+          onClick={onCobrar}
+        >
+          {aSepararParte
+            ? <Loader2 className="h-5 w-5 animate-spin" />
+            : 'COBRAR ESTA PESSOA'}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+
 function PainelConta({
   venda, caixa, aEscrever, travada, travadaPeloServidor, contasTravadasLargadas, aPerguntar,
   partesPorCobrar,
   onPerguntar, onLargar, onVoltarAsPartes, onTocarLinha, onRemoverLinha,
+  separando, aSepararParte, onJuntarASeparacao, onTirarDaSeparacao,
+  onCobrarPessoa, onSairDaSeparacao,
   onFinalizar, onCancelar,
   razaoDeNaoImprimirPedido, onImprimirPedido, aImprimirPedido,
 }) {
@@ -761,7 +838,9 @@ function PainelConta({
           linhas.map((linha) => (
             <LinhaDaConta
               key={linha.id} linha={linha} travada={travada}
-              onTocar={onTocarLinha} onRemover={onRemoverLinha}
+              separando={separando ? (separando[linha.id] || 0) : null}
+              onTocar={separando ? onJuntarASeparacao : onTocarLinha}
+              onRemover={separando ? onTirarDaSeparacao : onRemoverLinha}
             />
           ))
         )}
@@ -800,6 +879,15 @@ function PainelConta({
         </p>
       </div>
 
+      {separando ? (
+        <BarraDeSeparar
+          linhas={linhas}
+          separando={separando}
+          aSepararParte={aSepararParte}
+          onCobrar={onCobrarPessoa}
+          onSair={onSairDaSeparacao}
+        />
+      ) : (<>
       <div className="shrink-0 mt-3 bg-primary text-primary-foreground px-4 py-3">
         <div className="flex items-baseline justify-between gap-3">
           <span className="text-sm font-semibold uppercase tracking-wide">Total</span>
@@ -862,6 +950,7 @@ function PainelConta({
           FINALIZAR
         </Button>
       </div>
+      </>)}
     </div>
   );
 }
@@ -1012,6 +1101,17 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
   const [aRepartir, setARepartir] = useState(false);
   // O id da parte que está a ser cancelada, ou `null`.
   const [aCancelarParte, setACancelarParte] = useState(null);
+  // **A separar a conta, uma pessoa de cada vez.** `null` = não se está a
+  // separar nada; `{ [linha_id]: unidades }` = o que a pessoa à frente leva.
+  // Vive no ecrã e não no servidor de propósito: enquanto ninguém carrega em
+  // COBRAR ESTA PESSOA não há nada gravado, e sair não deixa rasto nenhum.
+  const [separando, setSeparando] = useState(null);
+  // O toque na grelha lê isto por uma REF, e não pelo estado: é a mesma razão
+  // do `vendaRef` — o `tocarProduto` está nas dependências de meio ecrã, e uma
+  // dependência nova recriava-o a cada unidade atribuída.
+  const separandoRef = useRef(null);
+  useEffect(() => { separandoRef.current = separando; }, [separando]);
+  const [aSepararParte, setASepararParte] = useState(false);
 
   // A conta também vive numa ref: `garantirVenda` corre dentro da fila de
   // escritas (abaixo) e precisa de saber se JÁ existe uma venda neste
@@ -1418,7 +1518,7 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
     // travada a função devolve `null` e o toque passa — juntar mais um artigo à
     // conta que já existe é o mesmo cliente, e não abre conta nenhuma.
     const razao = razaoDaGrelhaMorta({
-      venda: vendaRef.current, partes: reparticao?.partes,
+      venda: vendaRef.current, partes: reparticao?.partes, aSeparar: !!separandoRef.current,
     });
     if (razao) { toast.error(razao); return; }
     // Um produto COM grupos abre o pedido guiado; sem grupos vai direito para a
@@ -1730,15 +1830,9 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
   //
   // Partes já TODAS resolvidas (cobradas ou canceladas) não impedem nada: não
   // há dinheiro por receber nenhum e não há nada para perder de vista.
-  const abrirReparticao = useCallback((modo) => {
-    if (!vendaRef.current) return;
-    const razao = razaoDeNaoRepartir(partesAbertas(reparticao?.partes));
-    if (razao) {
-      toast.error(razao);
-      return;
-    }
-    setReparticao({ modo, mae: vendaRef.current, partes: null });
-    setVista('reparticao');
+  const razaoParaNaoRepartirAgora = useCallback(() => {
+    if (!vendaRef.current) return 'Não há conta nenhuma à frente para repartir.';
+    return razaoDeNaoRepartir(partesAbertas(reparticao?.partes));
   }, [reparticao]);
 
   const repartir = useCallback(({ modo, partes }) => {
@@ -1758,6 +1852,13 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
           ? await dividirConta(maeId, partes)
           : await separarConta(maeId, partes);
         setReparticao({ modo, mae: data.conta_mae, partes: data.partes || [] });
+        // **E cobra-se logo a primeira pessoa.** Era aqui que estava metade da
+        // confusão que o dono descreveu: repartida a conta, o ecrã ficava numa
+        // lista de pastilhas à espera de que alguém escolhesse por onde
+        // começar — quando a resposta é sempre a mesma, a primeira. A lista
+        // continua a existir para o F5 e para a nota do painel; deixou de ser
+        // uma paragem entre o toque e a fatura.
+        const primeira = (data.partes || []).find((p) => p.estado === 'aberta');
         // A mãe deixou de ser uma conta: passou a `separada` e não aceita
         // produtos, alterações, descontos nem cancelamento. Tirá-la da frente é
         // o que impede o toque seguinte de ir bater num 409 — e o que faz o
@@ -1767,9 +1868,10 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
         setEmEdicao(null);
         toast.success(
           modo === 'dividir'
-            ? `Conta dividida em ${(data.partes || []).length} partes. Cobre uma de cada vez.`
+            ? `Conta dividida por ${(data.partes || []).length} pessoas. Cobre uma de cada vez.`
             : `Conta separada em ${(data.partes || []).length} partes. Cobre uma de cada vez.`,
         );
+        if (primeira) cobrarParte(primeira);
       } catch (error) {
         const status = error?.response?.status;
         if (status === 401) { operadorInvalido(); return; }
@@ -1842,6 +1944,55 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
   // houver partes por resolver neste posto, `venda.py::abrir_venda` recusa
   // abrir a seguinte com 409, e o que está à frente é sempre uma das partes ou
   // nada. Não é o ecrã que o garante — é a rota.
+  // **Dividir: um toque, e já se está a cobrar a primeira pessoa.** O número
+  // de pessoas vem do stepper do ecrã de pagamento (`PosFinalizar`) e não de
+  // um ecrã à parte — era esse desvio, e a lista de pastilhas a seguir, que o
+  // dono descreveu como confuso ao pé do POS do Vendus.
+  const dividirEm = useCallback((pessoas) => {
+    const razao = razaoParaNaoRepartirAgora();
+    if (razao) { toast.error(razao); return; }
+    repartir({ modo: 'dividir', partes: pessoas });
+  }, [razaoParaNaoRepartirAgora, repartir]);
+
+  // **Separar: uma pessoa de cada vez, na conta.** Não se grava nada aqui — o
+  // que isto abre é o modo em que tocar num produto o passa para a pessoa que
+  // está a pagar. O servidor só é chamado no COBRAR ESTA PESSOA.
+  //
+  // Volta-se à vista da conta de propósito: é lá que estão as linhas, e é
+  // nelas que a operadora tem de tocar. O ecrã de pagamento não tem lugar
+  // para a conta toda, e um ecrã terceiro só para atribuir era exactamente o
+  // que se está a tirar do caminho.
+  const entrarEmSeparar = useCallback(() => {
+    const razao = razaoParaNaoRepartirAgora();
+    if (razao) { toast.error(razao); return; }
+    setSeparando({});
+    setVista('conta');
+  }, [razaoParaNaoRepartirAgora]);
+
+  const sairDaSeparacao = useCallback(() => setSeparando(null), []);
+
+  // Tocar num produto dá-lhe mais uma unidade; o "−" tira-lha. Nunca mais do
+  // que a conta tem: o servidor recusaria (é o 422 de "atribuída a mais gente
+  // do que artigos tem") e um ecrã que deixa montar o que a rota recusa é um
+  // ecrã que promete o que não pode cumprir.
+  const juntarASeparacao = useCallback((linha) => {
+    setSeparando((atual) => {
+      if (!atual) return atual;
+      const tem = atual[linha.id] || 0;
+      if (tem >= Math.floor(Number(linha.quantidade) || 0)) return atual;
+      return { ...atual, [linha.id]: tem + 1 };
+    });
+  }, []);
+
+  const tirarDaSeparacao = useCallback((linha) => {
+    setSeparando((atual) => {
+      if (!atual) return atual;
+      const tem = atual[linha.id] || 0;
+      if (tem <= 0) return atual;
+      return { ...atual, [linha.id]: tem - 1 };
+    });
+  }, []);
+
   const cobrarParte = useCallback((parte) => {
     if (!parte) return;
     aplicarVenda(parte);
@@ -1850,6 +2001,43 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
     setEmEdicao(null);
     setVista('finalizar');
   }, [aplicarVenda, mostrarDocumento]);
+
+  // **A chamada que grava.** Devolve a parte desta pessoa (para cobrar já) e a
+  // conta com o que sobrou — e é a parte que fica à frente, porque é ela que
+  // se vai pagar. A conta com o resto volta sozinha assim que esta fatura
+  // sair: é a mais recente das abertas do posto, e é isso que a
+  // `GET /pos/venda/aberta` devolve (ver `voltarDoFinalizar`).
+  const cobrarEstaPessoa = useCallback(() => {
+    if (aSepararParte) return;
+    const linhas = Object.entries(separando || {})
+      .filter(([, quantidade]) => quantidade > 0)
+      .map(([linha_id, quantidade]) => ({ linha_id, quantidade }));
+    if (!linhas.length) return;
+    setASepararParte(true);
+    executar(async () => {
+      const maeId = vendaRef.current?.id;
+      if (!maeId) { setASepararParte(false); return; }
+      try {
+        const { data } = await separarParte(maeId, linhas);
+        setSeparando(null);
+        cobrarParte(data.parte);
+      } catch (error) {
+        if (error?.response?.status === 401) { operadorInvalido(); return; }
+        toast.error(detalhesErroPos(
+          error, 'Não foi possível separar esta parte da conta.').mensagem);
+        // Sem resposta nenhuma, a parte PODE ter nascido do outro lado. Não se
+        // afirma nada: pergunta-se ao servidor qual é a conta que está à
+        // frente deste posto — se a parte foi criada, é ela, e a operadora
+        // cobra-a; se não, é a conta inteira, como estava.
+        if (semRespostaPos(error)) {
+          setSeparando(null);
+          await recarregarVenda();
+        }
+      } finally {
+        setASepararParte(false);
+      }
+    });
+  }, [aSepararParte, separando, executar, cobrarParte, operadorInvalido, recarregarVenda]);
 
   // A saída para quem não paga. É o `cancelarVenda` de sempre, sobre uma venda
   // normal — e o ecrã diz o que isso significa antes de o fazer (o diálogo do
@@ -2086,7 +2274,11 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
     //
     // A mesma linha fazia o "Nova Venda" de uma venda já emitida aterrar nas
     // partes de outra pessoa — um botão a dizer uma coisa e a fazer outra.
-    const ehParte = ehUmaDasPartes(daFrente, reparticao?.partes);
+    // Uma leitura só da `reparticao`: as duas perguntas que este ecrã lhe faz
+    // — «esta conta é uma das partes?» e «quem falta cobrar?» — vivem as duas
+    // em lib/pos.js, e é para lá que a lista vai.
+    const partesDaConta = reparticao?.partes;
+    const ehParte = ehUmaDasPartes(daFrente, partesDaConta);
     if (documento && daFrente?.estado !== 'aberta') aplicarVenda(null);
     mostrarDocumento(null, false);
     setErroEmissao((anterior) => (duvidaPorApurar(anterior) ? anterior : null));
@@ -2101,14 +2293,32 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
     // perguntar ao servidor, e com o EMITIR de outra parte à distância de um
     // toque.
     if (ehParte && !porApurar) {
-      // A parte sai da frente, mas não desaparece: está na lista para onde se
-      // vai a seguir, com o estado que o servidor lhe deu.
+      // **A pessoa SEGUINTE, sem lista pelo meio.** Cobrada uma parte, a
+      // pergunta que o balcão faz a seguir é sempre a mesma — quem falta? — e
+      // a resposta é a primeira parte que ainda está aberta. A lista continua
+      // a existir (é para onde se vai quando não falta ninguém, e é o que o
+      // F5 recupera), mas deixou de ser uma paragem obrigatória entre cada
+      // fatura: era metade da confusão que o dono descreveu.
+      const seguinte = proximaParteACobrar(partesDaConta, daFrente?.id);
       aplicarVenda(null);
+      if (seguinte) { cobrarParte(seguinte); return; }
       setVista('reparticao');
       return;
     }
+    // **Uma parte do «separar» não está na lista de repartição nenhuma** (o
+    // `separar-parte` cria uma de cada vez, e o número de pessoas nunca é
+    // conhecido): o que fica atrás dela é a CONTA com o resto. Pergunta-se ao
+    // servidor qual é — é a mais recente das abertas deste posto, que passa a
+    // ser exactamente essa — em vez de a assumir a partir do que este ecrã
+    // julga ter deixado para trás.
+    if (daFrente?.conta_mae_id && daFrente?.estado !== 'aberta') {
+      setVista('conta');
+      recarregarVenda();
+      return;
+    }
     setVista('conta');
-  }, [documento, aplicarVenda, mostrarDocumento, erroEmissao, reparticao]);
+  }, [documento, aplicarVenda, mostrarDocumento, erroEmissao, reparticao,
+      cobrarParte, recarregarVenda]);
 
   // --- O que está no diálogo do produto ---------------------------------------
 
@@ -2223,7 +2433,7 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
   // faixa — mas a faixa é outra coisa.
   const bloqueioDaGrelha = travada
     ? MSG_CONTA_TRAVADA_CURTA
-    : razaoDaGrelhaMorta({ venda, partes: reparticao?.partes });
+    : razaoDaGrelhaMorta({ venda, partes: reparticao?.partes, aSeparar: !!separando });
 
   // O spinner sozinho era o ecrã de arranque INTEIRO, e sem tecto de espera
   // podia ser o ecrã para sempre: a operadora ficava a olhar para uma roda a
@@ -2299,8 +2509,8 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
           onVoltar={voltarDoFinalizar}
           onAplicarDesconto={aplicarDesconto}
           onEmitir={emitir}
-          onDividir={() => abrirReparticao('dividir')}
-          onSeparar={() => abrirReparticao('separar')}
+          onDividir={dividirEm}
+          onSeparar={entrarEmSeparar}
           impedeRepartir={impedeRepartir}
         />
       </div>
@@ -2475,6 +2685,14 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
                «Remover da conta» do diálogo — um caminho só, com as
                guardas todas do servidor por baixo. */
             onRemoverLinha={removerDaConta}
+            /* A separar a conta, uma pessoa de cada vez: tocar num produto
+               passa-o para a pessoa que está a pagar, e o "−" tira-lho. */
+            separando={separando}
+            aSepararParte={aSepararParte}
+            onJuntarASeparacao={juntarASeparacao}
+            onTirarDaSeparacao={tirarDaSeparacao}
+            onCobrarPessoa={cobrarEstaPessoa}
+            onSairDaSeparacao={sairDaSeparacao}
             /* A dúvida por apurar NÃO se limpa aqui, pela mesma razão da seta
                de voltar (ver `voltarDoFinalizar`): ir ao ecrã de pagamento não
                é saber o que aconteceu à emissão anterior, e limpá-la punha o

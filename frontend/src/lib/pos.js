@@ -826,17 +826,48 @@ export const MSG_CONTA_TRAVADA_CURTA =
 // de estar: tocar num produto junta-lhe uma linha, que é o cliente que ela
 // está a atender. Só quando não há conta nenhuma é que o toque tenta abrir uma
 // nova, e é só aí que a recusa da rota entra em jogo.
-export const razaoDaGrelhaMorta = ({ venda, partes }) => {
+export const MSG_A_SEPARAR_A_CONTA = 'A separar a conta. Cobre esta pessoa, ou saia da '
+  + 'separação para voltar a picar artigos.';
+
+export const razaoDaGrelhaMorta = ({ venda, partes, aSeparar }) => {
+  // **A separar, a grelha está morta** — e é a primeira pergunta, antes de
+  // tudo o resto. Um artigo picado a meio de uma atribuição entra na conta com
+  // zero unidades atribuídas a esta pessoa e muda o total por baixo do que a
+  // operadora está a montar; pior, é um toque que a mão dá sem pensar, porque
+  // a grelha continua ali do lado. Quem quer mesmo picar sai da separação —
+  // ainda não há nada gravado.
+  if (aSeparar) return MSG_A_SEPARAR_A_CONTA;
   if (contaTravada(venda)) return MSG_CONTA_TRAVADA_CURTA;
   if (venda) return null;
   return razaoDeNaoComecar(partesAbertas(partes));
 };
+
+// **Quem se cobra a seguir.** Cobrada uma pessoa, a pergunta do balcão é
+// sempre a mesma — quem falta? — e a resposta é a primeira parte que ainda
+// está `aberta`, saltando a que se acabou de cobrar (o ecrã pode ainda ter a
+// versão velha dela, com o estado por actualizar). `null` quer dizer que não
+// falta ninguém: a repartição acabou.
+//
+// Vive aqui, e não dentro do `voltarDoFinalizar`, pela razão de sempre neste
+// módulo: uma decisão enterrada num componente é uma decisão que nenhum teste
+// consegue EXECUTAR — e esta decide para onde vai a operadora a seguir a cada
+// fatura.
+export const proximaParteACobrar = (partes, atualId) =>
+  (partes || []).find((p) => p?.estado === 'aberta' && p?.id !== atualId) || null;
 
 export const dividirConta = (vendaId, partes) =>
   api.post(`/pos/venda/${vendaId}/dividir`, { partes });
 
 export const separarConta = (vendaId, partes) =>
   api.post(`/pos/venda/${vendaId}/separar`, { partes });
+
+// **Uma pessoa de cada vez.** O `separarConta` acima exige a conta toda
+// atribuída a todas as pessoas antes de alguém pagar; este leva UMA pessoa e
+// devolve `{ parte, conta }` — a parte para cobrar já a seguir, e a conta com
+// o que sobrou, que continua a ser a conta em curso do posto. É o balcão a
+// sério, e foi o que o dono pediu ao ver o POS do Vendus.
+export const separarParte = (vendaId, linhas) =>
+  api.post(`/pos/venda/${vendaId}/separar-parte`, { linhas });
 
 // --- E a repartição depois de o browser se ter esquecido dela ----------------
 //

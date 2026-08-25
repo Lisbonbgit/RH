@@ -270,32 +270,53 @@ def test_a_seta_de_voltar_pergunta_se_a_conta_e_uma_das_partes():
     )
 
 
-def test_nao_se_abre_uma_reparticao_por_cima_de_outra_por_cobrar():
-    """O `abrirReparticao` recusa enquanto houver partes por cobrar. Sem esta
-    recusa, `setReparticao(...)` escrevia por cima da repartição anterior e o
-    `sairDaReparticao` (que com `partes` a `null` a deita fora) levava as
-    partes por cobrar com ele."""
+def test_a_recusa_de_repartir_por_cima_de_outra_pergunta_pelas_partes_abertas():
+    """A recusa vive numa função só (`razaoParaNaoRepartirAgora`) e é ela que
+    os DOIS caminhos de repartir chamam.
+
+    **O ecrã mudou por baixo deste guarda e a regra não.** O `abrirReparticao`
+    deixou de existir quando o dividir passou a ser um toque só (o stepper vive
+    no ecrã de pagamento, e não há ecrã de previsão nenhum pelo meio); o que
+    ficou foram dois caminhos — `dividirEm`, que grava no servidor, e
+    `entrarEmSeparar`, que abre o modo de atribuir na conta. Sem a recusa, o
+    primeiro repartia uma conta por cima de partes que ainda têm dinheiro por
+    receber, e o segundo punha a operadora a atribuir artigos de uma conta
+    enquanto a anterior ficava por cobrar e sem nada no ecrã a dizê-lo."""
     texto = _ler(_POS_VENDA)
-    corpo = _sem_comentarios(_corpo_da_funcao(texto, _ASSINATURA_ABRIR, _POS_VENDA))
-    assert "partesAbertas(" in corpo, (
-        "O `abrirReparticao` deixou de perguntar quantas partes ficaram por "
-        "cobrar. Sem essa pergunta, tocar em 'Dividir Conta' na conta seguinte "
-        "— mesmo só para ver a previsão — apaga do ecrã as partes que ainda "
-        "têm dinheiro por receber."
+    recusa = _sem_comentarios(_corpo_da_funcao(
+        texto, "const razaoParaNaoRepartirAgora = useCallback(() =>", _POS_VENDA))
+    assert "partesAbertas(" in recusa, (
+        "A recusa deixou de perguntar quantas partes ficaram por cobrar. Sem "
+        "essa pergunta, tocar em 'Dividir Conta' com a conta seguinte à frente "
+        "apaga do ecrã as partes que ainda têm dinheiro por receber."
     )
-    assert "razaoDeNaoRepartir(" in corpo, (
+    assert "razaoDeNaoRepartir(" in recusa, (
         "A recusa deixou de dizer porquê pela mesma frase que desliga os "
         "botões — quem lá chegar por outro caminho fica sem explicação."
     )
-    posicao_recusa = corpo.index("partesAbertas(")
-    posicao_escrita = corpo.index("setReparticao(")
+
+
+@pytest.mark.parametrize("assinatura, escrita", [
+    ("const dividirEm = useCallback((pessoas) =>", "repartir("),
+    ("const entrarEmSeparar = useCallback(() =>", "setSeparando("),
+])
+def test_os_dois_caminhos_de_repartir_recusam_ANTES_de_escrever(assinatura, escrita):
+    """A ordem é a regra: a recusa antes da escrita, e com `return`. Ao
+    contrário, a conta anterior já foi repartida (ou o modo de separar já está
+    aberto por cima dela) quando o aviso aparece."""
+    corpo = _sem_comentarios(_corpo_da_funcao(_ler(_POS_VENDA), assinatura, _POS_VENDA))
+    assert "razaoParaNaoRepartirAgora()" in corpo, (
+        "Este caminho deixou de perguntar se pode repartir — e é por ele que "
+        "se apagam do ecrã partes com dinheiro por receber."
+    )
+    posicao_recusa = corpo.index("razaoParaNaoRepartirAgora()")
+    posicao_escrita = corpo.index(escrita)
     assert posicao_recusa < posicao_escrita, (
-        "A recusa do `abrirReparticao` passou para DEPOIS do `setReparticao` — "
-        "a repartição anterior já foi escrita por cima quando ela corre."
+        "A recusa passou para DEPOIS da escrita — quando ela corre, o estrago "
+        "já está feito."
     )
     assert "return;" in corpo[posicao_recusa:posicao_escrita], (
-        "O `abrirReparticao` avisa mas segue em frente: sem o `return`, a "
-        "repartição anterior é escrita por cima na mesma."
+        "Avisa mas segue em frente: sem o `return`, a recusa não recusa nada."
     )
 
 
@@ -307,13 +328,13 @@ def test_os_botoes_de_repartir_dizem_porque_estao_desligados():
     venda = _ler(_POS_VENDA)
     assert "impedeRepartir={impedeRepartir}" in venda, (
         "O PosVenda deixou de dizer ao finalizar por que é que não se pode "
-        "repartir — os botões voltam a convidar ao que o `abrirReparticao` "
-        "recusa."
+        "repartir — os botões voltam a convidar ao que o "
+        "`razaoParaNaoRepartirAgora` recusa."
     )
     assert "const impedeRepartir = razaoDeNaoRepartir(" in venda, (
         "A razão que desliga os botões deixou de ser a MESMA que o "
-        "`abrirReparticao` diz. Duas frases para o mesmo dinheiro por receber "
-        "acabam a dizer coisas diferentes sobre ele."
+        "recusa diz. Duas frases para o mesmo dinheiro por receber acabam a "
+        "dizer coisas diferentes sobre ele."
     )
     finalizar = _sem_comentarios(_ler(_POS_FINALIZAR))
     assert finalizar.count("|| !!impedeRepartir") == 2, (
@@ -450,7 +471,7 @@ def test_as_saidas_da_conta_em_curso_estao_todas_contadas():
 # a porta conta, por isso uma conta simples por resolver está SEMPRE à frente),
 # mas a função é a mesma nos dois sítios e é aqui que se prova.
 
-_ASSINATURA_GRELHA = "export const razaoDaGrelhaMorta = ({ venda, partes }) =>"
+_ASSINATURA_GRELHA = "export const razaoDaGrelhaMorta = ({ venda, partes, aSeparar }) =>"
 _ASSINATURA_COMECAR = "export const razaoDeNaoComecar = (porCobrar) =>"
 _ASSINATURA_TRAVADA_LARGAR = "const largarContaTravada = useCallback(() => executar(async () =>"
 _LINHA_CENTIMOS = "const centimosPos = (valor) =>"
@@ -578,9 +599,18 @@ def test_a_grelha_e_o_toque_fazem_a_MESMA_pergunta():
         "Os cartões da grelha deixaram de ter uma razão para estarem mortos — "
         "voltam a convidar ao toque que a rota recusa."
     )
-    assert "razaoDaGrelhaMorta({ venda, partes: reparticao?.partes })" in sem_comentarios, (
+    assert ("razaoDaGrelhaMorta({ venda, partes: reparticao?.partes, "
+            "aSeparar: !!separando })") in sem_comentarios, (
         "O `bloqueioDaGrelha` deixou de sair da MESMA função que o "
         "`tocarProduto` usa. Duas escritas da mesma decisão acabam a discordar."
+    )
+    # E com os MESMOS argumentos. O `aSeparar` entrou depois (a grelha tem de
+    # estar morta enquanto se atribuem artigos a uma pessoa) e é o género de
+    # coisa que se acrescenta a um dos dois sítios: o cartão apagado e o toque
+    # a passar na mesma é o defeito que esta função existe para não ter.
+    assert "aSeparar: !!separandoRef.current" in corpo, (
+        "O `tocarProduto` deixou de perguntar se se está a separar a conta — "
+        "os cartões ficam apagados e o toque junta o artigo à mesma."
     )
     assert "bloqueio={bloqueioDaGrelha}" in texto, (
         "A grelha deixou de passar a razão aos cartões."
