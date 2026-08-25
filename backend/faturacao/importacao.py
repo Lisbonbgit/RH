@@ -369,6 +369,11 @@ async def _sincronizar_produtos(
                 dados = ProdutoEntrada(
                     nome=nome, categoria_id=categoria_id, preco=preco, tax_id=tax_id,
                     subcategoria_id=subcategoria_id,
+                    # O PREÇO DE CUSTO é nosso: o Vendus manda o preço de
+                    # VENDA, e uma reimportação que o deixasse de fora apagava
+                    # o custo de todos os artigos — e com ele a coluna
+                    # "Resultado" de todos os relatórios, sem um aviso.
+                    preco_custo=existente.get("preco_custo"),
                     foto_url=foto_url,
                     grupos_personalizacao=existente.get("grupos_personalizacao") or [],
                     ativo=existente.get("ativo", True),

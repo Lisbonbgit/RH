@@ -47,7 +47,7 @@ const TAXA_LABEL = Object.fromEntries(TAXA_OPCOES.map((t) => [t.value, t.label])
 const fmtEUR = (n) => new Intl.NumberFormat('pt-PT', { style: 'currency', currency: 'EUR' }).format(Number(n) || 0);
 
 const emptyForm = {
-  nome: '', categoria_id: '', subcategoria_id: '', preco: '', tax_id: '', foto_url: '', grupos_personalizacao: [], ativo: true,
+  nome: '', categoria_id: '', subcategoria_id: '', preco: '', preco_custo: '', tax_id: '', foto_url: '', grupos_personalizacao: [], ativo: true,
 };
 
 export default function FatProdutos() {
@@ -133,6 +133,8 @@ export default function FatProdutos() {
       nome: produto.nome || '',
       categoria_id: produto.categoria_id || '',
       subcategoria_id: produto.subcategoria_id || '',
+      preco_custo: produto.preco_custo === null || produto.preco_custo === undefined
+        ? '' : String(produto.preco_custo),
       preco: produto.preco != null ? String(produto.preco) : '',
       tax_id: produto.tax_id || '',
       foto_url: produto.foto_url || '',
@@ -210,6 +212,9 @@ export default function FatProdutos() {
       // que é o que o servidor guarda. Uma string vazia era um id que não
       // existe, e o produto ficava a apontar para nada.
       subcategoria_id: form.subcategoria_id || null,
+      // Vazio quer dizer "não sei o custo" e vai como `null` — nunca zero, que
+      // o relatório leria como "custa nada" e daria lucro total.
+      preco_custo: form.preco_custo.trim() === '' ? null : Number(form.preco_custo),
       preco,
       tax_id: form.tax_id,
       foto_url: form.foto_url.trim() || null,
@@ -574,7 +579,24 @@ export default function FatProdutos() {
                 </p>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-4">
+                {/* O PREÇO DE CUSTO é opcional e é o que acende as colunas
+                    "Custos" e "Resultado" dos relatórios. Sem ele, essas
+                    células mostram "—": um zero fazia o lucro parecer total. */}
+                <div className="space-y-2">
+                  <Label htmlFor="produto-custo">Custo (€)</Label>
+                  <Input
+                    id="produto-custo"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={form.preco_custo}
+                    onChange={(e) => setForm({ ...form, preco_custo: e.target.value })}
+                    placeholder="—"
+                    data-testid="produto-custo-input"
+                  />
+                  <p className="text-xs text-muted-foreground">Para o lucro nos relatórios.</p>
+                </div>
                 <div className="space-y-2">
                   <Label htmlFor="produto-preco">Preço (€) *</Label>
                   <Input

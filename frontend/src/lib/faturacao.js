@@ -147,6 +147,11 @@ export const criarCategoria = (data) => api.post(`${API_URL}/faturacao/categoria
 export const editarCategoria = (id, data) => api.put(`${API_URL}/faturacao/categorias/${id}`, data);
 export const apagarCategoria = (id) => api.delete(`${API_URL}/faturacao/categorias/${id}`);
 
+// Relatórios — as nove vistas da mesma tabela. A dimensão viaja no caminho
+// (`/relatorios/produto`), os filtros em `params`.
+export const getRelatorio = (dimensao, params) => api.get(
+  `${API_URL}/faturacao/relatorios/${dimensao}`, { params });
+
 // Clientes — quem já pediu fatura com NIF. A lista deriva das COMPRAS (não há
 // "criar cliente"); o que se grava por NIF é só o nome e o contacto.
 export const getClientes = (q) => api.get(
