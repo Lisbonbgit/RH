@@ -2306,7 +2306,17 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
       // a existir (é para onde se vai quando não falta ninguém, e é o que o
       // F5 recupera), mas deixou de ser uma paragem obrigatória entre cada
       // fatura: era metade da confusão que o dono descreveu.
-      const seguinte = proximaParteACobrar(partesDaConta, daFrente?.id);
+      //
+      // **Só a seguir a EMITIR**, e é a diferença que faltava: esta função
+      // serve as duas saídas do ecrã de pagamento — o botão que fecha a fatura
+      // acabada de sair E a seta de voltar. Sem distinguir, a seta passava a
+      // cobrar a pessoa seguinte: tocava-se para sair da pessoa 1 e aterrava-se
+      // na 2, tocava-se outra vez e voltava-se à 1 — um vaivém sem saída, com
+      // o cliente à frente (apanhado pelo dono ao usar o POS).
+      //
+      // Quem acabou de emitir tem `documento`; a seta não tem nada. Ela vai
+      // para a lista das partes, que é de onde se sai para o balcão.
+      const seguinte = documento ? proximaParteACobrar(partesDaConta, daFrente?.id) : null;
       aplicarVenda(null);
       if (seguinte) { cobrarParte(seguinte); return; }
       setVista('reparticao');

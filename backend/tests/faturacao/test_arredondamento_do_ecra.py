@@ -681,3 +681,75 @@ def test_o_que_a_barra_promete_e_o_que_a_parte_cobra(
         "operadora lê em voz alta com o cliente à frente."
         % (nome, previsto, cobrado)
     )
+
+
+# --- E a previsão do DIVIDIR contra as partes que o servidor grava -----------
+#
+# O stepper do ecrã de pagamento escreve «X por pessoa» ANTES de a conta ser
+# dividida — é o número que a operadora lê em voz alta. Foi aqui que o dono
+# apanhou o 11,71 numa conta de 23,40 €: o ecrã dizia a verdade sobre o que o
+# servidor ia fazer, e o que o servidor fazia é que estava desalinhado com o
+# que qualquer pessoa faz de cabeça. Corrigiram-se os dois ao mesmo tempo — e
+# é por isso que este guarda compara os DOIS, e não cada um com uma ideia.
+
+_ASSINATURA_PREVISAO_DIVIDIR = "export const previsaoDoDividir = (mae, partes) =>"
+_ASSINATURA_ORDEM = "export const ordemDasFatias = (valoresPorLinha, alvos) =>"
+
+
+def _previsao_do_dividir_no_ecra(mae, pessoas, tmp_path: Path):
+    lib = _ler(_LIB_POS)
+    guiao = tmp_path / "previsao-dividir.js"
+    guiao.write_text("\n".join([
+        _corpo_da_funcao(lib, _ASSINATURA_CENT, _LIB_POS).replace("export ", "", 1),
+        "const cent = arredondarComoOServidor;",
+        _corpo_da_funcao(lib, _ASSINATURA_CONTAS, _LIB_POS).replace("export ", "", 1),
+        _corpo_da_funcao(lib, _ASSINATURA_REPARTIR, _LIB_POS).replace("export ", "", 1),
+        _corpo_da_seta(lib, _ASSINATURA_CENTIMOS, _LIB_POS).replace("export ", "", 1),
+        _corpo_da_funcao(lib, _ASSINATURA_FATIAS, _LIB_POS).replace("export ", "", 1),
+        _corpo_da_funcao(lib, _ASSINATURA_ORDEM, _LIB_POS).replace("export ", "", 1),
+        _corpo_da_funcao(lib, _ASSINATURA_PREVISAO_DIVIDIR, _LIB_POS).replace("export ", "", 1),
+        "const mae = %s;" % json.dumps(mae, ensure_ascii=False),
+        "process.stdout.write(JSON.stringify("
+        "  previsaoDoDividir(mae, %d).map((p) => p.totalCentimos)));" % pessoas,
+    ]), encoding="utf-8")
+    resultado = subprocess.run(
+        [_node(), str(guiao)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if resultado.returncode != 0:
+        pytest.fail("O JavaScript do ecrã não correu:\n%s"
+                    % resultado.stderr.decode("utf-8", "replace"))
+    return json.loads(resultado.stdout.decode("utf-8"))
+
+
+@pytest.mark.parametrize("nome, precos, pessoas, global_pct, global_eur", [
+    ("o caso do dono: 23,40 por dois", [8.99, 14.41], 2, None, None),
+    ("8,99 por três", [8.99], 3, None, None),
+    ("quatro artigos ímpares", [3.80, 8.99, 3.41, 7.21], 3, None, None),
+    ("com 5% na conta toda", [43.79, 6.76, 30.88], 4, 5, None),
+    ("com 3,00 € na conta toda", [8.99, 7.20, 7.21], 3, None, 3.00),
+    ("cêntimos indivisíveis", [0.05, 0.05, 0.05], 2, None, None),
+])
+def test_o_que_o_stepper_promete_e_o_que_as_partes_cobram(
+    nome, precos, pessoas, global_pct, global_eur, monkeypatch, tmp_path
+):
+    from faturacao import venda as venda_mod
+    from faturacao.venda import PedidoDividir, _venda_publica, dividir_conta
+
+    from .test_venda import _corre, _db, _linha as _linha_de_venda, _operador, _venda
+
+    docs = [_linha_de_venda(id="l%d" % i, produto_nome="Artigo %d" % i,
+                            produto_preco=p, quantidade=1)
+            for i, p in enumerate(precos)]
+    conta = _venda(linhas=docs, desconto_global_pct=global_pct,
+                   desconto_global_eur=global_eur)
+
+    previsto = _previsao_do_dividir_no_ecra(_venda_publica(conta), pessoas, tmp_path)
+
+    db = _db([], vendas=[conta])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    r = _corre(dividir_conta("venda-1", PedidoDividir(partes=pessoas),
+                             operador=_operador()))
+    cobrado = [_centimos(p["totais"]["total"]) for p in r["partes"]]
+
+    assert previsto == cobrado, (
+        "%s: o ecrã promete %s e as partes cobram %s" % (nome, previsto, cobrado)
+    )

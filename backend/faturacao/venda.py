@@ -46,7 +46,9 @@ from .caixa import _obter_caixa_da_loja, _quem, _sessao_aberta
 from .db import COLECOES, obter_db
 from .pos_auth import operador_atual
 from .precos import _tem_mais_de_2_casas_decimais, erros_do_produto, linha_de_venda
-from .reparticao import CASAS_DA_QUANTIDADE, quantidade_para, repartir_centimos
+from .reparticao import (
+    CASAS_DA_QUANTIDADE, ordem_das_fatias, quantidade_para, repartir_centimos,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2488,7 +2490,41 @@ async def dividir_conta(
 
     # O desconto GLOBAL também se reparte. Se ficasse só na mãe, as partes
     # somavam mais do que o cliente pagou — e a mãe já não emite nada.
-    globais = repartir_centimos(_centimos(_totais(mae)["desconto_global"]), n)
+    #
+    # **Ao contrário: o cêntimo a mais de DESCONTO vai para o FIM da fila.**
+    # `repartir_centimos` dá sempre a sobra às primeiras, que é a regra certa
+    # para o dinheiro a receber — só que aqui o que se reparte é o que se
+    # ABATE, e mais desconto é menos a pagar. Sem inverter, uma conta de
+    # 149,00 € com 5% dividida por quatro punha a primeira pessoa a pagar
+    # 35,36 € e as outras 35,37 € — exactamente ao contrário do que o balcão
+    # diz em voz alta («se não dá certo, a primeira paga mais»). Medido: era a
+    # causa de 19 em 300 contas ao acaso ficarem com o cêntimo na pessoa
+    # errada, e as linhas nem sequer tinham sobra nenhuma nessas.
+    globais = list(reversed(
+        repartir_centimos(_centimos(_totais(mae)["desconto_global"]), n)))
+
+    # **E agora escolhe-se QUEM leva cada fatia**, para cada pessoa aterrar no
+    # valor que o total dividido por N lhe dá — 23,40 € por dois são 11,70 e
+    # 11,70, e não 11,71 e 11,69 (ver `reparticao.ordem_das_fatias`, e o
+    # defeito que o dono apanhou no ecrã).
+    #
+    # As fatias são as MESMAS que acabaram de ser calculadas: isto não mexe em
+    # nenhum valor, só na pessoa a quem cada um calha. É por isso que a soma
+    # continua a fechar por construção e que cada fatia continua a ter a
+    # quantidade que o Vendus factura ao cêntimo.
+    #
+    # O alvo de cada pessoa é o total da conta repartido por N, mais a fatia do
+    # desconto global dela — porque o valor que se soma aqui é o BRUTO das
+    # linhas, e o global é subtraído depois, na parte.
+    valores = [
+        [_centimos(_totais({"linhas": [f]})["total"]) if f else 0 for f in r]
+        for r in repartidas
+    ]
+    alvos = repartir_centimos(_centimos(_totais(mae)["total"]), n)
+    ordens = ordem_das_fatias(valores, [alvos[i] + globais[i] for i in range(n)])
+    repartidas = [
+        [r[ordem[i]] for i in range(n)] for r, ordem in zip(repartidas, ordens)
+    ]
 
     filhas = [
         _nova_parte(mae, [r[i] for r in repartidas if r[i] is not None], globais[i])

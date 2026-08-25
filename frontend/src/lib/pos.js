@@ -922,13 +922,65 @@ export const fatiasDaLinha = (linha, partes) => {
 // A conta de cada pessoa se a divisão for por N — a previsão inteira, com o
 // desconto global da mãe repartido em fatias iguais, tal como
 // `venda.py::dividir_conta` faz.
+// Quem leva cada fatia de cada linha, para cada pessoa aterrar no seu ALVO —
+// o espelho de `reparticao.ordem_das_fatias`, e não uma segunda ideia dela.
+// Está aqui pela mesma razão de tudo o mais neste bloco: o número que o ecrã
+// promete tem de ser o que a fatura cobra, e o servidor faz esta escolha.
+export const ordemDasFatias = (valoresPorLinha, alvos) => {
+  const n = alvos.length;
+  const falta = [...alvos];
+  const ordens = valoresPorLinha.map((valores) => {
+    const fatias = valores.map((_, j) => j).sort((a, b) => valores[b] - valores[a] || a - b);
+    const pessoas = falta.map((_, i) => i).sort((a, b) => falta[b] - falta[a] || a - b);
+    const ordem = new Array(n).fill(0);
+    pessoas.forEach((pessoa, k) => {
+      ordem[pessoa] = fatias[k];
+      falta[pessoa] -= valores[fatias[k]];
+    });
+    return ordem;
+  });
+
+  // A reparação do que a escolha por linha (míope) não acerta — ver a
+  // docstring da irmã em Python, que traz os números medidos.
+  const somas = ordens.reduce(
+    (acc, ordem, l) => acc.map((s, i) => s + valoresPorLinha[l][ordem[i]]),
+    new Array(n).fill(0),
+  );
+  for (let volta = 0; volta <= 2 * n * ordens.length; volta += 1) {
+    const acima = somas.findIndex((s, i) => s > alvos[i]);
+    const abaixo = somas.findIndex((s, i) => s < alvos[i]);
+    if (acima < 0 || abaixo < 0) break;
+    const l = ordens.findIndex((ordem, k) => {
+      const d = valoresPorLinha[k][ordem[acima]] - valoresPorLinha[k][ordem[abaixo]];
+      return d > 0 && d <= somas[acima] - alvos[acima] && d <= alvos[abaixo] - somas[abaixo];
+    });
+    if (l < 0) break;
+    const ordem = ordens[l];
+    const d = valoresPorLinha[l][ordem[acima]] - valoresPorLinha[l][ordem[abaixo]];
+    const troca = ordem[acima];
+    ordem[acima] = ordem[abaixo];
+    ordem[abaixo] = troca;
+    somas[acima] -= d;
+    somas[abaixo] += d;
+  }
+  return ordens;
+};
+
 export const previsaoDoDividir = (mae, partes) => {
   const linhas = mae?.linhas || [];
   const porLinha = linhas.map((linha) => fatiasDaLinha(linha, partes));
-  const globais = repartirCentimos(centimos(mae?.totais?.desconto_global), partes);
+  // Invertido, como no servidor: o cêntimo a mais de DESCONTO é um cêntimo a
+  // menos a pagar, e por isso vai para o fim da fila.
+  const globais = repartirCentimos(centimos(mae?.totais?.desconto_global), partes).reverse();
+  const alvos = repartirCentimos(centimos(mae?.totais?.total), partes);
+  const valores = porLinha.map((fatias) => fatias.map((f) => (f ? f.totalCentimos : 0)));
+  const ordens = ordemDasFatias(valores, alvos.map((a, i) => a + globais[i]));
   return Array.from({ length: partes }, (_, i) => {
     const daPessoa = linhas
-      .map((linha, l) => (porLinha[l][i] ? { linha, ...porLinha[l][i] } : null))
+      .map((linha, l) => {
+        const fatia = porLinha[l][ordens[l][i]];
+        return fatia ? { linha, ...fatia } : null;
+      })
       .filter(Boolean);
     const soma = daPessoa.reduce((total, item) => total + item.totalCentimos, 0);
     return { linhas: daPessoa, totalCentimos: soma - globais[i] };

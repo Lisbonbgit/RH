@@ -136,8 +136,19 @@ def dividir(tmp_path_factory):
         cenario,
         "const noPagamento = textoVisivel(alvo);",
         "await carregar_em('Dividir Conta');",
+        "const aCobrarAPrimeira = textoVisivel(alvo);",
+        # **A seta de voltar.** É um botão só com ícone (sem texto), por isso
+        # apanha-se pelo ícone. Dois toques: se a seta cobrasse a pessoa
+        # seguinte, o segundo trazia de volta a primeira — o vaivém que o dono
+        # apanhou ao usar o POS.
+        "const seta = () => [...alvo.querySelectorAll('button')].find(",
+        "  (b) => b.querySelector('[data-icone=\"ArrowLeft\"]'));",
+        "if (!seta()) throw new Error('sem seta de voltar no ecra de pagamento');",
+        "await act(async () => { seta().click(); });",
+        "await act(async () => {});",
+        "const depoisDaSeta = textoVisivel(alvo);",
         "process.stdout.write(JSON.stringify({",
-        "  noPagamento, depois: textoVisivel(alvo),",
+        "  noPagamento, aCobrarAPrimeira, depoisDaSeta, depois: textoVisivel(alvo),",
         "  pedidos: pedidos.map((p) => p.metodo.toUpperCase() + ' ' + p.url),",
         "  corpos: pedidos.filter((p) => p.corpo).map((p) => p.corpo),",
         "}));",
@@ -158,13 +169,27 @@ def test_o_toque_em_dividir_manda_o_numero_de_pessoas(dividir):
     assert {"partes": 2} in dividir["corpos"], dividir["corpos"]
 
 
+def test_a_seta_de_voltar_sai_do_pagamento_em_vez_de_cobrar_a_pessoa_seguinte(dividir):
+    """**O defeito que o dono apanhou a usar o POS.** Esta função serve as duas
+    saídas do ecrã de pagamento — o botão que fecha a fatura acabada de sair e
+    a seta de voltar — e o salto para a pessoa seguinte tinha ficado nas duas:
+    tocava-se na seta para sair da pessoa 1 e aterrava-se na 2, tocava-se outra
+    vez e voltava-se à 1, sem forma de sair.
+
+    Quem acabou de emitir tem `documento`; a seta não tem nada."""
+    assert "Pessoa 2 de 2" not in dividir["depoisDaSeta"], \
+        dividir["depoisDaSeta"][:400]
+    assert "Cobrar as partes" in dividir["depoisDaSeta"], \
+        dividir["depoisDaSeta"][:400]
+
+
 def test_a_seguir_ao_toque_ja_se_esta_a_cobrar_a_primeira_pessoa(dividir):
     """O ponto todo desta mudança: entre o toque e a fatura não há ecrã
     nenhum. Antes, aqui estava uma lista de pastilhas à espera de que alguém
     escolhesse por onde começar — quando a resposta é sempre a primeira."""
-    assert "Pessoa 1 de 2" in dividir["depois"], dividir["depois"][:600]
-    assert "€ 3,80" in dividir["depois"], dividir["depois"][:600]
-    assert "EMITIR" in dividir["depois"].upper(), dividir["depois"][:600]
+    assert "Pessoa 1 de 2" in dividir["aCobrarAPrimeira"], dividir["aCobrarAPrimeira"][:600]
+    assert "€ 3,80" in dividir["aCobrarAPrimeira"], dividir["aCobrarAPrimeira"][:600]
+    assert "EMITIR" in dividir["aCobrarAPrimeira"].upper(), dividir["aCobrarAPrimeira"][:600]
 
 
 # --- Separar: uma pessoa de cada vez, na conta --------------------------------
