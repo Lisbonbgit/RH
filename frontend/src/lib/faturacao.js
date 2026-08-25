@@ -153,6 +153,16 @@ export const apagarCategoria = (id) => api.delete(`${API_URL}/faturacao/categori
 export const getDocumentos = (params) => api.get(
   `${API_URL}/faturacao/documentos`, { params });
 export const getDocumento = (id) => api.get(`${API_URL}/faturacao/documentos/${id}`);
+// A segunda via sai na loja onde a fatura foi emitida (o gestor pode estar em
+// casa; a impressora que interessa é a do balcão que atendeu o cliente).
+// O PDF CERTIFICADO, ido buscar ao Vendus pelo servidor (a chave da API nunca
+// chega ao browser). Vem como blob porque o JWT viaja no cabeçalho — um
+// `<a href>` simples não ia autenticado e trazia um 403 com nome de fatura.
+export const getDocumentoPdf = (id) => api.get(
+  `${API_URL}/faturacao/documentos/${id}/pdf`, { responseType: 'blob' });
+
+export const reimprimirDocumento = (id) => api.post(
+  `${API_URL}/faturacao/documentos/${id}/reimprimir`);
 
 // Subcategorias — as gavetas dentro de cada categoria (Venda ao Público →
 // Açaís, Salgados). São só nossas: o Vendus não as tem e a importação não lhes

@@ -120,6 +120,7 @@ from pymongo.errors import DuplicateKeyError
 
 from . import escpos
 from .db import COLECOES, obter_db
+from .auth import gestor_atual
 from .pos_auth import dispositivo_atual, operador_atual
 from .talao import pedido_da_cozinha, relatorio_z
 
@@ -916,6 +917,45 @@ async def imprimir_pedido(
         tipo=PEDIDO,
         dados=escpos.documento(pedido_da_cozinha(venda)),
         chave="pedido-mao:%s" % uuid.uuid4(),
+    )
+    return {"trabalho_id": trabalho_id, "aceite": trabalho_id is not None}
+
+
+@router.post("/documentos/{documento_id}/reimprimir")
+async def reimprimir_do_backoffice(
+    documento_id: str, _: dict = Depends(gestor_atual)
+) -> dict:
+    """A segunda via pedida do BACKOFFICE — e o papel sai **na loja onde a
+    fatura foi emitida**, não onde o gestor está.
+
+    É a única leitura possível: o gestor pode estar em casa, e a impressora
+    que interessa é a do balcão que atendeu o cliente. Por isso a loja vem do
+    DOCUMENTO e nunca de quem carrega no botão — ao contrário da rota do POS,
+    onde ela vem do token do operador porque ele está lá.
+
+    O resto é igual e de propósito: os mesmos bytes guardados com a fatura (o
+    mesmo ATCUD, o mesmo QR), o mesmo `enfileirar` que nunca levanta excepção,
+    e uma chave nova, porque duas vezes aqui é o que a pessoa pediu ao carregar
+    duas vezes.
+
+    A resposta diz se o trabalho ENTROU na fila, não se o papel saiu — sem
+    programa de impressão a ouvir naquela loja ele fica à espera e sai quando
+    alguém o abrir. Prometer o segundo daqui era afirmar coisas sobre uma
+    impressora que ninguém deste lado vê."""
+    db = obter_db()
+    documento = await db[COLECOES["documentos"]].find_one({"id": documento_id})
+    if not documento:
+        raise HTTPException(status_code=404, detail=_MSG_DOCUMENTO_INEXISTENTE)
+    talao = _talao_guardado(documento)
+    if not talao:
+        raise HTTPException(status_code=422, detail=_MSG_DOCUMENTO_SEM_TALAO)
+    trabalho_id = await enfileirar(
+        db,
+        loja_id=documento["loja_id"],
+        impressora=CAIXA,
+        tipo=SEGUNDA_VIA,
+        dados=talao,
+        chave="segunda-via:%s" % uuid.uuid4(),
     )
     return {"trabalho_id": trabalho_id, "aceite": trabalho_id is not None}
 
