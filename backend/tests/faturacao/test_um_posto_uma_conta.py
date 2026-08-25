@@ -653,7 +653,7 @@ def _grelha_morta(venda, partes, tmp_path):
             lib, "export const razaoDeNaoComecar = (porCobrar) =>", _LIB_POS
         ).replace("export ", "", 1),
         _corpo_da_funcao(
-            lib, "export const razaoDaGrelhaMorta = ({ venda, partes }) =>", _LIB_POS
+            lib, "export const razaoDaGrelhaMorta = ({ venda, partes, aSeparar }) =>", _LIB_POS
         ).replace("export ", "", 1),
         "const entrada = %s;" % json.dumps({"venda": venda, "partes": partes}),
         "process.stdout.write(JSON.stringify(razaoDaGrelhaMorta(entrada)));",

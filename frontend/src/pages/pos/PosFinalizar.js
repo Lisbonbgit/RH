@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import {
   ArrowLeft, Pencil, X, ChevronDown, Loader2, AlertTriangle, CheckCircle2,
   ShieldAlert, Ban, User, Receipt, Printer, CreditCard, Coins, Divide, Scissors, Users,
+  Minus, Plus,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -849,6 +850,11 @@ export default function PosFinalizar({
   parte = null,
   // Repartir a conta. Ausentes (ou a conta já é uma parte) e os dois botões
   // nem aparecem: um botão que não faz nada é pior do que não existir.
+  //
+  // `onDividir` recebe o NÚMERO DE PESSOAS — o stepper vive aqui, encostado
+  // aos botões, e não num ecrã a seguir. É a diferença que o dono pediu ao ver
+  // o POS do Vendus: escolhe-se o número e o toque seguinte já está a cobrar a
+  // primeira pessoa, sem ecrã nenhum pelo meio.
   onDividir,
   onSeparar,
   // A frase que explica por que é que os dois botões estão desligados, ou
@@ -864,6 +870,10 @@ export default function PosFinalizar({
   // operadora está a meio de escrever não pode ser arredondado nem "corrigido"
   // debaixo dos dedos dela.
   const [pagamentos, setPagamentos] = useState([]);
+  // Quantas pessoas dividem esta conta. Começa em 2 — dividir por uma é não
+  // dividir, e é o que o servidor recusa (`PedidoDividir`, ge=2). O tecto de
+  // 20 é o mesmo dele, e por a mesma razão: um dedo distraído.
+  const [pessoas, setPessoas] = useState(2);
   const [recebido, setRecebido] = useState('');
   const [nifTexto, setNifTexto] = useState('');
   // O pagamento que acabou de nascer "por escrever" — só para lhe dar o foco
@@ -1339,19 +1349,54 @@ export default function PosFinalizar({
                   <p className="text-sm">{impedeRepartir}</p>
                 </div>
               )}
+              {/* O stepper das pessoas, encostado aos botões — é a peça que
+                  faz o dividir caber num toque. O valor que ele mostra é o da
+                  PRIMEIRA pessoa (o cêntimo que sobra vai para as primeiras,
+                  `reparticao.repartir_centimos`), que é precisamente quem vai
+                  pagar a seguir: mostrar a fatia mais pequena era prometer ao
+                  cliente à frente um número que não é o dele. */}
+              <div className="mt-3 flex items-center gap-3">
+                <span className="text-sm text-muted-foreground">Pessoas</span>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    type="button" variant="outline" className="h-11 w-11 p-0"
+                    aria-label="Menos uma pessoa"
+                    onClick={() => setPessoas((n) => Math.max(2, n - 1))}
+                    disabled={pessoas <= 2 || aEmitir || congelada}
+                  >
+                    <Minus className="h-5 w-5" />
+                  </Button>
+                  <span className="w-10 text-center font-heading font-bold text-xl tabular-nums">
+                    {pessoas}
+                  </span>
+                  <Button
+                    type="button" variant="outline" className="h-11 w-11 p-0"
+                    aria-label="Mais uma pessoa"
+                    onClick={() => setPessoas((n) => Math.min(20, n + 1))}
+                    disabled={pessoas >= 20 || aEmitir || congelada}
+                  >
+                    <Plus className="h-5 w-5" />
+                  </Button>
+                </div>
+                <span className="text-sm text-muted-foreground tabular-nums">
+                  {euros(Math.ceil(Math.round(total * 100) / pessoas) / 100)} por pessoa
+                </span>
+              </div>
               <div className="grid grid-cols-2 gap-2.5 mt-3">
                 <Button
                   type="button"
                   variant="outline"
                   className="h-16 flex-col gap-0.5"
-                  onClick={onDividir}
+                  onClick={() => onDividir(pessoas)}
                   disabled={aEmitir || congelada || !temLinhas || total <= 0 || !!impedeRepartir}
                 >
                   <span className="flex items-center gap-1.5 font-medium">
                     <Divide className="h-4 w-4" />
                     Dividir Conta
                   </span>
-                  <span className="text-xs font-normal text-muted-foreground">Todos pagam o mesmo</span>
+                  <span className="text-xs font-normal text-muted-foreground">
+                    Todos pagam o mesmo
+                  </span>
                 </Button>
                 <Button
                   type="button"
@@ -1364,7 +1409,9 @@ export default function PosFinalizar({
                     <Scissors className="h-4 w-4" />
                     Separar Conta
                   </span>
-                  <span className="text-xs font-normal text-muted-foreground">Cada um o que consumiu</span>
+                  <span className="text-xs font-normal text-muted-foreground">
+                    Escolher o que cada um leva
+                  </span>
                 </Button>
               </div>
             </section>

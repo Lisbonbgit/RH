@@ -76,6 +76,21 @@ _MSG_PARTE_SEM_VALOR = (
     "sempre, sem forma de gerar fatura. Junte-lhe pelo menos um artigo com "
     "preço, ou junte-a a outra parte."
 )
+# `separar_uma_parte`: a pessoa que leva TUDO não está a separar nada — e a
+# conta ficaria a zero, presa e sem forma de emitir. O caminho dela é cobrar a
+# conta como ela está, e é isso que a mensagem diz.
+_MSG_PARTE_LEVA_A_CONTA_TODA = (
+    "Esta pessoa está a levar a conta inteira — não sobra nada para cobrar a "
+    "seguir. Emita a conta como ela está, sem separar."
+)
+# E o inverso: o que SOBRA também tem de valer alguma coisa. Uma sobra de
+# 0,00 € (só artigos oferecidos) ficava `aberta` para sempre, pela mesma razão
+# de `_MSG_PARTE_SEM_VALOR` — só que do lado da conta, que é onde a operadora
+# nem sequer olha à procura de um defeito.
+_MSG_RESTO_SEM_VALOR = (
+    "O que ficaria na conta não tem valor nenhum — ficava aberta para sempre, "
+    "sem forma de gerar fatura. Deixe na conta pelo menos um artigo com preço."
+)
 _MSG_LINHA_INEXISTENTE = "Linha não encontrada nesta venda."
 _MSG_PRODUTO_INEXISTENTE = "Produto não encontrado."
 # A MESMA mensagem para as cinco rotas de escrita (juntar/editar/remover
@@ -1246,6 +1261,21 @@ async def _porque_nao_ha_cliente_seguinte(db, conta: Dict, caixa_pedida: str) ->
     if not nome:
         return _MSG_CONTA_POR_RESOLVER
     return _MSG_CONTA_POR_RESOLVER + (_MSG_CONTA_NOUTRA_CAIXA % nome)
+
+
+class PedidoSepararUmaParte(BaseModel):
+    """As unidades que ESTA pessoa leva agora — o resto continua a ser a conta.
+
+    A diferença para o `PedidoSeparar` não é de forma, é de momento: aquele
+    exige a conta TODA atribuída a todas as pessoas de uma vez, antes de
+    alguém pagar; este descreve uma pessoa só, e é chamado outra vez para a
+    seguinte. É o balcão a sério — «este leva o cookie», cobra-se, e a conta
+    segue com o açaí — e foi o que o dono pediu ao ver o POS do Vendus.
+
+    Cada unidade continua a ser um número INTEIRO de artigos: o
+    `PedidoSepararLinha` recusa 0,6 de um açaí, pela mesma razão de sempre."""
+
+    linhas: List[PedidoSepararLinha] = Field(min_length=1)
 
 
 @router.post("/pos/venda", status_code=201)
@@ -2729,6 +2759,215 @@ async def separar_conta(
     _confirma_que_as_partes_somam(mae, filhas, rota="separar")
 
     return await _grava_as_partes(db, venda_id, mae, filhas, "separar")
+
+
+def _o_que_sobra_na_conta(mae: Dict, pedidas: List[PedidoSepararLinha]) -> List[PedidoSepararLinha]:
+    """O COMPLEMENTO da atribuição: o que ninguém levou, e que continua a ser
+    a conta.
+
+    Existe para o `separar_uma_parte` poder reaproveitar, tal e qual, a
+    matemática do `separar_conta` — que só sabe repartir uma conta INTEIRA
+    por partes que a esgotam. Calculando aqui a sobra, a operação «uma pessoa
+    leva isto» transforma-se numa separação em DUAS partes (a pessoa e o
+    resto), e o desconto de linha, o desconto global e a soma ao cêntimo
+    passam todos pelo mesmo código já provado, em vez de uma segunda
+    implementação a divergir com o tempo.
+
+    Conta-se em UNIDADES INTEIRAS (`_unidades`) e não em float: somar 0.1
+    três vezes e comparar com 0.3 é exactamente como se perde um artigo.
+
+    Uma linha pedida a mais do que existe sai daqui com sobra ZERO (que é o
+    mesmo que não sobrar nada dela) e NÃO rebenta: quem recusa isso é o
+    `_partes_da_separacao`, com o 422 que explica que se está a faturar o que
+    não se vendeu. Uma linha pedida que não existe também não rebenta aqui —
+    o 404 é dele. Duas mensagens, um sítio só."""
+    pedido_por_linha: Dict[str, int] = {}
+    for pl in pedidas:
+        pedido_por_linha[pl.linha_id] = pedido_por_linha.get(pl.linha_id, 0) + _unidades(pl.quantidade)
+
+    sobra = []
+    for linha in (mae.get("linhas") or []):
+        restantes = _unidades(linha.get("quantidade", 1)) - pedido_por_linha.get(linha["id"], 0)
+        if restantes > 0:
+            sobra.append(PedidoSepararLinha(
+                linha_id=linha["id"],
+                quantidade=restantes / _UNIDADES_POR_QUANTIDADE,
+            ))
+    return sobra
+
+
+def _o_resto_como_conta(
+    linhas: List[Dict], sobra: List[PedidoSepararLinha], desconto_global_centimos: int
+) -> Dict:
+    """O que fica na conta, com a forma que o `_totais` sabe ler — para a soma
+    se confirmar ANTES de gravar seja o que for.
+
+    **As linhas do resto recuperam o `id` que já tinham, e isto não é
+    cosmética.** O `_partes_da_separacao` dá id novo a cada linha que
+    constrói (`_copia_da_linha`), o que está certo para uma parte — é uma
+    venda nova — e está errado para o resto, que é a MESMA conta a continuar:
+    a segunda pessoa é separada com os `linha_id` que o ecrã tem à frente, e
+    com ids novos a cada separação a chamada seguinte respondia 404 sobre uma
+    linha que a operadora está mesmo a ver. Medido, na segunda pessoa de três.
+
+    O `zip` é seguro porque as duas listas nascem da mesma ordem: `sobra` é
+    construída pela ordem das linhas da mãe e é essa a lista que vai como
+    segunda parte para o `_partes_da_separacao`, que constrói as linhas pela
+    ordem em que as recebe.
+
+    **A percentagem morre aqui, e é de propósito.** Se a conta guardasse os
+    seus 10% e a parte levasse a fatia em euros, os dois números eram
+    calculados por caminhos diferentes e podiam divergir num cêntimo — e é
+    esse cêntimo que faz a soma das faturas não bater com o que entrou na
+    gaveta. É a MESMA decisão que o `_nova_parte` já toma para as filhas
+    (`desconto_global_pct = None`), pela mesma razão, e por isso está escrita
+    duas vezes em vez de ser deduzida uma."""
+    for nova, pedida in zip(linhas, sobra):
+        nova["id"] = pedida.linha_id
+    return {
+        "linhas": linhas,
+        "desconto_global_pct": None,
+        "desconto_global_eur": round(desconto_global_centimos / 100.0, 2) or None,
+    }
+
+
+async def _grava_a_parte_e_o_resto(
+    db, venda_id: str, mae: Dict, filha: Dict, resto: Dict
+) -> dict:
+    """A escrita do `separar_uma_parte` — a disciplina do `_grava_as_partes`,
+    com uma diferença que muda tudo o resto: aqui a mãe NÃO fica `separada`.
+    Ela encolhe e continua a ser a conta que a operadora tem à frente.
+
+    **A ordem é a mesma, e pela mesma razão: a parte nasce primeiro.** Ao
+    contrário, existia um instante em que a conta já tinha perdido os artigos
+    e não havia parte nenhuma para os cobrar — dinheiro desaparecido do ecrã.
+    O preço desta ordem é a janela em que os mesmos artigos estão nas duas
+    contas ao mesmo tempo; é curta, e a escrita a seguir é CONDICIONADA à mãe
+    como ela foi lida (`_a_mae_como_foi_lida`: estado, versão das linhas e os
+    dois descontos globais). Se alguém ganhou a corrida — a operadora do outro
+    separador a juntar uma água, a emissão a fechar a conta — a parte que
+    acabou de nascer é apagada e a operadora leva um 409 que diz o quê.
+
+    **E a escrita casar não chega**, exactamente como no `_grava_as_partes`: o
+    `finalizar` pode ter reservado DEPOIS do `_garante_sem_emissao` e antes
+    desta escrita, sem tocar em nada que o filtro prenda. Nesse caso a conta
+    inteira pode estar a virar uma Fatura Simplificada REAL enquanto nós lhe
+    tiramos artigos — e a parte que nasceu emitiria os mesmos artigos outra
+    vez. Por isso pergunta-se OUTRA VEZ depois de escrever, e compensa-se.
+
+    **A compensação repõe o que se pode PERDER e apaga o que se pode
+    DUPLICAR**, na ordem em que isso é verdade: a parte morre primeiro (uma FS
+    a mais não se desfaz), e só depois se tenta devolver as linhas à conta,
+    condicionada à versão que esta escrita deixou — se outra escrita já entrou
+    por cima, não se lhe toca: as linhas dela são mais recentes do que as
+    nossas."""
+    await db[COLECOES["vendas"]].insert_one(dict(filha))
+
+    versao = mae.get("linhas_versao")
+    nova_versao = (versao or 0) + 1
+    atualizacao = {
+        "linhas": resto["linhas"],
+        "linhas_versao": nova_versao,
+        "desconto_global_pct": resto["desconto_global_pct"],
+        "desconto_global_eur": resto["desconto_global_eur"],
+    }
+    resultado = await db[COLECOES["vendas"]].update_one(
+        _a_mae_como_foi_lida(mae), {"$set": atualizacao}
+    )
+    if resultado.matched_count == 0:
+        await db[COLECOES["vendas"]].delete_one({"id": filha["id"]})
+        raise HTTPException(
+            status_code=409, detail=await _porque_nao_travou_a_mae(db, venda_id))
+
+    if await _tem_reserva_fiscal(db, venda_id):
+        await db[COLECOES["vendas"]].delete_one({"id": filha["id"]})
+        await db[COLECOES["vendas"]].update_one(
+            {"id": venda_id, "estado": "aberta", "linhas_versao": nova_versao},
+            {"$set": {
+                "linhas": mae.get("linhas") or [],
+                "linhas_versao": nova_versao + 1,
+                "desconto_global_pct": mae.get("desconto_global_pct"),
+                "desconto_global_eur": mae.get("desconto_global_eur"),
+            }},
+        )
+        raise HTTPException(
+            status_code=409, detail=await _porque_nao_ficou_dividida(db, venda_id)
+        )
+
+    mae.update(atualizacao)
+    # As duas contas que passam a existir, nas duas formas que o ecrã já sabe
+    # ler: a `parte` é a pessoa que se vai cobrar AGORA, a `conta` é o que
+    # sobra e volta à frente da operadora assim que aquela fatura sair.
+    return {"parte": _venda_publica(filha), "conta": _venda_publica(mae)}
+
+
+@router.post("/pos/venda/{venda_id}/separar-parte", status_code=201)
+async def separar_uma_parte(
+    venda_id: str, dados: PedidoSepararUmaParte, operador: Dict = Depends(operador_atual)
+) -> dict:
+    """**Uma pessoa leva estes artigos; o resto continua a ser a conta.**
+
+    A terceira forma de repartir, e a que o dono pediu depois de usar o POS do
+    Vendus: o `dividir_conta` reparte um VALOR por N, o `separar_conta` exige
+    a conta toda atribuída de uma vez, e este tira UMA pessoa de cada vez sem
+    ninguém ter de decidir a mesa inteira antes de a primeira fatura sair.
+
+    **Porque é que a mãe não fica `separada`.** Ela é o resto — e o resto é
+    dinheiro por cobrar que continua a ser a conta em curso deste posto. Isso
+    não é uma escolha estética: é o que faz a operação encaixar nos conjuntos
+    que já existem sem lhes tocar. A parte nasce agora, logo é a mais recente,
+    logo é ela que a `GET /pos/venda/aberta` põe à frente da operadora para
+    ser cobrada; emitida a fatura dela, a mais recente das abertas passa a ser
+    a mãe, e o ecrã volta sozinho ao que falta. A porta (`abrir_venda`)
+    continua fechada enquanto qualquer uma das duas estiver por resolver, e o
+    fecho de caixa continua a somar as duas — sem uma linha de código nova em
+    nenhum dos dois sítios.
+
+    **A matemática não é nova.** Calcula-se o complemento da atribuição
+    (`_o_que_sobra_na_conta`) e chama-se o `_partes_da_separacao` com DUAS
+    partes: a pessoa e o resto. Desconto de linha repartido pelas unidades,
+    desconto global repartido por PESO, soma confirmada ao cêntimo antes de
+    gravar seja o que for — tudo o mesmo código do `separar_conta`, e não uma
+    segunda versão dele a divergir daqui a seis meses.
+
+    As guardas de entrada são as das outras rotas de escrita, e a
+    `_garante_que_nao_e_ja_uma_parte` está cá pela razão de sempre: uma parte
+    não se volta a repartir. Note-se que a MÃE continua sem `conta_mae_id`
+    depois desta operação — é por isso que se pode separar a mesma conta
+    quantas vezes forem precisas, que é exactamente o ponto."""
+    db = obter_db()
+    mae = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
+    _garante_aberta(mae)
+    _garante_do_balcao(mae)
+    _garante_que_nao_e_ja_uma_parte(mae)
+    await _garante_sem_emissao(db, venda_id)
+    await _garante_sessao_desta_venda_aberta(db, mae)
+
+    if not (mae.get("linhas") or []):
+        raise HTTPException(status_code=422, detail=_MSG_CONTA_VAZIA_NAO_SE_DIVIDE)
+
+    sobra = _o_que_sobra_na_conta(mae, dados.linhas)
+    if not sobra:
+        raise HTTPException(status_code=422, detail=_MSG_PARTE_LEVA_A_CONTA_TODA)
+
+    linhas_por_parte = _partes_da_separacao(mae, PedidoSeparar(partes=[
+        PedidoSepararParte(linhas=dados.linhas),
+        PedidoSepararParte(linhas=sobra),
+    ]))
+    pesos = [
+        _centimos(_totais({"linhas": linhas})["total"]) for linhas in linhas_por_parte
+    ]
+    if pesos[0] <= 0:
+        raise HTTPException(status_code=422, detail=_MSG_PARTE_SEM_VALOR)
+    if pesos[1] <= 0:
+        raise HTTPException(status_code=422, detail=_MSG_RESTO_SEM_VALOR)
+
+    globais = _reparte_por_peso(_centimos(_totais(mae)["desconto_global"]), pesos)
+    filha = _nova_parte(mae, linhas_por_parte[0], globais[0])
+    resto = _o_resto_como_conta(linhas_por_parte[1], sobra, globais[1])
+    _confirma_que_as_partes_somam(mae, [filha, resto], rota="separar")
+
+    return await _grava_a_parte_e_o_resto(db, venda_id, mae, filha, resto)
 
 
 # --- As partes por cobrar, ao arrancar o ecrã ---------------------------------
