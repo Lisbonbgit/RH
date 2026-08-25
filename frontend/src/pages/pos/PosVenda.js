@@ -568,7 +568,7 @@ function AvisoPartesPorCobrar({ porCobrar, deQuantas, faltaCentimos, onVoltar })
   );
 }
 
-function LinhaDaConta({ linha, onTocar, travada }) {
+function LinhaDaConta({ linha, onTocar, onRemover, travada }) {
   const { unitario, total, desconto } = contasDaLinha(linha);
   // O pedido em duas frases: o serviço e o nome numa (`Levar · Maria`), as
   // escolhas com as doses noutra (`Nutella 2× · Leite condensado 1×`). É o que
@@ -581,35 +581,67 @@ function LinhaDaConta({ linha, onTocar, travada }) {
   // gestor vai ter de olhar, e apagá-la não ajudava ninguém) — o que
   // desaparece é o convite ao toque: sem realce, sem o afundar, e sem abrir o
   // diálogo de edição.
+  // DUAS zonas, e não um botão só: o corpo abre o diálogo do produto (como
+  // sempre abriu) e o X à direita tira a linha da conta num toque. Um botão
+  // dentro de outro botão não é HTML válido — o X ficava sem clique próprio e
+  // o toque nele abria o diálogo — por isso a linha passa a ser uma grelha com
+  // o corpo a ocupar as três primeiras colunas.
+  //
+  // O X apaga SEM perguntar, de propósito: é o que o «Remover da conta» do
+  // diálogo já fazia (PosDialogoProduto), e o pedido do dono foi precisamente
+  // poupar os dois toques do desvio. Apaga a LINHA inteira — para tirar uma
+  // unidade de três continua a ser pelo diálogo, onde está a quantidade.
   return (
-    <button
-      type="button"
-      onClick={() => onTocar(linha)}
-      disabled={travada}
-      title={travada ? MSG_CONTA_TRAVADA_CURTA : undefined}
-      className={`w-full text-left grid grid-cols-[1fr_2.5rem_6rem] gap-2 items-start px-4 py-3 border-b ${
-        travada ? 'cursor-default' : 'hover:bg-accent active:scale-[0.99] transition-transform'
+    <div
+      className={`grid grid-cols-[1fr_2.5rem_6rem_2.75rem] gap-2 items-stretch px-4 border-b ${
+        travada ? '' : 'hover:bg-accent'
       }`}
     >
-      <div className="min-w-0">
-        <p className="font-medium leading-tight">{linha.produto_nome}</p>
-        {servico && <p className="text-xs text-muted-foreground leading-snug mt-0.5">{servico}</p>}
-        {escolhas && <p className="text-xs text-muted-foreground leading-snug mt-0.5">{escolhas}</p>}
-        <p className="text-xs text-muted-foreground mt-0.5 tabular-nums">
-          {euros(unitario)} cada
-          {desconto > 0 && ` · desconto ${euros(desconto)}`}
-        </p>
-      </div>
-      <span className="font-heading font-bold text-lg tabular-nums text-center">{linha.quantidade}</span>
-      <span className="font-heading font-bold text-lg tabular-nums text-right">{euros(total)}</span>
-    </button>
+      <button
+        type="button"
+        onClick={() => onTocar(linha)}
+        disabled={travada}
+        title={travada ? MSG_CONTA_TRAVADA_CURTA : undefined}
+        className={`col-span-3 text-left grid grid-cols-[1fr_2.5rem_6rem] gap-2 items-start py-3 ${
+          travada ? 'cursor-default' : 'active:scale-[0.99] transition-transform'
+        }`}
+      >
+        <div className="min-w-0">
+          <p className="font-medium leading-tight">{linha.produto_nome}</p>
+          {servico && <p className="text-xs text-muted-foreground leading-snug mt-0.5">{servico}</p>}
+          {escolhas && <p className="text-xs text-muted-foreground leading-snug mt-0.5">{escolhas}</p>}
+          <p className="text-xs text-muted-foreground mt-0.5 tabular-nums">
+            {euros(unitario)} cada
+            {desconto > 0 && ` · desconto ${euros(desconto)}`}
+          </p>
+        </div>
+        <span className="font-heading font-bold text-lg tabular-nums text-center">{linha.quantidade}</span>
+        <span className="font-heading font-bold text-lg tabular-nums text-right">{euros(total)}</span>
+      </button>
+
+      {/* Travada, o X DESAPARECE — a linha continua a ler-se, que é o que o
+          gestor vai ter de olhar, mas já não se toca. O servidor recusaria na
+          mesma (`remover_linha` passa pelo `_garante_sem_emissao`), e um botão
+          que existe para dar erro é pior do que botão nenhum. */}
+      {travada ? <span aria-hidden="true" /> : (
+        <button
+          type="button"
+          onClick={() => onRemover(linha)}
+          title="Remover da conta"
+          aria-label={`Remover ${linha.produto_nome} da conta`}
+          className="my-2 flex items-center justify-center rounded-md text-destructive/70 hover:bg-destructive/10 hover:text-destructive active:scale-95 transition"
+        >
+          <X className="h-5 w-5" />
+        </button>
+      )}
+    </div>
   );
 }
 
 function PainelConta({
   venda, caixa, aEscrever, travada, travadaPeloServidor, contasTravadasLargadas, aPerguntar,
   partesPorCobrar,
-  onPerguntar, onLargar, onVoltarAsPartes, onTocarLinha,
+  onPerguntar, onLargar, onVoltarAsPartes, onTocarLinha, onRemoverLinha,
   onFinalizar, onCancelar,
   razaoDeNaoImprimirPedido, onImprimirPedido, aImprimirPedido,
 }) {
@@ -704,13 +736,16 @@ function PainelConta({
         </div>
       )}
 
-      <div className="shrink-0 grid grid-cols-[1fr_2.5rem_6rem] gap-2 px-4 h-11 items-center border-b text-xs uppercase tracking-wide text-muted-foreground">
+      <div className="shrink-0 grid grid-cols-[1fr_2.5rem_6rem_2.75rem] gap-2 px-4 h-11 items-center border-b text-xs uppercase tracking-wide text-muted-foreground">
         <span className="flex items-center gap-2">
           Produto
           {aEscrever && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
         </span>
         <span className="text-center">Qtd</span>
         <span className="text-right">Preço</span>
+        {/* A coluna do X. Vazia no cabeçalho, mas TEM de existir: sem ela o
+            "Preço" alinhava-se por três colunas e as linhas por quatro. */}
+        <span aria-hidden="true" />
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
@@ -724,7 +759,10 @@ function PainelConta({
           </div>
         ) : (
           linhas.map((linha) => (
-            <LinhaDaConta key={linha.id} linha={linha} onTocar={onTocarLinha} travada={travada} />
+            <LinhaDaConta
+              key={linha.id} linha={linha} travada={travada}
+              onTocar={onTocarLinha} onRemover={onRemoverLinha}
+            />
           ))
         )}
       </div>
@@ -1436,6 +1474,13 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
   }, [pedidoGuiado, gravarLinha]);
 
   const removerDaConta = useCallback((linha) => executar(async () => {
+    // Dois toques seguidos no X da mesma linha (o dedo apressado, o ecrã a
+    // responder em 200 ms): quando o segundo chega à sua vez na fila, a linha
+    // já não existe e o `DELETE` responderia 404 — um aviso vermelho por cima
+    // de uma remoção que CORREU BEM. A fila garante que aqui já se lê a conta
+    // depois da primeira remoção.
+    if (!vendaRef.current) return;
+    if (!(vendaRef.current.linhas || []).some((li) => li.id === linha.id)) return;
     try {
       const { data } = await removerLinha(vendaRef.current.id, linha.id);
       aplicarVenda(data);
@@ -2426,6 +2471,10 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
             onLargar={largarContaTravada}
             onVoltarAsPartes={() => setVista('reparticao')}
             onTocarLinha={(linha) => setEmEdicao({ produtoId: linha.produto_id, linhaId: linha.id })}
+            /* O X de cada linha. É o MESMO `removerDaConta` do botão
+               «Remover da conta» do diálogo — um caminho só, com as
+               guardas todas do servidor por baixo. */
+            onRemoverLinha={removerDaConta}
             /* A dúvida por apurar NÃO se limpa aqui, pela mesma razão da seta
                de voltar (ver `voltarDoFinalizar`): ir ao ecrã de pagamento não
                é saber o que aconteceu à emissão anterior, e limpá-la punha o
