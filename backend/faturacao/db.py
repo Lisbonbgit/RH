@@ -23,6 +23,9 @@ COLECOES = {
     # Açaís, Salgados…) e são só nossas: o Vendus não as tem, e a
     # importação nunca lhes toca. Servem para arrumar a grelha do POS.
     "subcategorias": "fat_subcategorias",
+    # A ficha do cliente — só o que os documentos não sabem (nome, contacto).
+    # Quem é cliente decide-se pelas COMPRAS, não por esta colecção.
+    "clientes": "fat_clientes",
     "grupos_personalizacao": "fat_grupos_personalizacao",
     "produtos": "fat_produtos",
     # Documentos fiscais emitidos pelo POS próprio (Plano 2 enche esta colecção;
@@ -114,6 +117,10 @@ INDICES = [
     # Dashboard: a série diária/mensal lê por data (todas as lojas) e por loja+data.
     ("fat_documentos", [("emitido_em", 1)], {}),
     ("fat_documentos", [("loja_id", 1), ("emitido_em", 1)], {}),
+    # O ecrã de Clientes e o relatório por cliente perguntam "quais os
+    # documentos deste NIF?" — sem índice era um varrimento da colecção toda.
+    ("fat_documentos", [("cliente_nif", 1)], {"sparse": True}),
+    ("fat_clientes", [("nif", 1)], {"unique": True}),
     # A Task 3 (spec §4.3): terceira e quarta defesa contra a fatura a dobrar
     # — únicos em `vendus_document_id` E em `atcud`. Mesmo que a reserva em
     # fat_refs_fiscais falhasse por alguma razão, um documento com o mesmo id
