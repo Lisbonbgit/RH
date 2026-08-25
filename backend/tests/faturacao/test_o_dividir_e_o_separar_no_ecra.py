@@ -179,8 +179,17 @@ def test_a_seta_de_voltar_sai_do_pagamento_em_vez_de_cobrar_a_pessoa_seguinte(di
     Quem acabou de emitir tem `documento`; a seta não tem nada."""
     assert "Pessoa 2 de 2" not in dividir["depoisDaSeta"], \
         dividir["depoisDaSeta"][:400]
-    assert "Cobrar as partes" in dividir["depoisDaSeta"], \
+    # **E volta ao BALCÃO**, não à lista das partes — segunda correcção, pedida
+    # pelo dono depois de ver a primeira: «quero que volte para a página de
+    # produto». O balcão não fica a fingir que está livre: a grelha está lá,
+    # morta, e a nota diz o que falta receber com o caminho de volta às partes.
+    assert "Cobrar as partes" not in dividir["depoisDaSeta"], \
         dividir["depoisDaSeta"][:400]
+    assert "Produto" in dividir["depoisDaSeta"], dividir["depoisDaSeta"][:400]
+    assert "Faltam cobrar" in dividir["depoisDaSeta"] or "falta cobrar" in dividir["depoisDaSeta"], (
+        "o balcão tem de dizer que ficou dinheiro por receber: %s"
+        % dividir["depoisDaSeta"][:400]
+    )
 
 
 def test_a_seguir_ao_toque_ja_se_esta_a_cobrar_a_primeira_pessoa(dividir):
