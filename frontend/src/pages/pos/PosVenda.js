@@ -2319,7 +2319,18 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
       const seguinte = documento ? proximaParteACobrar(partesDaConta, daFrente?.id) : null;
       aplicarVenda(null);
       if (seguinte) { cobrarParte(seguinte); return; }
-      setVista('reparticao');
+      // **Sem ninguém à espera, volta-se ao BALCÃO** — e não à lista das
+      // partes, que era o que a seta fazia e o dono corrigiu: «quero que volte
+      // para a página de produto». A lista deixa de ser um sítio por onde se
+      // passa; é um sítio aonde se vai, a um toque da nota do painel.
+      //
+      // O balcão não fica a fingir que está livre: com partes por cobrar a
+      // grelha está morta com a razão à vista (`razaoDaGrelhaMorta`) e a nota
+      // diz quanto falta receber, com o caminho de volta às partes. Quem
+      // acabou de emitir a ÚLTIMA não tem nada disso — a repartição acabou,
+      // limpa-se, e o posto fica pronto para o cliente seguinte.
+      if (documento) setReparticao(null);
+      setVista('conta');
       return;
     }
     // **Uma parte do «separar» não está na lista de repartição nenhuma** (o
