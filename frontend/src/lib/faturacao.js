@@ -147,6 +147,21 @@ export const criarCategoria = (data) => api.post(`${API_URL}/faturacao/categoria
 export const editarCategoria = (id, data) => api.put(`${API_URL}/faturacao/categorias/${id}`, data);
 export const apagarCategoria = (id) => api.delete(`${API_URL}/faturacao/categorias/${id}`);
 
+// Subcategorias — as gavetas dentro de cada categoria (Venda ao Público →
+// Açaís, Salgados). São só nossas: o Vendus não as tem e a importação não lhes
+// toca. Servem para arrumar a grelha do POS.
+// O `categoria_id` vai em `params` e não colado ao caminho de propósito: o
+// guarda que confronta as chamadas com as rotas do servidor
+// (test_caminhos_do_pos.py) lê o caminho do template literal, e uma query
+// construída com um `?:` lá dentro lia-se como parte do endereço — apanhou
+// exactamente isto.
+export const getSubcategorias = (categoriaId) => api.get(
+  `${API_URL}/faturacao/subcategorias`,
+  categoriaId ? { params: { categoria_id: categoriaId } } : undefined);
+export const criarSubcategoria = (data) => api.post(`${API_URL}/faturacao/subcategorias`, data);
+export const editarSubcategoria = (id, data) => api.put(`${API_URL}/faturacao/subcategorias/${id}`, data);
+export const apagarSubcategoria = (id) => api.delete(`${API_URL}/faturacao/subcategorias/${id}`);
+
 // Grupos de personalização (toppings)
 export const getGrupos = () => api.get(`${API_URL}/faturacao/grupos-personalizacao`);
 export const criarGrupo = (data) => api.post(`${API_URL}/faturacao/grupos-personalizacao`, data);

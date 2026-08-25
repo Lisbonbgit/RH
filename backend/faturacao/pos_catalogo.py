@@ -84,6 +84,11 @@ def _produto_publico(produto: Dict) -> Dict:
         "id": produto["id"],
         "nome": produto.get("nome"),
         "categoria_id": produto.get("categoria_id"),
+        # A subcategoria é só arrumação da grelha. Vem sempre no produto,
+        # mesmo a `None` — o ecrã não pode ter de adivinhar se a ausência
+        # quer dizer "sem subcategoria" ou "versão antiga da API" (a mesma
+        # regra do `cancelada_em` em venda.py).
+        "subcategoria_id": produto.get("subcategoria_id"),
         "preco": produto.get("preco"),
         "tax_id": produto.get("tax_id"),
         "foto_url": produto.get("foto_url"),
@@ -203,6 +208,16 @@ async def catalogo_do_pos(_: Dict = Depends(operador_atual)) -> dict:
         .sort("nome", 1)
         .to_list(LIMITE_PRODUTOS)
     )
+    # As subcategorias das categorias ACTIVAS — a filtragem faz-se aqui em
+    # baixo, sobre a lista de categorias que esta resposta devolve, pela mesma
+    # razão que os produtos: quem decide é a lista que vai no fio, não uma
+    # segunda consulta que pode ver outra coisa.
+    subcategorias = await (
+        db[COLECOES["subcategorias"]]
+        .find({"ativa": True}, {"_id": 0})
+        .sort("ordem", 1)
+        .to_list(LIMITE_CATEGORIAS)
+    )
     grupos = await (
         db[COLECOES["grupos_personalizacao"]]
         .find({"ativo": True}, {"_id": 0})
@@ -217,8 +232,17 @@ async def catalogo_do_pos(_: Dict = Depends(operador_atual)) -> dict:
     # segunda consulta.
     a_mostrar = _produtos_com_separador(produtos, {c["id"] for c in categorias_publicas})
 
+    ids_das_categorias = {c["id"] for c in categorias_publicas}
     return {
         "categorias": categorias_publicas,
+        # Uma subcategoria de categoria desactivada não tem separador onde
+        # caber: sai da lista com os produtos dela, que já saíram acima pela
+        # mesma regra (`_produtos_com_separador`).
+        "subcategorias": [
+            {"id": s["id"], "categoria_id": s.get("categoria_id"),
+             "nome": s.get("nome"), "ordem": s.get("ordem", 0)}
+            for s in subcategorias if s.get("categoria_id") in ids_das_categorias
+        ],
         "produtos": [_produto_publico(p) for p in a_mostrar],
         "grupos_personalizacao": [_grupo_publico(g) for g in grupos],
         # A contagem é o que separa esta regra de um desaparecimento em

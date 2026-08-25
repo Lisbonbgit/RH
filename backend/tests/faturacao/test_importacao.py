@@ -351,6 +351,57 @@ def test_reimportar_atualiza_nome_preco_iva_mas_preserva_foto_grupos_e_ativo():
     assert doc["ativo"] is False  # preservado
 
 
+def test_reimportar_preserva_a_SUBCATEGORIA_que_alguem_escolheu():
+    """**A arrumação da grelha do POS é nossa e o Vendus não a conhece.** A
+    reimportação grava o produto INTEIRO por cima; sem estar na lista do que
+    sobrevive, a subcategoria desaparecia na importação seguinte — e o dono só
+    dava por isso ao ver a grelha desarrumada, sem nada que ligasse uma coisa
+    à outra."""
+    db = DbMemoria()
+    mapa_categorias = {"10": "cat-local-1"}
+    produtos_vendus = [
+        {"id": "500", "title": "Açaí Regular", "gross_price": 8.99, "tax_id": "NOR",
+         "category_id": "10"}
+    ]
+    _corre(_sincronizar_produtos(db, produtos_vendus, mapa_categorias))
+
+    db.produtos.documentos[0]["subcategoria_id"] = "sub-acais"
+
+    resultado = _corre(_sincronizar_produtos(db, [
+        {"id": "500", "title": "Açaí Regular", "gross_price": 9.49, "tax_id": "NOR",
+         "category_id": "10"}
+    ], mapa_categorias))
+
+    assert resultado["atualizados"] == 1
+    assert db.produtos.documentos[0]["subcategoria_id"] == "sub-acais"
+    assert db.produtos.documentos[0]["preco"] == 9.49
+
+
+def test_um_produto_que_MUDA_DE_CATEGORIA_no_vendus_perde_a_subcategoria():
+    """Uma subcategoria pertence a uma categoria só. Com o produto a mudar de
+    categoria no Vendus, ela deixa de lhe pertencer — e um produto com a
+    subcategoria de outra categoria não cabe em separador nenhum da grelha:
+    desaparecia do ecrã com o artigo à venda na loja. Limpa-se, e a importação
+    diz qual foi."""
+    db = DbMemoria()
+    _corre(_sincronizar_produtos(db, [
+        {"id": "500", "title": "Coca-Cola", "gross_price": 1.15, "tax_id": "NOR",
+         "category_id": "10"}
+    ], {"10": "cat-local-1", "20": "cat-local-2"}))
+    db.produtos.documentos[0]["subcategoria_id"] = "sub-bebidas"
+
+    resultado = _corre(_sincronizar_produtos(db, [
+        {"id": "500", "title": "Coca-Cola", "gross_price": 1.15, "tax_id": "NOR",
+         "category_id": "20"}
+    ], {"10": "cat-local-1", "20": "cat-local-2"}))
+
+    doc = db.produtos.documentos[0]
+    assert doc["categoria_id"] == "cat-local-2"
+    assert doc["subcategoria_id"] is None
+    assert any("sem subcategoria" in p for p in resultado["problemas"]), \
+        resultado["problemas"]
+
+
 def test_sincroniza_produtos_sem_iva_reconhecido_e_ignorado_com_problema():
     db = DbMemoria()
     produtos_vendus = [{"id": "500", "title": "Misterioso", "gross_price": 5, "category_id": "10"}]

@@ -143,6 +143,12 @@ class ColeccaoFalsa:
         self.registo.append(("delete_one", filtro))
         return ResultadoDelete(self._delete_one_devolve)
 
+    async def update_many(self, filtro, atualizacao):
+        # Entrou com o apagar de uma SUBCATEGORIA, que solta os produtos dela
+        # em vez de os prender (ver test_subcategorias.py).
+        self.registo.append(("update_many", filtro, atualizacao))
+        return ResultadoUpdate(self._update_one_matched)
+
     async def count_documents(self, filtro):
         self.registo.append(("count_documents", filtro))
         return self._count_documents_devolve

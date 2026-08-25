@@ -181,6 +181,27 @@ def _extrair_tax_id(produto_vendus: dict) -> Optional[str]:
     return tax_id_de_taxa(taxa)
 
 
+def subcategoria_da_reimportacao(existente: dict, categoria_id: str):
+    """A subcategoria que o produto fica a ter depois de uma reimportação.
+
+    Mantém-se a que lá estava — **excepto se o Vendus tiver mudado o produto de
+    CATEGORIA**. Uma subcategoria é de uma categoria só (`Venda ao Público →
+    Açaís`); com o produto a mudar de categoria, ela deixa de lhe pertencer, e
+    um produto com a subcategoria de outra categoria não cabe em separador
+    nenhum da grelha — desaparecia do ecrã com o artigo à venda na loja. Nesse
+    caso limpa-se, e a importação diz-lhe qual foi (não se escolhe uma nova por
+    ele: isso é uma decisão de quem arruma o balcão).
+
+    Pura de propósito: é a única regra desta secção que se pode correr sem
+    servidor nenhum, e é a que decide se o trabalho de alguém sobrevive."""
+    subcategoria_id = existente.get("subcategoria_id")
+    if not subcategoria_id:
+        return None
+    if existente.get("categoria_id") != categoria_id:
+        return None
+    return subcategoria_id
+
+
 async def _sincronizar_categorias(
     db, categorias_vendus: List[dict]
 ) -> Tuple[Dict[str, str], List[str]]:
@@ -333,8 +354,21 @@ async def _sincronizar_produtos(
                 # automatismo, e uma reimportação NUNCA apaga uma foto: o
                 # quadro completo está em `fotos.foto_da_reimportacao`.
                 foto_url, foto_origem = foto_da_reimportacao(existente, foto)
+                # **A subcategoria é NOSSA e tem de sobreviver a isto.** O
+                # `$set` abaixo grava o `ProdutoEntrada` INTEIRO por cima do
+                # produto: um campo que não venha aqui é um campo apagado, e o
+                # que se apagava era a arrumação da grelha do POS que alguém
+                # fez à mão, sem um aviso em lado nenhum. Mesma razão da foto e
+                # dos grupos de personalização, logo acima.
+                subcategoria_id = subcategoria_da_reimportacao(existente, categoria_id)
+                if existente.get("subcategoria_id") and not subcategoria_id:
+                    problemas.append(
+                        "\"%s\" mudou de categoria no Vendus e ficou sem "
+                        "subcategoria — escolha-lhe uma nova, se quiser." % nome
+                    )
                 dados = ProdutoEntrada(
                     nome=nome, categoria_id=categoria_id, preco=preco, tax_id=tax_id,
+                    subcategoria_id=subcategoria_id,
                     foto_url=foto_url,
                     grupos_personalizacao=existente.get("grupos_personalizacao") or [],
                     ativo=existente.get("ativo", True),

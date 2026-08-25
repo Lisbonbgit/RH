@@ -314,7 +314,10 @@ def test_catalogo_devolve_os_campos_do_produto_e_nenhum_id_do_mongo(monkeypatch)
         "id": "cat-1", "nome": "Venda ao Público", "ordem": 3,
     }
     assert resposta["produtos"][0] == {
-        "id": "prod-1", "nome": "Açaí Regular", "categoria_id": "cat-1", "preco": 8.99,
+        "id": "prod-1", "nome": "Açaí Regular", "categoria_id": "cat-1",
+        # Sempre presente, mesmo a `None`: o ecrã não pode ter de adivinhar se
+        # a ausência quer dizer "sem subcategoria" ou "versão antiga da API".
+        "subcategoria_id": None, "preco": 8.99,
         "tax_id": "INT", "foto_url": "/fotos/acai.jpg",
         "grupos_personalizacao": ["grupo-1"], "vendavel": True, "erros": [],
     }
@@ -378,15 +381,16 @@ def test_um_grupo_antigo_sem_os_campos_vale_como_lista_que_sai_na_fatura(monkeyp
     assert grupo["sai_na_fatura"] is True
 
 
-def test_catalogo_vazio_devolve_as_tres_listas_e_a_contagem(monkeypatch):
+def test_catalogo_vazio_devolve_as_listas_todas_e_a_contagem(monkeypatch):
     """Uma loja com o catálogo ainda por importar não rebenta o ecrã: as
-    três chaves vêm sempre, vazias — e a contagem de escondidos a zero, para
-    o ecrã não ter de a tratar como opcional."""
+    chaves vêm sempre, vazias — e a contagem de escondidos a zero, para o ecrã
+    não ter de as tratar como opcionais. (As `subcategorias` entraram depois
+    das outras três e seguem a mesma regra.)"""
     _monta(monkeypatch)
 
     assert _corre(catalogo_do_pos(_={})) == {
-        "categorias": [], "produtos": [], "grupos_personalizacao": [],
-        "produtos_ocultos_categoria_inativa": 0,
+        "categorias": [], "subcategorias": [], "produtos": [],
+        "grupos_personalizacao": [], "produtos_ocultos_categoria_inativa": 0,
     }
 
 

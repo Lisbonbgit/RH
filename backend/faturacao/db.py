@@ -19,6 +19,10 @@ COLECOES = {
     "tipos_pagamento": "fat_tipos_pagamento",
     "motivos_nc": "fat_motivos_nc",
     "categorias": "fat_categorias",
+    # As subcategorias vivem DENTRO de uma categoria (Venda ao Público →
+    # Açaís, Salgados…) e são só nossas: o Vendus não as tem, e a
+    # importação nunca lhes toca. Servem para arrumar a grelha do POS.
+    "subcategorias": "fat_subcategorias",
     "grupos_personalizacao": "fat_grupos_personalizacao",
     "produtos": "fat_produtos",
     # Documentos fiscais emitidos pelo POS próprio (Plano 2 enche esta colecção;
@@ -101,7 +105,9 @@ INDICES = [
     ("fat_utilizadores", [("ativo", 1)], {}),
     ("fat_tipos_pagamento", [("ordem", 1)], {}),
     ("fat_categorias", [("ordem", 1)], {}),
+    ("fat_subcategorias", [("categoria_id", 1), ("ordem", 1)], {}),
     ("fat_produtos", [("categoria_id", 1)], {}),
+    ("fat_produtos", [("subcategoria_id", 1)], {"sparse": True}),
     ("fat_produtos", [("ativo", 1)], {}),
     ("fat_produtos", [("vendus_ref", 1)], {"sparse": True}),
     ("fat_grupos_personalizacao", [("nome", 1)], {}),

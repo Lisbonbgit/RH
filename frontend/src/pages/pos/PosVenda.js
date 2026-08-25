@@ -1001,7 +1001,7 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
   const [tentativaDeCarga, setTentativaDeCarga] = useState(0);
   const [erro, setErro] = useState(null);
   const [catalogo, setCatalogo] = useState({
-    categorias: [], produtos: [], grupos_personalizacao: [], ocultos: 0,
+    categorias: [], subcategorias: [], produtos: [], grupos_personalizacao: [], ocultos: 0,
   });
   const [tiposPagamento, setTiposPagamento] = useState([]);
 
@@ -1294,6 +1294,9 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
       if (!aindaEDaVez()) return;
       setCatalogo({
         categorias: respCatalogo.data?.categorias || [],
+        // As gavetas de cada separador. Vazio até alguém as criar no
+        // backoffice — e com a lista vazia a grelha é a de sempre.
+        subcategorias: respCatalogo.data?.subcategorias || [],
         produtos: respCatalogo.data?.produtos || [],
         grupos_personalizacao: respCatalogo.data?.grupos_personalizacao || [],
         // O servidor filtra os produtos cuja categoria está desactivada (não
@@ -1430,6 +1433,12 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
     if (grelhaRef.current) grelhaRef.current.scrollTop = 0;
   }, [aba, pesquisa]);
 
+  // A gaveta escolhida dentro do separador. Volta a "todas" ao mudar de
+  // separador: uma subcategoria é de UMA categoria, e mantê-la escolhida
+  // deixava a grelha vazia sem se perceber porquê.
+  const [gaveta, setGaveta] = useState('todas');
+  useEffect(() => { setGaveta('todas'); }, [aba]);
+
   const produtos = catalogo.produtos;
   const gruposPorId = useMemo(
     () => new Map((catalogo.grupos_personalizacao || []).map((g) => [g.id, g])),
@@ -1466,6 +1475,28 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
     [catalogo.categorias],
   );
 
+  // **As gavetas do separador que está aberto** — as subcategorias que o dono
+  // criou no backoffice para arrumar a grelha («Venda ao Público → Açaís,
+  // Salgados»). Só aparecem as que TÊM produtos à frente: uma gaveta vazia é
+  // um botão que não leva a lado nenhum, e ao balcão isso é um toque perdido.
+  //
+  // "Outros" é a gaveta dos produtos sem subcategoria, e só existe quando há
+  // mesmo mistura — com tudo arrumado ela não aparece, e com nada arrumado não
+  // aparece gaveta nenhuma: a grelha fica exactamente como era antes disto.
+  const gavetas = useMemo(() => {
+    if (aba === 'todos') return [];
+    const doSeparador = produtos.filter((p) => p.categoria_id === aba);
+    if (!doSeparador.length) return [];
+    const comProdutos = new Set(doSeparador.map((p) => p.subcategoria_id).filter(Boolean));
+    const lista = (catalogo.subcategorias || [])
+      .filter((s) => s.categoria_id === aba && comProdutos.has(s.id))
+      .map((s) => ({ id: s.id, nome: s.nome }));
+    if (!lista.length) return [];
+    return doSeparador.some((p) => !p.subcategoria_id)
+      ? [...lista, { id: 'outros', nome: 'Outros' }]
+      : lista;
+  }, [produtos, aba, catalogo.subcategorias]);
+
   const termo = semAcentos(pesquisa.trim());
   const visiveis = useMemo(() => {
     // A pesquisa procura em TODAS as categorias, não só na do separador
@@ -1473,8 +1504,13 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
     // vazia porque estava no separador errado. O ecrã diz que é assim.
     if (termo) return produtos.filter((p) => semAcentos(p.nome).includes(termo));
     if (aba === 'todos') return produtos;
-    return produtos.filter((p) => p.categoria_id === aba);
-  }, [produtos, aba, termo]);
+    const doSeparador = produtos.filter((p) => p.categoria_id === aba);
+    // A gaveta filtra por cima do separador. `todas` é o que sempre houve;
+    // `outros` são os que ninguém arrumou, e continuam à vista.
+    if (gaveta === 'todas') return doSeparador;
+    if (gaveta === 'outros') return doSeparador.filter((p) => !p.subcategoria_id);
+    return doSeparador.filter((p) => p.subcategoria_id === gaveta);
+  }, [produtos, aba, termo, gaveta]);
 
   // A grelha ROLA, não pagina — foi o que o dono pediu ao ver o ecrã pela
   // primeira vez, e é o gesto que ele já faz no telemóvel. A paginação (que o
@@ -2640,6 +2676,30 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
               </button>
             ))}
           </div>
+
+          {/* A segunda linha, só quando há gavetas neste separador. Sem
+              subcategorias criadas, esta linha não existe e o ecrã é o de
+              sempre. Não aparece com a pesquisa aberta: quem escreve o nome de
+              um artigo quer o artigo, e a pesquisa já varre tudo. */}
+          {termo === '' && gavetas.length > 0 && (
+            <div className="flex gap-2 overflow-x-auto">
+              {[{ id: 'todas', nome: 'Todas' }, ...gavetas].map((g) => (
+                <button
+                  key={g.id}
+                  type="button"
+                  onClick={() => setGaveta(g.id)}
+                  aria-pressed={gaveta === g.id}
+                  className={`h-10 px-3.5 rounded-lg border text-sm font-medium whitespace-nowrap shrink-0 transition-colors ${
+                    gaveta === g.id
+                      ? 'bg-secondary text-secondary-foreground border-secondary'
+                      : 'bg-card hover:bg-accent'
+                  }`}
+                >
+                  {g.nome}
+                </button>
+              ))}
+            </div>
+          )}
 
           {termo !== '' && (
             <p className="text-xs text-muted-foreground">
