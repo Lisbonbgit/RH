@@ -105,6 +105,112 @@ async def apagar_categoria(categoria_id: str, _: dict = Depends(gestor_atual)) -
     return {"apagada": True}
 
 
+# --- Subcategorias ---------------------------------------------------------------
+#
+# **Uma subcategoria vive DENTRO de uma categoria** — «Venda ao Público →
+# Açaís, Salgados, Bebidas» — e foi assim que o dono a pediu, depois de eu ter
+# proposto uma lista única partilhada pelas duas categorias. O preço dessa
+# escolha é conhecido e aceite: um nome que faça sentido nos dois sítios
+# («Bebidas») cria-se duas vezes, uma em cada categoria.
+#
+# **São só nossas.** O Vendus não tem este nível, a importação não as conhece e
+# nunca lhes toca — o que ela reescreve é a CATEGORIA do produto, que continua
+# a ser dela. Servem para arrumar a grelha do POS e mais nada: não entram na
+# fatura, no IVA nem nos relatórios.
+
+
+class SubcategoriaEntrada(BaseModel):
+    nome: str = Field(min_length=1, max_length=80)
+    categoria_id: str = Field(min_length=1)
+    ordem: int = 0
+    ativa: bool = True
+
+
+async def _garante_categoria(db, categoria_id: str) -> None:
+    if not await db[COLECOES["categorias"]].find_one({"id": categoria_id}):
+        raise HTTPException(
+            status_code=422, detail="Categoria inexistente: %s" % categoria_id)
+
+
+@router.get("/subcategorias")
+async def listar_subcategorias(
+    categoria_id: Optional[str] = None, _: dict = Depends(gestor_atual)
+) -> List[dict]:
+    """Todas, ou só as de uma categoria. O ecrã das Categorias pede-as todas de
+    uma vez (é uma lista pequena e são para mostrar dentro de cada categoria);
+    o `categoria_id` existe para a ficha do produto, que só quer as da
+    categoria escolhida."""
+    db = obter_db()
+    filtro = {"categoria_id": categoria_id} if categoria_id else {}
+    return await (
+        db[COLECOES["subcategorias"]].find(filtro, {"_id": 0})
+        .sort("ordem", 1).to_list(500)
+    )
+
+
+@router.post("/subcategorias", status_code=201)
+async def criar_subcategoria(
+    dados: SubcategoriaEntrada, _: dict = Depends(gestor_atual)
+) -> dict:
+    db = obter_db()
+    await _garante_categoria(db, dados.categoria_id)
+    subcategoria = dados.model_dump()
+    subcategoria["id"] = str(uuid.uuid4())
+    await db[COLECOES["subcategorias"]].insert_one(dict(subcategoria))
+    return subcategoria
+
+
+@router.put("/subcategorias/{subcategoria_id}")
+async def editar_subcategoria(
+    subcategoria_id: str, dados: SubcategoriaEntrada, _: dict = Depends(gestor_atual)
+) -> dict:
+    """**Mudar uma subcategoria de categoria arrastaria os produtos dela para
+    uma categoria que não é a deles** — e um produto cuja subcategoria pertence
+    a outra categoria não aparece em grelha nenhuma: some do ecrã sem ninguém
+    perceber porquê. Recusa-se enquanto ela tiver produtos; sem produtos, muda
+    à vontade."""
+    db = obter_db()
+    atual = await db[COLECOES["subcategorias"]].find_one({"id": subcategoria_id})
+    if not atual:
+        raise HTTPException(status_code=404, detail="Subcategoria não encontrada")
+    await _garante_categoria(db, dados.categoria_id)
+    if dados.categoria_id != atual.get("categoria_id"):
+        quantos = await db[COLECOES["produtos"]].count_documents(
+            {"subcategoria_id": subcategoria_id})
+        if quantos:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Esta subcategoria tem %d produto(s) e não se pode mudar "
+                    "para outra categoria — eles deixariam de aparecer na "
+                    "grelha. Tire-os dela primeiro." % quantos
+                ),
+            )
+    await db[COLECOES["subcategorias"]].update_one(
+        {"id": subcategoria_id}, {"$set": dados.model_dump()}
+    )
+    return await db[COLECOES["subcategorias"]].find_one({"id": subcategoria_id}, {"_id": 0})
+
+
+@router.delete("/subcategorias/{subcategoria_id}")
+async def apagar_subcategoria(
+    subcategoria_id: str, _: dict = Depends(gestor_atual)
+) -> dict:
+    """Apagar uma subcategoria com produtos NÃO os apaga nem os esconde: eles
+    voltam a ser produtos da categoria, sem subcategoria nenhuma, e continuam
+    a aparecer na grelha (em «Outros»). É por isso que isto não pede para os
+    mudar primeiro, ao contrário do apagar uma CATEGORIA — lá o produto ficava
+    órfão a apontar para nada, aqui não fica: o campo limpa-se."""
+    db = obter_db()
+    r = await db[COLECOES["subcategorias"]].delete_one({"id": subcategoria_id})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Subcategoria não encontrada")
+    soltos = await db[COLECOES["produtos"]].update_many(
+        {"subcategoria_id": subcategoria_id}, {"$set": {"subcategoria_id": None}}
+    )
+    return {"apagada": True, "produtos_soltos": getattr(soltos, "modified_count", 0)}
+
+
 # --- Grupos de personalização ----------------------------------------------------
 
 
@@ -276,6 +382,11 @@ class ProdutoEntrada(BaseModel):
 
     nome: str = Field(min_length=1, max_length=120)
     categoria_id: str = Field(min_length=1)
+    # A subcategoria é OPCIONAL e é só arrumação da grelha do POS: um produto
+    # sem ela aparece na mesma, em «Outros». Tem de pertencer à categoria do
+    # produto (`_valida_referencias`) — uma subcategoria de outra categoria
+    # fazia o produto desaparecer da grelha sem ninguém perceber porquê.
+    subcategoria_id: Optional[str] = None
     preco: float = Field(ge=0, allow_inf_nan=False)
     tax_id: str
     foto_url: Optional[str] = None
@@ -305,12 +416,33 @@ class ProdutoEstado(BaseModel):
     ativo: bool
 
 
-async def _valida_referencias(db, categoria_id: str, grupos: List[str]) -> None:
-    """Recusa uma categoria ou grupos de personalização inexistentes — um
-    produto órfão a apontar para nada é pior do que recusar a gravação (mesmo
-    raciocínio do apagar_categoria e do apagar_grupo, ao contrário)."""
+async def _valida_referencias(
+    db, categoria_id: str, grupos: List[str], subcategoria_id: Optional[str] = None
+) -> None:
+    """Recusa uma categoria, subcategoria ou grupos de personalização
+    inexistentes — um produto órfão a apontar para nada é pior do que recusar a
+    gravação (mesmo raciocínio do apagar_categoria e do apagar_grupo, ao
+    contrário).
+
+    **A subcategoria tem de ser DA categoria do produto.** Não é zelo: a grelha
+    do POS mostra as subcategorias da categoria que está à frente, e um produto
+    com a subcategoria de outra categoria não cabe em nenhuma delas —
+    desaparecia do ecrã, com o artigo à venda na loja."""
     if not await db[COLECOES["categorias"]].find_one({"id": categoria_id}):
         raise HTTPException(status_code=422, detail="Categoria inexistente: %s" % categoria_id)
+    if subcategoria_id:
+        sub = await db[COLECOES["subcategorias"]].find_one({"id": subcategoria_id})
+        if not sub:
+            raise HTTPException(
+                status_code=422, detail="Subcategoria inexistente: %s" % subcategoria_id)
+        if sub.get("categoria_id") != categoria_id:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "A subcategoria \"%s\" é de outra categoria — o produto "
+                    "deixaria de aparecer na grelha." % sub.get("nome")
+                ),
+            )
     if grupos:
         existentes = await (
             db[COLECOES["grupos_personalizacao"]]
@@ -359,7 +491,8 @@ async def produtos_sem_iva(_: dict = Depends(gestor_atual)) -> List[dict]:
 @router.post("/produtos", status_code=201)
 async def criar_produto(dados: ProdutoEntrada, _: dict = Depends(gestor_atual)) -> dict:
     db = obter_db()
-    await _valida_referencias(db, dados.categoria_id, dados.grupos_personalizacao)
+    await _valida_referencias(
+        db, dados.categoria_id, dados.grupos_personalizacao, dados.subcategoria_id)
     produto = dados.model_dump()
     produto["id"] = str(uuid.uuid4())
     # De onde veio a foto, gravado ao lado dela — é este campo que decide, na
@@ -385,7 +518,8 @@ async def editar_produto(
     produto_id: str, dados: ProdutoEntrada, _: dict = Depends(gestor_atual)
 ) -> dict:
     db = obter_db()
-    await _valida_referencias(db, dados.categoria_id, dados.grupos_personalizacao)
+    await _valida_referencias(
+        db, dados.categoria_id, dados.grupos_personalizacao, dados.subcategoria_id)
 
     alteracoes = dados.model_dump()
     # O `vendus_ref` NÃO se apaga por omissão. Este PUT substitui o registo

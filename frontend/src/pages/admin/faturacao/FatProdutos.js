@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   getProdutos, getProdutosSemIva, criarProduto, editarProduto, apagarProduto, mudarEstadoProduto,
-  getCategorias, getGrupos, importarVendus,
+  getCategorias, getSubcategorias, getGrupos, importarVendus,
   carregarFotoProduto, urlDaFotoProduto,
   detalhesErro, temMaisDe2CasasDecimais,
 } from '../../../lib/faturacao';
@@ -47,12 +47,13 @@ const TAXA_LABEL = Object.fromEntries(TAXA_OPCOES.map((t) => [t.value, t.label])
 const fmtEUR = (n) => new Intl.NumberFormat('pt-PT', { style: 'currency', currency: 'EUR' }).format(Number(n) || 0);
 
 const emptyForm = {
-  nome: '', categoria_id: '', preco: '', tax_id: '', foto_url: '', grupos_personalizacao: [], ativo: true,
+  nome: '', categoria_id: '', subcategoria_id: '', preco: '', tax_id: '', foto_url: '', grupos_personalizacao: [], ativo: true,
 };
 
 export default function FatProdutos() {
   const [produtos, setProdutos] = useState([]);
   const [categorias, setCategorias] = useState([]);
+  const [subcategorias, setSubcategorias] = useState([]);
   const [grupos, setGrupos] = useState([]);
   const [semIva, setSemIva] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -82,9 +83,11 @@ export default function FatProdutos() {
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [p, c, g, s] = await Promise.all([getProdutos(), getCategorias(), getGrupos(), getProdutosSemIva()]);
+      const [p, c, g, s, sub] = await Promise.all([
+        getProdutos(), getCategorias(), getGrupos(), getProdutosSemIva(), getSubcategorias()]);
       setProdutos(p.data || []);
       setCategorias(c.data || []);
+      setSubcategorias(sub.data || []);
       setGrupos(g.data || []);
       setSemIva(s.data || []);
     } catch (error) {
@@ -129,6 +132,7 @@ export default function FatProdutos() {
     setForm({
       nome: produto.nome || '',
       categoria_id: produto.categoria_id || '',
+      subcategoria_id: produto.subcategoria_id || '',
       preco: produto.preco != null ? String(produto.preco) : '',
       tax_id: produto.tax_id || '',
       foto_url: produto.foto_url || '',
@@ -202,6 +206,10 @@ export default function FatProdutos() {
     const payload = {
       nome,
       categoria_id: form.categoria_id,
+      // Vazio no formulário quer dizer "sem subcategoria" — e vai como `null`,
+      // que é o que o servidor guarda. Uma string vazia era um id que não
+      // existe, e o produto ficava a apontar para nada.
+      subcategoria_id: form.subcategoria_id || null,
       preco,
       tax_id: form.tax_id,
       foto_url: form.foto_url.trim() || null,
@@ -535,6 +543,35 @@ export default function FatProdutos() {
                 </Select>
                 {categorias.length === 0 && <p className="text-xs text-muted-foreground">Crie uma categoria primeiro.</p>}
                 {fieldErrors.categoria_id && <p className="text-xs text-destructive">{fieldErrors.categoria_id}</p>}
+              </div>
+
+              {/* A subcategoria é opcional e só arruma a grelha do POS. Só se
+                  mostram as da categoria escolhida: uma subcategoria de outra
+                  categoria fazia o produto desaparecer da grelha, e o servidor
+                  recusa-a (`_valida_referencias`) — o ecrã não a oferece. */}
+              <div className="space-y-2">
+                <Label>Subcategoria</Label>
+                <Select
+                  value={form.subcategoria_id || 'nenhuma'}
+                  onValueChange={(v) => setForm({ ...form, subcategoria_id: v === 'nenhuma' ? '' : v })}
+                  disabled={!form.categoria_id}
+                >
+                  <SelectTrigger data-testid="produto-subcategoria-select">
+                    <SelectValue placeholder="Sem subcategoria" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="nenhuma">Sem subcategoria</SelectItem>
+                    {subcategorias
+                      .filter((s) => s.categoria_id === form.categoria_id)
+                      .map((s) => (
+                        <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Arruma a grelha do POS. Sem subcategoria, o produto aparece em "Outros".
+                  Criam-se em Categorias.
+                </p>
               </div>
 
               <div className="grid grid-cols-2 gap-4">

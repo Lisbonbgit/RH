@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   getCategorias, criarCategoria, editarCategoria, apagarCategoria,
+  getSubcategorias, criarSubcategoria, editarSubcategoria, apagarSubcategoria,
   detalhesErro,
 } from '../../../lib/faturacao';
 import { Card, CardContent } from '../../../components/ui/card';
@@ -17,7 +18,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '../../../components/ui/alert-dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../../components/ui/table';
-import { Tag, Plus, Pencil, Trash2 } from 'lucide-react';
+import { Tag, Plus, Pencil, Trash2, FolderTree, Loader2 } from 'lucide-react';
 import PageHeader from '../../../components/PageHeader';
 import { toast } from 'sonner';
 
@@ -30,6 +31,154 @@ const estadoBadge = (ativa) => (
     : <Badge variant="outline" className="bg-slate-100 text-slate-600 border-slate-200">Inativa</Badge>
 );
 
+// **As subcategorias de UMA categoria** — «dentro do Venda ao Público quero
+// criar uma subcategoria», nas palavras do dono. Vivem aqui, no ecrã das
+// categorias, e não num ecrã à parte: é dentro da categoria que se pensa
+// nelas.
+//
+// São só arrumação da grelha do POS. Não entram na fatura, no IVA nem nos
+// relatórios — e a importação do Vendus não lhes toca (o Vendus não tem este
+// nível). O que ela reescreve é a CATEGORIA do produto, que continua a ser
+// dela; por isso um produto que mude de categoria lá perde a subcategoria, e a
+// importação diz qual foi.
+function DialogoSubcategorias({ categoria, onFechar }) {
+  const [subcategorias, setSubcategorias] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [nome, setNome] = useState('');
+  const [aGravar, setAGravar] = useState(false);
+
+  const recarregar = React.useCallback(async () => {
+    if (!categoria) return;
+    setCarregando(true);
+    try {
+      const { data } = await getSubcategorias(categoria.id);
+      setSubcategorias(data || []);
+    } catch (error) {
+      toast.error('Erro ao carregar as subcategorias');
+    } finally {
+      setCarregando(false);
+    }
+  }, [categoria]);
+
+  useEffect(() => { recarregar(); }, [recarregar]);
+
+  const acrescentar = async (e) => {
+    e.preventDefault();
+    const limpo = nome.trim();
+    if (!limpo || aGravar) return;
+    setAGravar(true);
+    try {
+      // A ordem nasce no fim da lista: quem cria uma subcategoria nova está a
+      // acrescentar ao que já lá está, não a pôr à frente de tudo.
+      await criarSubcategoria({
+        nome: limpo, categoria_id: categoria.id, ordem: subcategorias.length, ativa: true,
+      });
+      setNome('');
+      await recarregar();
+    } catch (error) {
+      toast.error(detalhesErro(error, 'Não foi possível criar a subcategoria.').mensagem);
+    } finally {
+      setAGravar(false);
+    }
+  };
+
+  const renomear = async (sub, novoNome) => {
+    const limpo = (novoNome || '').trim();
+    if (!limpo || limpo === sub.nome) return;
+    try {
+      await editarSubcategoria(sub.id, {
+        nome: limpo, categoria_id: sub.categoria_id, ordem: sub.ordem ?? 0,
+        ativa: sub.ativa !== false,
+      });
+      await recarregar();
+    } catch (error) {
+      toast.error(detalhesErro(error, 'Não foi possível renomear.').mensagem);
+      await recarregar();
+    }
+  };
+
+  const apagar = async (sub) => {
+    try {
+      const { data } = await apagarSubcategoria(sub.id);
+      // Apagar NÃO apaga produtos: eles ficam sem subcategoria e continuam na
+      // grelha, em "Outros". Dizê-lo aqui evita o susto de quem carregou.
+      const soltos = data?.produtos_soltos || 0;
+      toast.success(soltos
+        ? `Subcategoria apagada. ${soltos} produto(s) ficaram sem subcategoria — continuam à venda.`
+        : 'Subcategoria apagada.');
+      await recarregar();
+    } catch (error) {
+      toast.error(detalhesErro(error, 'Não foi possível apagar.').mensagem);
+    }
+  };
+
+  return (
+    <Dialog open={!!categoria} onOpenChange={(aberto) => { if (!aberto) onFechar(); }}>
+      <DialogContent data-testid="subcategorias-dialog">
+        <DialogHeader>
+          <DialogTitle>Subcategorias de "{categoria?.nome}"</DialogTitle>
+          <DialogDescription>
+            Arrumam a grelha do POS dentro deste separador. Um produto pode ficar sem
+            subcategoria — aparece na mesma, em "Outros".
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3 py-2">
+          {carregando ? (
+            <div className="flex items-center justify-center h-20">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : subcategorias.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-4 text-center">
+              Ainda não há subcategorias aqui. Enquanto não houver, a grelha do POS fica
+              exactamente como está hoje.
+            </p>
+          ) : (
+            <div className="rounded-xl border divide-y">
+              {subcategorias.map((sub) => (
+                <div key={sub.id} className="flex items-center gap-2 p-2">
+                  <Input
+                    defaultValue={sub.nome}
+                    maxLength={NOME_MAX}
+                    onBlur={(e) => renomear(sub, e.target.value)}
+                    data-testid={`subcategoria-nome-${sub.id}`}
+                  />
+                  <Button
+                    type="button" variant="ghost" size="icon"
+                    onClick={() => apagar(sub)}
+                    aria-label={`Apagar ${sub.nome}`}
+                    data-testid={`apagar-subcategoria-${sub.id}`}
+                  >
+                    <Trash2 className="h-4 w-4 text-destructive" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <form onSubmit={acrescentar} className="flex items-center gap-2">
+            <Input
+              value={nome}
+              onChange={(e) => setNome(e.target.value)}
+              placeholder="Nova subcategoria (ex: Açaís)"
+              maxLength={NOME_MAX}
+              data-testid="nova-subcategoria-input"
+            />
+            <Button type="submit" disabled={!nome.trim() || aGravar} data-testid="criar-subcategoria-btn">
+              <Plus className="h-4 w-4 mr-1" /> Criar
+            </Button>
+          </form>
+        </div>
+
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onFechar}>Fechar</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+
 export default function FatCategorias() {
   const [categorias, setCategorias] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -40,6 +189,7 @@ export default function FatCategorias() {
   const [fieldErrors, setFieldErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [subcategoriasDe, setSubcategoriasDe] = useState(null);
 
   useEffect(() => { fetchAll(); }, []);
 
@@ -159,6 +309,14 @@ export default function FatCategorias() {
                       <TableCell>{estadoBadge(categoria.ativa)}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-2">
+                          <Button
+                            variant="outline"
+                            onClick={() => setSubcategoriasDe(categoria)}
+                            data-testid={`subcategorias-categoria-${categoria.id}`}
+                          >
+                            <FolderTree className="h-4 w-4 mr-1.5" />
+                            Subcategorias
+                          </Button>
                           <Button variant="ghost" size="icon" onClick={() => openEdit(categoria)} data-testid={`edit-categoria-${categoria.id}`}>
                             <Pencil className="h-4 w-4" />
                           </Button>
@@ -175,6 +333,11 @@ export default function FatCategorias() {
           )}
         </CardContent>
       </Card>
+
+      <DialogoSubcategorias
+        categoria={subcategoriasDe}
+        onFechar={() => setSubcategoriasDe(null)}
+      />
 
       {/* Dialog criar/editar */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
