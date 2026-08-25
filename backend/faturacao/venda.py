@@ -3006,6 +3006,95 @@ async def separar_uma_parte(
     return await _grava_a_parte_e_o_resto(db, venda_id, mae, filha, resto)
 
 
+_MSG_DIVISAO_NAO_SE_DESFAZ = (
+    "Esta divisão já não se desfaz: uma das partes tem fatura emitida ou está "
+    "a emitir. O que já foi facturado corrige-se com uma nota de crédito, e as "
+    "partes que faltam cobram-se ou cancelam-se uma a uma."
+)
+_MSG_NAO_ESTA_DIVIDIDA = "Esta conta não está dividida — não há divisão para desfazer."
+
+
+@router.post("/pos/venda/{venda_id}/desfazer-divisao")
+async def desfazer_divisao(
+    venda_id: str, operador: Dict = Depends(operador_atual)
+) -> dict:
+    """**A conta volta a ser uma só, com tudo o que tinha.**
+
+    É a saída que faltava, e o dono descreveu-a numa frase: dividiu-se por
+    engano (ou o cliente lembrou-se de mais um artigo), toca-se na seta de
+    voltar e a conta fica inteira outra vez — acrescenta-se o que falta, e
+    divide-se de novo se for preciso.
+
+    Sem isto, a única saída era cancelar as partes uma a uma e **repicar a
+    conta toda do zero**: cancelar uma parte não devolve os artigos dela a
+    lado nenhum. Não era uma escolha de desenho; era um buraco.
+
+    **Só enquanto NADA aconteceu.** Basta uma parte emitida — uma Fatura
+    Simplificada real, entregue à Autoridade Tributária — para isto deixar de
+    ser possível: essa fatura não se desfaz, e a saída dela é a nota de
+    crédito. O mesmo para uma parte com reserva fiscal viva (pode estar a
+    nascer uma FS neste instante). Nesses casos, 409 e a conta fica como está.
+
+    **As partes são APAGADAS, não canceladas**, e a diferença importa: uma
+    parte cancelada aparece nos relatórios e no Z como uma venda que se
+    cancelou, e uma divisão desfeita antes de existir não é uma venda que
+    aconteceu — é uma que nunca chegou a existir. Nenhuma delas teve documento
+    nem reserva (é o que as guardas acima garantem), ninguém do lado de fora
+    lhes viu o `id`, e o `_grava_as_partes` já apaga filhas pela mesma razão
+    quando a divisão aborta.
+
+    A ordem das escritas é a de sempre, e a razão é a de sempre: **apagam-se as
+    partes primeiro e a mãe reabre-se a seguir**. Ao contrário, existia um
+    instante com a mãe `aberta` E as partes vivas — os mesmos artigos em duas
+    contas, prontos a ser facturados duas vezes. Se a reabertura falhar, a
+    conta fica `separada` sem partes, que é um estado que o sistema já sabe
+    ver (`por_resolver.contas_por_resolver`) e o gestor arruma."""
+    db = obter_db()
+    mae = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
+    _garante_do_balcao(mae)
+    if mae.get("estado") != "separada":
+        raise HTTPException(status_code=409, detail=_MSG_NAO_ESTA_DIVIDIDA)
+    await _garante_sem_emissao(db, venda_id)
+    await _garante_sessao_desta_venda_aberta(db, mae)
+
+    partes = await db[COLECOES["vendas"]].find(
+        {"conta_mae_id": venda_id, "loja_id": operador["loja_id"]}
+    ).to_list(50)
+
+    # Uma parte que não esteja `aberta` já teve vida própria — foi emitida, ou
+    # foi cancelada de propósito por quem estava a cobrar. Nos dois casos
+    # desfazer a divisão seria apagar uma decisão que alguém tomou.
+    if any(p.get("estado") != "aberta" for p in partes):
+        raise HTTPException(status_code=409, detail=_MSG_DIVISAO_NAO_SE_DESFAZ)
+    for parte in partes:
+        if await _tem_reserva_fiscal(db, parte["id"]):
+            raise HTTPException(status_code=409, detail=_MSG_DIVISAO_NAO_SE_DESFAZ)
+
+    apagadas = []
+    for parte in partes:
+        resultado = await db[COLECOES["vendas"]].delete_one(
+            {"id": parte["id"], "estado": "aberta"}
+        )
+        if getattr(resultado, "deleted_count", 1) == 0:
+            # Alguém ganhou a corrida a esta parte (emitiu-a, cancelou-a) entre
+            # a leitura e agora. As que já se apagaram voltam — e voltam
+            # `aberta`, que é como estavam — para não ficar a conta partida ao
+            # meio, com metade das pessoas por cobrar e metade desaparecida.
+            for reposta in apagadas:
+                await db[COLECOES["vendas"]].insert_one(dict(reposta))
+            raise HTTPException(status_code=409, detail=_MSG_DIVISAO_NAO_SE_DESFAZ)
+        apagadas.append(parte)
+
+    reaberta = await db[COLECOES["vendas"]].update_one(
+        {"id": venda_id, "estado": "separada"}, {"$set": {"estado": "aberta"}}
+    )
+    if reaberta.matched_count == 0:
+        raise HTTPException(status_code=409, detail=_MSG_VENDA_NAO_ABERTA)
+
+    mae["estado"] = "aberta"
+    return _venda_publica(mae)
+
+
 # --- As partes por cobrar, ao arrancar o ecrã ---------------------------------
 #
 # Declarada ANTES de `GET /pos/venda/{venda_id}` (que está no fim do
