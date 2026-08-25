@@ -43,13 +43,26 @@ _FATURA = {
     "id": "d1", "numero": "FS 01P2026/17", "atcud": "A-1", "tipo": "FS",
     "modo": "normal", "emitido_em": "2026-08-10T12:00:00+00:00",
     "cliente_nif": None, "tem_venda": True, "venda_id": "v1",
-    "linhas": [{"titulo": "Açaí Regular (Nutella)", "quantidade": 1,
-                "preco_unitario": 10.20, "desconto": 0.0, "total": 10.20}],
-    "pagamentos": [{"nome": "Dinheiro", "valor": 10.20}],
-    "mapa_imposto": [{"tax_id": "INT", "taxa": 13, "base": 9.03, "iva": 1.17, "total": 10.20}],
-    "totais_imposto": {"base": 9.03, "iva": 1.17, "total": 10.20},
-    "total": 10.20, "total_das_linhas": 10.20, "total_divergente": False,
+    # Duas taxas no mesmo talão — o caso normal do cardápio (açaí a 13 %,
+    # refrigerante a 23 %) e o que torna o IVA POR LINHA indispensável.
+    "linhas": [
+        {"titulo": "Açaí Regular (Nutella)", "quantidade": 1, "preco_unitario": 10.20,
+         "desconto": 0.0, "total": 10.20, "tax_id": "INT", "taxa": 13},
+        {"titulo": "Coca-Cola", "quantidade": 1, "preco_unitario": 1.15,
+         "desconto": 0.0, "total": 1.15, "tax_id": "NOR", "taxa": 23},
+    ],
+    "pagamentos": [{"nome": "Multibanco", "valor": 11.35}],
+    "mapa_imposto": [
+        {"tax_id": "INT", "taxa": 13, "base": 9.03, "iva": 1.17, "total": 10.20},
+        {"tax_id": "NOR", "taxa": 23, "base": 0.93, "iva": 0.22, "total": 1.15},
+    ],
+    "totais_imposto": {"base": 9.96, "iva": 1.39, "total": 11.35},
+    "total": 11.35, "total_das_linhas": 11.35, "total_divergente": False,
     "tem_talao": True,
+    # O contexto que só o backoffice pede: quem emitiu, onde e em que caixa.
+    "loja_nome": "L'Açaí Alfragide", "caixa_nome": "Caixa Alfragide",
+    "operador_nome": "Emily Rodrigues", "origem": "POS",
+    "vendus_document_id": 368453449,
 }
 
 
@@ -121,11 +134,42 @@ def test_a_nota_de_credito_le_se_com_sinal_menos(ecra):
     assert "€ 9,05" in ecra["naLista"], ecra["naLista"][:400]
 
 
-def test_abrir_uma_fatura_vai_busca_la_ao_servidor_e_mostra_a(ecra):
+def test_abrir_uma_fatura_vai_busca_la_ao_servidor(ecra):
     assert any(p["url"].endswith("/faturacao/documentos/d1") for p in ecra["pedidos"]), \
         ecra["pedidos"]
-    assert "Açaí Regular (Nutella)" in ecra["aberta"], ecra["aberta"][:400]
-    # "IVA 13 %" com espaço: o `textoVisivel` junta os nós de texto com um
-    # espaço, e o `%` é um nó à parte do `{linha.taxa}`.
-    assert "IVA 13" in ecra["aberta"], ecra["aberta"][:400]
-    assert "base € 9,03" in ecra["aberta"], ecra["aberta"][:400]
+    assert "Açaí Regular (Nutella)" in ecra["aberta"], ecra["aberta"][:600]
+
+
+def test_a_fatura_aberta_mostra_o_IVA_de_CADA_LINHA(ecra):
+    """O dono pediu-o com o print do Vendus à frente: a taxa é uma COLUNA da
+    linha, e não só uma tabela no fim. Numa fatura com duas taxas — o caso
+    normal do cardápio — sem ela é preciso adivinhar qual linha é qual."""
+    aberta = ecra["aberta"]
+    assert "13%" in aberta and "23%" in aberta, aberta[:600]
+    assert "P. Unit." in aberta and "Qtd." in aberta, aberta[:600]
+
+
+def test_a_fatura_aberta_mostra_o_subtotal_e_o_pagamento(ecra):
+    aberta = ecra["aberta"]
+    assert "Subtotal" in aberta, aberta[:600]
+    assert "Multibanco" in aberta, aberta[:600]
+    assert "€ 11,35" in aberta, aberta[:600]
+
+
+def test_a_fatura_aberta_oferece_o_papel_e_o_PDF(ecra):
+    """As duas saídas que o dono pediu com o print do Vendus à frente: a
+    segunda via em papel (sai na loja) e o PDF certificado (para guardar,
+    imprimir ou anexar a um email)."""
+    aberta = ecra["aberta"]
+    assert "Reimprimir na loja" in aberta, aberta[:600]
+    assert "PDF da fatura" in aberta, aberta[:600]
+
+
+def test_a_fatura_aberta_diz_QUEM_a_emitiu_e_ONDE(ecra):
+    """As três perguntas que a fatura não responde sozinha e as primeiras que
+    se fazem sobre um documento que não se reconhece."""
+    aberta = ecra["aberta"]
+    assert "Emily Rodrigues" in aberta, aberta[:600]
+    assert "L'Açaí Alfragide" in aberta, aberta[:600]
+    assert "Caixa Alfragide" in aberta, aberta[:600]
+    assert "ATCUD A-1" in aberta, aberta[:600]

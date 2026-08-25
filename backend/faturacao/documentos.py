@@ -66,21 +66,31 @@ não escreve nada por sua conta: chama `venda.abrir_venda` e
 `venda.juntar_linha`, as rotas de sempre, com os guardas de sempre. Ver a
 docstring dessa função.
 """
+import asyncio
 import base64
 import logging
+import os
 import re
 from datetime import date
 from typing import Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from .db import COLECOES, obter_db
 from .fiscal import _itens_vendus
-from .mapa_imposto import _liquido_da_linha, mapa_de_imposto, totais_do_mapa
+from .mapa_imposto import (
+    _TAXA_DO_CODIGO, _liquido_da_linha, mapa_de_imposto, totais_do_mapa,
+)
 from .auth import gestor_atual
 from .periodos import janela_de_datas
 from .pos_auth import operador_atual
+from .vendus.cliente import ClienteVendus, VendusErro, obter_conta
+
+# O mesmo NIF por omissão da importação (importacao.py) — a conta Vendus da
+# Fordaimon Foods. Escrito nos dois sítios porque são dois módulos que não se
+# importam um ao outro; o `.env` do servidor manda em ambos.
+_NIF_POR_OMISSAO = "517542510"
 
 logger = logging.getLogger(__name__)
 
@@ -309,12 +319,21 @@ def _linhas_da_fatura(venda: Optional[Dict]) -> List[Dict]:
     for item in _itens_vendus(venda):
         bruto = round(item["qty"] * item["gross_price"], 2)
         liquido = _liquido_da_linha(item)
+        # **O IVA vai NA LINHA, e não só no mapa lá em baixo.** É onde quem
+        # confere um talão o procura — o print do Vendus tem-no como coluna — e
+        # sem ele uma fatura com duas taxas (o açaí a 13 % e o refrigerante a
+        # 23 %, que é o caso normal do cardápio) obriga a adivinhar qual linha
+        # é qual. A taxa sai do MESMO sítio que o mapa usa
+        # (`mapa_imposto._TAXA_DO_CODIGO`), nunca de uma tabela escrita aqui.
+        codigo = item.get("tax_id")
         linhas.append({
             "titulo": item.get("title"),
             "quantidade": item.get("qty"),
             "preco_unitario": item.get("gross_price"),
             "desconto": (_centimos(bruto) - _centimos(liquido)) / 100.0,
             "total": liquido,
+            "tax_id": codigo,
+            "taxa": _TAXA_DO_CODIGO.get(codigo),
         })
     return linhas
 
@@ -345,7 +364,42 @@ async def obter_documento(
     return await _detalhe_do_documento(db, documento)
 
 
-async def _detalhe_do_documento(db, documento: Dict) -> dict:
+async def _quem_e_onde(db, documento: Dict, venda: Optional[Dict]) -> Dict:
+    """**Quem emitiu, em que loja e em que caixa** — as três perguntas que a
+    fatura não responde sozinha e que são as primeiras que o gestor faz quando
+    olha para um documento que não reconhece.
+
+    Os nomes vão RESOLVIDOS e não em ids: um ecrã que mostrasse
+    `operador_id: 3f2a…` obrigava o gestor a ir procurar a quem pertence, e a
+    pergunta dele é «quem fez esta venda?». Um id que já não exista (a pessoa
+    saiu da empresa e a ficha foi apagada) dá `None` — e o ecrã escreve «—», que
+    é a verdade, em vez de esconder a fatura.
+
+    Só o backoffice pede isto. O POS já sabe em que loja está, e três leituras
+    a mais no caminho da reimpressão eram três leituras a mais com o cliente à
+    frente."""
+    async def nome(coleccao: str, id_: Optional[str]) -> Optional[str]:
+        if not id_:
+            return None
+        doc = await db[COLECOES[coleccao]].find_one({"id": id_}, {"_id": 0, "nome": 1})
+        return (doc or {}).get("nome")
+
+    return {
+        "loja_nome": await nome("lojas", documento.get("loja_id")),
+        "caixa_nome": await nome("caixas", (venda or {}).get("caixa_id")),
+        "operador_nome": await nome("utilizadores", (venda or {}).get("operador_id")),
+        "loja_id": documento.get("loja_id"),
+        "caixa_id": (venda or {}).get("caixa_id"),
+        "operador_id": (venda or {}).get("operador_id"),
+        # De onde veio a venda. Hoje é sempre o POS próprio — mas escrevê-lo
+        # agora é o que impede a pergunta "e esta, veio da app?" de não ter
+        # resposta no dia em que houver outra origem.
+        "origem": "POS",
+        "criada_em": (venda or {}).get("criada_em"),
+    }
+
+
+async def _detalhe_do_documento(db, documento: Dict, com_contexto: bool = False) -> dict:
     """A fatura aberta, sem decidir QUEM a pode ver — isso é de quem chama.
 
     Vive à parte desde que o backoffice ganhou o seu próprio ecrã de
@@ -398,6 +452,7 @@ async def _detalhe_do_documento(db, documento: Dict) -> dict:
         # botão de reimprimir tem alguma coisa para mandar à impressora
         # quando o agente existir. Ver `talao_do_documento`.
         "tem_talao": bool(documento.get("talao_escpos")),
+        **(await _quem_e_onde(db, documento, venda) if com_contexto else {}),
     }
 
 
@@ -563,7 +618,69 @@ async def documento_do_backoffice(
     documento = await db[COLECOES["documentos"]].find_one({"id": documento_id})
     if not documento:
         raise HTTPException(status_code=404, detail="Documento não encontrado")
-    return await _detalhe_do_documento(db, documento)
+    return await _detalhe_do_documento(db, documento, com_contexto=True)
+
+
+_MSG_SEM_ID_NO_VENDUS = (
+    "Esta fatura não tem id do Vendus guardado — sem ele não há PDF para ir "
+    "buscar. O documento fiscal continua bom; o talão certificado está no "
+    "botão de reimprimir."
+)
+_MSG_SEM_CONTA_VENDUS = (
+    "Conta Vendus não configurada no servidor (VENDUS_ACCOUNTS). Sem ela não "
+    "se consegue ir buscar o PDF."
+)
+
+
+@router.get("/documentos/{documento_id}/pdf")
+async def pdf_do_documento(documento_id: str, _: dict = Depends(gestor_atual)):
+    """**O PDF certificado da fatura**, ido buscar ao Vendus e devolvido tal e
+    qual — para descarregar, imprimir ou anexar a um email.
+
+    **Não é um PDF nosso.** Desenhar um aqui era produzir um papel com ar de
+    fatura que não é fatura nenhuma: o documento fiscal é o do Vendus, com o
+    ATCUD, o hash e o QR que a Autoridade Tributária conhece. Por isso isto é
+    uma ida buscar, e não uma geração.
+
+    **O `mode` é o DO DOCUMENTO** (`documento["modo"]`), nunca o modo em que a
+    loja está hoje: um documento emitido em `tests` pedido com `mode=normal`
+    responde 404. Medido ao vivo na conta real — e é a mesma armadilha que já
+    apanhou a app L'Açaí.
+
+    Uma fatura sem `vendus_document_id` (não deve existir, mas a base é mais
+    velha do que algumas regras) diz que não tem PDF em vez de devolver um
+    ficheiro vazio com nome de fatura.
+    """
+    db = obter_db()
+    documento = await db[COLECOES["documentos"]].find_one({"id": documento_id})
+    if not documento:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+    vendus_id = documento.get("vendus_document_id")
+    if not vendus_id:
+        raise HTTPException(status_code=422, detail=_MSG_SEM_ID_NO_VENDUS)
+
+    conta = obter_conta(os.environ.get("FAT_NIF") or _NIF_POR_OMISSAO)
+    if conta is None:
+        raise HTTPException(status_code=503, detail=_MSG_SEM_CONTA_VENDUS)
+
+    modo = documento.get("modo") or "normal"
+    try:
+        with ClienteVendus(conta.chave) as cliente:
+            pdf = await asyncio.to_thread(cliente.pdf_do_documento, vendus_id, modo)
+    except VendusErro as e:
+        raise HTTPException(status_code=502, detail="Vendus indisponível: %s" % e)
+    if not pdf:
+        raise HTTPException(status_code=502, detail="O Vendus não devolveu PDF nenhum.")
+
+    nome = "%s.pdf" % (documento.get("numero") or documento_id).replace("/", "-")
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        # `inline` e não `attachment`: o browser abre-o e a pessoa decide se
+        # descarrega ou imprime dali. Com `attachment` não havia forma de o
+        # VER sem o gravar primeiro.
+        headers={"Content-Disposition": 'inline; filename="%s"' % nome},
+    )
 
 
 @router.get("/pos/documentos/{documento_id}/talao")

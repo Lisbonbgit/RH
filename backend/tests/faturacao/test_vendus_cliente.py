@@ -220,3 +220,70 @@ def test_metodos_pagamento_5xx_e_indisponibilidade_nao_lista_vazia():
 
     with pytest.raises(VendusIndisponivel):
         _cliente(handler).listar_metodos_pagamento()
+
+
+# --- O PDF certificado de um documento ----------------------------------------
+#
+# Verificado ao vivo na conta real antes de se escrever uma linha: o Vendus
+# devolve o PDF em BASE64 dentro do JSON (campo `output`), e não no corpo da
+# resposta — e exige o `mode` DO DOCUMENTO (um emitido em `tests` pedido com
+# `mode=normal` dá 404). É a mesma armadilha que já apanhou a app L'Açaí.
+
+import base64  # noqa: E402
+
+import pytest  # noqa: E402
+
+from faturacao.vendus.cliente import VendusHTTPErro  # noqa: E402
+
+_PDF = b"%PDF-1.3\nfingido\n%%EOF"
+
+
+def test_o_pdf_vem_em_base64_no_campo_output():
+    pedidos = []
+
+    def handler(request):
+        pedidos.append(dict(request.url.params))
+        return httpx.Response(200, json={
+            "id": 368200354, "number": "FS T06P2026/34",
+            "output": base64.b64encode(_PDF).decode(),
+        })
+
+    with _cliente(handler) as c:
+        assert c.pdf_do_documento(368200354, "tests") == _PDF
+
+    assert pedidos == [{"mode": "tests", "output": "pdf"}], pedidos
+
+
+def test_o_MODO_do_documento_e_o_que_viaja():
+    """Um documento emitido em testes pedido com `mode=normal` responde 404 —
+    o Vendus guarda os dois mundos separados."""
+    vistos = []
+
+    def handler(request):
+        vistos.append(request.url.params.get("mode"))
+        return httpx.Response(200, json={"output": base64.b64encode(_PDF).decode()})
+
+    with _cliente(handler) as c:
+        c.pdf_do_documento(1, "normal")
+        c.pdf_do_documento(2, "tests")
+
+    assert vistos == ["normal", "tests"]
+
+
+def test_um_documento_sem_pdf_devolve_vazio_e_nao_rebenta():
+    def handler(request):
+        return httpx.Response(200, json={"id": 1, "number": "FS 1/1"})
+
+    with _cliente(handler) as c:
+        assert c.pdf_do_documento(1, "normal") == b""
+
+
+def test_um_base64_ilegivel_rebenta_em_vez_de_gravar_lixo():
+    """Um ficheiro corrompido com nome de fatura é pior do que um erro: quem o
+    guarda só descobre quando o for abrir, e aí já não sabe de onde veio."""
+    def handler(request):
+        return httpx.Response(200, json={"output": "isto-não-é-base64!!!"})
+
+    with _cliente(handler) as c:
+        with pytest.raises(VendusHTTPErro):
+            c.pdf_do_documento(1, "normal")

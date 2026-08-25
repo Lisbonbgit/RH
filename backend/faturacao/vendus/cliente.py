@@ -42,6 +42,9 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+import base64
+import binascii
+
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -201,6 +204,42 @@ class ClienteVendus:
         de graça o `per_page` explícito e o tratamento do A001; se um dia
         uma conta passar dos 100, esta leitura não trunca em silêncio."""
         return self._paginar(CAMINHO_METODOS_PAGAMENTO)
+
+    def pdf_do_documento(self, documento_id: Any, modo: str) -> bytes:
+        """O PDF **certificado** de um documento, tal como o Vendus o gera.
+
+        **Não é um PDF nosso, e é de propósito.** Um PDF desenhado por nós
+        pareceria uma fatura sem o ser: o documento fiscal é o do Vendus, com o
+        ATCUD, o hash e o QR que a Autoridade Tributária conhece. O que se faz
+        aqui é ir buscá-lo.
+
+        **O `mode` tem de ser o DO DOCUMENTO**, não o de agora. Um documento
+        emitido em `tests` pedido com `mode=normal` responde 404 — o Vendus
+        guarda os dois mundos separados. Foi medido ao vivo na conta real, e é
+        a mesma armadilha que já apanhou a app L'Açaí.
+
+        **O PDF vem em BASE64 dentro do JSON**, no campo `output` (`output=pdf`
+        no pedido) — não é o corpo da resposta. Verificado ao vivo:
+        `JVBERi0xLjMK…` é `%PDF-1.3`. Há também um `output=pdf_url`, que
+        devolve um caminho relativo em base64 dentro de `output_data.content`;
+        não se usa, porque esse caminho volta a precisar da chave da API e
+        entregá-lo ao browser era pôr a chave no ecrã.
+        """
+        resposta = self._pedir(
+            "documents/%s/" % documento_id, {"mode": modo, "output": "pdf"}
+        )
+        if resposta is None:
+            return b""
+        conteudo = (resposta.json() or {}).get("output")
+        if not conteudo:
+            return b""
+        try:
+            return base64.b64decode(conteudo)
+        except (binascii.Error, ValueError):
+            # Um base64 ilegível não é um PDF vazio nem uma avaria de rede: é
+            # uma resposta que não se percebe, e quem chama tem de o saber para
+            # não gravar um ficheiro corrompido com nome de fatura.
+            raise VendusHTTPErro(200, "PDF do Vendus ilegível (base64 inválido)")
 
     def _paginar(self, caminho: str) -> List[dict]:
         """GET paginado até esgotar. Pede sempre `per_page=100` (a armadilha
