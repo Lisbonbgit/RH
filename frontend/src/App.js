@@ -50,6 +50,7 @@ import {
 import FatDashboard from './pages/admin/faturacao/FatDashboard';
 import FatProdutos from './pages/admin/faturacao/FatProdutos';
 import FatCategorias from './pages/admin/faturacao/FatCategorias';
+import FatDocumentos from './pages/admin/faturacao/FatDocumentos';
 import FatPersonalizacoes from './pages/admin/faturacao/FatPersonalizacoes';
 import FatLojas from './pages/admin/faturacao/FatLojas';
 import FatPagamentos from './pages/admin/faturacao/FatPagamentos';
@@ -229,7 +230,7 @@ function AppRoutes() {
         <Route path="faturacao/produtos/lista" element={<FatProdutos />} />
         <Route path="faturacao/produtos/categorias" element={<FatCategorias />} />
         <Route path="faturacao/produtos/personalizacoes" element={<FatPersonalizacoes />} />
-        <Route path="faturacao/documentos" element={<ComingSoon icon={FileText} title="Documentos" subtitle="Faturação · Gestão" note="Pesquisar faturas e notas de crédito, reimprimir e anular." />} />
+        <Route path="faturacao/documentos" element={<FatDocumentos />} />
         {/* A lista que as mensagens do POS já mandavam o gestor consultar
             ("chame o gestor, que resolve na lista de reservas fiscais presas")
             e que não existia — sem ela, uma emissão que fica a meio tranca a

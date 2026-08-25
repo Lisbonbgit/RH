@@ -70,6 +70,21 @@ def _meia_noite_lisboa(dia: date) -> datetime:
     return _combina(dia)
 
 
+def janela_de_datas(de: date, ate: date) -> Janela:
+    """A janela [inicio, fim) em UTC de um intervalo escolhido à mão — de
+    meia-noite de `de` a meia-noite do dia SEGUINTE a `ate`, hora de Lisboa.
+
+    O `ate` é INCLUSIVO para quem escolhe (escolher "1 a 25" quer dizer o dia
+    25 inteiro) e o `fim` continua exclusivo para quem filtra, que é a
+    convenção deste módulo. Somar um dia à data — e não 24 horas ao instante —
+    é o que faz isto continuar certo no dia da mudança da hora, que em Lisboa
+    só tem 23.
+    """
+    if ate < de:
+        raise ValueError("A data final é anterior à inicial.")
+    return Janela(_meia_noite_lisboa(de), _meia_noite_lisboa(ate + timedelta(days=1)))
+
+
 def janela_hoje(agora: datetime) -> Janela:
     """[meia-noite de hoje, meia-noite de amanhã) em Lisboa, convertido para UTC."""
     hoje = agora.astimezone(LISBON_TZ).date()

@@ -147,6 +147,13 @@ export const criarCategoria = (data) => api.post(`${API_URL}/faturacao/categoria
 export const editarCategoria = (id, data) => api.put(`${API_URL}/faturacao/categorias/${id}`, data);
 export const apagarCategoria = (id) => api.delete(`${API_URL}/faturacao/categorias/${id}`);
 
+// Documentos — as faturas e notas de crédito emitidas, de TODAS as lojas. São
+// rotas próprias do backoffice: as do POS (`/pos/documentos`) respondem à
+// pergunta do balcão (a loja do token, sem filtros) e recusam o JWT do portal.
+export const getDocumentos = (params) => api.get(
+  `${API_URL}/faturacao/documentos`, { params });
+export const getDocumento = (id) => api.get(`${API_URL}/faturacao/documentos/${id}`);
+
 // Subcategorias — as gavetas dentro de cada categoria (Venda ao Público →
 // Açaís, Salgados). São só nossas: o Vendus não as tem e a importação não lhes
 // toca. Servem para arrumar a grelha do POS.

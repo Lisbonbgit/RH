@@ -108,6 +108,24 @@ def _corresponde(item, filtro):
         # `pos-{loja}-{sessão}-` da `ext_ref`. Um duplo que o ignorasse tratava
         # o dicionário como um valor a comparar, não casava com reserva
         # nenhuma, e o travão ficava verde sem nunca travar.
+        elif isinstance(valor, dict) and ("$gte" in valor or "$lt" in valor
+                                          or "$gt" in valor or "$lte" in valor):
+            # O intervalo de datas do ecrã de Documentos do backoffice. As
+            # datas guardam-se como ISO em UTC e comparam-se como STRING — é o
+            # que o Mongo faz e o que `dashboard.py` já assume. Um duplo que
+            # ignorasse estes operadores devolvia a lista toda, e o teste do
+            # fuso ficava verde com o filtro partido.
+            actual = item.get(chave)
+            if actual is None:
+                return False
+            if "$gte" in valor and not actual >= valor["$gte"]:
+                return False
+            if "$gt" in valor and not actual > valor["$gt"]:
+                return False
+            if "$lt" in valor and not actual < valor["$lt"]:
+                return False
+            if "$lte" in valor and not actual <= valor["$lte"]:
+                return False
         elif isinstance(valor, dict) and "$regex" in valor:
             if not re.search(valor["$regex"], str(item.get(chave) or "")):
                 return False
@@ -132,6 +150,13 @@ class CursorFalso:
 
     def sort(self, campo, direccao=1):
         self._itens.sort(key=lambda d: d.get(campo), reverse=(direccao == -1))
+        return self
+
+    def skip(self, quantos):
+        # Entrou com a paginação do ecrã de Documentos do backoffice. Salta a
+        # sério — um `skip` que não saltasse punha a página 2 a mostrar a
+        # página 1 e o teste a passar na mesma.
+        self._itens = self._itens[quantos:]
         return self
 
     async def to_list(self, n=None):
@@ -285,6 +310,12 @@ class ColeccaoFalsa:
             alvos[0].clear()
             alvos[0].update(proposto)
         return ResultadoUpdateFalso(matched_count=len(alvos))
+
+    async def count_documents(self, filtro=None):
+        # Entrou com o ecrã de Documentos do backoffice, que pagina: conta
+        # pelo MESMO casamento de filtros do `find`, senão o total e a lista
+        # discordavam e a paginação passava a mentir.
+        return len([d for d in self._documentos if _corresponde(d, filtro or {})])
 
     async def delete_one(self, filtro):
         """Apaga UM documento, o primeiro que casa — como o Mongo. É o que

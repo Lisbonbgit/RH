@@ -607,6 +607,11 @@ def _preambulo_de_montagem() -> str:
         # errado: o tecto da quantidade da nota de crédito prova-se no
         # `{ linhas: [...] }` que sai, não no caminho.
         "        corpo: SEM_CORPO.has(metodo) ? undefined : resto[0],",
+        # Os PARÂMETROS DE QUERY, que faltavam. Sem eles, um ecrã que mande o
+        # filtro errado (o literal "todas" em vez de nenhum filtro) passava
+        # despercebido: o teste via a chamada, não via o que ela pedia.
+        # Medido: a mutação que fazia viajar o "todas" deixava a suite verde.
+        "        params: (opcoes && opcoes.params) || undefined,",
         "      };",
         "      for (const fn of interceptores) config = fn(config) || config;",
         "      pedidos.push(config);",
