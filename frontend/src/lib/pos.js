@@ -855,6 +855,129 @@ export const razaoDaGrelhaMorta = ({ venda, partes, aSeparar }) => {
 export const proximaParteACobrar = (partes, atualId) =>
   (partes || []).find((p) => p?.estado === 'aberta' && p?.id !== atualId) || null;
 
+// --- A previsão da repartição, para o ecrã prometer o que a fatura cobra -----
+//
+// **Estas funções viviam no PosReparticao.js e mudaram-se para aqui quando o
+// dividir/separar passou a acontecer no ecrã de pagamento e na conta** (o dono
+// pediu-o com os prints do POS do Vendus à frente). A mudança de casa não é
+// arrumação: o número «por pessoa» do stepper e o «esta pessoa leva» da barra
+// de separar são previsões, e uma previsão feita à parte da do servidor é a
+// promessa que a fatura desmente à frente do cliente — que é o defeito inteiro
+// que o test_arredondamento_do_ecra.py existe para apanhar. Uma definição só,
+// aqui, para os três sítios que a lêem.
+
+export const centimos = (valor) => Math.round((Number(valor) || 0) * 100);
+
+// A MESMA repartição proporcional do servidor (`venda.py::_reparte_por_peso`),
+// para os descontos: chão da divisão inteira para cada peso, e os cêntimos que
+// sobram vão, um a um, para quem tem o maior resto por arredondar. Tudo em
+// aritmética inteira — nunca uma divisão em vírgula flutuante.
+//
+// O desempate por índice ascendente está escrito à mão (`|| a - b`) e não
+// deixado ao acaso do motor: o `sorted` do Python é estável e mantém a ordem
+// dos índices em restos iguais; um `sort` que os trocasse punha o cêntimo numa
+// pessoa diferente da que o servidor vai escolher.
+export const repartirPorPeso = (totalCentimos, pesos) => {
+  const n = pesos.length;
+  const somaPesos = pesos.reduce((soma, p) => soma + p, 0);
+  if (somaPesos <= 0 || totalCentimos === 0) return new Array(n).fill(0);
+  const numeradores = pesos.map((peso) => totalCentimos * peso);
+  const base = numeradores.map((num) => Math.floor(num / somaPesos));
+  const restos = numeradores.map((num) => num % somaPesos);
+  const falta = totalCentimos - base.reduce((soma, b) => soma + b, 0);
+  const ordem = base.map((_, i) => i).sort((a, b) => restos[b] - restos[a] || a - b);
+  ordem.slice(0, falta).forEach((i) => { base[i] += 1; });
+  return base;
+};
+
+// --- A previsão do DIVIDIR ---------------------------------------------------
+
+// A mesma repartição que o servidor faz a uma linha (`venda.py::
+// _partes_de_uma_linha`): reparte-se o BRUTO por N e o DESCONTO por N, em
+// cêntimos, e a fatia de cada pessoa é a diferença entre os dois. Nunca se
+// reparte o total da linha de uma vez — o `round` de cada fatia não devolve o
+// que devolve aplicado ao todo, e é essa diferença que faz a soma das partes
+// divergir da conta.
+//
+// Devolve uma entrada por pessoa, e `null` na pessoa que não leva nada desta
+// linha — os dois casos em que isso acontece são os do servidor, e por isso
+// estão aqui: a linha que não vale nada (um artigo oferecido, a preço 0) vai
+// INTEIRA para a primeira parte, e a fatia que não chega a um cêntimo (uma
+// linha de 2 cêntimos por três) não entra na conta dessa pessoa.
+export const fatiasDaLinha = (linha, partes) => {
+  const { bruto, desconto } = contasDaLinha(linha);
+  const brutoCentimos = centimos(bruto);
+  if (brutoCentimos === 0) {
+    return Array.from({ length: partes }, (_, i) => (
+      i === 0 ? { fatia: 'inteiro', totalCentimos: 0 } : null
+    ));
+  }
+  const brutos = repartirCentimos(brutoCentimos, partes);
+  const descontos = repartirCentimos(centimos(desconto), partes);
+  return brutos.map((b, i) => (
+    b === 0 ? null : { fatia: `1/${partes}`, totalCentimos: b - descontos[i] }
+  ));
+};
+
+// A conta de cada pessoa se a divisão for por N — a previsão inteira, com o
+// desconto global da mãe repartido em fatias iguais, tal como
+// `venda.py::dividir_conta` faz.
+export const previsaoDoDividir = (mae, partes) => {
+  const linhas = mae?.linhas || [];
+  const porLinha = linhas.map((linha) => fatiasDaLinha(linha, partes));
+  const globais = repartirCentimos(centimos(mae?.totais?.desconto_global), partes);
+  return Array.from({ length: partes }, (_, i) => {
+    const daPessoa = linhas
+      .map((linha, l) => (porLinha[l][i] ? { linha, ...porLinha[l][i] } : null))
+      .filter(Boolean);
+    const soma = daPessoa.reduce((total, item) => total + item.totalCentimos, 0);
+    return { linhas: daPessoa, totalCentimos: soma - globais[i] };
+  });
+};
+
+// --- A previsão do SEPARAR ---------------------------------------------------
+
+// Quantas unidades desta linha estão atribuídas a esta pessoa. A atribuição é
+// um dicionário por pessoa (`{ [linha_id]: unidades }`) e não uma lista de
+// linhas: ao balcão toca-se muitas vezes no mesmo artigo, e somar unidades a
+// uma chave é o que faz o toque repetido ser o gesto natural.
+export const atribuidas = (mapa, linhaId) => Number(mapa?.[linhaId]) || 0;
+
+// A conta de cada pessoa com as linhas que o staff lhe atribuiu — a mesma
+// ordem de contas do `venda.py::separar_conta`:
+//   1. o bruto de cada fatia é `unitário × unidades atribuídas`;
+//   2. o desconto DA LINHA reparte-se PROPORCIONALMENTE às unidades de cada
+//      pessoa (nunca copiado inteiro: um "-3,00 €" copiado para as três partes
+//      descontava 9,00 € numa conta que descontou 3,00);
+//   3. o desconto GLOBAL reparte-se proporcionalmente ao LÍQUIDO de cada parte
+//      — que é a mesma base sobre a qual ele incide na mãe.
+export const previsaoDoSeparar = (mae, atribuicao) => {
+  const linhas = mae?.linhas || [];
+  const porPessoa = atribuicao.map(() => []);
+
+  linhas.forEach((linha) => {
+    const { unitario, desconto } = contasDaLinha(linha);
+    const unidades = atribuicao.map((mapa) => atribuidas(mapa, linha.id));
+    const brutos = unidades.map((n) => centimos(unitario * n));
+    const descontos = repartirPorPeso(centimos(desconto), unidades);
+    unidades.forEach((n, i) => {
+      if (n <= 0) return;
+      porPessoa[i].push({
+        linha,
+        fatia: n === (Number(linha.quantidade) || 0) ? `${n}` : `${n} de ${linha.quantidade}`,
+        totalCentimos: brutos[i] - descontos[i],
+      });
+    });
+  });
+
+  const liquidos = porPessoa.map((itens) => itens.reduce((soma, i) => soma + i.totalCentimos, 0));
+  const globais = repartirPorPeso(centimos(mae?.totais?.desconto_global), liquidos);
+  return porPessoa.map((itens, i) => ({
+    linhas: itens,
+    totalCentimos: liquidos[i] - globais[i],
+  }));
+};
+
 export const dividirConta = (vendaId, partes) =>
   api.post(`/pos/venda/${vendaId}/dividir`, { partes });
 
