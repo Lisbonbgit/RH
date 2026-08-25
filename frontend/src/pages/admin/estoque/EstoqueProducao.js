@@ -40,6 +40,8 @@ export default function EstoqueProducao() {
   const [produtoId, setProdutoId] = useState('');
   const [receita, setReceita] = useState(null);
   const [kg, setKg] = useState('');
+  const [completos, setCompletos] = useState('');
+  const [incompletos, setIncompletos] = useState('');
   const [saving, setSaving] = useState(false);
   const [relatorio, setRelatorio] = useState([]);
 
@@ -68,6 +70,8 @@ export default function EstoqueProducao() {
     setProdutoId('');
     setReceita(null);
     setKg('');
+    setCompletos('');
+    setIncompletos('');
   }, [fabId, marca]);
 
   useEffect(() => {
@@ -85,19 +89,29 @@ export default function EstoqueProducao() {
   const prod = produtos.find((p) => p.id === produtoId);
   const bkg = baldeKg(prod);
   const kgNum = parseNum(kg);
+  const nC = parseNum(completos);
+  const nI = incompletos.trim() === '' ? 0 : parseNum(incompletos);
+  const completosOk = completos.trim() !== '' && Number.isInteger(nC) && nC >= 0;
   const podePreVer = receita && bkg && !Number.isNaN(kgNum) && kgNum > 0 && receita.rendimento > 0;
-  const baldes = podePreVer ? kgNum / bkg : 0;
   const factor = podePreVer ? kgNum / receita.rendimento : 0;
+  // perda/margem = kg − (baldes completos × peso + kg por acabar). Só admin (é esta página).
+  const perda = podePreVer && completosOk && !Number.isNaN(nI) ? kgNum - (nC * bkg + nI) : null;
+  const podeProduzir = !!bkg && !Number.isNaN(kgNum) && kgNum > 0 && completosOk && !Number.isNaN(nI) && nI >= 0 && (nC > 0 || nI > 0);
 
   async function produzir() {
     if (!produtoId) return toast.error('Escolhe o produto.');
     if (!bkg) return toast.error('Este produto não tem peso de balde definido.');
     if (Number.isNaN(kgNum) || kgNum <= 0) return toast.error('Indica os kg produzidos.');
+    if (!completosOk) return toast.error('Baldes completos: usa um número inteiro (0, 1, 2…).');
+    if (Number.isNaN(nI) || nI < 0) return toast.error('Kg por acabar inválido.');
+    if (nC === 0 && nI === 0) return toast.error('Indica os baldes completos e/ou os kg por acabar.');
     setSaving(true);
     try {
-      await estoqueProduzir(fabId, { produto_id: produtoId, quantidade_kg: kgNum });
-      toast.success(`Produzido: ${fmt(baldes)} baldes de ${prod.nome}.`);
+      await estoqueProduzir(fabId, { produto_id: produtoId, quantidade_kg: kgNum, baldes_completos: nC, kg_incompletos: nI });
+      toast.success(`Produzido: ${nC} baldes de ${prod.nome}${nI > 0 ? ` (+ ${fmt(nI)} kg por acabar)` : ''}.`);
       setKg('');
+      setCompletos('');
+      setIncompletos('');
       carregar();
     } catch (e) {
       toast.error(e?.response?.data?.detail || 'Não foi possível registar a produção.');
@@ -138,22 +152,38 @@ export default function EstoqueProducao() {
             </div>
 
             <div className="space-y-1.5">
-              <Label>Quantidade produzida (kg)</Label>
-              <Input inputMode="decimal" placeholder="0" value={kg} onChange={(e) => setKg(e.target.value)} className="w-40" />
+              <Label>Kg produzidos (total)</Label>
+              <Input inputMode="decimal" placeholder="ex.: 230" value={kg} onChange={(e) => setKg(e.target.value)} className="w-40" />
             </div>
+
+            <div className="grid grid-cols-2 gap-3 max-w-md">
+              <div className="space-y-1.5">
+                <Label>Baldes completos</Label>
+                <Input inputMode="numeric" placeholder="ex.: 50" value={completos} onChange={(e) => setCompletos(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Kg em baldes por acabar</Label>
+                <Input inputMode="decimal" placeholder="ex.: 3" value={incompletos} onChange={(e) => setIncompletos(e.target.value)} />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Só os baldes completos entram no stock. Os kg por acabar terminam-se no dia seguinte.
+            </p>
 
             {podePreVer && (
               <div className="rounded-lg border bg-muted/40 p-3 text-sm space-y-1">
-                <p><b>{fmt(baldes)}</b> baldes de {fmt(bkg)} kg</p>
                 {receita.ingredientes?.length > 0 && (
                   <p className="text-destructive text-xs">
                     gasta: {receita.ingredientes.map((i) => `${fmt(i.quantidade * factor)} ${i.unidade_medida} ${i.nome}`).join(' · ')}
                   </p>
                 )}
+                {perda != null && (
+                  <p className="text-xs">perda/margem ≈ <b>{fmt(perda)} kg</b> (kg − baldes)</p>
+                )}
               </div>
             )}
 
-            <Button onClick={produzir} disabled={saving || !podePreVer} className="w-full sm:w-auto">
+            <Button onClick={produzir} disabled={saving || !podeProduzir} className="w-full sm:w-auto">
               <Factory className="h-4 w-4 mr-2" /> Registar produção
             </Button>
           </CardContent>
@@ -172,6 +202,8 @@ export default function EstoqueProducao() {
                     <p className="text-sm font-medium">{r.produto_nome}</p>
                     <p className="text-xs text-muted-foreground">
                       {r.autor ? `${r.autor} · ` : ''}{fmt(r.kg)} kg
+                      {r.kg_incompletos > 0 ? ` · ${fmt(r.kg_incompletos)} kg por acabar` : ''}
+                      {typeof r.perda_kg === 'number' && r.perda_kg !== 0 ? ` · perda ${fmt(r.perda_kg)} kg` : ''}
                       {r.ingredientes?.length ? ` · gastou: ${r.ingredientes.map((i) => `${fmt(i.quantidade)} ${i.unidade_medida} ${i.nome}`).join(', ')}` : ''}
                     </p>
                   </div>

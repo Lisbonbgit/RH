@@ -6121,6 +6121,10 @@ async def estoque_receita_put(produto_id: str, body: EstoqueReceitaIn, current_u
 class EstoqueProducaoIn(BaseModel):
     produto_id: str
     quantidade_kg: float
+    # Output real reportado: baldes completos (entram no stock) + kg em baldes
+    # por acabar. Se baldes_completos vier None, o estoque usa o modo antigo (kg/peso).
+    baldes_completos: Optional[int] = None
+    kg_incompletos: float = 0
 
 
 @api_router.post("/estoque/producao")
@@ -6129,7 +6133,12 @@ async def estoque_producao(body: EstoqueProducaoIn, unidade_id: str = Query(...)
     from urllib.parse import quote
     ator = current_user.get("name") or current_user.get("email") or "RH"
     path = f"/integ/producao?unidade_id={quote(unidade_id)}&actor={quote(str(ator))}"
-    return await _estoque_post(path, {"produto_id": body.produto_id, "quantidade_kg": body.quantidade_kg})
+    return await _estoque_post(path, {
+        "produto_id": body.produto_id,
+        "quantidade_kg": body.quantidade_kg,
+        "baldes_completos": body.baldes_completos,
+        "kg_incompletos": body.kg_incompletos,
+    })
 
 
 @api_router.get("/estoque/producao")
