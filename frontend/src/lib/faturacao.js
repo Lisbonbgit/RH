@@ -209,6 +209,15 @@ export const getProdutosSemVendus = () => api.get(`${API_URL}/faturacao/produtos
 // O catálogo da conta Vendus, para a ficha do produto poder ESCOLHER a que
 // artigo se liga — em vez de esperar que a importação lhe acerte no nome.
 export const getArtigosVendus = () => api.get(`${API_URL}/faturacao/vendus/artigos`);
+
+// --- Relatório diário por email ---
+export const getDefinicoesRelatorio = () =>
+  api.get(`${API_URL}/faturacao/relatorio-diario/definicoes`);
+export const gravarDefinicoesRelatorio = (dados) =>
+  api.put(`${API_URL}/faturacao/relatorio-diario/definicoes`, dados);
+// Sem `para`, vai para a lista configurada — que é o que o botão do ecrã faz.
+export const enviarRelatorioAgora = (para) =>
+  api.post(`${API_URL}/faturacao/relatorio-diario/enviar-agora`, para ? { para } : {});
 export const criarProduto = (data) => api.post(`${API_URL}/faturacao/produtos`, data);
 export const editarProduto = (id, data) => api.put(`${API_URL}/faturacao/produtos/${id}`, data);
 export const apagarProduto = (id) => api.delete(`${API_URL}/faturacao/produtos/${id}`);

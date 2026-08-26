@@ -23,11 +23,13 @@ Não lê base de dados e não envia nada: recebe listas e devolve um dicionário
 desenho do email ser visto sem inventar vendas.
 """
 import unicodedata
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from .caixa import _resumo_do_turno
 from .caixa_math import _centimos
 from .dashboard import _campo_valor, _valor_documento
+from .periodos import LISBON_TZ
 
 # **Que personalização é que parte um artigo em dois.** O dono criou UM artigo
 # "Açaí" e pôs-lhe dentro os tamanhos (mini, small, regular, supreme); um
@@ -59,16 +61,34 @@ def _e_grupo_de_variante(grupo_nome, grupos_de_variante: Optional[List[str]]) ->
 
 
 def _dia_do_documento(doc: Dict) -> str:
-    """O dia em que o documento foi emitido, no fuso em que foi gravado.
+    """O dia LISBOETA em que o documento foi emitido.
 
-    `emitido_em` é uma string ISO ("2026-08-26T14:30:00+01:00") e os primeiros
-    dez caracteres são a data local — que é o que interessa: o dia de uma loja
-    de Alfragide é o dia de Alfragide, não o dia UTC. Cortar a string em vez de
-    a descodificar evita reconstruir um `datetime` só para lhe pedir a data de
-    volta, e um valor estranho dá "" (não casa com dia nenhum) em vez de
-    rebentar o relatório inteiro por causa de um documento.
+    **Não se corta a string.** `emitido_em` é gravado em UTC
+    (`fiscal.py::_gravar_documento` chama um `datetime.now(timezone.utc)`), e
+    Lisboa está a UTC+1 no Verão: uma venda à 00:30 de dia 26 fica gravada
+    como `2026-08-25T23:30Z`, e os dez primeiros caracteres dizem dia 25. O
+    dia de uma loja de Alfragide é o de Alfragide.
+
+    Na prática as lojas estão fechadas nessa hora e isto raramente morde —
+    mas «raramente» num relatório de dinheiro é pior do que nunca, porque
+    quando morder ninguém vai desconfiar do fuso horário.
+
+    Um valor que não se consiga ler dá "" (não casa com dia nenhum) em vez de
+    derrubar o relatório inteiro por causa de um documento estragado.
     """
-    return str(doc.get("emitido_em") or "")[:10]
+    texto = str(doc.get("emitido_em") or "")
+    if not texto:
+        return ""
+    try:
+        # `fromisoformat` do Python 3.9 não engole o "Z" final; o resto dos
+        # formatos que este módulo grava, sim.
+        instante = datetime.fromisoformat(texto.replace("Z", "+00:00"))
+    except ValueError:
+        return texto[:10]
+    if instante.tzinfo is None:
+        # Sem fuso escrito, assume-se UTC — que é o que este backend grava.
+        instante = instante.replace(tzinfo=timezone.utc)
+    return instante.astimezone(LISBON_TZ).date().isoformat()
 
 
 def _soma_documentos(documentos: List[Dict], campo: str) -> float:

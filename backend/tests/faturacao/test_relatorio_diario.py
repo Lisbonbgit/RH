@@ -402,3 +402,17 @@ def test_sem_turnos_abertos_os_dois_esperados_sao_o_MESMO():
     caixa = r["geral"]["caixa"]
     assert caixa["esperado"] == caixa["esperado_contado"] == 80.0
     assert caixa["esperado_aberto"] == 0.0
+
+
+def test_o_dia_de_um_documento_e_o_dia_de_LISBOA_e_nao_o_de_UTC():
+    """`emitido_em` é gravado em UTC e Lisboa está a UTC+1 no Verão: uma venda
+    à 00:30 de dia 26 fica escrita `2026-08-25T23:30Z`. Cortar a string punha
+    essa venda no dia 25 — e no relatório do dia errado, sem ninguém desconfiar
+    do fuso horário."""
+    r = _relatorio(documentos=[
+        {"id": "d1", "loja_id": "l1", "tipo": "FS", "total_bruto": 12.0,
+         "emitido_em": "2026-08-25T23:30:00+00:00"},   # 00:30 em Lisboa, dia 26
+        {"id": "d2", "loja_id": "l1", "tipo": "FS", "total_bruto": 30.0,
+         "emitido_em": "2026-08-26T21:00:00+00:00"},   # 22:00 em Lisboa, dia 26
+    ])
+    assert r["geral"]["faturacao"] == 42.0

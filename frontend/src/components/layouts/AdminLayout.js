@@ -184,6 +184,7 @@ const sections = [
       { group: 'Configuração', path: '/admin/faturacao/config/utilizadores', label: 'Utilizadores', pai: '/admin/faturacao/config' },
       { group: 'Configuração', path: '/admin/faturacao/config/motivos', label: 'Motivos - Notas Crédito', pai: '/admin/faturacao/config' },
       { group: 'Configuração', path: '/admin/faturacao/config/dispositivos', label: 'Dispositivos', pai: '/admin/faturacao/config' },
+      { group: 'Configuração', path: '/admin/faturacao/config/relatorio-diario', label: 'Relatório diário', pai: '/admin/faturacao/config' },
     ],
   },
   {
