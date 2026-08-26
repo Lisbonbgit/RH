@@ -5,6 +5,24 @@
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
         <meta name="theme-color" content="#1366F0" />
         <meta name="description" content="Gestão Lisbonb — portal do grupo (RH, Financeiro e mais)" />
+        <!--
+            O que faz o POS abrir COMO APLICAÇÃO no PC da loja, e não num
+            separador do browser.
+
+            Sem este manifesto o browser não tem nada para "instalar": o menu
+            só oferece um atalho, e um atalho abre uma janela normal, com barra
+            de endereço, separadores e o resto. Foi o que aconteceu no PC da
+            loja. O Vendus abre como aplicação porque TEM manifesto — é a mesma
+            mecânica, não é magia deles.
+
+            Reparo importante: pedir /manifest.json a este servidor já
+            respondia 200 antes de este ficheiro existir — o nginx devolve o
+            index.html a qualquer caminho desconhecido (o fallback do React
+            Router). Um 200 com HTML lá dentro não é um manifesto, e o browser
+            desiste em silêncio. Ver o `try_files` em frontend/nginx.conf.
+        -->
+        <link rel="manifest" href="/manifest.json" />
+        <link rel="icon" href="/icones/pos-192.png" />
         <script>
             /* Aplica o tema guardado ANTES do primeiro render (evita flash). */
             (function () {
