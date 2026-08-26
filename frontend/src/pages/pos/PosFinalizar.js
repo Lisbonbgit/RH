@@ -89,6 +89,43 @@ export const camposDeValorDoPagamento = (pagamentos, totalCentimos) => {
   return centimos(unico.valor) === totalCentimos ? [] : [unico.tipo_pagamento_id];
 };
 
+// **Se há quadro de pagamentos para mostrar de todo.**
+//
+// O dono, de novo no mesmo ecrã, agora com o Multibanco sozinho numa conta de
+// 34,90 €: «quando o staff clicar em somente uma forma de pagamento, nao
+// precisa mostrar esse multibanco o valor total e o pagamento certo. (nao faz
+// sentido) portanto tira isso».
+//
+// A caixa de valor já tinha desaparecido (`camposDeValorDoPagamento`, acima).
+// O que sobrava era a LINHA a repetir «Multibanco 34,90 €» — o total que ela
+// já tem à frente, escrito outra vez — e o indicador verde «Pagamentos
+// certos», a confirmar uma soma de uma parcela só. Duas afirmações verdadeiras
+// e inúteis, em todas as vendas normais do dia.
+//
+// **Esconder o indicador só é seguro porque a razão do bloqueio tem outra
+// casa**: a frase «Para emitir: …», encostada ao botão, sai do MESMO
+// `motivoBloqueio` e aparece sempre. Sem ela, isto era voltar ao silêncio que
+// esse campo veio acabar. Há um teste a guardar essa frase, e é ele que torna
+// esta decisão defensável.
+//
+// A regra sai do JSX pela mesma razão do `camposDeValorDoPagamento`: uma
+// decisão dentro de um `{... && (` não é executável por teste nenhum, e
+// troca-se sem ninguém dar por isso.
+export const mostrarQuadroDePagamentos = (pagamentos, comCampoDeValor) => {
+  // **Há quadro exactamente quando há alguma caixa para preencher.**
+  //
+  // Escrevi isto primeiro com dois ramos — «dois ou mais pagamentos» OU «uma
+  // caixa por preencher» — e a mutação mostrou que o primeiro estava MORTO:
+  // `camposDeValorDoPagamento` já devolve os ids todos assim que há mais do
+  // que um pagamento, por isso «dois ou mais» nunca chegava a decidir nada.
+  // Um ramo que nenhum teste consegue pôr vermelho é um ramo que não existe.
+  //
+  // Fica a condição única, e as duas perguntas do dono continuam respondidas:
+  // um pagamento certo pelo total não leva caixa nenhuma (logo, quadro
+  // nenhum); dois pagamentos levam uma caixa cada (logo, quadro).
+  return (comCampoDeValor || []).length > 0;
+};
+
 const soDigitos = (texto) => String(texto || '').replace(/\D/g, '');
 
 const nifPorExtenso = (digitos) =>
@@ -947,6 +984,7 @@ export default function PosFinalizar({
   // Que pagamentos é que levam caixa de valor — ver `camposDeValorDoPagamento`
   // lá em cima, que é onde a regra vive e onde os testes lhe chegam.
   const comCampoDeValor = camposDeValorDoPagamento(pagamentos, totalCentimos);
+  const haQuadroDePagamentos = mostrarQuadroDePagamentos(pagamentos, comCampoDeValor);
 
   const digitosNif = soDigitos(nifTexto);
   const nifValido = digitosNif.length === 0 || digitosNif.length === 9;
@@ -1232,7 +1270,7 @@ export default function PosFinalizar({
               )}
             </div>
 
-            {pagamentos.length > 0 && (
+            {haQuadroDePagamentos && (
               <div className="mt-4 space-y-3">
                 <Separator />
                 {pagamentos.map((p) => {
