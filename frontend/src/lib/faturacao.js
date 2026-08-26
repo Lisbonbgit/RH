@@ -206,6 +206,9 @@ export const getProdutosSemIva = () => api.get(`${API_URL}/faturacao/produtos/se
 // um "tem vendus_ref?" escrito no browser: um `VACA123` escrito à mão é
 // verdadeiro para o browser e inútil para a emissão.
 export const getProdutosSemVendus = () => api.get(`${API_URL}/faturacao/produtos/sem-vendus`);
+// O catálogo da conta Vendus, para a ficha do produto poder ESCOLHER a que
+// artigo se liga — em vez de esperar que a importação lhe acerte no nome.
+export const getArtigosVendus = () => api.get(`${API_URL}/faturacao/vendus/artigos`);
 export const criarProduto = (data) => api.post(`${API_URL}/faturacao/produtos`, data);
 export const editarProduto = (id, data) => api.put(`${API_URL}/faturacao/produtos/${id}`, data);
 export const apagarProduto = (id) => api.delete(`${API_URL}/faturacao/produtos/${id}`);

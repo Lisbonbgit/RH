@@ -638,3 +638,138 @@ def test_importar_vendus_fluxo_completo_e_idempotente(monkeypatch):
     assert resultado2["produtos_criados"] == 0
     assert resultado2["produtos_atualizados"] == 237
     assert len(db.produtos.documentos) == 237  # continuam 237, não 474
+
+
+# --- A lista de artigos do Vendus, para a ficha do produto -------------------
+#
+# O dono: «na hora de criar um artigo, ter na ficha dele uma área de confirmar
+# e ligar a um produto específico no Vendus — assim não teria erro». Até aqui
+# só havia dois caminhos para um produto ter `vendus_ref`: vir da importação,
+# ou o acaso de a importação lhe casar o nome. Um produto criado à mão ficava
+# sem ligação nenhuma e, a partir daí, cada venda dele deixava um artigo novo
+# no catálogo do Vendus.
+#
+# Esta leitura é o que enche o escolhedor da ficha. Devolve a lista do Vendus
+# JÁ com quem, do nosso lado, já a está a usar — sem isso o dono ligaria dois
+# produtos nossos ao mesmo artigo sem nunca o saber.
+
+
+class ClienteSoProdutos:
+    """Duplo do ClienteVendus com um catálogo pequeno e legível."""
+
+    instancias = []
+    erro = None
+
+    def __init__(self, chave):
+        self.chave = chave
+        ClienteSoProdutos.instancias.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def listar_produtos(self):
+        if ClienteSoProdutos.erro is not None:
+            raise ClienteSoProdutos.erro
+        return [
+            {"id": 171258472, "title": "Açaí Mini", "reference": "ACM",
+             "gross_price": 5.90, "tax_id": "INT", "category_id": "1"},
+            {"id": 171258999, "title": "Água 33cl", "reference": "AG33",
+             "gross_price": 1.00, "tax_id": "INT", "category_id": "1"},
+            {"id": 0, "title": "Artigo estragado", "gross_price": 1.0},
+        ]
+
+
+def _prepara(monkeypatch, produtos_nossos=None):
+    from faturacao.vendus.cliente import VendusErro  # noqa: F401  (usado pelos testes)
+
+    monkeypatch.setenv("VENDUS_ACCOUNTS", '[{"key":"chave-teste","company_nif":"517542510"}]')
+    monkeypatch.setenv("FAT_NIF", "517542510")
+    db = DbMemoria()
+    for p in produtos_nossos or []:
+        db.produtos.documentos.append(deepcopy(p))
+    monkeypatch.setattr(importacao_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(importacao_mod, "ClienteVendus", ClienteSoProdutos)
+    ClienteSoProdutos.instancias.clear()
+    ClienteSoProdutos.erro = None
+    return db
+
+
+def test_artigos_do_vendus_devolve_a_lista_para_escolher(monkeypatch):
+    _prepara(monkeypatch)
+    artigos = _corre(importacao_mod.artigos_do_vendus(_={}))
+
+    assert ClienteSoProdutos.instancias[0].chave == "chave-teste"
+    assert [a["id"] for a in artigos] == ["171258472", "171258999"]
+    acai = artigos[0]
+    assert acai["nome"] == "Açaí Mini"
+    assert acai["referencia"] == "ACM"
+    assert acai["preco"] == 5.90
+    assert acai["tax_id"] == "INT"
+
+
+def test_artigos_do_vendus_DEIXA_DE_FORA_o_que_a_emissao_nao_saberia_enviar(monkeypatch):
+    """Um artigo com `id` 0 não é escolhível: a linha da fatura sairia sem
+    `id` na mesma (ver `precos.id_vendus_do_produto`), e o escolhedor teria
+    prometido uma ligação que não existe. A regra é a mesma da emissão."""
+    _prepara(monkeypatch)
+    artigos = _corre(importacao_mod.artigos_do_vendus(_={}))
+    assert "Artigo estragado" not in {a["nome"] for a in artigos}
+
+
+def test_artigos_do_vendus_DIZ_quem_ja_esta_a_usar_cada_artigo(monkeypatch):
+    """Dois produtos nossos ligados ao mesmo artigo do Vendus não partem a
+    emissão, mas baralham o catálogo de lá para sempre — e o dono não tinha
+    como o ver antes de escolher."""
+    _prepara(monkeypatch, produtos_nossos=[
+        {"id": "p1", "nome": "Açaí Mini", "vendus_ref": "171258472"},
+    ])
+    artigos = _corre(importacao_mod.artigos_do_vendus(_={}))
+    por_id = {a["id"]: a for a in artigos}
+    assert por_id["171258472"]["ligado_a"] == "Açaí Mini"
+    assert por_id["171258999"]["ligado_a"] is None
+
+
+def test_artigos_do_vendus_sem_conta_configurada_explica_se(monkeypatch):
+    _prepara(monkeypatch)
+    monkeypatch.setenv("VENDUS_ACCOUNTS", "[]")
+    with pytest.raises(HTTPException) as e:
+        _corre(importacao_mod.artigos_do_vendus(_={}))
+    assert e.value.status_code == 400
+    assert "Vendus" in e.value.detail
+
+
+def test_artigos_do_vendus_com_o_vendus_em_baixo_nao_finge_lista_vazia(monkeypatch):
+    """Uma lista vazia com ar de sucesso dizia ao dono «esta conta não tem
+    artigos» — e ele criava o produto sem ligação a acreditar que não havia
+    nenhum para escolher."""
+    from faturacao.vendus.cliente import VendusErro
+
+    _prepara(monkeypatch)
+    ClienteSoProdutos.erro = VendusErro(500, "boom")
+    with pytest.raises(HTTPException) as e:
+        _corre(importacao_mod.artigos_do_vendus(_={}))
+    assert e.value.status_code == 502
+
+
+def test_a_rota_dos_artigos_do_vendus_existe_e_e_do_gestor():
+    """Perguntado ao router, e não afirmado — um prefixo errado responde 404 e
+    o escolhedor fica vazio para sempre, sem nada partir."""
+    from faturacao import router
+    from faturacao.auth import gestor_atual
+
+    rotas = [r for r in router.routes
+             if r.path == "/api/faturacao/vendus/artigos" and "GET" in r.methods]
+    assert len(rotas) == 1, [r.path for r in router.routes if "vendus" in r.path]
+
+    encontrados = set()
+
+    def procura(d):
+        for filha in d.dependencies:
+            encontrados.add(filha.call)
+            procura(filha)
+
+    procura(rotas[0].dependant)
+    assert gestor_atual in encontrados

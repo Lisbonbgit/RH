@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   getProdutos, getProdutosSemIva, getProdutosSemVendus, criarProduto, editarProduto, apagarProduto, mudarEstadoProduto,
-  getCategorias, getSubcategorias, getGrupos, importarVendus,
+  getCategorias, getSubcategorias, getGrupos, importarVendus, getArtigosVendus,
   carregarFotoProduto, urlDaFotoProduto,
   detalhesErro, temMaisDe2CasasDecimais,
 } from '../../../lib/faturacao';
@@ -48,6 +48,10 @@ const fmtEUR = (n) => new Intl.NumberFormat('pt-PT', { style: 'currency', curren
 
 const emptyForm = {
   nome: '', categoria_id: '', subcategoria_id: '', preco: '', preco_custo: '', tax_id: '', foto_url: '', grupos_personalizacao: [], ativo: true,
+  // A ligação ao artigo do Vendus é agora um campo da ficha, e não uma
+  // herança invisível da importação. Vazio quer dizer «sem ligação», e o
+  // que isso custa está escrito no ecrã, ao lado.
+  vendus_ref: '',
 };
 
 export default function FatProdutos() {
@@ -75,6 +79,15 @@ export default function FatProdutos() {
   const [fieldErrors, setFieldErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
+
+  // O catálogo do Vendus só se vai buscar quando alguém abre o escolhedor:
+  // é uma chamada à rede do Vendus, e a esmagadora maioria das visitas a
+  // este ecrã não abre ficha nenhuma. Lido uma vez, fica.
+  const [artigosVendus, setArtigosVendus] = useState(null);
+  const [artigosEstado, setArtigosEstado] = useState('');
+  const [artigosErro, setArtigosErro] = useState('');
+  const [escolherAberto, setEscolherAberto] = useState(false);
+  const [filtroArtigo, setFiltroArtigo] = useState('');
 
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
@@ -145,9 +158,15 @@ export default function FatProdutos() {
 
   // --- Formulário de produto ---
 
+  const abrirFicha = () => {
+    setEscolherAberto(false);
+    setFiltroArtigo('');
+  };
+
   const openNew = () => {
     setEditing(null);
     setForm(emptyForm);
+    abrirFicha();
     setFieldErrors({});
     setDialogOpen(true);
   };
@@ -165,10 +184,54 @@ export default function FatProdutos() {
       foto_url: produto.foto_url || '',
       grupos_personalizacao: produto.grupos_personalizacao || [],
       ativo: produto.ativo !== false,
+      // Sem isto o Guardar mandava `vendus_ref` vazio e CORTAVA a ligação
+      // em silêncio — o produto passava a criar um artigo novo por venda
+      // sem ninguém ter pedido nada.
+      vendus_ref: produto.vendus_ref || '',
     });
     setFieldErrors({});
+    abrirFicha();
     setDialogOpen(true);
   };
+
+  const abrirEscolhaDeArtigo = async () => {
+    setEscolherAberto(true);
+    if (artigosVendus || artigosEstado === 'a-carregar') return;
+    setArtigosEstado('a-carregar');
+    setArtigosErro('');
+    try {
+      const { data } = await getArtigosVendus();
+      setArtigosVendus(data || []);
+      setArtigosEstado('pronto');
+    } catch (error) {
+      // A frase do servidor: é ele que sabe se a conta não está
+      // configurada ou se o Vendus está em baixo, e as duas pedem coisas
+      // diferentes. Uma lista vazia com ar de sucesso dizia «esta conta
+      // não tem artigos» e o produto ficava sem ligação por engano.
+      setArtigosErro(detalhesErro(
+        error, 'Não foi possível ler o catálogo do Vendus.').mensagem);
+      setArtigosEstado('erro');
+    }
+  };
+
+  const escolherArtigo = (artigo) => {
+    setForm((prev) => ({ ...prev, vendus_ref: artigo.id }));
+    setEscolherAberto(false);
+    setFiltroArtigo('');
+  };
+
+  // O artigo ligado, quando já lemos o catálogo — é só para o mostrar pelo
+  // nome. Sem catálogo lido, o que se sabe é a referência, e é o que se diz.
+  const artigoLigado = useMemo(
+    () => (artigosVendus || []).find((a) => a.id === form.vendus_ref) || null,
+    [artigosVendus, form.vendus_ref]);
+
+  const artigosFiltrados = useMemo(() => {
+    const texto = filtroArtigo.trim().toLowerCase();
+    if (!texto) return artigosVendus || [];
+    return (artigosVendus || []).filter(
+      (a) => `${a.nome} ${a.referencia || ''}`.toLowerCase().includes(texto));
+  }, [artigosVendus, filtroArtigo]);
 
   // **O carregamento da foto acontece AQUI, e não no Gravar.** O ficheiro sobe
   // assim que é escolhido e o que fica no formulário é o ENDEREÇO que o
@@ -246,12 +309,12 @@ export default function FatProdutos() {
       grupos_personalizacao: form.grupos_personalizacao,
       ativo: form.ativo,
     };
-    // O PUT do servidor substitui o registo inteiro. vendus_ref não tem campo
-    // neste formulário (é o produto importado do Vendus, não se edita à mão)
-    // — sem o reenviar aqui, gravar o produto punha-o a null e cortava, em
-    // silêncio, a ligação que a importação usa para não duplicar (mesmo
-    // padrão de empresa_id em FatLojas e de employee_id em FatUtilizadores).
-    if (editing) payload.vendus_ref = editing.vendus_ref ?? null;
+    // O PUT do servidor substitui o registo inteiro: sem este campo no corpo,
+    // gravar punha o `vendus_ref` a null e cortava a ligação em silêncio.
+    // Agora é a ficha que o traz — preenchido pelo escolhedor ou herdado do
+    // produto no `openEdit` — e vai SEMPRE, também na criação: é o que
+    // deixa nascer um produto já ligado ao artigo certo do Vendus.
+    payload.vendus_ref = form.vendus_ref || null;
 
     setSaving(true);
     setFieldErrors({});
@@ -809,11 +872,110 @@ export default function FatProdutos() {
                 </div>
               </div>
 
-              {editing?.vendus_ref && (
-                <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-                  <Link2 className="h-3.5 w-3.5" />Este produto veio do Vendus (ref. {editing.vendus_ref}). Uma nova importação atualiza nome, preço, IVA e categoria; as personalizações e a foto ficam como estão aqui.
-                </p>
-              )}
+              <div className="space-y-2" data-testid="produto-ligacao-vendus">
+                <Label>Ligação ao Vendus</Label>
+                {form.vendus_ref ? (
+                  <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 space-y-2">
+                    <p className="text-sm text-emerald-900 flex items-center gap-1.5">
+                      <Link2 className="h-3.5 w-3.5 shrink-0" />
+                      Ligado ao artigo <strong>{artigoLigado?.nome || 'do Vendus'}</strong> (ref. {form.vendus_ref}).
+                    </p>
+                    <p className="text-xs text-emerald-800">
+                      A fatura leva este id em cada linha — o Vendus usa o artigo que já lá existe
+                      em vez de criar um novo. Uma nova importação atualiza nome, preço, IVA e
+                      categoria; as personalizações e a foto ficam como estão aqui.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button" size="sm" variant="outline"
+                        onClick={abrirEscolhaDeArtigo}
+                        data-testid="escolher-artigo-vendus-btn"
+                      >
+                        Trocar de artigo
+                      </Button>
+                      <Button
+                        type="button" size="sm" variant="outline"
+                        onClick={() => setForm({ ...form, vendus_ref: '' })}
+                        data-testid="desligar-artigo-vendus-btn"
+                      >
+                        Desligar
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-amber-300 bg-amber-50 p-3 space-y-2">
+                    <p className="text-sm text-amber-900 flex items-center gap-1.5">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                      Sem ligação — o Vendus <strong>cria um artigo novo a cada venda</strong> deste
+                      produto, sem categoria e com uma referência inventada.
+                    </p>
+                    <Button
+                      type="button" size="sm" variant="outline"
+                      className="border-amber-400 text-amber-900 hover:bg-amber-100"
+                      onClick={abrirEscolhaDeArtigo}
+                      data-testid="escolher-artigo-vendus-btn"
+                    >
+                      Escolher artigo do Vendus
+                    </Button>
+                  </div>
+                )}
+
+                {escolherAberto && (
+                  <div className="rounded-md border p-3 space-y-2">
+                    {artigosEstado === 'a-carregar' && (
+                      <p className="text-sm text-muted-foreground flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" />A ler o catálogo do Vendus...
+                      </p>
+                    )}
+                    {artigosEstado === 'erro' && (
+                      <p className="text-sm text-destructive">{artigosErro}</p>
+                    )}
+                    {artigosEstado === 'pronto' && (artigosVendus || []).length === 0 && (
+                      <p className="text-sm text-muted-foreground">
+                        A conta Vendus não devolveu nenhum artigo. Crie-o primeiro no Vendus e
+                        volte aqui.
+                      </p>
+                    )}
+                    {artigosEstado === 'pronto' && (artigosVendus || []).length > 0 && (
+                      <>
+                        <Input
+                          value={filtroArtigo}
+                          onChange={(e) => setFiltroArtigo(e.target.value)}
+                          placeholder="Procurar por nome ou referência..."
+                          data-testid="filtro-artigo-vendus"
+                        />
+                        <div
+                          className="flex flex-col gap-1 max-h-56 overflow-y-auto"
+                          data-testid="artigos-vendus-lista"
+                        >
+                          {artigosFiltrados.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">Nenhum artigo com esse nome.</p>
+                          ) : artigosFiltrados.map((artigo) => (
+                            <Button
+                              key={artigo.id}
+                              type="button"
+                              variant="ghost"
+                              className="justify-start h-auto py-2 text-left"
+                              onClick={() => escolherArtigo(artigo)}
+                              data-testid={`artigo-vendus-${artigo.id}`}
+                            >
+                              <span className="flex flex-col items-start gap-0.5">
+                                <span className="font-medium">{artigo.nome}</span>
+                                <span className="text-xs text-muted-foreground">
+                                  {artigo.referencia ? `${artigo.referencia} · ` : ''}
+                                  {artigo.preco != null ? fmtEUR(artigo.preco) : 'sem preço'}
+                                  {artigo.tax_id ? ` · ${artigo.tax_id}` : ''}
+                                  {artigo.ligado_a ? ` · já ligado a "${artigo.ligado_a}"` : ''}
+                                </span>
+                              </span>
+                            </Button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
 
               <div className="flex items-center gap-2 pt-1">
                 <Switch id="produto-ativo" checked={form.ativo} onCheckedChange={(v) => setForm({ ...form, ativo: v })} data-testid="produto-ativo-switch" />

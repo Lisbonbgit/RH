@@ -64,7 +64,7 @@ from .auth import gestor_atual
 from .catalogo import CategoriaEntrada, ProdutoEntrada, _CODIGOS_IVA_VALIDOS
 from .db import COLECOES, obter_db
 from .fotos import foto_da_reimportacao
-from .precos import _tem_mais_de_2_casas_decimais, tax_id_de_taxa
+from .precos import _tem_mais_de_2_casas_decimais, id_vendus_do_produto, tax_id_de_taxa
 from .vendus.cliente import ClienteVendus, VendusErro, obter_conta
 
 logger = logging.getLogger(__name__)
@@ -401,6 +401,81 @@ async def _sincronizar_produtos(
         "ligados": ligados,
         "problemas": problemas,
     }
+
+
+@router.get("/vendus/artigos")
+async def artigos_do_vendus(_: dict = Depends(gestor_atual)) -> List[dict]:
+    """O catálogo da conta Vendus, para a ficha do produto poder ESCOLHER a
+    que artigo se liga — em vez de esperar que a importação lhe acerte no nome.
+
+    O pedido do dono: «na hora de criar um artigo, ter na ficha dele uma área
+    de confirmar e ligar a um produto específico no Vendus — assim não teria
+    erro». Até aqui um produto criado à mão no backoffice ficava sem
+    `vendus_ref`, e a partir daí cada venda dele deixava um artigo novo no
+    catálogo do Vendus, sem categoria e com uma referência inventada.
+
+    **Só entram os que a emissão saberia mesmo enviar.** Quem decide é
+    `precos.id_vendus_do_produto` — a MESMA função que monta o `id` da linha
+    da fatura. Um artigo que ela recusasse é um que o escolhedor prometeria
+    ligar sem ligar nada, e o produto continuaria a criar lixo com o dono
+    convencido do contrário.
+
+    **Cada artigo vem a dizer quem já o usa** (`ligado_a`): dois produtos
+    nossos apontados ao mesmo artigo não partem a emissão, mas baralham o
+    catálogo do Vendus, e sem este campo o dono não tinha como o ver ANTES de
+    escolher. Não se recusa a escolha — há razões legítimas (dois tamanhos que
+    facturam pelo mesmo artigo); o que não pode é ser por engano.
+
+    Leitura pura, como todo o `vendus/cliente.py`: nunca se cria nem se altera
+    nada no Vendus por aqui.
+    """
+    nif = _nif_configurado()
+    conta = obter_conta(nif)
+    if conta is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Conta Vendus não configurada para o NIF %s. Defina VENDUS_ACCOUNTS "
+                "no .env (ver backend/.env.example) com uma entrada cujo company_nif "
+                "seja esse NIF." % nif
+            ),
+        )
+
+    try:
+        with ClienteVendus(conta.chave) as cliente:
+            produtos_vendus = await asyncio.to_thread(cliente.listar_produtos)
+    except VendusErro as e:
+        # 502 e não uma lista vazia: `[]` com ar de sucesso dizia ao dono
+        # «esta conta não tem artigos», e ele gravava o produto sem ligação a
+        # acreditar que não havia nenhum para escolher.
+        raise HTTPException(status_code=502, detail="Vendus indisponível: %s" % e)
+
+    db = obter_db()
+    nossos = await db[COLECOES["produtos"]].find(
+        {}, {"_id": 0, "nome": 1, "vendus_ref": 1}).to_list(2000)
+    dono_de = {}
+    for nosso in nossos:
+        ref = id_vendus_do_produto(nosso)
+        if ref is not None:
+            dono_de.setdefault(str(ref), nosso.get("nome"))
+
+    artigos = []
+    for p in produtos_vendus:
+        # A regra da emissão, aplicada ao artigo do Vendus tal como será
+        # aplicada ao nosso produto depois de ligado.
+        ref = id_vendus_do_produto({"vendus_ref": p.get("id")})
+        if ref is None:
+            continue
+        artigos.append({
+            "id": str(ref),
+            "nome": str(p.get("title") or p.get("name") or "").strip(),
+            "referencia": str(p.get("reference") or "").strip() or None,
+            "preco": _extrair_preco(p),
+            "tax_id": _extrair_tax_id(p),
+            "ligado_a": dono_de.get(str(ref)),
+        })
+    artigos.sort(key=lambda a: a["nome"].lower())
+    return artigos
 
 
 @router.post("/importacao/vendus")
