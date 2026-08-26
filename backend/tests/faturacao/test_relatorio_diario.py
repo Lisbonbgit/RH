@@ -361,3 +361,44 @@ def test_o_relatorio_diz_o_DIA_e_a_HORA_do_corte():
     r = _relatorio()
     assert r["dia"] == _HOJE
     assert r["ate"] == "23:30"
+
+
+# --- O defeito que só apareceu ao OLHAR para o email -------------------------
+#
+# O cartão do caixa mostrava «Esperado 588,94 · Contado 484,85» e, por baixo,
+# «Falta 6,75 €». Os três números estão certos e juntos MENTEM: o esperado
+# somava as cinco lojas e o contado só as quatro que fecharam a gaveta. Quem
+# subtrai os dois que tem à frente dá 104,09 e não 6,75, e conclui que o
+# relatório se enganou — a pior coisa que um relatório de dinheiro pode fazer.
+#
+# A correcção é dar ao ecrã os dois esperados em separado, para poder mostrar
+# ao lado do contado aquele que É comparável com ele.
+
+
+def test_o_caixa_geral_separa_o_esperado_dos_turnos_CONTADOS():
+    """`esperado_contado` é o único que se pode pôr ao lado do `contado` sem
+    convidar a uma subtracção errada."""
+    v1 = [_venda("l1", [_pagamento("Dinheiro", 30.0)])]
+    v2 = [_venda("l2", [_pagamento("Dinheiro", 10.0)])]
+    r = _relatorio(
+        documentos=[_doc("l1", 30.0), _doc("l2", 10.0)],
+        turnos=[_turno("l1", fundo=50.0, contado=78.0, vendas=v1),
+                _turno("l2", fundo=20.0, contado=None, estado="aberta", vendas=v2)])
+    caixa = r["geral"]["caixa"]
+    assert caixa["esperado"] == 110.0           # as duas lojas
+    assert caixa["esperado_contado"] == 80.0    # só a que fechou
+    assert caixa["contado"] == 78.0
+    # E é ESTE par que a diferença compara — 78 − 80, nunca 78 − 110.
+    assert caixa["diferenca"] == -2.0
+    assert caixa["esperado_aberto"] == 30.0     # o que ficou por contar
+
+
+def test_sem_turnos_abertos_os_dois_esperados_sao_o_MESMO():
+    """Sem isto, o email teria de decidir qual mostrar — e o dia normal (nada
+    aberto) é aquele em que a distinção não existe."""
+    v1 = [_venda("l1", [_pagamento("Dinheiro", 30.0)])]
+    r = _relatorio(documentos=[_doc("l1", 30.0)],
+                   turnos=[_turno("l1", fundo=50.0, contado=80.0, vendas=v1)])
+    caixa = r["geral"]["caixa"]
+    assert caixa["esperado"] == caixa["esperado_contado"] == 80.0
+    assert caixa["esperado_aberto"] == 0.0

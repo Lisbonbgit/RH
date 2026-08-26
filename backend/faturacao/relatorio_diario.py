@@ -139,49 +139,65 @@ def _junta_pagamentos(listas: List[List[Dict]]) -> List[Dict]:
 def _caixa_das_sessoes(turnos: List[Dict]) -> Dict:
     """O esperado, o contado e a diferença de um conjunto de turnos.
 
-    **O contado só soma os turnos FECHADOS**, e diz-se quantos ficaram por
-    fechar. Somar o contado de um turno aberto (que ninguém contou) com o de um
-    fechado dava um número que não é o de lado nenhum — e a diferença
-    resultante mandava alguém procurar uma falta que não existe.
+    **O contado só soma os turnos FECHADOS.** Somar o contado de um turno
+    aberto (que ninguém contou) com o de um fechado dava um número que não é o
+    de lado nenhum, e a diferença mandava alguém procurar uma falta que não
+    existe.
+
+    **Daí saírem DOIS esperados, e não um.** Foi um defeito visto no email já
+    desenhado: o cartão mostrava «Esperado 588,94 · Contado 484,85» e, por
+    baixo, «Falta 6,75 €» — os três certos e, juntos, a mentir. O esperado
+    somava as cinco lojas e o contado só as quatro que fecharam a gaveta; quem
+    subtrai os dois números que tem à frente dá 104,09 e conclui que o
+    relatório se enganou.
+
+    - `esperado` — todas as gavetas, contadas ou não. É o dinheiro que devia
+      existir nas lojas neste momento;
+    - `esperado_contado` — só as que alguém contou. É o único que se pode pôr
+      ao lado do `contado` sem convidar a uma subtracção errada, e é contra
+      ele que a `diferenca` é calculada;
+    - `esperado_aberto` — o que falta contar, para o email o poder dizer por
+      extenso em vez de deixar o leitor a procurá-lo.
     """
     if not turnos:
-        return {"estado": "sem_turno", "esperado": None, "contado": None,
-                "diferenca": None, "turnos_abertos": 0}
+        return {"estado": "sem_turno", "esperado": None, "esperado_contado": None,
+                "esperado_aberto": None, "contado": None, "diferenca": None,
+                "turnos_abertos": 0}
 
-    esperado_c = 0
+    esperado_fechados = 0
+    esperado_abertos = 0
     contado_c = 0
     abertos = 0
-    algum_fechado = False
     for t in turnos:
+        # Uma leitura por turno, e uma só: `_resumo_do_turno` é aritmética
+        # pura mas percorre as vendas e as notas de crédito todas, e chamá-la
+        # duas vezes pelo mesmo turno era pagar isso a dobrar por nada.
         resumo = _resumo_do_turno(
             t["sessao"], t.get("movimentos") or [], t.get("vendas") or [],
             t.get("notas_credito") or [])
-        esperado_c += _centimos(resumo["esperado"])
+        centimos = _centimos(resumo["esperado"])
         if t["sessao"].get("estado") == "aberta":
             abertos += 1
+            esperado_abertos += centimos
         else:
-            algum_fechado = True
+            esperado_fechados += centimos
             contado_c += _centimos(t["sessao"].get("contado"))
 
-    esperado_v = round(esperado_c / 100.0, 2)
-    if not algum_fechado:
-        return {"estado": "aberto", "esperado": esperado_v, "contado": None,
-                "diferenca": None, "turnos_abertos": abertos}
-    contado_v = round(contado_c / 100.0, 2)
+    em_euros = lambda c: round(c / 100.0, 2)  # noqa: E731
+    if abertos == len(turnos):
+        # Nenhuma gaveta contada: não há diferença nenhuma para mostrar.
+        return {"estado": "aberto", "esperado": em_euros(esperado_abertos),
+                "esperado_contado": None, "esperado_aberto": em_euros(esperado_abertos),
+                "contado": None, "diferenca": None, "turnos_abertos": abertos}
     return {
         # "aberto" ganha a "fechado" quando há dos dois: o que o leitor precisa
         # de saber é que ALGUMA coisa ficou por fechar, não que o resto fechou.
         "estado": "aberto" if abertos else "fechado",
-        "esperado": esperado_v,
-        "contado": contado_v,
-        # A diferença compara o contado com o esperado DOS TURNOS CONTADOS —
-        # nunca com o esperado total, que inclui gavetas que ninguém contou.
-        "diferenca": round(
-            (contado_c - sum(
-                _centimos(_resumo_do_turno(
-                    t["sessao"], t.get("movimentos") or [], t.get("vendas") or [],
-                    t.get("notas_credito") or [])["esperado"])
-                for t in turnos if t["sessao"].get("estado") != "aberta")) / 100.0, 2),
+        "esperado": em_euros(esperado_fechados + esperado_abertos),
+        "esperado_contado": em_euros(esperado_fechados),
+        "esperado_aberto": em_euros(esperado_abertos),
+        "contado": em_euros(contado_c),
+        "diferenca": em_euros(contado_c - esperado_fechados),
         "turnos_abertos": abertos,
     }
 
