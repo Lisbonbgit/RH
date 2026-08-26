@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { getFatDashboard } from '../../../lib/faturacao';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Switch } from '../../../components/ui/switch';
@@ -195,6 +195,83 @@ const buildBars = (points, { xLeft = 0, slot = 58, barW = 34, yTop = 10, yBase =
   return { n, bars, max, min, yAt, zeroY, yTop, yBase, width: xLeft + n * slot };
 };
 
+// --- O toque: a linha de mira e o balão --------------------------------------
+//
+// O dono mostrou os gráficos do Vendus: o cursor sobre a curva e um balão a
+// dizer o dia e o valor. Os desenhos já cá estavam; o que faltava era isto —
+// sem o toque, um pico a meio de trinta dias não tem data nenhuma, lê-se a
+// olho contra o eixo e não se lê.
+//
+// UMA peça para os três gráficos (a curva grande, as barras, e os
+// mini-gráficos de cada loja): três cópias disto divergiam à terceira
+// correcção, e a conta das coordenadas é precisamente onde não se pode
+// divergir.
+
+// O índice do ponto MAIS PERTO do rato. O SVG desenha-se num `viewBox` fixo
+// e é mostrado com a largura que o cartão tiver — esta função é a ponte
+// entre as duas escalas, e é o único sítio onde essa conversão existe.
+//
+// «Mais perto» e não «por cima»: ninguém acerta com o rato num ponto de 2 px,
+// muito menos no rato de um PC de balcão. O leitor aponta para uma zona e o
+// gráfico decide qual é o dia.
+const indiceMaisPerto = (evento, svg, coords, larguraViewBox) => {
+  if (!svg || !coords || coords.length === 0) return null;
+  const caixa = svg.getBoundingClientRect();
+  // Sem largura não há conversão possível (o elemento ainda não foi medido, ou
+  // está escondido) — devolver 0 aqui punha o balão a apontar sempre para o
+  // primeiro dia, com ar de estar certo.
+  if (!caixa.width) return null;
+  const x = ((evento.clientX - caixa.left) / caixa.width) * larguraViewBox;
+  let melhor = 0;
+  for (let i = 1; i < coords.length; i += 1) {
+    if (Math.abs(coords[i].x - x) < Math.abs(coords[melhor].x - x)) melhor = i;
+  }
+  return melhor;
+};
+
+// O balão. O VALOR manda (é o que se veio cá ler) e a etiqueta vem a seguir,
+// em tom secundário — ao contrário de uma legenda, onde é o nome que manda.
+//
+// Encostado à borda o balão sairia do cartão. Em vez de o virar ao contrário
+// (que o faz saltar de lado a meio do movimento, e o salto lê-se como avaria),
+// limita-se o centro dele a ficar entre 12% e 88%: acompanha o rato até onde
+// pode e espera lá.
+function BalaoDoGrafico({ xPct, yPct, etiqueta, valor, testid, compacto = false }) {
+  const centro = Math.min(0.88, Math.max(0.12, xPct));
+  // Encostado ao TOPO não há para onde o empurrar — passa para baixo do ponto.
+  // Ao contrário do lado (onde virar faria o balão saltar durante o movimento),
+  // aqui a troca é estável: um ponto alto está alto e fica alto. Sem isto, o
+  // balão da barra mais alta sai do cartão e vai tapar o título do gráfico —
+  // visto a olho, não deduzido.
+  const porBaixo = yPct < 0.28;
+  return (
+    <div
+      data-testid={testid}
+      data-por-baixo={porBaixo ? 'sim' : 'nao'}
+      className={`pointer-events-none absolute z-20 -translate-x-1/2 ${
+        porBaixo ? '' : '-translate-y-full'}`}
+      style={{
+        left: `${centro * 100}%`,
+        top: `calc(${yPct * 100}% ${porBaixo ? '+' : '-'} 10px)`,
+      }}
+    >
+      <div className={`rounded-lg border border-border bg-popover shadow-lg whitespace-nowrap ${
+        compacto ? 'px-2 py-1' : 'px-2.5 py-1.5'}`}>
+        <div className="flex items-center gap-1.5">
+          {/* Um traço, não um quadrado: à densidade de um balão, um quadrado
+              cheio é tinta com peso de dados a fazer trabalho de etiqueta. */}
+          <span className="h-0.5 w-3 rounded-full bg-primary shrink-0" />
+          <span className={`font-semibold tabular-nums text-popover-foreground ${
+            compacto ? 'text-xs' : 'text-sm'}`}>{valor}</span>
+        </div>
+        <p className={`text-muted-foreground mt-0.5 ${compacto ? 'text-[10px]' : 'text-[11px]'}`}>
+          {etiqueta}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // Mini gráfico de área (sparkline) para a linha de uma loja — sem eixos nem
 // grelha, só a forma da tendência dos últimos 30 dias.
 function MiniArea({ pontos, gradId }) {
@@ -202,19 +279,48 @@ function MiniArea({ pontos, gradId }) {
     () => buildArea(pontos, { xLeft: 2, xRight: 118, yTop: 4, yBase: 36, yFill: 38 }),
     [pontos]
   );
+  // O toque vive DENTRO do mini-gráfico, e não no ecrã: são cinco lojas, e o
+  // estado de cada linha é dela. Uma variável no ecrã para todas fazia o balão
+  // de uma loja aparecer em cima da linha da outra.
+  const [ponto, setPonto] = useState(null);
+  const svg = useRef(null);
   if (!area) return null;
+  const escolhido = ponto != null ? area.coords[ponto] : null;
   return (
-    <svg viewBox="0 0 120 40" className="w-24 h-8 shrink-0" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity="0.35" />
-          <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity="0.02" />
-        </linearGradient>
-      </defs>
-      <path d={area.areaPath} fill={`url(#${gradId})`} />
-      <path d={area.line} fill="none" stroke="hsl(var(--primary))" strokeWidth="1.5"
-        strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
+    <div
+      className="relative w-24 shrink-0"
+      onPointerMove={(e) => setPonto(indiceMaisPerto(e, svg.current, area.coords, 120))}
+      onPointerLeave={() => setPonto(null)}
+    >
+      <svg viewBox="0 0 120 40" className="w-full h-8" ref={svg} xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity="0.35" />
+            <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        <path d={area.areaPath} fill={`url(#${gradId})`} />
+        <path d={area.line} fill="none" stroke="hsl(var(--primary))" strokeWidth="1.5"
+          strokeLinejoin="round" strokeLinecap="round" />
+        {escolhido && (
+          <g>
+            <line x1={escolhido.x} y1="2" x2={escolhido.x} y2="38"
+              stroke="hsl(var(--primary))" strokeWidth="0.8" strokeOpacity="0.45" />
+            <circle cx={escolhido.x} cy={escolhido.y} r="2.5" fill="hsl(var(--primary))"
+              stroke="hsl(var(--card))" strokeWidth="1" />
+          </g>
+        )}
+      </svg>
+      {escolhido && (
+        <BalaoDoGrafico
+          compacto
+          xPct={escolhido.x / 120}
+          yPct={escolhido.y / 40}
+          valor={fmtEUR(escolhido.v)}
+          etiqueta={ddmm(escolhido.data)}
+        />
+      )}
+    </div>
   );
 }
 
@@ -225,14 +331,34 @@ function MiniBars({ pontos }) {
     () => buildBars(pontos, { xLeft: 0, slot: 16, barW: 11, yTop: 4, yBase: 34, minH: 1.5 }),
     [pontos]
   );
+  const [tocada, setTocada] = useState(null);
   if (!b) return null;
+  const escolhida = tocada != null ? b.bars[tocada] : null;
   return (
-    <svg viewBox="0 0 96 40" className="w-24 h-10 shrink-0" xmlns="http://www.w3.org/2000/svg">
-      {b.bars.map((bar, i) => (
-        <path key={i} d={roundedBarPath(bar.x, bar.y, bar.w, bar.h, 2, bar.neg ? 'bottom' : 'top')}
-          fill="hsl(var(--primary))" fillOpacity={bar.neg ? 0.55 : 0.85} />
-      ))}
-    </svg>
+    <div className="relative w-24 shrink-0" onPointerLeave={() => setTocada(null)}>
+      <svg viewBox="0 0 96 40" className="w-full h-10" xmlns="http://www.w3.org/2000/svg">
+        {b.bars.map((bar, i) => (
+          <g key={i}>
+            <path d={roundedBarPath(bar.x, bar.y, bar.w, bar.h, 2, bar.neg ? 'bottom' : 'top')}
+              fill="hsl(var(--primary))"
+              fillOpacity={tocada != null && tocada !== i ? 0.35 : (bar.neg ? 0.55 : 0.85)} />
+            {/* A coluna inteira como alvo: estas barras têm 11 unidades de
+                largura num desenho de 96 — apontar à tinta era impossível. */}
+            <rect x={bar.cx - 8} y={0} width={16} height={40} fill="transparent"
+              onPointerEnter={() => setTocada(i)} />
+          </g>
+        ))}
+      </svg>
+      {escolhida && (
+        <BalaoDoGrafico
+          compacto
+          xPct={escolhida.cx / 96}
+          yPct={escolhida.y / 40}
+          valor={fmtEUR(escolhida.v)}
+          etiqueta={mesLabel(escolhida.mes)}
+        />
+      )}
+    </div>
   );
 }
 
@@ -272,6 +398,12 @@ const CARTOES = [
 
 export default function FatDashboard() {
   const [comIva, setComIva] = useState(true);
+  // Que ponto da curva e que barra estão debaixo do rato (ou do foco do
+  // teclado). `null` = nenhum, e nenhum é o estado normal: um balão sempre
+  // visível tapa o desenho e deixa de ser resposta a uma pergunta.
+  const [pontoDaArea, setPontoDaArea] = useState(null);
+  const [barraTocada, setBarraTocada] = useState(null);
+  const svgDaArea = useRef(null);
   const [dashboard, setDashboard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState(false);
@@ -319,7 +451,13 @@ export default function FatDashboard() {
       const idx = nLabels === 1 ? 0 : Math.round((k * (area.n - 1)) / (nLabels - 1));
       if (seen.has(idx)) continue;
       seen.add(idx);
-      xLabels.push({ x: area.coords[idx].x, label: ddmm(pontos[idx].data) });
+      // O ANCORAGEM da etiqueta, e não só a posição: a última fica em x=710
+      // num desenho de 720, e centrada nesse x metade dela cai fora do
+      // `viewBox` — lia-se "26-0". Quem está encostado à borda alinha-se por
+      // ela; o resto continua centrado.
+      const x = area.coords[idx].x;
+      const ancora = x > 700 ? 'end' : (x < 20 ? 'start' : 'middle');
+      xLabels.push({ x, ancora, label: ddmm(pontos[idx].data) });
     }
     return { ...area, gridLines, gridLabels, xLabels };
   }, [dashboard]);
@@ -444,8 +582,37 @@ export default function FatDashboard() {
                   <p className="text-center text-muted-foreground py-10 text-sm">Sem dados para mostrar.</p>
                 ) : (
                   <div className="overflow-x-auto">
-                    <svg viewBox="0 0 720 260" className="w-full min-w-[560px]" xmlns="http://www.w3.org/2000/svg"
-                      data-testid="fat-dashboard-area">
+                    {/* A moldura é o alvo do rato, e não o SVG: um SVG só recebe
+                        o rato onde tem tinta pintada, e o leitor aponta para o
+                        espaço em branco por cima da curva tantas vezes como para
+                        a curva. A largura mínima passou para cá para a moldura e
+                        o desenho terem EXACTAMENTE a mesma caixa — é dela que
+                        saem as percentagens onde o balão assenta. */}
+                    <div
+                      className="relative min-w-[560px] outline-none"
+                      data-testid="fat-dashboard-area-moldura"
+                      tabIndex={0}
+                      role="img"
+                      aria-label="Faturação diária dos últimos 30 dias"
+                      onPointerMove={(e) => setPontoDaArea(
+                        indiceMaisPerto(e, svgDaArea.current, areaPrincipal.coords, 720))}
+                      onPointerLeave={() => setPontoDaArea(null)}
+                      onFocus={() => setPontoDaArea((i) => (i == null ? 0 : i))}
+                      onBlur={() => setPontoDaArea(null)}
+                      /* O teclado. Trinta dias eram trinta paragens de
+                         tabulação — uma armadilha, não uma ajuda. Uma paragem
+                         só, e as setas andam de dia em dia. */
+                      onKeyDown={(e) => {
+                        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+                        e.preventDefault();
+                        const passo = e.key === 'ArrowRight' ? 1 : -1;
+                        setPontoDaArea((i) => Math.min(
+                          areaPrincipal.coords.length - 1,
+                          Math.max(0, (i == null ? 0 : i) + passo)));
+                      }}
+                    >
+                    <svg viewBox="0 0 720 260" className="w-full" xmlns="http://www.w3.org/2000/svg"
+                      ref={svgDaArea} data-testid="fat-dashboard-area">
                       <defs>
                         <linearGradient id="fatDashboardAreaGrad" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity="0.35" />
@@ -463,12 +630,43 @@ export default function FatDashboard() {
                       <path d={areaPrincipal.areaPath} fill="url(#fatDashboardAreaGrad)" />
                       <path d={areaPrincipal.line} fill="none" stroke="hsl(var(--primary))" strokeWidth="2.5"
                         strokeLinejoin="round" strokeLinecap="round" />
+                      {/* A mira e o ponto vêm DEPOIS da curva de propósito: no
+                          SVG quem vem a seguir fica por cima, e uma mira por
+                          baixo do preenchimento não se via. */}
+                      {pontoDaArea != null && areaPrincipal.coords[pontoDaArea] && (
+                        <g data-testid="fat-area-linha">
+                          <line
+                            x1={areaPrincipal.coords[pontoDaArea].x} y1="30"
+                            x2={areaPrincipal.coords[pontoDaArea].x} y2="230"
+                            stroke="hsl(var(--primary))" strokeWidth="1" strokeOpacity="0.45"
+                            strokeDasharray="3 3"
+                          />
+                          {/* Anel da cor do fundo à volta do ponto: sem ele, o
+                              ponto some-se dentro da própria curva. */}
+                          <circle
+                            cx={areaPrincipal.coords[pontoDaArea].x}
+                            cy={areaPrincipal.coords[pontoDaArea].y}
+                            r="5" fill="hsl(var(--primary))"
+                            stroke="hsl(var(--card))" strokeWidth="2"
+                          />
+                        </g>
+                      )}
                       {areaPrincipal.xLabels.map((l, i) => (
-                        <text key={i} x={l.x} y="254" textAnchor="middle" fontSize="10" fill="hsl(var(--muted-foreground))">
+                        <text key={i} x={l.x} y="254" textAnchor={l.ancora} fontSize="10" fill="hsl(var(--muted-foreground))">
                           {l.label}
                         </text>
                       ))}
                     </svg>
+                    {pontoDaArea != null && areaPrincipal.coords[pontoDaArea] && (
+                      <BalaoDoGrafico
+                        testid="fat-area-balao"
+                        xPct={areaPrincipal.coords[pontoDaArea].x / 720}
+                        yPct={areaPrincipal.coords[pontoDaArea].y / 260}
+                        valor={fmtEUR(areaPrincipal.coords[pontoDaArea].v)}
+                        etiqueta={ddmm(areaPrincipal.coords[pontoDaArea].data)}
+                      />
+                    )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -542,8 +740,13 @@ export default function FatDashboard() {
                     <EmptyMini icon={BarChart3} />
                   ) : (
                     <div className="overflow-x-auto w-full">
-                      <svg viewBox={`0 0 ${barras.width} 190`} className="w-full"
+                      {/* A largura mínima vive na moldura, e não no desenho: as
+                          duas têm de ter a MESMA caixa, porque é dela que saem
+                          as percentagens onde o balão assenta. */}
+                      <div className="relative w-full"
                         style={{ minWidth: Math.max(260, barras.width) }}
+                        onPointerLeave={() => setBarraTocada(null)}>
+                      <svg viewBox={`0 0 ${barras.width} 190`} className="w-full"
                         xmlns="http://www.w3.org/2000/svg" data-testid="fat-dashboard-bars">
                         <defs>
                           <linearGradient id="fatBarsGrad" x1="0" y1="0" x2="0" y2="1">
@@ -561,13 +764,49 @@ export default function FatDashboard() {
                         ))}
                         {barras.lista.map((b, i) => (
                           <g key={i}>
-                            <path d={roundedBarPath(b.x, b.y, b.w, b.h, 5, b.neg ? 'bottom' : 'top')} fill="url(#fatBarsGrad)" />
+                            <path
+                              d={roundedBarPath(b.x, b.y, b.w, b.h, 5, b.neg ? 'bottom' : 'top')}
+                              fill="url(#fatBarsGrad)"
+                              data-testid={`fat-bar-${i}`}
+                              data-em-foco={barraTocada === i ? 'sim' : 'nao'}
+                              /* A barra apontada RESPONDE. Com seis barras
+                                 encostadas, um balão sem nada aceso ao lado
+                                 podia estar a falar de qualquer uma delas. */
+                              stroke={barraTocada === i ? 'hsl(var(--primary))' : 'none'}
+                              strokeWidth={barraTocada === i ? 1.5 : 0}
+                              opacity={barraTocada == null || barraTocada === i ? 1 : 0.45}
+                            />
                             <text x={b.cx} y={barras.yBase + 15} textAnchor="middle" fontSize="10" fill="hsl(var(--muted-foreground))">
                               {mesLabel(b.mes)}
                             </text>
+                            {/* O alvo é a COLUNA inteira, não a barra pintada: a
+                                barra de um mês fraco é uma tira fina e ninguém
+                                lhe acerta. `fill="transparent"` e não `none` —
+                                `none` não recebe o rato de todo. */}
+                            <rect
+                              x={b.cx - 29} y={0} width={58} height={190}
+                              fill="transparent"
+                              tabIndex={0}
+                              role="img"
+                              aria-label={`${mesLabel(b.mes)}: ${fmtEUR(b.v)}`}
+                              data-testid={`fat-bar-toque-${i}`}
+                              onPointerEnter={() => setBarraTocada(i)}
+                              onFocus={() => setBarraTocada(i)}
+                              onBlur={() => setBarraTocada(null)}
+                            />
                           </g>
                         ))}
                       </svg>
+                      {barraTocada != null && barras.lista[barraTocada] && (
+                        <BalaoDoGrafico
+                          testid="fat-bars-balao"
+                          xPct={barras.lista[barraTocada].cx / barras.width}
+                          yPct={barras.lista[barraTocada].y / 190}
+                          valor={fmtEUR(barras.lista[barraTocada].v)}
+                          etiqueta={mesLabel(barras.lista[barraTocada].mes)}
+                        />
+                      )}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -618,7 +857,9 @@ export default function FatDashboard() {
                             </div>
                           </div>
                           <MiniArea
-                            pontos={(loja.serie_diaria || []).map((p) => ({ v: Number(p.valor) || 0 }))}
+                            /* A data viaja com o valor: sem ela o balão não tinha o que dizer. */
+                            pontos={(loja.serie_diaria || []).map(
+                              (p) => ({ data: p.data, v: Number(p.valor) || 0 }))}
                             gradId={`fatLojaGradHoje-${loja.loja_id}`}
                           />
                         </div>
@@ -635,7 +876,8 @@ export default function FatDashboard() {
                               <span className="text-xs text-muted-foreground">Anterior: {fmtEUR(loja.mensal_anterior)}</span>
                             </div>
                           </div>
-                          <MiniBars pontos={(loja.serie_mensal || []).map((p) => ({ v: Number(p.valor) || 0 }))} />
+                          <MiniBars pontos={(loja.serie_mensal || []).map(
+                            (p) => ({ mes: p.mes, v: Number(p.valor) || 0 }))} />
                         </div>
                       </div>
                     </div>
