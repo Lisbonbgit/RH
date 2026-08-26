@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 # Nomes das colecções, todos com prefixo fat_ (convenção do repositório: fin_, mkt_).
 COLECOES = {
+    # Definições do backoffice, um documento por chave. Genérica de
+    # propósito: a próxima definição não precisa de colecção nova.
+    "definicoes": "fat_definicoes",
     "lojas": "fat_lojas",
     "caixas": "fat_caixas",
     "utilizadores": "fat_utilizadores",

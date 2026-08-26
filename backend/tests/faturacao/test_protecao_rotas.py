@@ -42,6 +42,18 @@ ROTAS_PUBLICAS = {
     "/api/faturacao/produtos/fotos/{nome}",
 }
 ROTAS_BOOTSTRAP_POS = {"/api/faturacao/pos/emparelhar"}
+
+# **As portas de cron: sem JWT, e é essa a razão de existirem.** São chamadas
+# por um script do servidor (`relatorio-diario-cron.sh`), que não tem sessão de
+# gestor nenhuma para apresentar. A guarda não é uma dependência do FastAPI, é
+# o código lá dentro: a `CRON_KEY` do ambiente, comparada com
+# `secrets.compare_digest` — e sem `CRON_KEY` configurada a rota FECHA-SE, em
+# vez de se abrir a toda a gente (ver `test_relatorio_rota.py`, que é onde essa
+# guarda tem testes a sério).
+#
+# Acrescentada em consciência, e com o mesmo cuidado da lista de cima: uma
+# rota que apareça aqui sem esse mecanismo próprio é uma rota aberta ao mundo.
+ROTAS_DE_CRON = {"/api/faturacao/cron/relatorio-diario"}
 PREFIXO_POS = "/api/faturacao/pos/"
 
 _MECANISMOS_POS = (dispositivo_atual, operador_atual)
@@ -75,6 +87,7 @@ def test_rotas_de_gestao_exigem_gestor_atual():
         (route.path, sorted(route.methods))
         for route in router.routes
         if route.path not in ROTAS_PUBLICAS
+        and route.path not in ROTAS_DE_CRON
         and not route.path.startswith(PREFIXO_POS)
         and not _exige(route, gestor_atual)
     ]
@@ -113,7 +126,7 @@ def test_saude_e_o_bootstrap_do_pos_sao_as_unicas_rotas_sem_guarda():
         if not _exige(route, gestor_atual)
         and not any(_exige(route, mecanismo) for mecanismo in _MECANISMOS_POS)
     }
-    assert sem_nenhuma_guarda == ROTAS_PUBLICAS | ROTAS_BOOTSTRAP_POS
+    assert sem_nenhuma_guarda == ROTAS_PUBLICAS | ROTAS_BOOTSTRAP_POS | ROTAS_DE_CRON
 
 
 # A rota que lê os métodos de pagamento da conta Vendus é nomeada à parte, e

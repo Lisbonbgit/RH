@@ -47,6 +47,9 @@ router.include_router(_motivos)
 from .catalogo import router as _catalogo
 router.include_router(_catalogo)
 
+from .relatorio_rota import router as _relatorio
+router.include_router(_relatorio)
+
 # As fotos dos produtos: carregar uma do computador do dono, e servi-la.
 #
 # As rotas vivem debaixo de `/produtos/` e o catálogo já lá tem
