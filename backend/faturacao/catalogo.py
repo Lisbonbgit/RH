@@ -30,7 +30,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .auth import gestor_atual
 from .db import COLECOES, obter_db
 from .fotos import origem_de_uma_gravacao_do_backoffice
-from .precos import _CODIGOS_IVA_VALIDOS, _tem_mais_de_2_casas_decimais, erros_do_produto
+from .precos import (
+    _CODIGOS_IVA_VALIDOS,
+    _tem_mais_de_2_casas_decimais,
+    erros_do_produto,
+    id_vendus_do_produto,
+)
 
 router = APIRouter()
 
@@ -495,6 +500,38 @@ async def produtos_sem_iva(_: dict = Depends(gestor_atual)) -> List[dict]:
         if erros:
             incompletos.append(dict(produto, erros=erros))
     return incompletos
+
+
+@router.get("/produtos/sem-vendus")
+async def produtos_sem_vendus(_: dict = Depends(gestor_atual)) -> List[dict]:
+    """Os produtos que a emissão NÃO consegue ligar a um artigo do Vendus.
+
+    A pergunta do dono — «estão todos os artigos ligados a um produto no
+    Vendus, para não ficar a criar artigo de cada vez que faz uma fatura?» —
+    tinha resposta no ecrã, mas um produto de cada vez: um ícone pequeno ao
+    lado da linha da tabela. Ninguém percorre 200 produtos à mão, e por isso
+    a resposta na prática era «não sei».
+
+    **A regra é a da emissão, e não uma cópia dela.** Quem decide é
+    `precos.id_vendus_do_produto` — a MESMA função que monta o `id` da linha
+    em `precos.linha_de_venda`. Reimplementar aqui "tem vendus_ref?" era uma
+    segunda leitura da mesma verdade, e a divergência apareceria no pior
+    sítio: o ecrã a dizer que está tudo ligado enquanto o Vendus enche de
+    órfãos. Assim, o vazio, o texto (`VACA…`), o zero e o negativo caem todos
+    do mesmo lado — porque é assim que a fatura os trata.
+
+    Sem `id`, o Vendus não casa a linha pelo título: cria um produto novo e
+    inventa-lhe um código. Medido na conta real: 14 "Açaí Mini", 13 deles sem
+    categoria nenhuma. A 5 lojas × ~200 vendas/dia, o catálogo do Vendus fica
+    inutilizável em semanas.
+
+    O `ativo` viaja tal e qual para o ecrã os poder separar: um produto
+    desligado não está na grelha do POS, e prometer "cada venda cria um
+    artigo" sobre um que ninguém vende era assustar por nada.
+    """
+    db = obter_db()
+    produtos = await db[COLECOES["produtos"]].find({}, {"_id": 0}).sort("nome", 1).to_list(2000)
+    return [p for p in produtos if id_vendus_do_produto(p) is None]
 
 
 @router.post("/produtos", status_code=201)

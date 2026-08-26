@@ -1,0 +1,32 @@
+{
+  "name": "Lisbonb POS",
+  "short_name": "POS",
+  "description": "O balcão das lojas — vender, faturar e fechar a caixa.",
+  "start_url": "/faturacao/pos",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#ffffff",
+  "theme_color": "#1366F0",
+  "lang": "pt-PT",
+  "icons": [
+    {
+      "src": "/icones/pos-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icones/pos-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icones/pos-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

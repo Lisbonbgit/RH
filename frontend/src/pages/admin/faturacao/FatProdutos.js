@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  getProdutos, getProdutosSemIva, criarProduto, editarProduto, apagarProduto, mudarEstadoProduto,
-  getCategorias, getSubcategorias, getGrupos, importarVendus,
+  getProdutos, getProdutosSemIva, getProdutosSemVendus, criarProduto, editarProduto, apagarProduto, mudarEstadoProduto,
+  getCategorias, getSubcategorias, getGrupos, importarVendus, getArtigosVendus,
   carregarFotoProduto, urlDaFotoProduto,
   detalhesErro, temMaisDe2CasasDecimais,
 } from '../../../lib/faturacao';
@@ -48,6 +48,10 @@ const fmtEUR = (n) => new Intl.NumberFormat('pt-PT', { style: 'currency', curren
 
 const emptyForm = {
   nome: '', categoria_id: '', subcategoria_id: '', preco: '', preco_custo: '', tax_id: '', foto_url: '', grupos_personalizacao: [], ativo: true,
+  // A ligação ao artigo do Vendus é agora um campo da ficha, e não uma
+  // herança invisível da importação. Vazio quer dizer «sem ligação», e o
+  // que isso custa está escrito no ecrã, ao lado.
+  vendus_ref: '',
 };
 
 export default function FatProdutos() {
@@ -56,6 +60,7 @@ export default function FatProdutos() {
   const [subcategorias, setSubcategorias] = useState([]);
   const [grupos, setGrupos] = useState([]);
   const [semIva, setSemIva] = useState([]);
+  const [semVendus, setSemVendus] = useState([]);
   const [loading, setLoading] = useState(true);
   const [togglingId, setTogglingId] = useState(null);
 
@@ -65,6 +70,7 @@ export default function FatProdutos() {
   const [filtroTexto, setFiltroTexto] = useState('');
   const [filtroCategoria, setFiltroCategoria] = useState('');
   const [somenteSemIva, setSomenteSemIva] = useState(false);
+  const [somenteSemVendus, setSomenteSemVendus] = useState(false);
   const tabelaRef = useRef(null);
 
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -73,6 +79,15 @@ export default function FatProdutos() {
   const [fieldErrors, setFieldErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
+
+  // O catálogo do Vendus só se vai buscar quando alguém abre o escolhedor:
+  // é uma chamada à rede do Vendus, e a esmagadora maioria das visitas a
+  // este ecrã não abre ficha nenhuma. Lido uma vez, fica.
+  const [artigosVendus, setArtigosVendus] = useState(null);
+  const [artigosEstado, setArtigosEstado] = useState('');
+  const [artigosErro, setArtigosErro] = useState('');
+  const [escolherAberto, setEscolherAberto] = useState(false);
+  const [filtroArtigo, setFiltroArtigo] = useState('');
 
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
@@ -83,13 +98,15 @@ export default function FatProdutos() {
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [p, c, g, s, sub] = await Promise.all([
-        getProdutos(), getCategorias(), getGrupos(), getProdutosSemIva(), getSubcategorias()]);
+      const [p, c, g, s, sub, sv] = await Promise.all([
+        getProdutos(), getCategorias(), getGrupos(), getProdutosSemIva(), getSubcategorias(),
+        getProdutosSemVendus()]);
       setProdutos(p.data || []);
       setCategorias(c.data || []);
       setSubcategorias(sub.data || []);
       setGrupos(g.data || []);
       setSemIva(s.data || []);
+      setSemVendus(sv.data || []);
     } catch (error) {
       toast.error('Erro ao carregar produtos');
     } finally {
@@ -100,6 +117,16 @@ export default function FatProdutos() {
   const categoriasPorId = useMemo(() => Object.fromEntries(categorias.map((c) => [c.id, c])), [categorias]);
   const gruposPorId = useMemo(() => Object.fromEntries(grupos.map((g) => [g.id, g])), [grupos]);
   const semIvaIds = useMemo(() => new Set(semIva.map((p) => p.id)), [semIva]);
+  // Quem está ligado ao Vendus é o SERVIDOR que diz, com a mesma função que
+  // monta o `id` da linha da fatura. O ecrã não repete a regra: um
+  // `vendus_ref` escrito à mão com lixo lá dentro é verdadeiro para o
+  // JavaScript e nada para a emissão, e o ícone mentia exactamente aí.
+  const semVendusIds = useMemo(() => new Set(semVendus.map((p) => p.id)), [semVendus]);
+  // Os que se vendem mesmo. Um produto desligado não está na grelha do POS,
+  // por isso não cria artigo nenhum no Vendus — contá-lo no aviso era
+  // assustar por causa de coisa que ninguém vende.
+  const semVendusAtivos = useMemo(
+    () => semVendus.filter((p) => p.ativo !== false), [semVendus]);
 
   const produtosFiltrados = useMemo(() => {
     const texto = filtroTexto.trim().toLowerCase();
@@ -107,12 +134,23 @@ export default function FatProdutos() {
       if (filtroCategoria && p.categoria_id !== filtroCategoria) return false;
       if (texto && !p.nome.toLowerCase().includes(texto)) return false;
       if (somenteSemIva && !semIvaIds.has(p.id)) return false;
+      if (somenteSemVendus && !semVendusIds.has(p.id)) return false;
       return true;
     });
-  }, [produtos, filtroCategoria, filtroTexto, somenteSemIva, semIvaIds]);
+  }, [produtos, filtroCategoria, filtroTexto, somenteSemIva, semIvaIds,
+      somenteSemVendus, semVendusIds]);
 
   const verProdutosSemIva = () => {
     setSomenteSemIva(true);
+    setSomenteSemVendus(false);
+    setFiltroCategoria('');
+    setFiltroTexto('');
+    tabelaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const verProdutosSemVendus = () => {
+    setSomenteSemVendus(true);
+    setSomenteSemIva(false);
     setFiltroCategoria('');
     setFiltroTexto('');
     tabelaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -120,9 +158,15 @@ export default function FatProdutos() {
 
   // --- Formulário de produto ---
 
+  const abrirFicha = () => {
+    setEscolherAberto(false);
+    setFiltroArtigo('');
+  };
+
   const openNew = () => {
     setEditing(null);
     setForm(emptyForm);
+    abrirFicha();
     setFieldErrors({});
     setDialogOpen(true);
   };
@@ -140,10 +184,54 @@ export default function FatProdutos() {
       foto_url: produto.foto_url || '',
       grupos_personalizacao: produto.grupos_personalizacao || [],
       ativo: produto.ativo !== false,
+      // Sem isto o Guardar mandava `vendus_ref` vazio e CORTAVA a ligação
+      // em silêncio — o produto passava a criar um artigo novo por venda
+      // sem ninguém ter pedido nada.
+      vendus_ref: produto.vendus_ref || '',
     });
     setFieldErrors({});
+    abrirFicha();
     setDialogOpen(true);
   };
+
+  const abrirEscolhaDeArtigo = async () => {
+    setEscolherAberto(true);
+    if (artigosVendus || artigosEstado === 'a-carregar') return;
+    setArtigosEstado('a-carregar');
+    setArtigosErro('');
+    try {
+      const { data } = await getArtigosVendus();
+      setArtigosVendus(data || []);
+      setArtigosEstado('pronto');
+    } catch (error) {
+      // A frase do servidor: é ele que sabe se a conta não está
+      // configurada ou se o Vendus está em baixo, e as duas pedem coisas
+      // diferentes. Uma lista vazia com ar de sucesso dizia «esta conta
+      // não tem artigos» e o produto ficava sem ligação por engano.
+      setArtigosErro(detalhesErro(
+        error, 'Não foi possível ler o catálogo do Vendus.').mensagem);
+      setArtigosEstado('erro');
+    }
+  };
+
+  const escolherArtigo = (artigo) => {
+    setForm((prev) => ({ ...prev, vendus_ref: artigo.id }));
+    setEscolherAberto(false);
+    setFiltroArtigo('');
+  };
+
+  // O artigo ligado, quando já lemos o catálogo — é só para o mostrar pelo
+  // nome. Sem catálogo lido, o que se sabe é a referência, e é o que se diz.
+  const artigoLigado = useMemo(
+    () => (artigosVendus || []).find((a) => a.id === form.vendus_ref) || null,
+    [artigosVendus, form.vendus_ref]);
+
+  const artigosFiltrados = useMemo(() => {
+    const texto = filtroArtigo.trim().toLowerCase();
+    if (!texto) return artigosVendus || [];
+    return (artigosVendus || []).filter(
+      (a) => `${a.nome} ${a.referencia || ''}`.toLowerCase().includes(texto));
+  }, [artigosVendus, filtroArtigo]);
 
   // **O carregamento da foto acontece AQUI, e não no Gravar.** O ficheiro sobe
   // assim que é escolhido e o que fica no formulário é o ENDEREÇO que o
@@ -221,12 +309,12 @@ export default function FatProdutos() {
       grupos_personalizacao: form.grupos_personalizacao,
       ativo: form.ativo,
     };
-    // O PUT do servidor substitui o registo inteiro. vendus_ref não tem campo
-    // neste formulário (é o produto importado do Vendus, não se edita à mão)
-    // — sem o reenviar aqui, gravar o produto punha-o a null e cortava, em
-    // silêncio, a ligação que a importação usa para não duplicar (mesmo
-    // padrão de empresa_id em FatLojas e de employee_id em FatUtilizadores).
-    if (editing) payload.vendus_ref = editing.vendus_ref ?? null;
+    // O PUT do servidor substitui o registo inteiro: sem este campo no corpo,
+    // gravar punha o `vendus_ref` a null e cortava a ligação em silêncio.
+    // Agora é a ficha que o traz — preenchido pelo escolhedor ou herdado do
+    // produto no `openEdit` — e vai SEMPRE, também na criação: é o que
+    // deixa nascer um produto já ligado ao artigo certo do Vendus.
+    payload.vendus_ref = form.vendus_ref || null;
 
     setSaving(true);
     setFieldErrors({});
@@ -356,6 +444,37 @@ export default function FatProdutos() {
         </Alert>
       )}
 
+      {semVendusAtivos.length > 0 && (
+        <Alert data-testid="alerta-sem-vendus" className="border-amber-300 bg-amber-50 text-amber-900">
+          <Link2 className="h-4 w-4" />
+          <AlertTitle>
+            {semVendusAtivos.length === 1
+              ? '1 produto à venda sem ligação ao Vendus'
+              : `${semVendusAtivos.length} produtos à venda sem ligação ao Vendus`}
+          </AlertTitle>
+          <AlertDescription>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>
+                A fatura não consegue dizer ao Vendus <em>qual</em> é o artigo, e o Vendus não o
+                encontra pelo nome — <strong>cria um artigo novo a cada venda</strong>, sem categoria
+                e com uma referência inventada. «Importar do Vendus» liga os que já existam lá com o
+                mesmo nome e categoria.
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="border-amber-400 text-amber-900 hover:bg-amber-100 shrink-0"
+                onClick={verProdutosSemVendus}
+                data-testid="ver-produtos-sem-vendus-btn"
+              >
+                Ver produtos
+              </Button>
+            </div>
+          </AlertDescription>
+        </Alert>
+      )}
+
       <div ref={tabelaRef} className="flex flex-wrap items-center gap-3">
         <div className="relative flex-1 min-w-[220px]">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -384,6 +503,16 @@ export default function FatProdutos() {
             data-testid="limpar-filtro-sem-iva"
           >
             Só sem IVA <X className="h-3.5 w-3.5" />
+          </Badge>
+        )}
+        {somenteSemVendus && (
+          <Badge
+            variant="outline"
+            className="bg-amber-50 text-amber-800 border-amber-300 gap-1.5 cursor-pointer h-9 px-3"
+            onClick={() => setSomenteSemVendus(false)}
+            data-testid="limpar-filtro-sem-vendus"
+          >
+            Só sem Vendus <X className="h-3.5 w-3.5" />
           </Badge>
         )}
       </div>
@@ -447,8 +576,16 @@ export default function FatProdutos() {
                         <TableCell className="font-medium">
                           <div className="flex items-center gap-2">
                             {produto.nome}
-                            {produto.vendus_ref && (
-                              <Link2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-label="Importado do Vendus" />
+                            {semVendusIds.has(produto.id) ? (
+                              <Badge
+                                variant="outline"
+                                className="bg-amber-50 text-amber-800 border-amber-300 gap-1 shrink-0"
+                                title="A fatura não leva o id do artigo — o Vendus cria um artigo novo a cada venda"
+                              >
+                                <AlertTriangle className="h-3 w-3" />Sem Vendus
+                              </Badge>
+                            ) : (
+                              <Link2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-label="Ligado ao Vendus" />
                             )}
                           </div>
                         </TableCell>
@@ -735,11 +872,110 @@ export default function FatProdutos() {
                 </div>
               </div>
 
-              {editing?.vendus_ref && (
-                <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-                  <Link2 className="h-3.5 w-3.5" />Este produto veio do Vendus (ref. {editing.vendus_ref}). Uma nova importação atualiza nome, preço, IVA e categoria; as personalizações e a foto ficam como estão aqui.
-                </p>
-              )}
+              <div className="space-y-2" data-testid="produto-ligacao-vendus">
+                <Label>Ligação ao Vendus</Label>
+                {form.vendus_ref ? (
+                  <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 space-y-2">
+                    <p className="text-sm text-emerald-900 flex items-center gap-1.5">
+                      <Link2 className="h-3.5 w-3.5 shrink-0" />
+                      Ligado ao artigo <strong>{artigoLigado?.nome || 'do Vendus'}</strong> (ref. {form.vendus_ref}).
+                    </p>
+                    <p className="text-xs text-emerald-800">
+                      A fatura leva este id em cada linha — o Vendus usa o artigo que já lá existe
+                      em vez de criar um novo. Uma nova importação atualiza nome, preço, IVA e
+                      categoria; as personalizações e a foto ficam como estão aqui.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button" size="sm" variant="outline"
+                        onClick={abrirEscolhaDeArtigo}
+                        data-testid="escolher-artigo-vendus-btn"
+                      >
+                        Trocar de artigo
+                      </Button>
+                      <Button
+                        type="button" size="sm" variant="outline"
+                        onClick={() => setForm({ ...form, vendus_ref: '' })}
+                        data-testid="desligar-artigo-vendus-btn"
+                      >
+                        Desligar
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-amber-300 bg-amber-50 p-3 space-y-2">
+                    <p className="text-sm text-amber-900 flex items-center gap-1.5">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                      Sem ligação — o Vendus <strong>cria um artigo novo a cada venda</strong> deste
+                      produto, sem categoria e com uma referência inventada.
+                    </p>
+                    <Button
+                      type="button" size="sm" variant="outline"
+                      className="border-amber-400 text-amber-900 hover:bg-amber-100"
+                      onClick={abrirEscolhaDeArtigo}
+                      data-testid="escolher-artigo-vendus-btn"
+                    >
+                      Escolher artigo do Vendus
+                    </Button>
+                  </div>
+                )}
+
+                {escolherAberto && (
+                  <div className="rounded-md border p-3 space-y-2">
+                    {artigosEstado === 'a-carregar' && (
+                      <p className="text-sm text-muted-foreground flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" />A ler o catálogo do Vendus...
+                      </p>
+                    )}
+                    {artigosEstado === 'erro' && (
+                      <p className="text-sm text-destructive">{artigosErro}</p>
+                    )}
+                    {artigosEstado === 'pronto' && (artigosVendus || []).length === 0 && (
+                      <p className="text-sm text-muted-foreground">
+                        A conta Vendus não devolveu nenhum artigo. Crie-o primeiro no Vendus e
+                        volte aqui.
+                      </p>
+                    )}
+                    {artigosEstado === 'pronto' && (artigosVendus || []).length > 0 && (
+                      <>
+                        <Input
+                          value={filtroArtigo}
+                          onChange={(e) => setFiltroArtigo(e.target.value)}
+                          placeholder="Procurar por nome ou referência..."
+                          data-testid="filtro-artigo-vendus"
+                        />
+                        <div
+                          className="flex flex-col gap-1 max-h-56 overflow-y-auto"
+                          data-testid="artigos-vendus-lista"
+                        >
+                          {artigosFiltrados.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">Nenhum artigo com esse nome.</p>
+                          ) : artigosFiltrados.map((artigo) => (
+                            <Button
+                              key={artigo.id}
+                              type="button"
+                              variant="ghost"
+                              className="justify-start h-auto py-2 text-left"
+                              onClick={() => escolherArtigo(artigo)}
+                              data-testid={`artigo-vendus-${artigo.id}`}
+                            >
+                              <span className="flex flex-col items-start gap-0.5">
+                                <span className="font-medium">{artigo.nome}</span>
+                                <span className="text-xs text-muted-foreground">
+                                  {artigo.referencia ? `${artigo.referencia} · ` : ''}
+                                  {artigo.preco != null ? fmtEUR(artigo.preco) : 'sem preço'}
+                                  {artigo.tax_id ? ` · ${artigo.tax_id}` : ''}
+                                  {artigo.ligado_a ? ` · já ligado a "${artigo.ligado_a}"` : ''}
+                                </span>
+                              </span>
+                            </Button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
 
               <div className="flex items-center gap-2 pt-1">
                 <Switch id="produto-ativo" checked={form.ativo} onCheckedChange={(v) => setForm({ ...form, ativo: v })} data-testid="produto-ativo-switch" />
