@@ -45,6 +45,8 @@ _POS_FINALIZAR = _RAIZ / "frontend" / "src" / "pages" / "pos" / "PosFinalizar.js
 
 _ASSINATURA_CENTIMOS = "const centimos = (valor) =>"
 _ASSINATURA_CAMPOS = "export const camposDeValorDoPagamento = (pagamentos, totalCentimos) => {"
+_ASSINATURA_QUADRO = (
+    "export const mostrarQuadroDePagamentos = (pagamentos, comCampoDeValor) => {")
 _ASSINATURA_TROCO = "const mostrarTroco ="
 
 
@@ -330,3 +332,108 @@ def test_o_valor_recebido_nao_depende_de_quantos_pagamentos_ha():
         "O valor recebido passou a depender de quantos pagamentos há: %s\n"
         "Não pode. O troco sai do dinheiro, haja um tipo ou três." % linha.strip()
     )
+
+
+# --- O passo seguinte do mesmo pedido ----------------------------------------
+#
+# O dono voltou ao mesmo ecrã, agora com o Multibanco sozinho numa conta de
+# 34,90 €: «quando o staff clicar em somente uma forma de pagamento, nao
+# precisa mostrar esse multibanco o valor total e o pagamento certo. (nao faz
+# sentido) portanto tira isso.»
+#
+# A caixa de valor já tinha desaparecido (é disso que trata o resto deste
+# ficheiro). O que sobrava era a LINHA a repetir «Multibanco 34,90 €» — o total
+# que ela tem à frente, escrito outra vez — e o indicador verde «Pagamentos
+# certos», a confirmar uma soma de uma parcela só. Duas afirmações verdadeiras
+# e inúteis, em todas as vendas normais do dia.
+#
+# A regra sai do JSX pela mesma razão de sempre: uma decisão dentro de um
+# `{... && (` não é executável por teste nenhum.
+
+
+def _mostra_o_quadro(casos, tmp_path: Path):
+    """Corre em Node a decisão tal como está escrita no ecrã."""
+    ecra = _ler(_POS_FINALIZAR)
+    guiao = tmp_path / "quadro.js"
+    guiao.write_text(
+        "\n".join([
+            _corpo_da_funcao(ecra, _ASSINATURA_QUADRO, _POS_FINALIZAR).replace("export ", "", 1),
+            "const casos = %s;" % json.dumps(casos),
+            "process.stdout.write(JSON.stringify(casos.map(",
+            "  ({ pagamentos, comCampoDeValor }) =>",
+            "    mostrarQuadroDePagamentos(pagamentos, comCampoDeValor)",
+            ")));",
+        ]),
+        encoding="utf-8",
+    )
+    resultado = subprocess.run(
+        [_node(), str(guiao)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if resultado.returncode != 0:
+        pytest.fail("O JavaScript do ecrã não correu:\n%s"
+                    % resultado.stderr.decode("utf-8", "replace"))
+    return json.loads(resultado.stdout.decode("utf-8"))
+
+
+@pytest.mark.parametrize("tipo", ["multibanco", "uber", "glovo", "dinheiro"])
+def test_um_tipo_sozinho_NAO_mostra_quadro_nenhum(tipo, tmp_path):
+    """«quando se clica em somente um, nao precisa aparecer nada» — nem a
+    linha a repetir o total, nem o visto verde."""
+    assert _mostra_o_quadro(
+        [{"pagamentos": [_pagamento(tipo, "34.90")], "comCampoDeValor": []}],
+        tmp_path)[0] is False
+
+
+def test_dois_tipos_MOSTRAM_o_quadro(tmp_path):
+    """«quando clicar em dinheiro e multibanco ai aparece as caixas em baixo
+    para colocar o valor de cada pagamento» — e com elas o indicador, que aí
+    tem mesmo uma soma para confirmar."""
+    assert _mostra_o_quadro([{
+        "pagamentos": [_pagamento("dinheiro", "10.00"), _pagamento("multibanco", "24.90")],
+        "comCampoDeValor": ["dinheiro", "multibanco"],
+    }], tmp_path)[0] is True
+
+
+def test_um_tipo_com_o_valor_ERRADO_volta_a_mostrar_o_quadro(tmp_path):
+    """O caso que não se pode esconder: tira-se um dos dois pagamentos depois
+    de lhe ter escrito um valor à mão, e sobra um só que NÃO bate com o total.
+    Aí há uma caixa para preencher — escondê-la deixava a operadora com o
+    EMITIR morto e sem nada onde escrever."""
+    assert _mostra_o_quadro([{
+        "pagamentos": [_pagamento("multibanco", "10.00")],
+        "comCampoDeValor": ["multibanco"],
+    }], tmp_path)[0] is True
+
+
+def test_sem_pagamento_nenhum_nao_ha_quadro(tmp_path):
+    assert _mostra_o_quadro(
+        [{"pagamentos": [], "comCampoDeValor": []}], tmp_path)[0] is False
+
+
+def test_o_ecra_CHAMA_a_funcao_do_quadro_em_vez_de_a_redescobrir():
+    """O mesmo guarda do `camposDeValorDoPagamento`: a regra pode voltar para
+    dentro do JSX sem nada ficar vermelho, e a partir daí estes testes medem
+    uma função que o ecrã já não usa."""
+    ecra = _ler(_POS_FINALIZAR)
+    assert "mostrarQuadroDePagamentos(pagamentos, comCampoDeValor)" in ecra, (
+        "O ecrã não está a chamar `mostrarQuadroDePagamentos`.")
+    # E o PORTÃO do JSX tem de ser o resultado dela. Sem esta segunda
+    # asserção, trocar `{haQuadroDePagamentos && (` por `{pagamentos.length >
+    # 0 && (` deixava a suite verde com o defeito do dono de volta ao ecrã —
+    # medido, foi exactamente o que aconteceu.
+    assert "{haQuadroDePagamentos && (" in ecra, (
+        "O quadro dos pagamentos deixou de ser decidido por "
+        "`mostrarQuadroDePagamentos` — a regra voltou para dentro do JSX.")
+
+
+def test_a_RAZAO_do_bloqueio_continua_junto_ao_botao():
+    """Esconder o indicador só é seguro porque TODA a razão que desliga o
+    EMITIR já tem casa encostada ao botão. Se essa frase desaparecer um dia, o
+    ecrã volta ao silêncio que o `motivoBloqueio` veio acabar — e desta vez sem
+    o indicador para o compensar."""
+    ecra = _ler(_POS_FINALIZAR)
+    # A marcação inteira, e não só as palavras: "Para emitir" aparece também
+    # nos comentários deste ficheiro, e a primeira versão deste teste casava
+    # com um COMENTÁRIO — ficava verde com a frase apagada do ecrã.
+    assert '<span className="font-semibold">Para emitir: </span>' in ecra, (
+        "A frase que explica o EMITIR desligado desapareceu do ecrã.")
+    assert "{motivoBloqueio.texto}" in ecra
