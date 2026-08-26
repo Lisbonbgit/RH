@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  getProdutos, getProdutosSemIva, criarProduto, editarProduto, apagarProduto, mudarEstadoProduto,
+  getProdutos, getProdutosSemIva, getProdutosSemVendus, criarProduto, editarProduto, apagarProduto, mudarEstadoProduto,
   getCategorias, getSubcategorias, getGrupos, importarVendus,
   carregarFotoProduto, urlDaFotoProduto,
   detalhesErro, temMaisDe2CasasDecimais,
@@ -56,6 +56,7 @@ export default function FatProdutos() {
   const [subcategorias, setSubcategorias] = useState([]);
   const [grupos, setGrupos] = useState([]);
   const [semIva, setSemIva] = useState([]);
+  const [semVendus, setSemVendus] = useState([]);
   const [loading, setLoading] = useState(true);
   const [togglingId, setTogglingId] = useState(null);
 
@@ -65,6 +66,7 @@ export default function FatProdutos() {
   const [filtroTexto, setFiltroTexto] = useState('');
   const [filtroCategoria, setFiltroCategoria] = useState('');
   const [somenteSemIva, setSomenteSemIva] = useState(false);
+  const [somenteSemVendus, setSomenteSemVendus] = useState(false);
   const tabelaRef = useRef(null);
 
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -83,13 +85,15 @@ export default function FatProdutos() {
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [p, c, g, s, sub] = await Promise.all([
-        getProdutos(), getCategorias(), getGrupos(), getProdutosSemIva(), getSubcategorias()]);
+      const [p, c, g, s, sub, sv] = await Promise.all([
+        getProdutos(), getCategorias(), getGrupos(), getProdutosSemIva(), getSubcategorias(),
+        getProdutosSemVendus()]);
       setProdutos(p.data || []);
       setCategorias(c.data || []);
       setSubcategorias(sub.data || []);
       setGrupos(g.data || []);
       setSemIva(s.data || []);
+      setSemVendus(sv.data || []);
     } catch (error) {
       toast.error('Erro ao carregar produtos');
     } finally {
@@ -100,6 +104,16 @@ export default function FatProdutos() {
   const categoriasPorId = useMemo(() => Object.fromEntries(categorias.map((c) => [c.id, c])), [categorias]);
   const gruposPorId = useMemo(() => Object.fromEntries(grupos.map((g) => [g.id, g])), [grupos]);
   const semIvaIds = useMemo(() => new Set(semIva.map((p) => p.id)), [semIva]);
+  // Quem está ligado ao Vendus é o SERVIDOR que diz, com a mesma função que
+  // monta o `id` da linha da fatura. O ecrã não repete a regra: um
+  // `vendus_ref` escrito à mão com lixo lá dentro é verdadeiro para o
+  // JavaScript e nada para a emissão, e o ícone mentia exactamente aí.
+  const semVendusIds = useMemo(() => new Set(semVendus.map((p) => p.id)), [semVendus]);
+  // Os que se vendem mesmo. Um produto desligado não está na grelha do POS,
+  // por isso não cria artigo nenhum no Vendus — contá-lo no aviso era
+  // assustar por causa de coisa que ninguém vende.
+  const semVendusAtivos = useMemo(
+    () => semVendus.filter((p) => p.ativo !== false), [semVendus]);
 
   const produtosFiltrados = useMemo(() => {
     const texto = filtroTexto.trim().toLowerCase();
@@ -107,12 +121,23 @@ export default function FatProdutos() {
       if (filtroCategoria && p.categoria_id !== filtroCategoria) return false;
       if (texto && !p.nome.toLowerCase().includes(texto)) return false;
       if (somenteSemIva && !semIvaIds.has(p.id)) return false;
+      if (somenteSemVendus && !semVendusIds.has(p.id)) return false;
       return true;
     });
-  }, [produtos, filtroCategoria, filtroTexto, somenteSemIva, semIvaIds]);
+  }, [produtos, filtroCategoria, filtroTexto, somenteSemIva, semIvaIds,
+      somenteSemVendus, semVendusIds]);
 
   const verProdutosSemIva = () => {
     setSomenteSemIva(true);
+    setSomenteSemVendus(false);
+    setFiltroCategoria('');
+    setFiltroTexto('');
+    tabelaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const verProdutosSemVendus = () => {
+    setSomenteSemVendus(true);
+    setSomenteSemIva(false);
     setFiltroCategoria('');
     setFiltroTexto('');
     tabelaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -356,6 +381,37 @@ export default function FatProdutos() {
         </Alert>
       )}
 
+      {semVendusAtivos.length > 0 && (
+        <Alert data-testid="alerta-sem-vendus" className="border-amber-300 bg-amber-50 text-amber-900">
+          <Link2 className="h-4 w-4" />
+          <AlertTitle>
+            {semVendusAtivos.length === 1
+              ? '1 produto à venda sem ligação ao Vendus'
+              : `${semVendusAtivos.length} produtos à venda sem ligação ao Vendus`}
+          </AlertTitle>
+          <AlertDescription>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>
+                A fatura não consegue dizer ao Vendus <em>qual</em> é o artigo, e o Vendus não o
+                encontra pelo nome — <strong>cria um artigo novo a cada venda</strong>, sem categoria
+                e com uma referência inventada. «Importar do Vendus» liga os que já existam lá com o
+                mesmo nome e categoria.
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="border-amber-400 text-amber-900 hover:bg-amber-100 shrink-0"
+                onClick={verProdutosSemVendus}
+                data-testid="ver-produtos-sem-vendus-btn"
+              >
+                Ver produtos
+              </Button>
+            </div>
+          </AlertDescription>
+        </Alert>
+      )}
+
       <div ref={tabelaRef} className="flex flex-wrap items-center gap-3">
         <div className="relative flex-1 min-w-[220px]">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -384,6 +440,16 @@ export default function FatProdutos() {
             data-testid="limpar-filtro-sem-iva"
           >
             Só sem IVA <X className="h-3.5 w-3.5" />
+          </Badge>
+        )}
+        {somenteSemVendus && (
+          <Badge
+            variant="outline"
+            className="bg-amber-50 text-amber-800 border-amber-300 gap-1.5 cursor-pointer h-9 px-3"
+            onClick={() => setSomenteSemVendus(false)}
+            data-testid="limpar-filtro-sem-vendus"
+          >
+            Só sem Vendus <X className="h-3.5 w-3.5" />
           </Badge>
         )}
       </div>
@@ -447,8 +513,16 @@ export default function FatProdutos() {
                         <TableCell className="font-medium">
                           <div className="flex items-center gap-2">
                             {produto.nome}
-                            {produto.vendus_ref && (
-                              <Link2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-label="Importado do Vendus" />
+                            {semVendusIds.has(produto.id) ? (
+                              <Badge
+                                variant="outline"
+                                className="bg-amber-50 text-amber-800 border-amber-300 gap-1 shrink-0"
+                                title="A fatura não leva o id do artigo — o Vendus cria um artigo novo a cada venda"
+                              >
+                                <AlertTriangle className="h-3 w-3" />Sem Vendus
+                              </Badge>
+                            ) : (
+                              <Link2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-label="Ligado ao Vendus" />
                             )}
                           </div>
                         </TableCell>

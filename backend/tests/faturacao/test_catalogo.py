@@ -39,6 +39,7 @@ from faturacao.catalogo import (
     mudar_estado_produto,
     obter_produto,
     produtos_sem_iva,
+    produtos_sem_vendus,
 )
 
 
@@ -967,3 +968,91 @@ def test_editar_produto_ainda_desliga_a_ligacao_quando_lho_pedem(monkeypatch):
 
     alteracoes = _set_do_update(registo)
     assert "vendus_ref" in alteracoes and alteracoes["vendus_ref"] is None
+
+
+# --- Quem é que ainda não está ligado ao Vendus --------------------------------
+#
+# A pergunta do dono: «estão todos os artigos ligados a um produto no Vendus,
+# para não ficar a criar artigo de cada vez que faz uma fatura?». Até aqui a
+# resposta estava num ícone pequeno ao lado de cada linha da tabela — vê-se
+# um produto de cada vez, e ninguém percorre 200 à mão. O endpoint responde à
+# pergunta INTEIRA, com a MESMA função que a emissão usa para decidir se manda
+# o `id` (precos.id_vendus_do_produto) — e não com uma segunda regra escrita
+# aqui, que era uma segunda oportunidade para os dois lados divergirem.
+
+
+def test_produtos_sem_vendus_devolve_so_os_que_nao_ligam(monkeypatch):
+    """O que a emissão NÃO consegue enviar como `id` é o que aparece aqui: o
+    campo ausente, o vazio, o texto, o zero e o negativo — todos eles fazem o
+    Vendus criar um produto novo a cada venda."""
+    registo = []
+    dados = [
+        {"id": "p1", "nome": "Ligado", "preco": 8.99, "tax_id": "INT", "vendus_ref": "171258472"},
+        {"id": "p2", "nome": "Sem campo", "preco": 2.5, "tax_id": "NOR"},
+        {"id": "p3", "nome": "Vazio", "preco": 2.5, "tax_id": "NOR", "vendus_ref": ""},
+        {"id": "p4", "nome": "Texto", "preco": 2.5, "tax_id": "NOR", "vendus_ref": "VACA123"},
+        {"id": "p5", "nome": "Zero", "preco": 2.5, "tax_id": "NOR", "vendus_ref": "0"},
+        {"id": "p6", "nome": "Negativo", "preco": 2.5, "tax_id": "NOR", "vendus_ref": "-4"},
+        {"id": "p7", "nome": "Nulo", "preco": 2.5, "tax_id": "NOR", "vendus_ref": None},
+    ]
+    db = _db_produtos(registo, produtos_find_devolve=dados)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    resultado = _corre(produtos_sem_vendus(_={}))
+    assert {p["nome"] for p in resultado} == {
+        "Sem campo", "Vazio", "Texto", "Zero", "Negativo", "Nulo"}
+
+
+def test_produtos_sem_vendus_vazio_quando_todos_ligados(monkeypatch):
+    registo = []
+    dados = [
+        {"id": "p1", "nome": "Açaí Regular", "preco": 8.99, "tax_id": "INT", "vendus_ref": "171258472"},
+        {"id": "p2", "nome": "Água", "preco": 1.0, "tax_id": "INT", "vendus_ref": 987654},
+    ]
+    db = _db_produtos(registo, produtos_find_devolve=dados)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    assert _corre(produtos_sem_vendus(_={})) == []
+
+
+def test_produtos_sem_vendus_conta_os_inactivos_a_parte(monkeypatch):
+    """Um produto desligado não está na grelha do POS, mas está na conta: o
+    `ativo` viaja no que se devolve para o ecrã os poder separar, em vez de
+    prometer "cada venda cria um artigo" sobre um que ninguém vende."""
+    registo = []
+    dados = [
+        {"id": "p1", "nome": "Vivo", "preco": 2.5, "tax_id": "NOR", "ativo": True},
+        {"id": "p2", "nome": "Desligado", "preco": 2.5, "tax_id": "NOR", "ativo": False},
+    ]
+    db = _db_produtos(registo, produtos_find_devolve=dados)
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: db)
+
+    resultado = _corre(produtos_sem_vendus(_={}))
+    assert {p["nome"]: p["ativo"] for p in resultado} == {"Vivo": True, "Desligado": False}
+
+
+def test_a_rota_sem_vendus_nao_e_TAPADA_por_produtos_id():
+    """`/produtos/sem-vendus` vive debaixo de `/produtos/`, onde já mora
+    `/produtos/{produto_id}`. O FastAPI resolve pela ORDEM de registo: mover
+    a função para baixo do `{produto_id}` não parte nada em lado nenhum —
+    devolve 404 «Produto não encontrado» ao ecrã, o aviso desaparece, e a
+    leitura fica «está tudo ligado ao Vendus». O falso «está tudo bem» é o
+    pior dos dois lados.
+
+    Perguntado ao router A SÉRIO, e não afirmando o endereço que o código
+    escreve — só assim se apanha o prefixo ou a ordem errada."""
+    from faturacao import router
+
+    def quem_responde(metodo, caminho):
+        for rota in router.routes:
+            if metodo not in getattr(rota, "methods", ()):
+                continue
+            if rota.path_regex.match(caminho):
+                return rota.endpoint.__name__
+        return None
+
+    assert quem_responde("GET", "/api/faturacao/produtos/sem-vendus") == "produtos_sem_vendus"
+    # E a vizinha do lado, pela mesma razão e no mesmo sítio.
+    assert quem_responde("GET", "/api/faturacao/produtos/sem-iva") == "produtos_sem_iva"
+    # O contrário: um produto de verdade continua a ser servido pela sua rota.
+    assert quem_responde("GET", "/api/faturacao/produtos/p-1") == "obter_produto"
