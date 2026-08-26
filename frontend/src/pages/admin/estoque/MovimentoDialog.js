@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { estoqueMovimento, estoqueTransferencia } from '../../../lib/api';
+import { estoqueMovimento, estoqueTransferencia, setEstoqueMaximo } from '../../../lib/api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../../components/ui/dialog';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
@@ -27,6 +27,7 @@ const MOVS = [
 export default function MovimentoDialog({ item, lojaId, lojaNome, lojas, onClose, onDone }) {
   const [qtds, setQtds] = useState({ entrada: '', saida: '', contagem: '', transferir: '' });
   const [destino, setDestino] = useState('');
+  const [maximo, setMaximo] = useState(item && item.maximo != null ? String(item.maximo) : '');
   const [saving, setSaving] = useState(false);
 
   if (!item) return null;
@@ -48,6 +49,22 @@ export default function MovimentoDialog({ item, lojaId, lojaNome, lojas, onClose
       onClose();
     } catch (e) {
       toast.error(e?.response?.data?.detail || 'Não foi possível registar.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function guardarMaximo() {
+    const m = maximo.trim() === '' ? 0 : parseNum(maximo);
+    if (Number.isNaN(m) || m < 0) return toast.error('Máximo inválido.');
+    setSaving(true);
+    try {
+      await setEstoqueMaximo(item.produto_id, lojaId, m);
+      toast.success(m > 0 ? `Máximo de ${item.nome}: ${fmt(m)} ${medida}.` : 'Máximo removido.');
+      onDone();
+      onClose();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Não foi possível guardar o máximo.');
     } finally {
       setSaving(false);
     }
@@ -109,6 +126,24 @@ export default function MovimentoDialog({ item, lojaId, lojaNome, lojas, onClose
               </Button>
             </div>
           ))}
+        </div>
+
+        <div className="pt-3 mt-1 border-t space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">Máximo desta loja (quanto cabe cheio)</p>
+          <div className="flex items-center gap-2">
+            <Input
+              inputMode="decimal"
+              placeholder="sem máximo"
+              value={maximo}
+              onChange={(e) => setMaximo(e.target.value)}
+              className="flex-1"
+              data-testid="mov-maximo"
+            />
+            <Button type="button" variant="outline" className="w-32 shrink-0" disabled={saving} onClick={guardarMaximo}>
+              Guardar máx.
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">O aviso de acabar sai daqui, automático (% do máximo).</p>
         </div>
 
         {destinos.length > 0 && (

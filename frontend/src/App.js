@@ -37,6 +37,10 @@ import EstoqueHistorico from './pages/admin/estoque/EstoqueHistorico';
 import EstoqueFichas from './pages/admin/estoque/EstoqueFichas';
 import EstoqueProducao from './pages/admin/estoque/EstoqueProducao';
 import EstoqueEmBreve from './pages/admin/estoque/EstoqueEmBreve';
+import EstoqueVisaoGeral from './pages/admin/estoque/EstoqueVisaoGeral';
+import EstoqueCatalogo from './pages/admin/estoque/EstoqueCatalogo';
+import EstoqueCompras from './pages/admin/estoque/EstoqueCompras';
+import EstoqueDefinicoes from './pages/admin/estoque/EstoqueDefinicoes';
 import ComingSoon from './components/ComingSoon';
 import {
   FileText,
@@ -211,14 +215,18 @@ function AppRoutes() {
         <Route path="financeiro/extrato" element={<FinExtrato />} />
 
         {/* ===== Estoque ===== */}
-        <Route path="estoque" element={<Navigate to="/admin/estoque/stock" replace />} />
+        <Route path="estoque" element={<Navigate to="/admin/estoque/visao-geral" replace />} />
+        <Route path="estoque/visao-geral" element={<EstoqueVisaoGeral />} />
         <Route path="estoque/stock" element={<EstoqueStock />} />
+        <Route path="estoque/catalogo" element={<EstoqueCatalogo />} />
         <Route path="estoque/escanear" element={<EstoqueEmBreve />} />
         <Route path="estoque/lista-compras" element={<EstoqueListaCompras />} />
+        <Route path="estoque/compras" element={<EstoqueCompras />} />
         <Route path="estoque/transferencias" element={<EstoqueTransferencias />} />
         <Route path="estoque/fichas" element={<EstoqueFichas />} />
         <Route path="estoque/producao" element={<EstoqueProducao />} />
         <Route path="estoque/faturas" element={<EstoqueFaturas />} />
+        <Route path="estoque/definicoes" element={<EstoqueDefinicoes />} />
         <Route path="estoque/historico" element={<EstoqueHistorico />} />
 
         {/* ===== Faturação ===== */}

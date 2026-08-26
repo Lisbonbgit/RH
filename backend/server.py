@@ -6147,6 +6147,138 @@ async def estoque_producao_relatorio(unidade_id: str = Query(...), dias: int = Q
     return await _estoque_get("/integ/producao", {"unidade_id": unidade_id, "dias": dias})
 
 
+# ===== SECÇÃO ESTOQUE — Catálogo / Visão geral / Compras / Definições (Fase 1) =====
+
+async def _estoque_patch(path: str, body: dict):
+    headers = _estoque_headers()
+    try:
+        async with httpx.AsyncClient(timeout=15) as http_client:
+            r = await http_client.patch(f"{ESTOQUE_API_URL}{path}", json=body, headers=headers)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Sem ligação ao Estoque: {e}")
+    if r.status_code >= 400:
+        raise _estoque_erro(r)
+    return r.json()
+
+
+async def _estoque_delete(path: str):
+    headers = _estoque_headers()
+    try:
+        async with httpx.AsyncClient(timeout=15) as http_client:
+            r = await http_client.delete(f"{ESTOQUE_API_URL}{path}", headers=headers)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Sem ligação ao Estoque: {e}")
+    if r.status_code >= 400:
+        raise _estoque_erro(r)
+    return r.json()
+
+
+def _ator(current_user: dict) -> str:
+    return current_user.get("name") or current_user.get("email") or "RH"
+
+
+class EstoqueProdutoCreateIn(BaseModel):
+    nome: str
+    marca: str
+    unidade_medida: str
+    codigo_barras: Optional[str] = None
+    foto: Optional[str] = None
+    peso_valor: Optional[float] = None
+    peso_unidade: Optional[str] = None
+    fornecedor: Optional[str] = None
+
+
+class EstoqueProdutoUpdateIn(BaseModel):
+    nome: Optional[str] = None
+    unidade_medida: Optional[str] = None
+    codigo_barras: Optional[str] = None
+    foto: Optional[str] = None
+    peso_valor: Optional[float] = None
+    peso_unidade: Optional[str] = None
+    fornecedor: Optional[str] = None
+
+
+class EstoqueMergeIn(BaseModel):
+    principal_id: str
+    duplicados: list = []
+
+
+class EstoqueMaximoIn(BaseModel):
+    maximo: Optional[float] = None
+
+
+class EstoqueDefinicaoIn(BaseModel):
+    percentagem: float
+
+
+@api_router.post("/estoque/produtos")
+async def estoque_criar_produto(body: EstoqueProdutoCreateIn, current_user: dict = Depends(admin_required)):
+    """Cria um produto no catálogo de uma marca."""
+    from urllib.parse import quote
+    path = f"/integ/produtos?actor={quote(_ator(current_user))}"
+    return await _estoque_post(path, body.dict())
+
+
+@api_router.post("/estoque/produtos/merge")
+async def estoque_merge_produtos(body: EstoqueMergeIn, current_user: dict = Depends(admin_required)):
+    """Junta produtos duplicados num só."""
+    return await _estoque_post("/integ/produtos/merge", {"principal_id": body.principal_id, "duplicados": body.duplicados})
+
+
+@api_router.patch("/estoque/produtos/{produto_id}")
+async def estoque_editar_produto(produto_id: str, body: EstoqueProdutoUpdateIn, current_user: dict = Depends(admin_required)):
+    """Edita um produto (nome/medida/código/foto/peso/fornecedor)."""
+    from urllib.parse import quote
+    path = f"/integ/produtos/{quote(produto_id)}?actor={quote(_ator(current_user))}"
+    # só envia os campos preenchidos (evita apagar sem querer)
+    return await _estoque_patch(path, {k: v for k, v in body.dict().items() if v is not None})
+
+
+@api_router.delete("/estoque/produtos/{produto_id}")
+async def estoque_apagar_produto(produto_id: str, current_user: dict = Depends(admin_required)):
+    """Apaga um produto (limpa stock/movimentos)."""
+    from urllib.parse import quote
+    return await _estoque_delete(f"/integ/produtos/{quote(produto_id)}")
+
+
+@api_router.patch("/estoque/stock/{produto_id}/maximo")
+async def estoque_definir_maximo(produto_id: str, body: EstoqueMaximoIn, unidade_id: str = Query(...), current_user: dict = Depends(admin_required)):
+    """Define o máximo de um produto numa loja."""
+    from urllib.parse import quote
+    path = f"/integ/stock/{quote(produto_id)}/maximo?unidade_id={quote(unidade_id)}&actor={quote(_ator(current_user))}"
+    return await _estoque_patch(path, {"maximo": body.maximo})
+
+
+@api_router.get("/estoque/overview")
+async def estoque_overview(current_user: dict = Depends(admin_required)):
+    """Resumo de todas as lojas (abaixo do mínimo, sem máximo, etc.)."""
+    return await _estoque_get("/integ/overview", {})
+
+
+@api_router.get("/estoque/compras")
+async def estoque_compras(marca: str = Query(...), current_user: dict = Depends(admin_required)):
+    """Lista de compras consolidada por marca."""
+    return await _estoque_get("/integ/compras", {"marca": marca})
+
+
+@api_router.get("/estoque/definicoes")
+async def estoque_definicoes(current_user: dict = Depends(admin_required)):
+    """Percentagem do mínimo automático por marca."""
+    return await _estoque_get("/integ/definicoes", {})
+
+
+@api_router.get("/estoque/definicoes/{marca}/simular")
+async def estoque_simular_definicao(marca: str, percentagem: float = Query(...), current_user: dict = Depends(admin_required)):
+    """Pré-visualiza quantos produtos passam a avisar com uma percentagem."""
+    return await _estoque_get(f"/integ/definicoes/{marca}/simular", {"percentagem": percentagem})
+
+
+@api_router.patch("/estoque/definicoes/{marca}")
+async def estoque_definir_definicao(marca: str, body: EstoqueDefinicaoIn, current_user: dict = Depends(admin_required)):
+    """Define a percentagem do mínimo automático de uma marca."""
+    return await _estoque_patch(f"/integ/definicoes/{marca}", {"percentagem": body.percentagem})
+
+
 # ===== SECÇÃO ESTOQUE — faturas inseridas pela app do Estoque =====
 # Vista dedicada (todas as faturas com source="estoque", por confirmar E já
 # tratadas), com quem inseriu e em que loja. Base da futura secção "Estoque"

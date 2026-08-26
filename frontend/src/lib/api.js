@@ -152,6 +152,20 @@ export const setEstoqueReceita = (produtoId, data) => axios.put(`${API_URL}/esto
 export const estoqueProduzir = (unidadeId, data) => axios.post(`${API_URL}/estoque/producao?unidade_id=${unidadeId}`, data);
 export const getEstoqueProducao = (unidadeId, dias) => axios.get(`${API_URL}/estoque/producao`, { params: { unidade_id: unidadeId, dias } });
 
+// Secção Estoque — Catálogo / Visão geral / Compras / Definições (Fase 1 do portal)
+export const criarEstoqueProduto = (data) => axios.post(`${API_URL}/estoque/produtos`, data);
+export const editarEstoqueProduto = (produtoId, data) => axios.patch(`${API_URL}/estoque/produtos/${produtoId}`, data);
+export const apagarEstoqueProduto = (produtoId) => axios.delete(`${API_URL}/estoque/produtos/${produtoId}`);
+export const mergeEstoqueProdutos = (data) => axios.post(`${API_URL}/estoque/produtos/merge`, data);
+export const setEstoqueMaximo = (produtoId, unidadeId, maximo) =>
+  axios.patch(`${API_URL}/estoque/stock/${produtoId}/maximo`, { maximo }, { params: { unidade_id: unidadeId } });
+export const getEstoqueOverview = () => axios.get(`${API_URL}/estoque/overview`);
+export const getEstoqueCompras = (marca) => axios.get(`${API_URL}/estoque/compras`, { params: { marca } });
+export const getEstoqueDefinicoes = () => axios.get(`${API_URL}/estoque/definicoes`);
+export const simularEstoqueDefinicao = (marca, percentagem) =>
+  axios.get(`${API_URL}/estoque/definicoes/${marca}/simular`, { params: { percentagem } });
+export const setEstoqueDefinicao = (marca, percentagem) => axios.patch(`${API_URL}/estoque/definicoes/${marca}`, { percentagem });
+
 // Secção Estoque — faturas inseridas pela app do Estoque (todos os estados)
 // params: { company_id, month?, origin_user?, origin_store? }
 export const getFinEstoqueInvoices = (params) =>

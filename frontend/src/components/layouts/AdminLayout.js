@@ -54,12 +54,12 @@ import {
   Banknote,
   LayoutGrid,
   ShieldAlert,
-  ScanLine,
   ShoppingCart,
   ArrowLeftRight,
   History,
   ClipboardList,
-  Factory
+  Factory,
+  Boxes
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -109,16 +109,19 @@ const sections = [
   {
     key: 'estoque',
     label: 'Estoque',
-    home: '/admin/estoque/stock',
+    home: '/admin/estoque/visao-geral',
     match: (p) => p.startsWith('/admin/estoque'),
     items: [
+      { path: '/admin/estoque/visao-geral', label: 'Visão geral', icon: LayoutGrid },
       { path: '/admin/estoque/stock', label: 'Stock', icon: Package },
-      { path: '/admin/estoque/escanear', label: 'Escanear', icon: ScanLine },
+      { path: '/admin/estoque/catalogo', label: 'Catálogo', icon: Boxes },
       { path: '/admin/estoque/lista-compras', label: 'Lista de compras', icon: ShoppingCart },
+      { path: '/admin/estoque/compras', label: 'Compras', icon: Truck },
       { path: '/admin/estoque/transferencias', label: 'Transferências', icon: ArrowLeftRight },
       { path: '/admin/estoque/fichas', label: 'Fichas técnicas', icon: ClipboardList },
       { path: '/admin/estoque/producao', label: 'Produção', icon: Factory },
       { path: '/admin/estoque/faturas', label: 'Faturas', icon: Receipt },
+      { path: '/admin/estoque/definicoes', label: 'Definições', icon: Settings },
       { path: '/admin/estoque/historico', label: 'Histórico', icon: History },
     ],
   },
