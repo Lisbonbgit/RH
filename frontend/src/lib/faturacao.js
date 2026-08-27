@@ -215,6 +215,12 @@ export const getProdutosSemVendus = () => api.get(`${API_URL}/faturacao/produtos
 // artigo se liga — em vez de esperar que a importação lhe acerte no nome.
 export const getArtigosVendus = () => api.get(`${API_URL}/faturacao/vendus/artigos`);
 
+// --- Movimentos de caixa (histórico dos turnos) ---
+export const getHistoricoDeCaixa = (params) =>
+  api.get(`${API_URL}/faturacao/caixa/historico`, { params });
+export const getTurno = (id) =>
+  api.get(`${API_URL}/faturacao/caixa/historico/${id}`);
+
 // --- Relatório diário por email ---
 export const getDefinicoesRelatorio = () =>
   api.get(`${API_URL}/faturacao/relatorio-diario/definicoes`);

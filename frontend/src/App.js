@@ -65,6 +65,7 @@ import FatMotivos from './pages/admin/faturacao/FatMotivos';
 import FatDispositivos from './pages/admin/faturacao/FatDispositivos';
 import FatRelatorioDiario from './pages/admin/faturacao/FatRelatorioDiario';
 import FatTrocarModo from './pages/admin/faturacao/FatTrocarModo';
+import FatMovimentosCaixa from './pages/admin/faturacao/FatMovimentosCaixa';
 import FatReservasPresas from './pages/admin/faturacao/FatReservasPresas';
 import PosApp from './pages/pos/PosApp';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
@@ -256,7 +257,7 @@ function AppRoutes() {
         {/* POS — o "Iniciar Ponto de Venda" já não vive aqui: é o botão do
             topo do painel, e abre /faturacao/pos (fora do /admin) num
             separador novo. Ver App.js, rotas de topo, e AdminLayout. */}
-        <Route path="faturacao/movimentos-caixa" element={<ComingSoon icon={Banknote} title="Movimentos de Caixa" subtitle="Faturação · POS" note="Aberturas, entradas, saídas e fechos de caixa, loja a loja." />} />
+        <Route path="faturacao/movimentos-caixa" element={<FatMovimentosCaixa />} />
         <Route path="faturacao/pos-lojas" element={<ComingSoon icon={Store} title="Lojas" subtitle="Faturação · POS" note="Definições de cada loja e o que sai impresso no talão do cliente." />} />
 
         {/* Configuração — os ecrãs que já funcionam. A Configuração pendura-se
