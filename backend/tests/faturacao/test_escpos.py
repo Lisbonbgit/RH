@@ -174,3 +174,27 @@ def test_a_pagina_de_teste_sai_sem_loja_nem_servidor_configurados():
     saiu = escpos.pagina_de_teste("Microsoft Print to PDF")
     assert b"Microsoft Print to PDF" in saiu
     assert saiu.startswith(b"\x1b@")
+
+
+def test_a_pagina_de_teste_VOLTA_a_esquerda_no_inicio_de_uma_linha():
+    """A página de teste existe para dizer a verdade sobre a impressora — e
+    tinha o mesmo defeito que a ficha da cozinha teve: o `ESC a 0` colado ao
+    FIM da linha centrada.
+
+    A maioria das impressoras térmicas só obedece ao `ESC a` quando ele chega
+    ANTES de qualquer texto da linha. Nas que o ignoram a meio, tudo o que
+    vem depois — incluindo o «Se leu isto tudo em UMA linha cada» — saía
+    centrado, e quem estava à frente do papel não tinha como saber se era
+    assim de propósito. Uma ferramenta de diagnóstico com o defeito que
+    diagnostica é a pior das duas."""
+    papel = _pagina().decode("latin-1")
+    for i, linha in enumerate(papel.split("\n")):
+        if "\x1ba\x00" not in linha:
+            continue
+        antes = linha.split("\x1ba\x00")[0]
+        imprimivel = "".join(
+            c for c in antes if c.isprintable() and c not in "\x1b\x1d")
+        # Só sobram os argumentos dos comandos (a, E, !, e os seus bytes).
+        assert not imprimivel.strip("aE!@"), (
+            "O `ESC a 0` da linha %d vem depois de texto — a impressora "
+            "ignora-o: %r" % (i, linha))
