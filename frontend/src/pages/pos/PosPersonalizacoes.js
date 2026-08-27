@@ -356,10 +356,41 @@ function Aviso({ children }) {
   );
 }
 
-export default function PosPersonalizacoes({ grupos, seleccionadas, onChange }) {
-  // Os grupos de TEXTO ficam de fora: este painel só sabe de opções (está
-  // escrito porquê em `ehGrupoDeOpcoes`).
+export default function PosPersonalizacoes({
+  grupos, seleccionadas, onChange, respostas, onRespostasChange,
+}) {
+  // **Os grupos de TEXTO passaram a caber aqui** — mas só para se ESCREVEREM.
+  //
+  // O dono tirou o «Editar pedido» da linha da conta («só se repete o que já
+  // tem nas personalizações»), e esse era o único sítio onde o NOME DO CLIENTE
+  // se corrigia: este painel ignorava os grupos de texto por inteiro. Um
+  // «Matheus» onde era «Mateus» passava a só se corrigir apagando a linha e
+  // refazendo o pedido, com o cliente à frente — e o nome é o que vai no copo.
+  //
+  // O que NÃO mudou é a regra do `ehGrupoDeOpcoes`: a validação da selecção
+  // (`errosDeSelecao`) continua a não os ver. Um grupo de texto não tem opções
+  // nenhumas, e vê-lo como escolha desligava o Gravar de uma linha sem defeito
+  // (ver a explicação lá em cima, que essa continua toda de pé).
   const todos = (Array.isArray(grupos) ? grupos : []).filter(Boolean).filter(ehGrupoDeOpcoes);
+  const deTexto = (Array.isArray(grupos) ? grupos : []).filter(Boolean)
+    .filter((g) => !ehGrupoDeOpcoes(g));
+  const escritas = (Array.isArray(respostas) ? respostas : []).filter(Boolean);
+
+  const textoDoGrupo = (grupo) =>
+    (escritas.find((r) => r.grupo_id === grupo.id) || {}).texto || '';
+
+  const escrever = (grupo, texto) => {
+    if (!onRespostasChange) return;
+    // Uma resposta apagada SAI da lista, em vez de ficar com texto vazio: é
+    // assim que o servidor a lê como "não respondida" (`_respostas_dadas`, no
+    // talão, deita fora as vazias), e uma linha vazia guardada punha o título
+    // do grupo na ficha da cozinha sem nada à frente.
+    const resto = escritas.filter((r) => r.grupo_id !== grupo.id);
+    const limpo = String(texto || '');
+    onRespostasChange(limpo.trim()
+      ? [...resto, { grupo_id: grupo.id, nome_grupo: grupo.nome, texto: limpo }]
+      : resto);
+  };
   const escolhidas = semNulos(seleccionadas);
 
   // Retira a opção POR INTEIRO, todas as doses de uma vez — é o que o ✕
@@ -425,7 +456,40 @@ export default function PosPersonalizacoes({ grupos, seleccionadas, onChange }) 
   const idsDeGrupo = new Set(todos.map((g) => g.id));
   const semGrupo = escolhidas.filter((o) => !idsDeGrupo.has(o.grupo_id));
 
+  const camposDeTexto = deTexto.length === 0 ? null : (
+    <div className="space-y-4">
+      {deTexto.map((grupo) => (
+        <div key={grupo.id} className="space-y-1.5">
+          <label
+            htmlFor={`resposta-${grupo.id}`}
+            className="font-heading font-semibold text-base"
+          >
+            {grupo.nome}
+          </label>
+          <input
+            id={`resposta-${grupo.id}`}
+            data-testid={`resposta-${grupo.id}`}
+            className="w-full h-12 rounded-xl border bg-background px-4 text-base"
+            value={textoDoGrupo(grupo)}
+            onChange={(e) => escrever(grupo, e.target.value)}
+            placeholder="Escreva aqui"
+            autoComplete="off"
+          />
+        </div>
+      ))}
+    </div>
+  );
+
   if (todos.length === 0 && semGrupo.length === 0) {
+    // Com um grupo de TEXTO e mais nada (um produto só com o Nome), o painel
+    // deixou de ser um beco: mostra o campo e a frase por baixo.
+    if (deTexto.length > 0) {
+      return (
+        <div className="space-y-6">
+          {camposDeTexto}
+        </div>
+      );
+    }
     return (
       <p className="text-sm text-muted-foreground py-6 text-center">
         {/* "não tem opções para escolher", e não "não tem personalizações":
@@ -438,6 +502,7 @@ export default function PosPersonalizacoes({ grupos, seleccionadas, onChange }) 
 
   return (
     <div className="space-y-6">
+      {camposDeTexto}
       {todos.map((grupo) => {
         const min = inteiroNaoNegativo(grupo.min_select);
         const max = inteiroNaoNegativo(grupo.max_select);

@@ -237,6 +237,11 @@ export default function PosDialogoProduto({
   const [descontoPct, setDescontoPct] = useState(arranque.descontoPct);
   const [descontoEur, setDescontoEur] = useState(arranque.descontoEur);
   const [opcoes, setOpcoes] = useState(arranque.opcoes);
+  // As respostas escritas (o Nome no copo) passaram a ser editáveis AQUI,
+  // desde que o «Editar pedido» saiu: eram o que só o pedido guiado sabia
+  // mudar, e o nome é o que vai no copo.
+  const [respostas, setRespostas] = useState(
+    Array.isArray(linha?.respostas_texto) ? linha.respostas_texto : []);
   const [vista, setVista] = useState(arranque.vista);
   // Há uma edição de `opcoes` feita no painel de Personalizações de sempre
   // (mais abaixo) que ainda não foi gravada nesta linha — ver o guarda do
@@ -403,6 +408,10 @@ export default function PosDialogoProduto({
     onGravar({
       quantidade: qtdNumero,
       opcoes,
+      // Ao lado das opções e no MESMO pedido: o servidor lê-o com
+      // `exclude_unset`, por isso mandar uma sem a outra deixava metade da
+      // correcção por gravar — e o copo saía com o nome errado.
+      respostas_texto: respostas,
       // Só viaja se for DIFERENTE do que o servidor já cobra por esta linha
       // (`arranque.base`: o retrato dela, ou o catálogo se a linha é nova).
       // Mandar sempre o preço funcionava hoje e congelava na linha um valor
@@ -448,6 +457,8 @@ export default function PosDialogoProduto({
             grupos={grupos}
             seleccionadas={opcoes}
             onChange={(novas) => { setOpcoes(novas); setOpcoesPorGravar(true); }}
+            respostas={respostas}
+            onRespostasChange={(novas) => { setRespostas(novas); setOpcoesPorGravar(true); }}
           />
         </div>
 
@@ -496,16 +507,19 @@ export default function PosDialogoProduto({
       </header>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6 min-h-0">
-        {/* O bloco de leitura do pedido guiado (Task 7, brief da faturação).
-            Só aparece quando HÁ um pedido guiado para reabrir — um produto
-            sem grupos (ou sem `onEditarPedido`, o que o pai só omite quando
-            não há linha nenhuma para editar) não tem passo nenhum para
-            mostrar, e um "Editar pedido" que abrisse um pop-up vazio era um
-            botão morto. Fica ANTES da Quantidade de propósito: é o resumo
-            que ela confere com o cliente antes de mexer em preço ou
-            desconto — a mesma ordem de leitura do talão da cozinha. */}
-        {grupos && grupos.length > 0 && onEditarPedido && (
-          <div className="rounded-2xl border bg-muted/40 p-3 space-y-2.5">
+        {/* O RESUMO do pedido, só de leitura. O botão «Editar pedido» que
+            vivia aqui saiu a pedido do dono: «só se repete o que já tem nas
+            personalizações». Não repetia — era o único sítio onde o NOME DO
+            CLIENTE se corrigia —, e por isso o nome passou a viver dentro do
+            painel das Personalizações, onde ela já vai de qualquer maneira.
+            Ver `PosPersonalizacoes`.
+
+            O resumo FICA, e sem botão: é o que ela confere com o cliente
+            antes de mexer em preço ou desconto, e lê-se de relance. Fica ANTES
+            da Quantidade pela mesma razão de sempre — a ordem de leitura do
+            talão da cozinha. */}
+        {grupos && grupos.length > 0 && (
+          <div className="rounded-2xl border bg-muted/40 p-3">
             <p className="text-sm leading-snug">
               {titulo.length > 0 ? titulo.map((p, i) => (
                 <React.Fragment key={p.label}>
@@ -514,27 +528,6 @@ export default function PosDialogoProduto({
                 </React.Fragment>
               )) : 'Sem pedido registado.'}
             </p>
-            <Button
-              variant="outline"
-              className="w-full h-12 text-base justify-start"
-              onClick={onEditarPedido}
-              disabled={aGravar || opcoesPorGravar}
-            >
-              <Pencil className="h-5 w-5 mr-2" />
-              Editar pedido
-            </Button>
-            {/* Explica o desligado, e não só o desliga — a mesma regra do
-                "Porquê" do brief desta tarefa: um caminho que fica sem saída
-                sem dizer porquê é o defeito que a Task 7 existe para evitar,
-                só que agora aplicado a este botão. Carregar em Gravar (em
-                baixo) resolve: grava a alteração pendente e fecha a linha —
-                reabri-la já deixa "Editar pedido" outra vez disponível. */}
-            {opcoesPorGravar && (
-              <p className="text-xs text-muted-foreground">
-                Há uma alteração em Personalizações por gravar. Carregue em Gravar, em baixo,
-                antes de editar o pedido outra vez.
-              </p>
-            )}
           </div>
         )}
 
