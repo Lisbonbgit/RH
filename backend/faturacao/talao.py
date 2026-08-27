@@ -80,12 +80,18 @@ from zoneinfo import ZoneInfo
 from .escpos import (
     ALTO, A_ESQUERDA, CENTRADO, CORPO_NORMAL, DUPLO, NEGRITO, SEM_NEGRITO,
 )
+from .precos import _sem_acentos, e_grupo_de_variante
 from .reparticao import CASAS_DA_QUANTIDADE
 
 # 80 mm de papel. Em corpo normal cabem 42 colunas; em corpo DUPLO (dobro em
 # largura) cabe metade, 21. Uma linha que dê a volta numa ficha de cozinha faz
 # ler o topping errado — a linha de baixo aparece encostada à esquerda, por
 # baixo do artigo seguinte.
+# `GS ! n`: o nibble baixo e' a ALTURA, o alto a largura. Estes dois só
+# mexem na altura — a 4x em largura cabiam 10 caracteres por linha.
+QUATRO_ALTO = "\x1d!\x03"
+TRES_ALTO = "\x1d!\x02"
+
 _LARGURA = 42
 _LARGURA_DUPLA = 21
 
@@ -333,64 +339,91 @@ def _cabecalho(venda: Dict) -> List[str]:
     return linhas + ["=" * _LARGURA]
 
 
+def _tamanho_da_linha(opcoes: List[Dict]) -> Optional[Dict]:
+    """A opção que é o TAMANHO — a que sobe para a linha do produto.
+
+    Quem decide é `precos.e_grupo_de_variante`, a MESMA função que o relatório
+    diário usa para partir o top de artigos por tamanho. Duas regras sobre o
+    que é um tamanho divergiam à primeira loja que chamasse ao grupo outra
+    coisa, e o papel da cozinha e o relatório do dono passavam a discordar.
+    """
+    for opcao in opcoes:
+        if e_grupo_de_variante(opcao.get("nome_grupo")) and opcao.get("nome"):
+            return opcao
+    return None
+
+
+def _titulo_do_artigo(linha: Dict, tamanho: Optional[Dict]) -> str:
+    """«1 x Açaí Mini» — a primeira linha da ficha e a maior.
+
+    O tamanho cola-se ao nome do produto, e não se repete: o catálogo tem
+    produtos antigos chamados «Açaí Mini», e colar-lhes o tamanho outra vez
+    dava «1 x Açaí Mini Mini» no papel — ridículo, e o tipo de coisa que
+    ninguém corrige porque ninguém percebe de onde veio.
+    """
+    nome = (linha.get("produto_nome") or "?").strip()
+    if tamanho:
+        rotulo = (tamanho.get("nome") or "").strip()
+        if rotulo and _sem_acentos(rotulo) not in _sem_acentos(nome):
+            nome = "%s %s" % (nome, rotulo)
+    return "%s x %s" % (_quantidade(linha.get("quantidade", 1)), nome)
+
+
 def _ficha_do_artigo(linha: Dict) -> List[str]:
-    """Um copo. Pela ordem por que se lê, do maior para o menor."""
+    """Um copo. Pela ordem por que se lê, do maior para o menor.
+
+    **A ordem inverteu-se em Agosto de 2026**, com a foto de uma ficha a sério
+    à frente. A versão anterior punha o NOME DO CLIENTE em cima e maior, e a
+    razão escrita era boa — «é o que se grita e o que se escreve no copo».
+    Quem faz os açaís todos os dias disse que o que precisa de ver primeiro é
+    o que vai FAZER: «1 x acai mini (tamanho da letra 4) / nome do cliente
+    (tamanho da letra 3)». O nome continua lá, logo a seguir e bem visível.
+
+    Os títulos dos grupos saíram do papel («Tamanho:», «Toppings:»): num papel
+    de 42 colunas cada título era uma linha inteira a empurrar o resto para
+    baixo, e a dose à frente já diz o que é.
+    """
     respostas = _respostas_dadas(linha)
+    opcoes = linha.get("opcoes") or []
+    tamanho = _tamanho_da_linha(opcoes)
     saida: List[str] = []
 
-    # 1. O NOME, o maior elemento do talão, em corpo duplo e a negrito. Em
-    #    maiúsculas porque é assim que ele vai para o copo, e sem o título do
-    #    grupo à frente: "Nome:" gastava 5 das 21 colunas para dizer o que o
-    #    tamanho da letra já diz.
+    # 1. O ARTIGO com o tamanho, o maior elemento do papel. Quatro vezes mais
+    #    ALTO e com a largura normal: a 4× em largura cabiam 10 caracteres por
+    #    linha e «1 x Açaí Mini» partia-se em duas. Alto lê-se de longe na
+    #    mesma e não gasta colunas nenhumas.
+    saida += _bloco(_titulo_do_artigo(linha, tamanho), QUATRO_ALTO)
+
+    # 2. O NOME do cliente, a seguir e menor. Em maiúsculas porque é assim que
+    #    vai para o copo, e sem o título do grupo à frente — «Nome:» gastava
+    #    colunas para dizer o que a posição já diz.
     if respostas:
-        saida += _bloco(respostas[0]["texto"].upper(), DUPLO, _LARGURA_DUPLA,
-                        negrito=True)
+        saida += _bloco(respostas[0]["texto"].upper(), TRES_ALTO, negrito=True)
 
-    # 2. A quantidade e o produto, em corpo ALTO — a seguir em tamanho, e sem
-    #    gastar colunas nenhumas (o dobro é só na altura).
-    saida += _bloco(
-        "%s %s" % (_quantidade(linha.get("quantidade", 1)),
-                   linha.get("produto_nome") or "?"), ALTO)
-
-    opcoes = linha.get("opcoes") or []
-
-    # 3. As indicações de serviço, a negrito e logo por baixo do artigo,
-    #    porque mudam o que se faz ao copo. Uma linha por GRUPO respondido,
-    #    com o título à frente: "Comer aqui" sozinho adivinha-se, "Consumir em
-    #    loja: Comer aqui" lê-se.
+    # 3. As perguntas de serviço, SÓ COM A RESPOSTA e a negrito. O título saiu
+    #    a pedido do dono («só a resposta de tampa ou sem tampa»), com o aviso
+    #    dado de que uma resposta como «Sim», sozinha, diz pouco no papel — a
+    #    escolha é dele, e arruma-se pelo nome das respostas no catálogo.
     #
-    #    **E com a DOSE, quando ela for mais do que uma.** Aqui caem também os
-    #    grupos de TOPPINGS GRÁTIS que o gestor configurou com o interruptor
-    #    `sai_na_fatura` desligado (preço zero + interruptor desligado é tudo o
-    #    que `_e_indicacao_de_servico` sabe perguntar). Estavam a ser
-    #    deduplicados com `dict.fromkeys`: duas doses de «Granola» saíam uma
-    #    vez, e a cozinha punha uma colher onde o cliente pediu duas. Uma
-    #    resposta dada UMA vez — que é o caso de todas as perguntas de serviço
-    #    a sério — sai sem dose nenhuma: «1x Levar» era ruído numa linha que
-    #    existe para se ler de relance.
-    for titulo, opcoes_do_grupo in _grupos(
+    #    A DOSE continua quando é mais do que uma: aqui caem também os
+    #    toppings grátis de grupos escondidos, e «Granola» dita uma vez onde o
+    #    cliente pediu duas punha uma colher a menos no copo.
+    for _titulo, opcoes_do_grupo in _grupos(
             o for o in opcoes if _e_indicacao_de_servico(o) and o.get("nome")):
         respondido = ", ".join(
             nome if n == 1 else "%dx %s" % (n, nome)
             for nome, n in _contar(opcoes_do_grupo).items())
-        saida += _bloco("%s: %s" % (titulo, respondido) if titulo else respondido,
-                        negrito=True, recuo="   ")
+        saida += _bloco(respondido, negrito=True, recuo="   ")
 
-    # 4. Tudo o resto que se escolheu, grupo a grupo, com as doses à frente.
-    #    O título por cima e as doses recuadas: é o que faz um grupo de
-    #    serviço que caiu aqui (porque o gestor o pôs a sair na fatura) ser
-    #    lido como o que é, em vez de aparecer misturado com a Nutella.
-    for titulo, opcoes_do_grupo in _grupos(
-            o for o in opcoes if not _e_indicacao_de_servico(o)):
-        doses = _doses(opcoes_do_grupo)
-        if not doses:
-            continue
-        recuo = ""
-        if titulo:
-            saida += _bloco("%s:" % titulo)
-            recuo = "  "
-        for dose in doses:
-            saida += _bloco(recuo + dose, recuo=recuo + "   ")
+    # 4. Tudo o resto que se escolheu, com as doses à frente e SEM o título do
+    #    grupo. O tamanho não entra aqui — já subiu para a linha do artigo, e
+    #    repeti-lo era dizer duas vezes a mesma coisa num papel onde cada
+    #    linha custa.
+    escolhas = [o for o in opcoes
+                if not _e_indicacao_de_servico(o) and o is not tamanho]
+    for _titulo, opcoes_do_grupo in _grupos(escolhas):
+        for dose in _doses(opcoes_do_grupo):
+            saida += _bloco(dose, recuo="   ")
 
     # 5. As outras respostas de texto — as que se perdiam. A negrito e no fim,
     #    junto dos toppings, porque é quase sempre sobre eles que falam ("sem

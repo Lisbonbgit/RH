@@ -7,6 +7,7 @@ para o faturar a 13% em vez de 23% durante meses. Aqui, sem IVA não há venda.
 Modelo (spec D7): um produto pertence a uma categoria — Venda ao Público ou
 Vendas Aplicações — e tem UM preço e UM IVA.
 """
+import unicodedata
 from typing import Dict, List, Optional
 
 # Códigos de imposto do Vendus.
@@ -25,6 +26,40 @@ def tax_id_de_taxa(taxa) -> Optional[str]:
         return _TAXAS.get(int(round(float(taxa))))
     except (TypeError, ValueError):
         return None
+
+
+# **Que personalização é que define uma VARIANTE do produto** — o tamanho.
+#
+# O dono criou UM artigo "Açaí" e pôs-lhe dentro os tamanhos (mini, small,
+# regular, supreme); um "Nutella 2×" é um extra e não uma variante. Dois sítios
+# precisam de saber a diferença e têm de a saber da MESMA maneira: o relatório
+# diário (que parte o top de artigos por tamanho) e a ficha da cozinha (que
+# cola o tamanho ao nome do produto, «1 x Açaí Mini»).
+#
+# Vive aqui, e não num deles, porque `precos.py` não importa nada do pacote:
+# a ficha da cozinha a importar o relatório diário fazia um ciclo
+# (talão → relatório → caixa → impressão → talão).
+#
+# ponytail: heurística pelo NOME do grupo, porque não há no catálogo nenhum
+# campo que diga "este grupo define a variante". Sem acentos e sem maiúsculas,
+# e por CONTER e não por igualar, para apanhar "Tamanho", "Tamanhos" e
+# "Tamanho do açaí". Upgrade: um interruptor por grupo no backoffice no dia em
+# que um grupo de variante não se chamar tamanho.
+_PALAVRAS_DE_VARIANTE = ("tamanho", "size")
+
+
+def _sem_acentos(texto) -> str:
+    normalizado = unicodedata.normalize("NFD", str(texto or ""))
+    return "".join(c for c in normalizado if not unicodedata.combining(c)).lower()
+
+
+def e_grupo_de_variante(grupo_nome, grupos_de_variante=None) -> bool:
+    nome = _sem_acentos(grupo_nome)
+    if not nome:
+        return False
+    if grupos_de_variante is not None:
+        return any(_sem_acentos(g) == nome for g in grupos_de_variante)
+    return any(palavra in nome for palavra in _PALAVRAS_DE_VARIANTE)
 
 
 def _tem_mais_de_2_casas_decimais(valor) -> bool:
