@@ -785,7 +785,7 @@ def test_o_imprimir_pedido_manda_a_ficha_para_a_COZINHA(monkeypatch):
     assert trabalho["impressora"] == COZINHA
     saiu = base64.b64decode(trabalho["bytes_b64"])
     assert saiu == escpos.documento(pedido_da_cozinha(venda))
-    assert "RAFAELA".encode("cp858") in saiu
+    assert "RAFAELA".encode("cp850") in saiu
 
 
 def test_o_imprimir_pedido_numa_conta_VAZIA_nao_poe_PAPEL_EM_BRANCO_na_fila(monkeypatch):
@@ -829,7 +829,7 @@ def test_uma_quantidade_IMPOSSIVEL_ja_gravada_nao_rebenta_o_botao(monkeypatch):
     _relogio(monkeypatch, _T0)
     monkeypatch.setattr(imp, "obter_db", lambda: db)
     assert _corre(imprimir_pedido("venda-1", operador=_operador()))["aceite"]
-    saiu = base64.b64decode(_fila(db)[0]["bytes_b64"]).decode("cp858")
+    saiu = base64.b64decode(_fila(db)[0]["bytes_b64"]).decode("cp850")
     assert "? x Açaí Regular" in saiu
     assert "2 x Café Expresso" in saiu
 

@@ -28,9 +28,31 @@ def test_todo_o_papel_comeca_por_reiniciar_a_impressora():
 
 
 def test_a_tabela_de_caracteres_e_escolhida_e_nao_assumida():
-    """`ESC t 19` — a PC858, a PC850 com o símbolo do euro. Uma impressora que
-    arranque noutra tabela imprime «A�a�» onde devia dizer «Açaí»."""
-    assert escpos.documento("x").startswith(b"\x1b@\x1bt\x13")
+    """`ESC t 2` — a PC850. **O número está aqui em literal de propósito**: foi
+    trocado uma vez, com o papel na mão, e há-de ser trocado outra vez.
+
+    Esteve aqui o 19 (a PC858 da Epson) até uma TP8002 da iggual imprimir
+    «AΘaκ» onde dizia «Açaí». Está reproduzido byte a byte no teste a seguir.
+    O 2 é o único valor que quer dizer PC850 em todas as tabelas conhecidas —
+    o que serve as duas impressoras da loja, e não só a da cozinha."""
+    assert escpos.documento("x").startswith(b"\x1b@\x1bt\x02")
+
+
+def test_a_TP8002_lia_em_GREGO_o_que_o_servidor_mandava():
+    """A prova de campo, em código, para ninguém ter de acreditar em mim.
+
+    Os bytes que este módulo mandava até 27/08/2026, lidos na tabela em que a
+    TP8002 estava, dão exactamente o que saiu no papel da loja. É isto — e não
+    um palpite — que justifica a troca do número acima."""
+    assert "Açaí Pó".encode("cp858") == bytes.fromhex("41 87 61 A1 20 50 A2")
+    assert "Açaí Pó".encode("cp858").decode("cp737") == "AΘaκ Pλ"
+
+
+def test_o_defeito_e_um_dos_CANDIDATOS_do_varrimento():
+    """O par número/codificação anda sempre junto. Mudar um sem o outro é
+    exactamente o defeito que estamos a corrigir — bytes de uma tabela lidos
+    noutra — e passaria em silêncio, porque nada rebenta: só sai grego."""
+    assert (escpos._TABELA_DE_CARACTERES[-1], escpos._CODIFICACAO) in escpos._CANDIDATOS
 
 
 def test_o_papel_avanca_ANTES_do_corte_e_com_linhas_a_serio():
@@ -61,7 +83,7 @@ def test_o_portugues_sobrevive_a_codificacao():
     escreva mal em todas as linhas não é um pormenor estético — é a ficha que
     a cozinha lê."""
     saiu = escpos.documento("Açaí à moda, 3º")
-    assert "Açaí à moda, 3º".encode("cp858") in saiu
+    assert "Açaí à moda, 3º".encode("cp850") in saiu
 
 
 def test_um_caractere_impossivel_nao_deita_fora_o_pedido_TODO():
@@ -70,7 +92,7 @@ def test_um_caractere_impossivel_nao_deita_fora_o_pedido_TODO():
     pedido é exactamente o que a cozinha precisa para fazer o copo certo."""
     saiu = escpos.documento("Maria 🙂 ł")
     assert b"Maria" in saiu
-    assert "Maria".encode("cp858") in saiu
+    assert "Maria".encode("cp850") in saiu
 
 
 def test_o_fim_de_linha_do_windows_nao_faz_a_impressora_saltar_duas():
@@ -101,18 +123,41 @@ def test_a_pagina_de_teste_diz_QUAL_a_impressora_e_QUAL_a_loja():
     telefone."""
     saiu = _pagina()
     assert b"EPSON TM-m30" in saiu
-    assert "Loja do Guarda".encode("cp858") in saiu
+    assert "Loja do Guarda".encode("cp850") in saiu
     assert b"https://lisbonb.com" in saiu
 
 
-def test_a_pagina_de_teste_traz_os_acentos_DUAS_vezes():
-    """Uma linha sem acentos e a mesma com acentos, uma por baixo da outra. Se
-    a de baixo sair estragada e a de cima não, a resposta é imediata e não
-    precisa de ninguém: a tabela de caracteres desta impressora não é a
-    PC858."""
+def test_a_pagina_de_teste_VARRE_as_tabelas_candidatas():
+    """**A página já não pergunta se está bem: diz qual é o número certo.**
+
+    A mesma amostra sob cada tabela candidata, e cada linha tem de trazer três
+    coisas — o comando que muda mesmo de tabela, o rótulo que NOMEIA o número,
+    e o texto codificado na tabela que o rótulo anuncia. Uma linha com o codec
+    trocado era uma folha que mente a quem está à frente da impressora, e o
+    engano voltava para o código como um número errado."""
     saiu = _pagina()
-    assert b"Acentos: Acai, cao, 3o, 1a, euro" in saiu
-    assert "Acentos: Açaí, ção, 3º, 1ª, €".encode("cp858") in saiu
+    for n, codec in escpos._CANDIDATOS:
+        linha = (b"\x1bt" + bytes([n])
+                 + ("n=%-3d%-7s" % (n, codec)).encode("ascii")
+                 + escpos._AMOSTRA_DE_ACENTOS.encode(codec, errors="replace"))
+        assert linha in saiu, "falta a linha do n=%d" % n
+
+
+def test_o_rotulo_de_cada_linha_do_varrimento_e_LEGIVEL_em_qualquer_tabela():
+    """O rótulo é ASCII puro, que é igual em todas estas tabelas. A linha que
+    sair em grego sai com o número legível à mesma — e é justamente essa a
+    linha que quem está ao balcão precisa de saber identificar."""
+    for n, codec in escpos._CANDIDATOS:
+        assert ("n=%-3d%-7s" % (n, codec)).encode("ascii").isascii()
+
+
+def test_o_varrimento_REPOE_a_tabela_por_defeito():
+    """Sem isto a impressora ficava na última tabela varrida — o grego — e o
+    trabalho seguinte herdava-a. Esse trabalho pode ser a Fatura Simplificada
+    certificada de um cliente."""
+    saiu = _pagina()
+    assert escpos._varrimento().endswith(escpos._TABELA_DE_CARACTERES)
+    assert saiu[saiu.rindex(b"\x1bt"):].startswith(escpos._TABELA_DE_CARACTERES)
 
 
 def test_a_pagina_de_teste_mede_a_LARGURA_do_papel():

@@ -297,7 +297,7 @@ def test_o_papel_do_Z_traz_os_NUMEROS_do_Z_que_ficou_gravado(monkeypatch):
     db = _db_de_fecho()
     z = _fechar(db, monkeypatch, contado=42.5)
     (trabalho,) = _fila(db)
-    saiu = base64.b64decode(trabalho["bytes_b64"]).decode("cp858")
+    saiu = base64.b64decode(trabalho["bytes_b64"]).decode("cp850")
     assert "42,50" in saiu
     assert ("%.2f" % z["diferenca"]).replace(".", ",") in saiu
 

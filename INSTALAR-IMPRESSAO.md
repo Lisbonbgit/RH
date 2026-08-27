@@ -103,11 +103,17 @@ Carregar em **«Imprimir página de teste (caixa)»**, e depois no **«… (cozi
 
 O que sair da impressora diz tudo:
 
+A página traz um bloco chamado **TABELA DE LETRAS**, com seis linhas
+numeradas (`n=2`, `n=3`, `n=14`, `n=11`, `n=16`, `n=19`). Cada uma escreve a
+mesma coisa — «Açaí ção 3º 1ª» — na tabela de letras desse número. **O número
+está sempre legível**, mesmo na linha que sair estragada.
+
 | O que saiu | O que quer dizer | O que fazer |
 |---|---|---|
-| Uma página com **PÁGINA DE TESTE** em cima, os acentos certos («Açaí, ção») e cada linha a caber numa linha | **Está tudo bem.** | Nada. Passe ao passo 7. |
+| Uma página com **PAGINA DE TESTE** em cima e a linha **`n=2`** com os acentos certos («Açaí ção») | **Está tudo bem.** | Nada. Passe ao passo 7. |
+| A linha `n=2` sai estragada mas **outra** sai certa | Aquela impressora usa outra tabela. | **Aponte o número dessa linha** e diga-o a quem programa. Muda-se um número no servidor — nada na loja. |
+| **Todas as seis** saem estragadas | A impressora está a ignorar o comando e presa numa tabela dela. | Auto-teste da impressora (ligar com o **FEED** premido): ele imprime a tabela activa. Depois é mudá-la no utilitário/DIP da impressora. |
 | Uma folha com **letras e sinais soltos** (coisas como `ESC @ ESC t`) | O Windows está a **desenhar** os comandos em vez de os mandar em cru. | Ver **«Se sair lixo»**, mais abaixo. |
-| A página sai, mas **os acentos estão trocados** (sai «A?a?» em vez de «Açaí») | Aquela impressora usa outra tabela de letras. | Avisar quem programa — muda-se **um número** no sistema. |
 | A página sai, mas as três linhas da **hierarquia** saem todas iguais às outras (a que diz «CORPO DUPLO» não sai maior, a do negrito não sai mais escura, a do meio não vai ao meio) | Aquela impressora ignora esses comandos. | Avisar quem programa — **a ficha da cozinha vai sair toda no mesmo tamanho** e é preciso decidir o que fazer. |
 | A página sai mas **o papel não corta** | Aquela impressora usa outro comando de corte. | Avisar quem programa — muda-se **um número** no sistema. |
 | A linha dos números **dá a volta** e continua por baixo | O papel é de 58 mm, não de 80 mm. | Avisar quem programa. |

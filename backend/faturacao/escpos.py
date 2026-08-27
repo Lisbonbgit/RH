@@ -41,17 +41,51 @@ from typing import Optional
 # tamanho duplo, e ninguém percebia porquê.
 _INICIAR = b"\x1b@"
 
-# `ESC t n` — a tabela de caracteres. 19 é a PC858, que é a PC850 com o
-# símbolo do euro; é a que a Epson documenta para o mercado europeu e a que
-# tem os acentos do português (á, ã, ç, é, ó).
+# `ESC t n` — a tabela de caracteres. **n=2 é a PC850**, e a escolha tem uma
+# história curta, escrita em papel.
 #
-# **É AQUI que a TP8002 pode discordar**, e é por isso que está numa constante
-# só. Se a página de teste sair com "Acai" em vez de "Açaí" — ou com símbolos
-# a mais no meio das palavras — a tabela desta impressora é outra, e o que se
-# muda é este número (16 = WPC1252 é o outro candidato normal). Nada mais do
-# sistema precisa de saber.
-_TABELA_DE_CARACTERES = b"\x1bt\x13"  # ESC t 19
-_CODIFICACAO = "cp858"
+# Até 27/08/2026 estava aqui o 19, que é o que a Epson documenta para a PC858.
+# Numa **TP8002 da iggual** — a impressora que a maior parte destas lojas tem —
+# a ficha da cozinha saiu com «AΘaκ» onde dizia «Açaí», e «Pλ» onde dizia
+# «Pó». Não é aleatório e não é ruído: `"Açaí Pó".encode("cp858")` dá os bytes
+# `41 87 61 A1 20 50 A2`, e esses bytes lidos em **cp737** (o grego do MS-DOS)
+# dão exactamente `AΘaκ Pλ`. Nesta impressora, o n=19 selecciona GREGO — ou
+# seja, a numeração dela NÃO é a da Epson.
+#
+# **Porquê o 2 e não o 14**, que é onde a PC858 fica nas tabelas destes clones:
+# o 2 é o único valor que significa PC850 em TODAS as tabelas conhecidas — a da
+# Epson, a da HPRT, a da Bixolon e as duas famílias de clone chinês. O 14, numa
+# Epson genuína, é PC737: escolhê-lo corrigia a cozinha e mudava exactamente a
+# mesma avaria para a impressora do BALCÃO, que é onde sai a Fatura Simplificada
+# do cliente. O 2 serve as duas impressoras ao mesmo tempo, e numa loja onde os
+# acentos já saíam bem continua a sair bem.
+#
+# O que se perde da PC858 para a PC850 é o símbolo do euro. Não custa nada:
+# `talao._euros` escreve só o número com vírgula, e o único `€` que este sistema
+# imprimia estava na linha de acentos da página de teste — que agora o imprime
+# dentro do varrimento, nas tabelas que o têm.
+#
+# Se uma unidade discordar à mesma, quem responde é a `pagina_de_teste`: ela
+# imprime a mesma amostra sob cada um dos `_CANDIDATOS`, com o número ao lado,
+# e a linha que sair legível diz o valor a pôr aqui. Nada mais do sistema
+# precisa de saber, e o `.exe` das lojas não muda nem uma vírgula.
+_TABELA_DE_CARACTERES = b"\x1bt\x02"  # ESC t 2
+_CODIFICACAO = "cp850"
+
+# Os valores que a `pagina_de_teste` varre, pela ordem em que saem no papel. O
+# primeiro é o que está em uso — se essa linha sair certa, acabou, não é preciso
+# ler o resto. O último é o 19, que ficou provado errado na TP8002 e está aqui
+# de propósito, como controlo: numa Epson genuína ele sai CERTO, e é assim que
+# uma folha só distingue as duas famílias de impressora.
+_CANDIDATOS = (
+    (2, "cp850"),    # PC850 — o defeito, igual em todas as tabelas conhecidas
+    (3, "cp860"),    # PC860 — o português do MS-DOS, também estável em todas
+    (14, "cp858"),   # PC858 nos clones (mas PC737 grego numa Epson)
+    (11, "cp1252"),  # WPC1252 nos clones
+    (16, "cp1252"),  # WPC1252 na numeração da Epson
+    (19, "cp858"),   # o que aqui estava: PC858 na Epson, GREGO na TP8002
+)
+_AMOSTRA_DE_ACENTOS = "Açaí ção 3º 1ª €"
 
 # `GS V 66 n` — avança `n` linhas e faz corte PARCIAL (deixa um pedacinho de
 # papel agarrado, que é o que impede o talão de cair ao chão).
@@ -122,7 +156,7 @@ def _texto(conteudo: str) -> bytes:
     return conteudo.replace("\r\n", "\n").encode(_CODIFICACAO, errors="replace")
 
 
-def documento(conteudo: str) -> bytes:
+def documento(conteudo) -> bytes:
     """Um talão: reiniciar, escolher a tabela, escrever, avançar, cortar.
 
     **O negrito, o corpo duplo e o alinhamento vão DENTRO do `conteudo`**, e
@@ -135,11 +169,19 @@ def documento(conteudo: str) -> bytes:
     pode não obedecer — e é por isso que a `pagina_de_teste` os manda também:
     ela responde num clique, à frente da impressora, antes de a cozinha
     receber a primeira ficha plana.
+
+    **Aceita `bytes` além de `str`**, e é por uma razão só: a página de teste
+    precisa de escrever linhas em codificações DIFERENTES umas das outras (é
+    isso o varrimento das tabelas), o que nenhum `str` consegue exprimir. Sem
+    isto, a página de teste teria de repetir aqui a moldura — o `ESC @`, a
+    tabela, o avanço e o corte — e o comando de corte passava a viver em dois
+    sítios. Um deles ficaria para trás no dia em que a TP8002 não cortasse.
     """
+    corpo = conteudo if isinstance(conteudo, bytes) else _texto(conteudo)
     return (
         _INICIAR
         + _TABELA_DE_CARACTERES
-        + _texto(conteudo)
+        + corpo
         + b"\n" * _LINHAS_ANTES_DO_CORTE
         + _CORTAR
     )
@@ -157,6 +199,35 @@ def abrir_gaveta() -> bytes:
     return _INICIAR + _GAVETA
 
 
+def _varrimento() -> bytes:
+    """A mesma amostra de acentos impressa sob CADA tabela candidata.
+
+    É a resposta à pergunta que só o papel sabe responder: qual é o número da
+    tabela desta impressora. Antes, a página imprimia os acentos numa tabela
+    só e quem estivesse à frente do papel via que estava errado — mas não o que
+    pôr no lugar, e isso custava uma ida à loja e um segundo deploy às cegas.
+
+    Duas decisões que fazem a folha valer:
+
+    - **o rótulo de cada linha é ASCII puro** (`n=2  cp850`), e o ASCII é igual
+      em todas estas tabelas. A linha que sair em grego sai com o rótulo
+      legível à mesma — senão a folha era ilegível exactamente onde interessa;
+    - **repõe a tabela por defeito no fim**. Sem isto a impressora ficava na
+      última tabela varrida — o grego — e o trabalho SEGUINTE herdava-a. Esse
+      trabalho pode ser a Fatura Simplificada certificada de um cliente.
+    """
+    saiu = b""
+    for n, codec in _CANDIDATOS:
+        rotulo = ("n=%-3d%-7s" % (n, codec)).encode("ascii")
+        saiu += (
+            b"\x1bt" + bytes([n])
+            + rotulo
+            + _AMOSTRA_DE_ACENTOS.encode(codec, errors="replace")
+            + b"\n"
+        )
+    return saiu + _TABELA_DE_CARACTERES
+
+
 def pagina_de_teste(
     impressora: str, loja: Optional[str] = None, servidor: Optional[str] = None
 ) -> bytes:
@@ -167,8 +238,12 @@ def pagina_de_teste(
     página é a prova, e por isso o que ela imprime foi escolhido para
     RESPONDER, não para enfeitar:
 
-    - **os acentos** («Açaí, ção, º») — se saírem trocados, a tabela de
-      caracteres desta impressora não é a PC858 (ver `_TABELA_DE_CARACTERES`);
+    - **a tabela de letras** — a mesma amostra de acentos impressa sob CADA
+      tabela candidata, com o número de cada uma ao lado (ver `_varrimento`).
+      A página já não pergunta «está bem?»: dá a resposta escrita. A linha que
+      sair legível é o valor a pôr em `_TABELA_DE_CARACTERES`, e se saírem
+      TODAS estragadas então a impressora está a ignorar o comando e o que se
+      muda é a configuração dela, não este ficheiro;
     - **a linha de 42 colunas** — se der a volta e continuar na linha de
       baixo, o papel é de 58 mm e não de 80 mm, e os talões vão sair todos
       partidos;
@@ -202,8 +277,12 @@ def pagina_de_teste(
         linhas.append("Servidor: %s" % servidor)
     linhas += [
         "",
-        "Acentos: Acai, cao, 3o, 1a, euro",
-        "Acentos: Açaí, ção, 3º, 1ª, €",
+        "TABELA DE LETRAS - qual linha sai certa?",
+        "Deve ler-se: Acai cao 3o 1a euro",
+        "",
+    ]
+    # A cauda começa DEPOIS do varrimento, que é bytes e não texto.
+    cauda = [
         "",
         "Largura (42 colunas, 80mm):",
         "123456789012345678901234567890123456789012",
@@ -229,4 +308,8 @@ def pagina_de_teste(
         "a impressora esta' bem configurada.",
         "",
     ]
-    return documento("\n".join(linhas) + "\n")
+    return documento(
+        _texto("\n".join(linhas) + "\n")
+        + _varrimento()
+        + _texto("\n".join(cauda) + "\n")
+    )
