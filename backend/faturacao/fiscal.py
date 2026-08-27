@@ -56,6 +56,7 @@ from pymongo.errors import DuplicateKeyError
 from .auth import gestor_atual
 from .db import COLECOES, indice_idempotencia_confirmado, obter_db
 from .importacao import _nif_configurado
+from .modo import modo_efectivo
 from .pos_auth import operador_atual
 from .caixa_math import soma_vendas_dinheiro
 from .precos import _tem_mais_de_2_casas_decimais
@@ -1952,6 +1953,17 @@ async def finalizar(
     itens = _itens_vendus(venda)
     cliente_payload = {"fiscal_id": dados.nif} if dados.nif else None
 
+    # **O modo resolvido AQUI, e passado para baixo.** A emissão corre numa
+    # thread (`asyncio.to_thread`) e não consegue ler a base de dados, que é
+    # onde o botão do backoffice o guarda. Esta é a camada que consegue, e é
+    # por isso que a resolução vive aqui — pela fonte única
+    # (`modo.modo_efectivo`), a mesma que responde à faixa do POS.
+    #
+    # Se isto desaparecer, a emissão cai na variável de ambiente e o botão
+    # passa a MENTIR: o ecrã diz `normal` e a fatura sai em `tests`, sem nada
+    # partir. Há um teste a exigir esta chamada por essa razão exacta.
+    modo_da_emissao = await modo_efectivo(db)
+
     with ClienteEmissaoVendus(conta.chave) as cliente_vendus:
 
         async def emitir(ref: str) -> Dict:
@@ -1962,6 +1974,7 @@ async def finalizar(
                 cliente=cliente_payload,
                 external_reference=ref,
                 register_id=register_id,
+                modo=modo_da_emissao,
             )
 
         async def verificar(ref: str) -> Optional[Dict]:

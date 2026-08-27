@@ -187,7 +187,8 @@ class VendusNCFalso:
     def __exit__(self, *exc):
         return False
 
-    def criar_nota_credito(self, linhas, pagamentos, external_reference, register_id, motivo):
+    def criar_nota_credito(self, linhas, pagamentos, external_reference,
+                           register_id, motivo, modo=None):
         self.chamadas_criar.append({
             "linhas": linhas, "pagamentos": pagamentos,
             "external_reference": external_reference,

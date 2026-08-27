@@ -86,6 +86,11 @@ export const detalhesErro = (error, fallback) => {
 // misturam (test_protecao_rotas.py).
 export const getModoDeEmissaoDoBackoffice = () =>
   api.get(`${API_URL}/faturacao/modo-de-emissao`);
+// Vira o interruptor. Diz sempre PARA ONDE — nunca «alterna»: um pedido
+// repetido pela rede, ou um duplo toque, passava a real e voltava a testes
+// sem ninguém dar por isso, e as faturas do meio eram reais para sempre.
+export const mudarModoDeEmissao = (modo) =>
+  api.put(`${API_URL}/faturacao/modo-de-emissao`, { modo });
 
 export const getFatDashboard = (comIva = true) =>
   api.get(`${API_URL}/faturacao/dashboard`, { params: { com_iva: comIva } });

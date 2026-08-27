@@ -43,6 +43,30 @@ from faturacao.pos_auth import dispositivo_atual, operador_atual
 from faturacao.vendus.emissao import VendusModoInvalido, _modo_configurado
 
 
+
+# --- Uma base de dados sem nada guardado -------------------------------------
+#
+# Desde que o modo passou a poder virar-se no backoffice (`modo_efectivo`), a
+# leitura recebe uma base de dados. Estes testes usam-na VAZIA de propósito:
+# medem o caminho de quem nunca tocou no botão, que é o de qualquer instalação
+# no dia do deploy — e é a garantia de que essa mudança não alterou o
+# comportamento de produção.
+#
+# O caminho do valor GUARDADO tem os seus testes em `test_o_modo_no_botao.py`.
+
+
+class _ColeccaoSemNada:
+    async def find_one(self, filtro, projecao=None):
+        return None
+
+
+class _DbSemNada:
+    def __getitem__(self, nome):
+        return _ColeccaoSemNada()
+
+
+_SEM_NADA = _DbSemNada()
+
 def _corre(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
 
@@ -56,7 +80,7 @@ def test_o_modo_valido_sai_tal_e_qual(monkeypatch, configurado):
     nunca traduzidos, nunca abreviados: é o mesmo par de palavras dos dois
     lados (`_MODOS_VALIDOS` em vendus/emissao.py)."""
     monkeypatch.setenv("VENDUS_MODE", configurado)
-    assert modo_mod.modo_de_emissao() == configurado
+    assert _corre(modo_mod.modo_efectivo(_SEM_NADA)) == configurado
 
 
 @pytest.mark.parametrize("valor", [None, "", "producao", "TESTS", "tests ", "1"])
@@ -70,7 +94,7 @@ def test_sem_modo_valido_o_servidor_diz_que_nao_sabe(monkeypatch, valor):
         monkeypatch.delenv("VENDUS_MODE", raising=False)
     else:
         monkeypatch.setenv("VENDUS_MODE", valor)
-    assert modo_mod.modo_de_emissao() is None
+    assert _corre(modo_mod.modo_efectivo(_SEM_NADA)) is None
 
 
 @pytest.mark.parametrize("valor", ["producao", ""])
@@ -85,7 +109,7 @@ def test_o_terceiro_estado_e_exactamente_o_que_a_emissao_RECUSA(monkeypatch, val
     monkeypatch.setenv("VENDUS_MODE", valor)
     with pytest.raises(VendusModoInvalido):
         _modo_configurado()
-    assert modo_mod.modo_de_emissao() is None
+    assert _corre(modo_mod.modo_efectivo(_SEM_NADA)) is None
 
 
 # --- As duas rotas ------------------------------------------------------------
@@ -93,6 +117,7 @@ def test_o_terceiro_estado_e_exactamente_o_que_a_emissao_RECUSA(monkeypatch, val
 
 @pytest.mark.parametrize("configurado", ["tests", "normal"])
 def test_as_duas_rotas_dizem_o_mesmo_modo(monkeypatch, configurado):
+    monkeypatch.setattr(modo_mod, "obter_db", lambda: _SEM_NADA)
     """POS e backoffice não podem responder coisas diferentes sobre a mesma
     empresa: é a mesma pergunta feita de dois sítios."""
     monkeypatch.setenv("VENDUS_MODE", configurado)
@@ -103,6 +128,7 @@ def test_as_duas_rotas_dizem_o_mesmo_modo(monkeypatch, configurado):
 
 
 def test_as_duas_rotas_dizem_que_nao_sabem_em_vez_de_escolher(monkeypatch):
+    monkeypatch.setattr(modo_mod, "obter_db", lambda: _SEM_NADA)
     """Sem `VENDUS_MODE` válido, as rotas respondem 200 com `modo: null`.
 
     200 e não um erro, de propósito: um 500 aqui era indistinguível, do lado do
@@ -116,6 +142,7 @@ def test_as_duas_rotas_dizem_que_nao_sabem_em_vez_de_escolher(monkeypatch):
 
 
 def test_a_resposta_nao_diz_mais_nada(monkeypatch):
+    monkeypatch.setattr(modo_mod, "obter_db", lambda: _SEM_NADA)
     """Só o modo. Isto responde-se a um PC de balcão emparelhado e a resposta
     não pode arrastar consigo o nome da conta Vendus, a caixa API, o NIF ou
     seja o que for da configuração da empresa."""

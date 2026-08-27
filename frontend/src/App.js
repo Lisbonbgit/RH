@@ -64,6 +64,7 @@ import FatUtilizadores from './pages/admin/faturacao/FatUtilizadores';
 import FatMotivos from './pages/admin/faturacao/FatMotivos';
 import FatDispositivos from './pages/admin/faturacao/FatDispositivos';
 import FatRelatorioDiario from './pages/admin/faturacao/FatRelatorioDiario';
+import FatTrocarModo from './pages/admin/faturacao/FatTrocarModo';
 import FatReservasPresas from './pages/admin/faturacao/FatReservasPresas';
 import PosApp from './pages/pos/PosApp';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
@@ -268,6 +269,7 @@ function AppRoutes() {
         <Route path="faturacao/config/motivos" element={<FatMotivos />} />
         <Route path="faturacao/config/dispositivos" element={<FatDispositivos />} />
         <Route path="faturacao/config/relatorio-diario" element={<FatRelatorioDiario />} />
+        <Route path="faturacao/config/modo-de-emissao" element={<FatTrocarModo />} />
 
         {/* Os caminhos antigos, de antes da estrutura por secções */}
         <Route path="faturacao/lojas" element={<Navigate to="/admin/faturacao/config/lojas" replace />} />
