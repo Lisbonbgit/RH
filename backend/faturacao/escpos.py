@@ -217,8 +217,14 @@ def pagina_de_teste(
         "Hierarquia (a ficha da cozinha usa-a):",
         DUPLO + "CORPO DUPLO" + CORPO_NORMAL,
         NEGRITO + "Esta linha e' a negrito." + SEM_NEGRITO,
-        CENTRADO + "Esta linha vai ao meio." + A_ESQUERDA,
-        "",
+        # O A_ESQUERDA abre a linha SEGUINTE, e nao fecha esta: a maioria
+        # das impressoras termicas so' obedece ao `ESC a` quando ele chega
+        # antes de qualquer texto da linha. Colado ao fim desta, as que o
+        # ignoram deixavam TUDO o que vem a seguir centrado — numa pagina
+        # cujo trabalho e' dizer a verdade sobre a impressora. Mesmo defeito
+        # que a ficha da cozinha teve, e que so' se viu numa foto do papel.
+        CENTRADO + "Esta linha vai ao meio.",
+        A_ESQUERDA + "",
         "Se leu isto tudo em UMA linha cada,",
         "a impressora esta' bem configurada.",
         "",
