@@ -22,43 +22,14 @@ Não lê base de dados e não envia nada: recebe listas e devolve um dicionário
 É isso que deixa as contas de dinheiro ser testadas sem email nenhum, e o
 desenho do email ser visto sem inventar vendas.
 """
-import unicodedata
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from .caixa import _resumo_do_turno
 from .caixa_math import _centimos
 from .dashboard import _campo_valor, _valor_documento
+from .precos import e_grupo_de_variante
 from .periodos import LISBON_TZ
-
-# **Que personalização é que parte um artigo em dois.** O dono criou UM artigo
-# "Açaí" e pôs-lhe dentro os tamanhos (mini, small, regular, supreme); um
-# "Nutella 2×" é um extra e não uma variante — parti-lo por aí dava um top com
-# uma linha por combinação, ilegível e falso.
-#
-# ponytail: heurística pelo NOME do grupo, porque não há no catálogo nenhum
-# campo que diga "este grupo define a variante". Comparação sem acentos e sem
-# maiúsculas, e por conter e não por igualar, para apanhar "Tamanho",
-# "Tamanhos" e "Tamanho do açaí". Upgrade: um interruptor por grupo no
-# backoffice ("este grupo é uma variante") no dia em que um grupo de variante
-# não se chamar tamanho — `grupos_de_variante` já entra por parâmetro para
-# esse dia não obrigar a mexer aqui.
-_PALAVRAS_DE_VARIANTE = ("tamanho", "size")
-
-
-def _sem_acentos(texto) -> str:
-    normalizado = unicodedata.normalize("NFD", str(texto or ""))
-    return "".join(c for c in normalizado if not unicodedata.combining(c)).lower()
-
-
-def _e_grupo_de_variante(grupo_nome, grupos_de_variante: Optional[List[str]]) -> bool:
-    nome = _sem_acentos(grupo_nome)
-    if not nome:
-        return False
-    if grupos_de_variante is not None:
-        return any(_sem_acentos(g) == nome for g in grupos_de_variante)
-    return any(palavra in nome for palavra in _PALAVRAS_DE_VARIANTE)
-
 
 def _dia_do_documento(doc: Dict) -> str:
     """O dia LISBOETA em que o documento foi emitido.
@@ -242,7 +213,7 @@ def _artigos_vendidos(turnos: List[Dict], grupos_de_variante) -> List[Dict]:
                         "nome": nome, "quantidade": 0, "variantes": {}}
                 artigo["quantidade"] += quantidade
                 for opcao in linha.get("opcoes") or []:
-                    if not _e_grupo_de_variante(opcao.get("grupo_nome"), grupos_de_variante):
+                    if not e_grupo_de_variante(opcao.get("grupo_nome"), grupos_de_variante):
                         continue
                     v = opcao.get("nome") or "(sem nome)"
                     artigo["variantes"][v] = artigo["variantes"].get(v, 0) + quantidade

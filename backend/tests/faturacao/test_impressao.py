@@ -830,8 +830,8 @@ def test_uma_quantidade_IMPOSSIVEL_ja_gravada_nao_rebenta_o_botao(monkeypatch):
     monkeypatch.setattr(imp, "obter_db", lambda: db)
     assert _corre(imprimir_pedido("venda-1", operador=_operador()))["aceite"]
     saiu = base64.b64decode(_fila(db)[0]["bytes_b64"]).decode("cp858")
-    assert "? Açaí Regular" in saiu
-    assert "2 Café Expresso" in saiu
+    assert "? x Açaí Regular" in saiu
+    assert "2 x Café Expresso" in saiu
 
 
 def test_a_ficha_sai_com_a_conta_ABERTA_e_sem_documento_nenhum(monkeypatch):

@@ -110,8 +110,11 @@ def test_NENHUMA_resposta_dada_ao_balcao_pode_faltar_na_ficha():
 
     assert "MARIA" in papel                      # a primeira resposta de texto
     assert "Observações: sem granola" in papel   # a SEGUNDA, que se perdia
-    assert "Consumir em loja: Comer aqui" in papel
-    assert "Talheres" in papel and "Sem colher" in papel
+    # Os títulos dos grupos saíram do papel a pedido do dono (Agosto/2026) —
+    # o que NÃO pode sair são as respostas. Esta é a mesma regra de sempre,
+    # medida contra a arrumação nova.
+    assert "Comer aqui" in papel
+    assert "Sem colher" in papel
     assert "2x Nutella" in papel
     assert "1x Leite condensado" in papel
 
@@ -156,37 +159,38 @@ def test_a_HIERARQUIA_de_leitura_esta_no_papel_e_nao_so_as_palavras():
     assert "#F2C4" in "\n".join(texto)
     assert "21:47" in "\n".join(texto)  # 20:47 UTC são 21:47 na parede da loja
 
-    # 1. O NOME é o maior elemento do talão — o único em corpo DUPLO.
-    nome = papel[texto.index("MARIA")]
-    assert _duplo(nome) and nome["negrito"]
-    assert [l["texto"] for l in papel if _duplo(l)] == ["MARIA"]
+    # 1. O ARTIGO é o maior elemento do talão — e é a primeira coisa depois
+    #    do cabeçalho. A ordem inverteu-se em Agosto/2026: quem faz os açaís
+    #    precisa de ver primeiro o que vai FAZER.
+    artigo = papel[texto.index("1 x Açaí Small")]
+    assert artigo["corpo"] & 0x0F == 0x03, artigo   # 4x em altura
+    assert not _duplo(artigo), "Não pode gastar colunas: 4x em largura são 10 por linha."
 
-    # 2. O artigo abre com a quantidade e o produto, e vem a seguir em
-    #    tamanho: alto, mas não duplo (não gasta colunas).
-    artigo = papel[texto.index("1 Açaí Small")]
-    assert _alto(artigo) and not _duplo(artigo)
-    assert texto.index("1 Açaí Small") > texto.index("MARIA")
+    # 2. O NOME do cliente vem a seguir, e MENOR do que o artigo.
+    nome = papel[texto.index("MARIA")]
+    assert nome["corpo"] & 0x0F == 0x02, nome       # 3x em altura
+    assert nome["negrito"]
+    assert texto.index("MARIA") > texto.index("1 x Açaí Small")
 
     # 3. A resposta de serviço vem destacada e COM A PERGUNTA — muda o que se
     #    faz ao copo.
-    servico = papel[texto.index("Consumir em loja: Levar")]
+    servico = papel[texto.index("Levar")]
     assert servico["negrito"]
-    assert texto.index("Consumir em loja: Levar") > texto.index("1 Açaí Small")
+    assert texto.index("Levar") > texto.index("1 x Açaí Small")
 
-    # 4. Os toppings, com as doses, sob o grupo a que pertencem e depois de
-    #    tudo o resto.
-    assert texto.index("Toppings:") > texto.index("Consumir em loja: Levar")
-    assert texto[texto.index("Toppings:") + 1:texto.index("Toppings:") + 3] == [
-        "  1x Leite condensado", "  2x Nutella",
-    ]
+    # 4. Os toppings, com as doses e SEM o título do grupo, depois de tudo o
+    #    resto. Cada título era uma linha inteira num papel de 42 colunas.
+    assert "Toppings:" not in texto
+    assert texto.index("1x Leite condensado") > texto.index("Levar")
+    assert texto.index("2x Nutella") > texto.index("Levar")
 
     # E o que é destaque tem de ser POUCO: um talão todo a negrito e todo
     # centrado é outra vez um talão sem hierarquia nenhuma. Os toppings leem-se
     # em corpo normal, e o corpo do talão é encostado à esquerda — só o
     # cabeçalho é que vai ao meio.
-    assert not papel[texto.index("  2x Nutella")]["negrito"]
-    assert papel[texto.index("  2x Nutella")]["corpo"] == 0
-    assert not papel[texto.index("1 Açaí Small")]["centrado"]
+    assert not papel[texto.index("2x Nutella")]["negrito"]
+    assert papel[texto.index("2x Nutella")]["corpo"] == 0
+    assert not papel[texto.index("1 x Açaí Small")]["centrado"]
 
 
 def test_nenhuma_linha_passa_das_colunas_do_CORPO_DE_LETRA_dela():
@@ -256,8 +260,8 @@ def test_opcao_PAGA_de_grupo_escondido_vai_com_a_dose_e_nao_ao_servico():
         ],
     }]}
     texto = [l["texto"] for l in _analisar(pedido_da_cozinha(venda))]
-    assert "  2x Extra caramelo" in texto
-    assert "Consumir em loja: Levar" in texto
+    assert "2x Extra caramelo" in texto
+    assert "Levar" in texto
     assert "1x Extra caramelo" not in texto
 
 
@@ -288,8 +292,8 @@ def test_um_topping_GRATIS_de_grupo_escondido_nao_perde_a_DOSE():
         ],
     }]}
     texto = [l["texto"] for l in _analisar(pedido_da_cozinha(venda))]
-    assert "Toppings gratis: 2x Granola" in texto
-    assert "Consumir em loja: Levar" in texto
+    assert "2x Granola" in texto
+    assert "Levar" in texto
     assert "Consumir em loja: 1x Levar" not in texto
 
 
@@ -315,17 +319,17 @@ def test_a_quantidade_de_uma_PARTE_nao_imprime_ZERO_e_um_None_nao_apaga_a_ficha(
         {"produto_nome": "Açaí Regular", "quantidade": 2},
     ]}
     texto = [l["texto"] for l in _analisar(pedido_da_cozinha(venda))]
-    assert "0,3333 Açaí Regular" in texto
-    assert "? Açaí Regular" in texto
-    assert "2 Açaí Regular" in texto
-    assert "0 Açaí Regular" not in texto
+    assert "0,3333 x Açaí Regular" in texto
+    assert "? x Açaí Regular" in texto
+    assert "2 x Açaí Regular" in texto
+    assert "0 x Açaí Regular" not in texto
 
 
 def test_uma_linha_sem_nome_nem_opcoes_sai_na_mesma():
     texto = [l["texto"] for l in
              _analisar(pedido_da_cozinha({"linhas": [
                  {"produto_nome": "Café Expresso", "quantidade": 2}]}))]
-    assert "2 Café Expresso" in texto
+    assert "2 x Café Expresso" in texto
 
 
 def test_uma_linha_GRAVADA_ANTES_do_carimbo_do_titulo_sai_sem_titulo_e_inteira():
@@ -525,10 +529,10 @@ def test_NaN_e_INFINITO_nao_apagam_a_ficha_da_cozinha():
         {"produto_nome": "Café Expresso", "quantidade": 2},
     ]}
     texto = [l["texto"] for l in _analisar(pedido_da_cozinha(venda))]
-    assert "? Açaí Regular" in texto
-    assert "? Açaí Large" in texto
+    assert "? x Açaí Regular" in texto
+    assert "? x Açaí Large" in texto
     # A ficha INTEIRA sai — era isto que se perdia, e não só a linha.
-    assert "2 Café Expresso" in texto
+    assert "2 x Café Expresso" in texto
 
 
 def test_uma_linha_que_DOBRA_continua_RECUADA_e_nao_na_coluna_zero():
@@ -555,8 +559,12 @@ def test_uma_linha_que_DOBRA_continua_RECUADA_e_nao_na_coluna_zero():
              "nome": "Granola", "preco": 0, "sai_na_fatura": False},
             {"id": "t2", "grupo_id": "g2", "nome_grupo": "Toppings gratis",
              "nome": "Granola", "preco": 0, "sai_na_fatura": False},
+            # Nome comprido de propósito: sem o título do grupo (que saiu do
+            # papel em Agosto/2026) a linha deixou de dobrar, e este teste
+            # existe para medir a DOBRA. Encurtá-lo era deixar de medir.
             {"id": "t3", "grupo_id": "g2", "nome_grupo": "Toppings gratis",
-             "nome": "Leite condensado", "preco": 0, "sai_na_fatura": False},
+             "nome": "Leite condensado caseiro extra doce", "preco": 0,
+             "sai_na_fatura": False},
             {"id": "t4", "grupo_id": "g3", "nome_grupo": "Toppings",
              "nome": "Nutella", "preco": 0.95},
         ],
@@ -564,11 +572,147 @@ def test_uma_linha_que_DOBRA_continua_RECUADA_e_nao_na_coluna_zero():
     texto = [l["texto"] for l in _analisar(pedido_da_cozinha(venda))]
 
     # 3. a indicação de serviço que dobra
-    assert "Toppings gratis: 2x Granola, Leite" in texto
-    assert "   condensado" in texto
-    assert "condensado" not in texto
+    assert "2x Granola, Leite condensado caseiro extra" in texto
+    assert "   doce" in texto
+    assert "doce" not in texto
 
     # 5. a observação que dobra
     assert "Observações: sem granola por cima, muito" in texto
     assert "   frio" in texto
     assert "frio" not in texto
+
+
+# --- A ficha rearrumada, com o papel a sério à frente ------------------------
+#
+# O dono mandou uma FOTO da ficha que sai na loja e disse como a quer:
+#
+#     1 x acai mini (tamanho da letra 4)
+#     nome do cliente (tamanho da letra 3)
+#     só a resposta de tampa ou sem tampa
+#     1 x leite condensado
+#     2 x morango
+#
+# Três mudanças, e a primeira inverte o que este ficheiro dizia até aqui:
+#
+# 1. **o PRODUTO passa a ser o maior elemento**, com o tamanho colado ao nome
+#    («1 x Açaí Mini»), e o nome do cliente desce para segundo. A versão
+#    anterior punha o nome em cima, e a razão escrita era boa — «é o que se
+#    grita e o que se escreve no copo». Quem faz os açaís todos os dias diz
+#    que o que precisa de ver primeiro é o que vai fazer;
+# 2. **os títulos dos grupos saem** — nem «Tamanho:» nem «Toppings:». Num
+#    papel estreito cada título é uma linha que empurra o resto para baixo;
+# 3. **as perguntas de serviço saem só com a RESPOSTA**, sem o título.
+#
+# O que NÃO muda é a regra que não se negoceia: nada do que foi perguntado ao
+# balcão desaparece do papel. O `test_NENHUMA_resposta_dada_ao_balcao_pode_
+# faltar_na_ficha`, lá em cima, continua a valer sem uma linha alterada.
+
+_QUATRO = 0x03   # GS ! — 4× em ALTURA, 1× em largura (não gasta colunas)
+_TRES = 0x02     # GS ! — 3× em altura
+
+
+def _venda_da_foto():
+    """A ficha da foto que o dono mandou, com o tamanho num grupo à parte —
+    que é como o catálogo dele o tem."""
+    return {
+        "id": "aaaa-bbbb-cccc-1287",
+        "criada_em": "2026-08-27T23:26:00+00:00",
+        "linhas": [{
+            "produto_nome": "Açaí", "quantidade": 1,
+            "respostas_texto": [{"grupo_id": "g0", "nome_grupo": "Nome", "texto": "Débora"}],
+            "opcoes": [
+                {"id": "o0", "grupo_id": "g1", "nome": "Sim", "preco": 0,
+                 "nome_grupo": "Consumir em loja ?", "sai_na_fatura": False},
+                {"id": "ot", "grupo_id": "gt", "nome": "Mini", "preco": 0,
+                 "nome_grupo": "Tamanho"},
+                {"id": "o1", "grupo_id": "g2", "nome": "Leite Condensado", "preco": 0,
+                 "nome_grupo": "Toppings"},
+                {"id": "o2", "grupo_id": "g2", "nome": "Morango", "preco": 0,
+                 "nome_grupo": "Toppings"},
+                {"id": "o2", "grupo_id": "g2", "nome": "Morango", "preco": 0,
+                 "nome_grupo": "Toppings"},
+            ],
+        }],
+    }
+
+
+def test_o_PRODUTO_COM_O_TAMANHO_e_a_primeira_linha_e_a_maior():
+    """«1 x acai mini (tamanho da letra 4)» — literalmente o pedido."""
+    papel = [l for l in _analisar(pedido_da_cozinha(_venda_da_foto())) if l["texto"].strip()]
+    do_artigo = papel[3:]      # depois das duas linhas do cabeçalho e do traço
+    primeira = do_artigo[0]
+    assert "Açaí" in primeira["texto"] and "Mini" in primeira["texto"], primeira["texto"]
+    assert primeira["corpo"] & 0x0F == _QUATRO, (
+        "A linha do produto não está no corpo 4: %r" % primeira)
+
+
+def test_o_NOME_do_cliente_vem_a_seguir_e_MENOR_que_o_produto():
+    papel = [l for l in _analisar(pedido_da_cozinha(_venda_da_foto())) if l["texto"].strip()]
+    do_artigo = papel[3:]
+    nome = next(l for l in do_artigo if "DÉBORA" in l["texto"].upper())
+    produto = do_artigo[0]
+    assert nome["corpo"] & 0x0F == _TRES, nome
+    assert (nome["corpo"] & 0x0F) < (produto["corpo"] & 0x0F), (
+        "O nome do cliente não pode ser maior do que o produto.")
+
+
+def test_o_TAMANHO_deixa_de_ser_uma_linha_a_parte():
+    """Subiu para a linha do produto. Repeti-lo em baixo era dizer duas vezes
+    a mesma coisa num papel onde cada linha custa."""
+    texto = _sem_comandos(pedido_da_cozinha(_venda_da_foto()))
+    assert "1x Mini" not in texto
+    assert "Tamanho" not in texto
+
+
+def test_os_TITULOS_dos_grupos_desaparecem_do_papel():
+    """Nem «Tamanho:» nem «Toppings:» — cada um era uma linha que empurrava o
+    resto para baixo."""
+    texto = _sem_comandos(pedido_da_cozinha(_venda_da_foto()))
+    assert "Toppings:" not in texto
+    assert "Tamanho:" not in texto
+
+
+def test_a_pergunta_de_SERVICO_sai_so_com_a_resposta():
+    """«Consumir em loja ?: Sim» passa a «Sim». Foi o dono a escolher, com o
+    aviso de que «Sim» sozinho no papel diz pouco."""
+    texto = _sem_comandos(pedido_da_cozinha(_venda_da_foto()))
+    assert "Consumir em loja" not in texto
+    assert "Sim" in texto
+
+
+def test_os_TOPPINGS_mantem_as_doses():
+    """Dois morangos são «2x Morango» e nunca «Morango, Morango» — nem uma vez
+    só, que é o defeito que punha uma colher onde o cliente pediu duas."""
+    texto = _sem_comandos(pedido_da_cozinha(_venda_da_foto()))
+    assert "2x Morango" in texto
+    assert "1x Leite Condensado" in texto
+
+
+def test_um_produto_SEM_tamanho_nenhum_sai_com_o_nome_tal_e_qual():
+    venda = _venda_da_foto()
+    venda["linhas"][0]["produto_nome"] = "Água 33cl"
+    venda["linhas"][0]["opcoes"] = []
+    texto = _sem_comandos(pedido_da_cozinha(venda))
+    assert "1 x Água 33cl" in texto or "1 x Água 33cl" in texto
+
+
+def test_um_produto_que_JA_TEM_o_tamanho_no_nome_nao_o_repete():
+    """O catálogo tem produtos antigos chamados «Açaí Small». Colar-lhes o
+    tamanho outra vez dava «1 x Açaí Small Small» no papel da cozinha —
+    ridículo, e o tipo de coisa que ninguém corrige porque ninguém percebe de
+    onde veio."""
+    venda = _venda_da_foto()
+    venda["linhas"][0]["produto_nome"] = "Açaí Mini"
+    texto = _sem_comandos(pedido_da_cozinha(venda))
+    assert "Mini Mini" not in texto
+
+
+def test_NADA_do_que_foi_perguntado_desaparece_com_a_arrumacao_nova():
+    """A regra que não se negoceia, medida contra a arrumação nova: uma
+    observação escrita ao balcão continua a sair no papel."""
+    venda = _venda_da_foto()
+    venda["linhas"][0]["respostas_texto"].append(
+        {"grupo_id": "g9", "nome_grupo": "Observações", "texto": "sem granola"})
+    texto = _sem_comandos(pedido_da_cozinha(venda))
+    assert "sem granola" in texto
+    assert "Débora" in texto or "DÉBORA" in texto
