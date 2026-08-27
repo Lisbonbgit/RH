@@ -794,3 +794,29 @@ def test_um_produto_de_nome_COMPRIDO_dobra_e_nao_da_a_volta():
     assert len(do_produto) >= 2, [l["texto"] for l in do_produto]
     for l in do_produto:
         assert len(l["texto"].rstrip()) <= 21, l
+
+
+def test_a_resposta_de_SERVICO_e_um_degrau_maior_do_que_os_toppings():
+    """«A parte de com tampa pode ser só um pouquinho maior.»
+
+    Um degrau, e só um: fica 2× em ALTURA — a mesma letra do cabeçalho, que o
+    dono aprovou («o cabeçalho está bom»). O degrau seguinte já era o 2×
+    proporcional do produto, e aí a linha da tampa ficava do tamanho do
+    `1 x Açaí Mini` — a ficha voltava a não ter primeiro nem segundo.
+
+    Em altura e não em largura de propósito: mantém as 42 colunas, e uma
+    resposta comprida («Sem tampa, com colher») continua a caber."""
+    papel = _analisar(pedido_da_cozinha(_venda_da_foto()))
+    servico = next(l for l in papel if l["texto"].strip() == "Sim")
+    assert servico["corpo"] & 0x0F == 1, servico       # 2× em altura
+    assert not (servico["corpo"] & 0xF0), (
+        "Não pode gastar colunas: uma resposta comprida passava a dobrar.")
+    assert servico["negrito"]
+
+    # E continua MENOR do que o produto, que é quem manda no papel.
+    produto = next(l for l in papel if "Açaí" in l["texto"])
+    assert servico["corpo"] != produto["corpo"]
+
+    # ... e MAIOR do que os toppings, que é o que o dono pediu.
+    topping = next(l for l in papel if "Morango" in l["texto"])
+    assert topping["corpo"] == 0
