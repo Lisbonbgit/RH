@@ -163,13 +163,15 @@ def test_a_HIERARQUIA_de_leitura_esta_no_papel_e_nao_so_as_palavras():
     #    do cabeçalho. A ordem inverteu-se em Agosto/2026: quem faz os açaís
     #    precisa de ver primeiro o que vai FAZER.
     artigo = papel[texto.index("1 x Açaí Small")]
-    assert artigo["corpo"] & 0x0F == 0x03, artigo   # 4x em altura
-    assert not _duplo(artigo), "Não pode gastar colunas: 4x em largura são 10 por linha."
+    assert artigo["corpo"] == 0x11, artigo   # 2x nos dois sentidos
+    assert artigo["negrito"]
 
-    # 2. O NOME do cliente vem a seguir, e MENOR do que o artigo.
+    # 2. O NOME do cliente vem a seguir, do mesmo tamanho e SEM negrito — a
+    #    hierarquia é a ordem, não o tamanho (ver o teste da letra
+    #    proporcional, no fim do ficheiro).
     nome = papel[texto.index("MARIA")]
-    assert nome["corpo"] & 0x0F == 0x02, nome       # 3x em altura
-    assert nome["negrito"]
+    assert nome["corpo"] == 0x11, nome
+    assert not nome["negrito"]
     assert texto.index("MARIA") > texto.index("1 x Açaí Small")
 
     # 3. A resposta de serviço vem destacada e COM A PERGUNTA — muda o que se
@@ -607,8 +609,8 @@ def test_uma_linha_que_DOBRA_continua_RECUADA_e_nao_na_coluna_zero():
 # balcão desaparece do papel. O `test_NENHUMA_resposta_dada_ao_balcao_pode_
 # faltar_na_ficha`, lá em cima, continua a valer sem uma linha alterada.
 
-_QUATRO = 0x03   # GS ! — 4× em ALTURA, 1× em largura (não gasta colunas)
-_TRES = 0x02     # GS ! — 3× em altura
+# GS ! 0x11 — 2× em largura E em altura: letra quadrada, 21 colunas.
+_DOIS_PROPORCIONAL = 0x11
 
 
 def _venda_da_foto():
@@ -642,8 +644,8 @@ def test_o_PRODUTO_COM_O_TAMANHO_e_a_primeira_linha_e_a_maior():
     do_artigo = papel[3:]      # depois das duas linhas do cabeçalho e do traço
     primeira = do_artigo[0]
     assert "Açaí" in primeira["texto"] and "Mini" in primeira["texto"], primeira["texto"]
-    assert primeira["corpo"] & 0x0F == _QUATRO, (
-        "A linha do produto não está no corpo 4: %r" % primeira)
+    assert primeira["corpo"] == _DOIS_PROPORCIONAL, (
+        "A linha do produto não está no corpo 2 proporcional: %r" % primeira)
 
 
 def test_o_NOME_do_cliente_vem_a_seguir_e_MENOR_que_o_produto():
@@ -651,9 +653,13 @@ def test_o_NOME_do_cliente_vem_a_seguir_e_MENOR_que_o_produto():
     do_artigo = papel[3:]
     nome = next(l for l in do_artigo if "DÉBORA" in l["texto"].upper())
     produto = do_artigo[0]
-    assert nome["corpo"] & 0x0F == _TRES, nome
-    assert (nome["corpo"] & 0x0F) < (produto["corpo"] & 0x0F), (
-        "O nome do cliente não pode ser maior do que o produto.")
+    assert nome["corpo"] == _DOIS_PROPORCIONAL, nome
+    # Os dois ficaram do MESMO tamanho, por escolha do dono. A hierarquia
+    # passa a vir da ORDEM e do negrito: o produto primeiro e a negrito, o
+    # nome logo a seguir sem ele. Um dos dois maior obrigava a esticar a letra
+    # (foi disso que ele se queixou) ou a dobrar os nomes compridos.
+    assert produto["negrito"] and not nome["negrito"]
+    assert do_artigo.index(nome) > do_artigo.index(produto)
 
 
 def test_o_TAMANHO_deixa_de_ser_uma_linha_a_parte():
@@ -716,3 +722,75 @@ def test_NADA_do_que_foi_perguntado_desaparece_com_a_arrumacao_nova():
     texto = _sem_comandos(pedido_da_cozinha(venda))
     assert "sem granola" in texto
     assert "Débora" in texto or "DÉBORA" in texto
+
+
+# --- O alinhamento, corrigido com o papel na mão -----------------------------
+
+
+def test_o_CORPO_da_ficha_e_encostado_a_esquerda_e_so_o_cabecalho_vai_ao_meio():
+    """**O comando de voltar à esquerda tem de chegar no INÍCIO de uma linha.**
+
+    Estava no fim da linha do número (`"#1287  00:26" + ESC a 0`), e a maioria
+    das impressoras térmicas só obedece ao `ESC a` quando ele chega antes de
+    qualquer texto da linha — as outras aceitam-no a meio. O código dizia
+    "alinha à esquerda" e o papel saía todo centrado; foi preciso a foto de
+    uma ficha a sair na loja para se ver.
+
+    Este teste mede a POSIÇÃO do comando, e não só a sua presença: um teste
+    que procurasse `ESC a 0` no papel ficava verde com ele exactamente onde
+    estava a falhar."""
+    papel = pedido_da_cozinha(_venda_da_foto())
+    linhas = papel.split("\n")
+    a_esquerda = [i for i, l in enumerate(linhas) if "\x1ba\x00" in l]
+    assert a_esquerda, "O papel nunca volta a alinhar à esquerda."
+    for i in a_esquerda:
+        antes = linhas[i].split("\x1ba\x00")[0]
+        # Só comandos antes dele — nada de texto imprimível.
+        assert not antes.replace("\x1b", "").replace("\x1d", "").strip("aE!@\x00\x01\x02\x03\x11"), (
+            "O `ESC a 0` da linha %d vem depois de texto — a impressora ignora-o: %r"
+            % (i, linhas[i]))
+
+
+def test_o_cabecalho_CONTINUA_centrado():
+    """A única coisa que vai ao meio, e é o que o dono quis manter."""
+    papel = _analisar(pedido_da_cozinha(_venda_da_foto()))
+    titulo = next(l for l in papel if "PEDIDO COZINHA" in l["texto"])
+    assert titulo["centrado"]
+    artigo = next(l for l in papel if "Açaí" in l["texto"])
+    assert not artigo["centrado"], "O corpo da ficha não pode sair centrado."
+    nome = next(l for l in papel if "DÉBORA" in l["texto"])
+    assert not nome["centrado"]
+
+
+def test_a_letra_do_produto_e_PROPORCIONAL_e_nao_esticada():
+    """«as letras esta muito esticada para cima por que ?» — porque eu tinha
+    pedido 4× em altura com a largura normal, para nada dobrar. Passa a ser
+    2× nos dois sentidos: quadrada, e cabem 21 caracteres."""
+    papel = _analisar(pedido_da_cozinha(_venda_da_foto()))
+    artigo = next(l for l in papel if "Açaí" in l["texto"])
+    largura = (artigo["corpo"] & 0xF0) >> 4
+    altura = artigo["corpo"] & 0x0F
+    assert largura == altura, (
+        "A letra do produto está esticada: %d× em largura e %d× em altura."
+        % (largura + 1, altura + 1))
+    assert altura == 1, artigo   # 2× (o valor 1 é "o dobro")
+
+
+def test_o_nome_do_cliente_tambem_e_proporcional():
+    papel = _analisar(pedido_da_cozinha(_venda_da_foto()))
+    nome = next(l for l in papel if "DÉBORA" in l["texto"])
+    assert (nome["corpo"] & 0xF0) >> 4 == nome["corpo"] & 0x0F == 1, nome
+
+
+def test_um_produto_de_nome_COMPRIDO_dobra_e_nao_da_a_volta():
+    """A 2× cabem 21 caracteres. «Saco de Transporte» passa disso e tem de
+    DOBRAR nas palavras — dar a volta punha a sobra encostada à esquerda, por
+    baixo, onde parece um artigo novo."""
+    venda = _venda_da_foto()
+    venda["linhas"][0]["produto_nome"] = "Saco de Transporte App"
+    venda["linhas"][0]["opcoes"] = []
+    papel = _analisar(pedido_da_cozinha(venda))
+    do_produto = [l for l in papel if (l["corpo"] & 0xF0) and l["texto"].strip()]
+    assert len(do_produto) >= 2, [l["texto"] for l in do_produto]
+    for l in do_produto:
+        assert len(l["texto"].rstrip()) <= 21, l
