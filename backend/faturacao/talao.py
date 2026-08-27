@@ -414,7 +414,12 @@ def _ficha_do_artigo(linha: Dict) -> List[str]:
         respondido = ", ".join(
             nome if n == 1 else "%dx %s" % (n, nome)
             for nome, n in _contar(opcoes_do_grupo).items())
-        saida += _bloco(respondido, negrito=True, recuo="   ")
+        # Um degrau acima dos toppings, e so' um: 2x em ALTURA, a mesma letra
+        # do cabecalho. O degrau seguinte era o 2x proporcional do produto, e
+        # ai' a linha da tampa ficava do tamanho do artigo — a ficha voltava a
+        # nao ter primeiro nem segundo. Em altura e nao em largura mantem as
+        # 42 colunas: uma resposta comprida continua a caber sem dobrar.
+        saida += _bloco(respondido, ALTO, negrito=True, recuo="   ")
 
     # 4. Tudo o resto que se escolheu, com as doses à frente e SEM o título do
     #    grupo. O tamanho não entra aqui — já subiu para a linha do artigo, e
