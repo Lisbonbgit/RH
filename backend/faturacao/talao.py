@@ -87,11 +87,6 @@ from .reparticao import CASAS_DA_QUANTIDADE
 # largura) cabe metade, 21. Uma linha que dê a volta numa ficha de cozinha faz
 # ler o topping errado — a linha de baixo aparece encostada à esquerda, por
 # baixo do artigo seguinte.
-# `GS ! n`: o nibble baixo e' a ALTURA, o alto a largura. Estes dois só
-# mexem na altura — a 4x em largura cabiam 10 caracteres por linha.
-QUATRO_ALTO = "\x1d!\x03"
-TRES_ALTO = "\x1d!\x02"
-
 _LARGURA = 42
 _LARGURA_DUPLA = 21
 
@@ -335,8 +330,13 @@ def _cabecalho(venda: Dict) -> List[str]:
     marca = "#%s" % (str(venda.get("id") or "").upper()[-4:] or "?")
     linhas.append(("%s  %s" % (marca, _hora_de(venda.get("criada_em")))).strip())
     linhas[0] = CENTRADO + linhas[0]
-    linhas[-1] = linhas[-1] + A_ESQUERDA
-    return linhas + ["=" * _LARGURA]
+    # **O `A_ESQUERDA` no INÍCIO da linha seguinte, e não no fim desta.**
+    # Estava colado ao fim da linha do número, e a maioria das impressoras
+    # térmicas só obedece ao `ESC a` quando ele chega ANTES de qualquer texto
+    # da linha — as outras aceitam-no a meio, e foi por isso que passou. O
+    # código dizia "alinha à esquerda" e o papel saía todo centrado; foi
+    # preciso a foto de uma ficha a sair na loja para se ver.
+    return linhas + [A_ESQUERDA + "=" * _LARGURA]
 
 
 def _tamanho_da_linha(opcoes: List[Dict]) -> Optional[Dict]:
@@ -392,13 +392,14 @@ def _ficha_do_artigo(linha: Dict) -> List[str]:
     #    ALTO e com a largura normal: a 4× em largura cabiam 10 caracteres por
     #    linha e «1 x Açaí Mini» partia-se em duas. Alto lê-se de longe na
     #    mesma e não gasta colunas nenhumas.
-    saida += _bloco(_titulo_do_artigo(linha, tamanho), QUATRO_ALTO)
+    saida += _bloco(_titulo_do_artigo(linha, tamanho), DUPLO, _LARGURA_DUPLA,
+                    negrito=True)
 
     # 2. O NOME do cliente, a seguir e menor. Em maiúsculas porque é assim que
     #    vai para o copo, e sem o título do grupo à frente — «Nome:» gastava
     #    colunas para dizer o que a posição já diz.
     if respostas:
-        saida += _bloco(respostas[0]["texto"].upper(), TRES_ALTO, negrito=True)
+        saida += _bloco(respostas[0]["texto"].upper(), DUPLO, _LARGURA_DUPLA)
 
     # 3. As perguntas de serviço, SÓ COM A RESPOSTA e a negrito. O título saiu
     #    a pedido do dono («só a resposta de tampa ou sem tampa»), com o aviso
