@@ -105,6 +105,52 @@ const ler = (chave) => {
   try { return localStorage.getItem(chave); } catch (e) { return null; }
 };
 
+// --- Os dois armazenamentos, e porque é que não é o mesmo ---------------------
+//
+// O dono, com o POS já a vender numa loja: «eu desligo o pc e ligo novamente.
+// quando eu entro novamente no pos, ele já está numa sessão. mas isso não
+// deveria acontecer.»
+//
+// Não é um incómodo: quem abrir o PC a seguir vende com o nome de quem lá
+// esteve antes, e o Z do fim do dia culpa quem já tinha ido embora.
+//
+// O que estava errado era o SÍTIO, e não o prazo do token (12 h, do lado do
+// servidor). São dois armazenamentos com vidas diferentes:
+//
+// - `localStorage` sobrevive a fechar o browser e a desligar o PC. É onde o
+//   EMPARELHAMENTO tem de viver — um PC emparelhado uma vez fica emparelhado,
+//   e voltar a pedir o código do gestor a cada arranque era pior do que o
+//   defeito que se está a corrigir;
+// - `sessionStorage` morre quando a janela fecha, e sobrevive a um F5. É
+//   exactamente o que a SESSÃO DO OPERADOR precisa: recarregar a página a meio
+//   de uma venda não pode expulsar ninguém, e desligar o PC tem de expulsar.
+const guardarNaSessao = (chave, valor) => {
+  try {
+    if (valor === null || valor === undefined) sessionStorage.removeItem(chave);
+    else sessionStorage.setItem(chave, valor);
+  } catch (e) { /* modo privado sem storage */ }
+};
+
+// **A mudança de sítio, uma vez, na primeira leitura.** No instante do deploy
+// há operadoras com a sessão no `localStorage`, escrita pelo código anterior.
+// Sem isto, a primeira vez que a página recarregasse elas eram expulsas para o
+// teclado do PIN — a meio de um turno, com fila à frente.
+//
+// E APAGA a cópia antiga, que é o que faz disto uma correcção e não um
+// adiamento: sem esse apagar, a sessão voltava a ser restaurada em cada
+// arranque e o defeito ficava exactamente como estava.
+const lerDaSessao = (chave) => {
+  try {
+    const naSessao = sessionStorage.getItem(chave);
+    if (naSessao !== null) return naSessao;
+    const antigo = localStorage.getItem(chave);
+    if (antigo === null) return null;
+    sessionStorage.setItem(chave, antigo);
+    localStorage.removeItem(chave);
+    return antigo;
+  } catch (e) { return null; }
+};
+
 // --- Dispositivo -------------------------------------------------------------
 
 export const getDeviceToken = () => ler(CHAVE_DISPOSITIVO);
@@ -128,20 +174,25 @@ export const esquecerDispositivo = () => {
 
 // --- Operador ------------------------------------------------------------
 
-export const getOperatorToken = () => ler(CHAVE_OPERADOR_TOKEN);
+export const getOperatorToken = () => lerDaSessao(CHAVE_OPERADOR_TOKEN);
 
 export const getOperadorGuardado = () => {
-  const bruto = ler(CHAVE_OPERADOR);
+  const bruto = lerDaSessao(CHAVE_OPERADOR);
   if (!bruto) return null;
   try { return JSON.parse(bruto); } catch (e) { return null; }
 };
 
 export const guardarOperador = (operatorToken, operador) => {
-  guardar(CHAVE_OPERADOR_TOKEN, operatorToken);
-  guardar(CHAVE_OPERADOR, JSON.stringify(operador));
+  guardarNaSessao(CHAVE_OPERADOR_TOKEN, operatorToken);
+  guardarNaSessao(CHAVE_OPERADOR, JSON.stringify(operador));
 };
 
 export const esquecerOperador = () => {
+  guardarNaSessao(CHAVE_OPERADOR_TOKEN, null);
+  guardarNaSessao(CHAVE_OPERADOR, null);
+  // E a cópia antiga também, para o caso de o sair acontecer antes de a
+  // leitura ter chegado a mudá-la de sítio: deixá-la para trás fazia a sessão
+  // ressuscitar no arranque seguinte, depois de alguém ter saído de propósito.
   guardar(CHAVE_OPERADOR_TOKEN, null);
   guardar(CHAVE_OPERADOR, null);
 };

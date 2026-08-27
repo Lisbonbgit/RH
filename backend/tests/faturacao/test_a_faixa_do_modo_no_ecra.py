@@ -519,6 +519,10 @@ def _preambulo_de_montagem() -> str:
         "global.document = dom.window.document;",
         "global.navigator = dom.window.navigator;",
         "global.localStorage = dom.window.localStorage;",
+        # O `sessionStorage` e' onde a SESSAO DO OPERADOR passou a viver: e' o
+        # que distingue um F5 (mantem) de desligar o PC (esquece). Sem ele
+        # exposto aqui, os ecras montavam sem operador nenhum.
+        "global.sessionStorage = dom.window.sessionStorage;",
         "global.IS_REACT_ACT_ENVIRONMENT = true;",
         # --- o relógio, na mão ------------------------------------------------
         # O `setInterval` não chega a agendar nada: fica registado, e um cenário
