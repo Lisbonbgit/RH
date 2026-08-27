@@ -103,6 +103,7 @@ from .fiscal import (
 )
 from .importacao import _nif_configurado
 from .mapa_imposto import _liquido_da_linha, mapa_da_nota, totais_do_mapa
+from .modo import modo_efectivo
 from .pos_auth import operador_atual
 from .reparticao import parte_acumulada
 from .vendus.cliente import VendusErro, VendusIndisponivel, obter_conta
@@ -1357,6 +1358,12 @@ async def emitir_nota_credito(
     itens = itens_vendus_da_nota(escolhidas, documento["numero"])
     pagamentos = [{"id": tipo["vendus_payment_method_id"], "amount": total}]
 
+    # Pela MESMA razão da Fatura Simplificada (ver `fiscal.py`): a emissão
+    # corre numa thread e não lê a base de dados. Uma nota de crédito que
+    # saísse em `tests` para corrigir uma fatura REAL não corrigia nada — e
+    # era exactamente isso que acontecia se este `modo` faltasse aqui.
+    modo_da_emissao = await modo_efectivo(db)
+
     with ClienteEmissaoVendus(conta.chave) as cliente_vendus:
 
         async def emitir(ref: str) -> Dict:
@@ -1367,6 +1374,7 @@ async def emitir_nota_credito(
                 external_reference=ref,
                 register_id=register_id,
                 motivo=dados.motivo,
+                modo=modo_da_emissao,
             )
 
         async def verificar(ref: str) -> Optional[Dict]:

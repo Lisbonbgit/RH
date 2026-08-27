@@ -33,25 +33,74 @@ autenticação deste módulo não se misturam (ver `test_protecao_rotas.py`):
   instante o ecrã não tem token de operador nenhum;
 - `/modo-de-emissao` depende do **gestor**, para o backoffice.
 """
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel, field_validator
 
 from .auth import gestor_atual
+from .db import COLECOES, obter_db
 from .pos_auth import dispositivo_atual
-from .vendus.emissao import VendusModoInvalido, _modo_configurado
+from .vendus.emissao import VendusModoInvalido, _modo_configurado, _modo_valido
 
 router = APIRouter()
 
 
-def modo_de_emissao() -> Optional[str]:
-    """`'tests'`, `'normal'`, ou `None` quando não se sabe.
+CHAVE = "modo_emissao"
+
+
+class ModoEntrada(BaseModel):
+    """O modo PARA ONDE se quer ir — nunca «alternar».
+
+    Um botão que alterna, tocado duas vezes por engano (um duplo toque num
+    ecrã táctil, um pedido repetido pela rede), passa a real e volta a testes
+    sem ninguém dar por isso — e as faturas que saíram pelo meio são reais
+    para sempre. Dizer para onde torna a repetição inofensiva.
+    """
+    modo: str
+
+    @field_validator("modo")
+    @classmethod
+    def _valida(cls, v):
+        # A MESMA função que a emissão usa. Aceitar aqui um valor que ela
+        # depois recusa era pôr o sistema no terceiro estado por uma escrita
+        # do backoffice — exactamente o que este módulo existe para evitar.
+        try:
+            return _modo_valido(v)
+        except VendusModoInvalido as e:
+            raise ValueError(str(e))
+
+
+async def modo_efectivo(db) -> Optional[str]:
+    """`'tests'`, `'normal'`, ou `None` quando não se sabe. **A fonte única.**
+
+    Por esta ordem:
+
+    1. o que estiver GUARDADO (o botão do backoffice) — é para isso que ele
+       existe, mandar sem `ssh`;
+    2. senão, a variável de ambiente `VENDUS_MODE` — o que vale em qualquer
+       instalação onde ninguém tocou no botão. Sem esta segunda origem, o dia
+       do deploy mudava o comportamento de produção sem ninguém pedir;
+    3. senão, `None`.
 
     `None` é o terceiro estado e é exactamente o conjunto de casos em que a
-    emissão se RECUSA a emitir — não um subconjunto, não um parecido: é a
-    mesma função a decidir. Ausente, vazia, com maiúsculas, com um espaço ao
-    fim, ou com um valor inventado, tudo cai aqui.
+    emissão se RECUSA a emitir — não um subconjunto, não um parecido: quem
+    decide se um valor serve é `_modo_valido`, a mesma dos dois lados. Um
+    valor estragado GUARDADO cai aqui na mesma, e não «cai para a variável de
+    ambiente»: uma escrita que não se percebe não pode ser silenciosamente
+    substituída por outra coisa qualquer.
     """
+    # A base de dados vem de QUEM CHAMA, e não de um `obter_db()` aqui
+    # dentro: quem emite já tem a sua, e ir buscar uma segunda obrigava todo o
+    # caminho de emissão a conhecer mais uma ligação — e todos os testes desse
+    # caminho a remendar duas coisas em vez de uma.
+    doc = await db[COLECOES["definicoes"]].find_one({"id": CHAVE}, {"_id": 0})
+    if doc and doc.get("modo") is not None:
+        try:
+            return _modo_valido(doc.get("modo"))
+        except VendusModoInvalido:
+            return None
     try:
         return _modo_configurado()
     except VendusModoInvalido:
@@ -69,9 +118,31 @@ def modo_de_emissao() -> Optional[str]:
 
 @router.get("/pos/modo-de-emissao")
 async def modo_de_emissao_do_pos(dispositivo: Dict = Depends(dispositivo_atual)) -> dict:
-    return {"modo": modo_de_emissao()}
+    return {"modo": await modo_efectivo(obter_db())}
 
 
 @router.get("/modo-de-emissao")
 async def modo_de_emissao_do_backoffice(utilizador: Dict = Depends(gestor_atual)) -> dict:
-    return {"modo": modo_de_emissao()}
+    return {"modo": await modo_efectivo(obter_db())}
+
+
+@router.put("/modo-de-emissao")
+async def mudar_modo_de_emissao(
+    dados: ModoEntrada, utilizador: Dict = Depends(gestor_atual)
+) -> dict:
+    """Vira o interruptor, e deixa rasto de quem o virou.
+
+    O rasto não é burocracia: a diferença entre «alguém pôs isto a real às
+    14h» e «não se sabe» é a diferença entre perceber um dia estranho e não
+    perceber. Guarda-se o e-mail de quem mudou e o instante, e a leitura
+    devolve-os para o ecrã os poder mostrar.
+    """
+    agora = datetime.now(timezone.utc).isoformat()
+    await obter_db()[COLECOES["definicoes"]].update_one(
+        {"id": CHAVE},
+        {"$set": {"id": CHAVE, "modo": dados.modo,
+                  "mudado_em": agora,
+                  "mudado_por": utilizador.get("email") or utilizador.get("name")}},
+        upsert=True,
+    )
+    return {"modo": dados.modo, "mudado_em": agora}

@@ -267,7 +267,16 @@ class DbFalsa:
         self._coleccoes = coleccoes
 
     def __getitem__(self, nome):
-        return self._coleccoes[nome]
+        # **Uma colecção que o teste não montou é VAZIA, não um KeyError.** É
+        # o que o Mongo faz: as colecções criam-se ao escrever, e um
+        # `find_one` numa que nunca existiu devolve `None`. O duplo era mais
+        # severo do que a realidade, e isso deu-se a ver quando a emissão
+        # passou a ler o modo de `fat_definicoes`: 65 testes rebentaram com um
+        # KeyError que em produção não existe.
+        #
+        # Mesmo comportamento do `DbFalsa` de `test_venda.py`, que já fazia
+        # isto — os dois duplos passam a concordar.
+        return self._coleccoes.setdefault(nome, ColeccaoFalsa([]))
 
 
 def _unicos_de(coleccao):
@@ -355,7 +364,8 @@ class ClienteEmissaoVendusFalso:
     def __exit__(self, *exc):
         return False
 
-    def criar_fatura_simplificada(self, linhas, pagamentos, cliente, external_reference, register_id):
+    def criar_fatura_simplificada(self, linhas, pagamentos, cliente,
+                                  external_reference, register_id, modo=None):
         self.chamadas_criar.append({
             "linhas": linhas, "pagamentos": pagamentos, "cliente": cliente,
             "external_reference": external_reference, "register_id": register_id,

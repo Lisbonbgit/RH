@@ -247,6 +247,7 @@ class ClienteEmissaoVendus:
         cliente: Optional[Dict],
         external_reference: str,
         register_id: int,
+        modo: Optional[str] = None,
     ) -> Dict:
         """`POST documents/` com `type=FS` e `output=escpos` — o Vendus
         devolve o talão JÁ EM ESC/POS, por isso este módulo não desenha o
@@ -279,10 +280,18 @@ class ClienteEmissaoVendus:
                 "(VENDUS_REGISTER_ID=%r) — emissão recusada antes de sair "
                 "para a rede." % (register_id, esperado)
             )
-        # Ver a docstring de VendusModoInvalido: sem VENDUS_MODE explícito
+        # Ver a docstring de VendusModoInvalido: sem um modo explícito
         # ('tests' ou 'normal'), a emissão recusa-se ANTES de qualquer
         # pedido à rede — nunca assume um valor por omissão.
-        modo = _modo_configurado()
+        #
+        # `modo` vem de fora desde que ele passou a poder mudar-se no
+        # backoffice: isto corre numa thread e não consegue ler a base de
+        # dados. Quem o resolve é `fiscal.py`, pela fonte única
+        # (`modo.modo_efectivo`). Sem ele, cai-se na variável de ambiente —
+        # que é o comportamento de sempre, e o certo para quem nunca tocou no
+        # botão. Há um teste a exigir que o `fiscal.py` o passe: sem essa
+        # exigência, tirá-lo da chamada fazia o botão MENTIR em silêncio.
+        modo = _modo_valido(modo) if modo is not None else _modo_configurado()
 
         corpo: Dict[str, Any] = {
             "type": "FS",
@@ -331,6 +340,7 @@ class ClienteEmissaoVendus:
         external_reference: str,
         register_id: int,
         motivo: str,
+        modo: Optional[str] = None,
     ) -> Dict:
         """`POST documents/` com `type=NC` — a Nota de Crédito, o documento
         que corrige uma fatura já entregue à Autoridade Tributária. Mesma
@@ -385,7 +395,7 @@ class ClienteEmissaoVendus:
                 "exigido pela API do Vendus e pela lei. Recusada antes de "
                 "sair para a rede (external_reference=%s)." % external_reference
             )
-        modo = _modo_configurado()
+        modo = _modo_valido(modo) if modo is not None else _modo_configurado()
 
         corpo: Dict[str, Any] = {
             "type": "NC",
@@ -811,12 +821,34 @@ def _register_id_configurado() -> Optional[int]:
 _MODOS_VALIDOS = frozenset({"tests", "normal"})
 
 
-def _modo_configurado() -> str:
-    valor = os.environ.get("VENDUS_MODE")
+def _modo_valido(valor) -> str:
+    """`'tests'` ou `'normal'`, ou levanta. Não há terceira saída.
+
+    **A recusa é a funcionalidade.** Ausente, vazio, com maiúsculas, com um
+    espaço ao fim, ou com um valor inventado — tudo cai aqui, e a emissão
+    para. Devolver `'tests'` por omissão era escolher um dos dois enganos
+    caros em silêncio (ver `VendusModoInvalido`).
+
+    Separado do sítio de onde o valor VEM: desde que o modo passou a poder ser
+    mudado no backoffice, quem o vai buscar é a camada assíncrona
+    (`modo.modo_efectivo`), que sabe ler a base de dados. Esta função continua
+    a ser a única que decide se um valor serve — as duas coisas nunca podem
+    divergir porque só há uma a validar.
+    """
     if valor not in _MODOS_VALIDOS:
         raise VendusModoInvalido(
-            "VENDUS_MODE tem de estar definido como 'tests' ou 'normal' — "
-            "valor actual: %r. A emissão recusa-se em vez de assumir 'tests' "
-            "em silêncio (ver a docstring de VendusModoInvalido)." % valor
+            "O modo de emissão tem de ser 'tests' ou 'normal' — valor "
+            "actual: %r. A emissão recusa-se em vez de assumir 'tests' em "
+            "silêncio (ver a docstring de VendusModoInvalido)." % (valor,)
         )
     return valor
+
+
+def _modo_configurado() -> str:
+    """O modo escrito na variável de ambiente — a origem de recurso.
+
+    Continua a existir porque é o que vale enquanto ninguém tocar no botão do
+    backoffice: no dia do deploy, uma instalação que só tem `VENDUS_MODE` no
+    `.env` não pode mudar de comportamento.
+    """
+    return _modo_valido(os.environ.get("VENDUS_MODE"))
