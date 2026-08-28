@@ -51,9 +51,29 @@ _DASHBOARD = {
     "mais_rentaveis": [],
 }
 
-# O `viewBox` do gráfico de área e a zona onde a curva vive (ver `buildArea`).
-_LARGURA_VIEWBOX = 720
-_X_ESQ, _X_DIR = 40, 710
+# As medidas do gráfico de área, LIDAS do ecrã (a constante `AREA`, em
+# `FatDashboard.js`) e não escritas aqui à mão.
+#
+# Escritas à mão, foi o que aconteceu: o desenho passou de 720x260 para
+# 1400x250 e estes testes continuaram VERDES — a tolerância do «ponto mais
+# perto» tapou a diferença, e a conversão de coordenadas, que é o que eles
+# existem para medir, deixou de ser medida sem ninguém dar por isso.
+def _medidas_do_ecra():
+    from pathlib import Path
+    import re
+    ecra = (Path(__file__).resolve().parents[2].parent / "frontend" / "src" /
+            "pages" / "admin" / "faturacao" / "FatDashboard.js").read_text(encoding="utf-8")
+    bloco = ecra[ecra.index("const AREA = {"):]
+    bloco = bloco[:bloco.index("};")]
+    return {c: int(v) for c, v in re.findall(r"(\w+):\s*(\d+)", bloco)}
+
+
+_AREA = _medidas_do_ecra()
+_LARGURA_VIEWBOX = _AREA["largura"]
+_X_ESQ, _X_DIR = _AREA["xLeft"], _AREA["xRight"]
+# A caixa que o teste dá ao SVG: o dobro do desenho, para a escala ser 2 e a
+# conversão de coordenadas ficar afirmável com uma multiplicação simples.
+_CAIXA_L, _CAIXA_A = _LARGURA_VIEWBOX * 2, _AREA["altura"] * 2
 
 
 def _x_do_ponto(indice, total=len(_DIAS)):
@@ -83,15 +103,16 @@ def _guiao(passos):
         "const daCaixa = (no, caixa) => Object.defineProperty(",
         "  no, 'getBoundingClientRect', { value: () => caixa, configurable: true });",
         "const svgArea = porTestid('fat-dashboard-area');",
-        "daCaixa(svgArea, { left: 0, top: 0, width: 1440, height: 520,",
-        "  right: 1440, bottom: 520, x: 0, y: 0 });",
+        "daCaixa(svgArea, { left: 0, top: 0, width: %d, height: %d, "
+        "right: %d, bottom: %d, x: 0, y: 0 });"
+        % (_CAIXA_L, _CAIXA_A, _CAIXA_L, _CAIXA_A),
         # O rato mexe-se sobre a MOLDURA do gráfico (é ela que apanha o
         # movimento em toda a área, e não só onde há tinta pintada).
         "const moldura = porTestid('fat-dashboard-area-moldura');",
         "const mover = async (xNoViewBox) => {",
         "  await act(async () => {",
         "    const ev = new dom.window.Event('pointermove', { bubbles: true });",
-        "    ev.clientX = xNoViewBox * 2;",  # escala 2: viewBox 720 -> 1440 px
+        "    ev.clientX = xNoViewBox * 2;",  # a caixa e' o dobro do desenho
         "    ev.clientY = 100;",
         "    moldura.dispatchEvent(ev);",
         "  });",
@@ -292,3 +313,50 @@ def test_a_ULTIMA_etiqueta_do_eixo_nao_fica_cortada(bordas):
     # E as do meio continuam centradas — a correcção não pode desalinhar tudo.
     meio = [a for a in bordas["ancoras"] if 20 <= a["x"] <= 700]
     assert meio and all(a["ancora"] == "middle" for a in meio), bordas["ancoras"]
+
+
+# --- «Tem todos os dias do mês. Fica menor.» ---------------------------------
+
+
+def test_o_eixo_mostra_TODOS_os_dias_e_nao_seis(tmp_path_factory):
+    """O dono, com o painel do Vendus ao lado: «tem todos os dias do mês».
+
+    Mostrávamos seis datas porque a letra saía a 19 px — o desenho tinha 720
+    unidades esticadas para ~1400 px. Com 1400 unidades a letra sai a 10 px e
+    as trinta datas cabem."""
+    saida = _monta([
+        "saida.datas = Array.from(porTestid('fat-dashboard-area')",
+        "  .querySelectorAll('text')).map((t) => t.textContent)",
+        "  .filter((t) => (t || '').length === 5 && t.charAt(2) === '-');",
+    ], tmp_path_factory.mktemp("eixo"), "eixo.js")
+    assert len(saida["datas"]) == len(_DIAS), (
+        "O eixo mostra %d datas de %d dias." % (len(saida["datas"]), len(_DIAS)))
+    assert saida["datas"][0] == "23-08"
+    assert saida["datas"][-1] == "26-08"
+
+
+def test_o_desenho_e_BAIXO_e_nao_quase_quadrado():
+    """«fica menor, não fica tão grande como o nosso.»
+
+    A altura de um SVG com `viewBox` e largura de 100% é a largura a dividir
+    pela proporção. A 720x260 (2,8:1) um cartão de 1400 px dava 505 px de
+    gráfico; o do Vendus é quase 6,5:1 e por isso fica baixo.
+
+    Afirmado sobre a PROPORÇÃO e não sobre os números: o que não pode voltar é
+    um gráfico que ocupa meio ecrã."""
+    proporcao = _AREA["largura"] / _AREA["altura"]
+    assert proporcao >= 5, (
+        "O gráfico voltou a ser alto: %.1f:1 — num cartão de 1400 px são %d px "
+        "de altura." % (proporcao, 1400 / proporcao))
+
+
+def test_as_medidas_do_desenho_vivem_num_SITIO_SO():
+    """Espalhadas por seis números soltos no JSX, uma mudança de proporção
+    obrigava a acertar todos à mão — e falhar um deixava a linha da grelha ou
+    a mira fora do sítio, sem nada partir."""
+    from pathlib import Path
+    ecra = (Path(__file__).resolve().parents[2].parent / "frontend" / "src" /
+            "pages" / "admin" / "faturacao" / "FatDashboard.js").read_text(encoding="utf-8")
+    assert 'viewBox={`0 0 ${AREA.largura} ${AREA.altura}`}' in ecra
+    assert "x1={AREA.xLeft}" in ecra and "x2={AREA.xRight}" in ecra
+    assert "/ AREA.largura}" in ecra, "O balão voltou a dividir por um número escrito à mão."
