@@ -479,6 +479,12 @@ export default function FatDashboard() {
   }, [dashboard]);
 
   const cartoes = dashboard?.cartoes || {};
+  // A hora a que a comparação foi cortada — ver `dashboard.py`. As linhas por
+  // loja não têm espaço para a frase inteira da comparação (que os cartões do
+  // topo mostram), mas têm para a hora, e é ela que faz a diferença entre
+  // «Ontem» e «Ontem até às 17:25».
+  const ateAsHoras = dashboard?.hora_de_corte
+    ? ` até às ${dashboard.hora_de_corte}` : '';
   const porLoja = dashboard?.por_loja || [];
   const maisVendidos = dashboard?.mais_vendidos || [];
   const maisRentaveis = dashboard?.mais_rentaveis || [];
@@ -820,7 +826,10 @@ export default function FatDashboard() {
               <h2 className="font-heading font-semibold text-base">Por loja</h2>
               {(cartoes.hoje?.comparacao || cartoes.mensal?.comparacao) && (
                 <p className="text-xs text-muted-foreground">
-                  Hoje e Mensal comparados com os mesmos períodos dos cartões acima.
+                  {`Hoje e Mensal comparados com os mesmos períodos dos cartões acima${
+                dashboard?.hora_de_corte
+                  ? ` — o dia anterior conta só até às ${dashboard.hora_de_corte}, a mesma hora a que hoje vai`
+                  : ''}.`}
                 </p>
               )}
             </div>
@@ -853,7 +862,9 @@ export default function FatDashboard() {
                             </p>
                             <div className="flex flex-wrap items-center gap-1.5 mt-1">
                               <VariacaoPill variacao={loja.variacao_hoje} />
-                              <span className="text-xs text-muted-foreground">Ontem: {fmtEUR(loja.hoje_anterior)}</span>
+                              <span className="text-xs text-muted-foreground">
+                                Ontem{ateAsHoras}: {fmtEUR(loja.hoje_anterior)}
+                              </span>
                             </div>
                           </div>
                           <MiniArea
@@ -873,7 +884,9 @@ export default function FatDashboard() {
                             </p>
                             <div className="flex flex-wrap items-center gap-1.5 mt-1">
                               <VariacaoPill variacao={loja.variacao_mensal} />
-                              <span className="text-xs text-muted-foreground">Anterior: {fmtEUR(loja.mensal_anterior)}</span>
+                              <span className="text-xs text-muted-foreground">
+                                Anterior{ateAsHoras}: {fmtEUR(loja.mensal_anterior)}
+                              </span>
                             </div>
                           </div>
                           <MiniBars pontos={(loja.serie_mensal || []).map(
