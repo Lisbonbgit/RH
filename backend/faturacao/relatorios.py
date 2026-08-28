@@ -357,8 +357,22 @@ def _artigos_da_nota(nota: Optional[Dict], venda: Optional[Dict],
     linhas_origem = (venda or {}).get("linhas") or []
     artigos = []
     for creditada in nota.get("linhas") or []:
+        # **O `indice` da nota conta a partir de UM**, não de zero: é o número
+        # da linha no talão, que a operadora lê em papel
+        # (`nota_credito._linhas_creditaveis` faz `enumerate(itens, start=1)`).
+        #
+        # Lido como se fosse 0-based, este relatório atribuía a devolução ao
+        # artigo SEGUINTE — devolver o açaí de 10,20 € descontava-os na
+        # Coca-Cola —, e a última linha da fatura caía fora da guarda e criava
+        # uma linha-fantasma sem produto nenhum, ao lado da verdadeira. O
+        # dinheiro TOTAL do relatório continuava certo, que é o que fazia isto
+        # passar despercebido: só a atribuição por artigo é que mentia.
         indice = creditada.get("indice")
-        origem = linhas_origem[indice] if isinstance(indice, int) and 0 <= indice < len(linhas_origem) else None
+        origem = (
+            linhas_origem[indice - 1]
+            if isinstance(indice, int) and 1 <= indice <= len(linhas_origem)
+            else None
+        )
         produto_id = (origem or {}).get("produto_id")
         artigos.append(_artigo(
             produtos.get(produto_id), categorias, produto_id,
@@ -384,6 +398,125 @@ async def _por_id(db, coleccao: str, ids: List[str], campos: Dict) -> Dict[str, 
 async def _mapa_de_nomes(db, coleccao: str) -> Dict[str, str]:
     docs = await db[COLECOES[coleccao]].find({}, {"_id": 0, "id": 1, "nome": 1}).to_list(2000)
     return {d["id"]: d.get("nome") for d in docs}
+
+
+async def eventos_dos_documentos(
+    db, documentos: List[Dict], *,
+    categoria_id: Optional[str] = None,
+    utilizador_id: Optional[str] = None,
+) -> List[Dict]:
+    """Os documentos já lidos, transformados nos EVENTOS que `agregar` come.
+
+    É aqui que uma fatura deixa de ser uma linha de `fat_documentos` e passa a
+    ser dinheiro repartido por artigos: vai buscar a venda (ou a nota de
+    crédito) que lhe deu origem, o produto de cada linha e a categoria dele.
+
+    **Está fora do endpoint dos Relatórios de propósito.** O Dashboard precisa
+    exactamente da mesma transformação para os cartões «Mais Vendidos» e «Mais
+    Rentáveis», e uma segunda cópia dela era a garantia de que um dia o top de
+    artigos do painel e o relatório de Produtos, no mesmo dia, dariam números
+    diferentes — sem nenhum deles estar obviamente errado.
+
+    Os filtros de categoria e de utilizador ficam aqui e não em quem chama
+    porque o de CATEGORIA muda o dinheiro do evento (só conta os artigos dessa
+    categoria), e não apenas as linhas que se mostram.
+    """
+    notas = await _por_id(
+        db, "notas_credito",
+        [d.get("nota_credito_id") for d in documentos if d.get("tipo") == "NC"],
+        {"id": 1, "linhas": 1, "venda_id": 1, "operador": 1},
+    )
+    vendas = await _por_id(
+        db, "vendas",
+        [d.get("venda_id") for d in documentos] + [n.get("venda_id") for n in notas.values()],
+        {"id": 1, "linhas": 1, "operador_id": 1, "cliente_nif": 1,
+         "desconto_global_pct": 1, "desconto_global_eur": 1},
+    )
+    produtos = {
+        p["id"]: p for p in await (
+            db[COLECOES["produtos"]]
+            .find({}, {"_id": 0, "id": 1, "nome": 1, "categoria_id": 1, "preco_custo": 1})
+            .to_list(5000)
+        )
+    }
+    categorias = await _mapa_de_nomes(db, "categorias")
+    lojas = await _mapa_de_nomes(db, "lojas")
+    utilizadores = await _mapa_de_nomes(db, "utilizadores")
+    fichas = {
+        c["nif"]: c.get("nome") for c in await (
+            db[COLECOES["clientes"]].find({}, {"_id": 0, "nif": 1, "nome": 1}).to_list(5000)
+        )
+    }
+
+    eventos = []
+    for doc in documentos:
+        ehNC = doc.get("tipo") == "NC"
+        nota = notas.get(doc.get("nota_credito_id")) if ehNC else None
+        venda = vendas.get((nota or doc).get("venda_id"))
+        try:
+            artigos = (
+                _artigos_da_nota(nota, venda, produtos, categorias) if ehNC
+                else _artigos_da_fatura(venda, produtos, categorias)
+            )
+        except Exception:  # noqa: BLE001 — ver abaixo
+            # **Uma venda estragada não pode levar o ecrã inteiro com ela.**
+            #
+            # Repartir a fatura pelos artigos passa por `_linha_vendus`, que
+            # levanta um HTTPException 422 numa linha com dados impossíveis
+            # (um produto que ficou sem preço, um override inválido). É o
+            # mesmo travão que `fiscal._total_da_venda` já leva, e pela mesma
+            # razão: a venda estragada é justamente a que mais precisa de ser
+            # vista, e um relatório — ou, agora, o PRIMEIRO ECRÃ do módulo,
+            # com cinco lojas a faturar — não pode ficar inacessível por
+            # causa dela.
+            #
+            # Improvável, não impossível: `_produto_snapshot` lê o preço e o
+            # IVA GRAVADOS na linha, não o produto de hoje, portanto uma
+            # venda que emitiu bem volta a repartir-se bem. O que sobra são
+            # as linhas escritas por versões antigas do POS.
+            #
+            # Fica de fora e fica CONTADO: quem chama compara `len(eventos)`
+            # com os documentos que mandou. Desaparecer em silêncio era pôr o
+            # cartão «Hoje» e o top de artigos a discordar sem explicação.
+            logger.warning("Documento %s sem artigos: a venda não se deixa repartir.",
+                         doc.get("id"), exc_info=True)
+            continue
+        if categoria_id:
+            artigos = [a for a in artigos if a.get("categoria_id") == categoria_id]
+            if not artigos:
+                continue
+        operador_id = (
+            ((nota or {}).get("operador") or {}).get("id") if ehNC
+            else (venda or {}).get("operador_id")
+        )
+        if utilizador_id and operador_id != utilizador_id:
+            continue
+        nif = doc.get("cliente_nif") or (venda or {}).get("cliente_nif")
+        eventos.append({
+            "id": doc.get("id"),
+            "tipo": doc.get("tipo"),
+            "quando": em_lisboa(doc.get("emitido_em")),
+            "loja_id": doc.get("loja_id"),
+            "loja_nome": lojas.get(doc.get("loja_id")),
+            "cliente_nif": nif,
+            "cliente_nome": fichas.get(nif) if nif else None,
+            "operador_id": operador_id,
+            "operador_nome": utilizadores.get(operador_id),
+            # **O dinheiro do documento é a soma dos artigos dele**, e não o
+            # `total` gravado — é o que faz as nove vistas darem exactamente o
+            # mesmo total no mesmo intervalo. Os dois batem por construção (a
+            # repartição do desconto global é exacta ao cêntimo); quando não
+            # baterem, é o `total_divergente` do ecrã de Documentos que o diz.
+            "bruto_c": sum(a["bruto_c"] for a in artigos),
+            "liquido_c": sum(a["liquido_c"] for a in artigos),
+            "custo_c": (
+                None if any(a["custo_c"] is None for a in artigos)
+                else sum(a["custo_c"] for a in artigos)
+            ),
+            "quantidade": sum(a["quantidade"] for a in artigos),
+            "artigos": artigos,
+        })
+    return eventos
 
 
 @router.get("/relatorios/{dimensao}")
@@ -425,77 +558,8 @@ async def relatorio(
         db[COLECOES["documentos"]].find(filtro, {"_id": 0}).to_list(_TECTO_DOCUMENTOS)
     )
 
-    notas = await _por_id(
-        db, "notas_credito",
-        [d.get("nota_credito_id") for d in documentos if d.get("tipo") == "NC"],
-        {"id": 1, "linhas": 1, "venda_id": 1, "operador": 1},
-    )
-    vendas = await _por_id(
-        db, "vendas",
-        [d.get("venda_id") for d in documentos] + [n.get("venda_id") for n in notas.values()],
-        {"id": 1, "linhas": 1, "operador_id": 1, "cliente_nif": 1,
-         "desconto_global_pct": 1, "desconto_global_eur": 1},
-    )
-    produtos = {
-        p["id"]: p for p in await (
-            db[COLECOES["produtos"]]
-            .find({}, {"_id": 0, "id": 1, "nome": 1, "categoria_id": 1, "preco_custo": 1})
-            .to_list(5000)
-        )
-    }
-    categorias = await _mapa_de_nomes(db, "categorias")
-    lojas = await _mapa_de_nomes(db, "lojas")
-    utilizadores = await _mapa_de_nomes(db, "utilizadores")
-    fichas = {
-        c["nif"]: c.get("nome") for c in await (
-            db[COLECOES["clientes"]].find({}, {"_id": 0, "nif": 1, "nome": 1}).to_list(5000)
-        )
-    }
-
-    eventos = []
-    for doc in documentos:
-        ehNC = doc.get("tipo") == "NC"
-        nota = notas.get(doc.get("nota_credito_id")) if ehNC else None
-        venda = vendas.get((nota or doc).get("venda_id"))
-        artigos = (
-            _artigos_da_nota(nota, venda, produtos, categorias) if ehNC
-            else _artigos_da_fatura(venda, produtos, categorias)
-        )
-        if categoria_id:
-            artigos = [a for a in artigos if a.get("categoria_id") == categoria_id]
-            if not artigos:
-                continue
-        operador_id = (
-            ((nota or {}).get("operador") or {}).get("id") if ehNC
-            else (venda or {}).get("operador_id")
-        )
-        if utilizador_id and operador_id != utilizador_id:
-            continue
-        nif = doc.get("cliente_nif") or (venda or {}).get("cliente_nif")
-        eventos.append({
-            "id": doc.get("id"),
-            "tipo": doc.get("tipo"),
-            "quando": em_lisboa(doc.get("emitido_em")),
-            "loja_id": doc.get("loja_id"),
-            "loja_nome": lojas.get(doc.get("loja_id")),
-            "cliente_nif": nif,
-            "cliente_nome": fichas.get(nif) if nif else None,
-            "operador_id": operador_id,
-            "operador_nome": utilizadores.get(operador_id),
-            # **O dinheiro do documento é a soma dos artigos dele**, e não o
-            # `total` gravado — é o que faz as nove vistas darem exactamente o
-            # mesmo total no mesmo intervalo. Os dois batem por construção (a
-            # repartição do desconto global é exacta ao cêntimo); quando não
-            # baterem, é o `total_divergente` do ecrã de Documentos que o diz.
-            "bruto_c": sum(a["bruto_c"] for a in artigos),
-            "liquido_c": sum(a["liquido_c"] for a in artigos),
-            "custo_c": (
-                None if any(a["custo_c"] is None for a in artigos)
-                else sum(a["custo_c"] for a in artigos)
-            ),
-            "quantidade": sum(a["quantidade"] for a in artigos),
-            "artigos": artigos,
-        })
+    eventos = await eventos_dos_documentos(
+        db, documentos, categoria_id=categoria_id, utilizador_id=utilizador_id)
 
     agregado = agregar(eventos, dimensao)
     return {

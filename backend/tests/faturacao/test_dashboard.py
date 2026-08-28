@@ -379,19 +379,45 @@ def test_por_loja_serie_mensal_tem_6_meses_isolados_por_loja():
     assert por_loja["Loja Beta"]["serie_mensal"][-1]["valor"] == 999.00
 
 
-# --- mais_vendidos / mais_rentaveis: sem linhas de artigos, sem dados ------
+# --- mais_vendidos / mais_rentaveis: sem ARTIGOS, sem top --------------------
 #
-# fat_documentos, hoje, não guarda as LINHAS dos artigos vendidos (isso só
-# chega com o POS próprio, fase seguinte) — sem linhas não há como saber o
-# que vendeu mais ou deu mais margem. Devolve-se sempre lista vazia; o ecrã
-# mostra "Sem informação disponível", tal como o Vendus mostra hoje ao dono
-# (porque também não tem essa configuração feita).
+# Os dois cartões saem das LINHAS das vendas, e as linhas são I/O: quem as vai
+# buscar é o endpoint (`relatorios.eventos_dos_documentos`), não esta função,
+# que é pura. Sem elas os cartões ficam vazios — nunca se estima um top a
+# partir do total do documento, que é a única coisa que `fat_documentos` sabe
+# sozinho.
+#
+# O que estes dois testes prendiam antes era outra coisa: que as listas eram
+# vazias SEMPRE. Era verdade quando os artigos ainda não existiam em lado
+# nenhum, e continuou a passar depois de o POS próprio começar a gravá-los —
+# um teste verde a guardar uma limitação que já tinha caído. Ver
+# `test_o_topo_de_artigos_do_painel.py` para o comportamento a sério.
 
-def test_mais_vendidos_e_mais_rentaveis_sao_sempre_listas_vazias():
+def test_sem_artigos_os_dois_cartoes_ficam_vazios_mesmo_com_faturacao():
     documentos = [_doc("l1", _agora(2026, 8, 13, 9, 0), 25.00, 20.00)]
     resultado = calcula_dashboard(documentos, [{"id": "l1", "nome": "Loja Alfa"}], AGORA, com_iva=True)
+    assert resultado["cartoes"]["hoje"]["valor"] == 25.00, "houve faturação"
     assert resultado["mais_vendidos"] == []
     assert resultado["mais_rentaveis"] == []
+
+
+def test_com_os_artigos_a_funcao_pura_ja_monta_o_top():
+    """Os artigos entram por parâmetro e a função pura faz o resto — é o que
+    permite provar a aritmética dos cartões sem Mongo nenhum."""
+    evento = {
+        "id": "d1", "tipo": "FS", "quando": AGORA, "loja_id": "l1",
+        "loja_nome": "Loja Alfa", "cliente_nif": None, "cliente_nome": None,
+        "operador_id": None, "operador_nome": None,
+        "bruto_c": 2500, "liquido_c": 2000, "custo_c": 800, "quantidade": 2,
+        "artigos": [{"produto_id": "p1", "produto_nome": "Açaí",
+                     "categoria_id": None, "categoria_nome": None,
+                     "quantidade": 2, "bruto_c": 2500, "liquido_c": 2000,
+                     "custo_c": 800}],
+    }
+    resultado = calcula_dashboard([], [], AGORA, com_iva=True, eventos_de_hoje=[evento])
+    assert resultado["mais_vendidos"] == [
+        {"produto_id": "p1", "nome": "Açaí", "quantidade": 2, "valor": 25.00}]
+    assert resultado["mais_rentaveis"][0]["resultado"] == 12.00
 
 
 def test_mais_vendidos_e_mais_rentaveis_sem_documentos_tambem_vazios():
@@ -491,7 +517,11 @@ class DbFalsa:
         }
 
     def __getitem__(self, nome):
-        return self._coleccoes[nome]
+        # **Uma colecção que não existe é VAZIA, não é um erro** — é o que o
+        # Mongo faz, e uma falsa que rebentasse com KeyError transformava
+        # "este teste não precisa de produtos" em "o endpoint está partido".
+        return self._coleccoes.setdefault(
+            nome, ColeccaoFalsa([], self.registo, nome))
 
 
 def test_endpoint_sem_vendas_devolve_zeros_e_ha_vendas_falso(monkeypatch):

@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends
 
 from .auth import gestor_atual
 from .db import COLECOES, obter_db
+from .relatorios import agregar, eventos_dos_documentos
 from .periodos import (
     LISBON_TZ,
     Janela,
@@ -125,16 +126,37 @@ def _valor_documento(doc: Dict, campo: str) -> float:
     return valor
 
 
-def _soma_periodo(documentos: List[Dict], campo: str, janela: Janela, loja_id: Optional[str] = None) -> float:
-    total = 0.0
+def documentos_no_periodo(documentos: List[Dict], janela: Janela,
+                          loja_id: Optional[str] = None) -> List[Dict]:
+    """Os documentos que caem dentro da janela — o CRIVO, uma vez só.
+
+    Está separado da soma porque os cartões de artigos («Mais Vendidos»,
+    «Mais Rentáveis») precisam dos MESMOS documentos que o cartão «Hoje»
+    soma, mas para lhes ir buscar as linhas em vez do total. Escrito duas
+    vezes, bastava um `<=` virar `<` num dos lados para o painel mostrar um
+    total de dinheiro e um top de artigos de dois conjuntos diferentes de
+    faturas — e nenhum dos dois números parecer errado.
+
+    Um documento anulado fica de fora aqui (`_valor_documento` já lhe dava
+    zero, portanto as somas não mudam): é o que impede que os artigos de uma
+    fatura anulada contem para o top.
+    """
+    dentro = []
     for doc in documentos:
         if loja_id is not None and doc.get("loja_id") != loja_id:
+            continue
+        if doc.get("anulado"):
             continue
         dt = _parse_utc(doc.get("emitido_em"))
         if dt is None or not (janela.inicio <= dt < janela.fim):
             continue
-        total += _valor_documento(doc, campo)
-    return total
+        dentro.append(doc)
+    return dentro
+
+
+def _soma_periodo(documentos: List[Dict], campo: str, janela: Janela, loja_id: Optional[str] = None) -> float:
+    return sum(_valor_documento(doc, campo)
+               for doc in documentos_no_periodo(documentos, janela, loja_id))
 
 
 def _arredonda_opcional(valor: Optional[float]) -> Optional[float]:
@@ -209,8 +231,103 @@ def _cartao(documentos: List[Dict], campo: str, janela_actual: Janela, janela_an
     }
 
 
+# Quantas linhas cabem em cada cartão de artigos. Cinco é o que o cartão do
+# ecrã mostra — devolver mais era mandar pela rede o que ninguém vê.
+TOP_ARTIGOS = 5
+
+
+def topos_de_artigos(eventos: List[Dict], com_iva: bool = True,
+                     documentos_por_repartir: int = 0) -> Dict:
+    """Os dois cartões de artigos: o que mais saiu e o que mais deu.
+
+    `eventos` são as faturas do dia já repartidas por artigo
+    (`relatorios.eventos_dos_documentos`). **A soma é a do motor dos
+    Relatórios** (`relatorios.agregar`, dimensão "produto") e não uma conta
+    nova: é o que faz o top do painel e o relatório de Produtos, no mesmo dia,
+    darem exactamente os mesmos números.
+
+    **Vendidos ordena-se por QUANTIDADE, rentáveis por RESULTADO.** São duas
+    perguntas diferentes — «o que é que sai mais da loja?» e «o que é que dá
+    mais dinheiro ao fim do dia?» — e um cartão ordenado por euros ao lado de
+    outro ordenado por euros seria a mesma lista duas vezes.
+
+    **O resultado é sempre sem IVA**, mesmo com `com_iva=True`. O IVA não é
+    dinheiro do negócio: é dinheiro do Estado a passar pela caixa, e uma
+    margem calculada por cima dele diria que cada açaí dá mais 23% do que dá.
+    O `com_iva` só decide o que se escreve na coluna de vendas, que é a mesma
+    escolha que os cartões do topo já fazem.
+
+    **Um artigo sem preço de custo não entra com margem zero — não entra de
+    todo**, e conta-se em `artigos_sem_custo`. Zero ali fazia o açaí parecer
+    lucro inteiro, que é a mentira mais cara que este painel podia contar (a
+    regra de ouro está escrita no cabeçalho de `relatorios.py`). É esse número
+    que o ecrã usa para dizer o que falta em vez de ficar mudo.
+    """
+    # `agregar` recusa uma dimensão desconhecida, mas não uma lista vazia:
+    # sem eventos devolve zero linhas, que é exactamente o que se quer.
+    linhas = agregar(eventos, "produto")["linhas"] if eventos else []
+
+    vendidos = sorted(
+        (l for l in linhas if (l["quantidade"] or 0) > 0),
+        # Desempate pelo dinheiro e depois pelo nome: sem ele, dois artigos com
+        # a mesma quantidade trocavam de lugar a cada recarga do ecrã.
+        key=lambda l: (-(l["quantidade"] or 0), -l["bruto"], l["rotulo"] or ""),
+    )
+    rentaveis = sorted(
+        # **O MESMO crivo do cartão irmão** (`quantidade > 0`), e não só o
+        # "tem custo". Sem ele, um artigo vendido e depois devolvido no mesmo
+        # dia entrava aqui com 0,00 € de margem — ruído puro —, e um artigo
+        # devolvido a mais do que se vendeu entrava com margem NEGATIVA, num
+        # cartão que se chama «Mais Rentáveis».
+        #
+        # Não se filtra por `resultado > 0`, que era o passo seguinte e mais
+        # tentador: um artigo que se vendeu MESMO abaixo do custo tem de
+        # continuar a aparecer, no fundo da lista. Esconder o «vendo a perder»
+        # é a única coisa que este cartão não pode fazer.
+        (l for l in linhas
+         if l["resultado"] is not None and (l["quantidade"] or 0) > 0),
+        key=lambda l: (-l["resultado"], l["rotulo"] or ""),
+    )
+
+    return {
+        "mais_vendidos": [{
+            "produto_id": l["chave"],
+            "nome": l["rotulo"],
+            "quantidade": l["quantidade"],
+            "valor": l["bruto"] if com_iva else l["liquido"],
+        } for l in vendidos[:TOP_ARTIGOS]],
+        "mais_rentaveis": [{
+            "produto_id": l["chave"],
+            "nome": l["rotulo"],
+            "resultado": l["resultado"],
+            "vendas": l["liquido"],
+            "margem_pct": (
+                round(l["resultado"] * 100.0 / l["liquido"], 1)
+                if l["liquido"] > 0 else None
+            ),
+        } for l in rentaveis[:TOP_ARTIGOS]],
+        # **Contam-se os artigos VENDIDOS no período, não o catálogo inteiro.**
+        # É esta a frase que responde à pergunta que o cartão vazio levanta
+        # («porque é que não mostra nada?»): dos que se venderam hoje, tantos
+        # não têm preço de custo. Contar os 33 do catálogo dava um número
+        # maior e menos verdadeiro — os artigos que ninguém vendeu hoje não
+        # eram o que faltava a ESTE cartão.
+        "artigos_sem_custo": sum(1 for l in linhas if l["custo_incompleto"]),
+        "artigos_vendidos": len(linhas),
+        # Faturas de hoje que não se deixaram repartir por artigo (ver o
+        # travão em `relatorios.eventos_dos_documentos`). Quase sempre zero.
+        # Vai para o ecrã porque o dinheiro delas ESTÁ no cartão «Hoje» e não
+        # está aqui: sem esta linha, os dois números discordavam sem nada a
+        # explicar — e é a terceira vez neste painel que dois números certos
+        # lado a lado, sem legenda, dão uma leitura falsa.
+        "documentos_por_repartir": documentos_por_repartir,
+    }
+
+
 def calcula_dashboard(documentos: List[Dict], lojas: List[Dict], agora: datetime,
-                       com_iva: bool = True) -> Dict:
+                       com_iva: bool = True,
+                       eventos_de_hoje: Optional[List[Dict]] = None,
+                       documentos_por_repartir: int = 0) -> Dict:
     """Constrói toda a resposta do dashboard a partir de dados já em memória —
     puro no sentido em que não toca em Mongo nem na rede; só o endpoint (mais
     abaixo) é que vai buscar `documentos`/`lojas` à base de dados."""
@@ -319,16 +436,16 @@ def calcula_dashboard(documentos: List[Dict], lojas: List[Dict], agora: datetime
         "serie_diaria": _serie_diaria(documentos, campo, agora, DIAS_SERIE_DIARIA),
         "ultimos_6_meses": _serie_mensal(documentos, campo, agora, MESES_SERIE_MENSAL),
         "por_loja": por_loja,
-        # mais_vendidos / mais_rentaveis: sempre lista vazia, por agora.
-        # fat_documentos (o que este ecrã lê) guarda o DOCUMENTO da venda,
-        # não as LINHAS dos artigos vendidos — isso só chega com o POS
-        # próprio (Plano 2, fase seguinte). Sem linhas não há como saber o
-        # que se vendeu mais nem o que deu mais margem; não se inventa nem
-        # se estima a partir do total do documento. O ecrã mostra "Sem
-        # informação disponível" — exactamente o que o Vendus também mostra
-        # hoje ao dono, porque também não tem essa configuração feita.
-        "mais_vendidos": [],
-        "mais_rentaveis": [],
+        # Os dois cartões de artigos, do DIA de hoje (a mesma janela do cartão
+        # «Hoje», pelo mesmo crivo — ver `documentos_no_periodo`).
+        #
+        # `eventos_de_hoje` vem de fora porque ir buscar as linhas de cada
+        # venda é I/O, e esta função é pura de propósito. Sem eles — que é o
+        # caso de qualquer teste que só passe documentos — os cartões ficam
+        # vazios, e o ecrã diz que ainda não há artigos: nunca se inventa um
+        # top a partir do total do documento, que é a única coisa que
+        # `fat_documentos` sabe sozinho.
+        **topos_de_artigos(eventos_de_hoje or [], com_iva, documentos_por_repartir),
     }
 
 
@@ -384,7 +501,20 @@ async def obter_dashboard(com_iva: bool = True, _: dict = Depends(gestor_atual))
         {}, {"_id": 0, "id": 1, "nome": 1}
     ).to_list(LIMITE_LOJAS)
 
-    resultado = calcula_dashboard(documentos, lojas, agora, com_iva)
+    # Os artigos vendidos HOJE, para os dois cartões do topo de artigos.
+    #
+    # Sai dos documentos JÁ LIDOS acima — não é uma segunda ida à colecção de
+    # documentos. O que custa I/O aqui são as vendas e os produtos desses
+    # documentos, e só os de hoje: enriquecer o ano inteiro para desenhar
+    # cinco linhas era pagar mil vezes o preço do que se mostra.
+    docs_de_hoje = documentos_no_periodo(documentos, janela_hoje(agora))
+    eventos_de_hoje = await eventos_dos_documentos(db, docs_de_hoje)
+
+    resultado = calcula_dashboard(
+        documentos, lojas, agora, com_iva, eventos_de_hoje,
+        # Sem filtros de categoria nem de utilizador, o único motivo para um
+        # documento não sair de lá é não se deixar repartir por artigos.
+        documentos_por_repartir=len(docs_de_hoje) - len(eventos_de_hoje))
     # I3: pergunta à parte, nunca deduzida de `documentos` (essa janela é
     # limitada, ver acima — não serve para responder "alguma vez vendeu?").
     resultado["ha_vendas"] = await _existe_venda(db)
