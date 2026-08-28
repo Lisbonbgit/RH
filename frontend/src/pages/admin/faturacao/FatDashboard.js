@@ -119,7 +119,35 @@ const smoothPath = (coords) => {
 // negativo, ou uma série inteira negativa, tem de continuar dentro do
 // viewBox, com a linha de base (0€) visível lá dentro — nunca a fugir por
 // cima ou por baixo do desenho.
-const buildArea = (points, { xLeft = 40, xRight = 710, yTop = 30, yBase = 230, yFill = 240 } = {}) => {
+// **As medidas do gráfico grande, num sítio só.**
+//
+// O dono pôs o painel do Vendus ao lado do nosso: «tem todos os dias do mês.
+// fica menor, não fica tão grande como o nosso». As duas coisas saem da mesma
+// causa — a PROPORÇÃO do desenho.
+//
+// Um `viewBox` de 720×260 é quase 3:1. Esticado para a largura do ecrã
+// (~1400 px), a altura vai atrás: 505 px de gráfico. O do Vendus é quase
+// 6,5:1 e por isso fica baixo.
+//
+// A largura maior resolve as duas de uma vez: 1400 unidades de desenho
+// mostradas em ~1400 px fazem a letra de tamanho 10 sair a 10 px (e não a 19,
+// como saía), e nesse tamanho cabem as trinta datas que antes se atropelavam
+// — daí só se mostrarem seis.
+const AREA = {
+  largura: 1400,
+  altura: 250,
+  xLeft: 46,
+  xRight: 1392,
+  yTop: 16,
+  yBase: 206,
+  yFill: 216,
+  yLabels: 232,
+};
+
+const buildArea = (points, {
+  xLeft = AREA.xLeft, xRight = AREA.xRight, yTop = AREA.yTop,
+  yBase = AREA.yBase, yFill = AREA.yFill,
+} = {}) => {
   const n = points.length;
   if (!n) return null;
   const valores = points.map((p) => p.v);
@@ -436,7 +464,8 @@ export default function FatDashboard() {
     // vendas ainda), mostrar a mesma etiqueta 5 vezes empilhada seria um
     // bug visual, não "mais informação" — mostra-se UMA, junto da linha
     // onde o valor realmente está.
-    const gridLines = [0, 0.25, 0.5, 0.75, 1].map((f) => 30 + f * (230 - 30));
+    const gridLines = [0, 0.25, 0.5, 0.75, 1].map(
+      (f) => AREA.yTop + f * (AREA.yBase - AREA.yTop));
     const achatada = area.max === area.min;
     const gridLabels = achatada
       ? [{ y: area.yAt(0), label: fmtEURShort(0) }]
@@ -444,19 +473,20 @@ export default function FatDashboard() {
           const valor = area.min + f * (area.max - area.min);
           return { y: area.yAt(valor), label: fmtEURShort(valor) };
         });
-    const nLabels = Math.min(6, area.n);
-    const seen = new Set();
+    // **TODOS os dias, como no Vendus** — e não seis. Cabem porque o desenho
+    // passou a ter 1400 unidades de largura: cada dia fica com ~46, e "30-07"
+    // ocupa ~28. Se um dia a série crescer ao ponto de não caberem, a conta
+    // aqui em baixo salta dias em vez de os deixar atropelar-se — um eixo
+    // ilegível é pior do que um eixo com menos datas.
+    const porDia = (AREA.xRight - AREA.xLeft) / Math.max(1, area.n - 1);
+    const saltar = Math.max(1, Math.ceil(30 / porDia));
     const xLabels = [];
-    for (let k = 0; k < nLabels; k++) {
-      const idx = nLabels === 1 ? 0 : Math.round((k * (area.n - 1)) / (nLabels - 1));
-      if (seen.has(idx)) continue;
-      seen.add(idx);
-      // O ANCORAGEM da etiqueta, e não só a posição: a última fica em x=710
-      // num desenho de 720, e centrada nesse x metade dela cai fora do
-      // `viewBox` — lia-se "26-0". Quem está encostado à borda alinha-se por
-      // ela; o resto continua centrado.
+    for (let idx = 0; idx < area.n; idx += saltar) {
+      // A ANCORAGEM, e não só a posição: a última fica encostada à borda
+      // direita do `viewBox`, e centrada nesse x metade dela cai fora — lia-se
+      // "26-0". Quem está na borda alinha-se por ela; o resto fica centrado.
       const x = area.coords[idx].x;
-      const ancora = x > 700 ? 'end' : (x < 20 ? 'start' : 'middle');
+      const ancora = x > AREA.largura - 20 ? 'end' : (x < 20 ? 'start' : 'middle');
       xLabels.push({ x, ancora, label: ddmm(pontos[idx].data) });
     }
     return { ...area, gridLines, gridLabels, xLabels };
@@ -598,13 +628,16 @@ export default function FatDashboard() {
                         o desenho terem EXACTAMENTE a mesma caixa — é dela que
                         saem as percentagens onde o balão assenta. */}
                     <div
-                      className="relative min-w-[560px] outline-none"
+                      /* Largura mínima maior do que era: com trinta datas no eixo, um ecrã
+                         estreito atropelava-as. Abaixo disto o cartão faz rolar na
+                         horizontal, que é melhor do que um eixo ilegível. */
+                      className="relative min-w-[900px] outline-none"
                       data-testid="fat-dashboard-area-moldura"
                       tabIndex={0}
                       role="img"
                       aria-label="Faturação diária dos últimos 30 dias"
                       onPointerMove={(e) => setPontoDaArea(
-                        indiceMaisPerto(e, svgDaArea.current, areaPrincipal.coords, 720))}
+                        indiceMaisPerto(e, svgDaArea.current, areaPrincipal.coords, AREA.largura))}
                       onPointerLeave={() => setPontoDaArea(null)}
                       onFocus={() => setPontoDaArea((i) => (i == null ? 0 : i))}
                       onBlur={() => setPontoDaArea(null)}
@@ -620,7 +653,8 @@ export default function FatDashboard() {
                           Math.max(0, (i == null ? 0 : i) + passo)));
                       }}
                     >
-                    <svg viewBox="0 0 720 260" className="w-full" xmlns="http://www.w3.org/2000/svg"
+                    <svg viewBox={`0 0 ${AREA.largura} ${AREA.altura}`} className="w-full"
+                      xmlns="http://www.w3.org/2000/svg"
                       ref={svgDaArea} data-testid="fat-dashboard-area">
                       <defs>
                         <linearGradient id="fatDashboardAreaGrad" x1="0" y1="0" x2="0" y2="1">
@@ -629,10 +663,12 @@ export default function FatDashboard() {
                         </linearGradient>
                       </defs>
                       {areaPrincipal.gridLines.map((y, i) => (
-                        <line key={i} x1="40" y1={y} x2="710" y2={y} stroke="hsl(var(--border))" strokeWidth="1" />
+                        <line key={i} x1={AREA.xLeft} y1={y} x2={AREA.xRight} y2={y}
+                          stroke="hsl(var(--border))" strokeWidth="1" />
                       ))}
                       {areaPrincipal.gridLabels.map((g, i) => (
-                        <text key={i} x="36" y={g.y + 3.5} textAnchor="end" fontSize="10" fill="hsl(var(--muted-foreground))">
+                        <text key={i} x={AREA.xLeft - 6} y={g.y + 3.5} textAnchor="end" fontSize="10"
+                          fill="hsl(var(--muted-foreground))">
                           {g.label}
                         </text>
                       ))}
@@ -645,8 +681,8 @@ export default function FatDashboard() {
                       {pontoDaArea != null && areaPrincipal.coords[pontoDaArea] && (
                         <g data-testid="fat-area-linha">
                           <line
-                            x1={areaPrincipal.coords[pontoDaArea].x} y1="30"
-                            x2={areaPrincipal.coords[pontoDaArea].x} y2="230"
+                            x1={areaPrincipal.coords[pontoDaArea].x} y1={AREA.yTop}
+                            x2={areaPrincipal.coords[pontoDaArea].x} y2={AREA.yBase}
                             stroke="hsl(var(--primary))" strokeWidth="1" strokeOpacity="0.45"
                             strokeDasharray="3 3"
                           />
@@ -661,7 +697,8 @@ export default function FatDashboard() {
                         </g>
                       )}
                       {areaPrincipal.xLabels.map((l, i) => (
-                        <text key={i} x={l.x} y="254" textAnchor={l.ancora} fontSize="10" fill="hsl(var(--muted-foreground))">
+                        <text key={i} x={l.x} y={AREA.yLabels} textAnchor={l.ancora} fontSize="10"
+                          fill="hsl(var(--muted-foreground))">
                           {l.label}
                         </text>
                       ))}
@@ -669,8 +706,8 @@ export default function FatDashboard() {
                     {pontoDaArea != null && areaPrincipal.coords[pontoDaArea] && (
                       <BalaoDoGrafico
                         testid="fat-area-balao"
-                        xPct={areaPrincipal.coords[pontoDaArea].x / 720}
-                        yPct={areaPrincipal.coords[pontoDaArea].y / 260}
+                        xPct={areaPrincipal.coords[pontoDaArea].x / AREA.largura}
+                        yPct={areaPrincipal.coords[pontoDaArea].y / AREA.altura}
                         valor={fmtEUR(areaPrincipal.coords[pontoDaArea].v)}
                         etiqueta={ddmm(areaPrincipal.coords[pontoDaArea].data)}
                       />
