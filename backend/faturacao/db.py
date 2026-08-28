@@ -179,6 +179,19 @@ INDICES = [
     # loja+data (spec §4.3).
     ("fat_vendas", [("sessao_id", 1)], {}),
     ("fat_vendas", [("loja_id", 1), ("criada_em", 1)], {}),
+    # **`id` procurado por `$in`** — «dá-me as vendas destes documentos».
+    #
+    # `relatorios.eventos_dos_documentos` é quem pergunta, e passou a ser
+    # perguntado a cada abertura do PAINEL (os cartões «Mais Vendidos» e
+    # «Mais Rentáveis»), e não só quando alguém pede um relatório à mão. Sem
+    # índice, cada abertura varria `fat_vendas` de ponta a ponta — a colecção
+    # que cresce com cada conta de cinco lojas, para sempre.
+    #
+    # Não é único: a unicidade do `id` está garantida noutro sítio (a reserva
+    # atómica da emissão), e declará-la aqui era arriscar que a criação do
+    # índice falhasse numa colecção com um duplicado antigo e levasse consigo
+    # o arranque da API.
+    ("fat_vendas", [("id", 1)], {}),
     # As PARTES de uma conta dividida (`venda.py::dividir_conta`, Plano 2C):
     # a pergunta é "quais são as partes desta conta?" — o ecrã do finalizar
     # precisa dela para mostrar quem já pagou e quanto falta receber, e a

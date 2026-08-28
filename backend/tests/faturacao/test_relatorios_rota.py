@@ -45,11 +45,17 @@ _DOC_FS = {
     "venda_id": "v1", "cliente_nif": "517542510", "modo": "normal",
 }
 
-# A nota credita SÓ a Coca-Cola — a linha de índice 1 da fatura.
+# A nota credita SÓ a Coca-Cola — a SEGUNDA linha da fatura.
+#
+# `indice` conta a partir de UM (`nota_credito._linhas_creditaveis`, com
+# `enumerate(itens, start=1)`): é o número da linha no talão. Esta fixture
+# dizia `1` e chamava-lhe Coca-Cola, o que codificava a convenção ERRADA e
+# mantinha verde um defeito a sério — devolver o açaí descontava-o na
+# Coca-Cola. Ver `_artigos_da_nota`.
 _NOTA = {
     "id": "n1", "loja_id": "loja-1", "documento_id": "d1", "venda_id": "v1",
     "operador": {"id": "op-2", "nome": "Wallison"},
-    "linhas": [{"indice": 1, "titulo": "Coca-Cola", "tax_id": "NOR",
+    "linhas": [{"indice": 2, "titulo": "Coca-Cola", "tax_id": "NOR",
                 "quantidade": 1, "total": 1.15}],
     "total": 1.15,
 }
@@ -177,3 +183,38 @@ def test_o_grafico_das_outras_vistas_e_a_evolucao_diaria(monkeypatch):
     _db(monkeypatch)
     r = _correr("produto", monkeypatch)
     assert r["serie"] == [{"rotulo": "2026-08-10", "valor": 11.35}]
+
+
+# --- o índice da linha creditada: conta a partir de UM ------------------------
+#
+# Encontrado a correr, não a ler: `_artigos_da_nota` fazia `linhas_origem[indice]`
+# sobre um índice que `nota_credito._linhas_creditaveis` grava com
+# `enumerate(itens, start=1)`. O dinheiro TOTAL do relatório continuava certo —
+# é o que fez isto sobreviver — e só a atribuição por artigo é que mentia.
+
+def test_a_nota_desconta_no_artigo_DEVOLVIDO_e_nao_no_seguinte(monkeypatch):
+    """Devolve-se o AÇAÍ (a primeira linha da fatura).
+
+    Antes, os 10,20 € do açaí eram descontados na Coca-Cola: o relatório de
+    Produtos dizia que a Coca-Cola tinha vendido −9,05 € e que o açaí tinha
+    vendido tudo. Duas linhas erradas por uma devolução."""
+    nota = dict(_NOTA, id="n-acai", linhas=[
+        {"indice": 1, "titulo": "Açaí Regular", "tax_id": "INT",
+         "quantidade": 1, "total": 10.20}])
+    _db(monkeypatch, documentos=[dict(_DOC_FS), dict(_DOC_NC, nota_credito_id="n-acai")],
+        notas=[nota])
+    por_rotulo = {l["rotulo"]: l for l in _correr("produto", monkeypatch)["linhas"]}
+    assert por_rotulo["Açaí Regular"]["bruto"] == 0.0, "o açaí foi devolvido"
+    assert por_rotulo["Coca-Cola"]["bruto"] == 1.15, "a Coca-Cola não foi tocada"
+
+
+def test_creditar_a_ULTIMA_linha_nao_cria_um_artigo_FANTASMA(monkeypatch):
+    """A última linha (índice 2 de 2) caía fora da guarda `0 <= i < len` e o
+    artigo saía sem `produto_id` — uma segunda linha com o mesmo nome do
+    produto, sem chave, ao lado da verdadeira."""
+    _db(monkeypatch, documentos=[dict(_DOC_FS), dict(_DOC_NC)], notas=[dict(_NOTA)])
+    linhas = _correr("produto", monkeypatch)["linhas"]
+    assert None not in {l["chave"] for l in linhas}, "há uma linha sem produto"
+    assert len(linhas) == 2, [l["rotulo"] for l in linhas]
+    assert {l["rotulo"]: l["bruto"] for l in linhas} == {
+        "Açaí Regular": 10.20, "Coca-Cola": 0.0}

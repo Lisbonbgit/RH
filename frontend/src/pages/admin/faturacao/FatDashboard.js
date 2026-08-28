@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { getFatDashboard } from '../../../lib/faturacao';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Switch } from '../../../components/ui/switch';
@@ -6,7 +7,7 @@ import { Label } from '../../../components/ui/label';
 import { Button } from '../../../components/ui/button';
 import {
   LayoutDashboard, ShoppingCart, CalendarDays, BarChart3, ArrowUpRight, ArrowDownRight,
-  Store, Info, RefreshCw, Rocket, Star, TrendingUp, PackageSearch,
+  Store, Info, RefreshCw, Rocket, Star, TrendingUp, PackageSearch, Tag,
 } from 'lucide-react';
 import PageHeader from '../../../components/PageHeader';
 import FatModoDeEmissao from './FatModoDeEmissao';
@@ -31,6 +32,11 @@ const fmtEURShort = (n) => {
   }
   return `€${Math.round(v)}`;
 };
+
+// Quantidades: inteiro quando é inteiro. Uma devolução parcial pode deixar
+// 2,5 no meio de uma lista de números redondos — mostrar "2,500" a todos
+// para acomodar esse caso era feio nos 99% dos dias em que não acontece.
+const fmtQtd = (n) => new Intl.NumberFormat('pt-PT', { maximumFractionDigits: 3 }).format(Number(n) || 0);
 
 const fmtPct = (n) => {
   const v = Number(n) || 0;
@@ -407,13 +413,98 @@ function VariacaoPill({ variacao }) {
   );
 }
 
-// Estado vazio compacto para os cartões "Mais Vendidos" / "Mais Rentáveis"
-// (sem dados enquanto o POS próprio não guardar linhas de artigo).
-function EmptyMini({ icon: Icon }) {
+// Estado vazio compacto: nada se vendeu no período, e por isso não há top.
+function EmptyMini({ icon: Icon, texto = 'Sem informação disponível' }) {
   return (
     <div className="flex flex-col items-center gap-2 py-6 text-center">
       <Icon className="h-9 w-9 text-muted-foreground/50" strokeWidth={1.5} />
-      <p className="text-sm text-muted-foreground">Sem informação disponível</p>
+      <p className="text-sm text-muted-foreground">{texto}</p>
+    </div>
+  );
+}
+
+// **O topo de artigos** — a mesma lista nos dois cartões.
+//
+// A barra dá a proporção contra o primeiro da lista. Cinco números em coluna
+// obrigam a dividir de cabeça para ver que o primeiro vale o triplo do
+// segundo; a barra responde a isso antes de se ler um algarismo.
+//
+// `Math.abs` no denominador e na largura porque uma nota de crédito pode pôr
+// um resultado negativo na lista — uma barra de largura negativa desaparecia
+// e a linha ficava a parecer um erro de desenho em vez de um prejuízo.
+function TopoDeArtigos({ itens, prefixo, principal, secundario }) {
+  const maior = itens.reduce((m, i) => Math.max(m, Math.abs(principal(i).valor)), 0) || 1;
+  return (
+    <div className="w-full space-y-3 py-1">
+      {itens.map((item, i) => {
+        const p = principal(item);
+        const segundo = secundario ? secundario(item) : null;
+        // **Um prejuízo não se pinta da cor do lucro.** Um artigo vendido
+        // abaixo do custo aparece aqui de propósito (ver o crivo em
+        // `dashboard.topos_de_artigos`), mas com o número e a barra na cor do
+        // sistema para o que corre mal — de relance, uma linha azul entre
+        // linhas azuis lê-se como mais uma que deu dinheiro.
+        const perde = p.valor < 0;
+        return (
+          <div key={item.produto_id || item.nome || i} data-testid={`${prefixo}-${i}`}>
+            <div className="flex items-baseline justify-between gap-3 text-sm">
+              <span className="truncate" title={item.nome}>{item.nome}</span>
+              <span className="shrink-0 tabular-nums">
+                <span className={perde ? 'font-semibold text-destructive' : 'font-semibold'}>{p.texto}</span>
+                {segundo ? <span className="text-muted-foreground"> · {segundo}</span> : null}
+              </span>
+            </div>
+            <div className="mt-1.5 h-1.5 rounded-full bg-muted overflow-hidden">
+              <div
+                className={perde ? 'h-full rounded-full bg-destructive' : 'h-full rounded-full bg-primary'}
+                // Nunca menos de 2%: uma barra de largura zero lê-se como
+                // "não vendeu nada", que é falso — vendeu pouco.
+                style={{ width: `${Math.max(2, (Math.abs(p.valor) / maior) * 100)}%` }}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// **O cartão da margem quando houve vendas mas não há margem para mostrar.**
+//
+// "Sem informação disponível" é verdade e não serve para nada: não diz porquê
+// nem o que fazer, e foi exactamente o que este cartão disse durante meses. A
+// margem é Vendas − Custos; sem preço de custo no artigo, não há Custos e não
+// há margem. Isso escreve-se, com o caminho para o resolver ao lado — o
+// cartão acende sozinho no dia seguinte.
+//
+// **Três frases e não uma**, porque a lista vazia tem três causas diferentes e
+// só uma delas se resolve preenchendo custos. Uma frase única sobre "faltam os
+// preços de custo" num dia em que os custos estão todos lá — e o que houve foi
+// uma devolução — mandava o dono procurar um problema que não existe.
+function SemMargem({ semCusto, vendidos }) {
+  const todos = semCusto >= vendidos;
+  return (
+    <div className="flex flex-col items-center gap-2 py-6 text-center" data-testid="fat-sem-precos-de-custo">
+      <Tag className="h-9 w-9 text-muted-foreground/50" strokeWidth={1.5} />
+      {semCusto === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          Nenhum artigo com margem para mostrar hoje.
+        </p>
+      ) : (
+        <>
+          <p className="text-sm text-muted-foreground">
+            {todos && vendidos === 1
+              ? 'O artigo vendido hoje não tem preço de custo.'
+              : todos
+                ? `Nenhum dos ${vendidos} artigos vendidos hoje tem preço de custo.`
+                : `${semCusto} dos ${vendidos} artigos vendidos hoje não têm preço de custo.`}
+          </p>
+          <p className="text-xs text-muted-foreground">Sem ele não há margem para calcular.</p>
+          <Button asChild variant="outline" size="sm" className="mt-1">
+            <Link to="/admin/faturacao/produtos/lista">Preencher nos Produtos</Link>
+          </Button>
+        </>
+      )}
     </div>
   );
 }
@@ -521,6 +612,17 @@ export default function FatDashboard() {
   const porLoja = dashboard?.por_loja || [];
   const maisVendidos = dashboard?.mais_vendidos || [];
   const maisRentaveis = dashboard?.mais_rentaveis || [];
+  // Quantos artigos vendidos hoje não têm preço de custo — é o que
+  // transforma um cartão mudo numa frase que se pode resolver.
+  const artigosSemCusto = dashboard?.artigos_sem_custo || 0;
+  // Faturas de hoje cujo dinheiro está no cartão «Hoje» mas não se deixou
+  // repartir por artigo. Quase sempre zero — e quando não for, diz-se, em
+  // vez de deixar os dois números a discordar sem legenda.
+  const porRepartir = dashboard?.documentos_por_repartir || 0;
+  // Quantos artigos DIFERENTES se venderam hoje. É este — e não o
+  // comprimento da lista da margem — que distingue "a loja ainda não
+  // abriu" de "vendeu-se, mas não há margem para mostrar".
+  const artigosVendidos = dashboard?.artigos_vendidos || 0;
   const semVendas = !!dashboard && !dashboard.ha_vendas;
 
   return (
@@ -729,21 +831,27 @@ export default function FatDashboard() {
                   <span className="h-3.5 w-px bg-border" />
                   <span className="text-xs text-muted-foreground">Hoje</span>
                 </div>
-                <div className="flex-1 flex items-center justify-center">
+                <div className="flex-1 flex flex-col justify-center">
                   {maisVendidos.length === 0 ? (
-                    <EmptyMini icon={PackageSearch} />
+                    <EmptyMini icon={PackageSearch} texto="Ainda não se vendeu nada hoje" />
                   ) : (
-                    <div className="w-full space-y-2 py-2">
-                      {maisVendidos.slice(0, 5).map((item, i) => (
-                        <div key={item.id || item.nome || i} className="flex items-center justify-between gap-2 text-sm">
-                          <span className="truncate">{item.nome || `Artigo ${i + 1}`}</span>
-                          <span className="font-semibold text-primary shrink-0">
-                            {item.total != null ? fmtEUR(item.total) : item.quantidade ?? ''}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
+                    <TopoDeArtigos
+                      itens={maisVendidos}
+                      prefixo="fat-mais-vendido"
+                      // O número que manda é a QUANTIDADE — é a pergunta deste
+                      // cartão. O euro vem a seguir, mais apagado, porque a
+                      // resposta a "o que é que mais sai?" não é em dinheiro.
+                      principal={(a) => ({ valor: a.quantidade, texto: `${fmtQtd(a.quantidade)} un` })}
+                      secundario={(a) => fmtEUR(a.valor)}
+                    />
                   )}
+                  {porRepartir > 0 ? (
+                    <p className="text-xs text-muted-foreground mt-3" data-testid="fat-por-repartir">
+                      {porRepartir === 1
+                        ? '1 fatura de hoje não se deixou repartir por artigo — o valor dela está no cartão Hoje, mas não neste top.'
+                        : `${porRepartir} faturas de hoje não se deixaram repartir por artigo — o valor delas está no cartão Hoje, mas não neste top.`}
+                    </p>
+                  ) : null}
                 </div>
               </CardContent>
             </Card>
@@ -756,20 +864,31 @@ export default function FatDashboard() {
                   <span className="h-3.5 w-px bg-border" />
                   <span className="text-xs text-muted-foreground">Hoje</span>
                 </div>
-                <div className="flex-1 flex items-center justify-center">
-                  {maisRentaveis.length === 0 ? (
-                    <EmptyMini icon={PackageSearch} />
+                <div className="flex-1 flex flex-col justify-center">
+                  {maisRentaveis.length > 0 ? (
+                    <>
+                      <TopoDeArtigos
+                        itens={maisRentaveis}
+                        prefixo="fat-mais-rentavel"
+                        principal={(a) => ({ valor: a.resultado, texto: fmtEUR(a.resultado) })}
+                        // A percentagem diz o que o euro não diz: 5 € de
+                        // margem em 9 € de vendas é outro negócio que 5 € em
+                        // 90 €.
+                        secundario={(a) => (a.margem_pct == null ? null
+                          : `${a.margem_pct.toLocaleString('pt-PT', { maximumFractionDigits: 1 })}%`)}
+                      />
+                      {artigosSemCusto > 0 ? (
+                        <p className="text-xs text-muted-foreground mt-3" data-testid="fat-rentaveis-em-falta">
+                          {artigosSemCusto === 1
+                            ? '1 artigo sem preço de custo ficou de fora.'
+                            : `${artigosSemCusto} artigos sem preço de custo ficaram de fora.`}
+                        </p>
+                      ) : null}
+                    </>
+                  ) : artigosVendidos > 0 ? (
+                    <SemMargem semCusto={artigosSemCusto} vendidos={artigosVendidos} />
                   ) : (
-                    <div className="w-full space-y-2 py-2">
-                      {maisRentaveis.slice(0, 5).map((item, i) => (
-                        <div key={item.id || item.nome || i} className="flex items-center justify-between gap-2 text-sm">
-                          <span className="truncate">{item.nome || `Artigo ${i + 1}`}</span>
-                          <span className="font-semibold text-primary shrink-0">
-                            {item.total != null ? fmtEUR(item.total) : item.quantidade ?? ''}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
+                    <EmptyMini icon={PackageSearch} texto="Ainda não se vendeu nada hoje" />
                   )}
                 </div>
               </CardContent>
