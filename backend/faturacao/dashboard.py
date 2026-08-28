@@ -34,7 +34,7 @@ from .periodos import (
     janela_anterior_equivalente,
     janela_hoje,
     janela_mes,
-    janela_ontem_equivalente,
+    janela_ontem_inteiro,
     variacao,
 )
 
@@ -217,11 +217,30 @@ def calcula_dashboard(documentos: List[Dict], lojas: List[Dict], agora: datetime
     campo = _campo_valor(com_iva)
 
     j_hoje = janela_hoje(agora)
-    # "Ontem" NÃO é o dia anterior inteiro (24h) — seria comparar um dia a
-    # meio (poucas horas de vendas) com um dia completo, e mostraria sempre
-    # uma queda enorme de manhã (C2). janela_ontem_equivalente pára "ontem"
-    # à mesma hora do relógio a que "hoje" ainda vai.
-    j_hoje_anterior = janela_ontem_equivalente(agora)
+    # **"Ontem" é o dia anterior INTEIRO** — e isto foi uma inversão
+    # consciente, pedida pelo dono depois de ver o custo escrito.
+    #
+    # Até aqui parava à mesma hora do relógio a que "hoje" ia
+    # (`janela_ontem_equivalente`), para a percentagem não mostrar uma queda
+    # enorme todas as manhãs — comparar cinco horas com vinte e quatro. Esse
+    # raciocínio continua a valer e a queda matinal voltou com esta mudança.
+    #
+    # O que o desmontou foi o caso real: o Oeiras facturou 45,90 € às 19:09, o
+    # dono abriu o painel às 17:25 do dia seguinte e leu «Ontem: 0,00 €». A
+    # conta estava certa e a leitura era falsa — e a pergunta que ele faz a
+    # este ecrã é «quanto é que a loja fez ONTEM?», que tem uma só resposta
+    # certa: o dia inteiro. «à medida que vai sendo facturado vai mudando a
+    # percentagem. como é no vendus.»
+    #
+    # A percentagem passa a subir ao longo do dia até fechar a diferença. É o
+    # que o painel do Vendus lhe mostra há anos e é como ele o lê.
+    #
+    # O MÊS e o ANO continuam a comparar-se de forma equivalente
+    # (`janela_anterior_equivalente`, mais abaixo): ninguém se queixou deles, e
+    # um mês a meio contra um mês inteiro é a mesma injustiça multiplicada por
+    # trinta. Se um dia isso também mudar, muda-se aqui e ali com a mesma
+    # conversa — não em silêncio.
+    j_hoje_anterior = janela_ontem_inteiro(agora)
 
     # janela_anterior_equivalente devolve os DOIS lados (actual, anterior):
     # o anterior termina sempre à mesma hora do relógio que o actual (C2), e
@@ -282,10 +301,17 @@ def calcula_dashboard(documentos: List[Dict], lojas: List[Dict], agora: datetime
     # certa; a etiqueta é que mentia.
     #
     # A frase inteira (`comparacao`) já vai nos cartões do topo. Nas linhas por
-    # loja não cabe — mas a HORA cabe, e é ela que transforma «Ontem» em
-    # «Ontem até às 17:25». `None` quando não há corte nenhum (os dois lados
-    # fecham à meia-noite): aí escrever uma hora era ruído.
-    corte = hora_de_corte(j_hoje, j_hoje_anterior)
+    # loja não cabe — mas a HORA cabe, e é ela que transforma «Anterior» em
+    # «Anterior até às 17:25».
+    #
+    # Sai do MÊS e não do dia: desde que «ontem» passou a ser o dia inteiro, o
+    # cartão «Hoje» não tem corte nenhum a assinalar — mas o mensal continua a
+    # comparar-se de forma equivalente (um mês a meio contra o mesmo pedaço do
+    # mês anterior), e é lá que a etiqueta sem hora enganaria agora.
+    #
+    # `None` quando não há corte (o mês fechado, os dois lados à meia-noite):
+    # aí escrever uma hora era ruído.
+    corte = hora_de_corte(j_mes, j_mes_anterior)
 
     return {
         "cartoes": cartoes,

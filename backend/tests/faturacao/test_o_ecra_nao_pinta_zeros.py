@@ -290,8 +290,11 @@ def test_o_ecra_diz_ATE_QUANDO_conta_o_ontem_de_cada_loja():
     from pathlib import Path
     ecra = (Path(__file__).resolve().parents[2].parent / "frontend" / "src" /
             "pages" / "admin" / "faturacao" / "FatDashboard.js").read_text(encoding="utf-8")
-    assert "Ontem{ateAsHoras}" in ecra, (
-        "A etiqueta do «Ontem» por loja voltou a não dizer até que hora conta.")
+    # O «Ontem» deixou de levar hora: passou a ser o dia anterior INTEIRO.
+    # O que continua a precisar dela é o MENSAL, que compara um mês a meio com
+    # o mesmo pedaço do mês anterior.
+    assert "Ontem{ateAsHoras}" not in ecra, (
+        "O «Ontem» voltou a dizer uma hora de corte que já não existe.")
     assert "Anterior{ateAsHoras}" in ecra, (
         "A etiqueta do «Anterior» mensal por loja perdeu a hora de corte.")
     assert "dashboard?.hora_de_corte" in ecra, (
