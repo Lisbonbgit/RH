@@ -117,23 +117,38 @@ def test_cartao_hoje_no_dia_da_mudanca_da_hora_nao_rebenta():
     assert resultado["cartoes"]["hoje"]["valor"] == 0
 
 
-def test_cartao_hoje_negocio_estavel_nao_mostra_queda_de_manha():
-    """C2: um negócio com o MESMO valor todos os dias não pode mostrar uma
-    queda só porque ainda é de manhã. Antes desta correcção, 'ontem'
-    contava o dia inteiro (incl. a noite, ainda por vir hoje) — aqui 'ontem'
-    pára às 09:00, a mesma hora a que 'hoje' já vai."""
+def test_o_cartao_hoje_compara_com_o_dia_ANTERIOR_INTEIRO():
+    """**Este teste diz agora o contrário do que dizia**, e é uma inversão
+    pedida pelo dono — não um enfraquecimento.
+
+    Media o C2: "ontem" parava à mesma hora a que hoje ia, para um negócio
+    estável não mostrar uma queda todas as manhãs. Esse raciocínio continua a
+    ser verdade e a queda matinal voltou com esta mudança.
+
+    O que o desmontou foi um caso real: o Oeiras facturou 45,90 € às 19:09, o
+    dono abriu o painel às 17:25 do dia seguinte e leu «Ontem: 0,00 €». A
+    conta estava certa e a leitura era falsa. A pergunta que ele faz a este
+    ecrã é «quanto é que a loja fez ONTEM?», e essa tem uma só resposta certa.
+    «à medida que vai sendo facturado vai mudando a percentagem. como é no
+    vendus.»
+
+    A venda das 20:00 de ontem — a que este teste existia para EXCLUIR — é
+    agora a que ele exige que entre."""
     agora = _agora(2026, 8, 13, 9, 0)
     documentos = [
         _doc("l1", _agora(2026, 8, 13, 8, 0), 500.00, 400.00),    # hoje, antes das 9h
-        _doc("l1", _agora(2026, 8, 12, 8, 0), 500.00, 400.00),    # ontem, à mesma hora: conta
-        _doc("l1", _agora(2026, 8, 12, 20, 0), 1000.00, 800.00),  # ontem à noite: NÃO pode contar
+        _doc("l1", _agora(2026, 8, 12, 8, 0), 500.00, 400.00),    # ontem de manhã
+        _doc("l1", _agora(2026, 8, 12, 20, 0), 1000.00, 800.00),  # ontem à noite: CONTA
     ]
     resultado = calcula_dashboard(documentos, [], agora, com_iva=True)
     cartao = resultado["cartoes"]["hoje"]
     assert cartao["valor"] == 500.00
-    assert cartao["valor_comparado"] == 500.00
-    assert cartao["variacao"] == 0.0
-    assert "até às 09:00" in cartao["comparacao"]
+    assert cartao["valor_comparado"] == 1500.00
+    # A queda matinal, de olhos abertos: 500 de hoje contra 1500 do dia
+    # inteiro de ontem. Fecha-se ao longo do dia.
+    assert round(cartao["variacao"], 2) == -66.67
+    # E a frase deixa de falar de uma hora de corte que já não existe no dia.
+    assert "até às" not in cartao["comparacao"]
 
 
 # --- cartão "mensal" — a correção do defeito do Vendus ----------------------
@@ -288,24 +303,26 @@ def test_por_loja_nota_de_credito_conta_negativa_e_anulado_nao_conta():
 # Vendus que periodos.py corrige: comparar com o dia/mês anterior INTEIRO em
 # vez do período equivalente).
 
-def test_por_loja_hoje_anterior_usa_o_periodo_equivalente_nao_o_dia_inteiro():
-    """Réplica, por loja, de test_cartao_hoje_negocio_estavel_nao_mostra_queda_de_manha:
-    um negócio estável não pode mostrar queda de manhã só porque 'ontem'
-    seria contado por inteiro (24h) em vez de até à mesma hora do relógio."""
+def test_por_loja_o_hoje_anterior_e_o_dia_INTEIRO_como_no_cartao_do_total():
+    """Réplica, por loja, da inversão pedida pelo dono (ver
+    `test_o_cartao_hoje_compara_com_o_dia_ANTERIOR_INTEIRO`).
+
+    O que este teste guarda e NÃO mudou é o mais importante dos dois: a linha
+    da loja e o cartão do total têm de dizer o MESMO. Uma loja a mostrar
+    1500 € de ontem enquanto o total mostra 500 € era o pior desfecho
+    possível — o dono a não saber em qual acreditar."""
     agora = _agora(2026, 8, 13, 9, 0)
     lojas = [{"id": "l1", "nome": "Loja Alfa"}]
     documentos = [
         _doc("l1", _agora(2026, 8, 13, 8, 0), 500.00, 400.00),    # hoje, antes das 9h
-        _doc("l1", _agora(2026, 8, 12, 8, 0), 500.00, 400.00),    # ontem, à mesma hora: conta
-        _doc("l1", _agora(2026, 8, 12, 20, 0), 1000.00, 800.00),  # ontem à noite: NÃO pode contar
+        _doc("l1", _agora(2026, 8, 12, 8, 0), 500.00, 400.00),    # ontem de manhã
+        _doc("l1", _agora(2026, 8, 12, 20, 0), 1000.00, 800.00),  # ontem à noite: CONTA
     ]
     resultado = calcula_dashboard(documentos, lojas, agora, com_iva=True)
     loja = resultado["por_loja"][0]
     assert loja["hoje"] == 500.00
-    assert loja["hoje_anterior"] == 500.00  # não 1500.00 (dia de ontem inteiro)
-    assert loja["variacao_hoje"] == 0.0
-    # E tem de bater com o cartão do total, que usa a mesma janela e o mesmo
-    # único documento/loja neste teste.
+    assert loja["hoje_anterior"] == 1500.00      # o dia de ontem inteiro
+    assert round(loja["variacao_hoje"], 2) == -66.67
     assert loja["hoje_anterior"] == resultado["cartoes"]["hoje"]["valor_comparado"]
 
 
@@ -768,6 +785,9 @@ def test_o_dashboard_diz_a_HORA_DE_CORTE_da_comparacao(monkeypatch):
     ninguém tem como desconfiar."""
     agora = datetime(2026, 8, 28, 16, 25, tzinfo=timezone.utc)  # 17:25 em Lisboa
     saida = calcula_dashboard([], [], agora)
+    # A hora vem agora do MENSAL, que continua a comparar-se de forma
+    # equivalente — o cartão «Hoje» deixou de ter corte quando passou a
+    # comparar-se com o dia inteiro de ontem.
     assert saida["hora_de_corte"] == "17:25", saida.get("hora_de_corte")
 
 
@@ -792,4 +812,77 @@ def test_o_ONTEM_de_uma_loja_e_o_mesmo_que_o_do_total(monkeypatch):
     saida = calcula_dashboard(docs, lojas, agora)
     da_loja = saida["por_loja"][0]
     assert da_loja["hoje_anterior"] == saida["cartoes"]["hoje"]["valor_comparado"]
-    assert da_loja["hoje_anterior"] == 0.0
+    # 45,90 € e não zero: escrevi este teste a prender o comportamento
+    # anterior e o dono mudou-o na mesma conversa. O que ele guarda — que a
+    # loja e o total dizem o MESMO — continua a valer, e é isso que interessa.
+    assert da_loja["hoje_anterior"] == 45.90
+
+
+# --- «Ontem» passa a ser o DIA TODO ------------------------------------------
+#
+# O dono, depois de eu lhe mostrar o custo: «dia todo, à medida que vai sendo
+# facturado vai mudando a percentagem. como é no vendus.»
+#
+# É uma inversão consciente do que este ficheiro fazia. A `janela_ontem_
+# equivalente` parava "ontem" à mesma hora a que hoje ia, para a percentagem
+# não mostrar uma queda enorme todas as manhãs — e continua a ser verdade que
+# mostra. O dono já lê o painel do Vendus assim há anos e a pergunta que ele
+# faz a este ecrã é outra: «quanto é que a loja fez ONTEM?». Essa tem uma só
+# resposta certa, e é o dia inteiro.
+#
+# A percentagem passa a subir ao longo do dia até fechar a diferença, que é
+# exactamente o que ele quer ver e o que o Vendus faz.
+
+
+def test_o_ONTEM_conta_o_dia_INTEIRO_e_nao_ate_a_hora_de_agora():
+    """Uma venda das 19:30 de ontem TEM de entrar, mesmo com o painel aberto
+    às 17:25 — foi o caso que o dono apanhou: 45,90 € facturados às 19:09 e o
+    painel a dizer 0,00 €."""
+    docs = [{"id": "d1", "loja_id": "l1", "tipo": "FS", "total_bruto": 45.90,
+             "emitido_em": "2026-08-27T18:30:00+00:00"}]   # 19:30 em Lisboa
+    agora = datetime(2026, 8, 28, 16, 25, tzinfo=timezone.utc)   # 17:25 em Lisboa
+    saida = calcula_dashboard(docs, [{"id": "l1", "nome": "Oeiras"}], agora)
+    assert saida["cartoes"]["hoje"]["valor_comparado"] == 45.90
+    assert saida["por_loja"][0]["hoje_anterior"] == 45.90
+
+
+def test_o_ontem_NAO_apanha_hoje_nem_anteontem():
+    """As fronteiras do dia, em Lisboa: uma venda de hoje à 00:30 é de HOJE
+    (não de ontem), e uma de anteontem às 23:30 fica de fora."""
+    docs = [
+        {"id": "anteontem", "loja_id": "l1", "tipo": "FS", "total_bruto": 100.0,
+         "emitido_em": "2026-08-26T22:30:00+00:00"},   # 23:30 de 26, em Lisboa
+        {"id": "ontem", "loja_id": "l1", "tipo": "FS", "total_bruto": 45.90,
+         "emitido_em": "2026-08-27T18:30:00+00:00"},   # 19:30 de 27
+        {"id": "hoje", "loja_id": "l1", "tipo": "FS", "total_bruto": 7.0,
+         "emitido_em": "2026-08-27T23:30:00+00:00"},   # 00:30 de 28, em Lisboa
+    ]
+    agora = datetime(2026, 8, 28, 16, 25, tzinfo=timezone.utc)
+    saida = calcula_dashboard(docs, [{"id": "l1", "nome": "Oeiras"}], agora)
+    assert saida["cartoes"]["hoje"]["valor_comparado"] == 45.90
+    assert saida["cartoes"]["hoje"]["valor"] == 7.0
+
+
+def test_a_percentagem_do_dia_compara_com_o_dia_INTEIRO():
+    """«à medida que vai sendo facturado vai mudando a percentagem» — de manhã
+    a queda é grande e vai fechando. É o custo que o dono aceitou de olhos
+    abertos, e é o que o painel do Vendus lhe mostra há anos."""
+    docs = [
+        {"id": "ontem", "loja_id": "l1", "tipo": "FS", "total_bruto": 100.0,
+         "emitido_em": "2026-08-27T18:30:00+00:00"},
+        {"id": "hoje", "loja_id": "l1", "tipo": "FS", "total_bruto": 25.0,
+         "emitido_em": "2026-08-28T10:00:00+00:00"},
+    ]
+    agora = datetime(2026, 8, 28, 16, 25, tzinfo=timezone.utc)
+    saida = calcula_dashboard(docs, [{"id": "l1", "nome": "Oeiras"}], agora)
+    assert saida["cartoes"]["hoje"]["variacao"] == -75.0
+
+
+def test_a_hora_de_corte_e_a_do_MENSAL_e_nao_a_do_dia():
+    """Escrever «Ontem até às 17:25» sobre um dia inteiro passava a ser a
+    mentira ao contrário. A hora continua a fazer falta no MENSAL, que compara
+    um mês a meio com o mesmo pedaço do mês anterior."""
+    from faturacao.periodos import janela_hoje, janela_ontem_inteiro, hora_de_corte
+    agora = datetime(2026, 8, 28, 16, 25, tzinfo=timezone.utc)
+    assert hora_de_corte(janela_hoje(agora), janela_ontem_inteiro(agora)) is None
+    assert calcula_dashboard([], [], agora)["hora_de_corte"] == "17:25"

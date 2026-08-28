@@ -123,6 +123,26 @@ def janela_ontem_equivalente(agora: datetime) -> Janela:
     return Janela(_meia_noite_lisboa(ontem), _combina(ontem, hora_actual))
 
 
+def janela_ontem_inteiro(agora: datetime) -> Janela:
+    """[meia-noite de ontem, meia-noite de hoje) em Lisboa — o dia ANTERIOR
+    COMPLETO.
+
+    Convive de propósito com a `janela_ontem_equivalente` aqui em baixo, que
+    faz o contrário e continua a ser usada por quem precise dela: as duas
+    respondem a perguntas diferentes, e a escolha entre elas é de quem lê o
+    ecrã, não deste ficheiro.
+
+    - «quanto é que a loja fez ONTEM?» → esta. Tem uma só resposta certa.
+    - «hoje está melhor ou pior do que ontem a esta hora?» → a outra.
+
+    O dashboard usa esta desde Agosto/2026, por decisão do dono: o painel
+    dizia «Ontem: 0,00 €» a uma loja que facturara 45,90 € às 19:09, porque o
+    painel foi aberto às 17:25. A conta estava certa e a leitura era falsa.
+    """
+    hoje = agora.astimezone(LISBON_TZ).date()
+    return Janela(_meia_noite_lisboa(hoje - timedelta(days=1)), _meia_noite_lisboa(hoje))
+
+
 def janela_anterior_equivalente(inicio: datetime, fim: datetime, unidade: str) -> Comparacao:
     """Compara um período [inicio, fim) que começa no dia 1 do mês/ano com o
     período equivalente do mês/ano anterior. Devolve um `Comparacao(actual,

@@ -479,10 +479,13 @@ export default function FatDashboard() {
   }, [dashboard]);
 
   const cartoes = dashboard?.cartoes || {};
-  // A hora a que a comparação foi cortada — ver `dashboard.py`. As linhas por
-  // loja não têm espaço para a frase inteira da comparação (que os cartões do
+  // A hora a que a comparação MENSAL foi cortada — ver `dashboard.py`. As
+  // linhas por loja não têm espaço para a frase inteira (que os cartões do
   // topo mostram), mas têm para a hora, e é ela que faz a diferença entre
-  // «Ontem» e «Ontem até às 17:25».
+  // «Anterior» e «Anterior até às 17:25».
+  //
+  // Só no mensal: «Ontem» passou a ser o dia anterior INTEIRO, por decisão do
+  // dono — lá não há hora nenhuma a assinalar.
   const ateAsHoras = dashboard?.hora_de_corte
     ? ` até às ${dashboard.hora_de_corte}` : '';
   const porLoja = dashboard?.por_loja || [];
@@ -826,9 +829,9 @@ export default function FatDashboard() {
               <h2 className="font-heading font-semibold text-base">Por loja</h2>
               {(cartoes.hoje?.comparacao || cartoes.mensal?.comparacao) && (
                 <p className="text-xs text-muted-foreground">
-                  {`Hoje e Mensal comparados com os mesmos períodos dos cartões acima${
+                  {`Hoje compara-se com o dia de ONTEM INTEIRO — a diferença fecha-se ao longo do dia${
                 dashboard?.hora_de_corte
-                  ? ` — o dia anterior conta só até às ${dashboard.hora_de_corte}, a mesma hora a que hoje vai`
+                  ? `. O Mensal compara com o mesmo pedaço do mês anterior, até às ${dashboard.hora_de_corte}`
                   : ''}.`}
                 </p>
               )}
@@ -863,7 +866,7 @@ export default function FatDashboard() {
                             <div className="flex flex-wrap items-center gap-1.5 mt-1">
                               <VariacaoPill variacao={loja.variacao_hoje} />
                               <span className="text-xs text-muted-foreground">
-                                Ontem{ateAsHoras}: {fmtEUR(loja.hoje_anterior)}
+                                Ontem: {fmtEUR(loja.hoje_anterior)}
                               </span>
                             </div>
                           </div>
