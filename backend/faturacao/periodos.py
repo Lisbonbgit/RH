@@ -259,7 +259,7 @@ def _formata_periodo(janela: Janela) -> str:
     return "%s – %s" % (_formata_dia(primeiro), _formata_dia(ultimo))
 
 
-def _hora_de_corte(janela_actual: Janela, janela_anterior: Janela) -> Optional[time]:
+def hora_de_corte(janela_actual: Janela, janela_anterior: Janela) -> Optional[time]:
     """A hora (Lisboa) em que a comparação foi cortada a meio de um dia — ou
     None se os dois lados terminarem exactamente à meia-noite (período
     fechado, sem corte de relógio nenhum a assinalar — só o intervalo de
@@ -287,7 +287,7 @@ def descreve_comparacao(janela_actual: Janela, janela_anterior: Janela) -> str:
     com 1–13 de julho" lê-se como dois períodos completos, quando na
     verdade os dois pararam a meio do dia 13."""
     frase = "%s, comparado com %s" % (_formata_periodo(janela_actual), _formata_periodo(janela_anterior))
-    hora_corte = _hora_de_corte(janela_actual, janela_anterior)
+    hora_corte = hora_de_corte(janela_actual, janela_anterior)
     if hora_corte is not None:
         frase += ", até às %02d:%02d" % (hora_corte.hour, hora_corte.minute)
     return frase

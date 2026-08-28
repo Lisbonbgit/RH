@@ -29,6 +29,7 @@ from .periodos import (
     LISBON_TZ,
     Janela,
     descreve_comparacao,
+    hora_de_corte,
     janela_ano,
     janela_anterior_equivalente,
     janela_hoje,
@@ -267,8 +268,28 @@ def calcula_dashboard(documentos: List[Dict], lojas: List[Dict], agora: datetime
     # precisam (desde o início do ano anterior, ver o endpoint) — deduzir
     # "alguma vez existiu uma venda?" a partir dessa janela dava um "não"
     # errado sempre que o negócio tivesse vendas mais antigas do que ela.
+    # **A hora a que a comparação foi cortada**, para o ecrã a poder escrever.
+    #
+    # O «Ontem» dos cartões não é ontem inteiro: é ontem desde a meia-noite até
+    # à mesma hora do relógio a que hoje ainda vai
+    # (`janela_ontem_equivalente`), e é assim de propósito — comparar cinco
+    # horas de hoje com vinte e quatro de ontem mostrava uma queda enorme todas
+    # as manhãs.
+    #
+    # O dono apanhou o preço disso: o Oeiras abriu a caixa às 19:09, ele viu o
+    # painel às 17:25, e a linha dizia «Ontem: 0,00 €» — que se lê como «ontem
+    # a loja não fez nada», quando ontem a loja fez 45,90 €. A conta estava
+    # certa; a etiqueta é que mentia.
+    #
+    # A frase inteira (`comparacao`) já vai nos cartões do topo. Nas linhas por
+    # loja não cabe — mas a HORA cabe, e é ela que transforma «Ontem» em
+    # «Ontem até às 17:25». `None` quando não há corte nenhum (os dois lados
+    # fecham à meia-noite): aí escrever uma hora era ruído.
+    corte = hora_de_corte(j_hoje, j_hoje_anterior)
+
     return {
         "cartoes": cartoes,
+        "hora_de_corte": "%02d:%02d" % (corte.hour, corte.minute) if corte else None,
         "serie_diaria": _serie_diaria(documentos, campo, agora, DIAS_SERIE_DIARIA),
         "ultimos_6_meses": _serie_mensal(documentos, campo, agora, MESES_SERIE_MENSAL),
         "por_loja": por_loja,

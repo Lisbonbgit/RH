@@ -739,3 +739,57 @@ def test_ha_vendas_e_o_valor_dizem_a_mesma_coisa_sobre_um_documento_do_pos(monke
     resposta = _corre(obter_dashboard(com_iva=True, _={}))
     assert resposta["ha_vendas"] is True
     assert resposta["cartoes"]["hoje"]["valor"] == 8.99
+
+
+# --- «Ontem: 0,00 €» quando ontem foram 45,90 € ------------------------------
+#
+# O dono, a olhar para o painel: «teve faturação ontem em oeiras. mas está a
+# dizer que foi 0,00 €.»
+#
+# A conta estava certa e a etiqueta é que mentia. O «Ontem» dos cartões não é
+# ontem inteiro — é ontem desde a meia-noite até à MESMA HORA do relógio a que
+# hoje ainda vai (`janela_ontem_equivalente`), e é assim de propósito: comparar
+# cinco horas de hoje com vinte e quatro de ontem mostrava uma queda enorme
+# todas as manhãs.
+#
+# Só que a loja do Oeiras abriu a caixa às 19:09 nesse dia, e o painel foi
+# visto às 17:25. Ontem, até às 17:25, tinha vendido mesmo zero — e a etiqueta
+# dizia «Ontem: 0,00 €», que se lê como «ontem a loja não fez nada».
+#
+# A frase que resolve isto JÁ EXISTIA (`descreve_comparacao`, que acrescenta
+# «até às HH:MM» exactamente para este caso) — as linhas por loja é que a
+# deitavam fora, ficando só com o número. O que falta é a hora de corte chegar
+# ao ecrã.
+
+
+def test_o_dashboard_diz_a_HORA_DE_CORTE_da_comparacao(monkeypatch):
+    """Sem ela, o ecrã não tem como escrever «Ontem até às 17:25» — e um
+    número parcial com etiqueta de dia inteiro é uma leitura errada que
+    ninguém tem como desconfiar."""
+    agora = datetime(2026, 8, 28, 16, 25, tzinfo=timezone.utc)  # 17:25 em Lisboa
+    saida = calcula_dashboard([], [], agora)
+    assert saida["hora_de_corte"] == "17:25", saida.get("hora_de_corte")
+
+
+def test_uma_comparacao_SEM_corte_nao_inventa_uma_hora(monkeypatch):
+    """À meia-noite em ponto os dois lados fecham o dia inteiro: não há hora
+    nenhuma a assinalar, e escrever «até às 00:00» era ruído."""
+    agora = datetime(2026, 8, 27, 23, 0, tzinfo=timezone.utc)  # 00:00 em Lisboa
+    saida = calcula_dashboard([], [], agora)
+    assert saida["hora_de_corte"] is None, saida.get("hora_de_corte")
+
+
+def test_o_ONTEM_de_uma_loja_e_o_mesmo_que_o_do_total(monkeypatch):
+    """O caso do dono, com os números dele: 45,90 € faturados às 19:09 de
+    ontem não entram num «ontem até às 17:25» — nem para a loja nem para o
+    total. O que este teste prende é que os dois concordam: uma loja a dizer
+    45,90 € e o total a dizer 0,00 € era o pior dos dois mundos."""
+    ontem_tarde = "2026-08-27T18:30:00+00:00"   # 19:30 em Lisboa
+    docs = [{"id": "d1", "loja_id": "l-oeiras", "tipo": "FS", "total_bruto": 45.90,
+             "emitido_em": ontem_tarde}]
+    lojas = [{"id": "l-oeiras", "nome": "L'açaí Oeiras"}]
+    agora = datetime(2026, 8, 28, 16, 25, tzinfo=timezone.utc)  # 17:25 em Lisboa
+    saida = calcula_dashboard(docs, lojas, agora)
+    da_loja = saida["por_loja"][0]
+    assert da_loja["hoje_anterior"] == saida["cartoes"]["hoje"]["valor_comparado"]
+    assert da_loja["hoje_anterior"] == 0.0

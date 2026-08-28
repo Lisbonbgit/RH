@@ -273,3 +273,26 @@ def test_o_dialogo_do_fecho_nao_manda_cobrar_a_conta_que_o_balcao_nao_alcanca():
     assert "não se cobra no balcão" in texto
     assert "Contas por Resolver" in texto, (
         "A ressalva deixou de dizer ONDE é que essa conta se resolve.")
+
+
+# --- «Ontem: 0,00 €» quando ontem foram 45,90 € ------------------------------
+
+
+def test_o_ecra_diz_ATE_QUANDO_conta_o_ontem_de_cada_loja():
+    """O dono: «teve faturação ontem em oeiras. mas está a dizer que foi
+    0,00 €.» A conta estava certa — a loja abriu a caixa às 19:09 e ele viu o
+    painel às 17:25, e o «Ontem» dos cartões pára à mesma hora a que hoje vai.
+    A ETIQUETA é que mentia: «Ontem: 0,00 €» lê-se como «ontem a loja não fez
+    nada».
+
+    Afirmado sobre o ficheiro do ecrã e não sobre um valor: o que se prende
+    aqui é que a etiqueta CARREGA a hora, e não o número que ela mostra."""
+    from pathlib import Path
+    ecra = (Path(__file__).resolve().parents[2].parent / "frontend" / "src" /
+            "pages" / "admin" / "faturacao" / "FatDashboard.js").read_text(encoding="utf-8")
+    assert "Ontem{ateAsHoras}" in ecra, (
+        "A etiqueta do «Ontem» por loja voltou a não dizer até que hora conta.")
+    assert "Anterior{ateAsHoras}" in ecra, (
+        "A etiqueta do «Anterior» mensal por loja perdeu a hora de corte.")
+    assert "dashboard?.hora_de_corte" in ecra, (
+        "O ecrã deixou de ler a `hora_de_corte` que o servidor manda.")
