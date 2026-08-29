@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  getGrupos, criarGrupo, editarGrupo, apagarGrupo,
+  getGrupos, criarGrupo, editarGrupo, apagarGrupo, getArtigosVendus,
   detalhesErro, temMaisDe2CasasDecimais,
 } from '../../../lib/faturacao';
 import { Card, CardContent } from '../../../components/ui/card';
@@ -17,16 +17,20 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '../../../components/ui/alert-dialog';
-import { Sparkles, Plus, Pencil, Trash2, X } from 'lucide-react';
+import { Sparkles, Plus, Pencil, Trash2, X, Link2, Link2Off, Loader2, AlertTriangle } from 'lucide-react';
 import PageHeader from '../../../components/PageHeader';
 import { toast } from 'sonner';
 
 const NOME_GRUPO_MAX = 80;
 const NOME_OPCAO_MAX = 60;
 
-const emptyOpcao = () => ({ id: null, nome: '', preco: '0', ativa: true });
+const emptyOpcao = () => ({ id: null, nome: '', preco: '0', ativa: true, vendus_ref: '' });
 const emptyForm = {
   nome: '', min_select: '0', max_select: '0', ativo: true, opcoes: [],
+  // Só o servidor sabe se este grupo é o do TAMANHO (ver `openEdit`). Um
+  // grupo novo ainda não é nada: a ligação aparece depois do primeiro
+  // Guardar, que é quando o servidor responde sobre o nome escolhido.
+  eVariante: false,
   // Mesmos defaults do servidor (catalogo.py): "opcoes" e sai_na_fatura=true —
   // um grupo novo abre já como os toppings de sempre, não como o Nome/Levar.
   tipo: 'opcoes', sai_na_fatura: true,
@@ -92,17 +96,76 @@ export default function FatPersonalizacoes() {
       ativo: grupo.ativo !== false,
       tipo: grupo.tipo || 'opcoes',
       sai_na_fatura: grupo.sai_na_fatura !== false,
+      eVariante: grupo.e_variante === true,
       opcoes: (grupo.opcoes || []).map((o) => ({
         id: o.id || null,
         nome: o.nome || '',
         preco: String(o.preco ?? 0),
         ativa: o.ativa !== false,
+        // Vazio e não `undefined`: o input é controlado, e o Guardar
+        // distingue "não ligado" de "ligado" pelo texto, não pela ausência.
+        vendus_ref: o.vendus_ref || '',
       })),
     });
     setFormError('');
     setOpcaoErrors({});
     setDialogOpen(true);
   };
+
+  // --- A ligação de cada TAMANHO ao artigo dele no Vendus --------------------
+  //
+  // No nosso catálogo há UM açaí e o tamanho é uma personalização dele; no
+  // Vendus, o Mini, o Small, o Regular e o Supreme são quatro artigos. Sem
+  // esta ligação, todas as linhas viajam com a referência do produto e as
+  // lojas facturam tudo no mesmo artigo, seja qual for o tamanho.
+  //
+  // `eVariante` vem do SERVIDOR (`catalogo.listar_grupos`), que o calcula com
+  // a mesma função que a emissão usa. Repetir aqui a regra de "isto é um
+  // grupo de tamanho" era arranjar duas versões dela — e no dia em que
+  // discordassem, o campo aparecia, era preenchido, e a emissão ignorava-o.
+  const [artigosVendus, setArtigosVendus] = useState(null);
+  const [artigosEstado, setArtigosEstado] = useState('inicio');
+  const [artigosErro, setArtigosErro] = useState('');
+  const [escolhaAberta, setEscolhaAberta] = useState(null); // índice da opção
+  const [filtroArtigo, setFiltroArtigo] = useState('');
+
+  const abrirEscolhaDeArtigo = async (index) => {
+    setEscolhaAberta(index);
+    setFiltroArtigo('');
+    if (artigosVendus || artigosEstado === 'a-carregar') return;
+    setArtigosEstado('a-carregar');
+    setArtigosErro('');
+    try {
+      const { data } = await getArtigosVendus();
+      setArtigosVendus(data || []);
+      setArtigosEstado('pronto');
+    } catch (error) {
+      // A frase do servidor: é ele que sabe se a conta não está configurada
+      // ou se o Vendus está em baixo. Uma lista vazia com ar de sucesso dizia
+      // «esta conta não tem artigos» e o tamanho ficava por ligar por engano.
+      setArtigosErro(detalhesErro(
+        error, 'Não foi possível ler o catálogo do Vendus.').mensagem);
+      setArtigosEstado('erro');
+    }
+  };
+
+  const escolherArtigo = (artigo) => {
+    updateOpcao(escolhaAberta, { vendus_ref: artigo.id });
+    setEscolhaAberta(null);
+  };
+
+  const nomeDoArtigo = (ref) => {
+    const artigo = (artigosVendus || []).find((a) => String(a.id) === String(ref));
+    // Sem o catálogo lido, o que se sabe é a referência — e é o que se diz.
+    return artigo ? artigo.nome : `Ref. ${ref}`;
+  };
+
+  const artigosFiltrados = React.useMemo(() => {
+    const texto = filtroArtigo.trim().toLowerCase();
+    if (!texto) return artigosVendus || [];
+    return (artigosVendus || []).filter(
+      (a) => `${a.nome} ${a.referencia || ''}`.toLowerCase().includes(texto));
+  }, [artigosVendus, filtroArtigo]);
 
   const addOpcao = () => setForm((prev) => ({ ...prev, opcoes: [...prev.opcoes, emptyOpcao()] }));
   const removeOpcao = (index) => {
@@ -185,6 +248,9 @@ export default function FatPersonalizacoes() {
         nome: o.nome.trim(),
         preco: Number(o.preco) || 0,
         ativa: o.ativa,
+        // Sempre enviado, `null` quando não há ligação: omiti-lo deixava a
+        // ligação anterior gravada e desligar um tamanho era impossível.
+        vendus_ref: o.vendus_ref ? String(o.vendus_ref).trim() : null,
       })),
     };
     setSaving(true);
@@ -430,7 +496,8 @@ export default function FatPersonalizacoes() {
                 ) : (
                   <div className="space-y-2">
                     {form.opcoes.map((opcao, index) => (
-                      <div key={index} className="flex items-start gap-2" data-testid={`opcao-row-${index}`}>
+                      <React.Fragment key={index}>
+                      <div className="flex items-start gap-2" data-testid={`opcao-row-${index}`}>
                         <div className="flex-1 space-y-1">
                           <Input
                             value={opcao.nome}
@@ -467,6 +534,39 @@ export default function FatPersonalizacoes() {
                           </Button>
                         </div>
                       </div>
+                      {form.eVariante && (
+                        <div className="pl-1 -mt-1" data-testid={`opcao-vendus-${index}`}>
+                          {opcao.vendus_ref ? (
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <Link2 className="h-3.5 w-3.5 text-primary shrink-0" />
+                              <span className="truncate">
+                                Fatura como <span className="font-medium text-foreground">{nomeDoArtigo(opcao.vendus_ref)}</span>
+                              </span>
+                              <button
+                                type="button" className="underline hover:text-foreground shrink-0"
+                                onClick={() => abrirEscolhaDeArtigo(index)}
+                                data-testid={`trocar-artigo-${index}`}
+                              >Trocar</button>
+                              <button
+                                type="button" className="underline hover:text-destructive shrink-0"
+                                onClick={() => updateOpcao(index, { vendus_ref: '' })}
+                                data-testid={`desligar-artigo-${index}`}
+                              >Desligar</button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground underline"
+                              onClick={() => abrirEscolhaDeArtigo(index)}
+                              data-testid={`ligar-artigo-${index}`}
+                            >
+                              <Link2Off className="h-3.5 w-3.5" />
+                              Ligar ao artigo do Vendus
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      </React.Fragment>
                     ))}
                   </div>
                 )}
@@ -478,6 +578,65 @@ export default function FatPersonalizacoes() {
               <Button type="submit" disabled={saving} data-testid="save-grupo-btn">{saving ? 'A guardar...' : 'Guardar'}</Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* **A escolha do artigo do Vendus para UM tamanho.**
+          Lê o catálogo do Vendus ao vivo — não uma cópia nossa: uma lista
+          desactualizada fazia o dono ligar o tamanho a um artigo que já lá
+          não está, e a fatura seguinte era recusada com o cliente à frente. */}
+      <Dialog open={escolhaAberta !== null} onOpenChange={(o) => !o && setEscolhaAberta(null)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Ligar ao artigo do Vendus</DialogTitle>
+            <DialogDescription>
+              Este tamanho passa a ser faturado no artigo escolhido. O preço e o
+              nome continuam a ser os nossos — a ligação decide só em nome de que
+              artigo a linha entra no Vendus.
+            </DialogDescription>
+          </DialogHeader>
+
+          {artigosEstado === 'a-carregar' ? (
+            <div className="flex items-center justify-center h-32 gap-2 text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span className="text-sm">A ler o catálogo do Vendus…</span>
+            </div>
+          ) : artigosEstado === 'erro' ? (
+            <div className="flex items-start gap-2 rounded-lg bg-destructive/10 text-destructive p-3 text-sm"
+              data-testid="erro-artigos-vendus">
+              <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+              <span>{artigosErro}</span>
+            </div>
+          ) : (
+            <>
+              <Input
+                value={filtroArtigo}
+                onChange={(e) => setFiltroArtigo(e.target.value)}
+                placeholder="Procurar por nome ou referência"
+                data-testid="filtro-artigo-do-tamanho"
+              />
+              <div className="max-h-72 overflow-y-auto divide-y rounded-md border">
+                {artigosFiltrados.length === 0 ? (
+                  <p className="p-4 text-sm text-muted-foreground text-center">
+                    Nenhum artigo com esse nome.
+                  </p>
+                ) : artigosFiltrados.map((artigo) => (
+                  <button
+                    key={artigo.id}
+                    type="button"
+                    className="w-full text-left px-3 py-2.5 hover:bg-accent/60 flex items-center justify-between gap-3"
+                    onClick={() => escolherArtigo(artigo)}
+                    data-testid={`artigo-do-tamanho-${artigo.id}`}
+                  >
+                    <span className="text-sm truncate">{artigo.nome}</span>
+                    <span className="text-xs text-muted-foreground shrink-0 tabular-nums">
+                      {artigo.referencia || artigo.id}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </DialogContent>
       </Dialog>
 

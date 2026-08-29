@@ -1539,12 +1539,28 @@ async def _carimbar_sai_na_fatura(
         return not (preservar_carimbo and isinstance(o.get("sai_na_fatura"), bool))
 
     grupos_da_linha = {}
-    ids = [o.get("grupo_id") for o in opcoes if o.get("grupo_id") and falta_carimbo(o)]
+    # **O `vendus_ref` da opção lê-se SEMPRE da configuração** — nunca se
+    # preserva o que o pedido reenvia, ao contrário do `sai_na_fatura`.
+    #
+    # A diferença é o que está em jogo. O carimbo do `sai_na_fatura` decide se
+    # uma opção GRÁTIS aparece no título; aceitá-lo do cliente custa, no pior
+    # caso, um título sem uma palavra. O `vendus_ref` decide a que ARTIGO do
+    # Vendus a linha é atribuída num documento fiscal real — e aceitá-lo do
+    # cliente era deixar escolher, de fora, em nome de que artigo se factura.
+    #
+    # Por isso os ids de TODOS os grupos entram na consulta, e não só os das
+    # opções por carimbar.
+    ids = list({o.get("grupo_id") for o in opcoes if o.get("grupo_id")})
+    refs_das_opcoes = {}
     if ids:
         for g in await db[COLECOES["grupos_personalizacao"]].find(
-            {"id": {"$in": ids}}, {"_id": 0, "id": 1, "sai_na_fatura": 1, "nome": 1}
+            {"id": {"$in": ids}},
+            {"_id": 0, "id": 1, "sai_na_fatura": 1, "nome": 1, "opcoes": 1}
         ).to_list(len(ids)):
             grupos_da_linha[g["id"]] = (g.get("sai_na_fatura", True), g.get("nome"))
+            for opcao_configurada in g.get("opcoes") or []:
+                if opcao_configurada.get("id"):
+                    refs_das_opcoes[opcao_configurada["id"]] = opcao_configurada.get("vendus_ref")
 
     carimbadas = []
     for o in opcoes:
@@ -1566,6 +1582,16 @@ async def _carimbar_sai_na_fatura(
             # `None` e imprime as respostas sem título, exactamente como
             # imprimia. Nada rebenta e nada se perde.
             o["nome_grupo"] = nome_grupo
+        # Fora do `if`: o artigo do Vendus vem da configuração em TODAS as
+        # escritas, incluindo a edição de uma linha já gravada. Ver acima.
+        ref = refs_das_opcoes.get(o.get("id"))
+        if ref:
+            o["vendus_ref"] = ref
+        else:
+            # Apaga uma referência que a opção trouxesse e que a configuração
+            # já não tem — senão uma ligação desfeita no backoffice continuava
+            # a facturar no artigo antigo até alguém dar por isso.
+            o.pop("vendus_ref", None)
         # Senão fica o carimbo que a opção já trazia, tal e qual — é o
         # retrato do dia em que a linha nasceu.
         carimbadas.append(o)

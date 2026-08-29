@@ -4273,3 +4273,105 @@ def test_separar_recusa_parte_cujas_linhas_somam_zero(monkeypatch):
 
     # Nada foi escrito: a recusa acontece ANTES de qualquer insert_one.
     assert not any(op[0] == "insert_one" for op in registo)
+
+
+# --- o artigo do Vendus que o TAMANHO representa -----------------------------
+
+def _grupo_tamanho(ref="171258472"):
+    return {
+        "id": "g-tam", "nome": "Tamanho", "sai_na_fatura": True,
+        "opcoes": [
+            dict({"id": "o-mini", "nome": "Mini", "preco": 5.85},
+                 **({"vendus_ref": ref} if ref else {})),
+            {"id": "o-regular", "nome": "Regular", "preco": 8.99},
+        ],
+    }
+
+
+def _junta_o_mini(monkeypatch, grupo, opcao_enviada=None):
+    db = _db([], vendas=[_venda()], produtos=[_produto()], grupos=[grupo])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    return _corre(juntar_linha(
+        "venda-1", PedidoJuntarLinha(
+            produto_id="prod-1", quantidade=1,
+            opcoes=[opcao_enviada or {
+                "id": "o-mini", "grupo_id": "g-tam", "nome": "Mini", "preco": 5.85}],
+        ), operador=_operador()
+    ))
+
+
+def test_a_linha_carimba_o_ARTIGO_DO_VENDUS_da_opcao_de_tamanho(monkeypatch):
+    """Sem este carimbo, `precos.linha_de_venda` — que é pura e não tem base
+    de dados — não tinha como saber que o Mini é outro artigo, e a fatura
+    saía no artigo do produto («Açaí Regular», seja qual for o tamanho)."""
+    r = _junta_o_mini(monkeypatch, _grupo_tamanho())
+    assert r["linhas"][0]["opcoes"][0]["vendus_ref"] == "171258472"
+
+
+def test_a_opcao_SEM_ligacao_nao_ganha_referencia_nenhuma(monkeypatch):
+    r = _junta_o_mini(monkeypatch, _grupo_tamanho(ref=None))
+    assert "vendus_ref" not in r["linhas"][0]["opcoes"][0]
+
+
+def test_o_artigo_do_Vendus_vem_da_CONFIGURACAO_e_nunca_do_pedido(monkeypatch):
+    """**A diferença para o `sai_na_fatura`.**
+
+    O carimbo do `sai_na_fatura` aceita-se do cliente numa edição — no pior
+    caso custa uma palavra no título. Este decide a que ARTIGO um documento
+    fiscal real é atribuído: aceitá-lo do pedido era deixar escolher, de
+    fora, em nome de que artigo se factura."""
+    r = _junta_o_mini(monkeypatch, _grupo_tamanho(), opcao_enviada={
+        "id": "o-mini", "grupo_id": "g-tam", "nome": "Mini", "preco": 5.85,
+        "vendus_ref": "999999999",
+    })
+    assert r["linhas"][0]["opcoes"][0]["vendus_ref"] == "171258472", (
+        "o pedido escolheu o artigo em que se factura")
+
+
+def test_desfazer_a_ligacao_no_backoffice_TIRA_a_referencia_da_linha(monkeypatch):
+    """Uma ligação desfeita tem de deixar de facturar no artigo antigo. Se a
+    referência ficasse pegada à opção que o pedido reenvia, continuava lá até
+    alguém dar por isso — e ninguém dava."""
+    r = _junta_o_mini(monkeypatch, _grupo_tamanho(ref=None), opcao_enviada={
+        "id": "o-mini", "grupo_id": "g-tam", "nome": "Mini", "preco": 5.85,
+        "vendus_ref": "171258472",
+    })
+    assert "vendus_ref" not in r["linhas"][0]["opcoes"][0]
+
+
+def test_reabrir_o_dialogo_NAO_perde_o_artigo_do_Vendus_do_tamanho(monkeypatch):
+    """O caso real, e o que a mutação apanhou: `PosDialogoProduto.js` reenvia
+    as opções INTEIRAS sempre que a operadora reabre a linha para juntar mais
+    um topping.
+
+    Numa edição, uma opção que já traz o carimbo do `sai_na_fatura` não vai
+    reler o grupo — e enquanto a consulta só ia buscar os grupos das opções
+    POR carimbar, a referência do tamanho evaporava-se na primeira edição. A
+    fatura saía no artigo do produto, e só nas contas em que o cliente mudou
+    de ideias: metade dos açaís no artigo certo, metade no errado."""
+    registo = []
+    grupo_tamanho = {
+        "id": "g-tam", "nome": "Tamanho", "sai_na_fatura": True,
+        "opcoes": [{"id": "o-mini", "nome": "Mini", "preco": 5.85,
+                    "vendus_ref": "171258472"}],
+    }
+    linha_ja_carimbada = _linha(opcoes=[
+        {"id": "o-mini", "grupo_id": "g-tam", "nome": "Mini", "preco": 5.85,
+         "sai_na_fatura": True, "nome_grupo": "Tamanho",
+         "vendus_ref": "171258472"},
+    ])
+    db = _db(registo, vendas=[_venda(linhas=[linha_ja_carimbada])],
+             grupos=[grupo_tamanho])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+
+    resultado = _corre(editar_linha(
+        "venda-1", "linha-1", PedidoEditarLinha(opcoes=[
+            # Tal como o ecrã a devolve: já carimbada.
+            {"id": "o-mini", "grupo_id": "g-tam", "nome": "Mini", "preco": 5.85,
+             "sai_na_fatura": True, "nome_grupo": "Tamanho",
+             "vendus_ref": "171258472"},
+            {"id": "o-nut", "grupo_id": "g-top", "nome": "Nutella", "preco": 1.0},
+        ]), operador=_operador()
+    ))
+    opcoes = resultado["linhas"][0]["opcoes"]
+    assert next(o for o in opcoes if o["id"] == "o-mini")["vendus_ref"] == "171258472"

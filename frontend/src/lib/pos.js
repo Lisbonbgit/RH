@@ -151,6 +151,45 @@ const lerDaSessao = (chave) => {
   } catch (e) { return null; }
 };
 
+// --- O NIF que o cliente já ditou --------------------------------------------
+//
+// **A queixa do balcão**, palavra do dono: «o cliente pede fatura com NIF, a
+// funcionária escreve-o, o cliente lembra-se de juntar mais uma coisa ao
+// pedido, e quando se volta ao finalizar o NIF desapareceu». Desaparecia
+// porque vivia dentro do `PosFinalizar`, e sair desse ecrã desmonta-o.
+//
+// Guardado com o ID DA CONTA e devolvido só a essa conta. É essa a peça que
+// interessa aqui, e não o guardar: uma conta repartida cobra-se parte a parte,
+// e um NIF que passasse da primeira para a segunda punha a fatura de um
+// cliente em nome de outro — um erro fiscal a sério, e silencioso.
+//
+// `sessionStorage` e não `localStorage`: um F5 a meio de uma venda não pode
+// apagar o que já se escreveu, mas desligar o PC tem de limpar tudo — é a
+// mesma regra da sessão da operadora, e pela mesma razão.
+const CHAVE_NIF_DA_CONTA = 'pos_nif_da_conta';
+
+export const guardarNifDaConta = (vendaId, nif) => {
+  // **Sem conta não se escreve NADA** — e isto não é zelo: a gaveta é uma só,
+  // e uma escrita sem id APAGAVA o NIF que lá estava guardado para a conta a
+  // ser cobrada. O ecrã pode desenhar-se um instante antes de a conta chegar.
+  if (!vendaId) return;
+  guardarNaSessao(CHAVE_NIF_DA_CONTA, JSON.stringify({
+    vendaId, nif: String(nif || '').trim(),
+  }));
+};
+
+export const lerNifDaConta = (vendaId) => {
+  if (!vendaId) return '';
+  try {
+    const bruto = sessionStorage.getItem(CHAVE_NIF_DA_CONTA);
+    if (!bruto) return '';
+    const guardado = JSON.parse(bruto);
+    // A comparação de ids É a garantia. Sem ela, isto era um NIF à solta.
+    return guardado && guardado.vendaId === vendaId ? String(guardado.nif || '') : '';
+  } catch (e) { return ''; }
+};
+
+
 // --- Dispositivo -------------------------------------------------------------
 
 export const getDeviceToken = () => ler(CHAVE_DISPOSITIVO);

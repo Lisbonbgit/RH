@@ -1569,6 +1569,21 @@ async def _retomar_reserva_incerta(
                 "se emite às cegas; confirme no Vendus." % (ext_ref, erro_verificacao)
             ) from erro_verificacao
         if encontrado is not None:
+            # **A fatura já tinha saído numa tentativa anterior desta MESMA
+            # conta** — e é esta tentativa que a vai gravar. Portanto é o
+            # `dados_pagamento` DELA que vale, exactamente como no ramo de
+            # baixo (que emite e passa por `_emitir_e_gravar`).
+            #
+            # Sem isto, uma conta que passasse pela retoma de uma reserva
+            # incerta perdia o NIF duas vezes: não ficava na venda nem no
+            # documento. É o mesmo defeito que a linha em `_emitir_e_gravar`
+            # fecha, no único caminho até `_gravar_documento` que não passa
+            # por lá.
+            if dados_pagamento is not None:
+                await db[COLECOES["vendas"]].update_one(
+                    {"id": venda["id"]}, {"$set": dados_pagamento}
+                )
+                venda.update(dados_pagamento)
             documento = await _gravar_documento(
                 db, ext_ref, venda, encontrado, reserva_id=reserva_id)
         else:

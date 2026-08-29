@@ -5405,3 +5405,31 @@ def test_sem_NIF_o_documento_fica_sem_NIF_e_nao_com_um_inventado():
         dados_pagamento={"pagamentos": [], "cliente_nif": None}))
 
     assert documento["cliente_nif"] is None
+
+
+def test_o_NIF_sobrevive_a_RETOMA_de_uma_reserva_incerta():
+    """O caminho que a primeira correcção não cobria.
+
+    A tentativa anterior deixou a reserva `incerta`; esta verifica, descobre
+    que a fatura JÁ saiu, e grava o documento sem passar por
+    `_emitir_e_gravar`. Era o único caminho até `_gravar_documento` que não
+    escrevia o `dados_pagamento` — e aqui o NIF perdia-se DUAS vezes: nem
+    ficava na venda, nem no documento."""
+    ref = "pos-loja-1-sessao-1-venda-1"
+    db = _db(
+        vendas=[_venda()],
+        refs=[{"id": "r1", "ext_ref": ref, "venda_id": "venda-1", "incerta": True}],
+    )
+
+    async def emitir(ref):
+        raise AssertionError("a fatura já existe — não se emite outra vez")
+
+    async def verificar(ref):
+        return _bruto()
+
+    documento = _corre(finalizar_venda(
+        db, _venda(), emitir, verificar, esperar=_instantaneo,
+        dados_pagamento={"pagamentos": [], "cliente_nif": "517542510"}))
+
+    assert documento["cliente_nif"] == "517542510"
+    assert db[COLECOES["vendas"]]._documentos[0]["cliente_nif"] == "517542510"

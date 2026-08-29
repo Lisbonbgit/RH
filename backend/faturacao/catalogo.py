@@ -33,6 +33,7 @@ from .fotos import origem_de_uma_gravacao_do_backoffice
 from .precos import (
     _CODIGOS_IVA_VALIDOS,
     _tem_mais_de_2_casas_decimais,
+    e_grupo_de_variante,
     erros_do_produto,
     id_vendus_do_produto,
 )
@@ -242,6 +243,18 @@ class OpcaoEntrada(BaseModel):
     # outras guardas, e o json do Python aceita o literal sem se queixar.
     preco: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     ativa: bool = True
+    # **O artigo do Vendus que ESTA opção representa** — o mesmo campo que o
+    # produto já tem, um nível abaixo.
+    #
+    # Existe por uma razão de faturação e não de arrumação: no nosso catálogo
+    # há UM açaí e o tamanho é uma personalização dele; no Vendus, o Mini, o
+    # Small, o Regular e o Supreme são quatro artigos diferentes. Sem isto, a
+    # linha viajava sempre com a referência do produto — e as cinco lojas
+    # estiveram a faturar todos os açaís como «Açaí Regular», fosse qual
+    # fosse o tamanho. O total em dinheiro estava certo; o artigo é que não.
+    #
+    # `None` na esmagadora maioria das opções: um topping não é outro artigo.
+    vendus_ref: Optional[str] = None
 
     @field_validator("preco")
     @classmethod
@@ -318,12 +331,24 @@ def _opcoes_com_id(opcoes: List[dict]) -> List[dict]:
 @router.get("/grupos-personalizacao")
 async def listar_grupos(_: dict = Depends(gestor_atual)) -> List[dict]:
     db = obter_db()
-    return (
+    grupos = (
         await db[COLECOES["grupos_personalizacao"]]
         .find({}, {"_id": 0})
         .sort("nome", 1)
         .to_list(200)
     )
+    # **`e_variante` calculado AQUI e não adivinhado no ecrã.** É o grupo do
+    # TAMANHO — o único cujas opções podem apontar para outro artigo do Vendus
+    # (ver `precos.id_vendus_da_variante`), e é ele que decide se o backoffice
+    # mostra a ligação em cada opção.
+    #
+    # Vai no ar em vez de o ecrã repetir a regra: uma segunda cópia da
+    # heurística no JavaScript acabava a discordar desta, e o dia em que
+    # discordassem o dono via o campo, preenchia-o, e a emissão ignorava-o —
+    # sem erro nenhum.
+    for grupo in grupos:
+        grupo["e_variante"] = e_grupo_de_variante(grupo.get("nome"))
+    return grupos
 
 
 @router.post("/grupos-personalizacao", status_code=201)

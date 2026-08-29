@@ -86,6 +86,34 @@ def _tem_mais_de_2_casas_decimais(valor) -> bool:
     return len(casas) > 2
 
 
+def id_vendus_da_variante(opcoes) -> Optional[int]:
+    """O artigo do Vendus que o TAMANHO escolhido representa — ou `None`.
+
+    Só uma opção de um grupo de VARIANTE pode desviar o artigo, e é uma
+    restrição a sério, não uma formalidade: sem ela, ligar um topping ao
+    artigo dele no Vendus para efeitos de stock passava a facturar o açaí
+    inteiro como «Nutella». Um tamanho É outro artigo; um topping é o mesmo
+    artigo com mais uma coisa dentro.
+
+    A primeira que sirva, pela ordem em que a operadora as escolheu — uma
+    linha com dois tamanhos não existe (o grupo é de escolha única), e se
+    alguma vez existir, escolher em silêncio o último era pior do que
+    escolher o primeiro: pelo menos assim a regra é dizível.
+
+    Reutiliza `id_vendus_do_produto` para a validação do valor, que é a mesma
+    (inteiro positivo, senão não vai): duas cópias dessa guarda acabavam a
+    discordar, e a que discordasse mandava um `id` que o Vendus não reconhece
+    para dentro de um documento fiscal.
+    """
+    for opcao in opcoes or []:
+        if not e_grupo_de_variante(opcao.get("nome_grupo")):
+            continue
+        id_vendus = id_vendus_do_produto(opcao)
+        if id_vendus is not None:
+            return id_vendus
+    return None
+
+
 def id_vendus_do_produto(produto: Dict) -> Optional[int]:
     """O id do produto no Vendus (`vendus_ref`) pronto a viajar na linha como
     `id` — ou `None` quando não há nenhum que se possa enviar.
@@ -276,7 +304,13 @@ def linha_de_venda(
     # 7.75}`), o documento saiu a 7,75 € — o NOSSO preço — e a leitura
     # devolveu o NOSSO título. Por isso o `gross_price`, o `tax_id`, o título
     # e os descontos acima ficam exactamente como estavam.
-    id_vendus = id_vendus_do_produto(produto)
+    # **O TAMANHO manda no artigo.** No nosso catálogo há UM açaí e o tamanho
+    # é uma personalização dele; no Vendus, o Mini, o Small, o Regular e o
+    # Supreme são quatro artigos diferentes. Sem isto, todas as linhas viajavam
+    # com a referência do produto e as cinco lojas facturaram meses de açaís
+    # como «Açaí Regular», fosse qual fosse o tamanho — o dinheiro certo, o
+    # artigo errado, e o catálogo do Vendus a não servir para nada.
+    id_vendus = id_vendus_da_variante(opcoes) or id_vendus_do_produto(produto)
     if id_vendus is not None:
         linha["id"] = id_vendus
 
