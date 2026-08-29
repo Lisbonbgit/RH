@@ -416,7 +416,9 @@ def test_com_os_artigos_a_funcao_pura_ja_monta_o_top():
     }
     resultado = calcula_dashboard([], [], AGORA, com_iva=True, eventos_de_hoje=[evento])
     assert resultado["mais_vendidos"] == [
-        {"produto_id": "p1", "nome": "Açaí", "quantidade": 2, "valor": 25.00}]
+        {"produto_id": "p1", "nome": "Açaí", "quantidade": 2, "valor": 25.00,
+         # Sem tamanho na linha, sem repartição — e não uma parcela inventada.
+         "tamanhos": []}]
     assert resultado["mais_rentaveis"][0]["resultado"] == 12.00
 
 
