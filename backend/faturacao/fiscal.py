@@ -1415,6 +1415,25 @@ async def _emitir_e_gravar(
         await db[COLECOES["vendas"]].update_one(
             {"id": venda["id"]}, {"$set": dados_pagamento}
         )
+        # **E no dicionário que segue viagem, não só na base de dados.**
+        #
+        # O `venda` que esta função recebeu foi lido ANTES desta escrita, e é
+        # ele — não uma releitura — que chega a `_gravar_documento` lá em
+        # baixo. Sem esta linha, `venda.get("cliente_nif")` devolvia o valor
+        # de antes (`None`) e o documento nascia sem o NIF que a operadora
+        # tinha acabado de escrever.
+        #
+        # Medido em produção a 29/08: 16 vendas com NIF, 2 documentos com
+        # NIF. As 14 dos dias em que as lojas faturaram a sério perderam-no
+        # todas, e a zona de Clientes — que se deriva dos documentos — ficou
+        # com duas linhas.
+        #
+        # A fatura fiscal nunca esteve em risco: o NIF vai para o Vendus pelo
+        # `cliente_payload`, que não passa por aqui, e o talão que sai em
+        # papel é o certificado que o Vendus devolve. O que se perdia era a
+        # cópia local, que é a que responde à pergunta "quem são os meus
+        # clientes?".
+        venda.update(dados_pagamento)
     try:
         bruto = await emitir(ext_ref)
     except VendusIndisponivel as erro_emissao:
