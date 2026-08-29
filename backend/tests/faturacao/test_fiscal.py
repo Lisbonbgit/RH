@@ -5337,3 +5337,71 @@ def test_retoma_que_perde_a_sua_reserva_a_meio_nao_emite_nada():
             esperar=_instantaneo, tentativas_espera=1))
 
     assert db._coleccoes[COLECOES["documentos"]]._documentos == []
+
+
+# --- o NIF de quem pediu a fatura chega ao DOCUMENTO ---------------------------
+#
+# Medido em produção a 29 de agosto de 2026, com as cinco lojas a faturar a
+# sério: 16 vendas com `cliente_nif` e DOIS documentos com `cliente_nif`. As
+# catorze dos dias reais perderam-no todas pelo caminho, e a zona de Clientes
+# — que se deriva dos documentos, porque um cliente nasce de uma compra e não
+# de um formulário — ficou com duas linhas.
+#
+# A fatura fiscal nunca esteve em risco (o NIF vai para o Vendus pelo
+# `cliente_payload`, por outro caminho, e o talão é o certificado que ele
+# devolve). Perdia-se a cópia local, que é a que responde a «quem são os meus
+# clientes?».
+#
+# A causa: `dados_pagamento` é gravado na base de dados DEPOIS de ganhar a
+# reserva — o que está certo e foi uma correcção deliberada — mas o dicionário
+# `venda` que segue viagem até `_gravar_documento` é o de ANTES dessa escrita.
+
+
+def test_o_NIF_escrito_no_finalizar_chega_ao_DOCUMENTO():
+    """A operadora escreve o NIF no Finalizar; ele não está na venda que o
+    núcleo leu, porque é gravado no meio da emissão."""
+    db = _db(vendas=[_venda()])
+
+    async def emitir(ref):
+        return _bruto()
+
+    async def verificar(ref):
+        raise AssertionError("não devia verificar numa emissão sem falhas")
+
+    documento = _corre(finalizar_venda(
+        db, _venda(), emitir, verificar, esperar=_instantaneo,
+        dados_pagamento={"pagamentos": [], "cliente_nif": "517542510"}))
+
+    assert documento["cliente_nif"] == "517542510"
+
+
+def test_a_venda_gravada_e_o_documento_dizem_o_MESMO_NIF():
+    """As duas escritas têm de concordar. Enquanto não concordaram, a venda
+    tinha o NIF e o documento não — e nada partiu."""
+    db = _db(vendas=[_venda()])
+
+    async def emitir(ref):
+        return _bruto()
+
+    documento = _corre(finalizar_venda(
+        db, _venda(), emitir, lambda ref: None, esperar=_instantaneo,
+        dados_pagamento={"pagamentos": [], "cliente_nif": "295258144"}))
+
+    venda_gravada = db[COLECOES["vendas"]]._documentos[0]
+    assert venda_gravada["cliente_nif"] == documento["cliente_nif"] == "295258144"
+
+
+def test_sem_NIF_o_documento_fica_sem_NIF_e_nao_com_um_inventado():
+    """O Consumidor Final é a esmagadora maioria. `None` e não `""`: o ecrã de
+    Clientes filtra por `$ne: None`, e uma string vazia entrava na lista como
+    um cliente sem NIF."""
+    db = _db(vendas=[_venda()])
+
+    async def emitir(ref):
+        return _bruto()
+
+    documento = _corre(finalizar_venda(
+        db, _venda(), emitir, lambda ref: None, esperar=_instantaneo,
+        dados_pagamento={"pagamentos": [], "cliente_nif": None}))
+
+    assert documento["cliente_nif"] is None
