@@ -110,6 +110,20 @@ export default function FatPersonalizacoes() {
     setFormError('');
     setOpcaoErrors({});
     setDialogOpen(true);
+    // **O catálogo lê-se logo quando há ligações para mostrar.**
+    //
+    // Sem isto, um tamanho já ligado dizia «Ref. 145268982» — visto ao vivo,
+    // com o CSS a sério. Mas a pergunta que o dono faz a este ecrã é «ligado
+    // ao artigo CERTO?», e um número não a responde: só o nome do artigo o
+    // faz.
+    //
+    // Só neste caso, e nunca no ecrã inteiro: um pedido ao Vendus de cada vez
+    // que alguém abre o grupo dos Toppings era pagar uma chamada de rede para
+    // não mostrar nada. Se falhar, não se diz nada aqui — as referências
+    // continuam à vista e a escolha (que mostra o erro) continua a funcionar.
+    if (grupo.e_variante && (grupo.opcoes || []).some((o) => o.vendus_ref)) {
+      lerCatalogo();
+    }
   };
 
   // --- A ligação de cada TAMANHO ao artigo dele no Vendus --------------------
@@ -129,9 +143,8 @@ export default function FatPersonalizacoes() {
   const [escolhaAberta, setEscolhaAberta] = useState(null); // índice da opção
   const [filtroArtigo, setFiltroArtigo] = useState('');
 
-  const abrirEscolhaDeArtigo = async (index) => {
-    setEscolhaAberta(index);
-    setFiltroArtigo('');
+  // Lê o catálogo do Vendus uma vez, e só quando faz falta.
+  const lerCatalogo = async () => {
     if (artigosVendus || artigosEstado === 'a-carregar') return;
     setArtigosEstado('a-carregar');
     setArtigosErro('');
@@ -147,6 +160,12 @@ export default function FatPersonalizacoes() {
         error, 'Não foi possível ler o catálogo do Vendus.').mensagem);
       setArtigosEstado('erro');
     }
+  };
+
+  const abrirEscolhaDeArtigo = (index) => {
+    setEscolhaAberta(index);
+    setFiltroArtigo('');
+    lerCatalogo();
   };
 
   const escolherArtigo = (artigo) => {
@@ -368,6 +387,83 @@ export default function FatPersonalizacoes() {
       {/* Dialog criar/editar */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent data-testid="grupo-dialog" className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+          {/* **UM diálogo de cada vez, e isto é a correcção de um defeito.**
+
+              A escolha do artigo era um SEGUNDO `Dialog`, aberto por cima
+              deste. Ao carregar num artigo, o de baixo fechava-se — o clique
+              chegava-lhe como um toque «fora» — e o ecrã voltava à lista com
+              a ligação por fazer. O dono viu-o ao vivo; os testes não, porque
+              o arnês troca o `Dialog` por uma `div` e nunca chegou a montar
+              dois.
+
+              Aqui não há dois: o formulário dá lugar à lista de artigos e
+              volta. O estado do formulário vive no componente, não no DOM,
+              por isso trocar de vista não perde nada do que já foi escrito. */}
+          {escolhaAberta !== null ? (
+            <div data-testid="escolha-de-artigo">
+              <DialogHeader>
+                <DialogTitle>Ligar ao artigo do Vendus</DialogTitle>
+                <DialogDescription>
+                  Este tamanho passa a ser faturado no artigo escolhido. O preço e o
+                  nome continuam a ser os nossos — a ligação decide só em nome de que
+                  artigo a linha entra no Vendus.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="py-4 space-y-3">
+                {artigosEstado === 'a-carregar' ? (
+                  <div className="flex items-center justify-center h-32 gap-2 text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span className="text-sm">A ler o catálogo do Vendus…</span>
+                  </div>
+                ) : artigosEstado === 'erro' ? (
+                  <div className="flex items-start gap-2 rounded-lg bg-destructive/10 text-destructive p-3 text-sm"
+                    data-testid="erro-artigos-vendus">
+                    <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                    <span>{artigosErro}</span>
+                  </div>
+                ) : (
+                  <>
+                    <Input
+                      value={filtroArtigo}
+                      onChange={(e) => setFiltroArtigo(e.target.value)}
+                      placeholder="Procurar por nome ou referência"
+                      data-testid="filtro-artigo-do-tamanho"
+                    />
+                    <div className="max-h-72 overflow-y-auto divide-y rounded-md border">
+                      {artigosFiltrados.length === 0 ? (
+                        <p className="p-4 text-sm text-muted-foreground text-center">
+                          Nenhum artigo com esse nome.
+                        </p>
+                      ) : artigosFiltrados.map((artigo) => (
+                        <button
+                          key={artigo.id}
+                          type="button"
+                          className="w-full text-left px-3 py-2.5 hover:bg-accent/60 flex items-center justify-between gap-3"
+                          onClick={() => escolherArtigo(artigo)}
+                          data-testid={`artigo-do-tamanho-${artigo.id}`}
+                        >
+                          <span className="text-sm truncate">{artigo.nome}</span>
+                          <span className="text-xs text-muted-foreground shrink-0 tabular-nums">
+                            {artigo.referencia || artigo.id}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <DialogFooter>
+                <Button type="button" variant="outline"
+                  onClick={() => setEscolhaAberta(null)}
+                  data-testid="voltar-do-artigo-btn">
+                  Voltar sem ligar
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : (
+          <>
           <DialogHeader>
             <DialogTitle>{editing ? 'Editar grupo de personalização' : 'Novo grupo de personalização'}</DialogTitle>
             <DialogDescription>Ex.: "Toppings" com as opções Banana, Granola e Oreo grátis, e Nutella, Mel e Whey a pagar.</DialogDescription>
@@ -578,64 +674,7 @@ export default function FatPersonalizacoes() {
               <Button type="submit" disabled={saving} data-testid="save-grupo-btn">{saving ? 'A guardar...' : 'Guardar'}</Button>
             </DialogFooter>
           </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* **A escolha do artigo do Vendus para UM tamanho.**
-          Lê o catálogo do Vendus ao vivo — não uma cópia nossa: uma lista
-          desactualizada fazia o dono ligar o tamanho a um artigo que já lá
-          não está, e a fatura seguinte era recusada com o cliente à frente. */}
-      <Dialog open={escolhaAberta !== null} onOpenChange={(o) => !o && setEscolhaAberta(null)}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Ligar ao artigo do Vendus</DialogTitle>
-            <DialogDescription>
-              Este tamanho passa a ser faturado no artigo escolhido. O preço e o
-              nome continuam a ser os nossos — a ligação decide só em nome de que
-              artigo a linha entra no Vendus.
-            </DialogDescription>
-          </DialogHeader>
-
-          {artigosEstado === 'a-carregar' ? (
-            <div className="flex items-center justify-center h-32 gap-2 text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span className="text-sm">A ler o catálogo do Vendus…</span>
-            </div>
-          ) : artigosEstado === 'erro' ? (
-            <div className="flex items-start gap-2 rounded-lg bg-destructive/10 text-destructive p-3 text-sm"
-              data-testid="erro-artigos-vendus">
-              <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
-              <span>{artigosErro}</span>
-            </div>
-          ) : (
-            <>
-              <Input
-                value={filtroArtigo}
-                onChange={(e) => setFiltroArtigo(e.target.value)}
-                placeholder="Procurar por nome ou referência"
-                data-testid="filtro-artigo-do-tamanho"
-              />
-              <div className="max-h-72 overflow-y-auto divide-y rounded-md border">
-                {artigosFiltrados.length === 0 ? (
-                  <p className="p-4 text-sm text-muted-foreground text-center">
-                    Nenhum artigo com esse nome.
-                  </p>
-                ) : artigosFiltrados.map((artigo) => (
-                  <button
-                    key={artigo.id}
-                    type="button"
-                    className="w-full text-left px-3 py-2.5 hover:bg-accent/60 flex items-center justify-between gap-3"
-                    onClick={() => escolherArtigo(artigo)}
-                    data-testid={`artigo-do-tamanho-${artigo.id}`}
-                  >
-                    <span className="text-sm truncate">{artigo.nome}</span>
-                    <span className="text-xs text-muted-foreground shrink-0 tabular-nums">
-                      {artigo.referencia || artigo.id}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </>
+          </>
           )}
         </DialogContent>
       </Dialog>
