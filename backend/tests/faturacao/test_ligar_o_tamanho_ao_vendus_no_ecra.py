@@ -39,7 +39,7 @@ _ARTIGOS = [
 ]
 
 
-def _monta(grupo, leituras, tmp_path, nome, artigos=None):
+def _monta(grupo, leituras, tmp_path, nome, artigos=None, falhar_artigos=False):
     guiao = "\n".join([
         _COMPONENTES,
         "const path2 = require('path');",
@@ -51,8 +51,11 @@ def _monta(grupo, leituras, tmp_path, nome, artigos=None):
         # colidir com o GET da listagem, que acaba no mesmo prefixo.
         "RESPOSTAS_GESTAO['PUT /faturacao/grupos-personalizacao/%s'] = () => ({ data: {} });"
         % grupo["id"],
-        "RESPOSTAS_GESTAO['/faturacao/vendus/artigos'] = () => ({ data: %s });"
-        % json.dumps(artigos if artigos is not None else _ARTIGOS, ensure_ascii=False),
+        ("RESPOSTAS_GESTAO['/faturacao/vendus/artigos'] = () => { const e = "
+         "new Error('502'); e.response = { status: 502, data: { detail: "
+         "'O Vendus não respondeu.' } }; throw e; };") if falhar_artigos else
+        ("RESPOSTAS_GESTAO['/faturacao/vendus/artigos'] = () => ({ data: %s });"
+         % json.dumps(artigos if artigos is not None else _ARTIGOS, ensure_ascii=False)),
         "const alvo = document.getElementById('raiz');",
         "await act(async () => { createRoot(alvo).render(React.createElement(Ecra)); });",
         "await act(async () => {});",
@@ -60,7 +63,8 @@ def _monta(grupo, leituras, tmp_path, nome, artigos=None):
         "const clicar = async (t) => { const el = porTestid(t);",
         "  if (!el) throw new Error('sem ' + t);",
         "  await act(async () => { el.dispatchEvent(new window.MouseEvent('click',",
-        "    { bubbles: true })); }); await act(async () => {}); };",
+        "    { bubbles: true })); }); await act(async () => {});",
+        "  await act(async () => {}); };",
         "await clicar('edit-grupo-%s');" % grupo["id"],
         # O que o ecrã MANDOU, e não o que respondemos: o arnês guarda o
         # corpo de cada pedido em `pedidos`.
@@ -86,7 +90,10 @@ def test_o_grupo_do_TAMANHO_mostra_a_ligacao_em_cada_opcao(tmp_path):
     ], tmp_path, "tamanho.js")
     assert saida["mini"] and saida["ligarMini"], "o Mini não tem por onde ligar"
     assert saida["regularJaLigado"], "o Regular já está ligado e não o mostra"
-    assert "Ref. 145268982" in saida["textoDoRegular"], saida["textoDoRegular"]
+    # **Pelo NOME e não pela referência.** A pergunta que o dono faz a este
+    # ecrã é «ligado ao artigo CERTO?», e um número não a responde. Visto ao
+    # vivo, com o CSS a sério: dizia «Ref. 145268982».
+    assert "Açaí Regular" in saida["textoDoRegular"], saida["textoDoRegular"]
 
 
 def test_um_grupo_QUE_NAO_E_TAMANHO_nao_mostra_ligacao_nenhuma(tmp_path):
@@ -150,10 +157,88 @@ def test_o_catalogo_do_Vendus_em_baixo_DIZ_o_que_se_passa(tmp_path):
     o tamanho ficava por ligar por engano. A frase é a do servidor: é ele que
     sabe se a conta não está configurada ou se o Vendus está em baixo."""
     saida = _monta(_TAMANHO, [
-        "RESPOSTAS_GESTAO['/faturacao/vendus/artigos'] = () => {",
-        "  const e = new Error('502'); e.response = { status: 502, data:",
-        "    { detail: 'O Vendus não respondeu.' } }; throw e; };",
         "await clicar('ligar-artigo-0');",
         "saida.erro = (porTestid('erro-artigos-vendus') || {}).textContent;",
-    ], tmp_path, "vendus-em-baixo.js")
+    ], tmp_path, "vendus-em-baixo.js", falhar_artigos=True)
     assert saida["erro"] and "Vendus" in saida["erro"], saida["erro"]
+
+
+def test_a_escolha_do_artigo_NAO_e_um_SEGUNDO_dialogo(tmp_path):
+    """**O defeito que foi a produção, e que estes testes não podiam ver.**
+
+    A escolha era um segundo `Dialog` aberto por cima do formulário. Ao
+    carregar num artigo, o de baixo fechava-se — o clique chegava-lhe como um
+    toque «fora» — e o ecrã voltava à lista de personalizações com a ligação
+    por fazer. O dono viu-o ao vivo à primeira tentativa.
+
+    Os testes de comportamento aqui em cima passaram na mesma, e passam
+    ainda: o arnês troca o `Dialog` por uma `div`, portanto nunca chegou a
+    montar dois nem a exercitar o clique-fora do Radix. **É por isso que este
+    guarda é sobre a ESTRUTURA e lido do ficheiro** — é a única porta por onde
+    a diferença é visível daqui.
+
+    A regra: um só `<Dialog` de formulário neste ecrã. A escolha vive DENTRO
+    dele, e o formulário dá-lhe o lugar."""
+    from pathlib import Path
+    ecra = (Path(__file__).resolve().parents[2].parent / "frontend" / "src" /
+            "pages" / "admin" / "faturacao" / "FatPersonalizacoes.js").read_text(encoding="utf-8")
+    assert ecra.count("<Dialog ") == 1, (
+        "há %d <Dialog neste ecrã — dois diálogos empilhados fecham-se um ao "
+        "outro" % ecra.count("<Dialog "))
+    # E a escolha tem de estar mesmo lá dentro, e não fora do `<Dialog>`.
+    inicio = ecra.index("<Dialog ")
+    fim = ecra.index("</Dialog>", inicio)
+    assert 'data-testid="escolha-de-artigo"' in ecra[inicio:fim]
+
+
+def test_voltar_da_escolha_SEM_escolher_deixa_o_formulario_como_estava(tmp_path):
+    """A saída sem ligar. O formulário não pode perder o que já lá estava
+    escrito — o estado vive no componente, e trocar de vista não lhe toca."""
+    saida = _monta(_TAMANHO, [
+        "await clicar('ligar-artigo-0');",
+        "await clicar('voltar-do-artigo-btn');",
+        "saida.voltouAoFormulario = !!porTestid('opcao-row-0');",
+        "saida.mini = (porTestid('opcao-nome-input-0') || {}).value;",
+        "saida.semLigacao = !!porTestid('ligar-artigo-0');",
+    ], tmp_path, "voltar.js")
+    assert saida["voltouAoFormulario"]
+    assert saida["mini"] == "Mini", "o formulário perdeu o que tinha"
+    assert saida["semLigacao"], "ligou sem ninguém ter escolhido"
+
+
+def test_ao_escolher_o_artigo_o_ecra_VOLTA_ao_formulario_com_a_ligacao_feita(tmp_path):
+    """O caminho que o dono seguiu e que falhava: escolher e ver a ligação."""
+    saida = _monta(_TAMANHO, [
+        "await clicar('ligar-artigo-0');",
+        "saida.naEscolha = !!porTestid('escolha-de-artigo');",
+        "await clicar('artigo-do-tamanho-171258472');",
+        "saida.voltouAoFormulario = !!porTestid('opcao-row-0');",
+        "saida.escolhaFechada = !porTestid('escolha-de-artigo');",
+        "saida.texto = (porTestid('opcao-vendus-0') || {}).textContent;",
+    ], tmp_path, "escolher-e-voltar.js")
+    assert saida["naEscolha"]
+    assert saida["voltouAoFormulario"], "não voltou ao formulário"
+    assert saida["escolhaFechada"]
+    assert "Açaí Mini" in saida["texto"], saida["texto"]
+
+
+def test_um_grupo_SEM_LIGACOES_nao_vai_ao_Vendus_ao_abrir(tmp_path):
+    """A chamada é para mostrar nomes. Num grupo sem ligações não há nomes
+    para mostrar, e pagar uma ida ao Vendus de cada vez que alguém abre os
+    Toppings era rede gasta a não mostrar nada."""
+    saida = _monta(_TOPPINGS, [
+        "saida.foiAoVendus = pedidos.some((p) => String(p.url).includes('/vendus/artigos'));",
+    ], tmp_path, "sem-ligacoes.js")
+    assert saida["foiAoVendus"] is False
+
+
+def test_o_Vendus_em_baixo_NAO_estraga_o_formulario(tmp_path):
+    """A leitura do catálogo ao abrir é uma conveniência. Se falhar, o ecrã
+    não pode ficar preso nem em branco: as referências continuam à vista e o
+    grupo edita-se na mesma."""
+    saida = _monta(_TAMANHO, [
+        "saida.formulario = !!porTestid('opcao-row-0');",
+        "saida.regular = (porTestid('opcao-vendus-1') || {}).textContent;",
+    ], tmp_path, "vendus-em-baixo-ao-abrir.js", artigos=None, falhar_artigos=True)
+    assert saida["formulario"], "o formulário não abriu"
+    assert "145268982" in saida["regular"], saida["regular"]
