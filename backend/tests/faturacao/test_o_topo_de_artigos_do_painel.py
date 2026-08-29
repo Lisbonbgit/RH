@@ -373,3 +373,141 @@ def test_um_artigo_VENDIDO_ABAIXO_DO_CUSTO_continua_a_aparecer():
     ])])
     assert [a["nome"] for a in topos["mais_rentaveis"]] == ["Açaí", "Promoção"]
     assert topos["mais_rentaveis"][-1]["resultado"] == -4.58
+
+
+# --- «Vinte e cinco açaís de qual tamanho?» -----------------------------------
+
+def _com_tamanho(nome, tamanho, quantidade, bruto_c, liquido_c, custo_c):
+    a = _artigo(nome, quantidade, bruto_c, liquido_c, custo_c)
+    a["variante"] = tamanho
+    return a
+
+
+def test_o_mais_vendido_reparte_se_pelos_TAMANHOS(tmp_path=None):
+    """O dono, a olhar para o cartão: «no mais vendido devia ter também os
+    tamanhos, pois só está Açaí».
+
+    No nosso catálogo o açaí é UM produto e o tamanho é uma personalização
+    dele. «Açaí 25» é verdade e não responde a nada — vinte e cinco de qual?"""
+    topos = topos_de_artigos([_evento([
+        _com_tamanho("Açaí", "Regular", 12, 10788, 9547, 4800),
+        _com_tamanho("Açaí", "Mini", 7, 4095, 3624, 2800),
+        _com_tamanho("Açaí", "Supreme", 4, 5640, 4991, 1600),
+    ])])
+    linha = topos["mais_vendidos"][0]
+    assert linha["quantidade"] == 23
+    assert [t["nome"] for t in linha["tamanhos"]] == ["Regular", "Mini", "Supreme"]
+    assert [t["quantidade"] for t in linha["tamanhos"]] == [12, 7, 4]
+
+
+def test_as_parcelas_SOMAM_a_quantidade_da_linha():
+    """**A igualdade que interessa.** São duas somas sobre os mesmos artigos —
+    a de `agregar` e esta — e o dia em que divergirem o cartão mostra um total
+    e umas parcelas que não batem, sem nenhum deles parecer errado."""
+    topos = topos_de_artigos([_evento([
+        _com_tamanho("Açaí", "Regular", 12, 10788, 9547, 4800),
+        _com_tamanho("Açaí", "Mini", 7, 4095, 3624, 2800),
+    ])])
+    linha = topos["mais_vendidos"][0]
+    assert sum(t["quantidade"] for t in linha["tamanhos"]) == linha["quantidade"]
+
+
+def test_uma_DEVOLUCAO_desconta_no_tamanho_que_foi_devolvido():
+    """Somada como positiva, o tamanho devolvido subia no cartão — o painel
+    premiava o que correu mal. E descontada no tamanho errado, o Mini crescia
+    e o Supreme ficava por descontar."""
+    topos = topos_de_artigos([
+        _evento([_com_tamanho("Açaí", "Regular", 5, 4495, 3978, 2000),
+                 _com_tamanho("Açaí", "Mini", 3, 1755, 1553, 1200)], id_="d1"),
+        _evento([_com_tamanho("Açaí", "Regular", 2, 1798, 1591, 800)],
+                id_="d2", tipo="NC"),
+    ])
+    linha = topos["mais_vendidos"][0]
+    assert {t["nome"]: t["quantidade"] for t in linha["tamanhos"]} == {
+        "Regular": 3, "Mini": 3}
+    assert sum(t["quantidade"] for t in linha["tamanhos"]) == linha["quantidade"] == 6
+
+
+def test_um_tamanho_TODO_devolvido_desaparece_das_parcelas():
+    """Zero não é uma parcela — é ruído por baixo de uma linha que já é curta."""
+    topos = topos_de_artigos([
+        _evento([_com_tamanho("Açaí", "Regular", 5, 4495, 3978, 2000),
+                 _com_tamanho("Açaí", "Mini", 1, 585, 518, 400)], id_="d1"),
+        _evento([_com_tamanho("Açaí", "Mini", 1, 585, 518, 400)], id_="d2", tipo="NC"),
+    ])
+    tamanhos = topos["mais_vendidos"][0]["tamanhos"]
+    assert [t["nome"] for t in tamanhos] == ["Regular"]
+
+
+def test_um_artigo_SEM_tamanho_nao_ganha_parcela_nenhuma():
+    """Uma água não tem tamanho. Uma parcela «(sem tamanho)» debaixo de cada
+    linha era ruído em todas as linhas menos uma."""
+    topos = topos_de_artigos([_evento([_artigo("Água 50cl", 3, 435, 385, 120)])])
+    assert topos["mais_vendidos"][0]["tamanhos"] == []
+
+
+def test_os_tamanhos_de_um_produto_NAO_aparecem_debaixo_de_outro():
+    """A repartição é por produto. Sem isso, os tamanhos do açaí apareciam
+    debaixo da água — e ninguém percebia porquê."""
+    topos = topos_de_artigos([_evento([
+        _com_tamanho("Açaí", "Mini", 2, 1170, 1035, 800),
+        _artigo("Água 50cl", 9, 1305, 1155, 360),
+    ])])
+    por_nome = {a["nome"]: a for a in topos["mais_vendidos"]}
+    assert por_nome["Água 50cl"]["tamanhos"] == []
+    assert [t["nome"] for t in por_nome["Açaí"]["tamanhos"]] == ["Mini"]
+
+
+def test_o_TAMANHO_chega_ao_cartao_a_partir_da_LINHA_DA_VENDA(monkeypatch):
+    """De ponta a ponta: a opção escolhida ao balcão, carimbada na linha, e o
+    tamanho a aparecer no cartão.
+
+    O elo que isto prende é o `nome_grupo` — é ele que diz que «Mini» pertence
+    ao grupo do tamanho e não aos toppings. Sem ele (linhas gravadas antes de
+    existir), o artigo fica sem tamanho, e não com um tamanho adivinhado pelo
+    nome da opção."""
+    venda = dict(_VENDA, linhas=[dict(
+        _linha("l1", "p-acai", "Açaí Regular", 10.20),
+        # O topping vem PRIMEIRO de propósito: sem a pergunta «este grupo é
+        # de tamanho?», o cartão dizia que se venderam 1 «Nutella» de açaí.
+        opcoes=[{"id": "o-nut", "grupo_id": "g-top", "nome": "Nutella",
+                 "preco": 0, "nome_grupo": "Toppings", "sai_na_fatura": True},
+                {"id": "o-mini", "grupo_id": "g-tam", "nome": "Mini",
+                 "preco": 0, "nome_grupo": "Tamanho", "sai_na_fatura": True}],
+    )])
+    db = _db(monkeypatch)
+    db._coleccoes[COLECOES["vendas"]] = ColeccaoFalsa([], [venda])
+
+    r = _corre(obter_dashboard(com_iva=True, _={}))
+
+    acai = next(a for a in r["mais_vendidos"] if a["nome"] == "Açaí Regular")
+    assert [t["nome"] for t in acai["tamanhos"]] == ["Mini"]
+    assert acai["tamanhos"][0]["quantidade"] == acai["quantidade"] == 1
+
+
+def test_a_NOTA_DE_CREDITO_desconta_no_TAMANHO_que_a_fatura_vendeu(monkeypatch):
+    """A nota não tem opções nenhumas: as linhas dela só apontam para o índice
+    da linha na fatura de origem. O tamanho tem de sair DE LÁ.
+
+    Sem isso, a devolução descontava a quantidade do produto mas não a de
+    nenhum tamanho — as parcelas deixavam de somar o total, e o cartão
+    mostrava «Açaí 0» com «Mini 1» por baixo."""
+    venda = dict(_VENDA, linhas=[dict(
+        _linha("l1", "p-acai", "Açaí Regular", 10.20, quantidade=3),
+        opcoes=[{"id": "o-mini", "grupo_id": "g-tam", "nome": "Mini",
+                 "preco": 0, "nome_grupo": "Tamanho", "sai_na_fatura": True}],
+    )])
+    nota = dict(_NOTA, linhas=[{"indice": 1, "titulo": "Açaí Regular",
+                                "tax_id": "INT", "quantidade": 1, "total": 10.20}])
+    db = _db(monkeypatch, documentos=[dict(_DOC_FS), dict(_DOC_NC)], notas=[nota])
+    db._coleccoes[COLECOES["vendas"]] = ColeccaoFalsa([], [venda])
+
+    r = _corre(obter_dashboard(com_iva=True, _={}))
+
+    # Vendeu três Minis, devolveu um: ficam DOIS — e a parcela tem de descer
+    # com o total. Escrito com três e não com um de propósito: com um, a linha
+    # inteira desaparecia e o teste ficava verde mesmo que a nota não tocasse
+    # em tamanho nenhum.
+    acai = next(a for a in r["mais_vendidos"] if a["nome"] == "Açaí Regular")
+    assert acai["quantidade"] == 2
+    assert [(t["nome"], t["quantidade"]) for t in acai["tamanhos"]] == [("Mini", 2)]

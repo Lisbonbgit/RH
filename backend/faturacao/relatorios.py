@@ -47,6 +47,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from .periodos import LISBON_TZ
+from .precos import e_grupo_de_variante
 
 # As nove vistas. A chave é o que viaja no URL.
 DIMENSOES = (
@@ -297,12 +298,34 @@ def _base_sem_iva(liquido_c: int, taxa: Optional[float]) -> int:
     return int(round(liquido_c * 100 / (100 + float(taxa))))
 
 
+def _variante_da_linha(linha: Optional[Dict]) -> Optional[str]:
+    """O TAMANHO escolhido nesta linha — «Mini», «Supreme» — ou `None`.
+
+    Vem das opções carimbadas na linha (`venda._carimbar_sai_na_fatura` grava
+    o `nome_grupo` em cada uma), e é a MESMA pergunta que decide o artigo do
+    Vendus (`precos.e_grupo_de_variante`): um tamanho é outro artigo, um
+    topping não é.
+
+    Uma linha gravada antes de o `nome_grupo` existir não tem grupo nenhum e
+    devolve `None` — sem tamanho, e não com um tamanho adivinhado pelo nome
+    da opção."""
+    for opcao in (linha or {}).get("opcoes") or []:
+        if e_grupo_de_variante(opcao.get("nome_grupo")):
+            return opcao.get("nome")
+    return None
+
+
 def _artigo(produto: Optional[Dict], categorias: Dict[str, str],
             produto_id: Optional[str], nome: str, quantidade: float,
-            liquido_c: int, taxa: Optional[float]) -> Dict:
+            liquido_c: int, taxa: Optional[float],
+            variante: Optional[str] = None) -> Dict:
     custo_unitario = (produto or {}).get("preco_custo")
     return {
         "produto_id": produto_id,
+        # O tamanho, para quem quiser repartir o artigo por ele. Nenhuma das
+        # nove vistas dos Relatórios o usa — quem o usa é o cartão «Mais
+        # Vendidos» do painel, onde 25 açaís sem tamanho não dizem nada.
+        "variante": variante,
         "produto_nome": (produto or {}).get("nome") or nome,
         "categoria_id": (produto or {}).get("categoria_id"),
         "categoria_nome": categorias.get((produto or {}).get("categoria_id")),
@@ -338,6 +361,7 @@ def _artigos_da_fatura(venda: Optional[Dict], produtos: Dict, categorias: Dict) 
             float(linha.get("quantidade") or 0),
             centimos(_liquido_da_linha(item)),
             _TAXA_DO_CODIGO.get(item.get("tax_id")),
+            _variante_da_linha(linha),
         ))
     return artigos
 
@@ -380,6 +404,10 @@ def _artigos_da_nota(nota: Optional[Dict], venda: Optional[Dict],
             float(creditada.get("quantidade") or 0),
             centimos(creditada.get("total")),
             _TAXA_DO_CODIGO.get(creditada.get("tax_id")),
+            # Da linha de ORIGEM: uma devolução tem de descontar no MESMO
+            # tamanho que foi vendido, senão o Mini crescia e o Supreme
+            # ficava por descontar.
+            _variante_da_linha(origem),
         ))
     return artigos
 

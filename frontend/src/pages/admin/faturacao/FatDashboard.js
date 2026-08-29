@@ -454,6 +454,17 @@ function TopoDeArtigos({ itens, prefixo, principal, secundario }) {
                 {segundo ? <span className="text-muted-foreground"> · {segundo}</span> : null}
               </span>
             </div>
+            {/* **Os tamanhos, por baixo do artigo.** «Açaí 25» é verdade e
+                não responde a nada — vinte e cinco de qual? No nosso catálogo
+                o açaí é um produto só e o tamanho é uma personalização dele.
+                Só aparece onde existe: uma água não tem tamanho. */}
+            {(item.tamanhos || []).length > 0 ? (
+              <p className="mt-0.5 text-xs text-muted-foreground truncate tabular-nums"
+                title={item.tamanhos.map((t) => `${t.nome} ${fmtQtd(t.quantidade)}`).join(' · ')}
+                data-testid={`${prefixo}-${i}-tamanhos`}>
+                {item.tamanhos.map((t) => `${t.nome} ${fmtQtd(t.quantidade)}`).join(' · ')}
+              </p>
+            ) : null}
             <div className="mt-1.5 h-1.5 rounded-full bg-muted overflow-hidden">
               <div
                 className={perde ? 'h-full rounded-full bg-destructive' : 'h-full rounded-full bg-primary'}

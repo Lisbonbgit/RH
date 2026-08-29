@@ -242,3 +242,50 @@ def test_um_artigo_VENDIDO_A_PERDER_nao_se_pinta_da_cor_do_lucro(tmp_path):
     assert "bg-primary" in bom["barra"] and "text-destructive" not in bom["numero"]
     assert "bg-destructive" in mau["barra"], mau
     assert "text-destructive" in mau["numero"], mau
+
+
+def test_o_artigo_com_TAMANHOS_escreve_a_reparticao_por_baixo(tmp_path):
+    """«No mais vendido devia ter também os tamanhos, pois só está Açaí.»"""
+    saida = _monta({
+        "mais_vendidos": [
+            {"produto_id": "p1", "nome": "Açaí", "quantidade": 23, "valor": 205.23,
+             "tamanhos": [{"nome": "Regular", "quantidade": 12},
+                          {"nome": "Mini", "quantidade": 7},
+                          {"nome": "Supreme", "quantidade": 4}]},
+        ],
+        "artigos_vendidos": 1,
+    }, [
+        "const t = porTestid('fat-mais-vendido-0-tamanhos');",
+        "saida.tamanhos = t ? t.textContent : null;",
+        "saida.linha = (porTestid('fat-mais-vendido-0') || {}).textContent;",
+    ], tmp_path, "tamanhos.js")
+    assert saida["tamanhos"] == "Regular 12 · Mini 7 · Supreme 4"
+    # O total continua a ser o do artigo, e não a soma escrita à mão.
+    assert "23 un" in saida["linha"]
+
+
+def test_um_artigo_SEM_tamanhos_nao_ganha_linha_vazia_por_baixo(tmp_path):
+    """Uma água não tem tamanho. Uma segunda linha vazia debaixo de cada
+    artigo desalinhava o cartão inteiro por causa de um caso que não existe."""
+    saida = _monta({
+        "mais_vendidos": [{"produto_id": "p3", "nome": "Água 50cl",
+                           "quantidade": 3, "valor": 4.35, "tamanhos": []}],
+        "artigos_vendidos": 1,
+    }, [
+        "saida.tem = !!porTestid('fat-mais-vendido-0-tamanhos');",
+    ], tmp_path, "sem-tamanhos.js")
+    assert saida["tem"] is False
+
+
+def test_um_cartao_ANTIGO_sem_o_campo_tamanhos_nao_rebenta(tmp_path):
+    """A resposta de um servidor por actualizar não traz `tamanhos`. O ecrã
+    tem de continuar a desenhar-se — um `undefined.length` apagava o painel
+    inteiro, e não só esta linha."""
+    saida = _monta({
+        "mais_vendidos": [{"produto_id": "p1", "nome": "Açaí",
+                           "quantidade": 25, "valor": 185.73}],
+        "artigos_vendidos": 1,
+    }, [
+        "saida.linha = (porTestid('fat-mais-vendido-0') || {}).textContent;",
+    ], tmp_path, "sem-campo.js")
+    assert saida["linha"] and "25 un" in saida["linha"]
