@@ -218,3 +218,42 @@ def test_creditar_a_ULTIMA_linha_nao_cria_um_artigo_FANTASMA(monkeypatch):
     assert len(linhas) == 2, [l["rotulo"] for l in linhas]
     assert {l["rotulo"]: l["bruto"] for l in linhas} == {
         "Açaí Regular": 10.20, "Coca-Cola": 0.0}
+
+
+# --- os TAMANHOS na vista de Produtos ----------------------------------------
+
+def _venda_com_tamanho(tamanho, quantidade=1):
+    return dict(_VENDA, linhas=[dict(
+        _linha("l1", "p-acai", "Açaí Regular", 10.20, quantidade=quantidade),
+        opcoes=[{"id": "o-" + tamanho.lower(), "grupo_id": "g-tam", "nome": tamanho,
+                 "preco": 0, "nome_grupo": "Tamanho", "sai_na_fatura": True}],
+    )])
+
+
+def test_o_relatorio_de_PRODUTOS_reparte_o_acai_pelos_tamanhos(monkeypatch):
+    """«Não esqueça do açaí que tem as personalizações de tamanhos.» A linha
+    dizia «Açaí 3» — três de qual?"""
+    db = _db(monkeypatch)
+    db._coleccoes[COLECOES["vendas"]] = ColeccaoFalsa(
+        [], [_venda_com_tamanho("Supreme", quantidade=3)])
+    linha = next(l for l in _correr("produto", monkeypatch)["linhas"]
+                 if l["rotulo"] == "Açaí Regular")
+    assert linha["tamanhos"] == [{"nome": "Supreme", "quantidade": 3}]
+
+
+def test_as_OUTRAS_vistas_nao_ganham_tamanhos(monkeypatch):
+    """Repartir uma loja por tamanhos misturava o açaí com tudo o resto que
+    essa loja vendeu. Um tamanho reparte um ARTIGO."""
+    _db(monkeypatch)
+    for dimensao in ("loja", "cliente", "categoria", "utilizador", "dia"):
+        linhas = _correr(dimensao, monkeypatch)["linhas"]
+        assert all("tamanhos" not in l for l in linhas), dimensao
+
+
+def test_um_produto_SEM_tamanho_traz_a_lista_vazia_e_nao_falta_a_chave(monkeypatch):
+    """O ecrã lê `linha.tamanhos` em todas as linhas da vista de Produtos. Uma
+    chave em falta numas e presente noutras é a diferença entre não desenhar
+    nada e rebentar."""
+    _db(monkeypatch)
+    linhas = _correr("produto", monkeypatch)["linhas"]
+    assert linhas and all(l["tamanhos"] == [] for l in linhas)
