@@ -58,11 +58,18 @@ _DASHBOARD = {
 # 1400x250 e estes testes continuaram VERDES — a tolerância do «ponto mais
 # perto» tapou a diferença, e a conversão de coordenadas, que é o que eles
 # existem para medir, deixou de ser medida sem ninguém dar por isso.
-def _medidas_do_ecra():
+def _ficheiro_do_grafico():
+    """O gráfico saiu do `FatDashboard.js` para um módulo próprio quando o dono
+    o pediu também nos Relatórios — duas cópias da conta que converte a posição
+    do rato divergiam à primeira correcção."""
     from pathlib import Path
+    return (Path(__file__).resolve().parents[2].parent / "frontend" / "src" /
+            "pages" / "admin" / "faturacao" / "GraficosDaFaturacao.js")
+
+
+def _medidas_do_ecra():
     import re
-    ecra = (Path(__file__).resolve().parents[2].parent / "frontend" / "src" /
-            "pages" / "admin" / "faturacao" / "FatDashboard.js").read_text(encoding="utf-8")
+    ecra = _ficheiro_do_grafico().read_text(encoding="utf-8")
     bloco = ecra[ecra.index("const AREA = {"):]
     bloco = bloco[:bloco.index("};")]
     return {c: int(v) for c, v in re.findall(r"(\w+):\s*(\d+)", bloco)}
@@ -146,19 +153,19 @@ def _monta(passos, tmp, nome):
 @pytest.fixture(scope="module")
 def area(tmp_path_factory):
     return _monta([
-        "saida.antes = texto('fat-area-balao');",
+        "saida.antes = texto('fat-dashboard-area-balao');",
         # Em cima do 2.º dia (o pico de 900) — e depois um bocadinho AO LADO
         # dele, para provar que o balão se agarra ao ponto mais perto e não
         # exige pontaria em cima do pixel certo.
         "await mover(%.1f);" % _x_do_ponto(1),
-        "saida.em_cima = texto('fat-area-balao');",
-        "saida.tem_linha = !!porTestid('fat-area-linha');",
+        "saida.em_cima = texto('fat-dashboard-area-balao');",
+        "saida.tem_linha = !!porTestid('fat-dashboard-area-linha');",
         "await mover(%.1f);" % (_x_do_ponto(1) + 40),
-        "saida.ao_lado = texto('fat-area-balao');",
+        "saida.ao_lado = texto('fat-dashboard-area-balao');",
         "await mover(%.1f);" % _x_do_ponto(3),
-        "saida.ultimo_dia = texto('fat-area-balao');",
+        "saida.ultimo_dia = texto('fat-dashboard-area-balao');",
         "await sair();",
-        "saida.depois_de_sair = texto('fat-area-balao');",
+        "saida.depois_de_sair = texto('fat-dashboard-area-balao');",
     ], tmp_path_factory.mktemp("area"), "toque-area.js")
 
 
@@ -280,7 +287,7 @@ def bordas(tmp_path_factory):
         "  .getAttribute('data-por-baixo');",
         # E um ponto lá em baixo na curva, que tem espaço por cima de sobra.
         "await mover(%.1f);" % _x_do_ponto(0),
-        "saida.balao_do_ponto_baixo = porTestid('fat-area-balao')",
+        "saida.balao_do_ponto_baixo = porTestid('fat-dashboard-area-balao')",
         "  .getAttribute('data-por-baixo');",
         # As etiquetas do eixo dos dias, com a ancoragem de cada uma.
         "saida.ancoras = Array.from(porTestid('fat-dashboard-area')",
@@ -354,9 +361,7 @@ def test_as_medidas_do_desenho_vivem_num_SITIO_SO():
     """Espalhadas por seis números soltos no JSX, uma mudança de proporção
     obrigava a acertar todos à mão — e falhar um deixava a linha da grelha ou
     a mira fora do sítio, sem nada partir."""
-    from pathlib import Path
-    ecra = (Path(__file__).resolve().parents[2].parent / "frontend" / "src" /
-            "pages" / "admin" / "faturacao" / "FatDashboard.js").read_text(encoding="utf-8")
+    ecra = _ficheiro_do_grafico().read_text(encoding="utf-8")
     assert 'viewBox={`0 0 ${AREA.largura} ${AREA.altura}`}' in ecra
     assert "x1={AREA.xLeft}" in ecra and "x2={AREA.xRight}" in ecra
     assert "/ AREA.largura}" in ecra, "O balão voltou a dividir por um número escrito à mão."

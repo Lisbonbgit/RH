@@ -10,6 +10,9 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../../components/ui/table';
+// Os MESMOS gráficos do painel — o dono pediu-os aqui, e uma segunda cópia
+// divergia à primeira correcção.
+import { GraficoDeArea, GraficoDeBarras } from './GraficosDaFaturacao';
 import { BarChart3, Search, Loader2, Download, AlertTriangle } from 'lucide-react';
 import PageHeader from '../../../components/PageHeader';
 import { toast } from 'sonner';
@@ -44,53 +47,25 @@ const euros = (valor) => (valor === null || valor === undefined
 const hoje = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Lisbon' });
 const primeiroDoMes = () => hoje().slice(0, 8) + '01';
 
-// O gráfico é SVG à mão, como o do Dashboard — sem biblioteca nova para
-// desenhar barras e uma linha.
-function Grafico({ serie, barras }) {
-  if (!serie || serie.length === 0) return null;
-  const valores = serie.map((p) => Number(p.valor) || 0);
-  const maximo = Math.max(...valores, 0);
-  const minimo = Math.min(...valores, 0);
-  const amplitude = (maximo - minimo) || 1;
-  const largura = 720;
-  const altura = 200;
-  const passo = serie.length > 1 ? largura / (serie.length - 1) : largura;
-  const y = (v) => altura - ((v - minimo) / amplitude) * (altura - 20) - 10;
+// As três vistas que NÃO são uma linha do tempo contínua. Entre «Segunda» e
+// «Terça» não há nada, e uma curva a ligá-las desenha uma subida que não
+// existe — por isso estas são barras e as outras são área.
+const DE_BARRAS = ['hora', 'dia_semana', 'mes'];
 
-  return (
-    <div className="overflow-x-auto">
-      <svg viewBox={`0 0 ${largura} ${altura + 26}`} className="w-full min-w-[560px]"
-        xmlns="http://www.w3.org/2000/svg" role="img"
-        aria-label="Evolução das vendas no período">
-        <line x1="0" y1={y(0)} x2={largura} y2={y(0)} stroke="currentColor"
-          className="text-border" strokeWidth="1" />
-        {barras ? serie.map((p, i) => {
-          const largo = Math.max(4, (largura / serie.length) * 0.6);
-          const x = serie.length > 1 ? i * (largura / serie.length) + (largura / serie.length - largo) / 2 : 0;
-          const topo = y(Math.max(0, Number(p.valor) || 0));
-          return (
-            <rect key={i} x={x} y={topo} width={largo} height={Math.abs(y(0) - topo)}
-              className="fill-primary/70" />
-          );
-        }) : (
-          <polyline
-            fill="none" strokeWidth="2" className="stroke-primary"
-            points={serie.map((p, i) => `${i * passo},${y(Number(p.valor) || 0)}`).join(' ')}
-          />
-        )}
-        {serie.map((p, i) => (
-          (serie.length <= 12 || i % Math.ceil(serie.length / 12) === 0) ? (
-            <text key={`r${i}`} x={barras ? i * (largura / serie.length) + (largura / serie.length) / 2 : i * passo}
-              y={altura + 18} textAnchor="middle" className="fill-muted-foreground"
-              style={{ fontSize: 11 }}>
-              {String(p.rotulo).length > 7 ? String(p.rotulo).slice(5) : p.rotulo}
-            </text>
-          ) : null
-        ))}
-      </svg>
-    </div>
-  );
-}
+// O rótulo do eixo. A série vem com o rótulo já feito pelo servidor — «01-08»
+// para os dias, «14h», «Segunda-feira», «Agosto» —, mas um dia inteiro
+// escrito por extenso não cabe num eixo com trinta datas: corta-se ao dia e
+// ao mês, que é o que o painel também mostra.
+const rotuloDoEixo = (bruto) => {
+  const texto = String(bruto == null ? '' : bruto);
+  // 'AAAA-MM-DD' -> 'dd-mm' (parte a string; sem Date, para nunca tropeçar
+  // em fusos).
+  if (/^\d{4}-\d{2}-\d{2}$/.test(texto)) {
+    const [, m, d] = texto.split('-');
+    return `${d}-${m}`;
+  }
+  return texto;
+};
 
 export default function FatRelatorios() {
   const [vista, setVista] = useState('produto');
@@ -100,6 +75,15 @@ export default function FatRelatorios() {
   });
   const [dados, setDados] = useState(null);
   const [carregando, setCarregando] = useState(false);
+
+  // Os pontos do gráfico. O servidor manda `serie` já pronta — por dia nas
+  // vistas de área, e as PRÓPRIAS linhas da tabela nas de barras (é a mesma
+  // pergunta desenhada de duas maneiras, e por isso nunca podem discordar).
+  const pontosDoGrafico = useMemo(
+    () => (dados?.serie || []).map((p) => ({
+      rotulo: rotuloDoEixo(p.rotulo), v: Number(p.valor) || 0,
+    })),
+    [dados]);
   const [lojas, setLojas] = useState([]);
   const [utilizadores, setUtilizadores] = useState([]);
   const [categorias, setCategorias] = useState([]);
@@ -249,8 +233,22 @@ export default function FatRelatorios() {
           )}
 
           <Card>
-            <CardContent className="p-4">
-              <Grafico serie={dados.serie} barras={['hora', 'dia_semana', 'mes'].includes(vista)} />
+            <CardContent className="p-4 sm:p-5 space-y-3">
+              <p className="text-sm font-semibold">
+                {DE_BARRAS.includes(vista)
+                  ? (VISTAS.find((v) => v.id === vista) || {}).nome
+                  : 'Faturação diária'}
+                <span className="font-normal text-muted-foreground">
+                  {' · '}{filtros.de} a {filtros.ate}
+                </span>
+              </p>
+              {DE_BARRAS.includes(vista) ? (
+                <GraficoDeBarras pontos={pontosDoGrafico} testid="fat-relatorio-barras"
+                  ariaLabel="Vendas do período" />
+              ) : (
+                <GraficoDeArea pontos={pontosDoGrafico} testid="fat-relatorio-area"
+                  ariaLabel="Faturação diária do período" />
+              )}
             </CardContent>
           </Card>
 
@@ -283,9 +281,22 @@ export default function FatRelatorios() {
                           Sem vendas neste período.
                         </TableCell>
                       </TableRow>
-                    ) : dados.linhas.map((l) => (
+                    ) : dados.linhas.map((l, i) => (
                       <TableRow key={String(l.chave)}>
-                        <TableCell className="font-medium">{l.rotulo}</TableCell>
+                        <TableCell className="font-medium">
+                          {l.rotulo}
+                          {/* **Os tamanhos, por baixo do artigo.** No catálogo
+                              há UM açaí e o tamanho é uma personalização dele:
+                              «Açaí 25» é verdade e não responde a nada. Só a
+                              vista de Produtos os traz — um tamanho reparte um
+                              artigo, não uma loja. */}
+                          {(l.tamanhos || []).length > 0 ? (
+                            <span className="block mt-0.5 text-xs font-normal text-muted-foreground tabular-nums"
+                              data-testid={`fat-relatorio-tamanhos-${i}`}>
+                              {l.tamanhos.map((t) => `${t.nome} ${t.quantidade}`).join(' · ')}
+                            </span>
+                          ) : null}
+                        </TableCell>
                         <TableCell className="text-right tabular-nums">{euros(l.bruto)}</TableCell>
                         <TableCell className="text-right tabular-nums">{euros(l.liquido)}</TableCell>
                         <TableCell className="text-right tabular-nums">{euros(l.custo)}</TableCell>

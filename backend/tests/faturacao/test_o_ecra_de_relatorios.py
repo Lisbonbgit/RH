@@ -18,15 +18,18 @@ _PRODUTOS = {
     "linhas": [
         {"chave": "p-acai", "rotulo": "Açaí Regular", "bruto": 10.20, "liquido": 9.03,
          "custo": 4.00, "resultado": 5.03, "custo_incompleto": False,
-         "quantidade": 1, "faturas": 1, "rectificacoes": 0},
+         "quantidade": 3, "faturas": 1, "rectificacoes": 0,
+         "tamanhos": [{"nome": "Mini", "quantidade": 2}, {"nome": "Supreme", "quantidade": 1}]},
         {"chave": "p-cola", "rotulo": "Coca-Cola", "bruto": 1.15, "liquido": 0.93,
          "custo": None, "resultado": None, "custo_incompleto": True,
-         "quantidade": 1, "faturas": 1, "rectificacoes": 0},
+         "quantidade": 1, "faturas": 1, "rectificacoes": 0, "tamanhos": []},
     ],
     "total": {"chave": None, "rotulo": "TOTAL", "bruto": 11.35, "liquido": 9.96,
               "custo": None, "resultado": None, "custo_incompleto": True,
               "quantidade": 2, "faturas": 1, "rectificacoes": 0},
-    "serie": [{"rotulo": "2026-08-10", "valor": 11.35}],
+    # Uma série de DIAS, como o servidor a manda para esta vista — é ela que
+    # o gráfico de área desenha.
+    "serie": [{"rotulo": "2026-08-%02d" % d, "valor": 10.0 + d} for d in range(1, 26)],
 }
 
 _HORA = {
@@ -40,7 +43,8 @@ _HORA = {
     "total": {"chave": None, "rotulo": "TOTAL", "bruto": 57.54, "liquido": 50.92,
               "custo": 20.00, "resultado": 30.92, "custo_incompleto": False,
               "quantidade": None, "faturas": 5, "rectificacoes": 0},
-    "serie": [{"rotulo": "17h", "valor": 57.54}],
+    # A série de uma vista de BARRAS são as PRÓPRIAS linhas da tabela.
+    "serie": [{"rotulo": "%dh" % h, "valor": 10.0 * h} for h in range(9, 21)],
 }
 
 
@@ -64,13 +68,15 @@ def ecra(tmp_path_factory):
         "await act(async () => {});",
         "await act(async () => {});",
         "const produtos = textoVisivel(alvo);",
+        "const html_produtos = alvo.innerHTML;",
         "const trocar = alvo.querySelector('[data-testid=\"vista-hora\"]');",
         "if (!trocar) throw new Error('sem selector de vista: ' + produtos.slice(0, 300));",
         "await act(async () => { trocar.click(); });",
         "await act(async () => {});",
         "await act(async () => {});",
         "process.stdout.write(JSON.stringify({",
-        "  produtos, hora: textoVisivel(alvo),",
+        "  produtos, html_produtos, hora: textoVisivel(alvo),",
+        "  html_hora: alvo.innerHTML,",
         "  pedidos: pedidos.map((p) => ({ url: p.url, params: p.params || null })),",
         "}));",
     ])
@@ -117,3 +123,65 @@ def test_os_filtros_vazios_NAO_viajam(ecra):
     params = relatorios[0]["params"] or {}
     assert params.get("loja_id") is None and params.get("utilizador_id") is None
     assert params.get("de") and params.get("ate")
+
+
+# --- os gráficos, que são o que o dono pediu ---------------------------------
+#
+# «Quero este mesmo tipo nas páginas de relatórios.» A curva do painel, aqui.
+# E: «o por hora, dias da semana e mensal não estão bonitos» — esses são
+# barras, porque entre «Segunda» e «Terça» não há nada e uma curva a ligá-las
+# desenha uma subida que não existe.
+
+def test_a_vista_de_PRODUTOS_desenha_a_CURVA_do_painel(ecra):
+    assert 'data-testid="fat-relatorio-area"' in ecra["html_produtos"], "não é o gráfico de área"
+    assert 'data-testid="fat-relatorio-barras"' not in ecra["html_produtos"]
+
+
+def test_a_vista_POR_HORA_desenha_BARRAS_e_nao_uma_curva(ecra):
+    assert 'data-testid="fat-relatorio-barras"' in ecra["html_hora"]
+    assert 'data-testid="fat-relatorio-area"' not in ecra["html_hora"]
+
+
+def test_a_curva_dos_relatorios_e_a_MESMA_do_painel(ecra):
+    """A mesma caixa e a mesma grelha — é literalmente o mesmo componente. Se
+    um dia forem dois desenhos, este número deixa de bater."""
+    from .test_o_toque_nos_graficos_do_painel import _AREA
+    assert 'viewBox="0 0 %d %d"' % (_AREA["largura"], _AREA["altura"]) in ecra["html_produtos"]
+
+
+def test_os_TAMANHOS_do_acai_aparecem_por_baixo_do_artigo(ecra):
+    """«Não esqueça do açaí que tem as personalizações de tamanhos.»"""
+    assert "Mini 2 · Supreme 1" in ecra["produtos"], ecra["produtos"][:800]
+
+
+def test_um_artigo_SEM_tamanhos_nao_ganha_linha_nenhuma(ecra):
+    """A Coca-Cola não tem tamanho. Uma segunda linha vazia por baixo de cada
+    artigo desalinhava a tabela inteira por causa de um caso que não existe."""
+    assert 'data-testid="fat-relatorio-tamanhos-1"' not in ecra["html_produtos"]
+    assert 'data-testid="fat-relatorio-tamanhos-0"' in ecra["html_produtos"]
+
+
+def test_o_eixo_da_curva_escreve_DD_MM_e_nao_a_data_inteira(ecra):
+    """O servidor manda `2026-08-01`. Escrito assim no eixo, trinta datas
+    atropelavam-se — e a data inteira debaixo de cada ponto não é informação
+    nenhuma que o dia e o mês não dêem."""
+    assert ">01-08<" in ecra["html_produtos"], "o eixo mostra a data inteira"
+    assert ">2026-08-01<" not in ecra["html_produtos"]
+
+
+def test_as_BARRAS_tambem_tem_grelha_e_valores_no_eixo(ecra):
+    """«O por hora, dias da semana e mensal não estão bonitos.» O que faltava
+    era isto: eram barras a flutuar sem nada por trás nem escala à esquerda.
+    São irmãs da curva — mesma caixa, mesma grelha, mesmo balão."""
+    html = ecra["html_hora"]
+    assert 'stroke="hsl(var(--border))"' in html, "sem linhas de grelha"
+    assert "€" in html, "sem valores no eixo"
+    # E os rótulos das horas, todos.
+    for hora in ("9h", "14h", "20h"):
+        assert ">%s<" % hora in html, hora
+
+
+def test_as_barras_respondem_ao_dedo(ecra):
+    """Uma barra de três píxeis (uma hora fraca) é impossível de apontar — e é
+    justamente essa que se quer perguntar «quanto foi?». O alvo é a COLUNA."""
+    assert 'data-testid="fat-relatorio-barras-toque-0"' in ecra["html_hora"]

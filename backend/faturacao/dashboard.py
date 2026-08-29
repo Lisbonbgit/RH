@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends
 
 from .auth import gestor_atual
 from .db import COLECOES, obter_db
-from .relatorios import agregar, eventos_dos_documentos
+from .relatorios import agregar, eventos_dos_documentos, tamanhos_por_produto
 from .periodos import (
     LISBON_TZ,
     Janela,
@@ -236,44 +236,6 @@ def _cartao(documentos: List[Dict], campo: str, janela_actual: Janela, janela_an
 TOP_ARTIGOS = 5
 
 
-def _tamanhos_vendidos(eventos: List[Dict]) -> Dict:
-    """A repartição por TAMANHO de cada produto — `{produto_id: [{nome, quantidade}]}`.
-
-    O dono, a olhar para o cartão: «no mais vendido devia ter também os
-    tamanhos, pois só está Açaí». E tem razão: no nosso catálogo o açaí é UM
-    produto e o tamanho é uma personalização dele, portanto o topo dizia «Açaí
-    25» — que é verdade e não responde a nada. Vinte e cinco de qual?
-
-    **Soma pela MESMA regra de `agregar`** — a nota de crédito subtrai — e é
-    isso que faz estas parcelas somarem exactamente a quantidade da linha. Há
-    um teste a prender essa igualdade: se um dia divergirem, o cartão mostra
-    um total e umas parcelas que não batem, e nenhum dos dois parece errado.
-
-    Os artigos SEM tamanho (uma água, um salgado) não entram: não há
-    repartição nenhuma a fazer, e uma parcela «(sem tamanho)» debaixo de cada
-    linha era ruído em todas as linhas menos uma.
-    """
-    contas: Dict = {}
-    for evento in eventos:
-        sinal = -1 if evento.get("tipo") == "NC" else 1
-        for artigo in evento.get("artigos") or []:
-            variante = artigo.get("variante")
-            if not variante:
-                continue
-            por_produto = contas.setdefault(artigo.get("produto_id"), {})
-            por_produto[variante] = por_produto.get(variante, 0.0) + sinal * float(
-                artigo.get("quantidade") or 0)
-
-    saida: Dict = {}
-    for produto_id, tamanhos in contas.items():
-        lista = [{"nome": nome, "quantidade": round(q, 3)}
-                 for nome, q in tamanhos.items() if q > 0]
-        lista.sort(key=lambda t: (-t["quantidade"], t["nome"]))
-        if lista:
-            saida[produto_id] = lista
-    return saida
-
-
 def topos_de_artigos(eventos: List[Dict], com_iva: bool = True,
                      documentos_por_repartir: int = 0) -> Dict:
     """Os dois cartões de artigos: o que mais saiu e o que mais deu.
@@ -304,7 +266,7 @@ def topos_de_artigos(eventos: List[Dict], com_iva: bool = True,
     # `agregar` recusa uma dimensão desconhecida, mas não uma lista vazia:
     # sem eventos devolve zero linhas, que é exactamente o que se quer.
     linhas = agregar(eventos, "produto")["linhas"] if eventos else []
-    por_tamanho = _tamanhos_vendidos(eventos)
+    por_tamanho = tamanhos_por_produto(eventos)
 
     vendidos = sorted(
         (l for l in linhas if (l["quantidade"] or 0) > 0),

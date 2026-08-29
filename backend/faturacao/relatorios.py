@@ -212,6 +212,44 @@ def agregar(eventos: List[Dict], dimensao: str) -> Dict:
     }
 
 
+def tamanhos_por_produto(eventos: List[Dict]) -> Dict:
+    """A repartição por TAMANHO de cada produto — `{produto_id: [{nome, quantidade}]}`.
+
+    O dono, a olhar para o cartão: «no mais vendido devia ter também os
+    tamanhos, pois só está Açaí». E tem razão: no nosso catálogo o açaí é UM
+    produto e o tamanho é uma personalização dele, portanto o topo dizia «Açaí
+    25» — que é verdade e não responde a nada. Vinte e cinco de qual?
+
+    **Soma pela MESMA regra de `agregar`** — a nota de crédito subtrai — e é
+    isso que faz estas parcelas somarem exactamente a quantidade da linha. Há
+    um teste a prender essa igualdade: se um dia divergirem, o cartão mostra
+    um total e umas parcelas que não batem, e nenhum dos dois parece errado.
+
+    Os artigos SEM tamanho (uma água, um salgado) não entram: não há
+    repartição nenhuma a fazer, e uma parcela «(sem tamanho)» debaixo de cada
+    linha era ruído em todas as linhas menos uma.
+    """
+    contas: Dict = {}
+    for evento in eventos:
+        sinal = -1 if evento.get("tipo") == "NC" else 1
+        for artigo in evento.get("artigos") or []:
+            variante = artigo.get("variante")
+            if not variante:
+                continue
+            por_produto = contas.setdefault(artigo.get("produto_id"), {})
+            por_produto[variante] = por_produto.get(variante, 0.0) + sinal * float(
+                artigo.get("quantidade") or 0)
+
+    saida: Dict = {}
+    for produto_id, tamanhos in contas.items():
+        lista = [{"nome": nome, "quantidade": round(q, 3)}
+                 for nome, q in tamanhos.items() if q > 0]
+        lista.sort(key=lambda t: (-t["quantidade"], t["nome"]))
+        if lista:
+            saida[produto_id] = lista
+    return saida
+
+
 def _ordem_de(dimensao: str):
     """Como se ordena cada vista.
 
@@ -590,10 +628,25 @@ async def relatorio(
         db, documentos, categoria_id=categoria_id, utilizador_id=utilizador_id)
 
     agregado = agregar(eventos, dimensao)
+
+    # **Os TAMANHOS, na vista de Produtos.** No catálogo há UM açaí e o
+    # tamanho é uma personalização dele — a linha dizia «Açaí 25», que é
+    # verdade e não responde a nada: vinte e cinco de qual? A mesma
+    # repartição que o cartão «Mais Vendidos» do painel mostra, pela mesma
+    # função, para os dois nunca discordarem no mesmo dia.
+    #
+    # Só nesta dimensão: um tamanho reparte um ARTIGO. Repartir uma loja ou
+    # um utilizador por tamanhos misturava o açaí com tudo o resto que essa
+    # loja vendeu.
+    linhas = agregado["linhas"]
+    if dimensao == "produto":
+        por_tamanho = tamanhos_por_produto(eventos)
+        linhas = [dict(l, tamanhos=por_tamanho.get(l["chave"]) or []) for l in linhas]
+
     return {
         "dimensao": dimensao,
         "de": de, "ate": ate,
-        "linhas": agregado["linhas"],
+        "linhas": linhas,
         "total": agregado["total"],
         "serie": (
             [{"rotulo": l["rotulo"], "valor": l["bruto"]} for l in agregado["linhas"]]
