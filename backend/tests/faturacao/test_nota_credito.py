@@ -2078,3 +2078,45 @@ def test_quem_le_o_SALDO_e_e_ultrapassado_antes_de_ler_as_NOTAS_perde(monkeypatc
     assert len([d for d in db[COLECOES["documentos"]]._documentos
                 if d["tipo"] == "NC"]) == 1
     assert sum(len(v.chamadas_criar) for v in VendusNCFalso.instancias) == 1
+
+
+# --- o NIF da devolução: a nota desconta no cliente da FATURA -----------------
+
+def test_a_nota_leva_o_NIF_da_FATURA_que_corrige(monkeypatch):
+    """Sem isto, a devolução nunca descontava do que o cliente gastou.
+
+    O ecrã de Clientes lista documentos com NIF e desconta os de `tipo: "NC"`
+    — mas nenhuma nota de crédito levava NIF, e esse ramo era código morto: um
+    açaí comprado e devolvido continuava a contar inteiro na ficha da pessoa.
+    """
+    db = _db_nc(documentos=[_documento_fs(cliente_nif="517542510")])
+    _emitir(db, monkeypatch)
+
+    nc = [d for d in db[COLECOES["documentos"]]._documentos if d.get("tipo") == "NC"]
+    assert len(nc) == 1
+    assert nc[0]["cliente_nif"] == "517542510"
+
+
+def test_a_nota_de_uma_fatura_SEM_NIF_tambem_fica_sem_NIF(monkeypatch):
+    """Consumidor Final devolve: não se inventa um cliente para a nota."""
+    db = _db_nc(documentos=[_documento_fs()])
+    _emitir(db, monkeypatch)
+
+    nc = [d for d in db[COLECOES["documentos"]]._documentos if d.get("tipo") == "NC"]
+    assert nc[0]["cliente_nif"] is None
+
+
+def test_o_NIF_da_nota_sai_do_DOCUMENTO_e_nao_da_venda(monkeypatch):
+    """Os dois deviam dizer o mesmo. Quando discordarem, manda a FATURA: a
+    nota tem de descontar no MESMO cliente a quem a fatura somou.
+
+    Pela venda, uma divergência punha o total de um cliente a descer e o de
+    outro a ficar inflacionado — e nenhum dos dois números parecia errado."""
+    db = _db_nc(
+        documentos=[_documento_fs(cliente_nif="517542510")],
+        vendas=[_venda_faturada(cliente_nif="295258144")],
+    )
+    _emitir(db, monkeypatch)
+
+    nc = [d for d in db[COLECOES["documentos"]]._documentos if d.get("tipo") == "NC"]
+    assert nc[0]["cliente_nif"] == "517542510", "manda a fatura, não a venda"

@@ -14,6 +14,7 @@ import PosCampoValor, { TecladoNumerico, comVirgula } from './PosCampoValor';
 import {
   contaTravada, duvidaPorApurar, detalhesErroPos, eurosPos as euros,
   temMaisDe2CasasDecimaisPos, avisoDoDocumento, previsaoDoDividir,
+  guardarNifDaConta, lerNifDaConta,
 } from '@/lib/pos';
 
 // O ecrã de finalizar (Plano 2C, Task 4): três cartões — Total, Cliente e
@@ -912,7 +913,17 @@ export default function PosFinalizar({
   // 20 é o mesmo dele, e por a mesma razão: um dedo distraído.
   const [pessoas, setPessoas] = useState(2);
   const [recebido, setRecebido] = useState('');
-  const [nifTexto, setNifTexto] = useState('');
+  // O NIF sobrevive a sair deste ecrã para juntar mais um artigo à conta —
+  // preso ao id DESTA conta, ver `lib/pos.js::guardarNifDaConta`.
+  const [nifTexto, setNifTexto] = useState(() => lerNifDaConta(venda?.id));
+
+  // Trocar de conta (cobrar outra parte de uma conta repartida) recomeça do
+  // NIF daquela conta — nunca herda o da anterior.
+  useEffect(() => { setNifTexto(lerNifDaConta(venda?.id)); }, [venda?.id]);
+
+  // Guarda ao escrever, e não ao sair: sair pode ser um toque em «Voltar» ou
+  // um F5 da operadora, e nenhum dos dois passa por aqui a avisar.
+  useEffect(() => { guardarNifDaConta(venda?.id, nifTexto); }, [nifTexto]); // eslint-disable-line react-hooks/exhaustive-deps
   // O pagamento que acabou de nascer "por escrever" — só para lhe dar o foco
   // assim que aparece, que é o toque que a operadora ia dar a seguir.
   const [focoPagamentoId, setFocoPagamentoId] = useState(null);

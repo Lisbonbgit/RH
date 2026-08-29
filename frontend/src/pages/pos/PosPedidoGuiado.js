@@ -30,15 +30,20 @@ import { ehIndicacaoDeServico, errosDeSelecao } from './PosPersonalizacoes';
 // de cada dose entra no preço unitário em `precos.linha_de_venda`).
 
 // Quanto tempo o dedo tem de ficar em cima para apagar uma opção por inteiro.
-// UM segundo, por pedido do dono depois de o usar ao balcão: dois eram longos
-// de mais para quem tem fila à frente, e a barra que enche por baixo torna o
-// gesto visível o suficiente para um segundo chegar. Continua a ser longo o
-// bastante para não acontecer com o polegar apressado — um toque de apagar é
-// da ordem dos 100 ms.
 //
-// Sem a barra, isto não funcionava a nenhum tempo: solta-se antes do fim e
+// MEIO segundo. Foi descendo com o balcão a usá-lo: dois segundos eram longos
+// de mais para quem tem fila à frente, um segundo ainda o era. A barra que
+// enche por baixo é o que permite encurtar sem o gesto desaparecer — ela dá o
+// aviso que o tempo já não dá.
+//
+// Continua a ser cinco vezes mais do que um toque de apagar, que é da ordem
+// dos 100 ms: o polegar apressado não chega lá. Abaixo disto o risco muda de
+// lado — passa a apagar-se sem querer, e apagar a opção errada com o cliente
+// à frente custa mais do que esperar mais um instante.
+//
+// Sem a barra, isto não funcionava a tempo nenhum: solta-se antes do fim e
 // conclui-se que o gesto não existe.
-const MS_ATE_APAGAR = 1000;
+const MS_ATE_APAGAR = 500;
 
 // O limite dos caracteres do `RespostaTexto.texto` (venda.py). Está aqui para
 // o campo não deixar escrever o que o servidor vai recusar com um 422 depois

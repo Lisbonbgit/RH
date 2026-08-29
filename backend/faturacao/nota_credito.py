@@ -1031,6 +1031,8 @@ async def _gravar_documento_da_nota(
     conta. Gravá-lo fazia `documentos.obter_documento` desenhar a nota com os
     artigos todos da conta original e um mapa de imposto que não é o dela —
     um documento fiscal a mostrar números que não são os seus."""
+    origem = await db[COLECOES["documentos"]].find_one(
+        {"id": nota["documento_id"]}, {"_id": 0, "cliente_nif": 1})
     documento = {
         "id": str(uuid.uuid4()),
         "vendus_document_id": bruto.get("id"),
@@ -1058,6 +1060,21 @@ async def _gravar_documento_da_nota(
         "nota_credito_id": nota["id"],
         "documento_origem_id": nota["documento_id"],
         "numero_origem": nota["numero_origem"],
+        # **O NIF da FATURA que esta nota corrige**, e não o da venda.
+        #
+        # Sem ele, o ecrã de Clientes — que filtra por `cliente_nif != None` —
+        # nunca via uma nota de crédito, e o ramo que desconta a devolução do
+        # que o cliente gastou (`clientes._resumo_por_nif`, `tipo == "NC"`)
+        # era código morto: uma compra devolvida continuava a contar inteira
+        # na ficha da pessoa.
+        #
+        # Copiado do DOCUMENTO DE ORIGEM e não da venda, de propósito. Os dois
+        # deviam dizer o mesmo, mas se alguma vez discordarem é a fatura que
+        # manda: a nota tem de descontar no MESMO cliente a quem a fatura
+        # somou. Pela venda, uma divergência punha o total de um cliente a
+        # descer e o de outro a ficar inflacionado, e nenhum dos dois números
+        # parecia errado.
+        "cliente_nif": (origem or {}).get("cliente_nif"),
     }
     try:
         await db[COLECOES["documentos"]].insert_one(dict(documento))
