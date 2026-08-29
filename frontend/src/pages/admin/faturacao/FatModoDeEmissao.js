@@ -39,7 +39,7 @@ const TONS = {
   },
 };
 
-export default function FatModoDeEmissao() {
+export default function FatModoDeEmissao({ soQuandoImporta = false }) {
   // `undefined` até o servidor responder — e `avisoDoModoNoBackoffice` lê isso
   // como o terceiro estado, nunca como `normal`. O valor inicial de um estado
   // do React é uma resposta que ninguém deu.
@@ -55,6 +55,19 @@ export default function FatModoDeEmissao() {
   }, []);
 
   const aviso = avisoDoModoNoBackoffice(estado);
+
+  // **`soQuandoImporta`: cala-se quando está tudo bem.**
+  //
+  // O `calmo` responde aqui de propósito, ao contrário do POS — o gestor entra
+  // no ecrã do MODO precisamente para confirmar, e um ecrã calado obrigava-o a
+  // saber de cor que o silêncio quer dizer «sim». Isso continua verdade lá.
+  //
+  // No PAINEL não: ele abre-o dezenas de vezes por dia para ver dinheiro, e
+  // uma faixa verde permanente no topo é a maneira mais certa de ensinar
+  // alguém a não a ler — e depois não a ler no dia em que ela fica amarela.
+  // Pedido do dono a olhar para o painel; as outras duas continuam a aparecer,
+  // que são as que respondem a uma pergunta.
+  if (soQuandoImporta && aviso.tom === 'calmo') return null;
   const tom = TONS[aviso.tom] || TONS.perigo;
   const { Icone } = tom;
 

@@ -372,7 +372,7 @@ export default function FatDashboard() {
       {/* Em que modo é que as lojas estão a emitir. Fica ANTES dos números:
           uma receita do dia lida por baixo de um POS em modo de testes é uma
           receita que não existe. */}
-      <FatModoDeEmissao />
+      <FatModoDeEmissao soQuandoImporta />
 
       {loading && !dashboard ? (
         <div className="flex items-center justify-center h-40">

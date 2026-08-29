@@ -1616,6 +1616,56 @@ def test_o_painel_do_gestor_MOSTRA_MESMO_a_resposta(tmp_path_factory):
     )
 
 
+def _painel_com_modo(modo, tmp_path_factory, nome):
+    cenario = "\n".join([
+        "const Painel = carregar(%s).default;" % json.dumps(str(_DASHBOARD)),
+        ("RESPOSTAS_GESTAO['/faturacao/modo-de-emissao'] = () => ({ data: { modo: %s } });"
+         % json.dumps(modo)) if modo != "sem-rota" else
+        ("RESPOSTAS_GESTAO['/faturacao/modo-de-emissao'] = () => "
+         "{ throw new Error('Network Error'); };"),
+        "(async () => {",
+        "  process.stdout.write(JSON.stringify(",
+        "    await montar(React.createElement(Painel))));",
+        "})().catch((e) => { console.error(e); process.exit(3); });",
+    ])
+    return _montar_no_node(cenario, tmp_path_factory.mktemp(nome), "painel-%s.js" % nome)
+
+
+def test_o_painel_NAO_mostra_a_faixa_quando_esta_TUDO_NORMAL(tmp_path_factory):
+    """Pedido do dono, a olhar para o painel: «pode tirar esta parte de a
+    emitir faturas reais».
+
+    E é a decisão certa por uma razão que ele não teve de dizer: ele abre este
+    ecrã dezenas de vezes por dia para ver dinheiro, e uma faixa verde
+    permanente no topo é a maneira mais segura de ensinar alguém a não a ler —
+    e depois não a ler no dia em que ela fica amarela.
+
+    No ecrã do MODO ela continua a responder em `normal`, e aí é de propósito:
+    lá entra-se precisamente para confirmar."""
+    ecra = _painel_com_modo("normal", tmp_path_factory, "normal")
+    assert "A emitir faturas reais" not in ecra["visivel"], ecra["visivel"][:300]
+    # E o painel DESENHOU-SE — não é que tenha rebentado antes de chegar à
+    # faixa. (O pedido do dashboard não é fabricado de propósito, como no
+    # teste acima: a faixa vem ANTES dos números e não pode depender deles.)
+    assert "Valores c/ IVA" in ecra["visivel"], ecra["visivel"][:300]
+
+
+def test_o_painel_CONTINUA_a_gritar_quando_as_lojas_NAO_estao_a_facturar(tmp_path_factory):
+    """A que interessa. Calar a verde é limpeza; calar a amarela era o dono a
+    ver a receita de um dia inteiro de faturas que não existem."""
+    ecra = _painel_com_modo("tests", tmp_path_factory, "testes")
+    assert "MODO DE TESTES" in ecra["visivel"], ecra["visivel"][:400]
+
+
+def test_o_painel_CONTINUA_a_avisar_quando_nao_se_sabe_o_modo(tmp_path_factory):
+    """O terceiro estado. Sem resposta do servidor, não se afirma que está
+    tudo bem — «não sei» é a única resposta honesta, e tem de aparecer."""
+    ecra = _painel_com_modo("sem-rota", tmp_path_factory, "sem-rota")
+    assert "A emitir faturas reais" not in ecra["visivel"]
+    assert ("não" in ecra["visivel"].lower() or "?" in ecra["visivel"]), (
+        ecra["visivel"][:400])
+
+
 def test_o_painel_do_gestor_monta_esta_linha():
     """Textual, e sabe-se pouco valioso — serve só para a linha não ficar
     escrita num ficheiro que ninguém desenha. O que ela DIZ está guardado
