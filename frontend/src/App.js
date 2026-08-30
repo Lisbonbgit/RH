@@ -41,6 +41,9 @@ import EstoqueVisaoGeral from './pages/admin/estoque/EstoqueVisaoGeral';
 import EstoqueCatalogo from './pages/admin/estoque/EstoqueCatalogo';
 import EstoqueCompras from './pages/admin/estoque/EstoqueCompras';
 import EstoqueDefinicoes from './pages/admin/estoque/EstoqueDefinicoes';
+import EstoqueUnidades from './pages/admin/estoque/EstoqueUnidades';
+import EstoqueUtilizadores from './pages/admin/estoque/EstoqueUtilizadores';
+import EstoquePessoas from './pages/admin/estoque/EstoquePessoas';
 import ComingSoon from './components/ComingSoon';
 import {
   FileText,
@@ -230,6 +233,9 @@ function AppRoutes() {
         <Route path="estoque/producao" element={<EstoqueProducao />} />
         <Route path="estoque/faturas" element={<EstoqueFaturas />} />
         <Route path="estoque/definicoes" element={<EstoqueDefinicoes />} />
+        <Route path="estoque/unidades" element={<EstoqueUnidades />} />
+        <Route path="estoque/utilizadores" element={<EstoqueUtilizadores />} />
+        <Route path="estoque/pessoas" element={<EstoquePessoas />} />
         <Route path="estoque/historico" element={<EstoqueHistorico />} />
 
         {/* ===== Faturação ===== */}
