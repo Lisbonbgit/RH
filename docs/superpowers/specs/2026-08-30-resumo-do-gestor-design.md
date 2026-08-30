@@ -52,16 +52,23 @@ e zero empresas onde seja membro no quarto.
 
 | Bloco | Cliente | Endpoint |
 |---|---|---|
-| Financeiro + RH | `getFinGlobalDashboard` (`lib/api.js:263`) | `GET /api/fin/global/dashboard?company_id&month&unit_id` |
-| RH detalhado | `getAdminDashboard` (`lib/api.js:79`) | `GET /api/dashboard/admin` |
+| Financeiro | `getFinGlobalDashboard` (`lib/api.js:263`) | `GET /api/fin/global/dashboard?company_id&month&unit_id` |
+| RH | `getAdminDashboard` (`lib/api.js:79`) | `GET /api/dashboard/admin` |
 | Estoque | `getEstoqueOverview` (`lib/api.js:162`) | `GET /api/estoque/overview` |
-| Faturação | `lib/faturacao.js:96` | `GET /api/faturacao/dashboard?com_iva` |
+| Faturação | `getFatDashboard` (`lib/faturacao.js:94`) | `GET /api/faturacao/dashboard?com_iva` |
+
+**O RH vem do seu próprio endpoint, não do painel do Financeiro.** Os dois trazem
+números de RH, mas com guardas diferentes: `/dashboard/admin` é por papel e
+`/fin/global/dashboard` é por pertença à empresa. Ler o RH do segundo fazia o
+cartão de RH morrer sempre que o Financeiro respondesse 403 — que é exatamente o
+caso provável do Bruce e da Débora.
 
 Campos usados, tal como o backend os devolve hoje:
 
 - `fin/global/dashboard` → `financeiro{vendas_mes, a_pagar, pago, pendentes,
-  vencidas, saldo_banco}`, `rh{linked, colaboradores, ausencias_pendentes,
-  a_trabalhar[]}`, `company{id,name}`, `month`.
+  vencidas, saldo_banco}`, `company{id,name}`, `month`.
+- `dashboard/admin` → `total_employees`, `working_now`, `on_leave_today`,
+  `pending_requests`.
 - `faturacao/dashboard` → `cartoes{hoje, mensal, anual}`, cada um
   `{valor, valor_comparado, variacao, comparacao}`; mais `ha_vendas` e `por_loja`.
 - `estoque/overview` → **array** de lojas, cada uma
@@ -85,8 +92,7 @@ seletor de empresa e de mês. Puxar para baixo recarrega.
    face ao mês anterior. Vem de `cartoes.hoje` e `cartoes.mensal`.
 2. **Financeiro** — a pagar, vencidas (a vermelho quando > 0), pago no mês,
    saldo do banco.
-3. **RH** — colaboradores, quantos estão ao serviço agora (`a_trabalhar.length`),
-   ausências por aprovar.
+3. **RH** — colaboradores, ao serviço agora, de férias hoje, ausências por aprovar.
 4. **Estoque** — total de artigos abaixo do mínimo e, por baixo, a lista das
    lojas que têm algum.
 
