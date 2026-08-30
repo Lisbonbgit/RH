@@ -721,13 +721,54 @@ cd ~/Developer/RH && git add frontend/src/App.js && git commit -m "Na app, o ges
 
 **Ficheiros:** nenhum de código. `frontend/ios/App/App.xcodeproj` (versão).
 
-- [ ] **Passo 1: build da web a apontar para produção**
+> **A app NÃO existe na App Store Connect.** Confirmado pelo dono a 2026-08-30:
+> a conta só tem a app L'Açaí. O `com.lisbonb.rh` nunca foi registado, e não há
+> um único perfil de aprovisionamento neste Mac — este projeto iOS nunca foi
+> assinado. Os passos 1 a 3 abaixo criam a ficha; sem eles, o *Archive* falha.
+
+- [ ] **Passo 1: registar o App ID (no Xcode, deixa-o fazer sozinho)**
+
+```bash
+cd ~/Developer/RH/frontend && npx cap open ios
+```
+
+No Xcode, separador **App → Signing & Capabilities**:
+- **Automatically manage signing** ligado;
+- **Team**: escolher o team. O projeto traz `P58HVPWKS8` gravado — é a conta onde
+  vive a app L'Açaí. Para TestFlight interno serve; se quiser a Lisbonb numa
+  conta própria, é outra subscrição de programador (99 €/ano) e o team muda aqui.
+
+O Xcode regista o identificador `com.lisbonb.rh` no portal Apple sozinho. Se
+aparecer um erro a vermelho nesse painel, **parar** e resolvê-lo — é o único
+sítio onde este problema se vê antes de custar tempo.
+
+- [ ] **Passo 2: criar a ficha da app na App Store Connect**
+
+Em appstoreconnect.apple.com → **Apps → + → Nova app**:
+- Plataforma **iOS**; Nome: `Gestão Lisbonb`; Idioma principal: Português;
+- **Bundle ID**: `com.lisbonb.rh` (só aparece na lista depois do Passo 1);
+- SKU: `lisbonb-rh`.
+
+Não é preciso preencher preço, capturas de ecrã nem descrição: nada disso é
+exigido para **TestFlight interno**.
+
+- [ ] **Passo 3: dar acesso ao Bruce e à Débora**
+
+Testador **interno** de TestFlight é um **utilizador da App Store Connect** — não
+basta ter o email. Em **Utilizadores e Acesso**, convidar o Apple ID de cada um
+(função *Developer* ou *Marketing* chega) e garantir o acesso a TestFlight.
+Cada um aceita o convite no email antes de conseguir instalar.
+
+Testadores internos não passam por revisão da Apple. (A alternativa, testadores
+externos, exigiria *Beta App Review* — não é preciso para três pessoas.)
+
+- [ ] **Passo 4: build da web a apontar para produção**
 
 ```bash
 cd ~/Developer/RH/frontend && export PATH="$HOME/.local/node/bin:$HOME/Library/pnpm:$PATH" && yarn build:mobile
 ```
 
-- [ ] **Passo 2: confirmar a trava do backend (a mesma que o script do Android faz)**
+- [ ] **Passo 5: confirmar a trava do backend (a mesma que o script do Android faz)**
 
 ```bash
 cd ~/Developer/RH/frontend && grep -rq "https://rh.lisbonb.com" build/static/js/*.js && echo "OK: backend no bundle" || echo "ABORTAR: falta o backend no bundle"
@@ -736,13 +777,13 @@ cd ~/Developer/RH/frontend && grep -rq "https://rh.lisbonb.com" build/static/js/
 Esperado: `OK: backend no bundle`. Se disser ABORTAR, **parar** — a app não
 falaria com o servidor.
 
-- [ ] **Passo 3: sincronizar o iOS**
+- [ ] **Passo 6: sincronizar o iOS**
 
 ```bash
 cd ~/Developer/RH/frontend && export PATH="$HOME/.local/node/bin:$HOME/Library/pnpm:$PATH" && npx cap sync ios
 ```
 
-- [ ] **Passo 4: subir a versão e arquivar (Xcode, à mão)**
+- [ ] **Passo 7: subir a versão e arquivar (Xcode, à mão)**
 
 ```bash
 cd ~/Developer/RH/frontend && npx cap open ios
@@ -750,14 +791,17 @@ cd ~/Developer/RH/frontend && npx cap open ios
 
 No Xcode: em *App → General*, pôr **Build 13** (está em 12) e deixar a versão em
 1.0.11 — ou 1.0.12 se preferir marcar a novidade. Depois *Product → Archive* →
-*Distribute App* → **TestFlight**. O *Team* `P58HVPWKS8` já está configurado.
+*Distribute App* → **TestFlight**. À primeira subida, a Apple pergunta pela
+*Export Compliance*: a app só usa HTTPS, o que conta como criptografia isenta.
 
-- [ ] **Passo 5: convidar os três**
+- [ ] **Passo 8: distribuir a build aos três**
 
-Em App Store Connect → TestFlight → testadores internos:
-`bruce.silva@lisbonb.com`, `debora.ferreira@lisbonb.com`, `matheus.moraes@lisbonb.com`.
+Em App Store Connect → TestFlight → **Testes internos** → criar o grupo e juntar
+os três utilizadores convidados no Passo 3. Cada um instala pela app TestFlight.
+Nota: uma build de TestFlight caduca ao fim de **90 dias** — passado esse prazo é
+preciso subir outra.
 
-- [ ] **Passo 6: exercitar o caminho a sério, no iPhone**
+- [ ] **Passo 9: exercitar o caminho a sério, no iPhone**
 
 Entrar na app com cada uma das três contas e confirmar que o Resumo aparece com
 números reais. **É aqui que se descobre se o Bruce e a Débora são membros da
@@ -765,7 +809,7 @@ empresa no Financeiro**: se não forem, o cartão Financeiro diz «Sem acesso» 
 adicionam-se em Financeiro → equipa. Ver a app instalada é a única prova que
 conta; nada até aqui a deu.
 
-- [ ] **Passo 7: publicar pelo fluxo da casa**
+- [ ] **Passo 10: publicar pelo fluxo da casa**
 
 Usar a skill `fluxo` (parte B): juntar `matheus-resumo-do-gestor` ao `main`,
 empurrar, e publicar o `main` no servidor. O site ganha a rota `/admin/resumo`

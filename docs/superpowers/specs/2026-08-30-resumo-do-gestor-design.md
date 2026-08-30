@@ -127,9 +127,19 @@ cd frontend
 yarn build:mobile          # trava: exige https://rh.lisbonb.com no bundle
 npx cap sync ios
 ```
-Subir `CURRENT_PROJECT_VERSION` para 13 no Xcode, arquivar, enviar para o
-TestFlight e convidar `bruce.silva@`, `debora.ferreira@` e `matheus.moraes@lisbonb.com`.
-O Team de assinatura já está configurado; não há nada a criar.
+Subir `CURRENT_PROJECT_VERSION` para 13 no Xcode, arquivar e enviar para o TestFlight.
+
+**A ficha da app ainda não existe.** Confirmado a 2026-08-30: a App Store Connect
+do dono só tem a app L'Açaí. O `com.lisbonb.rh` nunca foi registado e não há
+perfis de aprovisionamento neste Mac — o projeto iOS nunca foi assinado. Antes
+de arquivar é preciso registar o App ID (o Xcode fá-lo com *automatic signing*),
+criar a app na App Store Connect e convidar o Bruce e a Débora como
+**utilizadores** da App Store Connect — um testador interno é um utilizador da
+conta, não apenas um email. Os passos estão na Tarefa 4 do plano.
+
+Fica também dito: o team gravado no projeto (`P58HVPWKS8`) é a conta onde vive a
+L'Açaí. Para TestFlight interno serve; uma conta própria da Lisbonb é outra
+subscrição de 99 €/ano.
 
 Nota: `scripts/build-app-release.sh` só trata do Android. O iOS fica manual pelo
 Xcode nesta primeira volta — automatiza-se se e quando doer.
