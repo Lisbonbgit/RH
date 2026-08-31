@@ -60,7 +60,8 @@ import {
   ClipboardList,
   Factory,
   Boxes,
-  UserRound
+  UserRound,
+  Smartphone
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -70,16 +71,19 @@ const sections = [
     key: 'painel',
     label: 'Painel',
     home: '/admin/painel',
-    match: (p) => p.startsWith('/admin/painel'),
+    // O Resumo (o ecrã de telemóvel) vive aqui: sem o acrescentar aos dois
+    // `match`, tocar-lhe acendia o grupo RH — o apanha-tudo por exclusão.
+    match: (p) => p.startsWith('/admin/painel') || p.startsWith('/admin/resumo'),
     items: [
       { path: '/admin/painel', label: 'Global', icon: LayoutDashboard, exact: true },
+      { path: '/admin/resumo', label: 'Resumo', icon: Smartphone, exact: true },
     ],
   },
   {
     key: 'rh',
     label: 'RH',
     home: '/admin',
-    match: (p) => !p.startsWith('/admin/painel') && !p.startsWith('/admin/financeiro') && !p.startsWith('/admin/marketing') && !p.startsWith('/admin/estoque') && !p.startsWith('/admin/faturacao'),
+    match: (p) => !p.startsWith('/admin/painel') && !p.startsWith('/admin/resumo') && !p.startsWith('/admin/financeiro') && !p.startsWith('/admin/marketing') && !p.startsWith('/admin/estoque') && !p.startsWith('/admin/faturacao'),
     items: [
       { path: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true },
       { path: '/admin/empresas', label: 'Empresas', icon: Building2 },

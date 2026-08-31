@@ -3,6 +3,8 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Toaster } from './components/ui/sonner';
 import { initNativeStatusBar } from './lib/statusbar';
+import { Capacitor } from '@capacitor/core';
+import { rotaDeAterragem } from './lib/resumo';
 
 // Pages
 import LoginPage from './pages/LoginPage';
@@ -11,6 +13,7 @@ import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import AdminDashboard from './pages/admin/AdminDashboard';
+import Resumo from './pages/admin/Resumo';
 import AdminCompanies from './pages/admin/AdminCompanies';
 import AdminLocations from './pages/admin/AdminLocations';
 import AdminEmployees from './pages/admin/AdminEmployees';
@@ -158,7 +161,10 @@ const RoleRedirect = () => {
     return <Navigate to="/alterar-senha" replace />;
   }
   
-  return <Navigate to={['admin', 'gerente', 'contabilista'].includes(user.role) ? '/admin' : '/colaborador'} replace />;
+  // Dentro da APP, um gestor aterra no Resumo; no browser, onde sempre aterrou.
+  return <Navigate to={rotaDeAterragem({
+    nativo: Capacitor.isNativePlatform(), papel: user.role,
+  })} replace />;
 };
 
 function AppRoutes() {
@@ -191,6 +197,7 @@ function AppRoutes() {
         </ProtectedRoute>
       }>
         <Route index element={<AdminDashboard />} />
+        <Route path="resumo" element={<Resumo />} />
         <Route path="painel" element={<PainelGlobal />} />
         <Route path="empresas" element={<AdminCompanies />} />
         <Route path="locais" element={<AdminLocations />} />

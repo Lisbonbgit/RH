@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { Capacitor } from '@capacitor/core';
 import { useAuth } from '../contexts/AuthContext';
+import { rotaDeAterragem } from '../lib/resumo';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -32,7 +34,7 @@ export default function LoginPage() {
 
   React.useEffect(() => {
     if (isAuthenticated && user) {
-      navigate(user.role === 'admin' ? '/admin' : '/colaborador');
+      navigate(rotaDeAterragem({ nativo: Capacitor.isNativePlatform(), papel: user.role }));
     }
   }, [isAuthenticated, user, navigate]);
 
@@ -42,7 +44,7 @@ export default function LoginPage() {
     try {
       const userData = await login(loginEmail, loginPassword);
       toast.success('Sessão iniciada com sucesso!');
-      navigate(userData.role === 'admin' ? '/admin' : '/colaborador');
+      navigate(rotaDeAterragem({ nativo: Capacitor.isNativePlatform(), papel: userData.role }));
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Erro ao iniciar sessão');
     } finally {
