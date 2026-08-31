@@ -12,7 +12,7 @@ import { eur } from './finance';
 import {
   pede, estadoDoBloco, rotaDeAterragem,
   cartaoVendas, cartaoFinanceiro, cartaoRh, cartaoEstoque,
-  OK, SEM_ACESSO, INDISPONIVEL, MSG_SEM_ACESSO, MSG_INDISPONIVEL,
+  OK, SEM_ACESSO, INDISPONIVEL, MSG_SEM_ACESSO, MSG_INDISPONIVEL, MSG_SEM_LOJAS,
 } from './resumo';
 
 const negado = { ok: false, status: 403 };
@@ -129,7 +129,7 @@ describe('cartaoVendas', () => {
 
   test('traz hoje e o mês, cada um com a sua variação', () => {
     const c = cartaoVendas(resposta);
-    expect(c.linhas.map((l) => l.rotulo)).toEqual(['Hoje', 'Este mês']);
+    expect(c.linhas.map((l) => l.rotulo)).toEqual(['Hoje', 'Mês atual']);
     expect(c.linhas[0].variacao).toBe(50);
   });
 
@@ -153,7 +153,7 @@ describe('cartaoVendas', () => {
       mensal: { valor: 9000, valor_comparado: 8000, variacao: 12.5 },
     } } };
     const c = cartaoVendas(semHoje);
-    expect(c.linhas.map((l) => l.rotulo)).toEqual(['Este mês']);
+    expect(c.linhas.map((l) => l.rotulo)).toEqual(['Mês atual']);
   });
 });
 
@@ -203,6 +203,22 @@ describe('cartaoEstoque', () => {
     const c = cartaoEstoque(r);
     expect(c.linhas[0].alerta).toBe(false);
     expect(c.linhas).toHaveLength(1);
+  });
+
+  // Um 200 sem lojas nenhuma não pode desenhar «0»: isso lê-se como «está
+  // tudo em ordem» quando pode ser «não veio nada».
+  test('res.data que não é array é avaria — sem linhas, sem «0» a fingir de dado', () => {
+    const c = cartaoEstoque({ ok: true, data: null });
+    expect(c.estado).toBe(OK);
+    expect(c.linhas).toEqual([]);
+    expect(c.mensagem).toBe(MSG_INDISPONIVEL);
+  });
+
+  test('array vazio é «sem lojas configuradas», não «zero em falta»', () => {
+    const c = cartaoEstoque({ ok: true, data: [] });
+    expect(c.estado).toBe(OK);
+    expect(c.linhas).toEqual([]);
+    expect(c.mensagem).toBe(MSG_SEM_LOJAS);
   });
 });
 

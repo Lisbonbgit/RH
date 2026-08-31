@@ -14,6 +14,7 @@ export const INDISPONIVEL = 'indisponivel';
 export const MSG_SEM_ACESSO = 'Sem acesso';
 export const MSG_INDISPONIVEL = 'Indisponível';
 export const MSG_SEM_VENDAS = 'Ainda não há vendas';
+export const MSG_SEM_LOJAS = 'Sem lojas configuradas';
 
 const PAPEIS_DE_GESTAO = ['admin', 'gerente', 'contabilista'];
 
@@ -84,7 +85,10 @@ export function cartaoVendas(res) {
   return {
     estado,
     mensagem: null,
-    linhas: [...linhaCartao('Hoje', c.hoje), ...linhaCartao('Este mês', c.mensal)],
+    // Rótulo «Mês atual», não «Este mês»: o /faturacao/dashboard não aceita
+    // parâmetro de mês (devolve sempre o mês corrente), por isso esta linha
+    // NÃO segue o MonthPicker do ecrã — o rótulo tem de o dizer.
+    linhas: [...linhaCartao('Hoje', c.hoje), ...linhaCartao('Mês atual', c.mensal)],
   };
 }
 
@@ -128,8 +132,17 @@ export function cartaoRh(res) {
 export function cartaoEstoque(res) {
   const estado = estadoDoBloco(res);
   if (estado !== OK) return semDados(estado);
-  // Este endpoint devolve um ARRAY de lojas (ver EstoqueVisaoGeral.js).
-  const lojas = Array.isArray(res.data) ? res.data : [];
+  // Este endpoint devolve um ARRAY de lojas (ver EstoqueVisaoGeral.js). Um
+  // 200 que não seja array é avaria a fingir de sucesso; um array vazio é
+  // sucesso sem lojas para somar — nos dois casos, sem linhas nenhuma, senão
+  // um «0» sem dados lê-se como «está tudo em ordem».
+  if (!Array.isArray(res.data)) {
+    return { estado, mensagem: MSG_INDISPONIVEL, linhas: [] };
+  }
+  const lojas = res.data;
+  if (lojas.length === 0) {
+    return { estado, mensagem: MSG_SEM_LOJAS, linhas: [] };
+  }
   const total = lojas.reduce((a, l) => a + (Number(l.abaixo_minimo) || 0), 0);
   const comFalta = lojas.filter((l) => Number(l.abaixo_minimo) > 0);
   return {

@@ -49,7 +49,9 @@ function Bloco({ titulo, icone: Icone, cartao, destaque = false }) {
         </div>
 
         {cartao.estado !== OK || cartao.linhas.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{cartao.mensagem}</p>
+          // Um cartão OK sem linhas nenhuma (falta tudo) não tem `mensagem`
+          // própria — sem isto ficava um <p> vazio, um espaço em branco.
+          <p className="text-sm text-muted-foreground">{cartao.mensagem || 'Sem dados'}</p>
         ) : (
           <div className="space-y-3">
             {cartao.linhas.map((l, i) => (
@@ -87,7 +89,14 @@ export default function Resumo() {
     pede(getFinCompanies).then((r) => {
       const lista = r.ok && Array.isArray(r.data) ? r.data : [];
       setEmpresas(lista);
-      if (!empresaId && lista.length) setEmpresaId(lista[0].id);
+      // A chave gravada é PARTILHADA com o Financeiro (FinExtrato/
+      // FinFornecedores lá escrevem o literal 'all' quando o seletor deles
+      // está em «todas as empresas»), ou pode ser uma empresa de que já não
+      // somos membros. Nos dois casos o <Select> fica sem correspondência
+      // enquanto o servidor responde com dados de uma empresa que o ecrã não
+      // está a mostrar — substitui pela primeira da lista, ou vazio.
+      // Forma funcional para não meter `empresaId` nas dependências.
+      setEmpresaId((actual) => (lista.some((e) => e.id === actual) ? actual : (lista[0]?.id || '')));
     });
     // só à entrada: a lista de empresas não muda com o mês
     // eslint-disable-next-line react-hooks/exhaustive-deps
