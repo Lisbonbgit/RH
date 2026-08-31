@@ -11,6 +11,7 @@ import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import AdminDashboard from './pages/admin/AdminDashboard';
+import Resumo from './pages/admin/Resumo';
 import AdminCompanies from './pages/admin/AdminCompanies';
 import AdminLocations from './pages/admin/AdminLocations';
 import AdminEmployees from './pages/admin/AdminEmployees';
@@ -188,6 +189,7 @@ function AppRoutes() {
         </ProtectedRoute>
       }>
         <Route index element={<AdminDashboard />} />
+        <Route path="resumo" element={<Resumo />} />
         <Route path="painel" element={<PainelGlobal />} />
         <Route path="empresas" element={<AdminCompanies />} />
         <Route path="locais" element={<AdminLocations />} />
