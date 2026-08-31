@@ -59,7 +59,8 @@ import {
   History,
   ClipboardList,
   Factory,
-  Boxes
+  Boxes,
+  UserRound
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -122,6 +123,9 @@ const sections = [
       { path: '/admin/estoque/producao', label: 'Produção', icon: Factory },
       { path: '/admin/estoque/faturas', label: 'Faturas', icon: Receipt },
       { path: '/admin/estoque/definicoes', label: 'Definições', icon: Settings },
+      { path: '/admin/estoque/unidades', label: 'Unidades', icon: Store },
+      { path: '/admin/estoque/utilizadores', label: 'Utilizadores', icon: Users },
+      { path: '/admin/estoque/pessoas', label: 'Pessoas', icon: UserRound },
       { path: '/admin/estoque/historico', label: 'Histórico', icon: History },
     ],
   },

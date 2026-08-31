@@ -49,6 +49,7 @@ function ProdutoDialog({ marca, produto, onClose, onSaved, onDelete }) {
   const [pesoValor, setPesoValor] = useState(produto?.peso_valor != null ? String(produto.peso_valor) : '');
   const [pesoUnidade, setPesoUnidade] = useState(produto?.peso_unidade || 'g');
   const [foto, setFoto] = useState(produto?.foto || null);
+  const [ilimitado, setIlimitado] = useState(produto?.ilimitado || false);
   const [saving, setSaving] = useState(false);
 
   async function escolherFoto(e) {
@@ -68,6 +69,7 @@ function ProdutoDialog({ marca, produto, onClose, onSaved, onDelete }) {
     };
     if (pesoOk) { base.peso_valor = parseNum(pesoValor); base.peso_unidade = pesoUnidade; }
     else if (editar) { base.peso_valor = 0; } // limpa o peso
+    base.ilimitado = ilimitado;
     if (foto !== (produto?.foto || null)) base.foto = foto || '';
     setSaving(true);
     try {
@@ -130,6 +132,14 @@ function ProdutoDialog({ marca, produto, onClose, onSaved, onDelete }) {
           <Label>Código de barras (opcional)</Label>
           <Input value={codigo} onChange={(e) => setCodigo(e.target.value)} placeholder="scan no telemóvel, ou à mão" />
         </div>
+
+        <label className="flex items-start gap-2 text-sm cursor-pointer">
+          <input type="checkbox" checked={ilimitado} onChange={(e) => setIlimitado(e.target.checked)} className="h-4 w-4 mt-0.5" />
+          <span>
+            Artigo ilimitado (não conta no stock)
+            <span className="block text-[11px] text-muted-foreground">Ex.: água — entra nas receitas mas nunca falta nem se desconta.</span>
+          </span>
+        </label>
 
         <div className="space-y-1.5">
           <Label>Foto (opcional)</Label>
@@ -276,7 +286,10 @@ export default function EstoqueCatalogo() {
                         {p.fornecedor ? ` · ${p.fornecedor}` : ''}
                       </p>
                     </div>
-                    {p.tem_receita && <Badge variant="outline" className="shrink-0">receita</Badge>}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {p.ilimitado && <Badge variant="secondary">ilimitado</Badge>}
+                      {p.tem_receita && <Badge variant="outline">receita</Badge>}
+                    </div>
                   </div>
                 );
               })}

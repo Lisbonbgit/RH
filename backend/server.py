@@ -6147,6 +6147,15 @@ async def estoque_producao_relatorio(unidade_id: str = Query(...), dias: int = Q
     return await _estoque_get("/integ/producao", {"unidade_id": unidade_id, "dias": dias})
 
 
+@api_router.post("/estoque/producao/{producao_id}/reverter")
+async def estoque_reverter_producao(producao_id: str, current_user: dict = Depends(admin_required)):
+    """Anula uma produção feita por engano (atribuída ao admin do RH)."""
+    from urllib.parse import quote
+    ator = current_user.get("name") or current_user.get("email") or "RH"
+    path = f"/integ/producao/{quote(producao_id)}/reverter?actor={quote(str(ator))}"
+    return await _estoque_post(path, {})
+
+
 # ===== SECÇÃO ESTOQUE — Catálogo / Visão geral / Compras / Definições (Fase 1) =====
 
 async def _estoque_patch(path: str, body: dict):
@@ -6186,6 +6195,7 @@ class EstoqueProdutoCreateIn(BaseModel):
     peso_valor: Optional[float] = None
     peso_unidade: Optional[str] = None
     fornecedor: Optional[str] = None
+    ilimitado: Optional[bool] = None  # artigo infinito (ex.: água) — não conta no stock
 
 
 class EstoqueProdutoUpdateIn(BaseModel):
@@ -6196,6 +6206,7 @@ class EstoqueProdutoUpdateIn(BaseModel):
     peso_valor: Optional[float] = None
     peso_unidade: Optional[str] = None
     fornecedor: Optional[str] = None
+    ilimitado: Optional[bool] = None
 
 
 class EstoqueMergeIn(BaseModel):
@@ -6277,6 +6288,121 @@ async def estoque_simular_definicao(marca: str, percentagem: float = Query(...),
 async def estoque_definir_definicao(marca: str, body: EstoqueDefinicaoIn, current_user: dict = Depends(admin_required)):
     """Define a percentagem do mínimo automático de uma marca."""
     return await _estoque_patch(f"/integ/definicoes/{marca}", {"percentagem": body.percentagem})
+
+
+# ===== SECÇÃO ESTOQUE — Unidades / Utilizadores / Pessoas (Fase 2) =====
+
+def _sem_nulos(d: dict) -> dict:
+    return {k: v for k, v in d.items() if v is not None}
+
+
+class EstoqueUnidadeCreateIn(BaseModel):
+    nome: str
+    marca: str
+
+
+class EstoqueUnidadeUpdateIn(BaseModel):
+    nome: Optional[str] = None
+    marca: Optional[str] = None
+    ativo: Optional[bool] = None
+    fabrica: Optional[bool] = None
+
+
+class EstoqueUserCreateIn(BaseModel):
+    nome: str
+    username: Optional[str] = None
+    pin: Optional[str] = None
+    email: Optional[str] = None
+    papel: str = "colaborador"
+    unidade_id: Optional[str] = None
+    unidade_ids: Optional[list] = None
+
+
+class EstoqueUserUpdateIn(BaseModel):
+    nome: Optional[str] = None
+    username: Optional[str] = None
+    email: Optional[str] = None
+    papel: Optional[str] = None
+    unidade_id: Optional[str] = None
+    unidade_ids: Optional[list] = None
+    ativo: Optional[bool] = None
+    pin: Optional[str] = None
+
+
+class EstoquePessoaCreateIn(BaseModel):
+    nome: str
+    codigo: str
+
+
+class EstoquePessoaUpdateIn(BaseModel):
+    nome: Optional[str] = None
+    codigo: Optional[str] = None
+    ativo: Optional[bool] = None
+    pode_transferir: Optional[bool] = None
+
+
+@api_router.get("/estoque/unidades")
+async def estoque_unidades(current_user: dict = Depends(admin_required)):
+    """Todas as unidades (id, nome, marca, ativo, fábrica)."""
+    return await _estoque_get("/integ/unidades", {})
+
+
+@api_router.post("/estoque/unidades")
+async def estoque_criar_unidade(body: EstoqueUnidadeCreateIn, current_user: dict = Depends(admin_required)):
+    """Cria uma loja/fábrica."""
+    return await _estoque_post("/integ/unidades", body.dict())
+
+
+@api_router.patch("/estoque/unidades/{unidade_id}")
+async def estoque_editar_unidade(unidade_id: str, body: EstoqueUnidadeUpdateIn, current_user: dict = Depends(admin_required)):
+    """Edita uma unidade (nome/ativo/fábrica)."""
+    from urllib.parse import quote
+    return await _estoque_patch(f"/integ/unidades/{quote(unidade_id)}", _sem_nulos(body.dict()))
+
+
+@api_router.get("/estoque/utilizadores")
+async def estoque_utilizadores(current_user: dict = Depends(admin_required)):
+    """Logins do estoque (colaboradores + admins)."""
+    return await _estoque_get("/integ/utilizadores", {})
+
+
+@api_router.post("/estoque/utilizadores")
+async def estoque_criar_utilizador(body: EstoqueUserCreateIn, current_user: dict = Depends(admin_required)):
+    """Cria um login do estoque (colaborador username+PIN)."""
+    return await _estoque_post("/integ/utilizadores", _sem_nulos(body.dict()))
+
+
+@api_router.patch("/estoque/utilizadores/{user_id}")
+async def estoque_editar_utilizador(user_id: str, body: EstoqueUserUpdateIn, current_user: dict = Depends(admin_required)):
+    """Edita um login (nome/username/papel/lojas/estado/PIN)."""
+    from urllib.parse import quote
+    return await _estoque_patch(f"/integ/utilizadores/{quote(user_id)}", _sem_nulos(body.dict()))
+
+
+@api_router.delete("/estoque/utilizadores/{user_id}")
+async def estoque_apagar_utilizador(user_id: str, current_user: dict = Depends(admin_required)):
+    """Apaga um login (nunca deixa o sistema sem administrador)."""
+    from urllib.parse import quote
+    return await _estoque_delete(f"/integ/utilizadores/{quote(user_id)}")
+
+
+@api_router.get("/estoque/pessoas")
+async def estoque_pessoas(current_user: dict = Depends(admin_required)):
+    """Pessoas ('quem está') — o código nunca é exposto."""
+    return await _estoque_get("/integ/pessoas", {})
+
+
+@api_router.post("/estoque/pessoas")
+async def estoque_criar_pessoa(body: EstoquePessoaCreateIn, current_user: dict = Depends(admin_required)):
+    """Cria uma pessoa (nome + código 4-6 dígitos)."""
+    return await _estoque_post("/integ/pessoas", body.dict())
+
+
+@api_router.patch("/estoque/pessoas/{pessoa_id}")
+async def estoque_editar_pessoa(pessoa_id: str, body: EstoquePessoaUpdateIn, current_user: dict = Depends(admin_required)):
+    """Edita uma pessoa (nome/ativo/pode_transferir/repor código)."""
+    from urllib.parse import quote
+    return await _estoque_patch(f"/integ/pessoas/{quote(pessoa_id)}", _sem_nulos(body.dict()))
 
 
 # ===== SECÇÃO ESTOQUE — faturas inseridas pela app do Estoque =====

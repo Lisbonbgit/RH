@@ -151,6 +151,7 @@ export const setEstoqueReceita = (produtoId, data) => axios.put(`${API_URL}/esto
 // Produção na fábrica
 export const estoqueProduzir = (unidadeId, data) => axios.post(`${API_URL}/estoque/producao?unidade_id=${unidadeId}`, data);
 export const getEstoqueProducao = (unidadeId, dias) => axios.get(`${API_URL}/estoque/producao`, { params: { unidade_id: unidadeId, dias } });
+export const reverterEstoqueProducao = (producaoId) => axios.post(`${API_URL}/estoque/producao/${producaoId}/reverter`);
 
 // Secção Estoque — Catálogo / Visão geral / Compras / Definições (Fase 1 do portal)
 export const criarEstoqueProduto = (data) => axios.post(`${API_URL}/estoque/produtos`, data);
@@ -165,6 +166,18 @@ export const getEstoqueDefinicoes = () => axios.get(`${API_URL}/estoque/definico
 export const simularEstoqueDefinicao = (marca, percentagem) =>
   axios.get(`${API_URL}/estoque/definicoes/${marca}/simular`, { params: { percentagem } });
 export const setEstoqueDefinicao = (marca, percentagem) => axios.patch(`${API_URL}/estoque/definicoes/${marca}`, { percentagem });
+
+// Secção Estoque — Unidades / Utilizadores / Pessoas (Fase 2 do portal)
+export const getEstoqueUnidades = () => axios.get(`${API_URL}/estoque/unidades`);
+export const criarEstoqueUnidade = (data) => axios.post(`${API_URL}/estoque/unidades`, data);
+export const editarEstoqueUnidade = (id, data) => axios.patch(`${API_URL}/estoque/unidades/${id}`, data);
+export const getEstoqueUtilizadores = () => axios.get(`${API_URL}/estoque/utilizadores`);
+export const criarEstoqueUtilizador = (data) => axios.post(`${API_URL}/estoque/utilizadores`, data);
+export const editarEstoqueUtilizador = (id, data) => axios.patch(`${API_URL}/estoque/utilizadores/${id}`, data);
+export const apagarEstoqueUtilizador = (id) => axios.delete(`${API_URL}/estoque/utilizadores/${id}`);
+export const getEstoquePessoas = () => axios.get(`${API_URL}/estoque/pessoas`);
+export const criarEstoquePessoa = (data) => axios.post(`${API_URL}/estoque/pessoas`, data);
+export const editarEstoquePessoa = (id, data) => axios.patch(`${API_URL}/estoque/pessoas/${id}`, data);
 
 // Secção Estoque — faturas inseridas pela app do Estoque (todos os estados)
 // params: { company_id, month?, origin_user?, origin_store? }
