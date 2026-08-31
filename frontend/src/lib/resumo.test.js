@@ -252,6 +252,37 @@ describe('cartaoEstoque', () => {
     expect(c.linhas[0]).toMatchObject({ rotulo: 'Artigos abaixo do mínimo', valor: '5' });
     expect(c.linhas.slice(1).map((l) => l.rotulo)).toEqual(['Belém', 'Cascais']);
   });
+
+  // Estes dois `test.each` prendem o ACOPLAMENTO das lojas ao `veioNumero`.
+  // Uma «simplificação» plausível do filtro para `l && l.abaixo_minimo != null`
+  // deixa todos os outros testes verdes e reabre o buraco: um `''` volta a
+  // contar como 0 e o cartão volta a escrever um zero que não veio do servidor.
+  test.each([
+    ['string vazia', ''],
+    ['só espaços', '   '],
+    ['true', true],
+    ['array vazio', []],
+    ['texto', 'x'],
+    ['null', null],
+    ['undefined', undefined],
+    ['NaN', NaN],
+  ])('abaixo_minimo = %s não veio do servidor — sem total, sem linhas', (_nome, valor) => {
+    const c = cartaoEstoque({ ok: true, data: [{ unidade_id: '1', nome: 'Belém', abaixo_minimo: valor }] });
+    expect(c.estado).toBe(OK);
+    expect(c.linhas).toEqual([]);
+    expect(c.mensagem).toBe(MSG_INDISPONIVEL);
+  });
+
+  test.each([
+    ['zero verdadeiro', 0, '0'],
+    ['zero em string', '0', '0'],
+    ['número', 3, '3'],
+    ['número em string', '3', '3'],
+  ])('abaixo_minimo = %s veio do servidor — conta para o total', (_nome, valor, esperado) => {
+    const c = cartaoEstoque({ ok: true, data: [{ unidade_id: '1', nome: 'Belém', abaixo_minimo: valor }] });
+    expect(c.mensagem).toBeNull();
+    expect(c.linhas[0]).toMatchObject({ rotulo: 'Artigos abaixo do mínimo', valor: esperado });
+  });
 });
 
 describe('rotaDeAterragem', () => {

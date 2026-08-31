@@ -31,6 +31,24 @@ import {
 // isso escrever nela trocava a escolha do utilizador no computador por uma
 // empresa concreta — um ecrã só-leitura não estraga definições de outros.
 const LS_KEY = 'resumo_empresa';
+
+// O localStorage ATIRA no WKWebView — que é onde este ecrã corre, dentro da
+// app iOS — quando o armazenamento está cheio ou bloqueado (modo privado,
+// definições de privacidade, quota). Lembrar a empresa é uma conveniência,
+// não uma função do ecrã: uma escrita falhada não pode saltar o
+// `setACarregar(false)` e prender os quatro cartões em «A carregar…», e uma
+// leitura falhada não pode impedir o ecrã de sequer montar.
+const leEmpresaGravada = () => {
+  try {
+    return localStorage.getItem(LS_KEY) || '';
+  } catch { return ''; }
+};
+const gravaEmpresa = (id) => {
+  try {
+    localStorage.setItem(LS_KEY, id);
+  } catch { /* sem memória da empresa, tudo bem */ }
+};
+
 const mesActual = () => new Date().toISOString().slice(0, 7);
 
 // «Por classificar» é uma fin_company normal e a lista vem ordenada por nome,
@@ -85,7 +103,7 @@ function Bloco({ titulo, icone: Icone, cartao, destaque = false }) {
 
 export default function Resumo() {
   const [empresas, setEmpresas] = useState([]);
-  const [empresaId, setEmpresaId] = useState(localStorage.getItem(LS_KEY) || '');
+  const [empresaId, setEmpresaId] = useState(leEmpresaGravada);
   const [mes, setMes] = useState(mesActual());
   const [cartoes, setCartoes] = useState(null);
   const [aCarregar, setACarregar] = useState(false);
@@ -119,7 +137,7 @@ export default function Resumo() {
   const carregar = useCallback(async () => {
     const meuPedido = (pedidoRef.current += 1);
     setACarregar(true);
-    if (empresaId) localStorage.setItem(LS_KEY, empresaId);
+    if (empresaId) gravaEmpresa(empresaId);
     // Os quatro em paralelo e cada um por sua conta: `pede` não deixa nenhum
     // lançar, por isso um 403 no Financeiro não apaga os outros três.
     //
