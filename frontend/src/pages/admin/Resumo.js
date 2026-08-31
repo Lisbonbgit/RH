@@ -5,7 +5,9 @@
 // «Ligar ao RH», e nada disso pode existir num ecrã que se abre com o polegar
 // dentro do autocarro. Todas as decisões estão em lib/resumo.js, corridas por
 // lib/resumo.test.js. Aqui só se desenha o que elas decidiram.
-import React, { useState, useEffect, useCallback } from 'react';
+import React, {
+  useState, useEffect, useCallback, useRef,
+} from 'react';
 import {
   getFinCompanies, getFinGlobalDashboard, getEstoqueOverview, getAdminDashboard,
 } from '../../lib/api';
@@ -50,8 +52,8 @@ function Bloco({ titulo, icone: Icone, cartao, destaque = false }) {
           <p className="text-sm text-muted-foreground">{cartao.mensagem}</p>
         ) : (
           <div className="space-y-3">
-            {cartao.linhas.map((l) => (
-              <div key={l.rotulo} className="flex items-baseline justify-between gap-3">
+            {cartao.linhas.map((l, i) => (
+              <div key={`${i}-${l.rotulo}`} className="flex items-baseline justify-between gap-3">
                 <span className="text-sm text-muted-foreground truncate">{l.rotulo}</span>
                 <span className="flex items-baseline gap-2 shrink-0">
                   <span className={`${destaque ? 'text-2xl' : 'text-base'} font-heading font-bold ${l.alerta ? 'text-red-600' : ''}`}>
@@ -74,6 +76,12 @@ export default function Resumo() {
   const [mes, setMes] = useState(mesActual());
   const [cartoes, setCartoes] = useState(null);
   const [aCarregar, setACarregar] = useState(false);
+  // Contador do pedido em curso: troca de empresa/mês (ou dois cliques em
+  // «Atualizar») pode deixar dois `carregar` a correr ao mesmo tempo. Sem
+  // isto, quem escrevia no ecrã era quem respondia por último, não quem foi
+  // pedido por último — a empresa lenta chegava depois e sobrepunha os
+  // números da empresa nova, com o seletor já a apontar para a certa.
+  const pedidoRef = useRef(0);
 
   useEffect(() => {
     pede(getFinCompanies).then((r) => {
@@ -86,6 +94,7 @@ export default function Resumo() {
   }, []);
 
   const carregar = useCallback(async () => {
+    const meuPedido = (pedidoRef.current += 1);
     setACarregar(true);
     if (empresaId) localStorage.setItem(LS_KEY, empresaId);
     // Os quatro em paralelo e cada um por sua conta: `pede` não deixa nenhum
@@ -104,6 +113,10 @@ export default function Resumo() {
       pede(getEstoqueOverview),
       pede(getAdminDashboard),
     ]);
+    // Só escreve se ainda formos o pedido mais recente: uma resposta atrasada
+    // de um pedido antigo não pode sobrepor o que um pedido mais novo já
+    // trouxe (nem apagar o «a carregar» de um pedido novo ainda em voo).
+    if (pedidoRef.current !== meuPedido) return;
     setCartoes({
       vendas: cartaoVendas(fat),
       financeiro: cartaoFinanceiro(fin),
