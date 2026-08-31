@@ -151,6 +151,7 @@ export const setEstoqueReceita = (produtoId, data) => axios.put(`${API_URL}/esto
 // Produção na fábrica
 export const estoqueProduzir = (unidadeId, data) => axios.post(`${API_URL}/estoque/producao?unidade_id=${unidadeId}`, data);
 export const getEstoqueProducao = (unidadeId, dias) => axios.get(`${API_URL}/estoque/producao`, { params: { unidade_id: unidadeId, dias } });
+export const reverterEstoqueProducao = (producaoId) => axios.post(`${API_URL}/estoque/producao/${producaoId}/reverter`);
 
 // Secção Estoque — Catálogo / Visão geral / Compras / Definições (Fase 1 do portal)
 export const criarEstoqueProduto = (data) => axios.post(`${API_URL}/estoque/produtos`, data);

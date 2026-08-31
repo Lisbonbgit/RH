@@ -6147,6 +6147,15 @@ async def estoque_producao_relatorio(unidade_id: str = Query(...), dias: int = Q
     return await _estoque_get("/integ/producao", {"unidade_id": unidade_id, "dias": dias})
 
 
+@api_router.post("/estoque/producao/{producao_id}/reverter")
+async def estoque_reverter_producao(producao_id: str, current_user: dict = Depends(admin_required)):
+    """Anula uma produção feita por engano (atribuída ao admin do RH)."""
+    from urllib.parse import quote
+    ator = current_user.get("name") or current_user.get("email") or "RH"
+    path = f"/integ/producao/{quote(producao_id)}/reverter?actor={quote(str(ator))}"
+    return await _estoque_post(path, {})
+
+
 # ===== SECÇÃO ESTOQUE — Catálogo / Visão geral / Compras / Definições (Fase 1) =====
 
 async def _estoque_patch(path: str, body: dict):
@@ -6186,6 +6195,7 @@ class EstoqueProdutoCreateIn(BaseModel):
     peso_valor: Optional[float] = None
     peso_unidade: Optional[str] = None
     fornecedor: Optional[str] = None
+    ilimitado: Optional[bool] = None  # artigo infinito (ex.: água) — não conta no stock
 
 
 class EstoqueProdutoUpdateIn(BaseModel):
@@ -6196,6 +6206,7 @@ class EstoqueProdutoUpdateIn(BaseModel):
     peso_valor: Optional[float] = None
     peso_unidade: Optional[str] = None
     fornecedor: Optional[str] = None
+    ilimitado: Optional[bool] = None
 
 
 class EstoqueMergeIn(BaseModel):

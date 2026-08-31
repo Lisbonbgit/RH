@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { getEstoqueLojas, getEstoqueProdutos, getEstoqueReceita, estoqueProduzir, getEstoqueProducao } from '../../../lib/api';
+import { getEstoqueLojas, getEstoqueProdutos, getEstoqueReceita, estoqueProduzir, getEstoqueProducao, reverterEstoqueProducao } from '../../../lib/api';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
+import { Badge } from '../../../components/ui/badge';
 import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
-import { Factory } from 'lucide-react';
+import { Factory, Undo2 } from 'lucide-react';
 import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
 
@@ -120,6 +121,20 @@ export default function EstoqueProducao() {
     }
   }
 
+  async function anular(r) {
+    if (!window.confirm(`Anular esta produção de ${r.produto_nome} (${fmt(r.baldes)} baldes)? Os ingredientes voltam ao stock e os baldes são retirados.`)) return;
+    setSaving(true);
+    try {
+      await reverterEstoqueProducao(r.id);
+      toast.success('Produção anulada. Fica registada no histórico.');
+      carregar();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Não foi possível anular.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader title="Estoque · Produção" subtitle="Registar a produção da fábrica (gasta ingredientes, cria os baldes).">
@@ -197,19 +212,28 @@ export default function EstoqueProducao() {
           ) : (
             <div className="divide-y">
               {relatorio.map((r) => (
-                <div key={r.id} className="p-4 flex items-start gap-3">
+                <div key={r.id} className={`p-4 flex items-start gap-3 ${r.revertida ? 'opacity-60' : ''}`}>
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium">{r.produto_nome}</p>
+                    <p className="text-sm font-medium flex items-center gap-2">
+                      <span className={r.revertida ? 'line-through' : ''}>{r.produto_nome}</span>
+                      {r.revertida && <Badge variant="secondary">anulada</Badge>}
+                    </p>
                     <p className="text-xs text-muted-foreground">
                       {r.autor ? `${r.autor} · ` : ''}{fmt(r.kg)} kg
                       {r.kg_incompletos > 0 ? ` · ${fmt(r.kg_incompletos)} kg por acabar` : ''}
                       {typeof r.perda_kg === 'number' && r.perda_kg !== 0 ? ` · perda ${fmt(r.perda_kg)} kg` : ''}
                       {r.ingredientes?.length ? ` · gastou: ${r.ingredientes.map((i) => `${fmt(i.quantidade)} ${i.unidade_medida} ${i.nome}`).join(', ')}` : ''}
+                      {r.revertida && r.revertida_por ? ` · anulada por ${r.revertida_por}` : ''}
                     </p>
                   </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-sm font-bold text-emerald-600">+ {fmt(r.baldes)} baldes</p>
+                  <div className="text-right shrink-0 flex flex-col items-end gap-1">
+                    <p className={`text-sm font-bold ${r.revertida ? 'text-muted-foreground line-through' : 'text-emerald-600'}`}>+ {fmt(r.baldes)} baldes</p>
                     <p className="text-xs text-muted-foreground">{dataFmt(r.data)}</p>
+                    {!r.revertida && (
+                      <Button variant="ghost" size="sm" className="h-7 text-destructive" disabled={saving} onClick={() => anular(r)}>
+                        <Undo2 className="h-3.5 w-3.5 mr-1" /> Anular
+                      </Button>
+                    )}
                   </div>
                 </div>
               ))}
