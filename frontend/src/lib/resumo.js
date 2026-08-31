@@ -44,8 +44,15 @@ function semDados(estado) {
   };
 }
 
-/** Um número que veio mesmo do servidor (0 conta; ausente e NaN não). */
-const veioNumero = (v) => v != null && Number.isFinite(Number(v));
+/** Um número que veio mesmo do servidor.
+ *  O zero VERDADEIRO conta; o que falta não. Uma string vazia não é zero —
+ *  `Number("")` é 0 e é finito, e era por aí que um campo em falta se
+ *  transformava num «0,00 €» com ar de dado real. */
+const veioNumero = (v) => {
+  if (typeof v === 'number') return Number.isFinite(v);
+  if (typeof v === 'string') return v.trim() !== '' && Number.isFinite(Number(v));
+  return false;
+};
 
 /** Linha de dinheiro — só existe se o número existir. */
 const linhaEur = (rotulo, valor, alerta = false) =>

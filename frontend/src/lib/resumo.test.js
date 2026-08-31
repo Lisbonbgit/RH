@@ -95,6 +95,30 @@ describe('cartaoFinanceiro', () => {
     expect(rotulos).not.toContain('Saldo do banco');
     expect(cartaoFinanceiro(semSaldo).linhas.some((l) => l.valor === eur(0))).toBe(false);
   });
+
+  // Uma string vazia não é zero: `Number('')` é 0 e é finito, e era por aí
+  // que um campo em falta chegado do servidor como '' (em vez de null) se
+  // transformava num «0,00 €» com ar de dado real.
+  test.each([
+    ['string vazia', ''],
+    ['só espaços', '   '],
+    ['null', null],
+    ['undefined', undefined],
+    ['NaN', NaN],
+    ['true', true],
+    ['array vazio', []],
+  ])('a_pagar = %s não é um número real — a linha «A pagar» some', (_nome, valor) => {
+    const r = { ok: true, data: { financeiro: { a_pagar: valor, vencidas: 0, pago: 0, saldo_banco: 0 } } };
+    expect(cartaoFinanceiro(r).linhas.map((l) => l.rotulo)).not.toContain('A pagar');
+  });
+
+  test.each([
+    ['zero verdadeiro', 0],
+    ['string numérica', '12'],
+  ])('a_pagar = %s é um número real — a linha «A pagar» fica', (_nome, valor) => {
+    const r = { ok: true, data: { financeiro: { a_pagar: valor, vencidas: 0, pago: 0, saldo_banco: 0 } } };
+    expect(cartaoFinanceiro(r).linhas.map((l) => l.rotulo)).toContain('A pagar');
+  });
 });
 
 describe('cartaoVendas', () => {
@@ -121,6 +145,15 @@ describe('cartaoVendas', () => {
     const c = cartaoVendas(nunca);
     expect(c.linhas).toEqual([]);
     expect(c.mensagem).toBe('Ainda não há vendas');
+  });
+
+  test('«hoje» sem valor some — não produz a linha «Hoje»', () => {
+    const semHoje = { ok: true, data: { ha_vendas: true, cartoes: {
+      hoje: { valor: null, valor_comparado: 200, variacao: null },
+      mensal: { valor: 9000, valor_comparado: 8000, variacao: 12.5 },
+    } } };
+    const c = cartaoVendas(semHoje);
+    expect(c.linhas.map((l) => l.rotulo)).toEqual(['Este mês']);
   });
 });
 
@@ -184,4 +217,13 @@ describe('rotaDeAterragem', () => {
     expect(rotaDeAterragem({ nativo: true, papel: 'colaborador' })).toBe('/colaborador');
     expect(rotaDeAterragem({ nativo: false, papel: 'colaborador' })).toBe('/colaborador');
   });
+
+  // Os outros dois papéis de gestão — um erro de transcrição em
+  // PAPEIS_DE_GESTAO não pode passar despercebido só por só testarmos 'admin'.
+  test.each(['gerente', 'contabilista'])(
+    'na APP, um %s (também de gestão) aterra no Resumo',
+    (papel) => {
+      expect(rotaDeAterragem({ nativo: true, papel })).toBe('/admin/resumo');
+    },
+  );
 });
