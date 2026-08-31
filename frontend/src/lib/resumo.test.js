@@ -220,6 +220,38 @@ describe('cartaoEstoque', () => {
     expect(c.linhas).toEqual([]);
     expect(c.mensagem).toBe(MSG_SEM_LOJAS);
   });
+
+  // Uma entrada `null` no array rebentava a soma, e a excepção subia de dentro
+  // do `carregar()` — que não a apanha —, deixando os QUATRO cartões presos em
+  // «A carregar…» até relançar a app.
+  test('uma entrada null não rebenta o cartão', () => {
+    expect(() => cartaoEstoque({ ok: true, data: [null] })).not.toThrow();
+    const c = cartaoEstoque({ ok: true, data: [null] });
+    expect(c.linhas).toEqual([]);
+    expect(c.mensagem).toBe(MSG_INDISPONIVEL);
+  });
+
+  // Lojas sem o campo não são lojas com zero em falta.
+  test('lojas sem `abaixo_minimo` não inventam um total de 0', () => {
+    const c = cartaoEstoque({ ok: true, data: [
+      { unidade_id: '1', nome: 'Belém' },
+      { unidade_id: '2', nome: 'Oeiras' },
+    ] });
+    expect(c.estado).toBe(OK);
+    expect(c.linhas).toEqual([]);
+    expect(c.mensagem).toBe(MSG_INDISPONIVEL);
+  });
+
+  test('as lojas boas contam, as entradas inválidas são ignoradas', () => {
+    const c = cartaoEstoque({ ok: true, data: [
+      { unidade_id: '1', nome: 'Belém', abaixo_minimo: 3 },
+      null,
+      { unidade_id: '2', nome: 'Oeiras' },
+      { unidade_id: '3', nome: 'Cascais', abaixo_minimo: 2 },
+    ] });
+    expect(c.linhas[0]).toMatchObject({ rotulo: 'Artigos abaixo do mínimo', valor: '5' });
+    expect(c.linhas.slice(1).map((l) => l.rotulo)).toEqual(['Belém', 'Cascais']);
+  });
 });
 
 describe('rotaDeAterragem', () => {

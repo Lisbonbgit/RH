@@ -143,8 +143,18 @@ export function cartaoEstoque(res) {
   if (lojas.length === 0) {
     return { estado, mensagem: MSG_SEM_LOJAS, linhas: [] };
   }
-  const total = lojas.reduce((a, l) => a + (Number(l.abaixo_minimo) || 0), 0);
-  const comFalta = lojas.filter((l) => Number(l.abaixo_minimo) > 0);
+  // Era a única linha do ficheiro que produzia um número sem passar pelo
+  // `veioNumero`: um array de lojas sem o campo desenhava «0» sem dados
+  // nenhuns, e uma entrada `null` atirava uma excepção de DENTRO do
+  // `carregar()` — que não apanha nada — prendendo os quatro cartões em
+  // «A carregar…» para sempre. Entradas inválidas ignoram-se; se nenhuma
+  // loja trouxer um `abaixo_minimo` utilizável, não há total para mostrar.
+  const validas = lojas.filter((l) => l && veioNumero(l.abaixo_minimo));
+  if (validas.length === 0) {
+    return { estado, mensagem: MSG_INDISPONIVEL, linhas: [] };
+  }
+  const total = validas.reduce((a, l) => a + Number(l.abaixo_minimo), 0);
+  const comFalta = validas.filter((l) => Number(l.abaixo_minimo) > 0);
   return {
     estado,
     mensagem: null,

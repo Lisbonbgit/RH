@@ -15,6 +15,7 @@ import { getFatDashboard } from '../../lib/faturacao';
 import {
   pede, cartaoVendas, cartaoFinanceiro, cartaoRh, cartaoEstoque, OK,
 } from '../../lib/resumo';
+import { normSup } from '../../lib/finance';
 import { Card, CardContent } from '../../components/ui/card';
 import MonthPicker from '../../components/MonthPicker';
 import {
@@ -24,8 +25,18 @@ import {
   TrendingUp, CircleDollarSign, Users, Package, ArrowUp, ArrowDown, RefreshCw,
 } from 'lucide-react';
 
-const LS_KEY = 'fin_selected_company';
+// Chave PRÓPRIA, de propósito. A do Financeiro ('fin_selected_company') é
+// partilhada pelo PainelGlobal, pelo Extrato e pelos Fornecedores, e lá dentro
+// vale o literal 'all' («Todas as empresas»). Este ecrã não tem «todas», por
+// isso escrever nela trocava a escolha do utilizador no computador por uma
+// empresa concreta — um ecrã só-leitura não estraga definições de outros.
+const LS_KEY = 'resumo_empresa';
 const mesActual = () => new Date().toISOString().slice(0, 7);
+
+// «Por classificar» é uma fin_company normal e a lista vem ordenada por nome,
+// por isso pode calhar em primeiro — não pode ser a empresa por omissão de
+// ninguém (o PainelGlobal recusa-a pela mesma razão).
+const eEmpresaReal = (c) => normSup(c?.name) !== 'por classificar';
 
 function Variacao({ valor }) {
   if (valor == null) return null;
@@ -87,14 +98,17 @@ export default function Resumo() {
 
   useEffect(() => {
     pede(getFinCompanies).then((r) => {
-      const lista = r.ok && Array.isArray(r.data) ? r.data : [];
+      // Uma FALHA não é uma lista vazia. Apagar aqui a empresa gravada fazia o
+      // Financeiro dizer «Sem acesso» a quem TEM acesso, e sem forma de
+      // recuperar sem relançar a app (este efeito corre uma só vez e o botão
+      // «Atualizar» não o repete) — é o oposto do que este ecrã promete.
+      if (!r.ok || !Array.isArray(r.data)) return;
+      const lista = r.data.filter(eEmpresaReal);
       setEmpresas(lista);
-      // A chave gravada é PARTILHADA com o Financeiro (FinExtrato/
-      // FinFornecedores lá escrevem o literal 'all' quando o seletor deles
-      // está em «todas as empresas»), ou pode ser uma empresa de que já não
-      // somos membros. Nos dois casos o <Select> fica sem correspondência
-      // enquanto o servidor responde com dados de uma empresa que o ecrã não
-      // está a mostrar — substitui pela primeira da lista, ou vazio.
+      // A empresa gravada pode ser uma de que já não somos membros: aí o
+      // <Select> ficava sem correspondência enquanto o servidor respondia com
+      // números de uma empresa que o ecrã não está a mostrar. Substitui pela
+      // primeira da lista, ou vazio.
       // Forma funcional para não meter `empresaId` nas dependências.
       setEmpresaId((actual) => (lista.some((e) => e.id === actual) ? actual : (lista[0]?.id || '')));
     });
@@ -158,6 +172,16 @@ export default function Resumo() {
           <RefreshCw className={`h-4 w-4 ${aCarregar ? 'animate-spin' : ''}`} />
         </button>
       </div>
+
+      {/* Dizer a verdade, como já se faz no rótulo «Mês atual»: o
+          /faturacao/dashboard não aceita empresa nem mês, o /estoque/overview
+          não aceita nada, e o company_id do /dashboard/admin é de outra
+          colecção (db.companies, não db.fin_companies) — passá-lo daria
+          «Colaboradores: 0». Nada disto se corrige aqui, mas cala-lo deixava
+          três cartões a parecer que respondem a seletores que os não tocam. */}
+      <p className="text-xs text-muted-foreground px-1">
+        A empresa e o mês só se aplicam ao Financeiro. Vendas, RH e Estoque são de todo o grupo.
+      </p>
 
       {!cartoes ? (
         <p className="text-sm text-muted-foreground px-1">A carregar…</p>
