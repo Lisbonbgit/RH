@@ -61,7 +61,8 @@ import {
   Factory,
   Boxes,
   UserRound,
-  Smartphone
+  Smartphone,
+  Bike
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -76,6 +77,7 @@ const sections = [
     match: (p) => p.startsWith('/admin/painel') || p.startsWith('/admin/resumo'),
     items: [
       { path: '/admin/painel', label: 'Global', icon: LayoutDashboard, exact: true },
+      { path: '/admin/painel/plataformas', label: 'Plataformas', icon: Bike },
       { path: '/admin/resumo', label: 'Resumo', icon: Smartphone, exact: true },
     ],
   },
