@@ -65,10 +65,15 @@ recibo é dinheiro que já foi contado quando a fatura saiu. Importados, punham
 
 1. Está na caixa configurada (`VENDUS_REGISTER_ID`) — isto já exclui documentos
    de outras caixas e outras séries (havia um `DC 05P2026/56` noutra caixa).
-2. O tipo é de **venda**: `FS`, `FT`, `FR` (somam) ou `NC` (subtrai). Tudo o resto
-   — `OT`, `RG`, `PF`, `DC`, `GT` e o que o Vendus venha a inventar — fica de fora.
+2. O tipo é `FS` (soma) ou `NC` (subtrai). Tudo o resto — `OT`, `RG`, `PF`, `DC`,
+   `GT` e o que o Vendus venha a inventar — fica de fora, registado no log.
    **Lista de permitidos, não de proibidos**: um tipo novo que apareça amanhã fica
-   de fora sozinho e é registado no log, em vez de entrar a contar dinheiro.
+   de fora sozinho, em vez de entrar a contar dinheiro.
+
+   Só estes dois, e não também `FT`/`FR`, porque `documentos._TIPOS = {"FS", "NC"}`
+   (documentos.py:476) responde **422** a qualquer outro no filtro do backoffice: um
+   documento com tipo `FT` entrava na base e depois não se conseguia listar. A app só
+   emite `FS`; se um dia emitir outra coisa, alarga-se `_TIPOS` ao mesmo tempo.
 3. A referência externa **não** começa por `pos-` (essas são do nosso POS).
 
 A app carimba as suas com `LA` + 5 dígitos (`routes_customer.py::_next_order_number`).
@@ -85,9 +90,18 @@ em que o portal está agora — um documento de teste vale zero e o portal já t
 
 ## O que se grava
 
-Um documento da app fica em `fat_documentos` com o mesmo formato dos nossos —
-`vendus_document_id`, `atcud`, `numero`, `tipo`, `modo`, `total`, `total_bruto`,
-`total_liquido`, `cliente_nif`, `emitido_em`, `loja_id` — mais dois campos novos:
+Um documento da app fica em `fat_documentos` com o mesmo formato dos nossos. O
+formato é a lista fechada de 15 campos que `fiscal._gravar_documento` monta
+(fiscal.py:1197-1250); a tradução do documento do Vendus para lá já existe e
+chama-se `vendus/emissao._normaliza_documento` (emissao.py:776) — preenche `id`,
+`numero`, `atcud`, `total`, `total_bruto`, `total_liquido`, `modo` e `emitido_em`.
+O que ela **não** traz e o cron tem de ir buscar ao documento cru: `cliente_nif`,
+`tipo` e as linhas.
+
+Campos preenchidos: `id` (uuid nosso, não o do Vendus — é por ele que os ecrãs e o
+PDF abrem o documento), `vendus_document_id`, `atcud`, `numero`, `tipo`, `modo`,
+`total`, `total_bruto`, `total_liquido`, `cliente_nif`, `emitido_em`, `loja_id`,
+`ext_ref`. Mais dois campos novos:
 
 - `origem: "app"` — o que distingue estes de tudo o resto. Ausente nos nossos, que
   continuam a ser lidos como POS (nenhuma migração, nenhuma escrita nos 748
@@ -103,7 +117,13 @@ a fatura ao pedido na app.
 **O dia a que pertence.** O `emitido_em` é a hora que o Vendus carimbou
 (`local_time`), convertida para UTC — nunca a hora a que a sincronização a
 descobriu. A fatura das 23h50 de ontem, importada às 00h05, tem de contar para
-ontem. É a mesma regra que `_instante_do_vendus` já aplica na reconciliação.
+ontem. Isto não se escreve de novo: `vendus/emissao._instante_do_vendus`
+(emissao.py:736) já o faz, e já trata o caso da hora sem fuso como hora de Lisboa.
+
+**O formato importa mais do que parece.** O `emitido_em` é uma **string** ISO com
+offset (`...+00:00`), como `fiscal._agora()` produz — e os filtros por intervalo
+comparam **strings**, não datas (dashboard.py:498, relatorios.py:620). Um sufixo
+`Z` ordena depois de `+` e partia silenciosamente os limites dos intervalos.
 
 **Sem fecho de caixa.** A loja "App Online" não tem sessão de caixa nenhuma, e
 não vai ter. Cada fatura conta para o dia (Lisboa) em que o Vendus a emitiu;
@@ -114,15 +134,37 @@ contagem de dinheiro — a app cobra por Stripe.
 
 - **Dashboard** — entra em Faturação Hoje / Mensal / Anual e ganha o seu cartão de
   loja, como as outras cinco.
-- **Relatórios** (Diário, Loja, Por Hora, Dias da Semana, Mensal) — entra pelo valor
-  do documento. **Aqui há uma alteração real**: hoje o motor de relatórios tira o
-  dinheiro das linhas da conta de balcão (`_artigos_da_fatura`), e um documento sem
-  venda cai no `except` e é **descartado** — apareceria a zero. Para os documentos
-  com `origem: "app"` o motor passa a usar `total_bruto`/`total_liquido` do próprio
-  documento, e a quantidade vem de `linhas_vendus`.
-- **Produtos e Categorias** — uma linha só, "App L'Açaí (artigos sem
-  correspondência)", com o dinheiro e a quantidade. Assim o total destas duas
-  vistas continua igual ao do Diário. A repartição por produto fica para depois.
+- **Relatórios** (as nove vistas) — **é aqui que está o trabalho a sério**, e o
+  mapeamento do código mostrou que é pior do que parecia.
+
+  `relatorios._artigos_da_fatura` começa com `if not venda: return []`
+  (relatorios.py:391) — **devolve lista vazia, não levanta excepção**. O documento
+  não é descartado: entra na lista de eventos (relatorios.py:561) com
+  `bruto_c`/`liquido_c`/`quantidade` a somar uma lista vazia, ou seja **zero**. Sem
+  fazer nada, uma fatura da app aparece com o valor certo no Dashboard (que lê
+  `total_bruto` do documento, dashboard.py:120) e a **0,00 €** nas nove vistas dos
+  Relatórios. Os dois números passam a discordar sem nenhum estar visivelmente errado.
+
+  Pior: o aviso que existe precisamente para isto — "N faturas de hoje não se
+  deixaram repartir por artigo" — conta `len(documentos) - len(eventos)`
+  (dashboard.py:519), e como o evento **é** criado, o contador fica a zero. A
+  ausência nascia invisível.
+
+  **A correcção:** em `relatorios.eventos_dos_documentos`, quando não há venda mas
+  o documento tem `linhas_vendus`, constroem-se os artigos a partir dessas linhas
+  (`amounts.gross_total`, `amounts.net_total`, `qty`, `title`). Isto resolve as nove
+  vistas de uma vez — dinheiro, quantidade, e as vistas por artigo — em vez de
+  remendar cada uma.
+
+  **O custo tem de ser `None`, nunca 0.** Com `artigos = []`, `custo_c` sai a **0**
+  e não a `None` (`any([])` é `False`, `sum([])` é `0` — relatorios.py:578), e um
+  custo de 0 € contra 6,85 € de venda dá **100% de margem** no relatório de
+  rentabilidade. Não sabemos o custo dos artigos da app; `None` é a verdade, e o
+  motor já sabe mostrar "—".
+- **Produtos e Categorias** — os artigos da app entram como "App L'Açaí (sem
+  correspondência)" (o `_SEM_DEFINICAO` que o motor já usa), com o dinheiro e a
+  quantidade certos. Assim o total destas duas vistas continua igual ao do Diário.
+  Casar os artigos com o nosso catálogo fica para depois.
 - **Documentos** — na lista com filtro de loja; ao abrir mostra "Origem: App
   L'Açaí", as linhas do Vendus, o NIF, e o PDF do Vendus. **Sem Reimprimir** — não
   há talão nosso nem impressora naquela loja.
@@ -134,6 +176,23 @@ contagem de dinheiro — a app cobra por Stripe.
 
 ## Como corre
 
+- **A leitura do Vendus já está escrita.**
+  `ClienteEmissaoVendus.listar_documentos_por_dia(data, register_id)`
+  (emissao.py:475) faz o dia inteiro, paginado por `X-Paginator-Pages`, e recusa-se
+  a sair para a rede se o `register_id` não for o configurado. Medido a 2026-09-04:
+  devolve os 128 documentos de 01/09 e a `FS 06P2026/446` lá está.
+
+  **Mas a lista não chega.** Medido: a lista (mesmo com `view=detailed`) **não traz
+  `atcud` nem `items`**. Os dois vêm só do `GET documents/{id}/`, e esse **não aceita
+  `view`** (responde 403 P001). Logo: um método novo `ler_documento(id)` em
+  `ClienteEmissaoVendus`, chamado uma vez por documento novo.
+
+  **Armadilha medida:** na lista o `status` é a string `"N"`; no documento por id é
+  um **dicionário** `{"id": "N", ...}`. Quem escrever `status == "A"` para detectar
+  anulações no detalhe nunca acerta.
+
+  O cliente é **síncrono** — o cron embrulha-o em `asyncio.to_thread`, como
+  `fiscal.py:1808` já faz.
 - **Endpoint** `POST /api/faturacao/cron/sincronizar-app?key=<CRON_KEY>`, protegido
   por `CRON_KEY` com `compare_digest`, no mesmo padrão de `/cron/relatorio-diario`.
 - **Script** `faturacao-app-cron.sh` na raiz do repositório, com a linha de
@@ -154,8 +213,16 @@ contagem de dinheiro — a app cobra por Stripe.
 - **Vendus em baixo, lento ou a limitar (429)** — a volta falha inteira, não deixa
   nada a meio, regista porquê. A volta seguinte apanha tudo. Nada do portal depende
   disto: é um cron próprio, num módulo próprio.
-- **Repetidos** — os índices únicos de `vendus_document_id` e `atcud` já existem.
-  Chegar duas vezes grava uma; o conflito é ignorado em silêncio, não é erro.
+- **Repetidos** — os índices únicos de `vendus_document_id` (db.py:132) e `atcud`
+  (db.py:133) já existem. Chegar duas vezes grava uma; o conflito é ignorado em
+  silêncio, não é erro.
+
+  **Mas os dois são únicos SIMPLES, não `sparse`** — dois documentos com o campo a
+  `None` colidem um com o outro. Um documento do Vendus sem `atcud` ou sem `id`
+  **não se grava**: fica de fora, contado e registado. E o `ext_ref` tem índice único
+  **parcial sobre strings** (db.py:153-156): a string vazia É uma string, por isso
+  gravar `ext_ref: ""` faria a segunda fatura da app rebentar. Referência vazia
+  grava-se `None`, nunca `""`.
 - **Anulada depois de importada** — como cada volta relê hoje e ontem, se o estado
   passar a `A` marca-se `anulado` e deixa de contar. **Uma anulação com mais de dois
   dias não é apanhada** — é o limite conhecido, e está aqui escrito para não ser
@@ -172,8 +239,10 @@ contagem de dinheiro — a app cobra por Stripe.
 ## Como se prova
 
 1. **Partes puras** — classificar (nosso / app / a ignorar), converter um documento
-   do Vendus no nosso formato, cêntimos, fuso. Incluindo os casos reais medidos:
-   um `OT` de 740,15 € tem de ficar de fora, a `FS 06P2026/446` tem de entrar.
+   do Vendus no nosso formato, cêntimos, fuso, e construir os artigos a partir das
+   linhas do Vendus. Com os casos reais medidos como material de teste: um `OT` de
+   740,15 € fica de fora, um `RG` fica de fora, a `FS 06P2026/446` (6,85 €, um
+   "Açaí Mini" a 13%) entra e vale 6,85 € nas nove vistas com custo `None`.
 2. **Rotas** com um Vendus falso. Nunca a rede.
 3. **Ensaio contra a produção, sem gravar nada** — a sincronização corre em modo
    simulação e diz "encontrei N, ia gravar isto". Comparo com o Relatório Diário do
@@ -182,6 +251,24 @@ contagem de dinheiro — a app cobra por Stripe.
    aos do Vendus para os mesmos dias e a mesma caixa. É este o critério de sucesso,
    e os números apuram-se no ensaio (o valor de 01/09 no portal é hoje 1.545,65 €;
    com a fatura da app passa a 1.552,50 €).
+
+## As armadilhas medidas, num sítio só
+
+Estão espalhadas pelo documento; ficam aqui juntas porque cada uma delas, sozinha,
+chega para pôr números errados no ecrã do dono.
+
+| Armadilha | O que acontece se se ignorar |
+|---|---|
+| A lista do Vendus não traz `atcud` nem `items` | Documento sem ATCUD não se grava (índice único) e fica tudo a zero nos artigos |
+| `GET documents/{id}/` não aceita `view` | 403 P001 |
+| `status` é string na lista, dicionário no detalhe | `status == "A"` nunca acerta e nada é marcado como anulado |
+| `atcud` e `vendus_document_id` são únicos **simples** | Dois documentos com `None` colidem entre si |
+| `ext_ref` é único parcial **sobre strings** | Gravar `""` faz a segunda fatura da app rebentar |
+| `total_liquido` não tem campo alternativo | O Dashboard "sem IVA" mostra a app a 0,00 € |
+| `emitido_em` é comparado como **string** | Um `Z` em vez de `+00:00` parte os intervalos em silêncio |
+| `_artigos_da_fatura` devolve `[]`, não levanta | A app vale 0,00 € nas nove vistas e o aviso de "por repartir" fica a zero |
+| `custo_c` de uma lista vazia é `0`, não `None` | 100% de margem no relatório de rentabilidade |
+| `documentos._TIPOS = {"FS", "NC"}` | Um `FT` entra na base e depois dá 422 a listar |
 
 ## O que fica de fora, de propósito
 
