@@ -202,8 +202,10 @@ contagem de dinheiro — a app cobra por Stripe.
   ser preciso esperar.
 - **Janela.** Cada volta relê **hoje e ontem** (apanha atrasos e anulações). O
   histórico desde **01/09/2026** é lido uma vez, na primeira volta, dia a dia.
-- **Retoma.** Guarda-se em `fat_definicoes` (chave `sincronizacao_app`) até que dia
-  já foi lido. Se a leitura do histórico falhar a meio, continua de onde ficou.
+- **O histórico faz-se uma vez, à mão.** O cron sabe ler dois dias e mais nada. Os
+  dias de 01/09 até hoje correm-se uma única vez, no ensaio, com a lista de dias
+  passada à mão. Guardar estado de retoma para uma coisa que acontece uma vez era
+  código a mais para manter para sempre; e se falhar, repete-se — é idempotente.
 - **A loja é uma definição**, não um valor no código: `fat_definicoes`, escolhida no
   backoffice. Sem loja escolhida a sincronização **recusa-se a correr** e diz
   porquê. Nunca adivinha.
