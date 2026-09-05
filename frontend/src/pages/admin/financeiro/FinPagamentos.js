@@ -9,7 +9,8 @@ import {
   getFinReconcileSuggestions, dismissFinReconcileSuggestion, getFinReconcilePending,
   runFinReconcileAuto,
 } from '../../../lib/api';
-import { eur, fmtDate, todayISO, effectiveDue, supplierKeyOf, kpiTone } from '../../../lib/finance';
+import { eur, fmtDate, todayISO, effectiveDue, supplierKeyOf, kpiTone,
+  categoriasDaEmpresa, categoriaLabel } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
 import { Label } from '../../../components/ui/label';
@@ -44,17 +45,6 @@ const RECURRENCE = [
   { value: 'yearly', label: 'Anual' },
 ];
 const UNIT_NONE = '__none__';
-// Categorias de despesa (usadas no relatório DRE, que agrupa por categoria).
-const CATEGORIAS = [
-  { value: 'mercadoria', label: 'Mercadoria' },
-  { value: 'rendas', label: 'Rendas' },
-  { value: 'energia_agua', label: 'Água/Energia' },
-  { value: 'salarios', label: 'Salários' },
-  { value: 'servicos', label: 'Serviços' },
-  { value: 'impostos', label: 'Impostos' },
-  { value: 'outros', label: 'Outros' },
-];
-const categoriaLabel = (v) => CATEGORIAS.find((c) => c.value === v)?.label || '';
 
 const emptyForm = () => ({
   kind: 'invoice', supplier: '', nif: '', invoice_number: '',
@@ -77,6 +67,8 @@ function DetailField({ label, value }) {
 
 export default function FinPagamentos() {
   const { selectedCompany } = useOutletContext();
+  // A lista de categorias é DA EMPRESA escolhida (cada empresa tem o seu "Excel").
+  const CATEGORIAS = categoriasDaEmpresa(selectedCompany);
   const [companies, setCompanies] = useState([]);
   const [companyId, setCompanyId] = useState('');
   const [units, setUnits] = useState([]);
@@ -1313,7 +1305,7 @@ export default function FinPagamentos() {
                   <SelectTrigger data-testid="fin-f-category"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value={UNIT_NONE}>Sem categoria</SelectItem>
-                    {CATEGORIAS.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+                    {CATEGORIAS.map((c) => <SelectItem key={c.id} value={c.id}>{c.label}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -1400,7 +1392,7 @@ export default function FinPagamentos() {
                     ? `${eur(detail.vat_amount)}${detail.vat_rate != null ? ` (${detail.vat_rate}%)` : ''}`
                     : null} />
                 <DetailField label="Unidade / Loja" value={unitName(detail.unit_id)} />
-                <DetailField label="Categoria" value={categoriaLabel(detail.category)} />
+                <DetailField label="Categoria" value={categoriaLabel(CATEGORIAS, detail.category)} />
                 <DetailField label="Empresa" value={companyName(detail.company_id)} />
                 <DetailField label="Origem" value={SOURCE_LABEL[detail.source] || detail.source} />
               </div>
