@@ -191,8 +191,8 @@ docker compose down
 
 **Trabalhos automáticos (crons):** vivem nos scripts `*-cron.sh` na raiz do
 repositório — a ingestão de faturas por email, as sincronizações do Vendus e do
-Moloni, o relatório diário de faturação e o relatório semanal das plataformas de
-entrega. **As instruções de instalação de cada um estão no cabeçalho do próprio
+Moloni, o relatório diário de faturação, o relatório semanal das plataformas de
+entrega e a sincronização das faturas da app L'Açaí (de 5 em 5 minutos). **As instruções de instalação de cada um estão no cabeçalho do próprio
 script**, com a linha de `crontab` já escrita e a explicação da hora (o servidor
 corre em UTC e Lisboa não). Ver o que está instalado: `crontab -l`.
 
