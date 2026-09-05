@@ -221,10 +221,15 @@ contagem de dinheiro — a app cobra por Stripe.
 
   **Mas os dois são únicos SIMPLES, não `sparse`** — dois documentos com o campo a
   `None` colidem um com o outro. Um documento do Vendus sem `atcud` ou sem `id`
-  **não se grava**: fica de fora, contado e registado. E o `ext_ref` tem índice único
-  **parcial sobre strings** (db.py:153-156): a string vazia É uma string, por isso
-  gravar `ext_ref: ""` faria a segunda fatura da app rebentar. Referência vazia
-  grava-se `None`, nunca `""`.
+  **não se grava**: fica de fora, contado e registado. (Os dois foram confirmados em
+  produção a 2026-09-04: `vendus_document_id_1` e `atcud_1`, ambos `unique`.)
+
+  O `ext_ref` é outra história. `db.py:153-156` declara-o único parcial sobre
+  strings — a string vazia É uma string, por isso `ext_ref: ""` faria a segunda
+  fatura da app rebentar. **Só que esse índice não existe em produção:** o que lá
+  está é um `ext_ref_1` simples, porque o antigo colide com o novo e o arranque
+  engole o `IndexKeySpecsConflict`. Hoje não rebentava; rebenta no dia em que
+  alguém repuser o índice. Grava-se `None`, que fica certo nos dois mundos.
 - **Anulada depois de importada** — como cada volta relê hoje e ontem, se o estado
   passar a `A` marca-se `anulado` e deixa de contar. **Uma anulação com mais de dois
   dias não é apanhada** — é o limite conhecido, e está aqui escrito para não ser

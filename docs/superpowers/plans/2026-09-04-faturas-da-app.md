@@ -29,8 +29,12 @@ para todas as tarefas.
   e registados no log. Lista de permitidos, nunca de proibidos.
 - **Nunca gravar `atcud: None` nem `vendus_document_id: None`** — os índices são
   únicos **simples** (db.py:132-133), dois nulos colidem entre si.
-- **Nunca gravar `ext_ref: ""`** — o índice é único parcial sobre strings
-  (db.py:153-156) e a string vazia é uma string. Vazio grava-se `None`.
+- **Nunca gravar `ext_ref: ""`.** `db.py:153-156` declara-o único parcial sobre
+  strings, e a string vazia é uma string. **Medido em produção a 2026-09-04: esse
+  índice não existe** — o `ext_ref_1` que lá está é simples, sem `unique`, porque o
+  antigo colidiu (`IndexKeySpecsConflict` no arranque, já registado no ledger). Hoje
+  não rebenta; rebenta no dia em que o índice for reposto. Grava-se `None`.
+  (`vendus_document_id` e `atcud` **são** únicos em produção — confirmado.)
 - **`emitido_em` é uma string ISO com offset `+00:00`**, produzida por
   `vendus/emissao._instante_do_vendus`. Nunca `Z`: os filtros comparam strings
   (dashboard.py:498, relatorios.py:620) e `Z` ordena depois de `+`.
@@ -638,8 +642,11 @@ def documento_para_gravar(cru: Dict, loja_id: str) -> Dict:
         "cliente_nif": _nif_do_cliente(cru),
         "emitido_em": _instante_do_vendus(cru),
         "loja_id": loja_id,
-        # Nunca "": o índice de `ext_ref` é único parcial SOBRE STRINGS
-        # (db.py:153-156) e a segunda fatura sem referência rebentava.
+        # Nunca "": `db.py:153-156` declara `ext_ref` único parcial sobre
+        # strings. Esse índice não chegou a criar-se em produção (o antigo
+        # colide), por isso hoje não rebentava — mas rebenta no dia em que
+        # for reposto, e uma fatura perdida por isso não se recupera.
+        # `None` fica certo nos dois mundos.
         "ext_ref": ref or None,
         "venda_id": None,
         "origem": "app",
