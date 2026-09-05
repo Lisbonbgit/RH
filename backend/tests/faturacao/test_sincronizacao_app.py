@@ -91,3 +91,94 @@ def test_e_nosso_nao_se_engana_com_none():
     assert E_NOSSO("LA00028") is False
     assert E_NOSSO(None) is False
     assert E_NOSSO("") is False
+
+
+# --- Task 3: traduzir o documento do Vendus para o formato de `fat_documentos` ---
+
+import pytest
+
+from faturacao.sincronizacao_app import documento_para_gravar
+
+LOJA = "98331284-ba8d-41b8-b074-4059902d68a9"
+
+# O documento como o Vendus o devolveu mesmo, lido em produção a 2026-09-04.
+FS_446 = {
+    "id": 370665072, "type": "FS", "number": "FS 06P2026/446",
+    "atcud": "J6SHGSNX-446", "date": "2026-09-01",
+    "local_time": "2026-09-01 14:43:25",
+    "status": {"id": "N", "date": "2026-09-01 13:43:25"},
+    "amount_gross": "6.85", "amount_net": "6.06",
+    "external_reference": "LA00028",
+    "client": {"name": "Matheus Augusto Flores de Moraes", "fiscal_id": "244772903"},
+    "items": [{"qty": 1, "title": "Açaí Mini",
+               "amounts": {"gross_total": "6.85", "net_total": "6.06"},
+               "tax": {"id": "INT", "rate": 13}}],
+}
+
+
+def test_traz_os_dois_totais_porque_o_liquido_nao_tem_alternativa():
+    d = documento_para_gravar(FS_446, LOJA)
+    assert d["total_bruto"] == 6.85
+    assert d["total_liquido"] == 6.06
+    assert d["total"] == 6.85
+
+
+def test_a_hora_e_a_do_vendus_e_sai_em_utc_com_offset():
+    d = documento_para_gravar(FS_446, LOJA)
+    # 14:43 de Lisboa em Setembro (UTC+1) são 13:43 UTC.
+    assert d["emitido_em"].startswith("2026-09-01T13:43:25")
+    assert d["emitido_em"].endswith("+00:00"), "um Z parte os filtros por string"
+    assert "Z" not in d["emitido_em"]
+
+
+def test_guarda_a_loja_a_origem_e_as_linhas():
+    d = documento_para_gravar(FS_446, LOJA)
+    assert d["loja_id"] == LOJA
+    assert d["origem"] == "app"
+    assert d["linhas_vendus"][0]["title"] == "Açaí Mini"
+
+
+def test_nao_tem_venda_nem_talao():
+    d = documento_para_gravar(FS_446, LOJA)
+    assert d["venda_id"] is None
+    assert "talao_escpos" not in d
+
+
+def test_o_id_e_nosso_e_o_do_vendus_fica_a_parte():
+    d = documento_para_gravar(FS_446, LOJA)
+    assert d["vendus_document_id"] == 370665072
+    assert d["id"] != 370665072
+    assert len(d["id"]) == 36, "uuid nosso — é por ele que o ecrã abre o documento"
+
+
+def test_copia_o_nif_do_cliente():
+    d = documento_para_gravar(FS_446, LOJA)
+    assert d["cliente_nif"] == "244772903"
+
+
+def test_um_consumidor_final_nao_leva_nif_de_tracinhos():
+    cru = dict(FS_446, client={"name": "Consumidor Final", "fiscal_id": "---------"})
+    assert documento_para_gravar(cru, LOJA)["cliente_nif"] is None
+
+
+def test_uma_referencia_vazia_grava_none_e_nunca_string_vazia():
+    # O índice de ext_ref é único parcial SOBRE STRINGS: dois "" colidem.
+    cru = dict(FS_446, external_reference="")
+    assert documento_para_gravar(cru, LOJA)["ext_ref"] is None
+
+
+def test_sem_atcud_recusa_se_a_gravar():
+    cru = dict(FS_446); cru.pop("atcud")
+    with pytest.raises(ValueError, match="ATCUD"):
+        documento_para_gravar(cru, LOJA)
+
+
+def test_sem_id_do_vendus_recusa_se_a_gravar():
+    cru = dict(FS_446); cru.pop("id")
+    with pytest.raises(ValueError, match="id"):
+        documento_para_gravar(cru, LOJA)
+
+
+def test_uma_nota_de_credito_guarda_o_tipo_para_o_sinal_ficar_certo():
+    cru = dict(FS_446, type="NC")
+    assert documento_para_gravar(cru, LOJA)["tipo"] == "NC"

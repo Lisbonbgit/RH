@@ -13,7 +13,10 @@ contrário — "tudo o que não começa por `pos-`" — punha 3.596,19 € de re
 inventada no Dashboard do dono. Um tipo novo que o Vendus invente amanhã fica de
 fora sozinho, e o log di-lo.
 """
+import uuid
 from typing import Dict, FrozenSet, Optional, Tuple
+
+from .vendus.emissao import _instante_do_vendus, _valor_monetario
 
 # Só estes dois, e não também FT/FR: `documentos._TIPOS` responde 422 a
 # qualquer outro tipo no filtro do backoffice, e um documento que entra na base
@@ -83,3 +86,63 @@ def deve_importar(doc: Dict) -> Tuple[bool, str]:
         return True, "sem referência externa — emitida à mão no painel do Vendus"
 
     return True, "da app (ref %s)" % ref
+
+
+# O Vendus escreve o NIF do consumidor final assim. Copiá-lo para
+# `cliente_nif` enchia o ecrã de Clientes de tracinhos.
+_NIF_VAZIO = {"", "---------", "999999990"}
+
+
+def _nif_do_cliente(cru: Dict) -> Optional[str]:
+    nif = str((cru.get("client") or {}).get("fiscal_id") or "").strip()
+    return None if nif in _NIF_VAZIO else nif
+
+
+def documento_para_gravar(cru: Dict, loja_id: str) -> Dict:
+    """O documento do Vendus traduzido para o que `fat_documentos` guarda.
+
+    Os campos são os mesmos 15 que `fiscal._gravar_documento` monta
+    (fiscal.py:1197-1250), menos os três que um documento sem conta de balcão
+    não pode ter — `venda_id` fica `None`, e não há `talao_escpos` nenhum — e
+    mais dois que só estes têm: `origem` e `linhas_vendus`.
+
+    **Recusa-se a gravar sem ATCUD ou sem id do Vendus.** Os dois índices são
+    únicos SIMPLES (db.py:132-133), não `sparse`: dois documentos com o campo a
+    `None` colidem um com o outro, e o segundo desaparecia com um erro que não
+    diz nada. Melhor recusar em voz alta e deixar quem chama contá-lo.
+    """
+    if not cru.get("atcud"):
+        raise ValueError("documento do Vendus sem ATCUD: não se grava "
+                         "(o índice é único e dois nulos colidem)")
+    if not cru.get("id"):
+        raise ValueError("documento do Vendus sem id: não se grava "
+                         "(o índice é único e dois nulos colidem)")
+
+    ref = str(cru.get("external_reference") or "").strip()
+    return {
+        # O nosso uuid: é por ele que o ecrã de Documentos e o PDF abrem a
+        # fatura (documentos.py:135). O id do Vendus vive no seu campo.
+        "id": str(uuid.uuid4()),
+        "vendus_document_id": int(cru["id"]),
+        "atcud": cru["atcud"],
+        "numero": cru.get("number"),
+        "tipo": str(cru.get("type") or "").strip().upper(),
+        "modo": "normal",
+        "total": _valor_monetario(cru.get("amount_gross")),
+        "total_bruto": _valor_monetario(cru.get("amount_gross")),
+        # Sem alternativa nenhuma no Dashboard (dashboard.py:78): não gravar
+        # isto é a app a valer 0,00 € no modo "sem IVA".
+        "total_liquido": _valor_monetario(cru.get("amount_net")),
+        "cliente_nif": _nif_do_cliente(cru),
+        "emitido_em": _instante_do_vendus(cru),
+        "loja_id": loja_id,
+        # Nunca "": `db.py:153-156` declara `ext_ref` único parcial sobre
+        # strings. Esse índice não chegou a criar-se em produção (o antigo
+        # colide), por isso hoje não rebentava — mas rebenta no dia em que
+        # for reposto, e uma fatura perdida por isso não se recupera.
+        # `None` fica certo nos dois mundos.
+        "ext_ref": ref or None,
+        "venda_id": None,
+        "origem": "app",
+        "linhas_vendus": cru.get("items") or [],
+    }
