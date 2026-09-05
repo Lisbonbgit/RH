@@ -5649,6 +5649,28 @@ def _fin_extract_pdf_sync(pdf_bytes):
     return parsed if isinstance(parsed, dict) else {"error": "json IA inválido"}
 
 
+# Remetentes que sabemos NAO mandar faturas de fornecedor. Cada PDF que passa
+# daqui custa uma chamada a IA (quota do plano gratuito: 20 por dia, partilhada
+# com a leitura das plataformas), e todos estes eram enviados ao Gemini so para
+# ele responder "isto nao e uma fatura".
+#
+# Medido na caixa a serio a 2026-09-05: 80 avisos do Millennium e 31 relatorios
+# da Teya em 30 dias — mais de 100 chamadas por mes deitadas fora.
+#
+# NAO por aqui a Glovo nem a Uber: essas TAMBEM mandam faturas de comissao.
+_FIN_REMETENTES_SEM_FATURA = (
+    "alertas.empresas@millenniumbcp.pt",  # "Documentos em formato digital" (avisos do banco)
+    "info@novobanco.pt",                  # "Extrato de conta"
+    "reporting@teya.com",                 # relatorios de liquidacao
+)
+
+
+def _fin_remetente_sem_faturas(de: str) -> bool:
+    """O remetente esta na lista dos que nunca mandam faturas?"""
+    d = (de or "").lower()
+    return any(x in d for x in _FIN_REMETENTES_SEM_FATURA)
+
+
 def _fin_fetch_pdf_attachments_sync(mb):
     """Liga a uma caixa IMAP, lê as mensagens da janela e devolve uma lista de
     {'file_name': str, 'bytes': bytes}. Síncrono — corre em thread."""
@@ -5657,7 +5679,10 @@ def _fin_fetch_pdf_attachments_sync(mb):
     imap = imaplib.IMAP4_SSL(host, port)
     try:
         imap.login(mb.get("user"), mb.get("pass"))
-        imap.select("INBOX")
+        # readonly=True + BODY.PEEK: e a caixa de correio do dono, e um agente
+        # automatico nao lhe pode mexer nos nao-lidos. O modulo plataformas ja
+        # fazia isto; este nao fazia e marcava tudo como lido todos os dias.
+        imap.select("INBOX", readonly=True)
         since = (datetime.now(timezone.utc) - timedelta(days=_FIN_INGEST_DAYS)).strftime("%d-%b-%Y")
         typ, msgnums = imap.search(None, "SINCE", since)
         ids = msgnums[0].split() if (typ == "OK" and msgnums and msgnums[0]) else []
@@ -5665,11 +5690,13 @@ def _fin_fetch_pdf_attachments_sync(mb):
         out = []
         for num in ids:
             try:
-                typ, msgdata = imap.fetch(num, "(RFC822)")
+                typ, msgdata = imap.fetch(num, "(BODY.PEEK[])")
                 if typ != "OK" or not msgdata or not msgdata[0]:
                     continue
                 raw = msgdata[0][1]
                 msg = _email.message_from_bytes(raw)
+                if _fin_remetente_sem_faturas(str(msg.get("From") or "")):
+                    continue
                 for part in msg.walk():
                     if part.get_content_maintype() == "multipart":
                         continue
@@ -5803,7 +5830,11 @@ async def fin_cron_ingest(key: str = Query(...)):
         marca, para o anexo repetir na próxima corrida em vez de se perder."""
         await db.fin_ingest_log.update_one(
             {"k": kk},
-            {"$setOnInsert": {"k": kk, "at": datetime.now(timezone.utc).isoformat()}},
+            # `t` marca de QUE leitor e a chave. Sem isto, um leitor de extratos
+            # que reutilizasse esta coleccao encontrava os sha1 ja la postos por
+            # este e importava zero, com 200 OK e sem se queixar.
+            {"$setOnInsert": {"k": kk, "t": "fatura",
+                              "at": datetime.now(timezone.utc).isoformat()}},
             upsert=True,
         )
 
