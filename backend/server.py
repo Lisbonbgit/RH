@@ -4617,6 +4617,22 @@ class FinMovementImport(BaseModel):
 class FinMovementTitle(BaseModel):
     title: Optional[str] = None
 
+class FinMovementFields(BaseModel):
+    """Campos que a Conciliacao edita celula a celula. Todos opcionais: o que
+    nao vier no pedido nao e escrito (ver `exclude_unset` no endpoint)."""
+    title: Optional[str] = None
+    category: Optional[str] = None
+    note: Optional[str] = None
+
+class FinMovementCreate(BaseModel):
+    """Linha escrita a mao na Conciliacao (ex.: 'Dinheiro Restante Mes Anterior')."""
+    company_id: str
+    date_lancamento: str
+    description: Optional[str] = None
+    amount: float
+    category: Optional[str] = None
+    note: Optional[str] = None
+
 class FinMovementLink(BaseModel):
     invoice_id: str
 
@@ -4809,6 +4825,86 @@ async def fin_set_movement_title(movement_id: str, payload: FinMovementTitle, cu
     title = (payload.title or "").strip() or None
     await db.fin_movements.update_one({"id": movement_id}, {"$set": {"title": title}})
     return await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+
+@api_router.put("/fin/movements/{movement_id}")
+async def fin_update_movement(movement_id: str, payload: FinMovementFields, current_user: dict = Depends(get_current_user)):
+    """Descricao, categoria e anotacao do movimento (a tabela da Conciliacao).
+    So escreve os campos que vierem MESMO no pedido."""
+    mv = await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+    if not mv:
+        raise HTTPException(status_code=404, detail="Movimento nao encontrado.")
+    await fin_require_editor(mv["company_id"], current_user)
+    enviados = payload.model_dump(exclude_unset=True)
+    campos = {}
+    if "title" in enviados:
+        campos["title"] = (payload.title or "").strip() or None
+    if "note" in enviados:
+        campos["note"] = (payload.note or "").strip() or None
+    if "category" in enviados:
+        cat = (payload.category or "").strip() or None
+        if cat:
+            validas = {c["id"] for c in await _fin_categorias_da_empresa(mv["company_id"])}
+            if cat not in validas:
+                raise HTTPException(status_code=400, detail="Categoria fora da lista da empresa.")
+        campos["category"] = cat
+    if campos:
+        await db.fin_movements.update_one({"id": movement_id}, {"$set": campos})
+    return await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+
+@api_router.post("/fin/movements")
+async def fin_create_movement(payload: FinMovementCreate, current_user: dict = Depends(get_current_user)):
+    """Linha a mao. Nao tem conta, nao tem saldo e nao tem dedup_key: nao passou
+    no banco, e o cartao de saldo e o importador nao a podem confundir com quem
+    passou."""
+    await fin_require_editor(payload.company_id, current_user)
+    data = (payload.date_lancamento or "").strip()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", data):
+        raise HTTPException(status_code=400, detail="Data invalida (aaaa-mm-dd).")
+    amt = _fin_clean_num(payload.amount)
+    if amt is None:
+        raise HTTPException(status_code=400, detail="Montante invalido.")
+    cat = (payload.category or "").strip() or None
+    if cat:
+        validas = {c["id"] for c in await _fin_categorias_da_empresa(payload.company_id)}
+        if cat not in validas:
+            raise HTTPException(status_code=400, detail="Categoria fora da lista da empresa.")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "account_id": None,
+        "company_id": payload.company_id,
+        "date_lancamento": data,
+        "date_valor": None,
+        "description": (payload.description or "").strip() or None,
+        "amount": amt,
+        "balance": None,
+        "currency": "EUR",
+        "title": None,
+        "category": cat,
+        "note": (payload.note or "").strip() or None,
+        "invoice_id": None,
+        "link_auto": False,
+        "attachment_path": None,
+        "manual": True,
+        "source": "manual",
+        "created_by": current_user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.fin_movements.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api_router.delete("/fin/movements/{movement_id}")
+async def fin_delete_movement(movement_id: str, current_user: dict = Depends(get_current_user)):
+    """Apaga uma linha escrita a mao. Movimentos do banco NAO se apagam - o
+    extrato e para reimportar, e apagar um deixava-o irrecuperavel pelo dedup."""
+    mv = await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+    if not mv:
+        raise HTTPException(status_code=404, detail="Movimento nao encontrado.")
+    await fin_require_editor(mv["company_id"], current_user)
+    if not mv.get("manual"):
+        raise HTTPException(status_code=400, detail="So se apagam linhas escritas a mao.")
+    await db.fin_movements.delete_one({"id": movement_id})
+    return {"message": "Linha apagada."}
 
 @api_router.put("/fin/movements/{movement_id}/link")
 async def fin_link_movement(movement_id: str, payload: FinMovementLink, current_user: dict = Depends(get_current_user)):

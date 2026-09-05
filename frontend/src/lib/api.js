@@ -231,6 +231,14 @@ export const importFinMovementsPdf = (file) => {
 };
 export const setFinMovementTitle = (id, title) =>
   axios.put(`${API_URL}/fin/movements/${id}/set-title`, { title });
+// Conciliação: guarda campo a campo (o que não for enviado não é tocado).
+export const updateFinMovement = (id, campos) =>
+  axios.put(`${API_URL}/fin/movements/${id}`, campos);
+export const createFinMovement = (data) => axios.post(`${API_URL}/fin/movements`, data);
+export const deleteFinMovement = (id) => axios.delete(`${API_URL}/fin/movements/${id}`);
+// Saldo de cada conta (cartão "Valor Contas" da Conciliação).
+export const getFinBankBalances = (companyId) =>
+  axios.get(`${API_URL}/fin/bank-accounts/balances`, { params: { company_id: companyId } });
 export const linkFinMovement = (id, invoiceId) =>
   axios.put(`${API_URL}/fin/movements/${id}/link`, { invoice_id: invoiceId });
 export const unlinkFinMovement = (id) => axios.put(`${API_URL}/fin/movements/${id}/unlink`);
