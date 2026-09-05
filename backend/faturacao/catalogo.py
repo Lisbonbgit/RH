@@ -226,6 +226,16 @@ async def apagar_subcategoria(
 TIPOS_DE_GRUPO = frozenset({"opcoes", "texto"})
 
 
+# As unidades em que se escreve o que uma opção GASTA (não o que custa).
+#
+# São as do peso do produto no Estoque (`PESO_UNIDADES` no EstoqueCatalogo) e
+# não as da unidade de stock (kg, L, un, caixa): quem escreve a ficha pensa em
+# «30 g de granola», não em «0,03 kg». A conversão para a unidade em que o
+# Estoque conta faz-se do lado de lá, na leitura — escrever já convertido era
+# pedir um zero a mais ao dono, todos os dias, para poupar uma divisão.
+UNIDADES_DE_CONSUMO = frozenset({"g", "kg", "ml", "L", "un"})
+
+
 class OpcaoEntrada(BaseModel):
     """Uma opção dentro de um grupo (ex.: "Nutella", €0,95).
 
@@ -256,10 +266,62 @@ class OpcaoEntrada(BaseModel):
     # `None` na esmagadora maioria das opções: um topping não é outro artigo.
     vendus_ref: Optional[str] = None
 
+    # **O que esta opção GASTA** — quanto, de quê, e de qual artigo do Estoque.
+    #
+    # Nasce para o stock descer sozinho com as vendas: escrever aqui «30 g de
+    # granola» é o que permite, depois, somar o que saiu num período e
+    # descontá-lo. Nesta fase só se ESCREVE — nada aqui desconta nada.
+    #
+    # `estoque_produto_id` e NÃO o `vendus_ref` que está mesmo por cima, ainda
+    # que a tentação seja evidente: são dois espaços de identificadores a
+    # servir dois sistemas diferentes. O catálogo já recusa a confusão por
+    # escrito em `precos.id_vendus_da_variante` — só uma opção de um grupo de
+    # VARIANTE pode desviar o artigo do Vendus, e sem essa guarda «ligar um
+    # topping ao artigo dele no Vendus para efeitos de stock passava a
+    # facturar o açaí inteiro como Nutella». O dinheiro da fatura e o peso do
+    # armazém não podem partilhar o mesmo campo.
+    #
+    # ge=0: um consumo negativo ACRESCENTAVA stock a cada venda.
+    # allow_inf_nan=False: mesma razão que o preço — `Infinity` não é negativo
+    # e o json do Python aceita o literal sem se queixar.
+    consumo: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    consumo_unidade: Optional[str] = None
+    estoque_produto_id: Optional[str] = None
+
     @field_validator("preco")
     @classmethod
     def _valida_preco(cls, v):
         return _recusa_mais_de_2_casas(v)
+
+    @field_validator("consumo_unidade")
+    @classmethod
+    def _valida_unidade_de_consumo(cls, v):
+        if v is not None and v not in UNIDADES_DE_CONSUMO:
+            raise ValueError(
+                "Unidade de consumo desconhecida: '%s'. Use uma destas: %s"
+                % (v, ", ".join(sorted(UNIDADES_DE_CONSUMO)))
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _valida_consumo(self):
+        """Ou se escrevem os dois campos, ou não se escreve nenhum.
+
+        Um `30` sozinho não quer dizer nada: 30 gramas de granola e 30
+        mililitros de leite condensado escrevem-se com o mesmo algarismo e
+        descontam coisas diferentes. E uma unidade sem número não desconta de
+        todo. Quem lesse isto a seguir tinha de adivinhar — e adivinhava
+        contra o stock.
+
+        `is None` e não a falsidade do valor: `consumo=0` é uma resposta
+        legítima (o palito, o guardanapo) e é diferente de «não sei».
+        """
+        if (self.consumo is None) != (self.consumo_unidade is None):
+            raise ValueError(
+                "O consumo de uma opção escreve-se com número E unidade (ex.: 30 «g»), "
+                "ou deixa-se os dois em branco."
+            )
+        return self
 
 
 class GrupoPersonalizacaoEntrada(BaseModel):
@@ -328,6 +390,48 @@ def _opcoes_com_id(opcoes: List[dict]) -> List[dict]:
     return resultado
 
 
+# Os campos que descrevem o que uma opção gasta. Andam sempre juntos porque
+# são a mesma frase («30 g de granola») repartida por três casas.
+_CAMPOS_DE_CONSUMO = ("consumo", "consumo_unidade", "estoque_produto_id")
+
+
+def _preserva_o_consumo_que_o_pedido_nao_falou(
+    opcoes: List[dict], entradas: List["OpcaoEntrada"], gravadas: List[dict]
+) -> List[dict]:
+    """Um pedido que não fala do consumo de uma opção não lhe toca.
+
+    Porquê isto existe: este PUT substitui o registo inteiro (`$set` do modelo
+    todo) e, dentro dele, o array `opcoes` por completo. O ecrã do backoffice
+    monta cada opção campo a campo. Junte-se as duas coisas e uma ida às
+    Personalizações para corrigir um PREÇO levava consigo, em silêncio, as
+    gramagens de todas as opções do grupo.
+
+    É a repetição exacta do defeito que obrigou à guarda `model_fields_set` no
+    PUT do produto — o `vendus_ref` que se apagava sozinho e encheu a conta do
+    Vendus de artigos-lixo. E, tal como lá, a defesa não pode viver no
+    browser: um curl, um script, ou um ecrã novo que reutilize este endpoint
+    desligavam-na sem deixar rasto.
+
+    Casa-se por `id` e nunca por posição: uma opção acrescentada no meio da
+    lista herdava o consumo da vizinha, e a Banana passava a descontar
+    granola. Uma opção sem id é nova — nasce sem consumo, que é o que se quer.
+
+    Quem QUISER mesmo apagar manda o campo a nulo explicitamente; quem não
+    falar dele não lhe toca.
+    """
+    por_id = {o.get("id"): o for o in gravadas if o.get("id")}
+    resultado = []
+    for opcao, entrada in zip(opcoes, entradas):
+        opcao = dict(opcao)
+        anterior = por_id.get(opcao.get("id"))
+        if anterior is not None:
+            for campo in _CAMPOS_DE_CONSUMO:
+                if campo not in entrada.model_fields_set:
+                    opcao[campo] = anterior.get(campo)
+        resultado.append(opcao)
+    return resultado
+
+
 @router.get("/grupos-personalizacao")
 async def listar_grupos(_: dict = Depends(gestor_atual)) -> List[dict]:
     db = obter_db()
@@ -366,8 +470,18 @@ async def editar_grupo(
     grupo_id: str, dados: GrupoPersonalizacaoEntrada, _: dict = Depends(gestor_atual)
 ) -> dict:
     db = obter_db()
+    # O grupo lê-se ANTES de se escrever, para o consumo que o pedido não
+    # mencionar poder ser preservado. Ver `_preserva_o_consumo_que_o_pedido_
+    # nao_falou`: sem esta leitura não há com o que comparar, e o `$set` do
+    # modelo inteiro apagava as gramagens.
+    gravado = await db[COLECOES["grupos_personalizacao"]].find_one({"id": grupo_id}, {"_id": 0})
+    if gravado is None:
+        raise HTTPException(status_code=404, detail="Grupo de personalização não encontrado")
+
     grupo = dados.model_dump()
-    grupo["opcoes"] = _opcoes_com_id(grupo["opcoes"])
+    grupo["opcoes"] = _preserva_o_consumo_que_o_pedido_nao_falou(
+        _opcoes_com_id(grupo["opcoes"]), dados.opcoes, gravado.get("opcoes") or []
+    )
     r = await db[COLECOES["grupos_personalizacao"]].update_one({"id": grupo_id}, {"$set": grupo})
     if r.matched_count == 0:
         raise HTTPException(status_code=404, detail="Grupo de personalização não encontrado")

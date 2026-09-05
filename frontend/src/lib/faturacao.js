@@ -464,3 +464,8 @@ export const temMaisDe2CasasDecimais = (valor) => {
   const casas = texto.includes('.') ? texto.split('.')[1] : '';
   return casas.length > 2;
 };
+
+// **O que saiu do ARMAZÉM** — as gramagens das personalizações somadas por
+// artigo do Estoque. Caminho próprio e não `/relatorios/consumo`: essa rota
+// tem um `{dimensao}` que come tudo o que lhe passe à frente.
+export const getConsumo = (params) => api.get(`${API_URL}/faturacao/consumo`, { params });

@@ -17,14 +17,30 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '../../../components/ui/alert-dialog';
-import { Sparkles, Plus, Pencil, Trash2, X, Link2, Link2Off, Loader2, AlertTriangle } from 'lucide-react';
+import { getEstoqueProdutos } from '../../../lib/api';
+import { Sparkles, Plus, Pencil, Trash2, X, Link2, Link2Off, Loader2, AlertTriangle, Scale } from 'lucide-react';
 import PageHeader from '../../../components/PageHeader';
 import { toast } from 'sonner';
 
 const NOME_GRUPO_MAX = 80;
 const NOME_OPCAO_MAX = 60;
 
-const emptyOpcao = () => ({ id: null, nome: '', preco: '0', ativa: true, vendus_ref: '' });
+const emptyOpcao = () => ({
+  id: null, nome: '', preco: '0', ativa: true, vendus_ref: '',
+  // O que a opção GASTA — texto vazio e não `null` porque os campos são
+  // controlados, tal como o `vendus_ref` aqui ao lado.
+  consumo: '', consumo_unidade: '', estoque_produto_id: '',
+});
+
+// As mesmas do servidor (`catalogo.UNIDADES_DE_CONSUMO`). Escreve-se como se
+// pensa — «30 g de granola» — e é o lado do Estoque que converte para a
+// unidade em que conta.
+const UNIDADES_DE_CONSUMO = ['g', 'kg', 'ml', 'L', 'un'];
+
+// A marca do catálogo do Estoque a que esta faturação pertence. A Faturação
+// é a das lojas L'Açaí; as outras marcas do Estoque (Lenha e Brasa, Purple
+// House) não têm nada que ver com estes toppings.
+const MARCA_DO_ESTOQUE = 'lacai';
 const emptyForm = {
   nome: '', min_select: '0', max_select: '0', ativo: true, opcoes: [],
   // Só o servidor sabe se este grupo é o do TAMANHO (ver `openEdit`). Um
@@ -105,6 +121,11 @@ export default function FatPersonalizacoes() {
         // Vazio e não `undefined`: o input é controlado, e o Guardar
         // distingue "não ligado" de "ligado" pelo texto, não pela ausência.
         vendus_ref: o.vendus_ref || '',
+        // `?? ''` e não `|| ''`: um consumo de 0 é uma resposta legítima (o
+        // palito, o guardanapo) e `|| ''` apagava-o do ecrã ao abrir.
+        consumo: o.consumo ?? '',
+        consumo_unidade: o.consumo_unidade || '',
+        estoque_produto_id: o.estoque_produto_id || '',
       })),
     });
     setFormError('');
@@ -141,6 +162,14 @@ export default function FatPersonalizacoes() {
   const [artigosEstado, setArtigosEstado] = useState('inicio');
   const [artigosErro, setArtigosErro] = useState('');
   const [escolhaAberta, setEscolhaAberta] = useState(null); // índice da opção
+  // A mesma máquina, para o catálogo do Estoque: índice da opção cujo artigo
+  // se está a escolher, mais a lista lida a pedido (nunca ao abrir o ecrã —
+  // o Estoque é outro serviço, noutro servidor, e pode estar em baixo).
+  const [escolhaEstoque, setEscolhaEstoque] = useState(null);
+  const [produtosEstoque, setProdutosEstoque] = useState([]);
+  const [estoqueEstado, setEstoqueEstado] = useState('inicial');
+  const [estoqueErro, setEstoqueErro] = useState('');
+  const [filtroEstoque, setFiltroEstoque] = useState('');
   const [filtroArtigo, setFiltroArtigo] = useState('');
 
   // Lê o catálogo do Vendus uma vez, e só quando faz falta.
@@ -172,6 +201,48 @@ export default function FatPersonalizacoes() {
     updateOpcao(escolhaAberta, { vendus_ref: artigo.id });
     setEscolhaAberta(null);
   };
+
+  const lerCatalogoDoEstoque = async () => {
+    setEstoqueEstado('a-carregar');
+    setEstoqueErro('');
+    try {
+      const { data } = await getEstoqueProdutos(MARCA_DO_ESTOQUE);
+      setProdutosEstoque(data || []);
+      setEstoqueEstado('pronto');
+    } catch (error) {
+      // A frase do servidor, pela mesma razão que no Vendus: uma lista vazia
+      // com ar de sucesso dizia «não há artigos no Estoque» e o topping ficava
+      // por ligar por engano. O Estoque é outro serviço — 502 quando não
+      // responde — e isso tem de se ler.
+      setEstoqueErro(detalhesErro(
+        error, 'Não foi possível ler o catálogo do Estoque.').mensagem);
+      setEstoqueEstado('erro');
+    }
+  };
+
+  const abrirEscolhaDoEstoque = (index) => {
+    setEscolhaEstoque(index);
+    setFiltroEstoque('');
+    lerCatalogoDoEstoque();
+  };
+
+  const escolherProdutoDoEstoque = (produto) => {
+    updateOpcao(escolhaEstoque, { estoque_produto_id: produto.id });
+    setEscolhaEstoque(null);
+  };
+
+  const nomeDoProdutoDoEstoque = (id) => {
+    const produto = (produtosEstoque || []).find((p) => String(p.id) === String(id));
+    // Sem o catálogo lido, o que se sabe é o id — e é o que se diz.
+    return produto ? produto.nome : `Artigo ${id}`;
+  };
+
+  const produtosDoEstoqueFiltrados = React.useMemo(() => {
+    const texto = filtroEstoque.trim().toLowerCase();
+    if (!texto) return produtosEstoque || [];
+    return (produtosEstoque || []).filter(
+      (p) => `${p.nome} ${p.fornecedor || ''}`.toLowerCase().includes(texto));
+  }, [produtosEstoque, filtroEstoque]);
 
   const nomeDoArtigo = (ref) => {
     const artigo = (artigosVendus || []).find((a) => String(a.id) === String(ref));
@@ -244,6 +315,18 @@ export default function FatPersonalizacoes() {
       if (opcao.preco === '' || !Number.isFinite(preco)) linhaErros.preco = 'Indique um preço válido';
       else if (preco < 0) linhaErros.preco = 'O preço não pode ser negativo';
       else if (temMaisDe2CasasDecimais(opcao.preco)) linhaErros.preco = 'Máximo de 2 casas decimais';
+      // Espelho do `model_validator` do servidor (catalogo.py): ou número E
+      // unidade, ou nenhum dos dois. Aqui só para o dono ver o erro no sítio
+      // — quem manda é o servidor, e é lá que a regra vive a sério.
+      const temConsumo = String(opcao.consumo ?? '').trim() !== '';
+      const temUnidade = !!opcao.consumo_unidade;
+      if (temConsumo !== temUnidade) {
+        linhaErros.consumo = 'Indique a quantidade E a unidade (ex.: 30 g)';
+      } else if (temConsumo) {
+        const consumo = Number(opcao.consumo);
+        if (!Number.isFinite(consumo)) linhaErros.consumo = 'Quantidade inválida';
+        else if (consumo < 0) linhaErros.consumo = 'A quantidade não pode ser negativa';
+      }
       if (Object.keys(linhaErros).length > 0) erros[i] = linhaErros;
     });
     setOpcaoErrors(erros);
@@ -270,6 +353,13 @@ export default function FatPersonalizacoes() {
         // Sempre enviado, `null` quando não há ligação: omiti-lo deixava a
         // ligação anterior gravada e desligar um tamanho era impossível.
         vendus_ref: o.vendus_ref ? String(o.vendus_ref).trim() : null,
+        // Os três do consumo, também sempre enviados e pela mesma razão. O
+        // servidor preserva o que o pedido NÃO mencionar (é o que protege as
+        // gramagens de um curl ou de um ecrã antigo) — mas este ecrã sabe do
+        // assunto, e tem de conseguir apagar o que o dono apagou.
+        consumo: String(o.consumo ?? '').trim() === '' ? null : Number(o.consumo),
+        consumo_unidade: o.consumo_unidade || null,
+        estoque_produto_id: o.estoque_produto_id || null,
       })),
     };
     setSaving(true);
@@ -459,6 +549,73 @@ export default function FatPersonalizacoes() {
                   onClick={() => setEscolhaAberta(null)}
                   data-testid="voltar-do-artigo-btn">
                   Voltar sem ligar
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : escolhaEstoque !== null ? (
+            /* A mesma vista, para o catálogo do Estoque — e pela mesma razão
+               de não ser um segundo diálogo: o formulário dá lugar à lista e
+               volta com a escolha feita, sem perder o que já lá estava
+               escrito. */
+            <div data-testid="escolha-do-estoque">
+              <DialogHeader>
+                <DialogTitle>Escolher o artigo do Estoque</DialogTitle>
+                <DialogDescription>
+                  É deste artigo que a quantidade escrita vai sair do armazém a cada
+                  venda. Nada desconta ainda — nesta fase só se escreve o que há-de
+                  descontar.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="py-4 space-y-3">
+                {estoqueEstado === 'a-carregar' ? (
+                  <div className="flex items-center justify-center h-32 gap-2 text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span className="text-sm">A ler o catálogo do Estoque…</span>
+                  </div>
+                ) : estoqueEstado === 'erro' ? (
+                  <div className="flex items-start gap-2 rounded-lg bg-destructive/10 text-destructive p-3 text-sm"
+                    data-testid="erro-produtos-estoque">
+                    <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                    <span>{estoqueErro}</span>
+                  </div>
+                ) : (
+                  <>
+                    <Input
+                      value={filtroEstoque}
+                      onChange={(e) => setFiltroEstoque(e.target.value)}
+                      placeholder="Procurar por nome ou fornecedor"
+                      data-testid="filtro-artigo-do-estoque"
+                    />
+                    <div className="max-h-72 overflow-y-auto divide-y rounded-md border">
+                      {produtosDoEstoqueFiltrados.length === 0 ? (
+                        <p className="p-4 text-sm text-muted-foreground text-center">
+                          Nenhum artigo com esse nome.
+                        </p>
+                      ) : produtosDoEstoqueFiltrados.map((produto) => (
+                        <button
+                          key={produto.id}
+                          type="button"
+                          className="w-full text-left px-3 py-2.5 hover:bg-accent/60 flex items-center justify-between gap-3"
+                          onClick={() => escolherProdutoDoEstoque(produto)}
+                          data-testid={`artigo-do-estoque-${produto.id}`}
+                        >
+                          <span className="text-sm truncate">{produto.nome}</span>
+                          <span className="text-xs text-muted-foreground shrink-0">
+                            {produto.unidade_medida || ''}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <DialogFooter>
+                <Button type="button" variant="outline"
+                  onClick={() => setEscolhaEstoque(null)}
+                  data-testid="voltar-do-estoque-btn">
+                  Voltar sem escolher
                 </Button>
               </DialogFooter>
             </div>
@@ -662,6 +819,81 @@ export default function FatPersonalizacoes() {
                           )}
                         </div>
                       )}
+                      {/* **O que esta opção GASTA** — a linha que faz o stock
+                          poder descer sozinho com as vendas.
+
+                          Ao contrário da ligação ao Vendus aqui em cima, esta
+                          aparece em TODOS os grupos e não só no do tamanho: a
+                          granola gasta granola e o Regular gasta polpa, e as
+                          duas coisas têm de se poder escrever. São espaços de
+                          identificadores diferentes de propósito — o
+                          `vendus_ref` decide em nome de que artigo se
+                          FACTURA, este decide o que sai do ARMAZÉM. */}
+                      <div
+                        className="pl-1 -mt-1 flex flex-wrap items-center gap-2"
+                        data-testid={`opcao-consumo-${index}`}
+                      >
+                        <Scale className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                        <span className="text-xs text-muted-foreground">Gasta</span>
+                        <Input
+                          type="number"
+                          step="0.001"
+                          min="0"
+                          value={opcao.consumo}
+                          onChange={(e) => updateOpcao(index, { consumo: e.target.value })}
+                          placeholder="—"
+                          className="w-20 h-8 text-xs"
+                          aria-invalid={!!opcaoErrors[index]?.consumo}
+                          data-testid={`opcao-consumo-input-${index}`}
+                        />
+                        {/* `select` nativo e não o do desenho: são cinco
+                            palavras numa lista fechada, o browser já sabe
+                            desenhá-lo em qualquer tamanho de ecrã, e não
+                            precisa de teclado próprio nem de foco emprestado. */}
+                        <select
+                          value={opcao.consumo_unidade}
+                          onChange={(e) => updateOpcao(index, { consumo_unidade: e.target.value })}
+                          className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                          aria-label="Unidade do consumo"
+                          data-testid={`opcao-consumo-unidade-${index}`}
+                        >
+                          <option value="">—</option>
+                          {UNIDADES_DE_CONSUMO.map((u) => (
+                            <option key={u} value={u}>{u}</option>
+                          ))}
+                        </select>
+                        <span className="text-xs text-muted-foreground">de</span>
+                        {opcao.estoque_produto_id ? (
+                          <>
+                            <span className="text-xs font-medium truncate">
+                              {nomeDoProdutoDoEstoque(opcao.estoque_produto_id)}
+                            </span>
+                            <button
+                              type="button" className="text-xs underline hover:text-foreground shrink-0"
+                              onClick={() => abrirEscolhaDoEstoque(index)}
+                              data-testid={`trocar-artigo-estoque-${index}`}
+                            >Trocar</button>
+                            <button
+                              type="button" className="text-xs underline hover:text-destructive shrink-0"
+                              onClick={() => updateOpcao(index, { estoque_produto_id: '' })}
+                              data-testid={`desligar-artigo-estoque-${index}`}
+                            >Desligar</button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground underline"
+                            onClick={() => abrirEscolhaDoEstoque(index)}
+                            data-testid={`ligar-artigo-estoque-${index}`}
+                          >
+                            <Link2Off className="h-3.5 w-3.5" />
+                            Escolher artigo do Estoque
+                          </button>
+                        )}
+                        {opcaoErrors[index]?.consumo && (
+                          <p className="w-full text-xs text-destructive">{opcaoErrors[index].consumo}</p>
+                        )}
+                      </div>
                       </React.Fragment>
                     ))}
                   </div>
