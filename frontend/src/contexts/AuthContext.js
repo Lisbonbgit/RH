@@ -19,13 +19,35 @@ export const AuthProvider = ({ children }) => {
     }
   }, [token]);
 
-  const fetchUser = async () => {
+  // **Só se termina a sessão quando o SERVIDOR a recusa.**
+  //
+  // Antes, qualquer erro aqui chamava `logout()` — e o `logout()` apaga o
+  // token do browser. Um erro SEM resposta (o 4G a falhar num café, o VPS a
+  // reiniciar, o telemóvel a acordar do bolso) não diz nada sobre a validade
+  // da sessão, e apagar o token com base nele era uma afirmação sem base:
+  // quem estava a trabalhar era atirado para o ecrã de entrar por causa de um
+  // pedido que nunca chegou a ser respondido.
+  //
+  // Por isso há duas mudanças e não uma: sem resposta **insiste-se** (três
+  // tentativas, 1 s e 2 s de intervalo — um piscar de rede dura menos do que
+  // isso) e, se mesmo assim não vier resposta, o token **fica**. Aí o ecrã de
+  // entrar aparece na mesma (o `isAuthenticated` é `!!user`), mas o próximo
+  // recarregamento já recupera a sessão sozinho, sem escrever nada.
+  const fetchUser = async (tentativa = 1) => {
     try {
       const response = await axios.get(`${API_URL}/auth/me`);
       setUser(response.data);
     } catch (error) {
-      console.error('Error fetching user:', error);
-      logout();
+      const status = error?.response?.status;
+      if (status === 401 || status === 403) {
+        logout();
+        return;
+      }
+      if (!error?.response && tentativa < 3) {
+        await new Promise((r) => setTimeout(r, 1000 * tentativa));
+        return fetchUser(tentativa + 1);
+      }
+      console.error('Não foi possível confirmar a sessão (a sessão não foi terminada):', error);
     } finally {
       setLoading(false);
     }

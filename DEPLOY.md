@@ -189,6 +189,13 @@ docker compose restart
 docker compose down
 ```
 
+**Trabalhos automáticos (crons):** vivem nos scripts `*-cron.sh` na raiz do
+repositório — a ingestão de faturas por email, as sincronizações do Vendus e do
+Moloni, o relatório diário de faturação e o relatório semanal das plataformas de
+entrega. **As instruções de instalação de cada um estão no cabeçalho do próprio
+script**, com a linha de `crontab` já escrita e a explicação da hora (o servidor
+corre em UTC e Lisboa não). Ver o que está instalado: `crontab -l`.
+
 **Backups:** o Atlas já faz backup da base de dados. Os documentos enviados ficam no
 volume `uploads_data` do Docker — para os copiar:
 ```bash
