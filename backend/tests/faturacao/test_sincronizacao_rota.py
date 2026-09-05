@@ -118,9 +118,17 @@ class _ClienteFalso:
 
     def __init__(self, documentos, rebenta_ao_ler=False, rebenta_a_listar=False):
         self.documentos = list(documentos)
-        # Um documento sem `id` não tem detalhe nenhum para ir buscar — não
-        # há GET por id que se lhe faça. É por isso que ele fica de fora aqui.
-        self.detalhes = {int(d["id"]): d for d in documentos if d.get("id")}
+        # Um documento sem `id`, ou com um `id` ilegível (texto em vez de
+        # número), não tem detalhe nenhum para ir buscar — não há GET por id
+        # que se lhe faça. É por isso que os dois ficam de fora aqui.
+        self.detalhes = {}
+        for d in documentos:
+            if not d.get("id"):
+                continue
+            try:
+                self.detalhes[int(d["id"])] = d
+            except (TypeError, ValueError):
+                continue
         self.rebenta_ao_ler = rebenta_ao_ler
         self.rebenta_a_listar = rebenta_a_listar
         self.pedidos = []
@@ -209,12 +217,16 @@ def test_sem_loja_escolhida_recusa_e_diz_porque(monkeypatch):
 
 
 def test_desligada_nas_definicoes_nao_corre(monkeypatch):
+    """Não basta `erros` não estar vazio: `obter_conta()` sem `_montar` também
+    devolve `None` e enche `erros` na mesma, com "sem conta Vendus
+    configurada" — um `if False:` no lugar da guarda `ativo` passava a suite
+    na mesma, por um motivo que nada tem a ver com estar desligada."""
     async def _desligada(_db):
         return {"loja_id": LOJA, "ativo": False}
     monkeypatch.setattr(rota, "_definicoes", _desligada)
     resultado = _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-01"]))
     assert resultado["gravados"] == 0
-    assert resultado["erros"]
+    assert resultado["erros"] == ["desligada nas definições"]
 
 
 # --- A gravação --------------------------------------------------------------
@@ -317,6 +329,23 @@ def test_um_documento_sem_id_na_lista_nao_derruba_a_volta(monkeypatch):
     assert resultado["ignorados"] == 1
     assert resultado["erros"] == []
     assert any("sem id" in linha for linha in resultado["assinalados"])
+
+
+def test_um_id_ilegivel_na_lista_nao_derruba_a_volta(monkeypatch):
+    """Um `id` PRESENTE mas ilegível (texto em vez de número) passa a guarda
+    do `not doc.get("id")` sem problema — é o `int(doc["id"])` a seguir que
+    levantava `ValueError`, que também não é `VendusErro` nenhuma: o mesmo
+    estrago do `KeyError` do id em falta, só com o gatilho menos provável."""
+    id_ilegivel = {"id": "abc-nao-e-numero", "type": "FS",
+                  "external_reference": "LA-x", "number": "FS ?/?"}
+    gravados = []
+    _montar(monkeypatch, gravados, documentos=[id_ilegivel, _FS_446])
+    resultado = _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-01"]))
+    assert resultado["gravados"] == 1, "o documento a seguir entra na mesma"
+    assert gravados[0]["vendus_document_id"] == 370665072
+    assert resultado["ignorados"] == 1
+    assert resultado["erros"] == []
+    assert any("ilegível" in linha for linha in resultado["assinalados"])
 
 
 def test_o_documento_saltado_fica_a_vista_de_quem_pode_agir(monkeypatch):

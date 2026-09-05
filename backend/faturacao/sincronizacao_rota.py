@@ -135,12 +135,23 @@ async def sincronizar(db, *, dias: List[str], simular: bool = False) -> Dict:
                     if not doc.get("id"):
                         _saltar(resultado, doc, "sem id na lista do Vendus")
                         continue
+                    # Um `id` presente mas ilegível (ex.: texto em vez de
+                    # número) faz o mesmo estrago: `int()` levanta
+                    # `ValueError`, também não é `VendusErro`, e escapava do
+                    # mesmo jeito. Converte-se uma vez aqui e reutiliza-se o
+                    # valor a seguir.
+                    try:
+                        doc_id = int(doc["id"])
+                    except (TypeError, ValueError):
+                        _saltar(resultado, doc,
+                                "id do Vendus ilegível: %r" % doc.get("id"))
+                        continue
 
                     # Um documento que já temos não se vai buscar outra vez: é
                     # um pedido ao Vendus por documento, e a esmagadora maioria
                     # das voltas relê dias inteiros que já estão gravados.
                     if await coleccao.find_one(
-                            {"vendus_document_id": int(doc["id"])}, {"_id": 1}):
+                            {"vendus_document_id": doc_id}, {"_id": 1}):
                         resultado["repetidos"] += 1
                         continue
 
