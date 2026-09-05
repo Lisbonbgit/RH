@@ -111,6 +111,14 @@ router.include_router(_documentos)
 from .nota_credito import router as _nota_credito
 router.include_router(_nota_credito)
 
+# As faturas que a app L'Açaí emite pela MESMA caixa e pela MESMA série que as
+# cinco lojas, e que o portal nunca soube que existiam. Só LÊ o Vendus: nada
+# aqui escreve nele, e nada aqui toca em vendas, sessões de caixa ou reservas
+# fiscais — a decisão de quem entra vive em `sincronizacao_app.py`, sem Mongo
+# nem rede pelo meio.
+from .sincronizacao_rota import router as _sincronizacao
+router.include_router(_sincronizacao)
+
 # A FILA DE IMPRESSÃO e as rotas do programa da loja. Entra por último de
 # propósito: é o único módulo que ninguém mais importa por dentro (o
 # `fiscal.py` e o `caixa.py` importam-no LOCALMENTE, dentro da função que
