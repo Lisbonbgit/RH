@@ -53,6 +53,20 @@ def _contar(resultado: Dict, motivo: str) -> None:
     resultado["motivos"][motivo] = resultado["motivos"].get(motivo, 0) + 1
 
 
+def _saltar(resultado: Dict, doc: Dict, motivo: str) -> None:
+    """Conta o documento como ignorado **e deixa-o à vista de quem pode agir.**
+
+    Um documento que fica de fora por avaria fica de fora PARA SEMPRE: a
+    janela da volta só olha para hoje e ontem, e a volta seguinte nem sequer o
+    tenta outra vez com outro resultado. Contá-lo em `motivos` e escrevê-lo no
+    log deixa-o só onde ninguém olha — `assinalados` é o que aparece a quem
+    carregou no botão.
+    """
+    _contar(resultado, motivo)
+    resultado["assinalados"].append(
+        "%s: %s" % (doc.get("number") or "id %s" % doc.get("id"), motivo))
+
+
 async def sincronizar(db, *, dias: List[str], simular: bool = False) -> Dict:
     """Lê os dias pedidos e grava o que for para gravar.
 
@@ -62,9 +76,18 @@ async def sincronizar(db, *, dias: List[str], simular: bool = False) -> Dict:
 
     `simular=True` faz tudo menos a gravação: é como se prova, contra a
     produção, o que ia acontecer antes de deixar acontecer.
+
+    `assinalados` é a lista dos documentos que ficaram de fora por AVARIA (sem
+    id na lista, sem ATCUD, total ilegível, desapareceu do Vendus) — um por
+    linha, identificado pelo número do Vendus e com a razão. Não é o mesmo que
+    `motivos`, que conta também as exclusões normais e de propósito (um
+    orçamento, uma fatura nossa). Uma FS real de 6,85 € que caia num destes
+    casos não volta a ser tentada: sem esta lista, desaparecia do Dashboard e
+    do relatório com o cron a parecer saudável.
     """
     resultado = {"lidos": 0, "gravados": 0, "ignorados": 0, "repetidos": 0,
-                 "motivos": {}, "erros": [], "simulado": simular}
+                 "motivos": {}, "assinalados": [], "erros": [],
+                 "simulado": simular}
 
     definicoes = await _definicoes(db)
     loja_id = definicoes.get("loja_id")
@@ -104,6 +127,15 @@ async def sincronizar(db, *, dias: List[str], simular: bool = False) -> Dict:
                         _contar(resultado, motivo)
                         continue
 
+                    # `deve_importar` não exige `id` — decide por tipo, ref e
+                    # estado. Sem esta guarda, o `int(doc["id"])` de baixo
+                    # levantava `KeyError`, que NÃO é `VendusErro` e por isso
+                    # escapava à volta inteira: o cron levava um 500 de cinco
+                    # em cinco minutos e nem os documentos seguintes entravam.
+                    if not doc.get("id"):
+                        _saltar(resultado, doc, "sem id na lista do Vendus")
+                        continue
+
                     # Um documento que já temos não se vai buscar outra vez: é
                     # um pedido ao Vendus por documento, e a esmagadora maioria
                     # das voltas relê dias inteiros que já estão gravados.
@@ -115,7 +147,7 @@ async def sincronizar(db, *, dias: List[str], simular: bool = False) -> Dict:
                     # O ATCUD e as linhas só existem no GET por id.
                     cru = await asyncio.to_thread(cliente.ler_documento, doc["id"])
                     if cru is None:
-                        _contar(resultado, "desapareceu do Vendus")
+                        _saltar(resultado, doc, "desapareceu do Vendus")
                         continue
 
                     try:
@@ -134,7 +166,7 @@ async def sincronizar(db, *, dias: List[str], simular: bool = False) -> Dict:
                         # uma fila a bloquear.
                         logger.warning("[sinc-app] documento %s não se grava: %s",
                                        doc.get("number"), e)
-                        _contar(resultado, str(e))
+                        _saltar(resultado, doc, str(e))
                         continue
 
                     resultado["gravados"] += 1
@@ -143,9 +175,39 @@ async def sincronizar(db, *, dias: List[str], simular: bool = False) -> Dict:
                     try:
                         await coleccao.insert_one(pronto)
                     except DuplicateKeyError:
-                        # Duas voltas em cima uma da outra. Não é avaria.
                         resultado["gravados"] -= 1
-                        resultado["repetidos"] += 1
+                        # `fat_documentos` tem TRÊS chaves únicas
+                        # (db.py:132-158): `vendus_document_id`, `atcud` e o
+                        # parcial `ext_ref`. Só a primeira é "o mesmo
+                        # documento outra vez" — as outras duas são um
+                        # documento DIFERENTE a colidir, e engoli-las era
+                        # deitá-lo fora em silêncio, com `erros: []`, a gastar
+                        # um `ler_documento` por volta para sempre. O caso
+                        # real: uma NC da app que traga a `external_reference`
+                        # da FS que anula — a fatura ficava, o estorno nunca
+                        # entrava, e a receita daquela loja ficava inflacionada
+                        # sem nada a assinalar. Pergunta-se à base qual dos
+                        # dois é.
+                        if await coleccao.find_one(
+                                {"vendus_document_id": pronto["vendus_document_id"]},
+                                {"_id": 1}):
+                            # Duas voltas em cima uma da outra. Não é avaria.
+                            resultado["repetidos"] += 1
+                        else:
+                            # O espírito do `ConflitoDocumentoFiscal` de
+                            # `fiscal.py:1287`: nada foi sobreposto, e isto
+                            # precisa de olhos.
+                            resultado["erros"].append(
+                                "documento %s (id=%s, ATCUD=%s) colide com "
+                                "outro já gravado — mesmo `atcud` ou mesma "
+                                "`ext_ref` com id DIFERENTE. Nada foi "
+                                "sobreposto e este documento NÃO entrou: "
+                                "precisa de investigação manual." % (
+                                    pronto.get("numero"),
+                                    pronto.get("vendus_document_id"),
+                                    pronto.get("atcud")))
+                            logger.error("[sinc-app] conflito ao gravar %s",
+                                         pronto.get("numero"))
     except VendusErro as e:
         # A volta acaba aqui. O que já foi gravado fica (cada documento é uma
         # gravação independente e idempotente); o que faltava vem na próxima.
@@ -156,6 +218,8 @@ async def sincronizar(db, *, dias: List[str], simular: bool = False) -> Dict:
                 "ENSAIO" if simular else "a sério", resultado["lidos"],
                 resultado["gravados"], resultado["ignorados"],
                 resultado["repetidos"], resultado["motivos"])
+    for linha in resultado["assinalados"]:
+        logger.warning("[sinc-app] assinalado: %s", linha)
     return resultado
 
 
@@ -178,9 +242,18 @@ async def ler_definicoes_app(_: dict = Depends(gestor_atual)) -> dict:
 @router.put("/sincronizacao-app/definicoes")
 async def gravar_definicoes_app(dados: DefinicoesEntrada,
                                 _: dict = Depends(gestor_atual)) -> dict:
-    await obter_db()[COLECOES["definicoes"]].update_one(
+    db = obter_db()
+    # Uma `loja_id` que não existe em `fat_lojas` não dá erro nenhum a gravar,
+    # e depois a FS da app fica invisível em toda a vista filtrada por loja
+    # enquanto continua a contar no total de "todas as lojas" — dois números
+    # diferentes que ninguém consegue explicar. Mesma guarda de
+    # `lojas.criar_caixa` e de `pos_auth.gerar_codigo_emparelhamento`.
+    if dados.loja_id and not await db[COLECOES["lojas"]].find_one(
+            {"id": dados.loja_id}):
+        raise HTTPException(status_code=404, detail="Loja não encontrada")
+    await db[COLECOES["definicoes"]].update_one(
         {"id": CHAVE}, {"$set": dados.model_dump()}, upsert=True)
-    return await _definicoes(obter_db())
+    return await _definicoes(db)
 
 
 @router.post("/sincronizacao-app/sincronizar-agora")

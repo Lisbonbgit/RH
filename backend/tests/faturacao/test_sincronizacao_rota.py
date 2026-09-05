@@ -18,6 +18,7 @@ from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
 
 from faturacao import sincronizacao_rota as rota
+from faturacao.db import COLECOES
 from faturacao.vendus.emissao import VendusIndisponivel
 
 
@@ -58,10 +59,15 @@ _ESTADO = {}
 
 
 class _ColeccaoFalsa:
-    def __init__(self, gravados, insert_rebenta=None, ja_gravados=()):
+    def __init__(self, gravados, insert_rebenta=None, ja_gravados=(),
+                 colide_com_outro=False):
         self.gravados = gravados
         self.insert_rebenta = insert_rebenta
         self.ja_gravados = set(ja_gravados)
+        # O `insert_one` rebenta porque OUTRO documento já ocupa o `atcud` ou
+        # a `ext_ref`, não porque este já lá esteja. É a diferença entre "duas
+        # voltas em cima uma da outra" e "um documento novo deitado fora".
+        self.colide_com_outro = colide_com_outro
 
     async def find_one(self, filtro, projeccao=None):
         existe = filtro.get("vendus_document_id") in self.ja_gravados
@@ -69,12 +75,41 @@ class _ColeccaoFalsa:
 
     async def insert_one(self, documento):
         if self.insert_rebenta is not None:
+            if not self.colide_com_outro:
+                # A outra volta gravou-o MESMO: a partir daqui ele está lá,
+                # como estaria no Mongo.
+                self.ja_gravados.add(documento["vendus_document_id"])
             raise self.insert_rebenta
         self.gravados.append(documento)
+        self.ja_gravados.add(documento["vendus_document_id"])
+
+
+class _DefinicoesFalsas:
+    """`fat_definicoes` como o Mongo a devolve: um documento por chave."""
+
+    def __init__(self, doc):
+        self.doc = doc
+
+    async def find_one(self, _filtro, _projeccao=None):
+        return self.doc
 
 
 class _DBFalsa:
-    def __getitem__(self, _nome):
+    """Regista o NOME de cada colecção pedida.
+
+    Numa base com ~750 Faturas Simplificadas fiscais reais, a colecção em que
+    se escreve é o que separa uma sincronização de um estrago: um duplo que
+    deita fora o nome deixa passar um `fat_vendas` no lugar de
+    `fat_documentos` sem um único teste vermelho.
+    """
+
+    def __init__(self):
+        self.pedidas = []
+
+    def __getitem__(self, nome):
+        self.pedidas.append(nome)
+        if nome == COLECOES["definicoes"]:
+            return _ESTADO.get("definicoes") or _DefinicoesFalsas(None)
         return _ESTADO.get("coleccao") or _ColeccaoFalsa([])
 
 
@@ -83,7 +118,9 @@ class _ClienteFalso:
 
     def __init__(self, documentos, rebenta_ao_ler=False, rebenta_a_listar=False):
         self.documentos = list(documentos)
-        self.detalhes = {int(d["id"]): d for d in documentos}
+        # Um documento sem `id` não tem detalhe nenhum para ir buscar — não
+        # há GET por id que se lhe faça. É por isso que ele fica de fora aqui.
+        self.detalhes = {int(d["id"]): d for d in documentos if d.get("id")}
         self.rebenta_ao_ler = rebenta_ao_ler
         self.rebenta_a_listar = rebenta_a_listar
         self.pedidos = []
@@ -108,15 +145,17 @@ class _ClienteFalso:
 
 
 def _montar(monkeypatch, gravados, *, documentos, rebenta_ao_ler=False,
-            rebenta_a_listar=False, insert_rebenta=None, ja_gravados=()):
+            rebenta_a_listar=False, insert_rebenta=None, ja_gravados=(),
+            colide_com_outro=False):
     monkeypatch.setitem(
         _ESTADO, "coleccao",
-        _ColeccaoFalsa(gravados, insert_rebenta, ja_gravados))
-
-    async def _com_loja(_db):
-        return {"loja_id": LOJA, "ativo": True}
-
-    monkeypatch.setattr(rota, "_definicoes", _com_loja)
+        _ColeccaoFalsa(gravados, insert_rebenta, ja_gravados, colide_com_outro))
+    # As definições vêm da BASE, não de um `_definicoes` substituído: é o que
+    # deixa `test_so_toca_nas_coleccoes_certas` ver as duas colecções que a
+    # sincronização toca de verdade.
+    monkeypatch.setitem(
+        _ESTADO, "definicoes",
+        _DefinicoesFalsas({"loja_id": LOJA, "ativo": True}))
     monkeypatch.setattr(rota, "obter_conta",
                         lambda *a, **kw: SimpleNamespace(chave="chave-de-teste"))
     monkeypatch.setattr(rota, "_register_id_configurado", lambda: CAIXA)
@@ -240,6 +279,162 @@ def test_um_documento_repetido_nao_e_erro(monkeypatch):
     assert resultado["gravados"] == 0
 
 
+def test_um_duplicado_que_e_OUTRO_documento_nao_se_deita_fora(monkeypatch):
+    """O `DuplicateKeyError` não quer dizer "já o temos".
+
+    `fat_documentos` tem três chaves únicas (db.py:132-158) e o `find_one` de
+    antes só cobre uma, `vendus_document_id`. Um choque em `atcud` ou na
+    `ext_ref` parcial é um documento DIFERENTE — o caso real é uma NC da app
+    (está em `TIPOS_ACEITES`) que traga a `external_reference` da FS que
+    anula: a fatura fica, o estorno nunca entra, e a receita daquela loja fica
+    inflacionada em silêncio, com `erros: []` e um `ler_documento` gasto ao
+    Vendus em cada volta, para sempre.
+    """
+    gravados = []
+    _montar(monkeypatch, gravados, documentos=[_FS_446],
+            insert_rebenta=DuplicateKeyError("atcud repetido"),
+            colide_com_outro=True)
+    resultado = _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-01"]))
+    assert resultado["gravados"] == 0
+    assert resultado["repetidos"] == 0, "não é o mesmo documento outra vez"
+    assert len(resultado["erros"]) == 1
+    assert "FS 06P2026/446" in resultado["erros"][0]
+    assert "manual" in resultado["erros"][0]
+
+
+def test_um_documento_sem_id_na_lista_nao_derruba_a_volta(monkeypatch):
+    """`deve_importar` deixa passar um documento sem `id` — decide por tipo,
+    ref e estado. O `int(doc["id"])` levantava então um `KeyError`, que não é
+    `VendusErro` nenhuma: escapava a `sincronizar` inteira, o documento
+    seguinte nunca chegava a ser gravado, e o cron levava um 500 de cinco em
+    cinco minutos."""
+    sem_id = {"type": "FS", "external_reference": "LA-x", "number": "FS ?/?"}
+    gravados = []
+    _montar(monkeypatch, gravados, documentos=[sem_id, _FS_446])
+    resultado = _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-01"]))
+    assert resultado["gravados"] == 1, "o documento a seguir entra na mesma"
+    assert gravados[0]["vendus_document_id"] == 370665072
+    assert resultado["ignorados"] == 1
+    assert resultado["erros"] == []
+    assert any("sem id" in linha for linha in resultado["assinalados"])
+
+
+def test_o_documento_saltado_fica_a_vista_de_quem_pode_agir(monkeypatch):
+    """Um documento saltado por avaria fica de fora PARA SEMPRE — a janela da
+    volta é só hoje e ontem. Um `logger.warning` e uma chave em `motivos` não
+    chegam a ninguém: `erros` fica vazio, o cron parece saudável, e uma FS
+    real de 6,85 € desaparece do Dashboard sem nada visível."""
+    ilegivel = dict(_FS_446, id=371000003, atcud="J6SHGSNX-445",
+                    number="FS 06P2026/445", amount_gross="8,99")
+    sem_atcud = dict(_FS_446, id=371000004, number="FS 06P2026/444")
+    sem_atcud.pop("atcud")
+    gravados = []
+    cliente = _montar(monkeypatch, gravados,
+                      documentos=[ilegivel, sem_atcud, _FS_446])
+    del cliente.detalhes[370665072]  # e este desapareceu do Vendus
+    resultado = _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-01"]))
+    assert resultado["ignorados"] == 3
+    assert len(resultado["assinalados"]) == 3, "um por documento, não um total"
+    juntos = " | ".join(resultado["assinalados"])
+    for numero in ("FS 06P2026/445", "FS 06P2026/444", "FS 06P2026/446"):
+        assert numero in juntos, "identifica o documento, não só a razão"
+    assert "ATCUD" in juntos and "desapareceu do Vendus" in juntos
+
+
+def test_uma_exclusao_normal_nao_se_assinala(monkeypatch):
+    """Um orçamento e uma fatura nossa ficam de fora de propósito, e todas as
+    voltas os voltam a ver. Assinalá-los era encher a lista de ruído até
+    ninguém olhar para ela — que é o mesmo que não ter lista."""
+    gravados = []
+    _montar(monkeypatch, gravados, documentos=[_FS_446, _OT_740, _NOSSA])
+    resultado = _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-01"]))
+    assert resultado["ignorados"] == 2
+    assert resultado["assinalados"] == []
+
+
+def test_so_toca_nas_coleccoes_certas(monkeypatch):
+    """A colecção em que se escreve não é um detalhe: `fat_documentos` tem
+    ~750 Faturas Simplificadas fiscais reais de cinco lojas."""
+    gravados = []
+    _montar(monkeypatch, gravados, documentos=[_FS_446])
+    db = _DBFalsa()
+    _corre(rota.sincronizar(db, dias=["2026-09-01"]))
+    assert gravados, "guarda: o caminho chegou mesmo à gravação"
+    assert set(db.pedidas) == {"fat_definicoes", "fat_documentos"}
+
+
+def test_o_vendus_sincrono_nunca_corre_no_event_loop(monkeypatch):
+    """O cliente do Vendus é SÍNCRONO e `sincronizar` é `async`.
+
+    Sem os dois `asyncio.to_thread`, cada leitura pendura o event loop do
+    portal inteiro — o ponto, as escalas, o POS das cinco lojas — enquanto o
+    Vendus responde (timeout de 60s). E não há teste que o note: o resultado
+    da volta fica exactamente igual.
+    """
+    gravados = []
+    _montar(monkeypatch, gravados, documentos=[_FS_446])
+    fora_do_loop = []
+    verdadeiro = asyncio.to_thread
+
+    async def _espia(funcao, *args, **kw):
+        fora_do_loop.append(getattr(funcao, "__name__", str(funcao)))
+        return await verdadeiro(funcao, *args, **kw)
+
+    monkeypatch.setattr(rota.asyncio, "to_thread", _espia)
+    _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-01"]))
+    assert gravados, "guarda: a volta chegou mesmo ao fim"
+    assert fora_do_loop == ["listar_documentos_por_dia", "ler_documento"]
+
+
+# --- As definições do backoffice ---------------------------------------------
+
+
+class _DBDefinicoes:
+    """A base do PUT: `fat_lojas` só sabe dizer se a loja existe e
+    `fat_definicoes` guarda o que lhe mandarem."""
+
+    def __init__(self, *, lojas=()):
+        self.lojas = set(lojas)
+        self.gravado = None
+        self.nome = None
+
+    def __getitem__(self, nome):
+        self.nome = nome
+        return self
+
+    async def find_one(self, filtro, _projeccao=None):
+        if self.nome == COLECOES["lojas"]:
+            return {"id": filtro["id"]} if filtro["id"] in self.lojas else None
+        return self.gravado
+
+    async def update_one(self, _filtro, alteracao, upsert=False):
+        self.gravado = dict(alteracao["$set"])
+
+
+def test_uma_loja_que_nao_existe_nao_se_grava(monkeypatch):
+    """Uma `loja_id` órfã não dá erro nenhum a gravar — e depois a FS da app
+    fica invisível em toda a vista filtrada por loja enquanto continua a
+    contar no total de "todas as lojas". Dois números diferentes que ninguém
+    consegue explicar."""
+    db = _DBDefinicoes(lojas=[])
+    monkeypatch.setattr(rota, "obter_db", lambda: db)
+    with pytest.raises(HTTPException) as e:
+        _corre(rota.gravar_definicoes_app(
+            rota.DefinicoesEntrada(loja_id="nao-existe-nenhures")))
+    assert e.value.status_code in (404, 422)
+    assert "loja" in str(e.value.detail).lower()
+    assert db.gravado is None, "e não gravou nada"
+
+
+def test_a_loja_que_existe_grava_se(monkeypatch):
+    db = _DBDefinicoes(lojas=[LOJA])
+    monkeypatch.setattr(rota, "obter_db", lambda: db)
+    resultado = _corre(rota.gravar_definicoes_app(
+        rota.DefinicoesEntrada(loja_id=LOJA)))
+    assert resultado["loja_id"] == LOJA
+    assert resultado["ativo"] is True
+
+
 def test_um_total_ilegivel_nao_TAPA_os_documentos_seguintes(monkeypatch):
     """Um `amount_gross` que não se lê é um documento que fica de fora — não o
     fim da volta.
@@ -287,10 +482,18 @@ def test_nunca_pede_ao_vendus_nada_alem_das_duas_LEITURAS(monkeypatch):
 
 
 def test_as_rotas_existem_mesmo():
-    # Afirmar o endereço que o código escreve nunca apanha um prefixo errado.
-    # Pergunta-se ao router.
+    """Afirmar o endereço que o código escreve nunca apanha um prefixo errado
+    — pergunta-se ao router. E pergunta-se também o MÉTODO: `ROTAS_DE_CRON`
+    (test_protecao_rotas.py:56) é uma lista de CAMINHOS, por isso qualquer
+    método naquele caminho fica dispensado da guarda de autenticação. Um
+    `@router.get` no lugar do `@router.post` não partia teste nenhum e abria
+    ao mundo, num GET, uma rota que escreve em `fat_documentos`.
+    """
     from faturacao import router
-    caminhos = {r.path for r in router.routes}
-    assert "/api/faturacao/cron/sincronizar-app" in caminhos
-    assert "/api/faturacao/sincronizacao-app/definicoes" in caminhos
-    assert "/api/faturacao/sincronizacao-app/sincronizar-agora" in caminhos
+    caminhos = {(r.path, metodo) for r in router.routes
+                for metodo in getattr(r, "methods", ())}
+    assert ("/api/faturacao/cron/sincronizar-app", "POST") in caminhos
+    assert ("/api/faturacao/sincronizacao-app/definicoes", "GET") in caminhos
+    assert ("/api/faturacao/sincronizacao-app/definicoes", "PUT") in caminhos
+    assert ("/api/faturacao/sincronizacao-app/sincronizar-agora",
+            "POST") in caminhos
