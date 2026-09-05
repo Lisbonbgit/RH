@@ -3221,9 +3221,46 @@ def _fin_norm_nif(v):
 
 # ---------- Modelos Pydantic ----------
 
+# Categorias do Financeiro. Uma lista SO, partilhada pelas faturas (DRE) e
+# pelos movimentos (Conciliacao). Espelha CATEGORIAS_PADRAO de
+# frontend/src/lib/finance.js - se mudar aqui, muda la.
+FIN_CATEGORIAS_PADRAO = [
+    {"id": "entradas", "label": "Entradas"},
+    {"id": "salarios", "label": "Sal\u00e1rios"},
+    {"id": "utilitarios", "label": "Utilit\u00e1rios"},
+    {"id": "servicos", "label": "Servi\u00e7os"},
+    {"id": "impostos", "label": "Impostos"},
+    {"id": "investimento", "label": "Investimento Equipamentos"},
+    {"id": "supermercado", "label": "Supermercado"},
+    {"id": "fornecedor", "label": "Fornecedor"},
+    {"id": "seguros", "label": "Seguros"},
+    {"id": "marketing", "label": "Marketing"},
+    {"id": "cartoes_credito", "label": "Cart\u00f5es de Cr\u00e9dito"},
+    {"id": "dominios_sites", "label": "Dom\u00ednios e Sites"},
+    {"id": "transporte", "label": "Transporte"},
+    {"id": "rendas", "label": "Rendas"},
+    {"id": "outros", "label": "Outros"},
+]
+
+
+async def _fin_categorias_da_empresa(company_id: str):
+    """A lista da empresa, ou a de omiss\u00e3o. Nunca devolve vazio: um ecr\u00e3 sem
+    categorias nenhumas deixava a diretora financeira sem forma de classificar."""
+    comp = await db.fin_companies.find_one({"id": company_id}, {"_id": 0, "categorias": 1})
+    cats = (comp or {}).get("categorias")
+    if isinstance(cats, list) and cats:
+        return cats
+    return FIN_CATEGORIAS_PADRAO
+
+
+class FinCategoria(BaseModel):
+    id: str
+    label: str
+
 class FinCompanyCreate(BaseModel):
     name: str
     nif: Optional[str] = None
+    categorias: Optional[List[FinCategoria]] = None
 
 class FinCompanyResponse(BaseModel):
     id: str
@@ -3231,6 +3268,7 @@ class FinCompanyResponse(BaseModel):
     nif: Optional[str] = None
     role: Optional[str] = None
     created_at: Optional[str] = None
+    categorias: Optional[List[FinCategoria]] = None
 
 class FinUnitCreate(BaseModel):
     company_id: str
@@ -3379,9 +3417,23 @@ async def fin_update_company(company_id: str, payload: FinCompanyCreate, current
     name = (payload.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Indica o nome da empresa.")
-    await db.fin_companies.update_one(
-        {"id": company_id}, {"$set": {"name": name, "nif": _fin_norm_nif(payload.nif)}}
-    )
+    campos = {"name": name, "nif": _fin_norm_nif(payload.nif)}
+    # `exclude_unset`: as categorias so se escrevem quando vem MESMO no pedido.
+    # Sem isto, guardar o nome da empresa apagava a lista que ela montou.
+    if "categorias" in payload.model_dump(exclude_unset=True):
+        cats = [{"id": c.id.strip(), "label": c.label.strip()} for c in (payload.categorias or [])]
+        cats = [c for c in cats if c["id"] and c["label"]]
+        vistos = set()
+        unicas = []
+        for c in cats:
+            if c["id"] in vistos:
+                continue
+            vistos.add(c["id"])
+            unicas.append(c)
+        if not unicas:
+            raise HTTPException(status_code=400, detail="A empresa precisa de pelo menos uma categoria.")
+        campos["categorias"] = unicas
+    await db.fin_companies.update_one({"id": company_id}, {"$set": campos})
     updated = await db.fin_companies.find_one({"id": company_id}, {"_id": 0})
     return FinCompanyResponse(**updated, role="owner")
 
