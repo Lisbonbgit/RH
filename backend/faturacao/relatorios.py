@@ -101,7 +101,18 @@ def _chave_e_rotulo(dimensao: str, evento: Dict, artigo: Optional[Dict]) -> tupl
     """A que linha da tabela pertence este documento (ou este artigo dele)."""
     quando = evento.get("quando")
     if dimensao == "produto":
-        return artigo.get("produto_id"), artigo.get("produto_nome") or _SEM_DEFINICAO
+        nome = artigo.get("produto_nome") or _SEM_DEFINICAO
+        # **Sem `produto_id`, a identidade do artigo é o NOME.** Os artigos das
+        # faturas da app não têm produto do catálogo nenhum (vêm das linhas do
+        # Vendus), e com a chave a `None` fundiam-se TODOS numa linha só, com o
+        # rótulo do primeiro: uma fatura com um açaí e duas águas aparecia como
+        # «Açaí Mini, 3, 9,85 €». O dinheiro total estava certo; a atribuição
+        # por artigo é que mentia — que é exactamente o que esta vista existe
+        # para responder.
+        #
+        # Só aqui: na CATEGORIA um `None` quer mesmo dizer uma coisa só («Sem
+        # definição»), e separá-la por nome inventava categorias.
+        return artigo.get("produto_id") or nome, nome
     if dimensao == "categoria":
         return artigo.get("categoria_id"), artigo.get("categoria_nome") or _SEM_DEFINICAO
     if dimensao == "cliente":
@@ -422,14 +433,32 @@ def _artigos_das_linhas_vendus(documento: Dict, categorias: Dict) -> List[Dict]:
     porque um custo de 0 € contra 6,85 € de venda dá 100% de margem no
     relatório de rentabilidade.
     """
+    # **Numa nota de crédito, o valor entra POSITIVO.** Quem soma é `agregar`,
+    # que aplica o sinal pelo `tipo` do documento — e um `-1 ×` sobre um valor
+    # que a API já devolveu negativo é uma dupla negação: a nota passava a
+    # SOMAR receita em vez de a subtrair. Medido: uma FS de 6,85 € da app e a
+    # NC que a anula davam +13,70 € e quantidade 2, em vez de zero.
+    #
+    # Não é hipótese: o Financeiro lê a MESMA API das MESMAS lojas e faz o
+    # mesmo há meses (`server.py::_fin_signed_amount`, «a API pode devolver o
+    # valor já negativo»; e ao nível do item, «a devolução reverte o custo,
+    # venha a quantidade positiva ou já negativa da API»).
+    #
+    # **Só na NC.** Numa fatura, uma linha negativa é um desconto legítimo, e
+    # um `abs()` incondicional transformava-o em receita.
+    eh_nc = documento.get("tipo") == "NC"
     artigos = []
     for linha in documento.get("linhas_vendus") or []:
         montantes = linha.get("amounts") or {}
+        bruto_c = centimos(montantes.get("gross_total"))
+        quantidade = float(linha.get("qty") or 0)
+        if eh_nc:
+            bruto_c, quantidade = abs(bruto_c), abs(quantidade)
         artigos.append(_artigo(
             None, categorias, None,
             linha.get("title") or _SEM_DEFINICAO,
-            float(linha.get("qty") or 0),
-            centimos(montantes.get("gross_total")),
+            quantidade,
+            bruto_c,
             (linha.get("tax") or {}).get("rate"),
         ))
     return artigos
@@ -583,6 +612,20 @@ async def eventos_dos_documentos(
             # cartão «Hoje» e o top de artigos a discordar sem explicação.
             logger.warning("Documento %s sem artigos: a venda não se deixa repartir.",
                          doc.get("id"), exc_info=True)
+            continue
+        # **Zero artigos não é um evento de 0,00 €.** É o defeito que esta
+        # repartição existe para matar, e uma lista VAZIA ressuscitava-o: um
+        # documento da app cujo `items` venha vazio grava-se na mesma
+        # (`sincronizacao_app.py`: `cru.get("items") or []`) e ficava a valer
+        # 0,00 € nas nove vistas para sempre — com o valor certo no cartão do
+        # Dashboard, que lê `total_bruto`, e o contador «documentos por
+        # repartir» a ZERO, portanto sem nada no ecrã a dizer que havia
+        # dinheiro por atribuir.
+        #
+        # Ficando de fora, entra no aviso «N faturas de hoje não se deixaram
+        # repartir por artigo» — a mesma porta do `except` acima, pela mesma
+        # razão: o que não se sabe repartir diz-se, não se arredonda a zero.
+        if not artigos:
             continue
         if categoria_id:
             artigos = [a for a in artigos if a.get("categoria_id") == categoria_id]
