@@ -4715,6 +4715,37 @@ async def _fin_get_or_create_account(company_id, account_number, bank, name):
     return acc
 
 
+@api_router.get("/fin/bank-accounts/balances")
+async def fin_bank_account_balances(company_id: str, current_user: dict = Depends(get_current_user)):
+    """Saldo de CADA conta (o cartao "Valor Contas" da Conciliacao).
+
+    Nao pode ser feito no frontend: o desempate intra-dia e por `_id` (ordem de
+    insercao do extrato) e o `_id` vem excluido de todas as projecoes, por isso
+    o browser mostraria um movimento arbitrario do dia."""
+    scope = await _fin_report_scope(company_id, current_user)
+    accounts = await db.fin_bank_accounts.find({"company_id": scope}, {"_id": 0}).to_list(2000)
+    contas = []
+    for acc in accounts:
+        last = await db.fin_movements.find_one(
+            {"account_id": acc.get("id"), "balance": {"$ne": None}},
+            {"_id": 0, "balance": 1, "date_lancamento": 1},
+            sort=[("date_lancamento", -1), ("_id", -1)],
+        )
+        contas.append({
+            "account_id": acc.get("id"),
+            "company_id": acc.get("company_id"),
+            "bank": acc.get("bank"),
+            "name": acc.get("name") or acc.get("bank"),
+            "account_number": acc.get("account_number"),
+            # None = nao sabemos (conta sem movimentos). Nunca 0.
+            "balance": _fin_num(last.get("balance")) if last else None,
+            "date": last.get("date_lancamento") if last else None,
+        })
+    contas.sort(key=lambda c: (c.get("name") or "").lower())
+    total = round(sum(c["balance"] for c in contas if c["balance"] is not None), 2)
+    return {"contas": contas, "total": total}
+
+
 # ---------- Movimentos ----------
 
 @api_router.get("/fin/movements")
@@ -9120,6 +9151,12 @@ async def startup_event():
         await db.fin_sales.create_index([("company_id", 1), ("date", 1)])
         await db.fin_sales.create_index([("company_id", 1), ("unit_id", 1), ("date", 1)])
         await db.bol_leituras.create_index([("origem", 1), ("comecou_em", -1)])
+        # A vista mensal da Conciliacao filtra por empresa + mes, e o saldo por
+        # conta procura o ultimo movimento de cada conta. Sem indice, as duas
+        # varrem a coleccao inteira.
+        await db.fin_movements.create_index([("company_id", 1), ("date_lancamento", -1)])
+        await db.fin_movements.create_index([("account_id", 1), ("date_lancamento", -1)])
+        await db.fin_movements.create_index([("invoice_id", 1)])
     except Exception:  # noqa: BLE001
         logger.warning("[fin] não foi possível criar os índices de fin_sales/bol_leituras")
 
