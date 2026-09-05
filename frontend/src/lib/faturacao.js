@@ -101,6 +101,66 @@ export const criarLoja = (data) => api.post(`${API_URL}/faturacao/lojas`, data);
 export const editarLoja = (id, data) => api.put(`${API_URL}/faturacao/lojas/${id}`, data);
 export const apagarLoja = (id) => api.delete(`${API_URL}/faturacao/lojas/${id}`);
 
+// As vendas da APP L'Açaí.
+//
+// A app emite as Faturas Simplificadas dela pela MESMA caixa API e pela MESMA
+// série das cinco lojas; o portal vai buscá-las ao Vendus e grava-as na loja
+// que o gestor escolher aqui — `{ loja_id, ativo }` em `fat_definicoes`. Sem
+// loja escolhida a sincronização não corre de todo, e diz porquê: adivinhá-la
+// era pôr a receita da app na loja errada (faturacao/sincronizacao_rota.py).
+export const getSincronizacaoApp = () =>
+  api.get(`${API_URL}/faturacao/sincronizacao-app/definicoes`);
+export const guardarSincronizacaoApp = (dados) =>
+  api.put(`${API_URL}/faturacao/sincronizacao-app/definicoes`, dados);
+// Vai ao VENDUS ler dois dias inteiros, documento a documento — tecto de 120 s,
+// como as outras chamadas deste ficheiro que lá falam. Corre sozinha de 5 em 5
+// minutos pelo cron; este botão é para quando alguém não quer esperar.
+export const sincronizarAppAgora = () =>
+  api.post(`${API_URL}/faturacao/sincronizacao-app/sincronizar-agora`, undefined,
+    { timeout: TIMEOUT_COM_VENDUS_MS });
+
+// **O que a volta da sincronização diz a quem carregou no botão.**
+//
+// Vive aqui e não dentro do ecrã por causa dos `assinalados`: são os documentos
+// que ficaram de fora POR AVARIA (sem ATCUD, total ilegível, desapareceram do
+// Vendus) e que **não voltam a ser tentados** — a janela do cron só olha para
+// hoje e ontem. Até hoje esse campo não tinha consumidor nenhum: existia no log
+// da API, onde ninguém olha. Quem pode agir é quem está à frente do ecrã, e por
+// isso eles aparecem mesmo quando o resto da volta correu bem.
+export const resumoDaSincronizacao = (resultado) => {
+  const r = resultado || {};
+  const gravados = r.gravados || 0;
+  const assinalados = r.assinalados || [];
+  const erros = r.erros || [];
+  const partes = [
+    `${gravados} ${gravados === 1 ? 'nova' : 'novas'} · ${r.repetidos || 0} `
+    + `${r.repetidos === 1 ? 'repetida' : 'repetidas'} · ${r.ignorados || 0} `
+    + `${r.ignorados === 1 ? 'ignorada' : 'ignoradas'}`,
+  ];
+  if (assinalados.length > 0) {
+    partes.push(
+      'Ficaram de fora e NÃO voltam a ser tentados:\n'
+      + assinalados.join('\n'),
+    );
+  }
+  if (erros.length > 0) partes.push(erros.join('\n'));
+  return {
+    // A avaria manda no tom: uma volta que parou a meio com 3 faturas gravadas
+    // não é um sucesso com um aviso, é uma volta por acabar.
+    tipo: erros.length > 0 ? 'error' : assinalados.length > 0 ? 'warning' : 'success',
+    titulo: erros.length > 0
+      ? 'A sincronização não chegou ao fim'
+      : assinalados.length > 0
+        ? `${assinalados.length} ${assinalados.length === 1
+          ? 'documento ficou de fora' : 'documentos ficaram de fora'}`
+        : gravados > 0
+          ? `${gravados} ${gravados === 1
+            ? 'fatura nova da app' : 'faturas novas da app'}`
+          : 'Sem faturas novas da app',
+    descricao: partes.join('\n\n'),
+  };
+};
+
 // Caixas (de uma loja)
 export const getCaixas = (lojaId) => api.get(`${API_URL}/faturacao/lojas/${lojaId}/caixas`);
 export const criarCaixa = (lojaId, data) => api.post(`${API_URL}/faturacao/lojas/${lojaId}/caixas`, data);

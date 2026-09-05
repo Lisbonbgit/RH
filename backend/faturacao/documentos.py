@@ -80,7 +80,8 @@ from pydantic import BaseModel, Field
 from .db import COLECOES, obter_db
 from .fiscal import _itens_vendus
 from .mapa_imposto import (
-    _TAXA_DO_CODIGO, _liquido_da_linha, mapa_de_imposto, totais_do_mapa,
+    _TAXA_DO_CODIGO, _base_em_centimos, _liquido_da_linha, mapa_de_imposto,
+    totais_do_mapa,
 )
 from .auth import gestor_atual
 from .periodos import janela_de_datas
@@ -338,6 +339,97 @@ def _linhas_da_fatura(venda: Optional[Dict]) -> List[Dict]:
     return linhas
 
 
+def _linhas_das_linhas_vendus(documento: Dict) -> List[Dict]:
+    """As linhas de uma fatura que não tem conta de balcão nenhuma.
+
+    O ecrã de Documentos monta as linhas a partir da venda. Estes documentos
+    não têm venda, e a ausência das linhas não pode ser lida como "esta fatura
+    não levou nada" — pior, `total_divergente` compara o total com a soma das
+    linhas e acendia um aviso de fatura estragada numa fatura sã.
+
+    **A FORMA é a de `_linhas_da_fatura`, campo por campo**, porque é a MESMA
+    tabela do MESMO ecrã: `FatDocumentos.js` lê `titulo`, `taxa`,
+    `preco_unitario`, `quantidade` e `total`. Um nome diferente aqui não dava
+    erro nenhum no servidor — dava uma coluna «Produto» em branco numa fatura
+    sã, que é o género de defeito que só aparece com o ecrã à frente.
+
+    O «P. Unit.» sai do total a dividir pela quantidade: o Vendus manda o
+    dinheiro da LINHA (`amounts.gross_total`, o número que a AT tem), e o preço
+    por unidade que interessa a quem confere é o que ele pagou por cada um —
+    repetir ali o total fazia uma linha de três águas parecer três vezes mais
+    cara. Pela mesma razão o `desconto` vai a `0.0`: já não há gap nenhum entre
+    `qtd × p. unit.` e o total para explicar (ver `_linhas_da_fatura`).
+    """
+    linhas = []
+    for linha in documento.get("linhas_vendus") or []:
+        montantes = linha.get("amounts") or {}
+        imposto = linha.get("tax") or {}
+        total = float(montantes.get("gross_total") or 0)
+        quantidade = float(linha.get("qty") or 0)
+        linhas.append({
+            # Não há produto nosso do outro lado: o ecrã escreve o nome que o
+            # Vendus mandou e não finge que conhece o artigo.
+            "titulo": linha.get("title") or "—",
+            "quantidade": quantidade,
+            "preco_unitario": round(total / quantidade, 2) if quantidade else total,
+            "desconto": 0.0,
+            "total": total,
+            "tax_id": imposto.get("id"),
+            "taxa": imposto.get("rate"),
+        })
+    return linhas
+
+
+def _mapa_das_linhas_vendus(documento: Dict) -> List[Dict]:
+    """O mapa de imposto de uma fatura da app, agrupado por taxa.
+
+    **A FORMA é a de `mapa_imposto.mapa_de_imposto`** — `tax_id`, `taxa`,
+    `documentos`, `base`, `iva`, `total` — porque é o MESMO campo da MESMA
+    resposta, e `totais_do_mapa` soma a chave `total` de cada linha a direito:
+    um dicionário com menos chaves levantava `KeyError` e a fatura abria com um
+    500. Pela mesma razão o mapa tem de ser feito AQUI e não deixado a
+    `mapa_de_imposto([])`: um mapa vazio dava «€ 0,00» de base e de IVA por
+    baixo de uma tabela de 6,85 €.
+
+    A base é a do PRÓPRIO documento (`amounts.net_total`, o número que o Vendus
+    entregou à AT) e o IVA é o RESTO — `base + iva == total` ao cêntimo por
+    construção, como no Z. Uma linha sem `net_total` decompõe-se pelo código de
+    imposto (`_base_em_centimos`, a fórmula do Z); uma que não tenha nem um nem
+    outro conta para o total e não para as outras duas colunas — não se inventa
+    imposto, que é a regra de `mapa_de_imposto` para uma taxa desconhecida.
+
+    A ordem é a das linhas do documento: um documento não é um turno, e a
+    ordem em que o Vendus as mandou é determinística e é a do papel.
+    """
+    por_taxa: Dict = {}
+    for linha in documento.get("linhas_vendus") or []:
+        montantes = linha.get("amounts") or {}
+        imposto = linha.get("tax") or {}
+        codigo = imposto.get("id")
+        entrada = por_taxa.setdefault(codigo, {
+            "tax_id": codigo, "taxa": imposto.get("rate"),
+            # Um documento, uma vez em cada taxa que tocou — a mesma contagem
+            # de `mapa_de_imposto` (é o que a contabilista conta).
+            "documentos": 1, "base": 0, "iva": 0, "total": 0,
+        })
+        total_centimos = _centimos(montantes.get("gross_total"))
+        entrada["total"] += total_centimos
+        if montantes.get("net_total") is not None:
+            base_centimos = _centimos(montantes.get("net_total"))
+        elif _TAXA_DO_CODIGO.get(codigo) is not None:
+            base_centimos = _base_em_centimos(
+                total_centimos, _TAXA_DO_CODIGO[codigo])
+        else:
+            continue
+        entrada["base"] += base_centimos
+        entrada["iva"] += total_centimos - base_centimos
+    return [
+        dict(entrada, base=entrada["base"] / 100.0, iva=entrada["iva"] / 100.0,
+             total=entrada["total"] / 100.0)
+        for entrada in por_taxa.values()
+    ]
+
+
 @router.get("/pos/documentos/{documento_id}")
 async def obter_documento(
     documento_id: str, operador: Dict = Depends(operador_atual)
@@ -391,10 +483,11 @@ async def _quem_e_onde(db, documento: Dict, venda: Optional[Dict]) -> Dict:
         "loja_id": documento.get("loja_id"),
         "caixa_id": (venda or {}).get("caixa_id"),
         "operador_id": (venda or {}).get("operador_id"),
-        # De onde veio a venda. Hoje é sempre o POS próprio — mas escrevê-lo
-        # agora é o que impede a pergunta "e esta, veio da app?" de não ter
-        # resposta no dia em que houver outra origem.
-        "origem": "POS",
+        # De onde veio a venda. A app não tem operador nem caixa, e a linha do
+        # ecrã tem de o DIZER em vez de deixar dois traços sem explicação: dois
+        # "—" numa fatura lêem-se como "a ficha do operador foi apagada", e a
+        # primeira coisa que o gestor faz com isso é ir procurar quem vendeu.
+        "origem": "App L'Açaí" if documento.get("origem") == "app" else "POS",
         "criada_em": (venda or {}).get("criada_em"),
     }
 
@@ -410,7 +503,15 @@ async def _detalhe_do_documento(db, documento: Dict, com_contexto: bool = False)
     delas está certa."""
     venda = await db[COLECOES["vendas"]].find_one({"id": documento.get("venda_id")})
 
-    linhas = _linhas_da_fatura(venda)
+    # Sem venda mas com as linhas do Vendus: é uma fatura da app. O `venda is
+    # None` é metade da guarda e tem de lá estar — um documento NOSSO que
+    # ganhasse `linhas_vendus` um dia passava a ignorar a venda, e os toppings,
+    # o desconto e o pagamento desapareciam do ecrã (a mesma guarda, e a mesma
+    # razão, de `relatorios.py`).
+    da_app = venda is None and bool(documento.get("linhas_vendus"))
+
+    linhas = (_linhas_das_linhas_vendus(documento) if da_app
+              else _linhas_da_fatura(venda))
     # Somado em CÊNTIMOS INTEIROS, nunca com `sum()` sobre floats — é a regra
     # da casa, e aqui serve para responder a uma pergunta sobre o cêntimo.
     total_das_linhas = sum(_centimos(li["total"]) for li in linhas)
@@ -421,7 +522,8 @@ async def _detalhe_do_documento(db, documento: Dict, com_contexto: bool = False)
     # emitido está sempre nesse estado (`fiscal._gravar_documento` põe-na lá
     # incondicionalmente), e uma que não esteja produz um mapa vazio em vez de
     # inventar imposto sobre uma conta que não é fatura nenhuma.
-    mapa = mapa_de_imposto([venda] if venda else [])
+    mapa = (_mapa_das_linhas_vendus(documento) if da_app
+            else mapa_de_imposto([venda] if venda else []))
 
     return {
         "id": documento.get("id"),
@@ -446,7 +548,17 @@ async def _detalhe_do_documento(db, documento: Dict, com_contexto: bool = False)
         "total_divergente": (
             total_documento is not None
             and bool(linhas)
-            and _centimos(total_documento) != total_das_linhas
+            # **Em valor ABSOLUTO, por causa da nota de crédito da app.** O
+            # sinal de uma NC lida do Vendus não é nosso: a API tanto devolve as
+            # linhas negativas como positivas (é o que
+            # `relatorios._artigos_das_linhas_vendus` documenta, e testa nos dois
+            # sentidos). Comparar com sinal fazia uma nota SÃ acender o aviso de
+            # "chame quem trata do sistema" — que é exactamente o alarme falso
+            # que esta tarefa existe para tirar do ecrã. Nada muda para os
+            # documentos do POS: ali as duas parcelas saem da MESMA venda e são
+            # positivas por construção, e uma diferença de valor continua a
+            # aparecer.
+            and abs(_centimos(total_documento)) != abs(total_das_linhas)
         ),
         # Há bytes de talão guardados com esta fatura? É o que decide se o
         # botão de reimprimir tem alguma coisa para mandar à impressora

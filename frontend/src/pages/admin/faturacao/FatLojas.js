@@ -2,7 +2,8 @@ import React, { useEffect, useState } from 'react';
 import {
   getLojas, criarLoja, editarLoja, apagarLoja,
   getCaixas, criarCaixa, editarCaixa, apagarCaixa,
-  detalhesErro,
+  getSincronizacaoApp, guardarSincronizacaoApp, sincronizarAppAgora,
+  resumoDaSincronizacao, detalhesErro,
 } from '../../../lib/faturacao';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
@@ -18,7 +19,10 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '../../../components/ui/alert-dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../../components/ui/table';
-import { Store, Plus, Pencil, Trash2, Wallet, MapPin, Mail, Phone } from 'lucide-react';
+import {
+  Store, Plus, Pencil, Trash2, Wallet, MapPin, Mail, Phone, Smartphone,
+  RefreshCw,
+} from 'lucide-react';
 import PageHeader from '../../../components/PageHeader';
 import { toast } from 'sonner';
 
@@ -59,6 +63,13 @@ export default function FatLojas() {
   const [savingLoja, setSavingLoja] = useState(false);
   const [deleteLojaTarget, setDeleteLojaTarget] = useState(null);
 
+  // A loja que recebe as vendas da app L'Açaí — `{ loja_id, ativo }` em
+  // `fat_definicoes` (faturacao/sincronizacao_rota.py). Fica `{}` enquanto
+  // ninguém a escolher, e nesse estado a sincronização não corre de todo.
+  const [sincApp, setSincApp] = useState({});
+  const [aGuardarApp, setAGuardarApp] = useState(false);
+  const [aSincronizarApp, setASincronizarApp] = useState(false);
+
   const [caixaDialogOpen, setCaixaDialogOpen] = useState(false);
   const [caixaLoja, setCaixaLoja] = useState(null);
   const [editingCaixa, setEditingCaixa] = useState(null);
@@ -66,7 +77,7 @@ export default function FatLojas() {
   const [savingCaixa, setSavingCaixa] = useState(false);
   const [deleteCaixaTarget, setDeleteCaixaTarget] = useState(null);
 
-  useEffect(() => { fetchAll(); }, []);
+  useEffect(() => { fetchAll(); carregarSincApp(); }, []);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -100,6 +111,62 @@ export default function FatLojas() {
       toast.error('Erro ao carregar lojas');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // --- As vendas da app L'Açaí ---
+  //
+  // A app emite as Faturas Simplificadas dela pela MESMA caixa API e pela MESMA
+  // série das lojas. O portal vai buscá-las ao Vendus de 5 em 5 minutos e
+  // grava-as na loja escolhida aqui; sem loja escolhida não corre de todo, e
+  // diz porquê — adivinhá-la era pôr a receita da app na loja errada.
+
+  const carregarSincApp = async () => {
+    try {
+      const { data } = await getSincronizacaoApp();
+      setSincApp(data || {});
+    } catch (error) {
+      // Em silêncio, a etiqueta apagada lia-se como "ninguém escolheu loja
+      // nenhuma" — que é o estado em que a app não é faturada em lado nenhum.
+      toast.error(detalhesErro(
+        error, 'Não foi possível saber que loja recebe as vendas da app.').mensagem);
+    }
+  };
+
+  const escolherLojaDaApp = async (loja) => {
+    setAGuardarApp(true);
+    try {
+      const { data } = await guardarSincronizacaoApp({ loja_id: loja.id, ativo: true });
+      setSincApp(data || {});
+      toast.success(`As vendas da app passam a entrar em ${loja.nome}.`);
+    } catch (error) {
+      toast.error(detalhesErro(
+        error, 'Não foi possível guardar a loja das vendas da app.').mensagem);
+    } finally {
+      setAGuardarApp(false);
+    }
+  };
+
+  const sincronizarApp = async () => {
+    setASincronizarApp(true);
+    try {
+      const { data } = await sincronizarAppAgora();
+      const resumo = resumoDaSincronizacao(data);
+      // Os `assinalados` são documentos que ficaram de fora POR AVARIA e que
+      // não voltam a ser tentados (a janela do cron só olha para hoje e ontem).
+      // Quem carregou no botão é quem pode agir — por isso ficam mais tempo no
+      // ecrã, e em linhas separadas.
+      toast[resumo.tipo](resumo.titulo, {
+        description: <span className="whitespace-pre-line">{resumo.descricao}</span>,
+        duration: resumo.tipo === 'success' ? 6000 : 15000,
+      });
+    } catch (error) {
+      toast.error(detalhesErro(
+        error,
+        'A sincronização não chegou ao fim — o Vendus pode estar lento. O que '
+        + 'faltar entra sozinho na próxima volta.').mensagem);
+    } finally {
+      setASincronizarApp(false);
     }
   };
 
@@ -294,6 +361,22 @@ export default function FatLojas() {
                       <div className="flex items-center gap-2 flex-wrap">
                         <h3 className="font-semibold text-lg">{loja.nome}</h3>
                         {estadoBadge(loja.ativa)}
+                        {/* As faturas que a app L'Açaí emite entram nesta loja.
+                            `ativo: false` é a sincronização desligada — a
+                            etiqueta tem de o dizer, senão promete uma receita
+                            que não está a entrar em lado nenhum. */}
+                        {sincApp.loja_id === loja.id && (
+                          <Badge
+                            variant="outline"
+                            className="bg-violet-50 text-violet-700 border-violet-200"
+                            data-testid={`loja-app-badge-${loja.id}`}
+                          >
+                            <Smartphone className="h-3 w-3 mr-1" />
+                            {sincApp.ativo === false
+                              ? 'Vendas da app (desligada)'
+                              : 'Vendas da app'}
+                          </Badge>
+                        )}
                       </div>
                       <div className="text-sm text-muted-foreground mt-1 space-y-0.5">
                         {morada && (
@@ -314,6 +397,31 @@ export default function FatLojas() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
+                      {sincApp.loja_id === loja.id ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={sincronizarApp}
+                          disabled={aSincronizarApp}
+                          title="Vai ao Vendus buscar as faturas de hoje e de ontem que a app emitiu"
+                          data-testid={`sincronizar-app-${loja.id}`}
+                        >
+                          <RefreshCw className={`h-4 w-4 mr-1.5 ${aSincronizarApp ? 'animate-spin' : ''}`} />
+                          Sincronizar agora
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => escolherLojaDaApp(loja)}
+                          disabled={aGuardarApp}
+                          title="As Faturas Simplificadas que a app L'Açaí emite passam a ser gravadas nesta loja"
+                          data-testid={`escolher-app-${loja.id}`}
+                        >
+                          <Smartphone className="h-4 w-4 mr-1.5" />
+                          Receber vendas da app
+                        </Button>
+                      )}
                       <Button variant="outline" size="sm" onClick={() => openNewCaixa(loja)} data-testid={`add-caixa-btn-${loja.id}`}>
                         <Plus className="h-4 w-4 mr-1.5" />Nova caixa
                       </Button>
