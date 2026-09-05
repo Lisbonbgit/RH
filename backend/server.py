@@ -7314,6 +7314,35 @@ def _fin_signed_amount(v, sign):
     return -abs(a) if sign < 0 else a
 _FIN_VENDUS_COST_TTL = 6 * 3600                 # cache do mapa de custos: 6h
 _FIN_VENDUS_MAX_DOC_PAGES = 60                  # >6000 docs/loja -> reduz o período
+
+# O código com que o Vendus diz "não há documentos no intervalo" — e di-lo num
+# 404, que de outra forma se lê como recusa. Medido em produção (2026-09-05):
+#   GET documents/?since=2026-09-02&until=2026-09-05&store_id=145260335
+#   -> 404  {"errors": [{"code": "A001", "message": "No data"}]}
+_FIN_VENDUS_CODIGO_SEM_DADOS = "A001"
+
+
+def _fin_vendus_sem_dados(resp) -> bool:
+    """Este 404 é um "não há nada" ou uma recusa?
+
+    Olha-se só ao CÓDIGO, nunca à mensagem: a mensagem é texto livre do lado
+    deles e pode mudar de redacção ou de idioma sem aviso. Corpo ilegível
+    responde `False` — na dúvida trata-se como falha, que é o lado seguro:
+    não grava e, por não gravar, não apaga.
+    """
+    try:
+        corpo = resp.json()
+    except Exception:  # noqa: BLE001
+        return False
+    erros = corpo.get("errors") if isinstance(corpo, dict) else None
+    if not isinstance(erros, list):
+        return False
+    return any(
+        isinstance(e, dict)
+        and str(e.get("code") or "").strip().upper() == _FIN_VENDUS_CODIGO_SEM_DADOS
+        for e in erros
+    )
+
 _FIN_VENDUS_MAX_PROD_PAGES = 100
 
 
@@ -7351,6 +7380,21 @@ def _fin_vendus_http(key, path, tries=3):
         if retriable and attempt < tries:
             _time.sleep(0.3 * (2 ** (attempt - 1)) + _random.uniform(0, 0.2))
             continue
+        if resp is not None and resp.status_code == 404 and _fin_vendus_sem_dados(resp):
+            # **"Não há nada" não é uma falha.** O Vendus responde 404 com o
+            # código A001 ("No data") quando não existem documentos no
+            # intervalo pedido — uma loja fechada nesse dia, ou uma loja que
+            # deixou de faturar por esta via. Devolver `None` aqui fazia o
+            # `_fin_vendus_fetch_store_days` chamar-lhe leitura FALHADA e
+            # recusar-se a gravar, e o registo de leituras passava a acusar
+            # uma avaria de hora a hora numa loja que apenas não vendeu.
+            #
+            # Uma resposta vazia É uma lista vazia, e é assim que sai daqui:
+            # quem pagina lê `[]`, dá as páginas por acabadas, e a leitura
+            # fica COMPLETA — que é a verdade. Uma falha a sério (timeout,
+            # 401, 5xx esgotado, corpo ilegível) continua a devolver `None`,
+            # e é essa que trava a gravação.
+            return []
         if resp is None or resp.status_code < 200 or resp.status_code >= 300:
             return None
         try:
