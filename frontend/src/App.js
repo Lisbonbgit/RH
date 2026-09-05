@@ -30,6 +30,7 @@ import FinPagamentos from './pages/admin/financeiro/FinPagamentos';
 import FinVendas from './pages/admin/financeiro/FinVendas';
 import FinFornecedores from './pages/admin/financeiro/FinFornecedores';
 import FinExtrato from './pages/admin/financeiro/FinExtrato';
+import FinConciliacao from './pages/admin/financeiro/conciliacao/FinConciliacao';
 import FinRelatorios from './pages/admin/financeiro/FinRelatorios';
 import PainelGlobal from './pages/admin/financeiro/PainelGlobal';
 import PainelPlataformas from './pages/admin/painel/Plataformas';
@@ -228,6 +229,7 @@ function AppRoutes() {
         <Route path="financeiro/relatorios" element={<FinRelatorios />} />
         <Route path="financeiro/fornecedores" element={<FinFornecedores />} />
         <Route path="financeiro/extrato" element={<FinExtrato />} />
+        <Route path="financeiro/conciliacao" element={<FinConciliacao />} />
 
         {/* ===== Estoque ===== */}
         <Route path="estoque" element={<Navigate to="/admin/estoque/visao-geral" replace />} />

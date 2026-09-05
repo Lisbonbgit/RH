@@ -44,6 +44,7 @@ import {
   BarChart3,
   Truck,
   Landmark,
+  Scale,
   Megaphone,
   CalendarDays,
   Star,
@@ -111,6 +112,7 @@ const sections = [
       { path: '/admin/financeiro/relatorios', label: 'Relatórios', icon: BarChart3 },
       { path: '/admin/financeiro/fornecedores', label: 'Fornecedores', icon: Truck },
       { path: '/admin/financeiro/extrato', label: 'Extrato', icon: Landmark },
+      { path: '/admin/financeiro/conciliacao', label: 'Conciliação', icon: Scale },
     ],
   },
   {
