@@ -6903,12 +6903,20 @@ async def fin_create_sale(payload: FinSaleCreate, current_user: dict = Depends(g
     # Evita dupla contagem: se já há vendas automáticas (Vendus/Moloni) nesse
     # dia+unidade, não deixa lançar à mão (somariam no painel). O automático manda.
     if doc.get("date"):
-        auto = await db.fin_sales.find_one({
+        filtro_auto = {
             "company_id": payload.company_id,
-            "unit_id": doc.get("unit_id"),
             "date": doc["date"],
             "source": {"$in": ["vendus", "moloni"]},
-        }, {"_id": 0, "id": 1})
+        }
+        # Com loja escolhida, a dupla contagem é por loja. SEM loja (`unit_id`
+        # a `None`), filtrar por `unit_id: None` procurava linhas automáticas
+        # sem loja — que não existem: o sync grava sempre com a unidade
+        # preenchida. A guarda passava SEMPRE, e a venda manual somava-se por
+        # cima da automática no painel, que soma por EMPRESA. Sem loja, a
+        # pergunta certa é "esta empresa já tem automático neste dia?".
+        if doc.get("unit_id") is not None:
+            filtro_auto["unit_id"] = doc["unit_id"]
+        auto = await db.fin_sales.find_one(filtro_auto, {"_id": 0, "id": 1})
         if auto:
             raise HTTPException(status_code=409, detail=(
                 "Já existem vendas automáticas (Vendus/Moloni) para este dia e loja. "
@@ -7434,7 +7442,27 @@ def _fin_vendus_fetch_store_days(key, store_id, since, until, with_cost, cost_ma
             key,
             f"documents/?since={since}&until={until}&store_id={store_id}&per_page=100&page={page}",
         )
-        if not isinstance(docs, list) or not docs:
+        # Uma leitura que FALHOU não é o fim das páginas. O `_fin_vendus_http`
+        # devolve None quando esgota as tentativas ou apanha um 4xx, e tratar
+        # isso como "acabaram os documentos" fazia esta função responder
+        # `complete=True` com o que tinha lido até ali — que é NADA, se a falha
+        # foi logo na primeira página. A seguir, `_fin_vendus_write_store` apaga
+        # o intervalo INTEIRO (`delete_many` incondicional, sempre) antes de
+        # gravar: as vendas destes dias desapareciam — de hora a hora, com o
+        # cron rápido — e o relatório dizia `errors: []`. O Moloni já faz isto
+        # bem na função equivalente (`_fin_moloni_fetch_days`: `if docs is
+        # None: return by_day, False, ...`), e era a assimetria entre os dois
+        # que mostrava que isto era lapso e não convenção.
+        #
+        # `not isinstance(docs, list)` e não `docs is None`: uma resposta que
+        # venha como dict (um corpo de erro que o Vendus devolva com 200) cai
+        # no mesmo sítio, e pela mesma razão.
+        if not isinstance(docs, list):
+            return by_day, False, (
+                f"a leitura da página {page} não devolveu documentos "
+                "(o Vendus não respondeu, ou recusou) — nada gravado"
+            )
+        if not docs:
             break
         for x in docs:
             if not isinstance(x, dict):
@@ -7458,6 +7486,18 @@ def _fin_vendus_fetch_store_days(key, store_id, since, until, with_cost, cost_ma
             acc[1] += n
             if with_cost:
                 det = _fin_vendus_http(key, f"documents/{x.get('id')}/")
+                if det is None:
+                    # A mesma regra da página, um nível abaixo: uma leitura
+                    # falhada não pode passar por "documento sem linhas". Sem
+                    # isto o CMV deste documento entrava a ZERO, em silêncio, e
+                    # a passagem noturna gravava um custo baixo de mais — que é
+                    # exactamente o número que alimenta o DRE. Custa uma noite
+                    # sem gravar esta loja (o cron volta a passar com a janela
+                    # de 3 dias); a alternativa é um custo errado que fica.
+                    return by_day, False, (
+                        f"a leitura das linhas do documento {x.get('id')} falhou "
+                        "— o custo (CMV) não foi apurado, nada gravado"
+                    )
                 if isinstance(det, list):  # a resposta pode vir como lista
                     det = det[0] if det else None
                 items = det.get("items") if isinstance(det, dict) else None
@@ -7499,7 +7539,12 @@ async def _fin_supersede_manual_sales(company_id, unit_id, days):
     res = await db.fin_sales.delete_many({
         "source": "manual",
         "company_id": company_id,
-        "unit_id": unit_id,
+        # `None` incluído de propósito, e é a outra metade da guarda do
+        # `fin_create_sale`: uma venda manual lançada SEM loja é invisível a um
+        # filtro por `unit_id`, e ficava para sempre ao lado da automática do
+        # mesmo dia — a somar em cima dela no painel, que soma por empresa.
+        # A guarda impede as novas; isto arruma as que já lá estão.
+        "unit_id": {"$in": [unit_id, None]},
         "date": {"$in": days},
     })
     n = res.deleted_count or 0
@@ -7570,7 +7615,71 @@ async def _fin_vendus_write_store(company_id, unit_id, since, until, by_day, wit
     return len(docs)
 
 
+# ---------- Registo de leituras (bol_leituras) ----------
+#
+# Uma linha por cada corrida de sincronização — do cron ou do botão —, com o
+# que ela leu e o que correu mal. Existe para uma pergunta que hoje não tem
+# resposta nenhuma: **um dia sem vendas foi um dia fechado, ou um dia em que
+# ninguém leu?** O escritor salta os dias a zero (não gera linha em
+# `fin_sales`) e não existe `last_sync` em lado nenhum — os dois casos são
+# indistinguíveis, e um painel de gestão mostrava exactamente a mesma coisa
+# nos dois.
+#
+# `stores` vai lá dentro tal como vem, com o `complete` de cada loja: é o
+# detalhe que faz a diferença entre "a conta toda falhou" e "uma loja ficou
+# por ler". E `erros` deixa de morrer só no log.
+async def _bol_registar_leitura(origem, since, until, comecou_em, resultado):
+    """Grava o resultado de uma corrida em `bol_leituras`. **Nunca levanta**:
+    um registo que falhe não pode derrubar uma sincronização que correu bem."""
+    try:
+        erros = list(resultado.get("errors") or [])
+        lojas = list(resultado.get("stores") or [])
+        await db.bol_leituras.insert_one({
+            "id": str(uuid.uuid4()),
+            "origem": origem,
+            "since": since,
+            "until": until,
+            "comecou_em": comecou_em,
+            "terminou_em": datetime.now(timezone.utc).isoformat(),
+            "escritas": int(resultado.get("written") or 0),
+            "lojas": lojas,
+            "erros": erros,
+            # A pergunta respondida de uma vez, para o painel não ter de a
+            # recalcular: esta corrida chegou ao fim sem uma única queixa?
+            "completa": not erros,
+        })
+    except Exception:  # noqa: BLE001
+        logger.warning("[bol] não foi possível registar a leitura (%s)", origem)
+
+
 async def _fin_vendus_run_account(acc, since, until, with_cost):
+    """Corre uma conta Vendus e **deixa a corrida escrita** em `bol_leituras`.
+
+    O trabalho é todo do `_fin_vendus_run_account_sem_registo`, aqui em baixo;
+    isto é só a camada que garante que nenhuma corrida passa sem registo.
+    Envolver, em vez de acrescentar a chamada às SETE rotas que lhe chamam
+    (dois crons, dois botões, o despachante e o painel global): uma rota nova
+    amanhã não nasce sem registo, e não há sítio nenhum onde alguém se esqueça.
+
+    O `finally` não é zelo a mais — é o que faz uma corrida que REBENTOU ficar
+    escrita também. Uma exceção que suba daqui é vista pelas rotas (todas a
+    apanham), mas sem isto não deixava rasto nenhum, que é precisamente o caso
+    em que alguém vai querer saber o que aconteceu."""
+    comecou = datetime.now(timezone.utc).isoformat()
+    resultado = {"written": 0, "stores": [], "errors": []}
+    try:
+        resultado = await _fin_vendus_run_account_sem_registo(
+            acc, since, until, with_cost
+        )
+        return resultado
+    except Exception as exc:  # noqa: BLE001
+        resultado = {"written": 0, "stores": [], "errors": [f"a corrida rebentou: {exc}"]}
+        raise
+    finally:
+        await _bol_registar_leitura("vendus", since, until, comecou, resultado)
+
+
+async def _fin_vendus_run_account_sem_registo(acc, since, until, with_cost):
     """Sincroniza UMA conta Vendus (todas as lojas dela). Devolve
     {'written': n, 'stores': [{'store','nif','days','net','cmv','complete'}],
     'errors': [...]}. Defensivo: uma loja com falha não aborta as restantes."""
@@ -8052,6 +8161,22 @@ async def _fin_moloni_write(company_id, unit_id, since, until, by_day):
 
 
 async def _fin_moloni_run(cfg, since, until):
+    """Corre a conta Moloni e deixa a corrida escrita — o mesmo invólucro do
+    `_fin_vendus_run_account`, e pela mesma razão. O Moloni não tem lojas, por
+    isso o registo fica sem `lojas` (o `resultado` não traz `stores`)."""
+    comecou = datetime.now(timezone.utc).isoformat()
+    resultado = {"written": 0, "errors": []}
+    try:
+        resultado = await _fin_moloni_run_sem_registo(cfg, since, until)
+        return resultado
+    except Exception as exc:  # noqa: BLE001
+        resultado = {"written": 0, "errors": [f"a corrida rebentou: {exc}"]}
+        raise
+    finally:
+        await _bol_registar_leitura("moloni", since, until, comecou, resultado)
+
+
+async def _fin_moloni_run_sem_registo(cfg, since, until):
     """Sincroniza a conta Moloni configurada no intervalo. Devolve
     {'written': n, 'days': n, 'net': x, 'complete': bool, 'errors': [...]}.
     Defensivo: qualquer falha vai para errors sem levantar exceção."""
@@ -8792,6 +8917,19 @@ async def startup_event():
 
     from faturacao import arrancar as faturacao_arrancar
     await faturacao_arrancar()
+
+    # Índices do Financeiro. Não havia UM ÚNICO `create_index` no backend, e
+    # todas as leituras do painel varrem `fin_sales` pelos mesmos campos:
+    # empresa e intervalo de datas. `create_index` é idempotente — não faz
+    # nada se o índice já existir —, por isso correr a cada arranque não custa
+    # nada. Dentro de um `try` pela mesma razão que o resto deste arranque:
+    # uma falha a criar um índice não pode impedir o servidor de subir.
+    try:
+        await db.fin_sales.create_index([("company_id", 1), ("date", 1)])
+        await db.fin_sales.create_index([("company_id", 1), ("unit_id", 1), ("date", 1)])
+        await db.bol_leituras.create_index([("origem", 1), ("comecou_em", -1)])
+    except Exception:  # noqa: BLE001
+        logger.warning("[fin] não foi possível criar os índices de fin_sales/bol_leituras")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

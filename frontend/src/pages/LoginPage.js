@@ -132,10 +132,20 @@ export default function LoginPage() {
               <form onSubmit={handleLogin} className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="login-email">Email</Label>
+                  {/* `name` e `autoComplete` são o que faz o gestor de
+                      palavras-passe do telemóvel reconhecer este formulário.
+                      Sem eles, o iPhone e o Android não oferecem guardar a
+                      palavra-passe e não aparece o desbloqueio por Face ID —
+                      quem entra pelo telemóvel escreve-a à mão todos os dias.
+                      Os pares certos são `username` + `current-password`: com
+                      outra combinação, o iOS oferece GERAR uma palavra-passe
+                      nova em vez de preencher a que está guardada. */}
                   <div className="relative">
                     <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
                       id="login-email"
+                      name="email"
+                      autoComplete="username"
                       type="email"
                       placeholder="seu@email.com"
                       value={loginEmail}
@@ -152,6 +162,8 @@ export default function LoginPage() {
                     <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
                       id="login-password"
+                      name="password"
+                      autoComplete="current-password"
                       type="password"
                       placeholder="••••••••"
                       value={loginPassword}
