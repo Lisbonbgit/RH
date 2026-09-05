@@ -98,6 +98,7 @@ def test_e_nosso_nao_se_engana_com_none():
 import pytest
 
 from faturacao.sincronizacao_app import documento_para_gravar
+from faturacao.vendus.emissao import VendusRespostaIlegivel
 
 LOJA = "98331284-ba8d-41b8-b074-4059902d68a9"
 
@@ -121,6 +122,26 @@ def test_traz_os_dois_totais_porque_o_liquido_nao_tem_alternativa():
     assert d["total_bruto"] == 6.85
     assert d["total_liquido"] == 6.06
     assert d["total"] == 6.85
+
+
+def test_o_numero_vem_do_vendus_e_o_modo_e_sempre_normal():
+    # Provado por mutação: trocar "numero" por None ou "modo" por "tests"
+    # deixava a suite toda verde — nenhum teste prendia nenhum dos dois.
+    d = documento_para_gravar(FS_446, LOJA)
+    assert d["numero"] == "FS 06P2026/446"
+    assert d["modo"] == "normal"
+
+
+def test_um_total_ilegivel_levanta_em_vez_de_gravar_none_para_sempre():
+    # `_valor_monetario` devolvia `None` em silêncio para um `amount_gross`
+    # presente mas ilegível — e um documento gravado com `total: None` fica
+    # assim PARA SEMPRE, porque os índices únicos de `atcud` e
+    # `vendus_document_id` impedem uma segunda tentativa. `_total_do_documento`
+    # (a mesma que `_normaliza_documento` usa) tem de levantar tipado, para
+    # quem chama tratar a leitura como incerta e tentar outra vez.
+    cru = dict(FS_446, amount_gross="seis euros")
+    with pytest.raises(VendusRespostaIlegivel):
+        documento_para_gravar(cru, LOJA)
 
 
 def test_a_hora_e_a_do_vendus_e_sai_em_utc_com_offset():

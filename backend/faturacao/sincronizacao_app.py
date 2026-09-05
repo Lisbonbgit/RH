@@ -16,7 +16,7 @@ fora sozinho, e o log di-lo.
 import uuid
 from typing import Dict, FrozenSet, Optional, Tuple
 
-from .vendus.emissao import _instante_do_vendus, _valor_monetario
+from .vendus.emissao import _instante_do_vendus, _total_do_documento, _valor_monetario
 
 # Só estes dois, e não também FT/FR: `documentos._TIPOS` responde 422 a
 # qualquer outro tipo no filtro do backoffice, e um documento que entra na base
@@ -102,7 +102,7 @@ def documento_para_gravar(cru: Dict, loja_id: str) -> Dict:
     """O documento do Vendus traduzido para o que `fat_documentos` guarda.
 
     Os campos são os mesmos 15 que `fiscal._gravar_documento` monta
-    (fiscal.py:1197-1250), menos os três que um documento sem conta de balcão
+    (fiscal.py:1197-1250), menos os dois que um documento sem conta de balcão
     não pode ter — `venda_id` fica `None`, e não há `talao_escpos` nenhum — e
     mais dois que só estes têm: `origem` e `linhas_vendus`.
 
@@ -128,7 +128,19 @@ def documento_para_gravar(cru: Dict, loja_id: str) -> Dict:
         "numero": cru.get("number"),
         "tipo": str(cru.get("type") or "").strip().upper(),
         "modo": "normal",
-        "total": _valor_monetario(cru.get("amount_gross")),
+        # `_total_do_documento`, não `_valor_monetario`: um `amount_gross`
+        # PRESENTE mas ilegível tem de levantar `VendusRespostaIlegivel` em
+        # vez de gravar `total: None` em silêncio. Os índices únicos de
+        # `atcud` e `vendus_document_id` impedem uma segunda tentativa — um
+        # documento gravado sem total fica assim PARA SEMPRE, e o ecrã de
+        # Documentos lê `total` a direito, sem fallback nenhum. A referência
+        # é o número do documento (ou o id do Vendus, quando aquele faltar),
+        # nunca `ext_ref` — esse pode vir vazio (ver `deve_importar`) e um
+        # log de erro fiscal com uma referência em branco não identifica
+        # nada.
+        "total": _total_do_documento(
+            cru.get("amount_gross"), str(cru.get("number") or cru["id"])
+        ),
         "total_bruto": _valor_monetario(cru.get("amount_gross")),
         # Sem alternativa nenhuma no Dashboard (dashboard.py:78): não gravar
         # isto é a app a valer 0,00 € no modo "sem IVA".
