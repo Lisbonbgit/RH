@@ -404,6 +404,37 @@ def _artigos_da_fatura(venda: Optional[Dict], produtos: Dict, categorias: Dict) 
     return artigos
 
 
+def _artigos_das_linhas_vendus(documento: Dict, categorias: Dict) -> List[Dict]:
+    """Os artigos de um documento que não tem conta de balcão nenhuma.
+
+    **Porque é que isto existe.** `_artigos_da_fatura` começa com
+    `if not venda: return []`. Um `[]` não levanta excepção, portanto o
+    documento não é descartado pelo `except` de quem chama: vira um evento com
+    a soma de uma lista vazia, ou seja **zero**. Media-se assim — a fatura da
+    app valia 6,85 € no cartão do Dashboard (que lê `total_bruto` do próprio
+    documento) e 0,00 € nas nove vistas dos Relatórios, sem nenhum dos dois
+    números parecer errado. E o aviso que existe para isto — «N faturas não se
+    deixaram repartir» — conta documentos menos eventos, e o evento existia.
+
+    As linhas vêm como o Vendus as mandou (`items` do `GET documents/{id}/`).
+    Reaproveita-se `_artigo`, que é onde as regras do dinheiro já vivem: com
+    `produto=None` o `custo_c` sai `None` sozinho — e tem mesmo de ser `None`,
+    porque um custo de 0 € contra 6,85 € de venda dá 100% de margem no
+    relatório de rentabilidade.
+    """
+    artigos = []
+    for linha in documento.get("linhas_vendus") or []:
+        montantes = linha.get("amounts") or {}
+        artigos.append(_artigo(
+            None, categorias, None,
+            linha.get("title") or _SEM_DEFINICAO,
+            float(linha.get("qty") or 0),
+            centimos(montantes.get("gross_total")),
+            (linha.get("tax") or {}).get("rate"),
+        ))
+    return artigos
+
+
 def _artigos_da_nota(nota: Optional[Dict], venda: Optional[Dict],
                      produtos: Dict, categorias: Dict) -> List[Dict]:
     """Os artigos CREDITADOS por uma nota de crédito.
@@ -520,10 +551,16 @@ async def eventos_dos_documentos(
         nota = notas.get(doc.get("nota_credito_id")) if ehNC else None
         venda = vendas.get((nota or doc).get("venda_id"))
         try:
-            artigos = (
-                _artigos_da_nota(nota, venda, produtos, categorias) if ehNC
-                else _artigos_da_fatura(venda, produtos, categorias)
-            )
+            # Um documento sem venda mas com as linhas do Vendus reparte-se por
+            # elas. É o caso das faturas da app (`origem: "app"`), que não têm
+            # conta de balcão nenhuma — ver `_artigos_das_linhas_vendus`.
+            if venda is None and doc.get("linhas_vendus"):
+                artigos = _artigos_das_linhas_vendus(doc, categorias)
+            else:
+                artigos = (
+                    _artigos_da_nota(nota, venda, produtos, categorias) if ehNC
+                    else _artigos_da_fatura(venda, produtos, categorias)
+                )
         except Exception:  # noqa: BLE001 — ver abaixo
             # **Uma venda estragada não pode levar o ecrã inteiro com ela.**
             #
