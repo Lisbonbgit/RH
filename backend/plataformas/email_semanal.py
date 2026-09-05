@@ -93,8 +93,16 @@ def _pilula_de_pagamento(periodo: Dict, sabido: bool = True) -> str:
                    % (quando, dias, "" if dias == 1 else "s"), PRIMARIA, PRIMARIA_FRACA)
 
 
-def _pilula_de_variacao(variacao: Optional[float], termo: str) -> str:
+def _pilula_de_variacao(variacao: Optional[float], termo: str,
+                        houve_anterior: bool = False) -> str:
+    """**«Sem período anterior para comparar» só se escreve quando ele não
+    existe.** Quando existe e a comparação é que não é honesta — mudaram as
+    lojas que reportaram, e três contra quatro medem o relatório que faltou e
+    não as vendas — a frase tem de ser outra."""
     if variacao is None:
+        if houve_anterior:
+            return _pilula("Comparação suspensa &mdash; mudaram as lojas",
+                           AVISO, AVISO_FUNDO)
         return _pilula("Sem %s para comparar" % termo, TEXTO_FRACO, "#EDF1F6")
     if variacao >= 0:
         return _pilula("&#9650; %s vs. %s" % (_percentagem(variacao), termo),
@@ -179,39 +187,60 @@ def _cartao_de_plataforma(linha: Dict) -> str:
         % (TEXTO, _texto(linha["nome"]), TEXTO_FRACO,
            _texto(_intervalo(periodo["inicio"], periodo["fim"]))))
 
-    if linha["estado"] != "lido":
-        # **Não recebido não é zero.** Diz-se o que falta, o período de que se
-        # falava e até quando se esperou — é isso que permite ir procurar.
+    if linha["estado"] in ("nao_recebido", "sem_valores"):
+        # **Nenhum destes dois é zero, e não são o mesmo.** "Não recebido" é
+        # não ter chegado nada; "sem valores" é ter chegado e nós não termos
+        # conseguido ler — e essa distinção diz a quem lê se vale a pena ir ao
+        # portal da plataforma procurar o número.
+        if linha["estado"] == "nao_recebido":
+            titulo = "Relatório não recebido"
+            frase = ("Não chegou à caixa nenhum email com o relatório de %s. Os "
+                     "valores ficam por saber &mdash; não são zero."
+                     % _texto(_intervalo(periodo["inicio"], periodo["fim"])))
+        else:
+            quantos = linha.get("lojas_que_reportaram") or 0
+            titulo = "Relatório recebido, sem valores"
+            frase = ("Chegaram %d relatório%s de %s, mas não foi possível ler "
+                     "deles nenhum valor. Os números estão no portal da "
+                     "plataforma &mdash; aqui ficam por saber, e não são zero."
+                     % (quantos, "" if quantos == 1 else "s",
+                        _texto(_intervalo(periodo["inicio"], periodo["fim"]))))
         corpo = (
             '<div style="margin-top:12px;padding:12px 14px;background:%s;'
             'border-radius:10px;">'
-            '<p style="margin:0;font-size:14px;font-weight:700;color:%s;">'
-            'Relatório não recebido</p>'
+            '<p style="margin:0;font-size:14px;font-weight:700;color:%s;">%s</p>'
             '<p style="margin:6px 0 0;font-size:13px;color:%s;line-height:1.6;">'
-            'Não chegou à caixa nenhum email com o relatório de %s. Os valores '
-            'ficam por saber &mdash; não são zero.</p></div>'
+            '%s</p></div>'
             '<div style="margin-top:12px;">%s</div>'
-            % (AVISO_FUNDO, AVISO, TEXTO,
-               _texto(_intervalo(periodo["inicio"], periodo["fim"])),
+            % (AVISO_FUNDO, AVISO, titulo, TEXTO, frase,
                _pilula_de_pagamento(periodo, sabido=False)))
         return _cartao(cabecalho + corpo)
 
     valores = linha["valores"]
     pedidos = valores.get("pedidos")
+    quantas = linha.get("lojas_que_reportaram") or 0
+    # **De quantas lojas é este número.** A Uber manda um relatório por loja e
+    # a soma de três não é a mesma coisa que a soma de quatro — quem lê tem de
+    # saber quantas entraram nela sem ir contar as linhas de baixo.
+    de_quantas = (' <span style="color:%s;">&middot; %d loja%s</span>'
+                  % (TEXTO_FRACO, quantas, "" if quantas == 1 else "s")) if quantas else ""
     corpo = (
         '<p style="margin:14px 0 0;font-size:11px;color:%s;letter-spacing:.6px;'
-        'text-transform:uppercase;font-weight:600;">A receber</p>'
+        'text-transform:uppercase;font-weight:600;">A receber%s</p>'
         '<p style="margin:4px 0 0;font-size:30px;line-height:1.1;font-weight:700;'
         'color:%s;">%s</p>'
         '<p style="margin:8px 0 0;font-size:13px;color:%s;">%s</p>'
         '<div style="margin-top:12px;">%s &nbsp;%s</div>'
-        % (TEXTO_FRACO, TEXTO, _valor(valores.get("liquido")), TEXTO_FRACO,
+        % (TEXTO_FRACO, de_quantas, TEXTO, _valor(valores.get("liquido")),
+           TEXTO_FRACO,
            ("%d pedido%s" % (pedidos, "" if pedidos == 1 else "s"))
            if pedidos is not None else "N.º de pedidos não indicado",
            _pilula_de_pagamento(periodo),
-           _pilula_de_variacao(linha.get("variacao"),
-                               "semana anterior" if linha["ritmo"] == "semana"
-                               else "quinzena anterior")))
+           _pilula_de_variacao(
+               linha.get("variacao"),
+               "semana anterior" if linha["ritmo"] == "semana"
+               else "quinzena anterior",
+               houve_anterior=(linha.get("anterior") or {}).get("liquido") is not None)))
 
     nota = ""
     if linha.get("notas"):

@@ -16,15 +16,20 @@ QUINZENA = ("2026-08-01", "2026-08-15")
 
 
 def registo(plataforma, inicio, fim, *, liquido=None, pedidos=None,
-            problemas=None, lojas=None, tipo=None):
+            problemas=None, lojas=None, tipo=None, loja="Loja Única",
+            comissao=None):
+    """Um relatório de UMA loja — que é como as plataformas os mandam."""
+    from plataformas.leitura import chave_da_loja
     return {
-        "id": "%s:%s..%s" % (plataforma, inicio, fim),
+        "id": "%s:%s..%s:%s" % (plataforma, inicio, fim, chave_da_loja(loja)),
         "plataforma": plataforma,
+        "loja": loja,
+        "loja_chave": chave_da_loja(loja),
         "tipo": tipo or ("quinzena" if plataforma == "glovo" else "semana"),
         "periodo_inicio": inicio,
         "periodo_fim": fim,
         "valores": {"liquido": liquido, "bruto": None, "pedidos": pedidos,
-                    "comissao": None, "taxas": None, "ajustes": None,
+                    "comissao": comissao, "taxas": None, "ajustes": None,
                     "iva": None, "moeda": "EUR"},
         "lojas": lojas or [],
         "problemas": problemas or [],
@@ -204,6 +209,79 @@ def test_os_avisos_da_leitura_chegam_ao_relatorio():
 
 
 def test_as_lojas_do_relatorio_passam_tal_e_qual():
-    dados = montar([registo("uber", *SEMANA, liquido=100.0,
-                            lojas=[{"nome": "Alfragide", "liquido": 60.0, "pedidos": 12}])])
+    dados = montar([registo("uber", *SEMANA, liquido=100.0, loja="Alfragide")])
     assert linha(dados, "uber")["lojas"][0]["nome"] == "Alfragide"
+
+
+# --- Um relatório por LOJA: as somas ----------------------------------------
+#
+# As plataformas mandam um email por loja — a Uber quatro por semana, a Glovo
+# cinco por quinzena. Este bloco existe porque a primeira versão guardava-os
+# todos com a mesma chave: ficava o último, e o email mostrava o valor de UMA
+# loja como se fosse o da semana inteira.
+
+def test_as_lojas_somam_se_em_vez_de_se_comerem_umas_as_outras():
+    dados = montar([
+        registo("uber", *SEMANA, loja="L'açaí Amadora", liquido=293.39, pedidos=25),
+        registo("uber", *SEMANA, loja="L'açaí Alfragide", liquido=1720.10, pedidos=151),
+        registo("uber", *SEMANA, loja="L'açai Oeiras", liquido=964.42, pedidos=84),
+    ])
+    l = linha(dados, "uber")
+    assert l["valores"]["liquido"] == 2977.91
+    assert l["valores"]["pedidos"] == 260
+    assert l["lojas_que_reportaram"] == 3
+    assert [x["nome"] for x in l["lojas"]] == [
+        "L'açaí Alfragide", "L'açai Oeiras", "L'açaí Amadora"]  # da maior p/ a menor
+
+
+def test_a_soma_e_em_centimos_e_nao_deixa_resto():
+    """`0.29 + 1.15 + 10.20` em vírgula flutuante dá 11,639999999999999, e
+    isto vai num email a dizer quanto se vai receber."""
+    dados = montar([registo("uber", *SEMANA, loja="A", liquido=0.29),
+                    registo("uber", *SEMANA, loja="B", liquido=1.15),
+                    registo("uber", *SEMANA, loja="C", liquido=10.20)])
+    assert linha(dados, "uber")["valores"]["liquido"] == 11.64
+
+
+def test_uma_loja_sem_valor_nao_conta_como_zero_na_soma():
+    dados = montar([registo("uber", *SEMANA, loja="A", liquido=100.0),
+                    registo("uber", *SEMANA, loja="B", liquido=None)])
+    l = linha(dados, "uber")
+    assert l["valores"]["liquido"] == 100.0     # a soma é de quem disse
+    assert l["lojas_que_reportaram"] == 2       # mas foram dois relatórios
+
+
+def test_se_NENHUMA_loja_disser_o_valor_o_estado_e_sem_valores():
+    """A Bolt manda o relatório sem números quando os links não se conseguem
+    ler. «Recebido sem valores» não é «não recebido» — e nenhum dos dois é
+    zero."""
+    dados = montar([registo("bolt", *SEMANA, loja="A", liquido=None)])
+    l = linha(dados, "bolt")
+    assert l["estado"] == "sem_valores"
+    assert l["valores"]["liquido"] is None
+
+
+def test_uma_loja_que_reportou_na_semana_passada_e_agora_nao_e_assinalada():
+    """O total mais pequeno é por FALTA de um relatório, não por menos vendas.
+    Sem este aviso lê-se como quebra de vendas."""
+    dados = montar([
+        registo("uber", *SEMANA, loja="Amadora", liquido=100.0),
+        registo("uber", *SEMANA_ANTES, loja="Amadora", liquido=90.0),
+        registo("uber", *SEMANA_ANTES, loja="Oeiras", liquido=200.0),
+    ])
+    l = linha(dados, "uber")
+    assert l["lojas_em_falta"] == ["Oeiras"]
+    assert l["comparavel"] is False
+    assert l["variacao"] is None
+    assert any("Oeiras" in p["texto"] for p in dados["problemas"])
+
+
+def test_com_as_MESMAS_lojas_nas_duas_semanas_ja_se_compara():
+    dados = montar([
+        registo("uber", *SEMANA, loja="Amadora", liquido=110.0),
+        registo("uber", *SEMANA, loja="Oeiras", liquido=110.0),
+        registo("uber", *SEMANA_ANTES, loja="Amadora", liquido=100.0),
+        registo("uber", *SEMANA_ANTES, loja="Oeiras", liquido=100.0),
+    ])
+    l = linha(dados, "uber")
+    assert l["comparavel"] is True and l["variacao"] == 10.0
