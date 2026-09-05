@@ -100,3 +100,4 @@ backend/uploads/*
 !backend/uploads/.gitkeep
 Caddyfile.bak*
 *.bak-*
+.venv
