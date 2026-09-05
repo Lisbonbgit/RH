@@ -8757,6 +8757,11 @@ async def health_check():
 from faturacao import router as faturacao_router
 app.include_router(faturacao_router)
 
+# Painel → Plataformas: o relatório de segunda-feira da Uber Eats, da Bolt Food
+# e da Glovo (lê a caixa de email com o IMAP_MAILBOXES já configurado acima).
+from plataformas import router as plataformas_router
+app.include_router(plataformas_router)
+
 # Include the router in the main app
 app.include_router(api_router)
 

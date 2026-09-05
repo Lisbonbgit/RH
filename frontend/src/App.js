@@ -32,6 +32,7 @@ import FinFornecedores from './pages/admin/financeiro/FinFornecedores';
 import FinExtrato from './pages/admin/financeiro/FinExtrato';
 import FinRelatorios from './pages/admin/financeiro/FinRelatorios';
 import PainelGlobal from './pages/admin/financeiro/PainelGlobal';
+import PainelPlataformas from './pages/admin/painel/Plataformas';
 import EstoqueFaturas from './pages/admin/estoque/EstoqueFaturas';
 import EstoqueStock from './pages/admin/estoque/EstoqueStock';
 import EstoqueListaCompras from './pages/admin/estoque/EstoqueListaCompras';
@@ -199,6 +200,7 @@ function AppRoutes() {
         <Route index element={<AdminDashboard />} />
         <Route path="resumo" element={<Resumo />} />
         <Route path="painel" element={<PainelGlobal />} />
+        <Route path="painel/plataformas" element={<PainelPlataformas />} />
         <Route path="empresas" element={<AdminCompanies />} />
         <Route path="locais" element={<AdminLocations />} />
         <Route path="colaboradores" element={<AdminEmployees />} />
