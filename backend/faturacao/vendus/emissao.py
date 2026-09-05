@@ -17,14 +17,16 @@ Duas armadilhas documentadas no código de produção do mesmo dono
    `registers/{id}/movements`, é precisamente o que este módulo NUNCA chama,
    ver a regra abaixo.)
 2. O GET de UM documento (`documents/{id}/`) não aceita `view` (403 P001) —
-   já traz o detalhe. Não se aplica às leituras deste módulo, que são sempre
-   sobre a COLECÇÃO (`documents/` com filtro), onde `view=detailed` é
-   aceite e necessário para trazer `payments`/`amount_gross`.
+   já traz o detalhe. É exactamente o que `ler_documento` (abaixo) chama, e
+   é por isso que não lhe passa `view` nenhum. As outras leituras deste
+   módulo são sempre sobre a COLECÇÃO (`documents/` com filtro), onde
+   `view=detailed` é aceite e necessário para trazer `payments`/`amount_gross`.
 
 Este módulo também LÊ — mas só o mínimo estritamente exigido pela
-idempotência da própria emissão (Plano 2B Task 3), nunca contas em aberto
-nem nada que pertença à leitura de catálogo (`vendus/cliente.py` continua
-SÓ DE LEITURA de catálogo, à parte, ver acima):
+idempotência da própria emissão (Plano 2B Task 3) e pela sincronização das
+faturas da app L'Açaí, nunca contas em aberto nem nada que pertença à
+leitura de catálogo (`vendus/cliente.py` continua SÓ DE LEITURA de catálogo,
+à parte, ver acima):
 
 - `procurar_por_referencia_externa`: UMA chamada exacta
   (`GET documents/?external_reference=`), usada só depois de uma emissão
@@ -35,6 +37,12 @@ SÓ DE LEITURA de catálogo, à parte, ver acima):
   reconciliar as vendas em dinheiro da sessão contra o que o Vendus tem
   registado — só leitura, nunca decide nada sozinha (o fecho nunca bloqueia
   por isto, só avisa).
+- `ler_documento`: leitura de UM documento por id (`GET documents/{id}/`),
+  usada pela sincronização das faturas da app — é a ÚNICA chamada deste
+  módulo que traz `atcud` e `items`, que a lista (`documents/` com filtro)
+  não traz nem com `view=detailed` (medido a 2026-09-04). Sem isto não há
+  ATCUD para gravar (índice único) nem linhas para a fatura valer mais do
+  que zero nos Relatórios.
 
 Duas regras que este módulo aplica e que ninguém pode contornar (Plano 2B —
 Global Constraints, e spec §5.2/§10/§12):
@@ -565,7 +573,8 @@ class ClienteEmissaoVendus:
             raise
         except Exception as e:  # noqa: BLE001 — ver o comentário acima
             raise _resposta_ilegivel(
-                resposta, "documento %d" % documento_id, "a ler o documento", e,
+                resposta, str(documento_id), "a ler o documento", e,
+                rotulo="documento_id",
             ) from e
         return dados[0] if dados else None
 
@@ -621,7 +630,8 @@ class ClienteEmissaoVendus:
 
 
 def _resposta_ilegivel(
-    resposta: httpx.Response, referencia: str, momento: str, erro: Exception
+    resposta: httpx.Response, referencia: str, momento: str, erro: Exception,
+    rotulo: str = "external_reference",
 ) -> VendusRespostaIlegivel:
     """A excepção TIPADA para "o Vendus respondeu 2xx e não consigo ler o que
     disse" — a única forma de erro que pode sair deste módulo depois de uma
@@ -630,12 +640,20 @@ def _resposta_ilegivel(
     Uma função, e não a mensagem escrita duas vezes: a criação e a leitura
     têm de dizer o MESMO a quem as apanha, senão a próxima ronda tipifica uma
     e esquece a outra — que é exactamente o que aconteceu com o
-    `round(float(amount_gross))`."""
+    `round(float(amount_gross))`.
+
+    `rotulo` por omissão é `external_reference` porque é isso que a maioria
+    dos chamadores (a emissão, a nota de crédito, a procura por referência)
+    tem disponível para identificar o documento numa mensagem de erro fiscal.
+    Quem não tiver essa referência à mão (`ler_documento`, que só conhece o
+    id) passa o seu próprio rótulo — nunca `external_reference=` a apontar
+    para um valor que não é um `external_reference`."""
     return VendusRespostaIlegivel(
         "O Vendus respondeu %d mas não foi possível ler a resposta %s "
         "(%s: %s) — não é possível saber o que ele disse. "
-        "external_reference=%s" % (
-            resposta.status_code, momento, type(erro).__name__, erro, referencia,
+        "%s=%s" % (
+            resposta.status_code, momento, type(erro).__name__, erro,
+            rotulo, referencia,
         )
     )
 
