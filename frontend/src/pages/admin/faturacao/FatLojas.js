@@ -135,13 +135,43 @@ export default function FatLojas() {
 
   const escolherLojaDaApp = async (loja) => {
     setAGuardarApp(true);
+    // **O `ativo` que já lá estava vai com a loja.** O PUT grava o modelo
+    // inteiro (`$set` de `sincronizacao_rota.py`), e um `ativo: true` fixo
+    // RELIGAVA em silêncio uma sincronização que alguém tinha desligado de
+    // propósito — bastava trocar de loja. Trocar a loja é trocar a loja.
+    const ativo = sincApp.ativo !== false;
     try {
-      const { data } = await guardarSincronizacaoApp({ loja_id: loja.id, ativo: true });
+      const { data } = await guardarSincronizacaoApp({ loja_id: loja.id, ativo });
       setSincApp(data || {});
-      toast.success(`As vendas da app passam a entrar em ${loja.nome}.`);
+      toast.success(ativo
+        ? `As vendas da app passam a entrar em ${loja.nome}.`
+        : `${loja.nome} passa a ser a loja das vendas da app — mas a `
+          + 'sincronização continua desligada.');
     } catch (error) {
       toast.error(detalhesErro(
         error, 'Não foi possível guardar a loja das vendas da app.').mensagem);
+    } finally {
+      setAGuardarApp(false);
+    }
+  };
+
+  // Ligar e desligar a sincronização da loja escolhida. Sem isto, «Vendas da
+  // app (desligada)» era um estado que o ecrã sabia mostrar e não sabia nem
+  // produzir nem repor: quem a desligasse (ou a apanhasse desligada) ficava
+  // sem caminho de volta que não fosse a base de dados.
+  const ligarSincApp = async (ativo) => {
+    setAGuardarApp(true);
+    try {
+      const { data } = await guardarSincronizacaoApp({
+        loja_id: sincApp.loja_id, ativo });
+      setSincApp(data || {});
+      toast.success(ativo
+        ? 'As vendas da app voltam a entrar sozinhas, de 5 em 5 minutos.'
+        : 'Sincronização desligada: as faturas da app deixam de entrar no '
+          + 'portal — continuam a ser emitidas no Vendus.');
+    } catch (error) {
+      toast.error(detalhesErro(
+        error, 'Não foi possível mudar a sincronização das vendas da app.').mensagem);
     } finally {
       setAGuardarApp(false);
     }
@@ -398,17 +428,35 @@ export default function FatLojas() {
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       {sincApp.loja_id === loja.id ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={sincronizarApp}
-                          disabled={aSincronizarApp}
-                          title="Vai ao Vendus buscar as faturas de hoje e de ontem que a app emitiu"
-                          data-testid={`sincronizar-app-${loja.id}`}
-                        >
-                          <RefreshCw className={`h-4 w-4 mr-1.5 ${aSincronizarApp ? 'animate-spin' : ''}`} />
-                          Sincronizar agora
-                        </Button>
+                        <>
+                          {/* O interruptor da sincronização desta loja. A
+                              etiqueta «(desligada)» lá em cima já mostrava o
+                              estado; isto é o que o produz e o repõe. */}
+                          <div className="flex items-center gap-2 mr-1">
+                            <Switch
+                              checked={sincApp.ativo !== false}
+                              onCheckedChange={ligarSincApp}
+                              disabled={aGuardarApp}
+                              aria-label="Sincronização das vendas da app"
+                              title="Desligue para parar de trazer as faturas da app para o portal"
+                              data-testid={`sinc-app-ativo-${loja.id}`}
+                            />
+                            <span className="text-sm text-muted-foreground">Sincronização</span>
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={sincronizarApp}
+                            disabled={aSincronizarApp || sincApp.ativo === false}
+                            title={sincApp.ativo === false
+                              ? 'A sincronização está desligada — ligue-a para poder trazer as faturas'
+                              : 'Vai ao Vendus buscar as faturas de hoje e de ontem que a app emitiu'}
+                            data-testid={`sincronizar-app-${loja.id}`}
+                          >
+                            <RefreshCw className={`h-4 w-4 mr-1.5 ${aSincronizarApp ? 'animate-spin' : ''}`} />
+                            Sincronizar agora
+                          </Button>
+                        </>
                       ) : (
                         <Button
                           variant="ghost"

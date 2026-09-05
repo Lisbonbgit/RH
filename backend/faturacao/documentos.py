@@ -69,6 +69,7 @@ docstring dessa função.
 import asyncio
 import base64
 import logging
+import math
 import os
 import re
 from datetime import date
@@ -124,6 +125,54 @@ def _centimos(valor) -> int:
     `mapa_imposto._centimos`, e pela mesma razão: o dinheiro compara-se em
     inteiros."""
     return int(round(float(valor or 0) * 100))
+
+
+# --- As linhas que vêm da API do Vendus (as faturas da app) -------------------
+#
+# **Não passam por validação nenhuma.** A sincronização confere o
+# `amount_gross` do DOCUMENTO e mais nada (`sincronizacao_app.deve_importar`);
+# os `items` ficam gravados como a API os mandou. Um `qty` a dizer `"abc"`
+# levantava `ValueError` no `float()`, um `amounts` a vir como lista levantava
+# `AttributeError` no `.get` — e o gestor levava um **500 ao abrir a fatura**:
+# uma linha ilegível fechava o ecrã inteiro, incluindo as linhas boas, o
+# número, o ATCUD e o mapa de imposto.
+#
+# O leitor da MESMA API no Financeiro guarda-se assim há meses
+# (`server.py::_fin_clean_num` e o `isinstance` dos `items`/`it`), e isto é o
+# mesmo padrão no mesmo sítio. Nos Relatórios não é preciso: ali a leitura das
+# mesmas linhas já corre dentro de um `try` que conta o documento como "não se
+# deixou repartir" (`relatorios.py`).
+
+
+def _numero_do_vendus(valor) -> Optional[float]:
+    """Um número que veio do Vendus, ou `None` se não se conseguir ler.
+
+    Aceita a vírgula decimal (`"1,00"`), o outro formato que a API usa. Não
+    tenta o `"1.234,56"` do Financeiro: uma FS da app são uns euros, não há
+    milhares nenhuns, e uma leitura que se engane de casa é pior do que uma que
+    diga que não sabe.
+    """
+    if valor is None or isinstance(valor, bool):
+        return None
+    try:
+        numero = float(str(valor).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    return numero if math.isfinite(numero) else None
+
+
+def _linhas_do_vendus(documento: Dict) -> List[Dict]:
+    """As `linhas_vendus` que dá para ler — as outras nem chegam ao ciclo."""
+    linhas = documento.get("linhas_vendus")
+    if not isinstance(linhas, list):
+        return []
+    return [linha for linha in linhas if isinstance(linha, dict)]
+
+
+def _campo_dict(linha: Dict, nome: str) -> Dict:
+    """`amounts`/`tax` da linha, e `{}` se vier outra coisa qualquer."""
+    valor = linha.get(nome)
+    return valor if isinstance(valor, dict) else {}
 
 
 async def _documento_da_loja(db, documento_id: str, loja_id: str) -> Dict:
@@ -361,15 +410,24 @@ def _linhas_das_linhas_vendus(documento: Dict) -> List[Dict]:
     `qtd × p. unit.` e o total para explicar (ver `_linhas_da_fatura`).
     """
     linhas = []
-    for linha in documento.get("linhas_vendus") or []:
-        montantes = linha.get("amounts") or {}
-        imposto = linha.get("tax") or {}
-        total = float(montantes.get("gross_total") or 0)
-        quantidade = float(linha.get("qty") or 0)
+    for linha in _linhas_do_vendus(documento):
+        montantes = _campo_dict(linha, "amounts")
+        imposto = _campo_dict(linha, "tax")
+        # **Uma linha ilegível fica no ecrã, com o valor a zero — não se
+        # esconde.** Saltá-la deixava a fatura com ar de completa e um artigo a
+        # menos, que é a versão silenciosa do mesmo defeito; a zero, ela aparece
+        # com o nome que o Vendus mandou E o `total_divergente` acende sozinho
+        # («a soma das linhas não bate com o total»), que é o aviso que já
+        # existe para "esta fatura não está bem, veja-a no Vendus".
+        total = _numero_do_vendus(montantes.get("gross_total")) or 0.0
+        quantidade = _numero_do_vendus(linha.get("qty")) or 0.0
         linhas.append({
             # Não há produto nosso do outro lado: o ecrã escreve o nome que o
-            # Vendus mandou e não finge que conhece o artigo.
-            "titulo": linha.get("title") or "—",
+            # Vendus mandou e não finge que conhece o artigo. `str()` porque o
+            # ecrã põe isto directamente numa célula: um `title` que viesse como
+            # objeto rebentava o React ("Objects are not valid as a React
+            # child") e o ecrã ficava branco em vez de 500.
+            "titulo": str(linha.get("title") or "—"),
             "quantidade": quantidade,
             "preco_unitario": round(total / quantidade, 2) if quantidade else total,
             "desconto": 0.0,
@@ -402,20 +460,29 @@ def _mapa_das_linhas_vendus(documento: Dict) -> List[Dict]:
     ordem em que o Vendus as mandou é determinística e é a do papel.
     """
     por_taxa: Dict = {}
-    for linha in documento.get("linhas_vendus") or []:
-        montantes = linha.get("amounts") or {}
-        imposto = linha.get("tax") or {}
-        codigo = imposto.get("id")
+    for linha in _linhas_do_vendus(documento):
+        montantes = _campo_dict(linha, "amounts")
+        imposto = _campo_dict(linha, "tax")
+        # O código é a CHAVE do agrupamento: um `id` que viesse como lista era
+        # `TypeError: unhashable` no `setdefault`, outra vez 500 ao abrir. Um
+        # código que não seja texto é código nenhum — e um código desconhecido
+        # já tem regra escrita aqui em baixo (conta para o total, não inventa
+        # imposto).
+        codigo = imposto.get("id") if isinstance(imposto.get("id"), str) else None
         entrada = por_taxa.setdefault(codigo, {
             "tax_id": codigo, "taxa": imposto.get("rate"),
             # Um documento, uma vez em cada taxa que tocou — a mesma contagem
             # de `mapa_de_imposto` (é o que a contabilista conta).
             "documentos": 1, "base": 0, "iva": 0, "total": 0,
         })
-        total_centimos = _centimos(montantes.get("gross_total"))
+        total_centimos = _centimos(_numero_do_vendus(montantes.get("gross_total")))
         entrada["total"] += total_centimos
-        if montantes.get("net_total") is not None:
-            base_centimos = _centimos(montantes.get("net_total"))
+        # `_numero_do_vendus` e não `is not None`: uma base ilegível lida como
+        # "presente" dava base 0 e punha o IVA a valer a linha inteira. Ilegível
+        # é o mesmo que ausente — decompõe-se pelo código, como sempre.
+        base = _numero_do_vendus(montantes.get("net_total"))
+        if base is not None:
+            base_centimos = _centimos(base)
         elif _TAXA_DO_CODIGO.get(codigo) is not None:
             base_centimos = _base_em_centimos(
                 total_centimos, _TAXA_DO_CODIGO[codigo])
@@ -525,6 +592,24 @@ async def _detalhe_do_documento(db, documento: Dict, com_contexto: bool = False)
     mapa = (_mapa_das_linhas_vendus(documento) if da_app
             else mapa_de_imposto([venda] if venda else []))
 
+    # **Em valor ABSOLUTO, mas SÓ NA NOTA DE CRÉDITO.** O sinal de uma NC lida
+    # do Vendus não é nosso: a API tanto devolve as linhas negativas como
+    # positivas (é o que `relatorios._artigos_das_linhas_vendus` documenta, e
+    # testa nos dois sentidos), e comparar com sinal fazia uma nota SÃ acender o
+    # aviso de "chame quem trata do sistema" — o alarme falso que esta tarefa
+    # existe para tirar do ecrã.
+    #
+    # **Só na NC**, porque é a regra que a casa já escreve sobre estas MESMAS
+    # `linhas_vendus` (`relatorios.py:449`): «Numa fatura, uma linha negativa é
+    # um desconto legítimo, e um `abs()` incondicional transformava-o em
+    # receita.» Aqui o estrago do `abs()` incondicional é o simétrico:
+    # `abs(a) != abs(b)` só perde um caso — `a == -b` — e é precisamente esse
+    # que esta rede de segurança existe para apanhar. Uma FS com o sinal
+    # trocado (no total, ou numa linha) passava por sã, calada.
+    total_c, linhas_c = _centimos(total_documento), total_das_linhas
+    if documento.get("tipo") == "NC":
+        total_c, linhas_c = abs(total_c), abs(linhas_c)
+
     return {
         "id": documento.get("id"),
         "numero": documento.get("numero"),
@@ -545,20 +630,13 @@ async def _detalhe_do_documento(db, documento: Dict, com_contexto: bool = False)
         "totais_imposto": totais_do_mapa(mapa),
         "total": total_documento,
         "total_das_linhas": total_das_linhas / 100.0,
+        # Ver o `total_c`/`linhas_c` acima: o `abs()` é só o da NC. Nada muda
+        # para os documentos do POS — ali as duas parcelas saem da MESMA venda
+        # e são positivas por construção.
         "total_divergente": (
             total_documento is not None
             and bool(linhas)
-            # **Em valor ABSOLUTO, por causa da nota de crédito da app.** O
-            # sinal de uma NC lida do Vendus não é nosso: a API tanto devolve as
-            # linhas negativas como positivas (é o que
-            # `relatorios._artigos_das_linhas_vendus` documenta, e testa nos dois
-            # sentidos). Comparar com sinal fazia uma nota SÃ acender o aviso de
-            # "chame quem trata do sistema" — que é exactamente o alarme falso
-            # que esta tarefa existe para tirar do ecrã. Nada muda para os
-            # documentos do POS: ali as duas parcelas saem da MESMA venda e são
-            # positivas por construção, e uma diferença de valor continua a
-            # aparecer.
-            and abs(_centimos(total_documento)) != abs(total_das_linhas)
+            and total_c != linhas_c
         ),
         # Há bytes de talão guardados com esta fatura? É o que decide se o
         # botão de reimprimir tem alguma coisa para mandar à impressora

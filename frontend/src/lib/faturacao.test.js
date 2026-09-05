@@ -47,6 +47,32 @@ describe('resumoDaSincronizacao', () => {
     expect(r.descricao).toContain('3 novas');
   });
 
+  test('os assinalados não se somam por cima dos ignorados', () => {
+    // No servidor, `_saltar` chama `_contar`: os 2 assinalados são 2 DOS 8
+    // ignorados. Escritas como duas contagens soltas, quem lê soma 10 e vai
+    // procurar dois documentos que não existem.
+    const r = resumoDaSincronizacao({
+      ...VOLTA_LIMPA,
+      assinalados: ['FS 06P2026/447: sem ATCUD',
+        'FS 06P2026/448: desapareceu do Vendus'],
+    });
+    expect(r.descricao)
+      .toContain('8 ignoradas (2 delas ficaram de fora e não voltam)');
+  });
+
+  test('um só assinalado fala no singular', () => {
+    const r = resumoDaSincronizacao({
+      ...VOLTA_LIMPA, assinalados: ['FS 06P2026/447: sem ATCUD'],
+    });
+    expect(r.descricao)
+      .toContain('8 ignoradas (1 dela ficou de fora e não volta)');
+  });
+
+  test('sem assinalados a contagem fica limpa', () => {
+    expect(resumoDaSincronizacao(VOLTA_LIMPA).descricao)
+      .toBe('3 novas · 1 repetida · 8 ignoradas');
+  });
+
   test('um erro manda no tom, mesmo com faturas gravadas', () => {
     const r = resumoDaSincronizacao({
       ...VOLTA_LIMPA,

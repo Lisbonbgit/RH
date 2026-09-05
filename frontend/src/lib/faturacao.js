@@ -132,14 +132,23 @@ export const resumoDaSincronizacao = (resultado) => {
   const gravados = r.gravados || 0;
   const assinalados = r.assinalados || [];
   const erros = r.erros || [];
+  // **Os assinalados JÁ ESTÃO dentro dos ignorados.** No servidor, `_saltar`
+  // chama `_contar` (`sincronizacao_rota.py`), por isso «8 ignoradas» seguido
+  // de «2 documentos ficaram de fora» são 8 documentos e não 10 — mas quem lê
+  // soma, e fica à procura de dois documentos que não existem. O parêntesis
+  // diz de que número é que os 2 saíram.
+  const deFora = assinalados.length > 0
+    ? ` (${assinalados.length} ${assinalados.length === 1
+      ? 'dela ficou de fora e não volta' : 'delas ficaram de fora e não voltam'})`
+    : '';
   const partes = [
     `${gravados} ${gravados === 1 ? 'nova' : 'novas'} · ${r.repetidos || 0} `
     + `${r.repetidos === 1 ? 'repetida' : 'repetidas'} · ${r.ignorados || 0} `
-    + `${r.ignorados === 1 ? 'ignorada' : 'ignoradas'}`,
+    + `${r.ignorados === 1 ? 'ignorada' : 'ignoradas'}${deFora}`,
   ];
   if (assinalados.length > 0) {
     partes.push(
-      'Ficaram de fora e NÃO voltam a ser tentados:\n'
+      'São estas:\n'
       + assinalados.join('\n'),
     );
   }
