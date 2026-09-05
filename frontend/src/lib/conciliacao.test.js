@@ -70,6 +70,26 @@ describe('percentagens sobre as entradas', () => {
     expect(pcts.find((p) => p.id === 'supermercado').pct).toBeCloseTo(1.78, 2);
   });
 
+  test('o rótulo diz a relação, como no Excel', () => {
+    const linhas = resumoPorCategoria([
+      { category: 'entradas', amount: 100 },
+      { category: 'fornecedor', amount: -30 },
+    ], CATS);
+    expect(percentagensSobreEntradas(linhas)[0].label).toBe('Entradas/Fornecedor');
+  });
+
+  test('uma categoria sem movimento não aparece — isto não é a cópia do resumo', () => {
+    // O cartão de cima mostra as quinze categorias, zeros incluídos. Este só
+    // mostra as que têm alguma coisa, senão são dois cartões iguais.
+    const linhas = resumoPorCategoria([
+      { category: 'entradas', amount: 100 },
+      { category: 'fornecedor', amount: -30 },
+    ], CATS);
+    const pcts = percentagensSobreEntradas(linhas);
+    expect(pcts.map((p) => p.id)).toEqual(['fornecedor']);
+    expect(pcts.find((p) => p.id === 'salarios')).toBeUndefined();
+  });
+
   test('as entradas não aparecem a dividir-se por si próprias', () => {
     const linhas = resumoPorCategoria([{ category: 'entradas', amount: 100 }], CATS);
     expect(percentagensSobreEntradas(linhas).find((p) => p.id === 'entradas')).toBeUndefined();

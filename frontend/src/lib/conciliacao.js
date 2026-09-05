@@ -26,15 +26,18 @@ export const resumoPorCategoria = (movimentos, categorias) => {
   return linhas;
 };
 
-// Cada categoria em % das Entradas. `pct` é null quando não há entradas —
+// Quanto de tudo o que ENTROU foi para cada categoria: "Entradas/Fornecedor".
+// Só entram categorias com movimento — senão isto era a cópia do cartão de cima,
+// com quinze linhas das quais dez a zero. `pct` é null quando não há entradas:
 // desconhecido não é zero.
 export const percentagensSobreEntradas = (linhas) => {
   const entradas = (linhas || []).find((l) => l.id === 'entradas');
   const base = Math.abs((entradas && entradas.total) || 0);
   return (linhas || [])
     .filter((l) => l.id !== 'entradas')
+    .filter((l) => l.total !== 0)
     .map((l) => ({
-      id: l.id, label: l.label,
+      id: l.id, label: `Entradas/${l.label}`,
       pct: base ? (Math.abs(l.total) / base) * 100 : null,
     }));
 };

@@ -47,11 +47,14 @@ export default function ConciliacaoCartoes({ movimentos, categorias, saldos, pen
       </Bloco>
 
       <Bloco titulo="Resumo em %" icone={PieChart} cor={1}>
-        {pcts.filter((p) => p.pct === null || p.pct > 0).map((p) => (
+        {pcts.map((p) => (
           <Linha key={p.id} label={p.label}
             value={p.pct === null ? '—' : `${p.pct.toLocaleString('pt-PT', { maximumFractionDigits: 2 })}%`} />
         ))}
-        {pcts.every((p) => p.pct === null) && (
+        {!pcts.length && (
+          <p className="text-xs text-muted-foreground">Sem despesas classificadas neste mês.</p>
+        )}
+        {!!pcts.length && pcts.every((p) => p.pct === null) && (
           <p className="text-xs text-muted-foreground">Sem entradas neste mês: não há por onde dividir.</p>
         )}
       </Bloco>

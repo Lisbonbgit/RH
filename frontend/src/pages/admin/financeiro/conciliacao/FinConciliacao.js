@@ -20,7 +20,6 @@ import {
 import { categoriasDaEmpresa, todayISO } from '../../../../lib/finance';
 import ConciliacaoTabela from './ConciliacaoTabela';
 import ConciliacaoCartoes from './ConciliacaoCartoes';
-import ConciliacaoSugestoes from './ConciliacaoSugestoes';
 import DialogoFatura from './DialogoFatura';
 
 const mesAtual = () => todayISO().slice(0, 7);
@@ -82,7 +81,13 @@ export default function FinConciliacao() {
 
   const criar = async () => {
     try {
-      await createFinMovement({ ...novaLinha, amount: Number(novaLinha.amount), company_id: companyId });
+      // O sinal vem da escolha "entra/sai", não de a pessoa se lembrar do menos.
+      const valor = Math.abs(Number(novaLinha.amount) || 0);
+      await createFinMovement({
+        ...novaLinha,
+        amount: novaLinha.entra ? valor : -valor,
+        company_id: companyId,
+      });
       setNovaLinha(null);
       carregar();
     } catch (e) {
@@ -97,50 +102,37 @@ export default function FinConciliacao() {
         <MonthPicker value={month} onChange={setMonth} className="w-44" testid="fin-conc-month" />
         {podeEditar && (
           <Button variant="outline" size="sm" data-testid="fin-conc-nova"
-            onClick={() => setNovaLinha({ date_lancamento: `${month}-01`, description: '', amount: '', category: null })}>
+            onClick={() => setNovaLinha({ date_lancamento: `${month}-01`, description: '', amount: '', category: null, entra: false })}>
             <Plus className="h-4 w-4 mr-2" />Linha
           </Button>
         )}
       </PageHeader>
 
-      <Tabs defaultValue="mapa" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="mapa" data-testid="fin-conc-tab-mapa">Mapa do mês</TabsTrigger>
-          <TabsTrigger value="sugestoes" data-testid="fin-conc-tab-sugestoes">Sugestões</TabsTrigger>
-          <TabsTrigger value="porligar" data-testid="fin-conc-tab-porligar">Por ligar</TabsTrigger>
-        </TabsList>
+      {!selectedCompany ? (
+        <Card><CardContent className="p-6 text-center text-muted-foreground">
+          Escolhe uma empresa no topo. Cada empresa tem a sua conciliação.
+        </CardContent></Card>
+      ) : (
+        <Tabs defaultValue="mapa" className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="mapa" data-testid="fin-conc-tab-mapa">Mapa do mês</TabsTrigger>
+          </TabsList>
 
-        {/* O mapa é sempre de UMA empresa: sem ela não há saldo contínuo nem
-            "Excel" para mostrar. As outras duas vistas agregam todas. */}
-        <TabsContent value="mapa" className="space-y-4">
-          {!selectedCompany ? (
-            <Card><CardContent className="p-6 text-center text-muted-foreground">
-              Escolhe uma empresa no topo. Cada empresa tem a sua conciliação.
+          <TabsContent value="mapa" className="space-y-4">
+            <ConciliacaoCartoes movimentos={movimentos} categorias={categorias}
+              saldos={saldos} pendentes={pendentes} />
+            <Card><CardContent className="p-0">
+              {loading
+                ? <div className="flex justify-center h-24 items-center">
+                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary" />
+                  </div>
+                : <ConciliacaoTabela
+                    movimentos={movimentos} categorias={categorias} podeEditar={podeEditar}
+                    aoGuardar={guardar} aoApagar={apagar} aoAbrirFaturas={setMovDoc} />}
             </CardContent></Card>
-          ) : (
-            <>
-              <ConciliacaoCartoes movimentos={movimentos} categorias={categorias}
-                saldos={saldos} pendentes={pendentes} />
-              <Card><CardContent className="p-0">
-                {loading
-                  ? <div className="flex justify-center h-24 items-center">
-                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary" />
-                    </div>
-                  : <ConciliacaoTabela
-                      movimentos={movimentos} categorias={categorias} podeEditar={podeEditar}
-                      aoGuardar={guardar} aoApagar={apagar} aoAbrirFaturas={setMovDoc} />}
-              </CardContent></Card>
-            </>
-          )}
-        </TabsContent>
-
-        <TabsContent value="sugestoes">
-          <ConciliacaoSugestoes vista="sugestoes" companyId={companyId} month={month} aoMudar={carregar} />
-        </TabsContent>
-        <TabsContent value="porligar">
-          <ConciliacaoSugestoes vista="porligar" companyId={companyId} month={month} aoMudar={carregar} />
-        </TabsContent>
-      </Tabs>
+          </TabsContent>
+        </Tabs>
+      )}
 
       <Dialog open={!!novaLinha} onOpenChange={(o) => !o && setNovaLinha(null)}>
         <DialogContent className="max-w-md">
@@ -152,10 +144,21 @@ export default function FinConciliacao() {
             <div><Label>Descrição</Label>
               <Input value={novaLinha?.description || ''} placeholder="Dinheiro Restante Mês Anterior"
                 onChange={(e) => setNovaLinha({ ...novaLinha, description: e.target.value })} /></div>
-            <div><Label>Montante</Label>
-              <Input type="number" step="0.01" value={novaLinha?.amount ?? ''}
-                placeholder="Negativo se for dinheiro a sair"
-                onChange={(e) => setNovaLinha({ ...novaLinha, amount: e.target.value })} /></div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><Label>Montante</Label>
+                <Input type="number" step="0.01" min="0" value={novaLinha?.amount ?? ''}
+                  placeholder="0,00"
+                  onChange={(e) => setNovaLinha({ ...novaLinha, amount: e.target.value })} /></div>
+              <div><Label>Dinheiro que</Label>
+                <Select value={novaLinha?.entra ? 'entra' : 'sai'}
+                  onValueChange={(v) => setNovaLinha({ ...novaLinha, entra: v === 'entra' })}>
+                  <SelectTrigger data-testid="fin-conc-nova-sinal"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="sai">Sai da conta</SelectItem>
+                    <SelectItem value="entra">Entra na conta</SelectItem>
+                  </SelectContent>
+                </Select></div>
+            </div>
             <div><Label>Categoria</Label>
               <Select value={novaLinha?.category || ''}
                 onValueChange={(v) => setNovaLinha({ ...novaLinha, category: v })}>
