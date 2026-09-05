@@ -80,6 +80,12 @@ export default function ConciliacaoTabela({ movimentos, categorias, podeEditar, 
                   testid={`fin-conc-desc-${mv.id}`}
                   aoGuardar={(t) => aoGuardar(mv, { title: t })} />
                 {mv.manual && <Badge variant="outline" className="ml-2 text-[10px]">à mão</Badge>}
+                {mv.provisorio && (
+                  <Badge variant="outline" className="ml-2 text-[10px] border-amber-500/60 text-amber-600"
+                    title="Veio de um aviso do banco, sem saldo. O extrato do mês substitui-o.">
+                    aviso do banco
+                  </Badge>
+                )}
                 {mv.title && mv.description && (
                   <p className="text-[11px] text-muted-foreground truncate">{mv.description}</p>
                 )}

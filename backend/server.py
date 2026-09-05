@@ -5023,6 +5023,170 @@ async def fin_get_movement_attachment(movement_id: str, current_user: dict = Dep
     return FileResponse(path, filename=f"movimento-{movement_id}.pdf")
 
 
+# ---------- Documentos do banco por email ----------
+#
+# Os bancos mandam duas coisas para a caixa, e sao DIFERENTES:
+#
+#  * o EXTRATO (novobanco, "Extrato de conta"): o periodo todo, com a coluna de
+#    saldo. E a verdade — passa pela validacao da cadeia de saldos.
+#  * o AVISO de lancamento (Millennium, "Documentos em formato digital"): UM
+#    movimento, SEM saldo. Medido na caixa a serio a 2026-09-05: 80 em 30 dias.
+#
+# O aviso entra na mesma, marcado `provisorio`, para o dinheiro aparecer no dia
+# em que acontece em vez de esperar pelo fecho do mes. Quando o extrato daquele
+# periodo chegar, ele MANDA e apaga os avisos que cobre. Sem isso, a mesma
+# transferencia ficava contada duas vezes: a descricao e o saldo diferem entre
+# os dois documentos, e nenhuma das travas de duplicados os reconhece.
+
+_FIN_BANCO_DIAS = 30      # janela de procura na caixa
+_FIN_BANCO_LIMITE = 8     # anexos por corrida (a quota da IA e 20/dia, partilhada)
+
+
+def _fin_fetch_bank_attachments_sync(mb):
+    """Anexos PDF vindos SO dos bancos. Sincrono — corre em thread.
+
+    Pergunta ao servidor de email pelos remetentes (SEARCH FROM) em vez de
+    trazer a caixa toda: uma destas caixas tem centenas de mensagens por semana,
+    e as dos bancos sao umas dezenas.
+    """
+    imap = imaplib.IMAP4_SSL(mb.get("host"), int(mb.get("port") or 993))
+    try:
+        imap.login(mb.get("user"), mb.get("pass"))
+        imap.select("INBOX", readonly=True)
+        since = (datetime.now(timezone.utc) - timedelta(days=_FIN_BANCO_DIAS)).strftime("%d-%b-%Y")
+        nums = []
+        for remetente in _FIN_REMETENTES_BANCO:
+            try:
+                typ, res = imap.search(None, "SINCE", since, "FROM", '"%s"' % remetente)
+            except Exception:  # noqa: BLE001 — um criterio recusado nao para os outros
+                continue
+            if typ == "OK" and res and res[0]:
+                nums.extend(res[0].split())
+        # Do mais recente para o mais antigo: com o limite por corrida, o que
+        # interessa e o dinheiro de hoje, nao o da semana passada.
+        nums = sorted(set(nums), key=int, reverse=True)
+        out = []
+        for num in nums:
+            try:
+                typ, dados = imap.fetch(num, "(BODY.PEEK[])")
+                if typ != "OK" or not dados or not dados[0]:
+                    continue
+                msg = _email.message_from_bytes(dados[0][1])
+                de = str(msg.get("From") or "")
+                for part in msg.walk():
+                    if part.get_content_maintype() == "multipart":
+                        continue
+                    fn = part.get_filename() or ""
+                    ctype = (part.get_content_type() or "").lower()
+                    if ctype != "application/pdf" and not fn.lower().endswith(".pdf"):
+                        continue
+                    payload = part.get_payload(decode=True)
+                    if not payload or len(payload) < 200:
+                        continue
+                    out.append({"file_name": fn or "documento.pdf", "bytes": payload, "from": de})
+            except Exception:  # noqa: BLE001 — uma mensagem estragada nao para o resto
+                continue
+        return out
+    finally:
+        try:
+            imap.logout()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _fin_desc_norm(s):
+    """Descricao normalizada, para comparar duas linhas do mesmo movimento."""
+    return re.sub(r"\s+", " ", str(s or "")).strip().lower()
+
+
+async def _fin_guardar_movimentos_do_banco(acc, movs, origem, provisorio):
+    """Grava os movimentos de um documento do banco. Devolve (inseridos, saltados).
+
+    Sem saldo nao ha dedup pelo saldo, por isso a chave inclui a descricao:
+    correr a recolha duas vezes sobre o mesmo aviso nao duplica nada.
+    """
+    canon = _fin_acct_digits(acc.get("account_number")) or ""
+    inseridos = 0
+    saltados = 0
+    agora = datetime.now(timezone.utc).isoformat()
+    for m in movs:
+        data = _fin_clean_date(m.get("date_lancamento"))
+        valor = _fin_clean_num(m.get("amount"))
+        if not data or valor is None:
+            saltados += 1
+            continue
+        desc = str(m.get("description") or "").strip() or None
+        saldo = _fin_clean_num(m.get("balance"))
+        saldo_k = "None" if saldo is None else f"{round(saldo, 2):.2f}"
+        chave = hashlib.sha1(
+            f"{canon}|{data}|{valor:.2f}|{saldo_k}|{_fin_desc_norm(desc)}".encode()
+        ).hexdigest()
+        if await db.fin_movements.find_one({"dedup_key": chave}, {"_id": 0, "id": 1}):
+            saltados += 1
+            continue
+        # O MESMO movimento ja ca esta por outro caminho? Mesma conta, mesmo dia,
+        # mesmo valor E mesma descricao. Sem a descricao, dois pagamentos iguais
+        # no mesmo dia — que acontecem — seriam tomados por um so.
+        candidatos = await db.fin_movements.find(
+            {"account_id": acc["id"], "date_lancamento": data},
+            {"_id": 0, "id": 1, "amount": 1, "description": 1},
+        ).to_list(500)
+        gemeo = None
+        for c in candidatos:
+            ca = _fin_clean_num(c.get("amount"))
+            if ca is None:
+                continue
+            if round(ca, 2) == round(valor, 2) and _fin_desc_norm(c.get("description")) == _fin_desc_norm(desc):
+                gemeo = c
+                break
+        if gemeo:
+            saltados += 1
+            continue
+        await db.fin_movements.insert_one({
+            "id": str(uuid.uuid4()),
+            "account_id": acc["id"],
+            "company_id": acc["company_id"],
+            "date_lancamento": data,
+            "date_valor": _fin_clean_date(m.get("date_valor")),
+            "description": desc,
+            "amount": valor,
+            "balance": saldo,
+            "currency": acc.get("currency") or "EUR",
+            "title": None,
+            "category": None,
+            "note": None,
+            "invoice_id": None,
+            "link_auto": False,
+            "attachment_path": None,
+            "dedup_key": chave,
+            "provisorio": bool(provisorio),
+            "source": origem,
+            "created_by": "cron",
+            "created_at": agora,
+        })
+        inseridos += 1
+    return inseridos, saltados
+
+
+async def _fin_substituir_provisorios(account_id, d_min, d_max):
+    """O extrato a serio manda: apaga os avisos provisorios que ele cobre.
+
+    NAO apaga os que ja tem fatura ligada. Alguem ligou aquilo a mao; apagar
+    desfazia trabalho humano e deixava a fatura dada por paga sem movimento
+    nenhum por tras. Esses ficam, e o gemeo do extrato e travado pela
+    comparacao de data+valor+descricao.
+    """
+    if not d_min or not d_max:
+        return 0
+    res = await db.fin_movements.delete_many({
+        "account_id": account_id,
+        "provisorio": True,
+        "invoice_id": None,
+        "date_lancamento": {"$gte": d_min, "$lte": d_max},
+    })
+    return getattr(res, "deleted_count", 0)
+
+
 # ---------- Conciliação automática (#4) ----------
 
 @api_router.post("/fin/movements/automatch")
@@ -5658,9 +5822,11 @@ def _fin_extract_pdf_sync(pdf_bytes):
 # da Teya em 30 dias — mais de 100 chamadas por mes deitadas fora.
 #
 # NAO por aqui a Glovo nem a Uber: essas TAMBEM mandam faturas de comissao.
-_FIN_REMETENTES_SEM_FATURA = (
-    "alertas.empresas@millenniumbcp.pt",  # "Documentos em formato digital" (avisos do banco)
+_FIN_REMETENTES_BANCO = (
+    "alertas.empresas@millenniumbcp.pt",  # "Documentos em formato digital" (avisos)
     "info@novobanco.pt",                  # "Extrato de conta"
+)
+_FIN_REMETENTES_SEM_FATURA = _FIN_REMETENTES_BANCO + (
     "reporting@teya.com",                 # relatorios de liquidacao
 )
 
@@ -6841,6 +7007,114 @@ def _fin_chain_check(movs):
         if abs(movs[i]["balance"] - (movs[i - 1]["balance"] + movs[i]["amount"])) > 0.01:
             return i
     return None
+
+
+@api_router.post("/fin/cron/extratos")
+async def fin_cron_bank_docs(key: str = Query(...)):
+    """Vai buscar a caixa de email os documentos que os BANCOS mandam.
+
+    Corre por cron. Cada caixa do IMAP_MAILBOXES ja traz o `company_nif`, e e
+    por ai que se sabe de que empresa e a conta quando ela ainda nao esta
+    registada. O roteamento normal e pelo NUMERO DE CONTA do documento, nao
+    pela caixa: um extrato so vai para a conta a que pertence.
+    """
+    cron_key = os.environ.get("CRON_KEY") or ""
+    if not cron_key or not secrets.compare_digest(key or "", cron_key):
+        raise HTTPException(status_code=403, detail="Chave inválida.")
+
+    raw = os.environ.get("IMAP_MAILBOXES") or _FIN_IMAP_RAW or "[]"
+    try:
+        mailboxes = json.loads(raw)
+        if not isinstance(mailboxes, list):
+            mailboxes = []
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("[fin-extratos] IMAP_MAILBOXES inválido: %s", _e)
+        mailboxes = []
+
+    resumo = {"anexos": 0, "documentos_lidos": 0, "movimentos": 0,
+              "saltados": 0, "provisorios_substituidos": 0, "erros": []}
+
+    async def marcar_visto(kk):
+        await db.fin_ingest_log.update_one(
+            {"k": kk, "t": "extrato"},
+            {"$setOnInsert": {"k": kk, "t": "extrato",
+                              "at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+
+    contas = await db.fin_bank_accounts.find({}, {"_id": 0}).to_list(2000)
+
+    for mb in mailboxes:
+        nif_caixa = _fin_norm_nif(mb.get("company_nif"))
+        empresa = await db.fin_companies.find_one({"nif": nif_caixa}, {"_id": 0}) if nif_caixa else None
+        try:
+            anexos = await asyncio.to_thread(_fin_fetch_bank_attachments_sync, mb)
+        except Exception as e:  # noqa: BLE001
+            resumo["erros"].append(f"{mb.get('user')}: {e}")
+            continue
+        for a in anexos:
+            if resumo["documentos_lidos"] >= _FIN_BANCO_LIMITE:
+                break
+            k = hashlib.sha1(a["bytes"]).hexdigest()
+            if await db.fin_ingest_log.find_one({"k": k, "t": "extrato"}):
+                continue
+            resumo["anexos"] += 1
+            ex = await asyncio.to_thread(_fin_extract_statement_sync, a["bytes"])
+            resumo["documentos_lidos"] += 1
+            if not isinstance(ex, dict) or ex.get("error"):
+                # Erro de IA/rede e TRANSITORIO: nao marcar, para repetir.
+                resumo["erros"].append(f"{a['file_name']}: {(ex or {}).get('error')}")
+                continue
+            movs_raw = ex.get("movements")
+            if not isinstance(movs_raw, list) or not movs_raw:
+                # Documento sem movimentos: definitivo para ESTE ficheiro.
+                await marcar_visto(k)
+                resumo["erros"].append(f"{a['file_name']}: sem movimentos")
+                continue
+            acct = _fin_acct_digits(ex.get("account_number"))
+            if not acct:
+                await marcar_visto(k)
+                resumo["erros"].append(f"{a['file_name']}: sem número de conta")
+                continue
+            iguais = [c for c in contas if _fin_acct_match(acct, _fin_acct_digits(c.get("account_number")))]
+            exatas = [c for c in iguais if _fin_acct_digits(c.get("account_number")) == acct]
+            acc = exatas[0] if exatas else (iguais[0] if iguais else None)
+            if not acc:
+                if not empresa:
+                    resumo["erros"].append(
+                        f"{a['file_name']}: conta {acct} desconhecida e a caixa "
+                        f"{mb.get('user')} não diz de que empresa é")
+                    await marcar_visto(k)
+                    continue
+                banco = "novobanco" if "novobanco" in (a.get("from") or "").lower() else "Millennium BCP"
+                acc = await _fin_get_or_create_account(empresa["id"], acct, banco, None)
+                contas.append(acc)
+            # Traz saldo em TODAS as linhas? Entao e um extrato a serio.
+            movs = [m for m in movs_raw if isinstance(m, dict)]
+            com_saldo = [m for m in movs if _fin_clean_num(m.get("balance")) is not None]
+            e_extrato = len(com_saldo) == len(movs) and len(movs) > 0
+            if e_extrato:
+                datas = sorted(_fin_clean_date(m.get("date_lancamento")) or "" for m in movs)
+                apagados = await _fin_substituir_provisorios(acc["id"], datas[0], datas[-1])
+                resumo["provisorios_substituidos"] += apagados
+            ins, salt = await _fin_guardar_movimentos_do_banco(
+                acc, movs, "bank_email", provisorio=not e_extrato)
+            resumo["movimentos"] += ins
+            resumo["saltados"] += salt
+            await marcar_visto(k)
+
+    if resumo["movimentos"]:
+        await _fin_auto_reconcile(None)
+    logger.info("[fin-extratos] %s", resumo)
+    return resumo
+
+
+@api_router.post("/fin/sync/extratos")
+async def fin_manual_sync_bank_docs(current_user: dict = Depends(get_current_user)):
+    """O mesmo, a pedido, a partir do painel."""
+    if not await _fin_user_is_editor_somewhere(current_user):
+        raise HTTPException(status_code=403, detail="Sem permissão.")
+    return await fin_cron_bank_docs(key=os.environ.get("CRON_KEY") or "")
 
 
 @api_router.post("/fin/movements/import-pdf")
