@@ -20,6 +20,7 @@ import {
 import { categoriasDaEmpresa, todayISO } from '../../../../lib/finance';
 import ConciliacaoTabela from './ConciliacaoTabela';
 import ConciliacaoCartoes from './ConciliacaoCartoes';
+import ConciliacaoSugestoes from './ConciliacaoSugestoes';
 import DialogoFatura from './DialogoFatura';
 
 const mesAtual = () => todayISO().slice(0, 7);
@@ -102,31 +103,44 @@ export default function FinConciliacao() {
         )}
       </PageHeader>
 
-      {!selectedCompany ? (
-        <Card><CardContent className="p-6 text-center text-muted-foreground">
-          Escolhe uma empresa no topo. Cada empresa tem a sua conciliação.
-        </CardContent></Card>
-      ) : (
-        <Tabs defaultValue="mapa" className="space-y-4">
-          <TabsList>
-            <TabsTrigger value="mapa" data-testid="fin-conc-tab-mapa">Mapa do mês</TabsTrigger>
-          </TabsList>
+      <Tabs defaultValue="mapa" className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="mapa" data-testid="fin-conc-tab-mapa">Mapa do mês</TabsTrigger>
+          <TabsTrigger value="sugestoes" data-testid="fin-conc-tab-sugestoes">Sugestões</TabsTrigger>
+          <TabsTrigger value="porligar" data-testid="fin-conc-tab-porligar">Por ligar</TabsTrigger>
+        </TabsList>
 
-          <TabsContent value="mapa" className="space-y-4">
-            <ConciliacaoCartoes movimentos={movimentos} categorias={categorias}
-              saldos={saldos} pendentes={pendentes} />
-            <Card><CardContent className="p-0">
-              {loading
-                ? <div className="flex justify-center h-24 items-center">
-                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary" />
-                  </div>
-                : <ConciliacaoTabela
-                    movimentos={movimentos} categorias={categorias} podeEditar={podeEditar}
-                    aoGuardar={guardar} aoApagar={apagar} aoAbrirFaturas={setMovDoc} />}
+        {/* O mapa é sempre de UMA empresa: sem ela não há saldo contínuo nem
+            "Excel" para mostrar. As outras duas vistas agregam todas. */}
+        <TabsContent value="mapa" className="space-y-4">
+          {!selectedCompany ? (
+            <Card><CardContent className="p-6 text-center text-muted-foreground">
+              Escolhe uma empresa no topo. Cada empresa tem a sua conciliação.
             </CardContent></Card>
-          </TabsContent>
-        </Tabs>
-      )}
+          ) : (
+            <>
+              <ConciliacaoCartoes movimentos={movimentos} categorias={categorias}
+                saldos={saldos} pendentes={pendentes} />
+              <Card><CardContent className="p-0">
+                {loading
+                  ? <div className="flex justify-center h-24 items-center">
+                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary" />
+                    </div>
+                  : <ConciliacaoTabela
+                      movimentos={movimentos} categorias={categorias} podeEditar={podeEditar}
+                      aoGuardar={guardar} aoApagar={apagar} aoAbrirFaturas={setMovDoc} />}
+              </CardContent></Card>
+            </>
+          )}
+        </TabsContent>
+
+        <TabsContent value="sugestoes">
+          <ConciliacaoSugestoes vista="sugestoes" companyId={companyId} month={month} aoMudar={carregar} />
+        </TabsContent>
+        <TabsContent value="porligar">
+          <ConciliacaoSugestoes vista="porligar" companyId={companyId} month={month} aoMudar={carregar} />
+        </TabsContent>
+      </Tabs>
 
       <Dialog open={!!novaLinha} onOpenChange={(o) => !o && setNovaLinha(null)}>
         <DialogContent className="max-w-md">
