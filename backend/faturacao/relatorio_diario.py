@@ -240,6 +240,7 @@ def montar_relatorio(
     turnos: List[Dict],
     com_iva: bool = True,
     grupos_de_variante: Optional[List[str]] = None,
+    loja_da_app: Optional[str] = None,
 ) -> Dict:
     """Os números do dia, prontos a desenhar.
 
@@ -250,6 +251,14 @@ def montar_relatorio(
 
     `turnos` são as sessões de caixa do dia, cada uma com o que
     `_resumo_do_turno` precisa: `{sessao, movimentos, vendas, notas_credito}`.
+
+    `loja_da_app` é a loja onde a sincronização do Vendus grava as Faturas
+    Simplificadas da app L'Açaí. Ela fatura mas **não tem gaveta**: a app cobra
+    por Stripe e não há venda, sessão nem operador por trás. Sai daqui com
+    `caixa: None` — ver o comentário no corpo.
+
+    Vem por parâmetro e não de uma leitura ao Mongo porque este módulo não lê
+    base de dados nenhuma; é a `relatorio_rota` que sabe onde está a definição.
     """
     campo = _campo_valor(com_iva)
     dias = sorted({_dia_do_documento(d) for d in documentos if _dia_do_documento(d)})
@@ -286,7 +295,25 @@ def montar_relatorio(
             # Uma loja que desaparecia do relatório lia-se como "não existe" em
             # vez de "não vendeu" — e é precisamente a que o dono quer ver.
             "sem_vendas": not docs,
-            "caixa": _caixa_das_sessoes(da_loja),
+            # **A loja da app não tem caixa nenhuma, e `None` diz isso.**
+            # `_caixa_das_sessoes([])` devolve `estado: "sem_turno"`, que o
+            # email escreve como «Sem turno de caixa aberto neste dia» — uma
+            # acusação correcta para uma das cinco lojas com gaveta e falsa
+            # para esta, que nunca vai ter uma. `None` não é "zero euros na
+            # gaveta": é "esta pergunta não se aplica aqui".
+            #
+            # O critério é a DEFINIÇÃO e não os documentos terem
+            # `origem: "app"`: num dia em que a app não vendeu não há
+            # documento nenhum por onde a reconhecer, e o email voltava a
+            # acusá-la justamente no dia em que ela não fez nada. O `ativo`
+            # da definição não entra: desligar a sincronização não faz a loja
+            # ganhar uma gaveta, só deixa de lhe chegarem documentos novos.
+            #
+            # O `loja_da_app and` não é decorativo: sem ele, uma loja gravada
+            # sem `id` casava com o `None` de quem não configurou nada e
+            # perdia a caixa em silêncio.
+            "caixa": None if loja_da_app and loja["id"] == loja_da_app
+                     else _caixa_das_sessoes(da_loja),
             "pagamentos": pagamentos,
         })
     linhas_de_loja.sort(key=lambda l: (-l["faturacao"], l["nome"]))

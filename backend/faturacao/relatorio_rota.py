@@ -25,6 +25,10 @@ from .db import COLECOES, obter_db
 from .periodos import LISBON_TZ
 from .relatorio_diario import montar_relatorio
 from .relatorio_email import html_do_relatorio
+# A chave da definição da sincronização da app, importada e não copiada: a
+# loja onde as faturas da app são gravadas é a MESMA que o email tem de
+# reconhecer, e duas cópias da string divergem no dia em que uma mudar.
+from .sincronizacao_rota import CHAVE as CHAVE_SINCRONIZACAO_APP
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -120,6 +124,12 @@ async def _juntar_dados(db, dia: str) -> Dict:
         {"aberta_em": {"$gte": inicio_do_dia.isoformat()}}, {"_id": 0}
     ).to_list(500)
 
+    # A loja da app: fatura, mas não tem gaveta nenhuma para conferir. Quem
+    # sabe qual é, é a definição da sincronização — ver
+    # `relatorio_diario.montar_relatorio`.
+    definicao_da_app = await db[COLECOES["definicoes"]].find_one(
+        {"id": CHAVE_SINCRONIZACAO_APP}, {"_id": 0}) or {}
+
     turnos = []
     for sessao in sessoes:
         movimentos = await db[COLECOES["movimentos_caixa"]].find(
@@ -130,7 +140,8 @@ async def _juntar_dados(db, dia: str) -> Dict:
             {"sessao_id": sessao["id"]}, {"_id": 0}).to_list(500)
         turnos.append({"sessao": sessao, "movimentos": movimentos,
                        "vendas": vendas, "notas_credito": notas})
-    return {"documentos": documentos, "lojas": lojas, "turnos": turnos}
+    return {"documentos": documentos, "lojas": lojas, "turnos": turnos,
+            "loja_da_app": definicao_da_app.get("loja_id")}
 
 
 async def _enviar(html: str, para: List[str], assunto: str) -> Dict:
@@ -181,7 +192,8 @@ async def _produzir_e_enviar(para: List[str], url_do_painel: Optional[str]) -> D
     partes = await _juntar_dados(db, dia)
     dados = montar_relatorio(
         dia=dia, ate=ate, lojas=partes["lojas"],
-        documentos=partes["documentos"], turnos=partes["turnos"])
+        documentos=partes["documentos"], turnos=partes["turnos"],
+        loja_da_app=partes["loja_da_app"])
     html = html_do_relatorio(dados, url_do_painel=url_do_painel)
     envio = await _enviar(html, para, _assunto(dados))
     return {
