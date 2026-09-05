@@ -81,8 +81,8 @@ from pydantic import BaseModel, Field
 from .db import COLECOES, obter_db
 from .fiscal import _itens_vendus
 from .mapa_imposto import (
-    _TAXA_DO_CODIGO, _base_em_centimos, _liquido_da_linha, mapa_de_imposto,
-    totais_do_mapa,
+    _TAXA_DO_CODIGO, _base_em_centimos, _liquido_da_linha,
+    apos_desconto_da_linha, mapa_de_imposto, totais_do_mapa,
 )
 from .auth import gestor_atual
 from .periodos import janela_de_datas
@@ -402,12 +402,21 @@ def _linhas_das_linhas_vendus(documento: Dict) -> List[Dict]:
     erro nenhum no servidor — dava uma coluna «Produto» em branco numa fatura
     sã, que é o género de defeito que só aparece com o ecrã à frente.
 
-    O «P. Unit.» sai do total a dividir pela quantidade: o Vendus manda o
-    dinheiro da LINHA (`amounts.gross_total`, o número que a AT tem), e o preço
-    por unidade que interessa a quem confere é o que ele pagou por cada um —
-    repetir ali o total fazia uma linha de três águas parecer três vezes mais
-    cara. Pela mesma razão o `desconto` vai a `0.0`: já não há gap nenhum entre
-    `qtd × p. unit.` e o total para explicar (ver `_linhas_da_fatura`).
+    O «P. Unit.» sai do BRUTO da linha a dividir pela quantidade — o preço a
+    que o artigo foi lançado, antes do desconto —, e o «Total» é o que a linha
+    vale DEPOIS dele (`apos_desconto_da_linha`). São as duas pontas que
+    `_linhas_da_fatura` também mostra, e a diferença entre elas é o `desconto`,
+    calculado exactamente como lá (`bruto − líquido`, em cêntimos inteiros).
+
+    **O `desconto` tem de ser esse número e não `0.0`.** Um resgate de
+    recompensa da app é uma linha de 5,85 € com 100 % de desconto e 0,00 € a
+    pagar. Com o desconto a zero, o ecrã escrevia «Açaí Mini · 1 · 0,00 € ·
+    0,00 € · 0,00 €» — um artigo que nunca teve preço, em vez de um açaí de
+    5,85 € que foi oferecido. O dinheiro batia certo e a fatura mentia na
+    única coisa que o dono abre esta tabela para ver.
+
+    Dividir pela quantidade e não repetir o total: uma linha de três águas
+    parecia três vezes mais cara (ver `_linhas_da_fatura`).
     """
     linhas = []
     for linha in _linhas_do_vendus(documento):
@@ -419,7 +428,14 @@ def _linhas_das_linhas_vendus(documento: Dict) -> List[Dict]:
         # com o nome que o Vendus mandou E o `total_divergente` acende sozinho
         # («a soma das linhas não bate com o total»), que é o aviso que já
         # existe para "esta fatura não está bem, veja-a no Vendus".
-        total = _numero_do_vendus(montantes.get("gross_total")) or 0.0
+        # **`gross_total` é o valor ANTES do desconto.** Ver
+        # `mapa_imposto.apos_desconto_da_linha`: o desconto da linha vem à
+        # parte, em `discounts.calculated_percentage`. Sem o aplicar, a
+        # `FS 06P2026/1081` — 0,00 € de recompensa resgatada — abria com uma
+        # linha de 5,85 € e `total_divergente` aceso, a acusar de estragada uma
+        # fatura sã. É o oposto do que esta função existe para fazer.
+        bruto = _numero_do_vendus(montantes.get("gross_total")) or 0.0
+        total = apos_desconto_da_linha(bruto, linha)
         quantidade = _numero_do_vendus(linha.get("qty")) or 0.0
         linhas.append({
             # Não há produto nosso do outro lado: o ecrã escreve o nome que o
@@ -429,8 +445,8 @@ def _linhas_das_linhas_vendus(documento: Dict) -> List[Dict]:
             # child") e o ecrã ficava branco em vez de 500.
             "titulo": str(linha.get("title") or "—"),
             "quantidade": quantidade,
-            "preco_unitario": round(total / quantidade, 2) if quantidade else total,
-            "desconto": 0.0,
+            "preco_unitario": round(bruto / quantidade, 2) if quantidade else bruto,
+            "desconto": round(bruto - total, 2),
             "total": total,
             "tax_id": imposto.get("id"),
             "taxa": imposto.get("rate"),
@@ -475,12 +491,18 @@ def _mapa_das_linhas_vendus(documento: Dict) -> List[Dict]:
             # de `mapa_de_imposto` (é o que a contabilista conta).
             "documentos": 1, "base": 0, "iva": 0, "total": 0,
         })
-        total_centimos = _centimos(_numero_do_vendus(montantes.get("gross_total")))
+        total_centimos = _centimos(apos_desconto_da_linha(
+            _numero_do_vendus(montantes.get("gross_total")), linha))
         entrada["total"] += total_centimos
         # `_numero_do_vendus` e não `is not None`: uma base ilegível lida como
         # "presente" dava base 0 e punha o IVA a valer a linha inteira. Ilegível
         # é o mesmo que ausente — decompõe-se pelo código, como sempre.
-        base = _numero_do_vendus(montantes.get("net_total"))
+        # O desconto aplica-se TAMBÉM à base: o `net_total` da linha é, como o
+        # `gross_total`, anterior ao desconto. Na `FS 06P2026/1081` ele vem a
+        # 5,18 € num documento cujo `taxes` diz base 0,00 € e imposto 0,00 € —
+        # descontar só o bruto punha o IVA a valer 0,00 − 5,18 = −5,18 €.
+        base = apos_desconto_da_linha(
+            _numero_do_vendus(montantes.get("net_total")), linha)
         if base is not None:
             base_centimos = _centimos(base)
         elif _TAXA_DO_CODIGO.get(codigo) is not None:

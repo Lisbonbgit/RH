@@ -323,7 +323,11 @@ from fastapi import APIRouter, Depends, HTTPException  # noqa: E402
 from .auth import gestor_atual  # noqa: E402
 from .db import COLECOES, obter_db  # noqa: E402
 from .fiscal import _itens_vendus  # noqa: E402
-from .mapa_imposto import _TAXA_DO_CODIGO, _liquido_da_linha  # noqa: E402
+from .mapa_imposto import (  # noqa: E402
+    _TAXA_DO_CODIGO,
+    _liquido_da_linha,
+    apos_desconto_da_linha,
+)
 from .periodos import janela_de_datas  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -450,7 +454,21 @@ def _artigos_das_linhas_vendus(documento: Dict, categorias: Dict) -> List[Dict]:
     artigos = []
     for linha in documento.get("linhas_vendus") or []:
         montantes = linha.get("amounts") or {}
-        bruto_c = centimos(montantes.get("gross_total"))
+        # **`gross_total` é o valor ANTES do desconto, não o da linha.** Medido
+        # na `FS 06P2026/1081` (um resgate de recompensa da app, 2026-09-05): a
+        # linha vem com `gross_total: "5.85"` e `discounts:
+        # {calculated_percentage: 100}`, e o documento vale `amount_gross:
+        # "0.00"`. Lido a direito, este relatório dava 5,85 € de receita que
+        # nunca existiu — o Dashboard mostrava 0,00 € (lê `total_bruto` do
+        # documento) e as NOVE vistas daqui mostravam 5,85 €, sem nenhum dos
+        # dois números parecer errado. Numa app de fidelização isto não é um
+        # caso de canto: é o dia-a-dia, uma recompensa de cada vez.
+        #
+        # `apos_desconto_da_linha` é a fórmula do Vendus, e é a mesma que
+        # `_artigos_da_fatura` já aplica às nossas faturas por
+        # `_liquido_da_linha` — as duas metades deste ficheiro passam a medir
+        # a mesma coisa.
+        bruto_c = centimos(apos_desconto_da_linha(montantes.get("gross_total"), linha))
         quantidade = float(linha.get("qty") or 0)
         if eh_nc:
             bruto_c, quantidade = abs(bruto_c), abs(quantidade)

@@ -63,6 +63,7 @@ o meio-cêntimo para cima (`(2·num + den) // (2·den)`): `round()` sobre
 floats faz arredondamento bancário sobre a representação binária, e este é
 um número que vai numa declaração de imposto.
 """
+import math
 from typing import Dict, List, Optional
 
 from .fiscal import _itens_vendus
@@ -85,6 +86,91 @@ def _liquido_da_linha(item: Dict) -> float:
     bruto = round(item["qty"] * item["gross_price"], 2)
     pct = item.get("discount_percentage") or 0.0
     return round(bruto * (1 - pct / 100.0), 2)
+
+
+def _percentagem_de_desconto(linha: Dict) -> float:
+    """O desconto, em PERCENTAGEM, de uma linha COMO O VENDUS A DEVOLVE
+    (`GET documents/{id}/` → `items[].discounts.calculated_percentage`).
+
+    **Isto é o irmão de `_liquido_da_linha` para o outro lado do fio.**
+    `_liquido_da_linha` lê uma linha que NÓS construímos para ENVIAR
+    (`qty`/`gross_price`/`discount_percentage`); esta lê uma linha que o Vendus
+    nos DEVOLVEU, que tem outra forma e outros nomes. A pergunta é a mesma e a
+    fórmula tem de ser a mesma, senão os dois caminhos divergem.
+
+    **Porque é que a percentagem da LINHA chega, e o desconto do DOCUMENTO não
+    se soma a ela.** O documento lido também traz `discounts: {amount, total}`.
+    Ele é um SOMATÓRIO do que já está nas linhas, não uma dedução a mais:
+
+    - **do lado de quem escreve, todo o desconto vai por linha.** O
+      `fiscal._itens_vendus` deste repo pega no desconto GLOBAL da conta,
+      reparte-o pelas linhas ao cêntimo (`_distribuir_centimos`, método do
+      maior resto) e converte cada fatia numa `discount_percentage` da LINHA —
+      nunca envia desconto de documento nenhum. O outro sistema do dono que
+      emite Faturas Simplificadas reais pela MESMA API
+      (`~/dev/pizzaria/backend/pos/pricing.py::combine_global`) di-lo por
+      escrito — «o Vendus só aceita um dos dois por linha» — e faz exactamente
+      o mesmo: colapsa o desconto global num único `discount_percentage` por
+      linha. Não há por onde entrar um desconto de documento que as linhas não
+      conheçam;
+    - **o nome do campo diz o resto.** `calculated_percentage` é uma
+      percentagem CALCULADA pelo Vendus — o efeito já apurado sobre aquela
+      linha, não o que lá foi posto;
+    - **e os números medidos batem.** Na `FS 06P2026/1081` (um resgate de
+      recompensa da app) o documento diz `discounts.amount = "5.85"` e a linha
+      diz `calculated_percentage = 100` sobre um `gross_total` de 5,85 €.
+      100 % de 5,85 € são 5,85 €: é o MESMO desconto contado duas vezes, uma
+      por linha e outra em rodapé. Descontar os dois dava −5,85 € numa fatura
+      de 0,00 €.
+
+    Por isso NÃO se reparte aqui nada com `_distribuir_centimos`: a repartição
+    já foi feita — do lado de lá, na emissão — e o que volta já vem repartido.
+    E a prova de que continua assim não é uma promessa: é uma conta que o ecrã
+    de Documentos já faz todos os dias. `total_divergente` compara o total do
+    documento com a soma das linhas; no dia em que aparecer um desconto de
+    documento que as linhas não expliquem, a soma deixa de bater e o aviso
+    acende — que é exactamente o trabalho dele.
+
+    Ilegível é o mesmo que ausente (0 %) — a regra que este ficheiro e o ecrã
+    de Documentos já seguem para tudo o que vem do Vendus. E fica preso a
+    [0, 100]: um NaN passava incólume pelo `min`/`max` e virava 100 % (a linha
+    inteira de graça), e uma percentagem negativa fazia um desconto ACRESCENTAR
+    receita. É o mesmo tecto de `combine_global`.
+    """
+    descontos = linha.get("discounts")
+    if not isinstance(descontos, dict):
+        return 0.0
+    try:
+        pct = float(str(descontos.get("calculated_percentage")).replace(",", "."))
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(pct):
+        return 0.0
+    return max(0.0, min(100.0, pct))
+
+
+def apos_desconto_da_linha(valor, linha: Dict) -> Optional[float]:
+    """`valor` — um montante de uma linha LIDA do Vendus — já com o desconto
+    dessa linha aplicado.
+
+    A fórmula é, ao carácter, a de `_liquido_da_linha`: `valor × (1 − pct/100)`
+    arredondado ao cêntimo, que é o que o Vendus faz do lado dele, linha a
+    linha, antes de somar. Arredondar aqui (e não só no fim) é o que faz a soma
+    das linhas bater com o `amount_gross` do documento.
+
+    Serve o BRUTO e o LÍQUIDO da mesma linha, e tem de servir os dois: o
+    `net_total` que o Vendus devolve também é ANTERIOR ao desconto. Na
+    `FS 06P2026/1081` ele vem a 5,18 € num documento cujo `taxes` diz base
+    0,00 € e imposto 0,00 € — descontar só o bruto punha o IVA a valer
+    0,00 − 5,18 = −5,18 € no mapa de imposto do ecrã.
+
+    `None` fica `None`: quem chama distingue «não veio» de «veio zero» (o mapa
+    de imposto decompõe-se pelo código de imposto quando a base não vem, em vez
+    de inventar imposto).
+    """
+    if valor is None:
+        return None
+    return round(float(valor or 0) * (1 - _percentagem_de_desconto(linha) / 100.0), 2)
 
 
 def _base_em_centimos(total_centimos: int, taxa: int) -> int:
