@@ -697,7 +697,17 @@ async def relatorio(
         raise HTTPException(status_code=422, detail=str(erro))
 
     db = obter_db()
-    filtro = {"emitido_em": {"$gte": janela.inicio.isoformat(), "$lt": janela.fim.isoformat()}}
+    # **O anulado fica de fora**, a mesma regra e o mesmo `$ne` de
+    # `dashboard.documentos_no_periodo`. `$ne` e não `== False`: o campo é
+    # AUSENTE em toda a gente (`fiscal._gravar_documento` nunca o grava, de
+    # propósito), e um `{"anulado": False}` exigia-o presente e devolvia nove
+    # relatórios vazios. Sem isto, uma FS da app anulada no Vendus saía do
+    # Dashboard e do email da noite (os dois somam por
+    # `dashboard._valor_documento`, que lhe dá 0,00 €) e continuava aqui — o
+    # dono a ver dois números diferentes para o mesmo dia, sem forma de saber
+    # qual mente.
+    filtro = {"emitido_em": {"$gte": janela.inicio.isoformat(), "$lt": janela.fim.isoformat()},
+              "anulado": {"$ne": True}}
     if loja_id:
         filtro["loja_id"] = loja_id
     documentos = await (

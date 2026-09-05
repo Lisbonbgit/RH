@@ -621,7 +621,14 @@ async def _detalhe_do_documento(db, documento: Dict, com_contexto: bool = False)
         # O NIF que o cliente pediu na altura, ou `None` — que o ecrã lê como
         # "Consumidor Final", que é o que o Vendus assume quando não vai NIF
         # nenhum (`fiscal.finalizar`).
-        "cliente_nif": (venda or {}).get("cliente_nif"),
+        #
+        # **O documento tem precedência sobre a venda**, a mesma regra de
+        # `relatorios.py:640`. Uma fatura da app não tem venda nenhuma
+        # (`venda_id: None`) e traz o NIF no PRÓPRIO documento
+        # (`sincronizacao_app.documento_para_gravar`): lido só pela venda, o
+        # ecrã escrevia "Consumidor Final" numa fatura que TEM NIF — medido na
+        # FS 06P2026/446 real, que traz um NIF verdadeiro.
+        "cliente_nif": documento.get("cliente_nif") or (venda or {}).get("cliente_nif"),
         "tem_venda": venda is not None,
         "venda_id": documento.get("venda_id"),
         "linhas": linhas,
@@ -701,17 +708,24 @@ async def _filtro_dos_documentos(
         filtro["tipo"] = tipo
     if q:
         procurado = q.strip()
-        # **O NIF não está no documento, está na VENDA** — e é por isso que a
-        # pesquisa vai buscar primeiro as vendas com aquele NIF e só depois
-        # procura os documentos delas. Procura-se pelas duas coisas ao mesmo
-        # tempo (número OU NIF) em vez de adivinhar qual é qual pelo formato:
-        # quem escreve na caixa não sabe que são dois campos diferentes.
+        # **O NIF está em DOIS sítios** e a pesquisa tem de olhar para os dois.
+        # Numa fatura do POS vive na VENDA (por isso se vão buscar primeiro as
+        # vendas com aquele NIF e só depois os documentos delas); numa fatura
+        # da app não há venda nenhuma e ele vive no PRÓPRIO documento
+        # (`sincronizacao_app.documento_para_gravar`). Só pela venda, procurar
+        # o NIF real da FS 06P2026/446 devolvia ZERO resultados, com a fatura
+        # na base e o NIF certo lá dentro.
+        #
+        # Procura-se pelas coisas todas ao mesmo tempo (número OU NIF) em vez
+        # de adivinhar qual é qual pelo formato: quem escreve na caixa não sabe
+        # que são campos diferentes.
         vendas = await (
             db[COLECOES["vendas"]]
             .find({"cliente_nif": _regex_literal(procurado)}, {"id": 1, "_id": 0})
             .to_list(_TECTO_DO_RESUMO)
         )
-        alternativas = [{"numero": _regex_literal(procurado)}]
+        alternativas = [{"numero": _regex_literal(procurado)},
+                        {"cliente_nif": _regex_literal(procurado)}]
         if vendas:
             alternativas.append({"venda_id": {"$in": [v["id"] for v in vendas]}})
         filtro["$or"] = alternativas
@@ -788,7 +802,8 @@ async def documentos_do_backoffice(
         "documentos": [
             dict(_documento_na_lista(d, vendas.get(d.get("venda_id"))),
                  loja_id=d.get("loja_id"),
-                 cliente_nif=(vendas.get(d.get("venda_id")) or {}).get("cliente_nif"))
+                 cliente_nif=(d.get("cliente_nif")
+                              or (vendas.get(d.get("venda_id")) or {}).get("cliente_nif")))
             for d in documentos
         ],
         "total": total,

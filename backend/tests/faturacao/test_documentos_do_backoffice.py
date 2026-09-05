@@ -219,3 +219,60 @@ def test_um_documento_que_nao_existe_da_404(monkeypatch):
     with pytest.raises(HTTPException) as e:
         _corre(documento_do_backoffice("nao-existe", _={}))
     assert e.value.status_code == 404
+
+
+# --- O NIF de uma fatura da APP -----------------------------------------------
+
+# Uma FS da app como `sincronizacao_app.documento_para_gravar` a grava: SEM
+# venda nenhuma (`venda_id: None`) e com o NIF no PRÓPRIO documento. A FS
+# 06P2026/446 real, lida em produção, traz um NIF verdadeiro — e as três
+# leituras deste ecrã iam buscá-lo à venda, que aqui não existe.
+def _da_app(id_="a1", numero="FS 06P2026/446", nif="244772903"):
+    return {
+        "id": id_, "numero": numero, "total": 6.85, "total_bruto": 6.85,
+        "total_liquido": 6.06, "emitido_em": "2026-09-01T13:43:25+00:00",
+        "loja_id": "loja-app", "tipo": "FS", "venda_id": None,
+        "atcud": "J6SHGSNX-446", "modo": "normal", "origem": "app",
+        "cliente_nif": nif,
+        "linhas_vendus": [{"qty": 1, "title": "Açaí Mini",
+                           "amounts": {"gross_total": "6.85",
+                                       "net_total": "6.06"},
+                           "tax": {"id": "INT", "rate": 13}}],
+    }
+
+
+def test_a_lista_mostra_o_NIF_QUE_ESTA_NO_DOCUMENTO(monkeypatch):
+    """Medido a correr: a lista escrevia `cliente_nif: None` numa fatura que
+    TEM NIF, e o ecrã pinta isso como «Consumidor Final»."""
+    _db(monkeypatch, [_da_app()])
+    r = _corre(documentos_do_backoffice(_={}))
+    assert r["documentos"][0]["cliente_nif"] == "244772903"
+
+
+def test_o_detalhe_mostra_o_NIF_QUE_ESTA_NO_DOCUMENTO(monkeypatch):
+    _db(monkeypatch, [_da_app()])
+    r = _corre(documento_do_backoffice("a1", _={}))
+    assert r["cliente_nif"] == "244772903"
+
+
+def test_a_pesquisa_encontra_pelo_NIF_DO_DOCUMENTO(monkeypatch):
+    """Procurar pelo NIF real da fatura da app devolvia ZERO resultados — a
+    pesquisa só olhava para as vendas, e uma fatura da app não tem nenhuma.
+    O NIF é por onde o gestor procura a fatura de uma empresa."""
+    _db(monkeypatch,
+        [_da_app(),
+         _documento("d2", "FS 1/2", 20.0, "2026-08-10T13:00:00+00:00")],
+        vendas=[_venda("v-d2")])
+    r = _corre(documentos_do_backoffice(q="244772903", _={}))
+    assert [d["numero"] for d in r["documentos"]] == ["FS 06P2026/446"]
+
+
+def test_o_NIF_do_documento_tem_precedencia_sobre_o_da_venda(monkeypatch):
+    """A mesma regra de `relatorios.py:640`, e não é decorativa: escrita ao
+    contrário (`venda or documento`), a linha voltava a ler a venda primeiro e
+    as faturas da app perdiam o NIF outra vez assim que uma venda órfã
+    aparecesse com o campo a `None`."""
+    doc = dict(_da_app(id_="a2"), venda_id="v-a2")
+    _db(monkeypatch, [doc], vendas=[_venda("v-a2", cliente_nif=None)])
+    r = _corre(documento_do_backoffice("a2", _={}))
+    assert r["cliente_nif"] == "244772903"

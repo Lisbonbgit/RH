@@ -131,6 +131,12 @@ export const resumoDaSincronizacao = (resultado) => {
   const r = resultado || {};
   const gravados = r.gravados || 0;
   const assinalados = r.assinalados || [];
+  // Outra lista e outra coisa: as que JÁ CÁ ESTAVAM e passaram a `A` no
+  // Vendus, e que esta volta acabou de marcar como anuladas. Não são avaria
+  // nenhuma — não entram nos `assinalados`, que são o que ficou de fora e não
+  // volta — mas são dinheiro a SAIR do Dashboard, e isso diz-se a quem
+  // carregou no botão em vez de ficar só no log da API.
+  const anulados = r.anulados || [];
   const erros = r.erros || [];
   // **Os assinalados JÁ ESTÃO dentro dos ignorados.** No servidor, `_saltar`
   // chama `_contar` (`sincronizacao_rota.py`), por isso «8 ignoradas» seguido
@@ -144,12 +150,21 @@ export const resumoDaSincronizacao = (resultado) => {
   const partes = [
     `${gravados} ${gravados === 1 ? 'nova' : 'novas'} · ${r.repetidos || 0} `
     + `${r.repetidos === 1 ? 'repetida' : 'repetidas'} · ${r.ignorados || 0} `
-    + `${r.ignorados === 1 ? 'ignorada' : 'ignoradas'}${deFora}`,
+    + `${r.ignorados === 1 ? 'ignorada' : 'ignoradas'}${deFora}`
+    + (anulados.length > 0
+      ? ` · ${anulados.length} ${anulados.length === 1 ? 'anulada' : 'anuladas'}`
+      : ''),
   ];
   if (assinalados.length > 0) {
     partes.push(
       'São estas:\n'
       + assinalados.join('\n'),
+    );
+  }
+  if (anulados.length > 0) {
+    partes.push(
+      'Anuladas no Vendus e já não contam:\n'
+      + anulados.join('\n'),
     );
   }
   if (erros.length > 0) partes.push(erros.join('\n'));
@@ -165,7 +180,14 @@ export const resumoDaSincronizacao = (resultado) => {
         : gravados > 0
           ? `${gravados} ${gravados === 1
             ? 'fatura nova da app' : 'faturas novas da app'}`
-          : 'Sem faturas novas da app',
+          // Uma volta que não trouxe nada mas RETIROU uma fatura do Dashboard
+          // não é uma volta sem novidades: "Sem faturas novas da app" no
+          // título era a única linha que muita gente lê a esconder a única
+          // coisa que aconteceu.
+          : anulados.length > 0
+            ? `${anulados.length} ${anulados.length === 1
+              ? 'fatura anulada no Vendus' : 'faturas anuladas no Vendus'}`
+            : 'Sem faturas novas da app',
     descricao: partes.join('\n\n'),
   };
 };

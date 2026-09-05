@@ -11,6 +11,7 @@ cliente só sabe fazer as DUAS leituras permitidas — qualquer outra chamada
 passar despercebida.
 """
 import asyncio
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -60,18 +61,50 @@ _ESTADO = {}
 
 class _ColeccaoFalsa:
     def __init__(self, gravados, insert_rebenta=None, ja_gravados=(),
-                 colide_com_outro=False):
+                 colide_com_outro=False, nao_da_app=()):
         self.gravados = gravados
         self.insert_rebenta = insert_rebenta
         self.ja_gravados = set(ja_gravados)
+        # Quem já leva `anulado: True` na base. Separado dos `ja_gravados`
+        # porque é exactamente o que distingue a primeira volta da segunda.
+        self.anulados = set()
+        # Os que estão na base com `origem` diferente de `app` — as ~750 FS
+        # reais das cinco lojas. Sem eles no duplo, a cerca do `origem: "app"`
+        # não tinha como ficar vermelha.
+        self.nao_da_app = set(nao_da_app)
         # O `insert_one` rebenta porque OUTRO documento já ocupa o `atcud` ou
         # a `ext_ref`, não porque este já lá esteja. É a diferença entre "duas
         # voltas em cima uma da outra" e "um documento novo deitado fora".
         self.colide_com_outro = colide_com_outro
 
     async def find_one(self, filtro, projeccao=None):
-        existe = filtro.get("vendus_document_id") in self.ja_gravados
-        return {"_id": "x"} if existe else None
+        if not self._corresponde(filtro):
+            return None
+        return {"_id": "x"}
+
+    def _corresponde(self, filtro) -> bool:
+        """O duplo tem de honrar o filtro TODO, não só o `vendus_document_id`.
+
+        `_marcar_anulado` procura por `{vendus_document_id, anulado: {$ne:
+        True}}`, e é o segundo termo que faz a idempotência: um duplo que o
+        ignorasse contava a mesma anulação em todas as voltas — 288 vezes por
+        dia — e o teste da segunda volta passava a verde a mentir.
+        """
+        if filtro.get("vendus_document_id") not in self.ja_gravados:
+            return False
+        if (filtro.get("origem") == "app"
+                and filtro["vendus_document_id"] in self.nao_da_app):
+            return False
+        if filtro.get("anulado") == {"$ne": True}:
+            return filtro["vendus_document_id"] not in self.anulados
+        return True
+
+    async def update_one(self, filtro, alteracao):
+        if not self._corresponde(filtro):
+            return SimpleNamespace(modified_count=0)
+        if alteracao.get("$set", {}).get("anulado"):
+            self.anulados.add(filtro["vendus_document_id"])
+        return SimpleNamespace(modified_count=1)
 
     async def insert_one(self, documento):
         if self.insert_rebenta is not None:
@@ -154,10 +187,11 @@ class _ClienteFalso:
 
 def _montar(monkeypatch, gravados, *, documentos, rebenta_ao_ler=False,
             rebenta_a_listar=False, insert_rebenta=None, ja_gravados=(),
-            colide_com_outro=False):
+            colide_com_outro=False, nao_da_app=()):
     monkeypatch.setitem(
         _ESTADO, "coleccao",
-        _ColeccaoFalsa(gravados, insert_rebenta, ja_gravados, colide_com_outro))
+        _ColeccaoFalsa(gravados, insert_rebenta, ja_gravados, colide_com_outro,
+                       nao_da_app))
     # As definições vêm da BASE, não de um `_definicoes` substituído: é o que
     # deixa `test_so_toca_nas_coleccoes_certas` ver as duas colecções que a
     # sincronização toca de verdade.
@@ -526,3 +560,173 @@ def test_as_rotas_existem_mesmo():
     assert ("/api/faturacao/sincronizacao-app/definicoes", "PUT") in caminhos
     assert ("/api/faturacao/sincronizacao-app/sincronizar-agora",
             "POST") in caminhos
+
+
+# --- A anulação depois de importada ------------------------------------------
+
+# O MESMO documento, agora com `status: "A"` — o dicionário, que é a forma em
+# que ele vem no DETALHE (`estado_do_vendus` cobre as duas).
+_FS_446_ANULADA = dict(_FS_446, status={"id": "A", "date": "2026-09-05 10:00:00"})
+
+
+def test_uma_fatura_ja_gravada_que_e_anulada_deixa_de_contar(monkeypatch):
+    """A especificação prometia-o e o código saltava antes de qualquer escrita.
+
+    `deve_importar` devolve `(False, "anulada no Vendus")` e o atalho dos
+    repetidos sai antes do `insert_one`: o documento que já estava em
+    `fat_documentos` ficava intacto. O dono anulava no painel do Vendus uma FS
+    da app já importada e ela continuava a somar receita no Dashboard, nos
+    Relatórios e no email da noite — para sempre.
+    """
+    gravados = []
+    _montar(monkeypatch, gravados, documentos=[_FS_446_ANULADA],
+            ja_gravados=[370665072])
+    resultado = _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-05"]))
+    assert _ESTADO["coleccao"].anulados == {370665072}, "ficou marcada na base"
+    assert len(resultado["anulados"]) == 1, "e contada uma vez"
+    assert "FS 06P2026/446" in resultado["anulados"][0], "identifica qual"
+    assert resultado["gravados"] == 0 and gravados == []
+
+
+def test_a_mesma_anulacao_nao_se_conta_duas_vezes(monkeypatch):
+    """O cron corre 288 vezes por dia e cada volta relê hoje e ontem.
+
+    Uma marcação que se contasse outra vez em cada volta transformava uma
+    anulação numa avalanche: o ecrã a anunciar «1 fatura anulada» de cinco em
+    cinco minutos, para sempre, pela mesma fatura.
+    """
+    gravados = []
+    _montar(monkeypatch, gravados, documentos=[_FS_446_ANULADA],
+            ja_gravados=[370665072])
+    primeira = _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-05"]))
+    segunda = _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-05"]))
+    assert len(primeira["anulados"]) == 1
+    assert segunda["anulados"] == [], "a segunda volta não a conta outra vez"
+    assert _ESTADO["coleccao"].anulados == {370665072}
+
+
+def test_uma_anulada_que_nunca_entrou_continua_de_fora(monkeypatch):
+    """Marcar não é importar: uma FS anulada que nunca cá esteve não se grava
+    nem se anuncia. Sem esta distinção, a lista de anuladas enchia-se de
+    documentos que nunca contaram nada."""
+    gravados = []
+    cliente = _montar(monkeypatch, gravados, documentos=[_FS_446_ANULADA])
+    resultado = _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-05"]))
+    assert gravados == [], "não grava nada"
+    assert resultado["anulados"] == [], "nem anuncia uma marcação que não houve"
+    assert _ESTADO["coleccao"].anulados == set()
+    assert resultado["ignorados"] == 1
+    assert ("ler", 370665072) not in cliente.pedidos, "nem gasta um GET"
+
+
+def test_o_ensaio_nao_marca_a_anulacao(monkeypatch):
+    """`simular` é o que se corre contra a PRODUÇÃO — a base com ~750 FS
+    fiscais reais — para ver o que ia acontecer. Escrever ali durante um
+    ensaio era exactamente o estrago que o ensaio existe para evitar."""
+    gravados = []
+    _montar(monkeypatch, gravados, documentos=[_FS_446_ANULADA],
+            ja_gravados=[370665072])
+    resultado = _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-05"],
+                                        simular=True))
+    assert len(resultado["anulados"]) == 1, "diz o que ia marcar"
+    assert _ESTADO["coleccao"].anulados == set(), "mas não marcou nada"
+
+
+def test_uma_fatura_NOSSA_anulada_no_vendus_nao_se_toca(monkeypatch):
+    """Esta caixa é a MESMA das cinco lojas: a esmagadora maioria do que lá
+    está é nosso. Uma anulação de um documento do POS trata-se pela nota de
+    crédito, não por aqui — `deve_importar` recusa-o pela `ext_ref` antes de
+    sequer olhar para o estado, e é isso que impede esta rotina de mexer nas
+    ~750 FS reais que não lhe dizem respeito."""
+    nossa_anulada = dict(_NOSSA, id=371000002, number="FS 06P2026/100",
+                         status={"id": "A", "date": "2026-09-05 10:00:00"})
+    gravados = []
+    _montar(monkeypatch, gravados, documentos=[nossa_anulada],
+            ja_gravados=[371000002], nao_da_app=[371000002])
+    resultado = _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-05"]))
+    assert resultado["anulados"] == []
+    assert _ESTADO["coleccao"].anulados == set()
+
+
+# --- A porta para os dias que já passaram ------------------------------------
+
+
+def _dias_lidos(cliente):
+    return [pedido[1] for pedido in cliente.pedidos if pedido[0] == "listar"]
+
+
+def _botao(monkeypatch, **kw):
+    """O botão do backoffice, com a base e o Vendus em duplo."""
+    cliente = _montar(monkeypatch, [], documentos=[])
+    monkeypatch.setattr(rota, "obter_db", lambda: _DBFalsa())
+    return cliente, _corre(rota.sincronizar_agora(**kw))
+
+
+def test_sem_parametros_o_botao_continua_a_ler_ontem_e_hoje(monkeypatch):
+    """As datas contam-se AQUI, não se pedem a `_dias_da_volta`.
+
+    Escrito como `== rota._dias_da_volta()`, o teste mutava com o código:
+    provado por mutação — reduzir a volta a só hoje deixava-o VERDE, porque os
+    dois lados da igualdade saíam da mesma função. Ontem tem de lá estar
+    sempre: é o que apanha a fatura das 23h50 que o Vendus só mostrou depois
+    da meia-noite.
+    """
+    hoje = datetime.now(rota.LISBON_TZ).date()
+    cliente, _resultado = _botao(monkeypatch)
+    assert _dias_lidos(cliente) == [(hoje - timedelta(days=1)).isoformat(),
+                                    hoje.isoformat()]
+
+
+def test_um_intervalo_a_escolha_le_os_dias_certos(monkeypatch):
+    """A única fatura da app que existe é de 2026-09-01. Ligado o cron a 05/09,
+    ele NUNCA a ia buscar: `sincronizar(dias=_dias_da_volta())` devolve só
+    ontem e hoje, e nenhuma das duas rotas aceitava datas. Qualquer paragem
+    maior do que 24 horas perdia essas faturas para sempre."""
+    cliente, _resultado = _botao(monkeypatch, de="2026-09-01", ate="2026-09-03")
+    assert _dias_lidos(cliente) == ["2026-09-01", "2026-09-02", "2026-09-03"], \
+        "os dois extremos INCLUÍDOS, e os dias do meio também"
+
+
+def test_um_intervalo_demasiado_longo_e_recusado(monkeypatch):
+    """Cada dia é um pedido ao Vendus (mais um por documento novo) e o ecrã
+    desiste aos 120 s: sem tecto, o botão dizia "não respondeu" com a volta
+    ainda a correr do lado de lá — e quem lê isso carrega outra vez."""
+    with pytest.raises(HTTPException) as e:
+        rota._dias_do_intervalo("2026-09-01", "2027-09-01")
+    assert e.value.status_code == 422
+    assert "máximo" in str(e.value.detail)
+
+
+def test_uma_data_antes_do_PRIMEIRO_DIA_e_recusada():
+    """`PRIMEIRO_DIA` é a decisão do dono sobre desde quando a receita da app
+    entra no portal — a app emite desde 18/08. Até esta tarefa a constante não
+    era lida por ninguém: uma única ocorrência em todo o repositório, a própria
+    definição."""
+    with pytest.raises(HTTPException) as e:
+        rota._dias_do_intervalo("2026-08-31", "2026-09-01")
+    assert e.value.status_code == 422
+    assert rota.PRIMEIRO_DIA in str(e.value.detail)
+
+
+def test_uma_data_no_futuro_e_recusada():
+    amanha = (datetime.now(rota.LISBON_TZ).date() + timedelta(days=1)).isoformat()
+    with pytest.raises(HTTPException) as e:
+        rota._dias_do_intervalo(amanha, amanha)
+    assert e.value.status_code == 422
+
+
+def test_uma_data_sozinha_nao_serve():
+    """Metade de um intervalo é uma pergunta por acabar. Deixá-la passar
+    obrigava a inventar a outra metade — e a metade inventada é a que leria
+    dias que ninguém pediu."""
+    for de, ate in (("2026-09-01", None), (None, "2026-09-03")):
+        with pytest.raises(HTTPException) as e:
+            rota._dias_do_intervalo(de, ate)
+        assert e.value.status_code == 422
+
+
+def test_datas_ilegiveis_nao_rebentam():
+    for de, ate in (("01/09/2026", "2026-09-03"), ("2026-09-01", "ontem")):
+        with pytest.raises(HTTPException) as e:
+            rota._dias_do_intervalo(de, ate)
+        assert e.value.status_code == 422

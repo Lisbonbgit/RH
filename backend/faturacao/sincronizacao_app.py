@@ -106,7 +106,8 @@ def documento_para_gravar(cru: Dict, loja_id: str) -> Dict:
     não pode ter — `venda_id` fica `None`, e não há `talao_escpos` nenhum — e
     mais dois que só estes têm: `origem` e `linhas_vendus`.
 
-    **Recusa-se a gravar sem ATCUD ou sem id do Vendus.** Os dois índices são
+    **Recusa-se a gravar sem ATCUD, sem id do Vendus, ou sem data legível.**
+    A data tem a sua própria razão, escrita onde é levantada. Os dois índices são
     únicos SIMPLES (db.py:132-133), não `sparse`: dois documentos com o campo a
     `None` colidem um com o outro, e o segundo desaparecia com um erro que não
     diz nada. Melhor recusar em voz alta e deixar quem chama contá-lo.
@@ -117,6 +118,25 @@ def documento_para_gravar(cru: Dict, loja_id: str) -> Dict:
     if not cru.get("id"):
         raise ValueError("documento do Vendus sem id: não se grava "
                          "(o índice é único e dois nulos colidem)")
+
+    # **Recusa-se também sem data legível** — e aqui, ao contrário do POS
+    # (`fiscal.py:1196` faz `bruto.get("emitido_em") or _agora()`), NÃO se cai
+    # no instante actual. A diferença é que aqui não há segunda oportunidade:
+    # `atcud` e `vendus_document_id` são índices ÚNICOS, portanto uma fatura
+    # gravada com a data errada fica com ela PARA SEMPRE — nunca mais pode ser
+    # regravada no dia certo. E errada seria: um documento de 01/09 lido a
+    # 05/09 ia parar ao dia 05, a inflacionar um dia e a esvaziar o outro,
+    # sem nada no ecrã a dizê-lo. Pior ainda, `None` a direito era invisível:
+    # todos os filtros por intervalo comparam `emitido_em`
+    # (dashboard.py:498, relatorios.py:620), e um documento sem ele não conta
+    # para janela NENHUMA — desaparecia de todos os ecrãs de dinheiro, sem
+    # erro nenhum. Recusar deixa-a de fora com um `assinalado` visível
+    # (`sincronizacao_rota._saltar`), que é recuperável.
+    emitido_em = _instante_do_vendus(cru)
+    if not emitido_em:
+        raise ValueError("documento do Vendus sem data legível: não se grava "
+                         "(sem `emitido_em` não conta para janela nenhuma e "
+                         "o ATCUD único impede regravá-lo no dia certo)")
 
     ref = str(cru.get("external_reference") or "").strip()
     return {
@@ -146,7 +166,7 @@ def documento_para_gravar(cru: Dict, loja_id: str) -> Dict:
         # isto é a app a valer 0,00 € no modo "sem IVA".
         "total_liquido": _valor_monetario(cru.get("amount_net")),
         "cliente_nif": _nif_do_cliente(cru),
-        "emitido_em": _instante_do_vendus(cru),
+        "emitido_em": emitido_em,
         "loja_id": loja_id,
         # Nunca "": `db.py:153-156` declara `ext_ref` único parcial sobre
         # strings. Esse índice não chegou a criar-se em produção (o antigo

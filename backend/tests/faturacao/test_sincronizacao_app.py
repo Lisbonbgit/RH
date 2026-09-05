@@ -203,3 +203,37 @@ def test_sem_id_do_vendus_recusa_se_a_gravar():
 def test_uma_nota_de_credito_guarda_o_tipo_para_o_sinal_ficar_certo():
     cru = dict(FS_446, type="NC")
     assert documento_para_gravar(cru, LOJA)["tipo"] == "NC"
+
+
+def test_sem_data_legivel_recusa_se_a_gravar():
+    """**Recusar, e não cair no instante actual como o POS faz.**
+
+    `_instante_do_vendus` devolve `None` quando nem `local_time` nem `date` se
+    lêem, e a docstring dela diz «quem chama cai no instante actual» — é o que
+    `fiscal.py:1196` faz (`bruto.get("emitido_em") or _agora()`). Aqui não
+    pode ser, por duas razões medidas:
+
+    - `emitido_em: None` gravava e o documento ficava INVISÍVEL para sempre:
+      todos os filtros por intervalo comparam `emitido_em` (dashboard.py:498,
+      relatorios.py:620), portanto ele não contava para janela nenhuma e
+      desaparecia de todos os ecrãs de dinheiro, sem erro nenhum;
+    - o instante actual punha a fatura no dia ERRADO — uma FS de 01/09 lida a
+      05/09 ia para o dia 5 — e como `atcud` e `vendus_document_id` são
+      índices únicos, nunca mais poderia ser regravada no dia certo.
+
+    Recusar deixa-a de fora com um `assinalado` visível
+    (`sincronizacao_rota._saltar`), e isso é recuperável.
+    """
+    sem_data = dict(FS_446)
+    sem_data.pop("local_time")
+    sem_data.pop("date")
+    with pytest.raises(ValueError, match="data"):
+        documento_para_gravar(sem_data, LOJA)
+
+
+def test_uma_data_ilegivel_tambem_recusa():
+    """`_instante_do_vendus` não levanta num valor ilegível: avisa no log e
+    devolve `None`. Sem esta guarda, o `None` chegava intacto à gravação."""
+    ilegivel = dict(FS_446, local_time="ontem à tarde", date="não sei")
+    with pytest.raises(ValueError, match="data"):
+        documento_para_gravar(ilegivel, LOJA)

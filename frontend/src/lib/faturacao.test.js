@@ -83,6 +83,33 @@ describe('resumoDaSincronizacao', () => {
     expect(r.descricao).toContain('sem loja escolhida');
   });
 
+  // As ANULADAS: as que já cá estavam e passaram a `A` no Vendus. Não são
+  // avaria (não entram nos `assinalados`), mas são dinheiro a SAIR do
+  // Dashboard — e o dono anulou-as no painel do Vendus, não aqui.
+  test('uma anulação aparece a quem carregou no botão', () => {
+    const r = resumoDaSincronizacao({
+      ...VOLTA_LIMPA,
+      gravados: 0,
+      anulados: ['FS 06P2026/446: anulada no Vendus depois de importada'],
+    });
+    expect(r.titulo).toBe('1 fatura anulada no Vendus');
+    expect(r.descricao).toContain('1 anulada');
+    expect(r.descricao).toContain('FS 06P2026/446');
+  });
+
+  test('uma anulação não se disfarça de avaria', () => {
+    const r = resumoDaSincronizacao({
+      ...VOLTA_LIMPA,
+      anulados: ['FS 06P2026/446: anulada no Vendus depois de importada'],
+    });
+    // Nem entra no parêntesis dos «que ficaram de fora e não voltam» — ela
+    // não ficou de fora, entrou e depois saiu.
+    expect(r.descricao).not.toContain('ficou de fora');
+    expect(r.descricao).toContain('8 ignoradas · 1 anulada');
+    // E com faturas novas o título continua a liderar com elas.
+    expect(r.titulo).toBe('3 faturas novas da app');
+  });
+
   test('uma resposta vazia (ou nenhuma) não rebenta o ecrã', () => {
     expect(resumoDaSincronizacao(undefined).tipo).toBe('success');
     expect(resumoDaSincronizacao({}).descricao)

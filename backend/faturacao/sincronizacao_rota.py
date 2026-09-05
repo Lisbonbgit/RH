@@ -12,7 +12,7 @@ import asyncio
 import logging
 import os
 import secrets
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -22,7 +22,11 @@ from pymongo.errors import DuplicateKeyError
 from .auth import gestor_atual
 from .db import COLECOES, obter_db
 from .periodos import LISBON_TZ
-from .sincronizacao_app import deve_importar, documento_para_gravar
+from .sincronizacao_app import (
+    deve_importar,
+    documento_para_gravar,
+    estado_do_vendus,
+)
 from .vendus.cliente import obter_conta
 from .vendus.emissao import (
     ClienteEmissaoVendus,
@@ -36,6 +40,14 @@ router = APIRouter()
 
 CHAVE = "sincronizacao_app"
 PRIMEIRO_DIA = "2026-09-01"   # decisão do dono; a app emite desde 18/08
+
+# O tecto do intervalo à escolha. Cada dia é UM pedido ao Vendus (mais um por
+# documento novo) e o botão do backoffice desiste aos 120 s
+# (`frontend/src/lib/faturacao.js::TIMEOUT_COM_VENDUS_MS`): um intervalo sem
+# tecto era o ecrã a dizer "não respondeu" com a volta ainda a correr do lado
+# de lá — e quem lê isso carrega outra vez. 31 dias cobre um mês inteiro de
+# recuperação, que é para o que esta porta existe.
+MAXIMO_DE_DIAS = 31
 
 
 class DefinicoesEntrada(BaseModel):
@@ -67,6 +79,64 @@ def _saltar(resultado: Dict, doc: Dict, motivo: str) -> None:
         "%s: %s" % (doc.get("number") or "id %s" % doc.get("id"), motivo))
 
 
+def _id_do_vendus(doc: Dict) -> Optional[int]:
+    """O `id` do documento como inteiro, ou `None` se não se ler.
+
+    `deve_importar` não exige `id` — decide por tipo, ref e estado — por isso
+    um `int(doc["id"])` a direito levantava `KeyError` (id em falta) ou
+    `ValueError` (texto em vez de número). Nenhum dos dois é `VendusErro`, e
+    por isso escapavam à volta INTEIRA: o cron levava um 500 de cinco em cinco
+    minutos e nem os documentos seguintes entravam.
+    """
+    try:
+        return int(doc["id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+async def _marcar_anulado(coleccao, doc: Dict, resultado: Dict,
+                          simular: bool) -> None:
+    """**Anulada DEPOIS de importada** — deixa de contar, hoje mesmo.
+
+    `deve_importar` diz só que ela não entra, e o atalho dos repetidos sai
+    antes de qualquer escrita: sem isto, o dono anulava no painel do Vendus
+    uma FS da app já gravada e ela continuava a somar receita no Dashboard,
+    nos Relatórios e no email da noite — para sempre. Como cada volta relê
+    hoje e ontem, a anulação chega cá dentro no máximo cinco minutos depois.
+
+    `anulado` já é honrado a jusante: `dashboard._valor_documento` devolve
+    0.0 e `dashboard.documentos_no_periodo` tira-o do crivo (e com ele os
+    artigos, do top de «Mais Vendidos»).
+
+    **Idempotente por construção**: o filtro exige `anulado` ainda não
+    marcado, portanto a segunda volta não a conta outra vez. Não é uma
+    conveniência — o cron corre 288 vezes por dia, e um contador que crescesse
+    a cada volta transformava uma anulação numa avalanche no ecrã.
+    """
+    doc_id = _id_do_vendus(doc)
+    if doc_id is None:
+        return   # sem id não há como a encontrar em `fat_documentos`
+    # **`origem: "app"` não é redundante, é a cerca.** `deve_importar` já
+    # recusa o que é nosso pela `ext_ref`, mas esta caixa é a MESMA das cinco
+    # lojas e `fat_documentos` tem ~750 FS fiscais reais que não saíram da app.
+    # Uma rotina que nunca correu não pode ter a possibilidade de pôr a zero a
+    # receita de uma loja: só mexe no que ela própria importou. As anulações do
+    # POS têm o seu caminho (`nota_credito.py`).
+    filtro = {"vendus_document_id": doc_id, "origem": "app",
+              "anulado": {"$ne": True}}
+    if simular:
+        # `simular` não escreve NADA: é o que permite prová-lo contra a
+        # produção antes de deixar acontecer.
+        marcou = await coleccao.find_one(filtro, {"_id": 1}) is not None
+    else:
+        marcou = (await coleccao.update_one(
+            filtro, {"$set": {"anulado": True}})).modified_count > 0
+    if marcou:
+        resultado["anulados"].append(
+            "%s: anulada no Vendus depois de importada — deixa de contar"
+            % (doc.get("number") or "id %s" % doc_id))
+
+
 async def sincronizar(db, *, dias: List[str], simular: bool = False) -> Dict:
     """Lê os dias pedidos e grava o que for para gravar.
 
@@ -84,9 +154,14 @@ async def sincronizar(db, *, dias: List[str], simular: bool = False) -> Dict:
     orçamento, uma fatura nossa). Uma FS real de 6,85 € que caia num destes
     casos não volta a ser tentada: sem esta lista, desaparecia do Dashboard e
     do relatório com o cron a parecer saudável.
+
+    `anulados` é outra lista e outra coisa: os documentos que JÁ CÁ ESTAVAM e
+    que esta volta acabou de marcar `anulado: True` por terem passado a `A` no
+    Vendus. Não é avaria nenhuma — é dinheiro a sair do Dashboard, e por isso
+    diz-se também. Ver `_marcar_anulado`.
     """
     resultado = {"lidos": 0, "gravados": 0, "ignorados": 0, "repetidos": 0,
-                 "motivos": {}, "assinalados": [], "erros": [],
+                 "motivos": {}, "assinalados": [], "anulados": [], "erros": [],
                  "simulado": simular}
 
     definicoes = await _definicoes(db)
@@ -125,24 +200,24 @@ async def sincronizar(db, *, dias: List[str], simular: bool = False) -> Dict:
                     entra, motivo = deve_importar(doc)
                     if not entra:
                         _contar(resultado, motivo)
+                        # Ficar de fora não chega quando ela JÁ ESTÁ cá
+                        # dentro: uma FS da app anulada no painel do Vendus
+                        # continuava a somar receita para sempre. Ver
+                        # `_marcar_anulado`.
+                        if estado_do_vendus(doc) == "A":
+                            await _marcar_anulado(
+                                coleccao, doc, resultado, simular)
                         continue
 
-                    # `deve_importar` não exige `id` — decide por tipo, ref e
-                    # estado. Sem esta guarda, o `int(doc["id"])` de baixo
-                    # levantava `KeyError`, que NÃO é `VendusErro` e por isso
-                    # escapava à volta inteira: o cron levava um 500 de cinco
-                    # em cinco minutos e nem os documentos seguintes entravam.
                     if not doc.get("id"):
                         _saltar(resultado, doc, "sem id na lista do Vendus")
                         continue
                     # Um `id` presente mas ilegível (ex.: texto em vez de
-                    # número) faz o mesmo estrago: `int()` levanta
-                    # `ValueError`, também não é `VendusErro`, e escapava do
-                    # mesmo jeito. Converte-se uma vez aqui e reutiliza-se o
-                    # valor a seguir.
-                    try:
-                        doc_id = int(doc["id"])
-                    except (TypeError, ValueError):
+                    # número) faz o mesmo estrago do id em falta, só com o
+                    # gatilho menos provável. Converte-se uma vez aqui e
+                    # reutiliza-se o valor a seguir.
+                    doc_id = _id_do_vendus(doc)
+                    if doc_id is None:
                         _saltar(resultado, doc,
                                 "id do Vendus ilegível: %r" % doc.get("id"))
                         continue
@@ -225,11 +300,13 @@ async def sincronizar(db, *, dias: List[str], simular: bool = False) -> Dict:
         resultado["erros"].append("%s: %s" % (type(e).__name__, e))
         logger.warning("[sinc-app] volta interrompida: %s", e)
 
-    logger.info("[sinc-app] %s: lidos=%d gravados=%d ignorados=%d repetidos=%d %s",
+    logger.info("[sinc-app] %s: lidos=%d gravados=%d ignorados=%d repetidos=%d "
+                "anulados=%d %s",
                 "ENSAIO" if simular else "a sério", resultado["lidos"],
                 resultado["gravados"], resultado["ignorados"],
-                resultado["repetidos"], resultado["motivos"])
-    for linha in resultado["assinalados"]:
+                resultado["repetidos"], len(resultado["anulados"]),
+                resultado["motivos"])
+    for linha in resultado["assinalados"] + resultado["anulados"]:
         logger.warning("[sinc-app] assinalado: %s", linha)
     return resultado
 
@@ -267,10 +344,64 @@ async def gravar_definicoes_app(dados: DefinicoesEntrada,
     return await _definicoes(db)
 
 
+def _dias_do_intervalo(de: Optional[str], ate: Optional[str]) -> List[str]:
+    """Os dias de `de` a `ate`, inclusive — a porta para o que já passou.
+
+    **Porque tem de existir.** A volta normal lê ontem e hoje, e mais nada. A
+    única fatura da app que existe é de 2026-09-01: ligado o cron a 05/09, ele
+    NUNCA a ia buscar. E qualquer paragem maior do que 24 horas (cron
+    desligado, Vendus em baixo, deploy) perdia essas faturas para sempre, sem
+    nada no ecrã a dizê-lo.
+
+    As três guardas, e o que cada uma impede:
+    - antes de `PRIMEIRO_DIA` é recusado — é a decisão do dono sobre desde
+      quando a receita da app entra no portal, e um `de` a mais trazia para o
+      Dashboard faturas de Agosto que ninguém mandou vir;
+    - depois de hoje é recusado — um dia futuro é sempre uma leitura vazia,
+      e paga-se-lhe um pedido ao Vendus na mesma;
+    - mais do que `MAXIMO_DE_DIAS` é recusado — ver a constante.
+    """
+    if not (de and ate):
+        raise HTTPException(
+            status_code=422,
+            detail="Indique as duas datas (`de` e `ate`), ou nenhuma.")
+    try:
+        inicio, fim = date.fromisoformat(de), date.fromisoformat(ate)
+    except ValueError:
+        raise HTTPException(status_code=422,
+                            detail="Datas em AAAA-MM-DD.")
+    if inicio > fim:
+        raise HTTPException(status_code=422,
+                            detail="A data inicial é depois da final.")
+    if inicio < date.fromisoformat(PRIMEIRO_DIA):
+        raise HTTPException(
+            status_code=422,
+            detail="A sincronização da app só lê a partir de %s." % PRIMEIRO_DIA)
+    # O tecto ANTES do "ainda não chegou": um pedido de 400 dias é uma
+    # pergunta mal feita, quer acabe hoje quer acabe em 2099, e responder-lhe
+    # com a data final é mandar quem pergunta corrigir a metade errada.
+    quantos = (fim - inicio).days + 1
+    if quantos > MAXIMO_DE_DIAS:
+        raise HTTPException(
+            status_code=422,
+            detail="Intervalo de %d dias: o máximo são %d de cada vez."
+                   % (quantos, MAXIMO_DE_DIAS))
+    if fim > datetime.now(LISBON_TZ).date():
+        raise HTTPException(status_code=422,
+                            detail="A data final ainda não chegou.")
+    return [(inicio + timedelta(days=n)).isoformat() for n in range(quantos)]
+
+
 @router.post("/sincronizacao-app/sincronizar-agora")
-async def sincronizar_agora(_: dict = Depends(gestor_atual)) -> dict:
-    """O botão do backoffice. Lê hoje e ontem, como o cron."""
-    return await sincronizar(obter_db(), dias=_dias_da_volta())
+async def sincronizar_agora(de: Optional[str] = None, ate: Optional[str] = None,
+                            _: dict = Depends(gestor_atual)) -> dict:
+    """O botão do backoffice. Sem parâmetros lê hoje e ontem, como o cron.
+
+    Com `de` e `ate` (AAAA-MM-DD, os dois incluídos) lê o intervalo pedido —
+    é a porta para recuperar os dias que já passaram. Ver `_dias_do_intervalo`.
+    """
+    dias = (_dias_do_intervalo(de, ate) if (de or ate) else _dias_da_volta())
+    return await sincronizar(obter_db(), dias=dias)
 
 
 @router.post("/cron/sincronizar-app")
