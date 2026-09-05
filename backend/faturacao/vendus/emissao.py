@@ -536,6 +536,39 @@ class ClienteEmissaoVendus:
             pagina += 1
         return resultado
 
+    def ler_documento(self, documento_id: int) -> Optional[Dict]:
+        """UM documento do Vendus, cru, com o ATCUD e as linhas.
+
+        **Porque é que isto não é a lista.** Medido a 2026-09-04: a lista
+        (`GET documents/`), mesmo com `view=detailed`, devolve 18 campos e
+        nenhum deles é `atcud` ou `items` — traz `payments` e `amount_gross`,
+        que é para o que foi feita. O ATCUD é obrigatório para gravar (o índice
+        é único) e as linhas são o que faz a fatura valer mais do que zero nos
+        Relatórios. Os dois só existem aqui.
+
+        **E este pedido não leva `view`.** O Vendus responde 403 P001 a um
+        `view` num GET por id — o detalhe já vem todo (ver a docstring deste
+        módulo).
+
+        `None` no 404 (o documento não existe) — não é avaria. Um 2xx cujo
+        corpo não se lê continua a ser `VendusRespostaIlegivel`, nunca um
+        documento vazio: quem chama tem de saber a diferença entre «não há»
+        e «não consegui ler» (a mesma fronteira de `listar_documentos_por_dia`
+        acima)."""
+        resposta = self._pedir_get_com_retentativas(
+            "documents/%d/" % int(documento_id), None)
+        if resposta is None:
+            return None
+        try:
+            dados = _corpo_como_lista(resposta)
+        except VendusErro:
+            raise
+        except Exception as e:  # noqa: BLE001 — ver o comentário acima
+            raise _resposta_ilegivel(
+                resposta, "documento %d" % documento_id, "a ler o documento", e,
+            ) from e
+        return dados[0] if dados else None
+
     def _pedir_com_retentativas(self, path: str, corpo: Dict) -> httpx.Response:
         return self._enviar_com_retentativas("POST", path, json=corpo)
 
