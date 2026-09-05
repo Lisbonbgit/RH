@@ -51,3 +51,40 @@ export const KPI_TONES = [
   { icon: 'text-indigo-600 dark:text-indigo-400', bg: 'bg-indigo-50 dark:bg-indigo-500/10' },
 ];
 export const kpiTone = (i) => KPI_TONES[((i % KPI_TONES.length) + KPI_TONES.length) % KPI_TONES.length];
+
+// Categorias do Financeiro. Uma lista SÓ, partilhada pelas faturas (relatório
+// de Resultados) e pelos movimentos (Conciliação) — duas listas dariam dois
+// números para a mesma pergunta. É a lista do Excel da diretora financeira,
+// mais `rendas` e `outros`, que já existiam gravadas nas faturas.
+export const CATEGORIAS_PADRAO = [
+  { id: 'entradas', label: 'Entradas' },
+  { id: 'salarios', label: 'Salários' },
+  { id: 'utilitarios', label: 'Utilitários' },
+  { id: 'servicos', label: 'Serviços' },
+  { id: 'impostos', label: 'Impostos' },
+  { id: 'investimento', label: 'Investimento Equipamentos' },
+  { id: 'supermercado', label: 'Supermercado' },
+  { id: 'fornecedor', label: 'Fornecedor' },
+  { id: 'seguros', label: 'Seguros' },
+  { id: 'marketing', label: 'Marketing' },
+  { id: 'cartoes_credito', label: 'Cartões de Crédito' },
+  { id: 'dominios_sites', label: 'Domínios e Sites' },
+  { id: 'transporte', label: 'Transporte' },
+  { id: 'rendas', label: 'Rendas' },
+  { id: 'outros', label: 'Outros' },
+];
+
+// A lista é POR EMPRESA (cada empresa tem o seu "Excel"). Sem lista própria,
+// vale a de omissão.
+export const categoriasDaEmpresa = (company) => {
+  const cats = company && Array.isArray(company.categorias) ? company.categorias : null;
+  return cats && cats.length ? cats : CATEGORIAS_PADRAO;
+};
+
+// Devolve a chave crua quando não conhece a categoria: um valor legado nunca
+// pode sumir do ecrã só porque saiu da lista.
+export const categoriaLabel = (cats, id) => {
+  if (!id) return '';
+  const found = (cats || []).find((c) => c.id === id);
+  return found ? found.label : id;
+};
