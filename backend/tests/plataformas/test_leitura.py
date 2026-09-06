@@ -654,10 +654,10 @@ def test_um_503_do_modelo_tambem_se_retenta(monkeypatch):
     assert len(tentativas) > 1, "desistiu à primeira num erro que passa sozinho"
 
 
-# --- A quota é por modelo e por dia: passa-se ao modelo seguinte -------------
+# --- O 429 espera-se, e não se troca de modelo ------------------------------
 
-def _cliente_que_responde(mapa, registo):
-    """Um duplo do httpx.Client: `mapa` diz o que cada modelo responde."""
+def _cliente_que(respostas, registo):
+    """Um duplo do httpx.Client que devolve, por ordem, os códigos dados."""
     class Resposta:
         def __init__(self, codigo):
             self.status_code = codigo
@@ -665,7 +665,9 @@ def _cliente_que_responde(mapa, registo):
         def json(self):
             if self.status_code == 200:
                 return {"candidates": [{"content": {"parts": [{"text": '{"ok":1}'}]}}]}
-            return {"error": {"message": "Quota exceeded, retry in 55s."}}
+            return {"error": {"message": "Quota exceeded. Please retry in 21.5s."}}
+
+    fila = list(respostas)
 
     class Cliente:
         def __init__(self, *a, **k):
@@ -678,65 +680,68 @@ def _cliente_que_responde(mapa, registo):
             return False
 
         def post(self, url, **k):
-            modelo = url.split("/models/")[1].split(":")[0]
-            registo.append(modelo)
-            return Resposta(mapa.get(modelo, 200))
+            registo.append(url.split("/models/")[1].split(":")[0])
+            return Resposta(fila.pop(0) if fila else 200)
 
     return Cliente
 
 
-def test_com_a_quota_de_um_modelo_esgotada_vai_se_ao_seguinte(monkeypatch):
-    """Esperar não devolve uma quota DIÁRIA. Medido na conta a sério: com o
-    primeiro modelo esgotado, os outros respondiam à primeira."""
+def test_um_429_espera_e_repete_NO_MESMO_modelo(monkeypatch):
+    """**A quota gratuita é por MINUTO, não por dia** — medido a 2026-09-06:
+    25 pedidos seguidos ao mesmo modelo passaram todos, com duas esperas, em
+    107 segundos.
+
+    Houve uma versão que trocava de modelo no 429, construída sobre a leitura
+    errada de que a quota era diária. Piorava: com o minuto saturado, os quatro
+    modelos apanhavam 429 em treze segundos e a recolha falhava inteira.
+    """
+    esperas = []
     tentados = []
     monkeypatch.setenv("GEMINI_API_KEY", "chave")
-    monkeypatch.setattr(leitura.time, "sleep", lambda s: None)
-    monkeypatch.setattr(leitura.httpx, "Client",
-                        _cliente_que_responde({leitura.MODELO_POR_OMISSAO: 429},
-                                              tentados))
-    leitura.reiniciar_orcamento()
-    leitura._ultima_chamada = 0.0
+    monkeypatch.setattr(leitura.time, "sleep", lambda s: esperas.append(s))
+    monkeypatch.setattr(leitura.httpx, "Client", _cliente_que([429, 429, 200], tentados))
+
     assert "ok" in leitura._chamar_gemini([{"text": "x"}])
-    assert tentados[0] == leitura.MODELO_POR_OMISSAO
-    assert tentados[1] in leitura.MODELOS_DE_RECURSO
+    assert set(tentados) == {leitura.MODELO_POR_OMISSAO}, "trocou de modelo"
+    # Espera o que o Google mandou (21,5 + 1), e não um número inventado.
+    assert [e for e in esperas if e > 5] == [22.5, 22.5]
 
 
-def test_um_modelo_esgotado_nao_e_tentado_outra_vez_na_mesma_recolha(monkeypatch):
-    """Sem isto, cada uma das quinze mensagens voltava a bater à mesma porta
-    fechada — quinze pedidos deitados fora e o tempo todo a passar."""
-    tentados = []
+def test_a_espera_usa_o_tempo_que_o_GOOGLE_indica(monkeypatch):
+    class Resposta:
+        status_code = 429
+
+        def json(self):
+            return {"error": {"message": "Please retry in 47.9s."}}
+
+    assert leitura._quanto_esperar(Resposta(), 22.0) == 48.9
+
+    class SemTempo:
+        status_code = 429
+
+        def json(self):
+            return {"error": {"message": "Quota exceeded."}}
+
+    assert leitura._quanto_esperar(SemTempo(), 22.0) == 22.0
+
+    class Enorme:
+        status_code = 429
+
+        def json(self):
+            return {"error": {"message": "Please retry in 3600s."}}
+
+    # Com tecto: uma recolha não pode ficar uma hora à espera de um pedido.
+    assert leitura._quanto_esperar(Enorme(), 22.0) == 65.0
+
+
+def test_a_espera_tem_um_tecto_por_recolha(monkeypatch):
+    """Uma recolha que demore mais do que o orçamento é uma recolha que
+    ninguém vê acabar — o botão do ecrã desiste aos cinco minutos."""
     monkeypatch.setenv("GEMINI_API_KEY", "chave")
     monkeypatch.setattr(leitura.time, "sleep", lambda s: None)
-    monkeypatch.setattr(leitura.httpx, "Client",
-                        _cliente_que_responde({leitura.MODELO_POR_OMISSAO: 429},
-                                              tentados))
-    leitura.reiniciar_orcamento()
-    leitura._ultima_chamada = 0.0
-    leitura._chamar_gemini([{"text": "a"}])
-    leitura._chamar_gemini([{"text": "b"}])
-    assert tentados.count(leitura.MODELO_POR_OMISSAO) == 1
-
-
-def test_com_TODOS_os_modelos_esgotados_diz_se_por_extenso(monkeypatch):
-    tentados = []
-    esgotados = {m: 429 for m in
-                 (leitura.MODELO_POR_OMISSAO,) + leitura.MODELOS_DE_RECURSO}
-    monkeypatch.setenv("GEMINI_API_KEY", "chave")
-    monkeypatch.setattr(leitura.time, "sleep", lambda s: None)
-    monkeypatch.setattr(leitura.httpx, "Client",
-                        _cliente_que_responde(esgotados, tentados))
-    leitura.reiniciar_orcamento()
-    leitura._ultima_chamada = 0.0
-    resposta = leitura._chamar_gemini([{"text": "x"}])
-    assert "esgotou-se hoje em todos os modelos" in resposta
-    assert "próxima recolha" in resposta
-
-
-def test_a_lista_de_esgotados_limpa_se_a_cada_recolha(monkeypatch):
-    """A quota é diária — a corrida seguinte pode ser noutro dia."""
-    leitura._modelos_esgotados.add("gemini-qualquer")
-    leitura.reiniciar_orcamento()
-    assert leitura._modelos_esgotados == set()
+    monkeypatch.setattr(leitura.httpx, "Client", _cliente_que([429] * 60, []))
+    respostas = [leitura._chamar_gemini([{"text": "x"}]) for _ in range(5)]
+    assert any("tempo de espera desta recolha esgotou-se" in r for r in respostas)
 
 
 # --- Não pagar duas vezes pelo mesmo email -----------------------------------
