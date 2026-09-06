@@ -146,12 +146,33 @@ def test_o_consumo_ja_gravado_aparece_no_ecra(tmp_path):
     assert saida["semArtigo"], "a Nutella não tem por onde ligar"
 
 
-def test_um_grupo_ao_abrir_NAO_vai_ao_Estoque(tmp_path):
+_SEM_LIGACOES = {
+    "id": "g-top", "nome": "Toppings", "tipo": "opcoes", "ativo": True,
+    "min_select": 0, "max_select": 0, "sai_na_fatura": True, "e_variante": False,
+    "opcoes": [{"id": "o-nut", "nome": "Nutella", "preco": 1.0, "ativa": True}],
+}
+
+
+def test_um_grupo_SEM_LIGACOES_nao_vai_ao_Estoque_ao_abrir(tmp_path):
     """O Estoque é outro serviço, noutro servidor, com 12-15 s de espera até
     desistir. Abrir um grupo para corrigir um preço não pode ficar pendurado
-    nele. Lê-se quando se escolhe um artigo, e só aí."""
-    saida = _monta(_TOPPINGS, [], tmp_path, "sem-ida.js")
+    nele — e num grupo sem ligações nenhumas não haveria nome nenhum para
+    mostrar."""
+    saida = _monta(_SEM_LIGACOES, [], tmp_path, "sem-ida.js")
     assert saida["idasAoEstoque"] == 0
+
+
+def test_um_grupo_COM_LIGACOES_mostra_o_NOME_e_nao_o_uuid(tmp_path):
+    """A correcção de um defeito que a versão anterior deste ficheiro
+    consagrava: o ecrã só lia o catálogo ao abrir o selector, portanto reabrir
+    um grupo já configurado dizia «Gasta 30 g de Artigo est-granola» em todas
+    as opções. O dono escrevia quinze gramagens, voltava no dia seguinte para
+    conferir, e lia quinze uuids."""
+    saida = _monta(_TOPPINGS, [
+        "saida.texto = (porTestid('opcao-consumo-0') || {}).textContent;",
+    ], tmp_path, "com-ida.js")
+    assert saida["idasAoEstoque"] == 1, "não foi ler o catálogo, ou foi lá duas vezes"
+    assert "Granola aveia" in saida["texto"], saida["texto"]
 
 
 def test_escolher_um_artigo_mostra_o_NOME_e_nao_o_id(tmp_path):

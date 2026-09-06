@@ -284,7 +284,11 @@ class OpcaoEntrada(BaseModel):
     # ge=0: um consumo negativo ACRESCENTAVA stock a cada venda.
     # allow_inf_nan=False: mesma razão que o preço — `Infinity` não é negativo
     # e o json do Python aceita o literal sem se queixar.
-    consumo: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    # `le=10000`: não é um limite físico, é o apanha-zeros. Escrever 30000 em
+    # vez de 30 gravava 30 kg de granola por dose, e o relatório do mês passava
+    # a dizer que saíram toneladas sem nada se queixar. Nenhuma dose de um copo
+    # de açaí chega perto de dez mil seja do que for.
+    consumo: Optional[float] = Field(default=None, ge=0, le=10000, allow_inf_nan=False)
     consumo_unidade: Optional[str] = None
     estoque_produto_id: Optional[str] = None
 
@@ -391,11 +395,24 @@ def _opcoes_com_id(opcoes: List[dict]) -> List[dict]:
 
 
 # Os campos que descrevem o que uma opção gasta. Andam sempre juntos porque
-# são a mesma frase («30 g de granola») repartida por três casas.
+# são a mesma frase («30 g de granola») repartida por três casas — e é por
+# isso que se preservam EM BLOCO. Ver a docstring abaixo.
 _CAMPOS_DE_CONSUMO = ("consumo", "consumo_unidade", "estoque_produto_id")
 
+# Os que se preservam um a um: cada um é uma frase inteira sozinho.
+#
+# O `vendus_ref` entra aqui porque tem exactamente o mesmo buraco e é o
+# incidente que a docstring abaixo invoca como precedente: é campo declarado
+# com `default=None`, portanto o `model_dump()` emite-o a nulo quando o pedido
+# não fala dele, e o `$set` do modelo inteiro grava-o a nulo. O backoffice
+# reenvia-o sempre — mas essa defesa vive no browser, e um curl, um script de
+# importação ou um separador com um build antigo desligavam a ligação do
+# tamanho ao artigo do Vendus sem deixar rasto. Foi assim que a conta do
+# Vendus ficou com 14 «Açaí Mini», 13 deles lixo.
+_CAMPOS_PRESERVADOS_UM_A_UM = ("vendus_ref",)
 
-def _preserva_o_consumo_que_o_pedido_nao_falou(
+
+def _preserva_o_que_o_pedido_nao_falou(
     opcoes: List[dict], entradas: List["OpcaoEntrada"], gravadas: List[dict]
 ) -> List[dict]:
     """Um pedido que não fala do consumo de uma opção não lhe toca.
@@ -418,6 +435,21 @@ def _preserva_o_consumo_que_o_pedido_nao_falou(
 
     Quem QUISER mesmo apagar manda o campo a nulo explicitamente; quem não
     falar dele não lhe toca.
+
+    **O consumo preserva-se EM BLOCO, e isto não é arrumação.** O
+    `_valida_consumo` promete que nunca se grava número sem unidade — mas
+    valida o PEDIDO, e a preservação corre depois. Campo a campo, um PUT com
+    `{"consumo": null}` que não mencionasse a unidade passava a validação (no
+    pedido os dois estão a None) e saía daqui com `consumo=None,
+    consumo_unidade="g"` — exactamente o par que o validador existe para
+    recusar. Ao contrário, `{"consumo_unidade": null}` sozinho gravava
+    `consumo=30, consumo_unidade=None`, e o carimbo em `venda.py` (que só
+    pergunta `consumo is not None`) levava-o para as linhas, onde o relatório
+    o deitava fora em silêncio por não saber converter a unidade.
+
+    Por isso a regra é a da frase: se o pedido não falar de NENHUM dos três,
+    repõem-se os três; se falar de algum, aceitam-se os três tal como vieram —
+    e aí o validador já os viu juntos.
     """
     por_id = {o.get("id"): o for o in gravadas if o.get("id")}
     resultado = []
@@ -425,7 +457,10 @@ def _preserva_o_consumo_que_o_pedido_nao_falou(
         opcao = dict(opcao)
         anterior = por_id.get(opcao.get("id"))
         if anterior is not None:
-            for campo in _CAMPOS_DE_CONSUMO:
+            if not any(c in entrada.model_fields_set for c in _CAMPOS_DE_CONSUMO):
+                for campo in _CAMPOS_DE_CONSUMO:
+                    opcao[campo] = anterior.get(campo)
+            for campo in _CAMPOS_PRESERVADOS_UM_A_UM:
                 if campo not in entrada.model_fields_set:
                     opcao[campo] = anterior.get(campo)
         resultado.append(opcao)
@@ -479,7 +514,7 @@ async def editar_grupo(
         raise HTTPException(status_code=404, detail="Grupo de personalização não encontrado")
 
     grupo = dados.model_dump()
-    grupo["opcoes"] = _preserva_o_consumo_que_o_pedido_nao_falou(
+    grupo["opcoes"] = _preserva_o_que_o_pedido_nao_falou(
         _opcoes_com_id(grupo["opcoes"]), dados.opcoes, gravado.get("opcoes") or []
     )
     r = await db[COLECOES["grupos_personalizacao"]].update_one({"id": grupo_id}, {"$set": grupo})

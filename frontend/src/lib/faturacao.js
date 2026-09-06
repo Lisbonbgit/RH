@@ -469,3 +469,4 @@ export const temMaisDe2CasasDecimais = (valor) => {
 // artigo do Estoque. Caminho próprio e não `/relatorios/consumo`: essa rota
 // tem um `{dimensao}` que come tudo o que lhe passe à frente.
 export const getConsumo = (params) => api.get(`${API_URL}/faturacao/consumo`, { params });
+

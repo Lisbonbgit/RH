@@ -24,7 +24,7 @@ _SO_BALCAO = {
 }
 
 
-def _monta(resposta, leituras, tmp_path, nome, falhar=False):
+def _monta(resposta, leituras, tmp_path, nome, falhar=False, falhar_na_segunda=False):
     guiao = "\n".join([
         _COMPONENTES,
         "const path2 = require('path');",
@@ -34,12 +34,31 @@ def _monta(resposta, leituras, tmp_path, nome, falhar=False):
         ("RESPOSTAS_GESTAO['/faturacao/consumo'] = () => { const e = new Error('502');"
          " e.response = { status: 502, data: { detail: 'O servidor não respondeu.' } };"
          " throw e; };") if falhar else
+        ("let vezes = 0;\n"
+         "RESPOSTAS_GESTAO['/faturacao/consumo'] = () => { vezes += 1;"
+         " if (vezes > 1) { const e = new Error('502');"
+         " e.response = { status: 502, data: { detail: 'O servidor não respondeu.' } };"
+         " throw e; } return { data: %s }; };"
+         % json.dumps(resposta, ensure_ascii=False)) if falhar_na_segunda else
         ("RESPOSTAS_GESTAO['/faturacao/consumo'] = () => ({ data: %s });"
          % json.dumps(resposta, ensure_ascii=False)),
         "const alvo = document.getElementById('raiz');",
         "await act(async () => { createRoot(alvo).render(React.createElement(Ecra)); });",
         "await act(async () => {}); await act(async () => {});",
         "const porTestid = (t) => alvo.querySelector(`[data-testid=\"${t}\"]`);",
+        "const clicar = async (t) => { const el = porTestid(t);",
+        "  if (!el) throw new Error('sem ' + t);",
+        "  await act(async () => { el.dispatchEvent(new window.MouseEvent('click',",
+        "    { bubbles: true })); }); await act(async () => {});",
+        "  await act(async () => {}); };",
+        "const escrever = async (t, valor) => { const el = porTestid(t);",
+        "  const setter = Object.getOwnPropertyDescriptor(",
+        "    window.HTMLInputElement.prototype, 'value').set;",
+        "  await act(async () => { setter.call(el, valor);",
+        "    el.dispatchEvent(new window.Event('change', { bubbles: true })); });",
+        "  await act(async () => {}); };",
+        "const pedidosAoConsumo = () => pedidos.filter(",
+        "  (p) => String(p.url).includes('/faturacao/consumo')).length;",
         "const saida = {};",
         "saida.texto = alvo.textContent;",
     ] + leituras + [
@@ -105,3 +124,48 @@ def test_o_servidor_em_baixo_DIZ_o_que_se_passa(tmp_path):
         "saida.erro = !!porTestid('consumo-erro');",
     ], tmp_path, "erro.js", falhar=True)
     assert saida["erro"], "o erro passou por tabela vazia"
+
+
+def test_um_erro_LIMPA_a_tabela_do_periodo_anterior(tmp_path):
+    """O caso que faz o dono escrever o número errado na folha da contagem.
+
+    Muda-se de «1–7 set» para «1–30 ago», carrega-se em Ver, e o servidor
+    falha. As datas em cima já são as de agosto; se a tabela de setembro ficar
+    por baixo, é aquele número que ele copia — com uma faixa vermelha pelo
+    meio que se lê como «não conseguiu actualizar», não como «isto é de outro
+    mês»."""
+    saida = _monta(_SO_BALCAO, [
+        "saida.antes = alvo.textContent.includes('Granola');",
+        "await clicar('consumo-procurar');",
+        "saida.temErro = !!porTestid('consumo-erro');",
+        "saida.aindaTemTabela = alvo.textContent.includes('4,2 kg');",
+        "saida.aindaTemRodape = !!porTestid('consumo-rodape');",
+    ], tmp_path, "erro-limpa.js", falhar_na_segunda=True)
+    assert saida["antes"], "a primeira leitura nem chegou a mostrar a tabela"
+    assert saida["temErro"], "o erro não apareceu"
+    assert saida["aindaTemTabela"] is False, "ficaram os quilos do período anterior"
+    assert saida["aindaTemRodape"] is False, "ficou o rodapé do período anterior"
+
+
+def test_uma_data_APAGADA_nao_vai_ao_servidor(tmp_path):
+    """O axios não omite uma string vazia: ia `de=` e o servidor devolvia
+    «Invalid isoformat string» — inglês do Python na cara do dono. A pergunta
+    responde-se no ecrã."""
+    saida = _monta(_SO_BALCAO, [
+        "const antes = pedidosAoConsumo();",
+        "await escrever('consumo-de', '');",
+        "await clicar('consumo-procurar');",
+        "saida.pediuOutraVez = pedidosAoConsumo() > antes;",
+        "saida.erro = (porTestid('consumo-erro') || {}).textContent;",
+    ], tmp_path, "data-apagada.js")
+    assert saida["pediuOutraVez"] is False, "foi ao servidor com uma data vazia"
+    assert "datas" in (saida["erro"] or "").lower(), saida["erro"]
+
+
+def test_as_devolucoes_aparecem_no_rodape_e_nao_como_vendas(tmp_path):
+    """Uma devolução não vendeu nada, mas o dono quer saber que houve."""
+    com_nc = dict(_SO_BALCAO, notas_de_credito=3)
+    saida = _monta(com_nc, [
+        "saida.rodape = (porTestid('consumo-rodape') || {}).textContent;",
+    ], tmp_path, "com-nc.js")
+    assert "3 devolu" in saida["rodape"], saida["rodape"]

@@ -86,9 +86,12 @@ def test_uma_dose_DUPLA_conta_duas_vezes():
 
 
 def test_a_quantidade_da_linha_MULTIPLICA_o_consumo():
-    """Dois açaís iguais com granola gastam o dobro da granola."""
+    """Dois açaís iguais com granola gastam o dobro da granola — e servem o
+    dobro das doses. As duas colunas do ecrã têm de reconciliar: quem divide
+    os quilos pelas doses tem de encontrar a gramagem que escreveu."""
     linha = _uma(agregar_consumo([_doc()], {"venda-1": _venda([_opcao()], quantidade=2)}))
     assert linha["quantidade"] == 0.06
+    assert linha["doses"] == 2, "dois copos são duas doses, não uma escolha"
 
 
 def test_uma_conta_DIVIDIDA_por_tres_nao_triplica_o_consumo():
@@ -104,6 +107,7 @@ def test_uma_conta_DIVIDIDA_por_tres_nao_triplica_o_consumo():
     }
     linha = _uma(agregar_consumo([_doc()], partes))
     assert linha["quantidade"] == 0.03, "a conta dividida gastou UM açaí de granola"
+    assert linha["doses"] == 1, "e serviu UMA dose, não três"
 
 
 def test_as_vendas_da_APP_contam_se_a_parte_e_dizem_se():
@@ -118,6 +122,33 @@ def test_as_vendas_da_APP_contam_se_a_parte_e_dizem_se():
     assert agregado["documentos_da_app"] == 2
     assert agregado["documentos_por_medir"] == 2
     assert _uma(agregado)["quantidade"] == 0.03
+
+
+def test_uma_NOTA_DE_CREDITO_nao_e_uma_venda_do_balcao():
+    """As NC vivem na mesma colecção das faturas, com `tipo: "NC"` e sem
+    `venda_id`. Sem as tirar, um dia com 650 faturas e 3 devoluções dizia 653
+    vendas do balcão — e contava as 3 como documentos por medir. O consumo já
+    estava certo por construção (a NC não tem venda de onde ler opções); o que
+    mentia era o número que o dono vai comparar com uma contagem."""
+    agregado = agregar_consumo(
+        [_doc(), dict(_doc(venda_id=None), tipo="NC")],
+        {"venda-1": _venda([_opcao()])},
+    )
+    assert agregado["documentos_do_balcao"] == 1
+    assert agregado["documentos_por_medir"] == 0
+    assert agregado["notas_de_credito"] == 1
+    assert _uma(agregado)["quantidade"] == 0.03
+
+
+def test_uma_nota_de_credito_da_APP_nao_conta_como_venda_da_app_em_falta():
+    """A sincronização da app também aceita NC. Sem esta saída, o aviso «há N
+    vendas da app que não estão aqui dentro» contava as devoluções dela como
+    vendas em falta — e o aviso existe precisamente para o dono saber quanto
+    lhe falta à conta."""
+    agregado = agregar_consumo(
+        [dict(_doc(venda_id=None), tipo="NC", origem="app")], {})
+    assert agregado["documentos_da_app"] == 0
+    assert agregado["notas_de_credito"] == 1
 
 
 # --- As unidades --------------------------------------------------------------

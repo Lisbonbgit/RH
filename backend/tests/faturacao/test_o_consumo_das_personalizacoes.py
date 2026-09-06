@@ -251,6 +251,94 @@ def test_mandar_o_consumo_a_nulo_de_propria_vontade_apaga_o_consumo(monkeypatch)
     assert escrita["estoque_produto_id"] is None
 
 
+def test_apagar_SO_o_numero_nao_deixa_a_unidade_orfa(monkeypatch):
+    """A guarda preserva o consumo EM BLOCO, e é por isto.
+
+    O `_valida_consumo` promete que nunca se grava número sem unidade — mas
+    valida o PEDIDO, e a preservação corre depois. Campo a campo, este pedido
+    (`consumo: null`, unidade não mencionada) passava a validação — no pedido
+    os dois estão a None — e saía com `consumo=None, consumo_unidade="g"`,
+    exactamente o par que o validador existe para recusar."""
+    registo = []
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: _db_com_grupo(registo, _GRUPO_GRAVADO))
+
+    dados = GrupoPersonalizacaoEntrada(
+        nome="Toppings",
+        opcoes=[OpcaoEntrada(id="opt-granola", nome="Granola", preco=0.80, consumo=None)],
+    )
+    _corre(editar_grupo("g1", dados, _={}))
+
+    escrita = _opcoes_escritas(registo)[0]
+    assert escrita["consumo"] is None
+    assert escrita["consumo_unidade"] is None, "a unidade ficou órfã do número"
+
+
+def test_apagar_SO_a_unidade_nao_deixa_o_numero_orfao(monkeypatch):
+    """O contrário, e o mais perigoso dos dois: `consumo=30` com a unidade a
+    nulo era carimbado na linha pelo `venda.py` (que só pergunta se o consumo
+    existe) e depois o relatório deitava-o fora em silêncio, por não saber
+    converter a unidade. Uma gramagem escrita que nunca aparecia em lado
+    nenhum, sem um erro pelo caminho."""
+    registo = []
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: _db_com_grupo(registo, _GRUPO_GRAVADO))
+
+    dados = GrupoPersonalizacaoEntrada(
+        nome="Toppings",
+        opcoes=[OpcaoEntrada(id="opt-granola", nome="Granola", preco=0.80,
+                             consumo_unidade=None)],
+    )
+    _corre(editar_grupo("g1", dados, _={}))
+
+    escrita = _opcoes_escritas(registo)[0]
+    assert escrita["consumo_unidade"] is None
+    assert escrita["consumo"] is None, "o número ficou órfão da unidade"
+
+
+def test_gravar_sem_falar_do_vendus_ref_tambem_nao_o_apaga(monkeypatch):
+    """O buraco que a docstring desta guarda invocava como precedente — e que
+    continuava aberto ao lado dela. O `vendus_ref` é o campo que decide em nome
+    de que ARTIGO do Vendus a linha é facturada; um PUT que não fale dele
+    gravava-o a nulo, e as cinco lojas voltavam a facturar todos os tamanhos
+    no mesmo artigo. O backoffice reenvia-o sempre, mas essa defesa vive no
+    browser: um curl ou um script desligavam-na sem deixar rasto."""
+    registo = []
+    gravado = dict(_GRUPO_GRAVADO)
+    gravado["opcoes"] = [dict(_GRUPO_GRAVADO["opcoes"][0], vendus_ref="145268982")]
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: _db_com_grupo(registo, gravado))
+
+    dados = GrupoPersonalizacaoEntrada(
+        nome="Toppings",
+        opcoes=[OpcaoEntrada(id="opt-granola", nome="Granola", preco=0.90)],
+    )
+    _corre(editar_grupo("g1", dados, _={}))
+
+    assert _opcoes_escritas(registo)[0]["vendus_ref"] == "145268982"
+
+
+def test_quem_manda_o_vendus_ref_a_nulo_DESLIGA_mesmo_a_ligacao(monkeypatch):
+    """A outra metade: desligar um tamanho tem de continuar a ser possível, e
+    é o que o ecrã faz — manda o campo explicitamente a nulo."""
+    registo = []
+    gravado = dict(_GRUPO_GRAVADO)
+    gravado["opcoes"] = [dict(_GRUPO_GRAVADO["opcoes"][0], vendus_ref="145268982")]
+    monkeypatch.setattr(catalogo_mod, "obter_db", lambda: _db_com_grupo(registo, gravado))
+
+    dados = GrupoPersonalizacaoEntrada(
+        nome="Toppings",
+        opcoes=[OpcaoEntrada(id="opt-granola", nome="Granola", preco=0.90, vendus_ref=None)],
+    )
+    _corre(editar_grupo("g1", dados, _={}))
+
+    assert _opcoes_escritas(registo)[0]["vendus_ref"] is None
+
+
+def test_um_consumo_absurdo_e_recusado_a_entrada():
+    """Escrever 30000 em vez de 30 gravava 30 kg de granola por dose. Não é um
+    limite físico — é o apanha-zeros."""
+    with pytest.raises(ValidationError):
+        OpcaoEntrada(nome="Granola", consumo=30000, consumo_unidade="g")
+
+
 def test_uma_opcao_nova_nao_herda_o_consumo_de_ninguem(monkeypatch):
     """Uma opção sem id é nova: recebe um id novo e nasce sem consumo. Herdar
     pela POSIÇÃO na lista era o erro fácil — a Banana acrescentada a seguir à

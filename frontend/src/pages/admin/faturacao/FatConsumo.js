@@ -44,6 +44,14 @@ export default function FatConsumo() {
   }, []);
 
   const procurar = useCallback(async () => {
+    // Uma caixa de data apagada manda `de=` (string vazia, que o axios não
+    // omite) e o servidor devolve «Invalid isoformat string» — inglês do
+    // Python na cara do dono. A pergunta responde-se aqui.
+    if (!filtros.de || !filtros.ate) {
+      setErro('Escolha as duas datas: de que dia até que dia.');
+      setDados(null);
+      return;
+    }
     setCarregando(true);
     setErro('');
     try {
@@ -56,6 +64,11 @@ export default function FatConsumo() {
     } catch (error) {
       const { mensagem } = detalhesErro(error, 'Não foi possível ler o consumo.');
       setErro(mensagem);
+      // **A tabela do período anterior TEM de sair do ecrã.** Sem isto, mudar
+      // de «1–7 set» para «1–30 ago», falhar o pedido e ficar com as datas
+      // novas em cima e os quilos de setembro por baixo — que é o número que
+      // se copia para a folha da contagem de agosto.
+      setDados(null);
       toast.error(mensagem);
     } finally {
       setCarregando(false);
@@ -141,7 +154,9 @@ export default function FatConsumo() {
           <Link2Off className="h-4 w-4 mt-0.5 shrink-0" />
           <span>
             {porLigar} linha(s) ainda não estão ligadas a um artigo do Estoque. Contam-se
-            aqui pelo nome da personalização, mas não têm de onde descontar.
+            aqui pelo nome da personalização, mas não têm de onde descontar — e, por
+            serem contadas pelo nome, uma personalização que tenha mudado de nome no
+            meio do período aparece em duas linhas até ser ligada.
           </span>
         </div>
       )}
@@ -190,6 +205,13 @@ export default function FatConsumo() {
         <p className="text-xs text-muted-foreground" data-testid="consumo-rodape">
           {dados.documentos_do_balcao} venda(s) do balcão no período
           {dados.documentos_da_app > 0 && ` · ${dados.documentos_da_app} da app (fora da conta)`}
+          {dados.notas_de_credito > 0 && ` · ${dados.notas_de_credito} devolução(ões), que não mexem no stock`}
+          {/* O servidor conta isto e o ecrã escondia-o: são faturas do período
+              cuja venda não está do nosso lado, e que por isso não entraram
+              nos quilos. Era o único sinal de relatório incompleto, e não
+              chegava a quem o lê. */}
+          {dados.documentos_por_medir > 0
+            && ` · ${dados.documentos_por_medir} venda(s) sem detalhe, fora da soma`}
           {dados.truncado && ' · a lista foi cortada no limite de documentos do período'}
         </p>
       )}

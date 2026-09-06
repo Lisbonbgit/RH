@@ -3,6 +3,7 @@ import {
   getGrupos, criarGrupo, editarGrupo, apagarGrupo, getArtigosVendus,
   detalhesErro, temMaisDe2CasasDecimais,
 } from '../../../lib/faturacao';
+import { getEstoqueProdutos } from '../../../lib/api';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
@@ -17,7 +18,6 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '../../../components/ui/alert-dialog';
-import { getEstoqueProdutos } from '../../../lib/api';
 import { Sparkles, Plus, Pencil, Trash2, X, Link2, Link2Off, Loader2, AlertTriangle, Scale } from 'lucide-react';
 import PageHeader from '../../../components/PageHeader';
 import { toast } from 'sonner';
@@ -144,6 +144,17 @@ export default function FatPersonalizacoes() {
     // continuam à vista e a escolha (que mostra o erro) continua a funcionar.
     if (grupo.e_variante && (grupo.opcoes || []).some((o) => o.vendus_ref)) {
       lerCatalogo();
+    }
+    // **E a mesma coisa para o Estoque, pela mesma razão exacta.**
+    // `nomeDoProdutoDoEstoque` cai em «Artigo 6f2a-9c4e…» enquanto o catálogo
+    // não estiver lido. O dono escrevia as gramagens de quinze toppings,
+    // guardava, voltava no dia seguinte para conferir — e lia quinze uuids.
+    //
+    // Num grupo SEM ligações nenhumas não se pergunta nada: é de longe o caso
+    // mais comum, e o Estoque é outro serviço, noutro servidor, que pode estar
+    // em baixo. Só se pergunta quando há mesmo um nome para mostrar.
+    if ((grupo.opcoes || []).some((o) => o.estoque_produto_id)) {
+      lerCatalogoDoEstoque();
     }
   };
 

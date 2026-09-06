@@ -87,6 +87,14 @@ def _consumo_da_opcao(opcao: Dict, quantidade_da_linha: float) -> Optional[Dict]
         # `float(quantidade)` e não `int`: uma conta dividida por três grava
         # 0,3337 e um `int()` aqui apagava o consumo dessa parte por inteiro.
         "quantidade": float(consumo) * factor * float(quantidade_da_linha or 0),
+        # **A dose conta COPOS, não toques.** Uma linha de 2 açaís com uma
+        # escolha de granola serviu DUAS doses, e uma conta dividida por três
+        # serviu UMA (as três partes trazem a opção inteira, cada uma com um
+        # terço da quantidade). Contar `+= 1` por entrada errava para os dois
+        # lados ao mesmo tempo — e as duas colunas da tabela deixavam de
+        # reconciliar: quem dividisse os quilos pelas doses para conferir a
+        # ficha não fechava a conta e desconfiava da gramagem certa.
+        "doses": float(quantidade_da_linha or 0),
     }
 
 
@@ -118,7 +126,23 @@ def agregar_consumo(documentos: List[Dict], vendas: Dict[str, Dict]) -> Dict:
     documentos_do_balcao = 0
     sem_venda = 0
 
+    notas_de_credito = 0
     for doc in documentos:
+        # **Uma nota de crédito não vendeu nada a ninguém.** Vive na MESMA
+        # colecção das faturas, com `tipo: "NC"`, e — de propósito — sem
+        # `venda_id`. Sem esta saída ia contada como venda do balcão E como
+        # documento por medir: num dia com 650 faturas e 3 devoluções, o
+        # rodapé dizia 653 vendas. Do lado da app era pior, porque a
+        # sincronização também aceita NC: o aviso «faltam N vendas da app»
+        # contava as devoluções dela como vendas em falta.
+        #
+        # O consumo em si já estava certo por construção (a NC não tem venda
+        # de onde ler opções, e a decisão do dono é que uma devolução não
+        # repõe stock) — o que mentia eram os contadores que ele vai
+        # comparar com uma contagem.
+        if doc.get("tipo") == "NC":
+            notas_de_credito += 1
+            continue
         # A origem é do DOCUMENTO e não da venda: é o `sincronizacao_app` que
         # a carimba, e é a única coisa que distingue um copo vendido no
         # balcão de um vendido na app.
@@ -147,7 +171,7 @@ def agregar_consumo(documentos: List[Dict], vendas: Dict[str, Dict]) -> Dict:
                     "ligado_ao_estoque": bool(gasto["destino_id"]),
                 }
             linha["quantidade"] += gasto["quantidade"]
-            linha["doses"] += 1
+            linha["doses"] += gasto["doses"]
 
     linhas = sorted(
         por_chave.values(), key=lambda l: (-l["quantidade"], l["nome"] or "")
@@ -156,6 +180,9 @@ def agregar_consumo(documentos: List[Dict], vendas: Dict[str, Dict]) -> Dict:
     # e são milhares de doses num mês.
     for linha in linhas:
         linha["quantidade"] = round(linha["quantidade"], 3)
+        # As doses vêm somadas em fracções (as contas divididas) — arredondam
+        # com a quantidade, pela mesma razão e no mesmo sítio.
+        linha["doses"] = round(linha["doses"], 2)
     return {
         "linhas": linhas,
         "documentos_do_balcao": documentos_do_balcao,
@@ -164,6 +191,10 @@ def agregar_consumo(documentos: List[Dict], vendas: Dict[str, Dict]) -> Dict:
         # ecrã poder dizer «e faltam aqui 214 vendas da app».
         "documentos_da_app": documentos_da_app,
         "documentos_por_medir": sem_venda,
+        # Ditas e não escondidas, como tudo o resto neste relatório: quem
+        # confere quer saber que houve devoluções, mesmo que elas não mexam
+        # em quilo nenhum.
+        "notas_de_credito": notas_de_credito,
     }
 
 
@@ -195,7 +226,7 @@ async def relatorio_de_consumo(
         filtro["loja_id"] = loja_id
     documentos = await (
         db[COLECOES["documentos"]]
-        .find(filtro, {"_id": 0, "venda_id": 1, "origem": 1, "loja_id": 1})
+        .find(filtro, {"_id": 0, "venda_id": 1, "origem": 1, "loja_id": 1, "tipo": 1})
         .to_list(_TECTO_DOCUMENTOS)
     )
 
