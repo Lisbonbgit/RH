@@ -156,6 +156,12 @@ def test_o_cartao_de_ontem_compara_com_anteontem():
     assert c["anterior"] == 100.0
     assert c["variacao"] == pytest.approx(20.0)
     assert "4 de setembro" in c["comparacao"] and "3 de setembro" in c["comparacao"]
+    # Os rótulos separados são o que o cartão mostra ao lado da medalha. Sem o
+    # do intervalo ANTERIOR, o ecrã teria de escrever "Mês Anterior" à mão —
+    # que é exactamente a etiqueta vaga que deixa passar "seis dias contra um
+    # mês inteiro" no painel do Vendus.
+    assert c["anterior_rotulo"] == "3 de setembro"
+    assert c["actual_rotulo"] == "4 de setembro"
 
 
 def test_o_cartao_de_HOJE_nunca_leva_variacao():
@@ -265,3 +271,41 @@ def test_a_comparacao_do_ano_diz_de_que_ANO_fala():
 
     assert "2026" in c["comparacao"] and "2025" in c["comparacao"], c["comparacao"]
     assert c["comparacao"].count("de 2026") == 1
+
+
+# --- O cartão de hoje, com ontem ao lado -------------------------------------
+
+def test_o_cartao_de_hoje_diz_quanto_ja_vai_de_ontem():
+    """A pergunta que se pode responder a qualquer hora. Às 9 da manhã, com
+    600 € feitos contra os 1800 € de ontem, a resposta honesta é "vai em 33%
+    de ontem" — e não "−67%", que é o que o painel do Vendus diria."""
+    js = bolso.janelas(date(2026, 9, 5))
+    linhas = [_linha("2026-09-05", 600.0), _linha("2026-09-04", 1800.0)]
+
+    c = bolso.cartao_de_hoje(linhas, js)
+
+    assert c["valor"] == 600.0
+    assert c["anterior"] == 1800.0
+    assert c["progresso"] == pytest.approx(33.3)
+    assert c["variacao"] is None, (
+        "com `variacao` preenchida o ecrã pinta uma medalha vermelha — é isso "
+        "que este cartão existe para não fazer"
+    )
+
+
+def test_ao_fim_do_dia_o_progresso_passa_dos_100():
+    js = bolso.janelas(date(2026, 9, 5))
+    linhas = [_linha("2026-09-05", 2124.0), _linha("2026-09-04", 1800.0)]
+
+    assert bolso.cartao_de_hoje(linhas, js)["progresso"] == pytest.approx(118.0)
+
+
+def test_sem_vendas_ontem_nao_ha_progresso_nenhum():
+    """Uma percentagem de zero não existe, e um "+100%" diria que se duplicou
+    o nada."""
+    js = bolso.janelas(date(2026, 9, 5))
+
+    c = bolso.cartao_de_hoje([_linha("2026-09-05", 500.0)], js)
+
+    assert c["progresso"] is None
+    assert c["anterior"] == 0.0

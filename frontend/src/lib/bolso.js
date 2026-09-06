@@ -30,11 +30,15 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// `empresa` é o id de uma empresa ou 'all' (o grupo). O servidor decide o que
-// isso quer dizer — 'all' soma só as empresas onde este utilizador é membro, e
+// `empresa` é o id de uma empresa ou 'all' (o grupo); `unidade` é a loja, o
+// terceiro nível, e só faz sentido DENTRO de uma empresa (o servidor recusa-a
+// com 400 no grupo). Vai fora do objecto quando é nula para não mandar
+// `unidade=null` na query string, que o FastAPI leria como a string "null".
+//
+// O servidor decide o que o âmbito quer dizer — 'all' soma só as empresas onde este utilizador é membro, e
 // a resposta diz sempre QUAIS foram somadas.
-export const getPainel = (empresa = 'all') =>
-  api.get('/painel', { params: { empresa } });
+export const getPainel = (empresa = 'all', unidade = null) =>
+  api.get('/painel', { params: unidade ? { empresa, unidade } : { empresa } });
 
 // O dinheiro escreve-se sempre com duas casas e o símbolo à frente, como no
 // resto do portal. **`null` não é zero**: um valor que o servidor não soube

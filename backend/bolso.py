@@ -196,6 +196,8 @@ def cartao(linhas: List[Dict], janela, janela_actual=None, janela_anterior=None,
         "periodo": _formata_intervalo(janela),
         "variacao": None,
         "anterior": None,
+        "anterior_rotulo": None,
+        "actual_rotulo": None,
         "comparacao": None,
         "nota": nota,
     }
@@ -204,10 +206,58 @@ def cartao(linhas: List[Dict], janela, janela_actual=None, janela_anterior=None,
         antes = somar(linhas, janela_anterior)
         saida["anterior"] = antes["total"]
         saida["variacao"] = variacao(agora["total"] or 0.0, antes["total"] or 0.0)
+        # **Os dois rótulos separados, e não uma frase só.** O painel do Vendus
+        # escreve "Mês Anterior: 44.421,91 €" ao lado da medalha — e é aí que
+        # está a mentira dele, porque esse valor é o mês INTEIRO enquanto o de
+        # cima são seis dias. Aqui o rótulo do valor de comparação diz o
+        # intervalo exacto ("1 a 5 de agosto"), e o outro diz o que foi
+        # medido deste lado. Com os intervalos escritos, a percentagem deixa
+        # de poder enganar seja quem for.
+        saida["anterior_rotulo"] = _formata_intervalo(janela_anterior)
+        saida["actual_rotulo"] = _formata_intervalo(janela_actual)
         saida["comparacao"] = "%s vs %s" % (
-            _formata_intervalo(janela_actual), _formata_intervalo(janela_anterior)
+            saida["actual_rotulo"], saida["anterior_rotulo"]
         )
     return saida
+
+
+def cartao_de_hoje(linhas: List[Dict], janelas_do_dia: Dict) -> Dict:
+    """O cartão de HOJE — com ontem ao lado, mas sem a percentagem que mente.
+
+    **O problema, e porque é que este cartão é diferente dos outros.** O
+    painel do Vendus mostra "Faturação Hoje" com uma medalha verde ou
+    vermelha contra ontem. Às dez da noite isso é justo; às nove da manhã
+    compara duas horas de vendas com um dia inteiro e anuncia −85%, todos os
+    dias, para sempre. E o `fin_sales` guarda DIAS, não horas: não há maneira
+    de comparar "hoje até às 9h" com "ontem até às 9h".
+
+    **A saída honesta não é esconder ontem — é mudar a pergunta.** Em vez de
+    "quanto caiu?" (que não se sabe), responde-se "quanto já vai do que ontem
+    fez?", que é verdade a qualquer hora e é a conta que o dono faz de
+    cabeça. A meio da manhã diz 34%; ao fim do dia diz 118% e aí sim é uma
+    boa notícia a sério.
+
+    Por isso este cartão traz `progresso` e **nunca** `variacao`: é a
+    ausência da variação que impede o ecrã de lhe pintar uma medalha
+    vermelha.
+    """
+    hoje = somar(linhas, janelas_do_dia["hoje"])
+    ontem = somar(linhas, janelas_do_dia["ontem"])
+    valor = hoje["total"] or 0.0
+    referencia = ontem["total"] or 0.0
+    return {
+        "valor": hoje["total"],
+        "valor_sem_iva": hoje["sem_iva"],
+        "periodo": _formata_intervalo(janelas_do_dia["hoje"]),
+        "variacao": None,
+        "anterior": ontem["total"],
+        "anterior_rotulo": "Ontem",
+        # `None` quando ontem foi zero: uma percentagem de zero não existe, e
+        # inventar "+100%" seria dizer que se duplicou o nada.
+        "progresso": round(valor / referencia * 100, 1) if referencia else None,
+        "comparacao": None,
+        "nota": "dia a decorrer",
+    }
 
 
 def serie_de_dias(linhas: List[Dict], hoje: date, dias: int = DIAS_DA_SERIE) -> List[Dict]:

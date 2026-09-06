@@ -8505,6 +8505,7 @@ _BOLSO_CAMPOS = {
 @api_router.get("/bolso/painel")
 async def bolso_painel(
     empresa: str = Query("all"),
+    unidade: Optional[str] = Query(None),
     current_user: dict = Depends(get_current_user),
 ):
     """O painel inteiro num pedido só.
@@ -8525,16 +8526,37 @@ async def bolso_painel(
     hoje = bolso.hoje_em_lisboa()
     js = bolso.janelas(hoje)
 
+    # A unidade é o terceiro nível do âmbito (Grupo -> Empresa -> Loja) e só
+    # existe DENTRO de uma empresa: filtrar por loja no grupo não quer dizer
+    # nada, e aceitá-lo em silêncio dava um painel a zeros sem explicação.
+    if unidade and empresa == "all":
+        raise HTTPException(
+            status_code=400,
+            detail="Escolha primeiro a empresa para poder escolher a loja.",
+        )
+    # A loja tem de ser MESMO desta empresa. Sem esta verificação, um id de
+    # loja de outra empresa passava pelo filtro e mostrava faturação a quem
+    # não tem acesso a ela — a pertença é por empresa, e é aqui que ela se
+    # estende à loja.
+    if unidade:
+        dela = await db.fin_units.find_one(
+            {"id": unidade, "company_id": empresa}, {"_id": 0, "id": 1}
+        )
+        if not dela:
+            raise HTTPException(status_code=404, detail="Loja não encontrada nesta empresa.")
+
     # A leitura mais antiga de que o painel precisa é o início do ano
     # anterior equivalente (a comparação do cartão do Ano).
     mais_antigo = min(
         j[0] for j in (js["ano"], js["ano_anterior"], js["mes_anterior"]) if j
     )
-    linhas = await db.fin_sales.find(
-        {"company_id": ambito,
-         "date": {"$gte": mais_antigo.isoformat(), "$lte": hoje.isoformat()}},
-        _BOLSO_CAMPOS,
-    ).to_list(500000)
+    filtro = {
+        "company_id": ambito,
+        "date": {"$gte": mais_antigo.isoformat(), "$lte": hoje.isoformat()},
+    }
+    if unidade:
+        filtro["unit_id"] = unidade
+    linhas = await db.fin_sales.find(filtro, _BOLSO_CAMPOS).to_list(500000)
 
     # Só as linhas DESTE ano entram nos cartões, séries e repartição; as do
     # ano passado servem uma coisa só — a comparação do cartão do Ano.
@@ -8549,15 +8571,21 @@ async def bolso_painel(
     somadas = [c for c in todas if c["id"] in ids_no_ambito]
     de_fora = [c for c in todas if c["id"] not in ids_no_ambito]
 
+    unidades = []
     if empresa == "all":
         nomes = {c["id"]: c.get("name") for c in todas}
         campo, reparte_por = "company_id", "empresa"
     else:
         unidades = await db.fin_units.find(
             {"company_id": empresa}, {"_id": 0, "id": 1, "name": 1}
-        ).to_list(1000)
+        ).sort("name", 1).to_list(1000)
         nomes = {u["id"]: u.get("name") for u in unidades}
         campo, reparte_por = "unit_id", "loja"
+
+    # Com uma loja escolhida, repartir "por loja" devolvia uma linha só — a
+    # própria. Não é informação, é ruído: quem já escolheu a loja não precisa
+    # que lhe repitam o nome dela por baixo do total.
+    reparticao = [] if unidade else bolso.repartir(deste_ano, js["mes"], campo, nomes)
 
     # A proveniência: quando é que cada origem leu pela última vez. É o que
     # transforma "não vendemos nada" em "ninguém leu" — a pergunta que o
@@ -8580,19 +8608,25 @@ async def bolso_painel(
         "hoje": hoje.isoformat(),
         "ambito": {
             "pedido": empresa,
+            "unidade": unidade,
             "somadas": [{"id": c["id"], "nome": c.get("name")} for c in somadas],
             "sem_acesso": [c.get("name") for c in de_fora],
+            # As lojas desta empresa, para o ecrã poder oferecer o terceiro
+            # nível sem um segundo pedido. Vazio no grupo e nas empresas que
+            # não têm lojas (a Purple House não tem).
+            "unidades": [{"id": u["id"], "nome": u.get("name")} for u in unidades],
         },
         "cartoes": {
             "ontem": bolso.cartao(deste_ano, js["ontem"], js["ontem"], js["anteontem"]),
-            # Sem comparação, e a nota diz porquê — ver a regra 2 do módulo.
-            "hoje": bolso.cartao(deste_ano, js["hoje"], nota="dia a decorrer"),
+            # Sem percentagem de variação, e com ontem ao lado como REFERÊNCIA
+            # e não como alvo — ver `bolso.cartao_de_hoje`.
+            "hoje": bolso.cartao_de_hoje(deste_ano, js),
             "mes": bolso.cartao(deste_ano, js["mes"], js["mes_completo"], js["mes_anterior"]),
             "ano": bolso.cartao(linhas, js["ano"], js["ano_completo"], js["ano_anterior"]),
         },
         "serie_dias": bolso.serie_de_dias(deste_ano, hoje),
         "serie_meses": bolso.serie_de_meses(linhas, hoje),
-        "reparticao": bolso.repartir(deste_ano, js["mes"], campo, nomes),
+        "reparticao": reparticao,
         "reparticao_por": reparte_por,
         "dias_sem_vendas": bolso.dias_sem_linha(deste_ano, hoje),
         "leituras": list(ultima_por_origem.values()),
