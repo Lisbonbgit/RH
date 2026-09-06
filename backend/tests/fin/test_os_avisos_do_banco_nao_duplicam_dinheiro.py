@@ -94,7 +94,7 @@ def test_um_aviso_sem_saldo_entra_marcado_como_provisorio(monkeypatch):
     movs = MovimentosFalsos()
     monkeypatch.setattr(server, "db", BaseFalsa(movs))
 
-    ins, salt = _corre(server._fin_guardar_movimentos_do_banco(
+    ins, salt, _abs = _corre(server._fin_guardar_movimentos_do_banco(
         CONTA, AVISO, "bank_email", provisorio=True))
 
     assert (ins, salt) == (1, 0)
@@ -110,7 +110,7 @@ def test_ler_o_mesmo_aviso_outra_vez_nao_duplica(monkeypatch):
     monkeypatch.setattr(server, "db", BaseFalsa(movs))
 
     _corre(server._fin_guardar_movimentos_do_banco(CONTA, AVISO, "bank_email", provisorio=True))
-    ins, salt = _corre(server._fin_guardar_movimentos_do_banco(CONTA, AVISO, "bank_email", provisorio=True))
+    ins, salt, _abs = _corre(server._fin_guardar_movimentos_do_banco(CONTA, AVISO, "bank_email", provisorio=True))
 
     assert (ins, salt) == (0, 1), "a mesma nota de lançamento entrou duas vezes"
     assert len(movs.guardados) == 1
@@ -127,7 +127,7 @@ def test_um_movimento_ja_la_estar_pelo_extrato_trava_o_aviso(monkeypatch):
     }])
     monkeypatch.setattr(server, "db", BaseFalsa(movs))
 
-    ins, salt = _corre(server._fin_guardar_movimentos_do_banco(
+    ins, salt, _abs = _corre(server._fin_guardar_movimentos_do_banco(
         CONTA, AVISO, "bank_email", provisorio=True))
 
     assert (ins, salt) == (0, 1), "o dinheiro ficou contado a dobrar"
@@ -143,7 +143,7 @@ def test_dois_pagamentos_iguais_no_mesmo_dia_sao_dois(monkeypatch):
         {"date_lancamento": "2026-09-04", "description": "TRF FORNECEDOR B", "amount": -100.0, "balance": None},
     ]
 
-    ins, salt = _corre(server._fin_guardar_movimentos_do_banco(CONTA, dois, "bank_email", provisorio=True))
+    ins, salt, _abs = _corre(server._fin_guardar_movimentos_do_banco(CONTA, dois, "bank_email", provisorio=True))
 
     assert (ins, salt) == (2, 0), "duas saídas distintas foram tomadas por uma"
 
