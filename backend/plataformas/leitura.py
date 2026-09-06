@@ -129,46 +129,21 @@ INTERVALO_ENTRE_CHAMADAS = 3.2
 
 # **O modelo é FIXO, e não `gemini-flash-latest`.**
 #
-# Medido contra a conta a sério a 2026-09-05: a quota do plano gratuito é de
-# **20 pedidos por DIA e por modelo**, e o `gemini-flash-latest` aponta sempre
-# para o mais recente — que é justamente o que tem a quota mais apertada
-# (`gemini-3.8-flash`, 20/dia). Com a ingestão de facturas a usar a mesma
-# chave, esses vinte acabam de manhã e não sobra nada para a segunda-feira.
-# No mesmo instante em que o `-latest` recusava tudo, o `gemini-3.5-flash`
-# respondia à primeira.
+# Não é por causa de quota: **a quota do plano gratuito é por MINUTO, não por
+# dia** — medido a 2026-09-06 com 25 pedidos seguidos, que passaram todos com
+# duas esperas pelo meio, 107 segundos ao todo. (Escrevi aqui o contrário
+# durante um dia inteiro, a partir da mensagem de erro, e construí a correcção
+# errada em cima disso. Ver a nota do 429 mais abaixo.)
 #
-# Fixo por duas razões: um alias muda de modelo debaixo dos pés (foi assim que
-# isto rebentou), e um relatório de dinheiro não deve mudar de leitor sem
-# alguém decidir.
+# É fixo porque um alias muda de modelo debaixo dos pés: o `-latest` aponta
+# sempre para o mais recente, e um relatório que diz quanto dinheiro vamos
+# receber não deve trocar de leitor sem alguém decidir.
 #
 # **Variável PRÓPRIA e não a `GEMINI_MODEL`**: essa é a da ingestão de
 # facturas, e mexer-lhe mudava o modelo que lê as facturas dos fornecedores —
 # outro problema, de outro dono.
 MODELO_POR_OMISSAO = "gemini-3.5-flash"
 
-# **E quando os vinte de um modelo acabam, passa-se ao seguinte.**
-#
-# A quota é por modelo e por dia. Vinte leituras chegam para uma segunda-feira
-# normal (quatro da Uber, cinco da Bolt, cinco da Glovo), mas não chegam para
-# a primeira corrida — que tem de recuperar o atraso — nem para um dia em que
-# alguém carregue duas vezes no botão. Medido: com o primeiro modelo esgotado,
-# os outros respondiam à primeira, no mesmo instante.
-#
-# Esperar não resolve nada quando a quota é DIÁRIA: a espera só faz sentido
-# quando o limite é por minuto, e aí ela continua a acontecer (ver o orçamento
-# mais abaixo). Contra uma quota diária, o que resolve é ir ao modelo a seguir.
-#
-# São todos da mesma família e a tarefa é a mesma: ler números que estão
-# escritos. Nenhum deles inventa contas — isso é o prompt que o proíbe.
-MODELOS_DE_RECURSO = (
-    "gemini-3.5-flash-lite",
-    "gemini-3.6-flash",
-    "gemini-3.7-flash",
-)
-
-# Os modelos cuja quota já se esgotou NESTA recolha, para não se voltar a
-# bater à mesma porta quinze vezes.
-_modelos_esgotados = set()
 
 # **O tecto do tempo que uma recolha pode passar à espera da quota.** Quando a
 # ingestão de facturas já gastou o minuto, ainda há 429 — mas uma recolha que
@@ -187,7 +162,6 @@ def reiniciar_orcamento() -> None:
     a corrida seguinte tem de voltar a tentar — pode ser noutro dia."""
     global _espera_gasta
     _espera_gasta = 0.0
-    _modelos_esgotados.clear()
 
 # Os tipos de anexo que a IA consegue mesmo ler. O `.xlsx` fica de fora de
 # propósito: não é aceite em linha pela API, e mandá-lo devolvia um erro que
@@ -523,14 +497,6 @@ def data_da_mensagem(msg) -> Optional[date]:
 
 # --- A extracção pela IA -----------------------------------------------------
 
-def _modelos_a_tentar() -> List[str]:
-    """O modelo escolhido primeiro, e os de recurso a seguir — sem repetidos e
-    sem os que já se esgotaram nesta recolha."""
-    escolhido = os.environ.get("PLATAFORMAS_GEMINI_MODEL", MODELO_POR_OMISSAO)
-    ordem = [escolhido] + [m for m in MODELOS_DE_RECURSO if m != escolhido]
-    return [m for m in ordem if m not in _modelos_esgotados]
-
-
 def _pedir(modelo: str, partes: List[Dict], chave: str, timeout: int):
     """Um pedido. Devolve a resposta do httpx, ou levanta o que a rede levantar."""
     global _ultima_chamada
@@ -564,6 +530,13 @@ def _mensagem_de_erro(resposta) -> str:
         return ""
 
 
+def _quanto_esperar(resposta, por_omissao: float) -> float:
+    """O tempo que o próprio Google diz para esperar, entre 5 e 65 segundos."""
+    encontrado = re.search(r"retry in ([\d.]+)s", _mensagem_de_erro(resposta))
+    pedido = float(encontrado.group(1)) + 1.0 if encontrado else por_omissao
+    return min(max(pedido, 5.0), 65.0)
+
+
 def _chamar_gemini(partes: List[Dict], timeout: int = 180) -> str:
     """O pedido ao Gemini. Devolve o texto em cru, ou `"ERRO:..."`.
 
@@ -572,70 +545,62 @@ def _chamar_gemini(partes: List[Dict], timeout: int = 180) -> str:
     fechava um ciclo que impedia a API de arrancar. Difere no que interessa —
     aqui vão várias partes (o texto do email mais os anexos) e não um PDF só.
 
-    **Duas avarias diferentes, dois remédios diferentes.**
+    **O 429 espera-se. Não se troca de modelo.**
 
-    - **429 (quota).** É por MODELO e por DIA — medido contra a conta a sério.
-      Esperar não a devolve; o que a devolve é ir ao modelo seguinte. O modelo
-      fica marcado para não se voltar a bater à mesma porta quinze vezes.
-    - **503 (procura alta).** É um pico de segundos e passa sozinho: espera-se,
-      no mesmo modelo, dentro do orçamento de espera da recolha.
+    Esta função já teve uma versão que, ao apanhar um 429, marcava o modelo
+    como esgotado e passava ao seguinte de uma lista de quatro. Foi construída
+    sobre uma conclusão errada — que a quota gratuita era de 20 pedidos por
+    DIA, lida à pressa da mensagem de erro. **É por minuto**: medido a
+    2026-09-06 com 25 pedidos seguidos ao mesmo modelo, que passaram todos com
+    duas esperas pelo meio, 107 segundos ao todo. A ingestão de facturas
+    espera desde sempre e leu 787 PDFs, 47 deles num só dia.
 
-    Quando já não há modelos, devolve-se um erro que se lê — a mensagem vira
-    um aviso no email e a corrida seguinte apanha o que ficou por ler.
+    Trocar de modelo **piorava** as coisas: com o minuto saturado, os quatro
+    modelos apanhavam 429 em treze segundos, ficavam todos marcados como
+    esgotados, e o resto da recolha falhava inteira — uma barreira de segundos
+    transformada numa avaria da corrida toda. Esperar os vinte segundos que o
+    Google indica resolve, e é tudo o que é preciso.
     """
     global _espera_gasta
     chave = os.environ.get("GEMINI_API_KEY")
     if not chave:
         return "ERRO:sem GEMINI_API_KEY no servidor"
+    modelo = os.environ.get("PLATAFORMAS_GEMINI_MODEL", MODELO_POR_OMISSAO)
 
-    modelos = _modelos_a_tentar()
-    if not modelos:
-        return ("ERRO:a quota da IA esgotou-se hoje em todos os modelos — o que "
-                "ficou por ler entra na próxima recolha")
+    for tentativa in range(1, 7):
+        try:
+            resposta = _pedir(modelo, partes, chave, timeout)
+        except Exception as e:  # noqa: BLE001
+            return "ERRO:rede: %s" % e
 
-    for modelo in modelos:
-        for tentativa in range(1, 6):
-            try:
-                resposta = _pedir(modelo, partes, chave, timeout)
-            except Exception as e:  # noqa: BLE001
-                return "ERRO:rede: %s" % e
+        # 429 é a quota do minuto; 503 é «este modelo está com muita procura».
+        # As duas passam sozinhas — o remédio das duas é o mesmo: esperar.
+        if resposta.status_code in (429, 503) and tentativa < 6:
+            espera = _quanto_esperar(resposta, 22.0 if resposta.status_code == 429 else 12.0)
+            if _espera_gasta + espera > ORCAMENTO_DE_ESPERA_SEGUNDOS:
+                return ("ERRO:a IA está a recusar por excesso de pedidos e o tempo "
+                        "de espera desta recolha esgotou-se — o que ficou por ler "
+                        "entra na próxima")
+            _espera_gasta += espera
+            logger.info("[plataformas] %s devolveu %d: a esperar %.0fs (gasto %.0fs)",
+                        modelo, resposta.status_code, espera, _espera_gasta)
+            time.sleep(espera)
+            continue
 
-            if resposta.status_code == 429:
-                _modelos_esgotados.add(modelo)
-                logger.info("[plataformas] quota esgotada em %s — passo ao seguinte",
-                            modelo)
-                break  # passa ao modelo seguinte
+        if resposta.status_code >= 400:
+            return "ERRO:%s" % (_mensagem_de_erro(resposta)
+                                or "HTTP %d" % resposta.status_code)
 
-            if resposta.status_code == 503 and tentativa < 5:
-                mensagem = _mensagem_de_erro(resposta)
-                encontrado = re.search(r"retry in ([\d.]+)s", mensagem)
-                espera = min(max((float(encontrado.group(1)) if encontrado else 12.0),
-                                 5.0), 60.0)
-                if _espera_gasta + espera > ORCAMENTO_DE_ESPERA_SEGUNDOS:
-                    return ("ERRO:o modelo está com muita procura e o tempo de "
-                            "espera desta recolha esgotou-se — tenta daqui a um "
-                            "bocado")
-                _espera_gasta += espera
-                logger.info("[plataformas] %s ocupado: a esperar %.0fs (gasto %.0fs)",
-                            modelo, espera, _espera_gasta)
-                time.sleep(espera)
-                continue
+        try:
+            dados = resposta.json()
+            candidato = (dados.get("candidates") or [{}])[0]
+            pedacos = (candidato.get("content") or {}).get("parts") or [{}]
+            return "".join(p.get("text", "") for p in pedacos if isinstance(p, dict))
+        except Exception:  # noqa: BLE001
+            return "ERRO:resposta da IA ilegível"
 
-            if resposta.status_code >= 400:
-                return "ERRO:%s" % (_mensagem_de_erro(resposta)
-                                    or "HTTP %d" % resposta.status_code)
-
-            try:
-                dados = resposta.json()
-                candidato = (dados.get("candidates") or [{}])[0]
-                pedacos = (candidato.get("content") or {}).get("parts") or [{}]
-                return "".join(p.get("text", "") for p in pedacos
-                               if isinstance(p, dict))
-            except Exception:  # noqa: BLE001
-                return "ERRO:resposta da IA ilegível"
-
-    return ("ERRO:a quota da IA esgotou-se hoje em todos os modelos — o que ficou "
-            "por ler entra na próxima recolha")
+    return ("ERRO:a IA recusou seis vezes seguidas por excesso de pedidos — o que "
+            "ficou por ler entra na próxima recolha")
 
 
 def ler_json_da_ia(cru: str) -> Dict:
