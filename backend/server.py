@@ -5721,6 +5721,31 @@ def _fin_only_digits(s):
     return re.sub(r"\D+", "", str(s or ""))
 
 
+# **A quota gratuita do Gemini é 20 pedidos por dia E POR MODELO.**
+#
+# Por isso o modelo é FIXO e não `gemini-flash-latest`: um alias muda de modelo
+# debaixo dos pés e aponta sempre para o de quota mais apertada. E por isso há
+# modelos de recurso: quando os vinte de um acabam, passa-se ao seguinte, o que
+# multiplica por quatro o que se consegue ler num dia sem pagar nada.
+#
+# O módulo `plataformas` já vivia assim (plataformas/leitura.py:147-167); este
+# não, e era ele que ficava sem quota. As listas são deliberadamente separadas:
+# mexer numa não pode mudar o modelo que a outra usa.
+_FIN_GEMINI_MODELO = "gemini-3.5-flash"
+_FIN_GEMINI_RECURSO = (
+    "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+)
+
+
+def _fin_gemini_modelos():
+    """A ordem por que se batem as portas. GEMINI_MODEL, se estiver definido,
+    manda — e os de recurso vêm a seguir, sem repetir o primeiro."""
+    primeiro = os.environ.get("GEMINI_MODEL") or _FIN_GEMINI_MODELO
+    return [primeiro] + [m for m in _FIN_GEMINI_RECURSO if m != primeiro]
+
+
 def _fin_gemini_call(pdf_bytes, prompt, max_tokens, timeout):
     """Chama a API do Google Gemini (síncrono) com o PDF em base64 e um prompt.
     Devolve (raw_text, finish_reason). Em falha de rede/HTTP, finish_reason vem
@@ -5731,7 +5756,7 @@ def _fin_gemini_call(pdf_bytes, prompt, max_tokens, timeout):
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return "", "ERROR:sem GEMINI_API_KEY"
-    model = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+    modelos = _fin_gemini_modelos()
     body = {
         "contents": [{
             "parts": [
@@ -5753,33 +5778,42 @@ def _fin_gemini_call(pdf_bytes, prompt, max_tokens, timeout):
             "thinkingConfig": {"thinkingLevel": "low"},
         },
     }
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    attempts = 0
-    while True:
-        attempts += 1
-        try:
-            with httpx.Client(timeout=timeout) as http_client:
-                # Chave no HEADER (não no URL): evita que apareça nos logs do httpx.
-                resp = http_client.post(
-                    url,
-                    headers={"content-type": "application/json", "x-goog-api-key": api_key},
-                    json=body,
-                )
-        except Exception as exc:  # noqa: BLE001
-            return "", f"ERROR:rede IA: {exc}"
-        # 429 = limite de ritmo do plano gratuito (5/min). Espera o tempo
-        # sugerido pelo Google e repete (até 5 tentativas) para não falhar
-        # bursts de faturas. Depois disso, devolve o erro (fica p/ a próxima).
-        if resp.status_code == 429 and attempts <= 5:
+    resp = None
+    # **Primeira volta: percorrer os modelos SEM esperar.** A quota gratuita é
+    # por dia E POR MODELO. Com o primeiro esgotado, o seguinte responde à
+    # primeira, no mesmo instante — está medido no módulo das plataformas, que
+    # já vive assim. Esperar não devolve quota diária; mudar de porta devolve.
+    #
+    # **Segunda volta: aí sim, esperar.** Se TODOS deram 429, o que se apanhou
+    # já não é a quota do dia mas o limite por minuto (5/min), e esse passa.
+    ultima_espera = 0.0
+    for volta in range(2):
+        if volta:
+            # Todas as portas recusaram: o que se apanhou já não é a quota do
+            # dia — é o limite por minuto. Aí sim, esperar resolve.
+            _time.sleep(min(max(ultima_espera + 1.0, 5.0), 45.0))
+        for modelo in modelos:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
+            try:
+                with httpx.Client(timeout=timeout) as http_client:
+                    # Chave no HEADER (não no URL): não aparece nos logs do httpx.
+                    resp = http_client.post(
+                        url,
+                        headers={"content-type": "application/json", "x-goog-api-key": api_key},
+                        json=body,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                return "", f"ERROR:rede IA: {exc}"
+            if resp.status_code != 429:
+                break
             try:
                 msg = resp.json().get("error", {}).get("message", "")
             except Exception:  # noqa: BLE001
                 msg = ""
             mt = re.search(r"retry in ([\d.]+)s", msg or "")
-            delay = float(mt.group(1)) if mt else 22.0
-            _time.sleep(min(max(delay + 1.0, 5.0), 45.0))
-            continue
-        break
+            ultima_espera = float(mt.group(1)) if mt else 22.0
+        if resp is not None and resp.status_code != 429:
+            break
     if resp.status_code >= 400:
         try:
             err = resp.json().get("error", {}).get("message")
