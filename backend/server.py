@@ -5102,7 +5102,9 @@ def _fin_desc_norm(s):
 
 
 async def _fin_guardar_movimentos_do_banco(acc, movs, origem, provisorio):
-    """Grava os movimentos de um documento do banco. Devolve (inseridos, saltados).
+    """Grava os movimentos de um documento do banco.
+
+    Devolve (inseridos, saltados, absorvidas).
 
     Sem saldo nao ha dedup pelo saldo, por isso a chave inclui a descricao:
     correr a recolha duas vezes sobre o mesmo aviso nao duplica nada.
@@ -5110,6 +5112,8 @@ async def _fin_guardar_movimentos_do_banco(acc, movs, origem, provisorio):
     canon = _fin_acct_digits(acc.get("account_number")) or ""
     inseridos = 0
     saltados = 0
+    absorvidas = 0
+    absorvidos = set()   # linhas antigas ja absorvidas NESTA passagem
     agora = datetime.now(timezone.utc).isoformat()
     for m in movs:
         data = _fin_clean_date(m.get("date_lancamento"))
@@ -5126,24 +5130,47 @@ async def _fin_guardar_movimentos_do_banco(acc, movs, origem, provisorio):
         if await db.fin_movements.find_one({"dedup_key": chave}, {"_id": 0, "id": 1}):
             saltados += 1
             continue
-        # O MESMO movimento ja ca esta por outro caminho? Mesma conta, mesmo dia,
-        # mesmo valor E mesma descricao. Sem a descricao, dois pagamentos iguais
-        # no mesmo dia — que acontecem — seriam tomados por um so.
         candidatos = await db.fin_movements.find(
             {"account_id": acc["id"], "date_lancamento": data},
-            {"_id": 0, "id": 1, "amount": 1, "description": 1},
+            {"_id": 0},
         ).to_list(500)
-        gemeo = None
-        for c in candidatos:
-            ca = _fin_clean_num(c.get("amount"))
-            if ca is None:
-                continue
-            if round(ca, 2) == round(valor, 2) and _fin_desc_norm(c.get("description")) == _fin_desc_norm(desc):
-                gemeo = c
-                break
+        mesmo_valor = [c for c in candidatos
+                       if _fin_clean_num(c.get("amount")) is not None
+                       and round(_fin_clean_num(c.get("amount")), 2) == round(valor, 2)
+                       and c["id"] not in absorvidos]
+
+        # 1) Ja ca esta pelo mesmo caminho? Mesma data, valor E descricao, numa
+        #    linha que ja veio do banco. Sem a descricao, dois pagamentos iguais
+        #    no mesmo dia — que acontecem — seriam tomados por um so.
+        gemeo = next(
+            (c for c in mesmo_valor
+             if not c.get("provisorio") and not c.get("manual")
+             and _fin_desc_norm(c.get("description")) == _fin_desc_norm(desc)),
+            None,
+        )
         if gemeo:
             saltados += 1
             continue
+
+        # 2) **O extrato absorve.** Traz saldo, por isso e ele a verdade — mas
+        #    a linha antiga pode ser um aviso do banco OU uma linha que a
+        #    diretora financeira escreveu a mao, ja classificada. Herda-se o
+        #    trabalho dela (categoria, a descricao que ela deu, a anotacao, a
+        #    fatura ligada e o anexo) e apaga-se a antiga. Uma linha antiga so
+        #    pode ser absorvida UMA vez: dois movimentos iguais no mesmo dia
+        #    continuam a ser dois.
+        #    A descricao NAO entra na comparacao de proposito: ela escreve
+        #    "MAKRO" onde o banco escreve "COMPRA 4512 MAKRO CASH".
+        herdado = {}
+        if not provisorio:
+            velha = next((c for c in mesmo_valor if c.get("provisorio") or c.get("manual")), None)
+            if velha:
+                absorvidos.add(velha["id"])
+                for campo in ("category", "title", "note", "invoice_id", "link_auto", "attachment_path"):
+                    if velha.get(campo) not in (None, "", False):
+                        herdado[campo] = velha[campo]
+                await db.fin_movements.delete_one({"id": velha["id"]})
+                absorvidas += 1
         await db.fin_movements.insert_one({
             "id": str(uuid.uuid4()),
             "account_id": acc["id"],
@@ -5165,9 +5192,10 @@ async def _fin_guardar_movimentos_do_banco(acc, movs, origem, provisorio):
             "source": origem,
             "created_by": "cron",
             "created_at": agora,
+            **herdado,
         })
         inseridos += 1
-    return inseridos, saltados
+    return inseridos, saltados, absorvidas
 
 
 async def _fin_substituir_provisorios(account_id, d_min, d_max):
@@ -7068,7 +7096,8 @@ async def fin_cron_bank_docs(key: str = Query(...)):
         mailboxes = []
 
     resumo = {"anexos": 0, "documentos_lidos": 0, "movimentos": 0,
-              "saltados": 0, "provisorios_substituidos": 0, "erros": []}
+              "saltados": 0, "absorvidas": 0, "provisorios_substituidos": 0,
+              "erros": []}
 
     async def marcar_visto(kk):
         await db.fin_ingest_log.update_one(
@@ -7129,14 +7158,18 @@ async def fin_cron_bank_docs(key: str = Query(...)):
             movs = [m for m in movs_raw if isinstance(m, dict)]
             com_saldo = [m for m in movs if _fin_clean_num(m.get("balance")) is not None]
             e_extrato = len(com_saldo) == len(movs) and len(movs) > 0
+            ins, salt, absorv = await _fin_guardar_movimentos_do_banco(
+                acc, movs, "bank_email", provisorio=not e_extrato)
+            resumo["movimentos"] += ins
+            resumo["saltados"] += salt
+            resumo["absorvidas"] += absorv
+            # A limpeza vem DEPOIS da absorcao, nunca antes: apagar primeiro
+            # deitava fora o trabalho que a linha antiga trazia (categoria,
+            # anotacao, fatura ligada) em vez de o herdar.
             if e_extrato:
                 datas = sorted(_fin_clean_date(m.get("date_lancamento")) or "" for m in movs)
                 apagados = await _fin_substituir_provisorios(acc["id"], datas[0], datas[-1])
                 resumo["provisorios_substituidos"] += apagados
-            ins, salt = await _fin_guardar_movimentos_do_banco(
-                acc, movs, "bank_email", provisorio=not e_extrato)
-            resumo["movimentos"] += ins
-            resumo["saltados"] += salt
             await marcar_visto(k)
 
     if resumo["movimentos"]:
