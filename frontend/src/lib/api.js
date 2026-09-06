@@ -144,7 +144,13 @@ export const estoqueMovimento = (data) => axios.post(`${API_URL}/estoque/movimen
 // { unidade_id, destino_unidade_id, produto_id, quantidade }
 export const estoqueTransferencia = (data) => axios.post(`${API_URL}/estoque/transferencia`, data);
 // Fichas técnicas / receitas
-export const getEstoqueProdutos = (marca) => axios.get(`${API_URL}/estoque/produtos`, { params: { marca } });
+// **Com tecto de espera, ao contrário do resto deste ficheiro.** O Estoque é
+// outro serviço, noutro servidor: o proxy do portal já espera 12-15 s por ele
+// antes de desistir, e sem `timeout` no browser (não há `axios.defaults.
+// timeout` em lado nenhum deste repositório) um pedido pendurado deixava quem
+// o fez a olhar para «A ler o catálogo…» para sempre — sem erro e sem fim.
+export const getEstoqueProdutos = (marca) => axios.get(
+  `${API_URL}/estoque/produtos`, { params: { marca }, timeout: 60000 });
 export const getEstoqueReceita = (produtoId) => axios.get(`${API_URL}/estoque/produtos/${produtoId}/receita`);
 // data: { rendimento, ingredientes:[{produto_id, quantidade}], tamanhos_balde:[kg] }
 export const setEstoqueReceita = (produtoId, data) => axios.put(`${API_URL}/estoque/produtos/${produtoId}/receita`, data);
@@ -231,6 +237,14 @@ export const importFinMovementsPdf = (file) => {
 };
 export const setFinMovementTitle = (id, title) =>
   axios.put(`${API_URL}/fin/movements/${id}/set-title`, { title });
+// Conciliação: guarda campo a campo (o que não for enviado não é tocado).
+export const updateFinMovement = (id, campos) =>
+  axios.put(`${API_URL}/fin/movements/${id}`, campos);
+export const createFinMovement = (data) => axios.post(`${API_URL}/fin/movements`, data);
+export const deleteFinMovement = (id) => axios.delete(`${API_URL}/fin/movements/${id}`);
+// Saldo de cada conta (cartão "Valor Contas" da Conciliação).
+export const getFinBankBalances = (companyId) =>
+  axios.get(`${API_URL}/fin/bank-accounts/balances`, { params: { company_id: companyId } });
 export const linkFinMovement = (id, invoiceId) =>
   axios.put(`${API_URL}/fin/movements/${id}/link`, { invoice_id: invoiceId });
 export const unlinkFinMovement = (id) => axios.put(`${API_URL}/fin/movements/${id}/unlink`);

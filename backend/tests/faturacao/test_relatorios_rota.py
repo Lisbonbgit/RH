@@ -257,3 +257,18 @@ def test_um_produto_SEM_tamanho_traz_a_lista_vazia_e_nao_falta_a_chave(monkeypat
     _db(monkeypatch)
     linhas = _correr("produto", monkeypatch)["linhas"]
     assert linhas and all(l["tamanhos"] == [] for l in linhas)
+
+
+def test_uma_fatura_ANULADA_nao_conta_no_relatorio(monkeypatch):
+    """A mesma regra do Dashboard, que a soma dos nove relatórios não tinha.
+
+    Desde que a sincronização da app passou a marcar `anulado: True` numa FS
+    anulada no Vendus (`sincronizacao_rota._marcar_anulado`), o campo existe
+    mesmo em `fat_documentos`. O Dashboard e o email da noite já lhe davam
+    0,00 € (`dashboard._valor_documento`); este ecrã continuava a somá-la, e o
+    dono ficava com dois números diferentes para o mesmo dia.
+    """
+    anulada = dict(_DOC_FS, id="d9", numero="FS 1/9", anulado=True)
+    _db(monkeypatch, documentos=[_DOC_FS, anulada])
+    r = _correr("produto", monkeypatch)
+    assert r["total"]["bruto"] == 11.35, "só a fatura sã, e não as duas"

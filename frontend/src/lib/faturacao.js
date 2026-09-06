@@ -101,6 +101,97 @@ export const criarLoja = (data) => api.post(`${API_URL}/faturacao/lojas`, data);
 export const editarLoja = (id, data) => api.put(`${API_URL}/faturacao/lojas/${id}`, data);
 export const apagarLoja = (id) => api.delete(`${API_URL}/faturacao/lojas/${id}`);
 
+// As vendas da APP L'Açaí.
+//
+// A app emite as Faturas Simplificadas dela pela MESMA caixa API e pela MESMA
+// série das cinco lojas; o portal vai buscá-las ao Vendus e grava-as na loja
+// que o gestor escolher aqui — `{ loja_id, ativo }` em `fat_definicoes`. Sem
+// loja escolhida a sincronização não corre de todo, e diz porquê: adivinhá-la
+// era pôr a receita da app na loja errada (faturacao/sincronizacao_rota.py).
+export const getSincronizacaoApp = () =>
+  api.get(`${API_URL}/faturacao/sincronizacao-app/definicoes`);
+export const guardarSincronizacaoApp = (dados) =>
+  api.put(`${API_URL}/faturacao/sincronizacao-app/definicoes`, dados);
+// Vai ao VENDUS ler dois dias inteiros, documento a documento — tecto de 120 s,
+// como as outras chamadas deste ficheiro que lá falam. Corre sozinha de 5 em 5
+// minutos pelo cron; este botão é para quando alguém não quer esperar.
+export const sincronizarAppAgora = () =>
+  api.post(`${API_URL}/faturacao/sincronizacao-app/sincronizar-agora`, undefined,
+    { timeout: TIMEOUT_COM_VENDUS_MS });
+
+// **O que a volta da sincronização diz a quem carregou no botão.**
+//
+// Vive aqui e não dentro do ecrã por causa dos `assinalados`: são os documentos
+// que ficaram de fora POR AVARIA (sem ATCUD, total ilegível, desapareceram do
+// Vendus) e que **não voltam a ser tentados** — a janela do cron só olha para
+// hoje e ontem. Até hoje esse campo não tinha consumidor nenhum: existia no log
+// da API, onde ninguém olha. Quem pode agir é quem está à frente do ecrã, e por
+// isso eles aparecem mesmo quando o resto da volta correu bem.
+export const resumoDaSincronizacao = (resultado) => {
+  const r = resultado || {};
+  const gravados = r.gravados || 0;
+  const assinalados = r.assinalados || [];
+  // Outra lista e outra coisa: as que JÁ CÁ ESTAVAM e passaram a `A` no
+  // Vendus, e que esta volta acabou de marcar como anuladas. Não são avaria
+  // nenhuma — não entram nos `assinalados`, que são o que ficou de fora e não
+  // volta — mas são dinheiro a SAIR do Dashboard, e isso diz-se a quem
+  // carregou no botão em vez de ficar só no log da API.
+  const anulados = r.anulados || [];
+  const erros = r.erros || [];
+  // **Os assinalados JÁ ESTÃO dentro dos ignorados.** No servidor, `_saltar`
+  // chama `_contar` (`sincronizacao_rota.py`), por isso «8 ignoradas» seguido
+  // de «2 documentos ficaram de fora» são 8 documentos e não 10 — mas quem lê
+  // soma, e fica à procura de dois documentos que não existem. O parêntesis
+  // diz de que número é que os 2 saíram.
+  const deFora = assinalados.length > 0
+    ? ` (${assinalados.length} ${assinalados.length === 1
+      ? 'dela ficou de fora e não volta' : 'delas ficaram de fora e não voltam'})`
+    : '';
+  const partes = [
+    `${gravados} ${gravados === 1 ? 'nova' : 'novas'} · ${r.repetidos || 0} `
+    + `${r.repetidos === 1 ? 'repetida' : 'repetidas'} · ${r.ignorados || 0} `
+    + `${r.ignorados === 1 ? 'ignorada' : 'ignoradas'}${deFora}`
+    + (anulados.length > 0
+      ? ` · ${anulados.length} ${anulados.length === 1 ? 'anulada' : 'anuladas'}`
+      : ''),
+  ];
+  if (assinalados.length > 0) {
+    partes.push(
+      'São estas:\n'
+      + assinalados.join('\n'),
+    );
+  }
+  if (anulados.length > 0) {
+    partes.push(
+      'Anuladas no Vendus e já não contam:\n'
+      + anulados.join('\n'),
+    );
+  }
+  if (erros.length > 0) partes.push(erros.join('\n'));
+  return {
+    // A avaria manda no tom: uma volta que parou a meio com 3 faturas gravadas
+    // não é um sucesso com um aviso, é uma volta por acabar.
+    tipo: erros.length > 0 ? 'error' : assinalados.length > 0 ? 'warning' : 'success',
+    titulo: erros.length > 0
+      ? 'A sincronização não chegou ao fim'
+      : assinalados.length > 0
+        ? `${assinalados.length} ${assinalados.length === 1
+          ? 'documento ficou de fora' : 'documentos ficaram de fora'}`
+        : gravados > 0
+          ? `${gravados} ${gravados === 1
+            ? 'fatura nova da app' : 'faturas novas da app'}`
+          // Uma volta que não trouxe nada mas RETIROU uma fatura do Dashboard
+          // não é uma volta sem novidades: "Sem faturas novas da app" no
+          // título era a única linha que muita gente lê a esconder a única
+          // coisa que aconteceu.
+          : anulados.length > 0
+            ? `${anulados.length} ${anulados.length === 1
+              ? 'fatura anulada no Vendus' : 'faturas anuladas no Vendus'}`
+            : 'Sem faturas novas da app',
+    descricao: partes.join('\n\n'),
+  };
+};
+
 // Caixas (de uma loja)
 export const getCaixas = (lojaId) => api.get(`${API_URL}/faturacao/lojas/${lojaId}/caixas`);
 export const criarCaixa = (lojaId, data) => api.post(`${API_URL}/faturacao/lojas/${lojaId}/caixas`, data);
@@ -373,3 +464,9 @@ export const temMaisDe2CasasDecimais = (valor) => {
   const casas = texto.includes('.') ? texto.split('.')[1] : '';
   return casas.length > 2;
 };
+
+// **O que saiu do ARMAZÉM** — as gramagens das personalizações somadas por
+// artigo do Estoque. Caminho próprio e não `/relatorios/consumo`: essa rota
+// tem um `{dimensao}` que come tudo o que lhe passe à frente.
+export const getConsumo = (params) => api.get(`${API_URL}/faturacao/consumo`, { params });
+

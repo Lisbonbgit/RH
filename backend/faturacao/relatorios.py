@@ -101,7 +101,18 @@ def _chave_e_rotulo(dimensao: str, evento: Dict, artigo: Optional[Dict]) -> tupl
     """A que linha da tabela pertence este documento (ou este artigo dele)."""
     quando = evento.get("quando")
     if dimensao == "produto":
-        return artigo.get("produto_id"), artigo.get("produto_nome") or _SEM_DEFINICAO
+        nome = artigo.get("produto_nome") or _SEM_DEFINICAO
+        # **Sem `produto_id`, a identidade do artigo é o NOME.** Os artigos das
+        # faturas da app não têm produto do catálogo nenhum (vêm das linhas do
+        # Vendus), e com a chave a `None` fundiam-se TODOS numa linha só, com o
+        # rótulo do primeiro: uma fatura com um açaí e duas águas aparecia como
+        # «Açaí Mini, 3, 9,85 €». O dinheiro total estava certo; a atribuição
+        # por artigo é que mentia — que é exactamente o que esta vista existe
+        # para responder.
+        #
+        # Só aqui: na CATEGORIA um `None` quer mesmo dizer uma coisa só («Sem
+        # definição»), e separá-la por nome inventava categorias.
+        return artigo.get("produto_id") or nome, nome
     if dimensao == "categoria":
         return artigo.get("categoria_id"), artigo.get("categoria_nome") or _SEM_DEFINICAO
     if dimensao == "cliente":
@@ -312,7 +323,11 @@ from fastapi import APIRouter, Depends, HTTPException  # noqa: E402
 from .auth import gestor_atual  # noqa: E402
 from .db import COLECOES, obter_db  # noqa: E402
 from .fiscal import _itens_vendus  # noqa: E402
-from .mapa_imposto import _TAXA_DO_CODIGO, _liquido_da_linha  # noqa: E402
+from .mapa_imposto import (  # noqa: E402
+    _TAXA_DO_CODIGO,
+    _liquido_da_linha,
+    apos_desconto_da_linha,
+)
 from .periodos import janela_de_datas  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -400,6 +415,69 @@ def _artigos_da_fatura(venda: Optional[Dict], produtos: Dict, categorias: Dict) 
             centimos(_liquido_da_linha(item)),
             _TAXA_DO_CODIGO.get(item.get("tax_id")),
             _variante_da_linha(linha),
+        ))
+    return artigos
+
+
+def _artigos_das_linhas_vendus(documento: Dict, categorias: Dict) -> List[Dict]:
+    """Os artigos de um documento que não tem conta de balcão nenhuma.
+
+    **Porque é que isto existe.** `_artigos_da_fatura` começa com
+    `if not venda: return []`. Um `[]` não levanta excepção, portanto o
+    documento não é descartado pelo `except` de quem chama: vira um evento com
+    a soma de uma lista vazia, ou seja **zero**. Media-se assim — a fatura da
+    app valia 6,85 € no cartão do Dashboard (que lê `total_bruto` do próprio
+    documento) e 0,00 € nas nove vistas dos Relatórios, sem nenhum dos dois
+    números parecer errado. E o aviso que existe para isto — «N faturas não se
+    deixaram repartir» — conta documentos menos eventos, e o evento existia.
+
+    As linhas vêm como o Vendus as mandou (`items` do `GET documents/{id}/`).
+    Reaproveita-se `_artigo`, que é onde as regras do dinheiro já vivem: com
+    `produto=None` o `custo_c` sai `None` sozinho — e tem mesmo de ser `None`,
+    porque um custo de 0 € contra 6,85 € de venda dá 100% de margem no
+    relatório de rentabilidade.
+    """
+    # **Numa nota de crédito, o valor entra POSITIVO.** Quem soma é `agregar`,
+    # que aplica o sinal pelo `tipo` do documento — e um `-1 ×` sobre um valor
+    # que a API já devolveu negativo é uma dupla negação: a nota passava a
+    # SOMAR receita em vez de a subtrair. Medido: uma FS de 6,85 € da app e a
+    # NC que a anula davam +13,70 € e quantidade 2, em vez de zero.
+    #
+    # Não é hipótese: o Financeiro lê a MESMA API das MESMAS lojas e faz o
+    # mesmo há meses (`server.py::_fin_signed_amount`, «a API pode devolver o
+    # valor já negativo»; e ao nível do item, «a devolução reverte o custo,
+    # venha a quantidade positiva ou já negativa da API»).
+    #
+    # **Só na NC.** Numa fatura, uma linha negativa é um desconto legítimo, e
+    # um `abs()` incondicional transformava-o em receita.
+    eh_nc = documento.get("tipo") == "NC"
+    artigos = []
+    for linha in documento.get("linhas_vendus") or []:
+        montantes = linha.get("amounts") or {}
+        # **`gross_total` é o valor ANTES do desconto, não o da linha.** Medido
+        # na `FS 06P2026/1081` (um resgate de recompensa da app, 2026-09-05): a
+        # linha vem com `gross_total: "5.85"` e `discounts:
+        # {calculated_percentage: 100}`, e o documento vale `amount_gross:
+        # "0.00"`. Lido a direito, este relatório dava 5,85 € de receita que
+        # nunca existiu — o Dashboard mostrava 0,00 € (lê `total_bruto` do
+        # documento) e as NOVE vistas daqui mostravam 5,85 €, sem nenhum dos
+        # dois números parecer errado. Numa app de fidelização isto não é um
+        # caso de canto: é o dia-a-dia, uma recompensa de cada vez.
+        #
+        # `apos_desconto_da_linha` é a fórmula do Vendus, e é a mesma que
+        # `_artigos_da_fatura` já aplica às nossas faturas por
+        # `_liquido_da_linha` — as duas metades deste ficheiro passam a medir
+        # a mesma coisa.
+        bruto_c = centimos(apos_desconto_da_linha(montantes.get("gross_total"), linha))
+        quantidade = float(linha.get("qty") or 0)
+        if eh_nc:
+            bruto_c, quantidade = abs(bruto_c), abs(quantidade)
+        artigos.append(_artigo(
+            None, categorias, None,
+            linha.get("title") or _SEM_DEFINICAO,
+            quantidade,
+            bruto_c,
+            (linha.get("tax") or {}).get("rate"),
         ))
     return artigos
 
@@ -520,10 +598,16 @@ async def eventos_dos_documentos(
         nota = notas.get(doc.get("nota_credito_id")) if ehNC else None
         venda = vendas.get((nota or doc).get("venda_id"))
         try:
-            artigos = (
-                _artigos_da_nota(nota, venda, produtos, categorias) if ehNC
-                else _artigos_da_fatura(venda, produtos, categorias)
-            )
+            # Um documento sem venda mas com as linhas do Vendus reparte-se por
+            # elas. É o caso das faturas da app (`origem: "app"`), que não têm
+            # conta de balcão nenhuma — ver `_artigos_das_linhas_vendus`.
+            if venda is None and doc.get("linhas_vendus"):
+                artigos = _artigos_das_linhas_vendus(doc, categorias)
+            else:
+                artigos = (
+                    _artigos_da_nota(nota, venda, produtos, categorias) if ehNC
+                    else _artigos_da_fatura(venda, produtos, categorias)
+                )
         except Exception:  # noqa: BLE001 — ver abaixo
             # **Uma venda estragada não pode levar o ecrã inteiro com ela.**
             #
@@ -546,6 +630,20 @@ async def eventos_dos_documentos(
             # cartão «Hoje» e o top de artigos a discordar sem explicação.
             logger.warning("Documento %s sem artigos: a venda não se deixa repartir.",
                          doc.get("id"), exc_info=True)
+            continue
+        # **Zero artigos não é um evento de 0,00 €.** É o defeito que esta
+        # repartição existe para matar, e uma lista VAZIA ressuscitava-o: um
+        # documento da app cujo `items` venha vazio grava-se na mesma
+        # (`sincronizacao_app.py`: `cru.get("items") or []`) e ficava a valer
+        # 0,00 € nas nove vistas para sempre — com o valor certo no cartão do
+        # Dashboard, que lê `total_bruto`, e o contador «documentos por
+        # repartir» a ZERO, portanto sem nada no ecrã a dizer que havia
+        # dinheiro por atribuir.
+        #
+        # Ficando de fora, entra no aviso «N faturas de hoje não se deixaram
+        # repartir por artigo» — a mesma porta do `except` acima, pela mesma
+        # razão: o que não se sabe repartir diz-se, não se arredonda a zero.
+        if not artigos:
             continue
         if categoria_id:
             artigos = [a for a in artigos if a.get("categoria_id") == categoria_id]
@@ -617,7 +715,17 @@ async def relatorio(
         raise HTTPException(status_code=422, detail=str(erro))
 
     db = obter_db()
-    filtro = {"emitido_em": {"$gte": janela.inicio.isoformat(), "$lt": janela.fim.isoformat()}}
+    # **O anulado fica de fora**, a mesma regra e o mesmo `$ne` de
+    # `dashboard.documentos_no_periodo`. `$ne` e não `== False`: o campo é
+    # AUSENTE em toda a gente (`fiscal._gravar_documento` nunca o grava, de
+    # propósito), e um `{"anulado": False}` exigia-o presente e devolvia nove
+    # relatórios vazios. Sem isto, uma FS da app anulada no Vendus saía do
+    # Dashboard e do email da noite (os dois somam por
+    # `dashboard._valor_documento`, que lhe dá 0,00 €) e continuava aqui — o
+    # dono a ver dois números diferentes para o mesmo dia, sem forma de saber
+    # qual mente.
+    filtro = {"emitido_em": {"$gte": janela.inicio.isoformat(), "$lt": janela.fim.isoformat()},
+              "anulado": {"$ne": True}}
     if loja_id:
         filtro["loja_id"] = loja_id
     documentos = await (

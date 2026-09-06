@@ -310,15 +310,27 @@ def _cartao_de_loja(loja: Dict, maior: float) -> str:
            "sem vendas neste dia" if loja.get("sem_vendas")
            else "%d documento%s" % (loja.get("documentos") or 0,
                                     "" if loja.get("documentos") == 1 else "s")))
-    corpo = (
-        '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" border="0" '
-        'style="margin-top:14px;border-top:1px solid %s;">'
-        '<tr><td width="50%%" valign="top" style="padding:14px 10px 0 0;">%s</td>'
-        '<td width="50%%" valign="top" style="padding:14px 0 0 10px;">'
-        '<p style="margin:0 0 2px;font-size:11px;color:%s;text-transform:uppercase;'
-        'letter-spacing:.6px;font-weight:600;">Pagamentos</p>%s</td></tr></table>'
-        % (LINHA, _bloco_caixa(loja.get("caixa") or {}, compacto=True), TEXTO_FRACO,
-           _linhas_de_pagamento(loja.get("pagamentos") or [], faturacao or 1)))
+    if loja.get("caixa") is None:
+        # **A loja da app não tem gaveta** (ver `relatorio_diario`): metade do
+        # cartão em branco lia-se como uma avaria do relatório, e o
+        # `_bloco_caixa` de um dicionário vazio dizia «Turno ainda aberto» —
+        # que é a acusação que este cartão existe para não fazer. Uma linha a
+        # explicar porquê, e nada de "Sem pagamentos registados": a app foi
+        # paga, só não por uma gaveta.
+        corpo = (
+            '<p style="margin:14px 0 0;padding-top:14px;border-top:1px solid %s;'
+            'font-size:12px;color:%s;">Vendas da aplicação, pagas online &mdash; '
+            'sem caixa nem gaveta para conferir.</p>' % (LINHA, TEXTO_FRACO))
+    else:
+        corpo = (
+            '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" border="0" '
+            'style="margin-top:14px;border-top:1px solid %s;">'
+            '<tr><td width="50%%" valign="top" style="padding:14px 10px 0 0;">%s</td>'
+            '<td width="50%%" valign="top" style="padding:14px 0 0 10px;">'
+            '<p style="margin:0 0 2px;font-size:11px;color:%s;text-transform:uppercase;'
+            'letter-spacing:.6px;font-weight:600;">Pagamentos</p>%s</td></tr></table>'
+            % (LINHA, _bloco_caixa(loja.get("caixa") or {}, compacto=True), TEXTO_FRACO,
+               _linhas_de_pagamento(loja.get("pagamentos") or [], faturacao or 1)))
     return _cartao(cabecalho + corpo)
 
 

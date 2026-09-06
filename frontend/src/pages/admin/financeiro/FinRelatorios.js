@@ -3,7 +3,7 @@ import { useOutletContext } from 'react-router-dom';
 import {
   getFinReportIva, getFinReportDre, getFinReportTesouraria, getFinReportExport,
 } from '../../../lib/api';
-import { eur, kpiTone } from '../../../lib/finance';
+import { eur, kpiTone, categoriasDaEmpresa, categoriaLabel } from '../../../lib/finance';
 import { Button } from '../../../components/ui/button';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../../components/ui/tabs';
@@ -32,11 +32,6 @@ const trimestreDe = (ym) => {
   return { ano: yy, q, meses, label: `T${q + 1} ${yy} · ${MESES[meses[0] - 1].slice(0, 3)}–${MESES[meses[2] - 1].slice(0, 3)}` };
 };
 
-const CAT_LABEL = {
-  mercadoria: 'Mercadoria', rendas: 'Rendas', energia_agua: 'Água/Energia',
-  salarios: 'Salários', servicos: 'Serviços', impostos: 'Impostos',
-  outros: 'Outros', sem_categoria: 'Sem categoria',
-};
 const taxaLabel = (k) => (k === 'sem_taxa' ? 'Sem taxa' : `${k}%`);
 
 // Cartão de KPI (mesmo visual das outras páginas do Financeiro).
@@ -85,6 +80,7 @@ function TaxaRows({ por_taxa }) {
 
 export default function FinRelatorios() {
   const { selectedCompany } = useOutletContext();
+  const CATEGORIAS = categoriasDaEmpresa(selectedCompany);
   const [companyId, setCompanyId] = useState('');
   const [month, setMonth] = useState(thisMonth());
   const [weeks] = useState(8);
@@ -300,7 +296,8 @@ export default function FinRelatorios() {
                     {despEntries.length === 0
                       ? <p className="text-xs text-muted-foreground">Sem despesas classificadas no período.</p>
                       : despEntries.map(([cat, val]) => (
-                        <Row key={cat} label={CAT_LABEL[cat] || cat} value={eur(-Math.abs(val))} muted />
+                        <Row key={cat} label={cat === 'sem_categoria' ? 'Sem categoria' : categoriaLabel(CATEGORIAS, cat)}
+                          value={eur(-Math.abs(val))} muted />
                       ))}
                     <Row label="− Total despesas" value={eur(-Math.abs(dre.despesas?.total || 0))} />
                   </div>

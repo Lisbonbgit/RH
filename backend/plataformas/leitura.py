@@ -30,7 +30,10 @@ import json
 import logging
 import os
 import re
+import time
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
+from urllib.parse import unquote, urlparse
 from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
@@ -54,14 +57,137 @@ MAX_ANEXOS_POR_MENSAGEM = 4
 MAX_BYTES_POR_ANEXO = 8 * 1024 * 1024
 MAX_CARACTERES_DO_CORPO = 60000
 
-# Como se reconhece cada plataforma. Procura-se no remetente E no assunto: a
-# Uber manda de vários subdomínios ao longo do ano, e o assunto ("Uber Eats")
-# apanha o que um domínio novo deixaria passar.
-MARCAS = {
-    "uber": ("uber.com", "ubereats", "uber eats", "uber portugal"),
-    "bolt": ("bolt.eu", "boltfood", "bolt food", "bolt.food"),
-    "glovo": ("glovoapp", "glovo.com", "glovo"),
+# **Quem manda relatórios a sério — e é o REMETENTE que os separa da
+# publicidade.**
+#
+# A primeira versão disto procurava "uber", "bolt" e "glovo" em qualquer parte
+# do remetente ou do assunto. Numa caixa real apanhou **73 mensagens em 20
+# dias**, e a maioria era publicidade: «5% de desconto em Sacos
+# Personalizados», «VOLTA ÀS AULAS! -10€ em Sacos Glovo», «Campanha nacional:
+# 40% de desconto». Todas iam à IA. O plano gratuito do Gemini permite 20
+# pedidos por minuto, por isso a partir da 21.ª todas falhavam por quota — e a
+# recolha acabava sem encontrar um único relatório.
+#
+# As três plataformas separam bem os dois mundos por endereço de envio:
+#
+#   Uber   relatórios noreply@uber.com        publicidade eats@uber.com
+#   Bolt   relatórios portugal-food@bolt.eu   publicidade *-marketing.bolt.eu
+#   Glovo  relatórios no-reply@glovoapp.com   publicidade email.glovostore.com
+#                                                         partner.glovoapp.com
+#
+# O assunto confirma. Os dois juntos deixam passar ~15 mensagens por janela em
+# vez de 73 — e nenhuma delas é uma promoção.
+RELATORIOS = {
+    "uber": {
+        # «Resumo dos Pagamentos Uber Eats para L'açaí Amadora Aug 24 - Aug 30, 2026»
+        "de": ("noreply@uber.com",),
+        "assunto": ("resumo dos pagamentos", "payments summary", "payment summary"),
+    },
+    "bolt": {
+        # «Relatório semanal da Bolt Food»
+        "de": ("portugal-food@bolt.eu",),
+        "assunto": ("relatório semanal", "relatorio semanal", "weekly report"),
+    },
+    "glovo": {
+        # «Glovoapp Spain Platform S.L. - Extrato I26LQPOMT1000017»
+        "de": ("no-reply@glovoapp.com",),
+        "assunto": ("extrato", "statement"),
+    },
 }
+
+# **De onde é que se aceita descarregar um ficheiro.**
+#
+# A Bolt não põe um único número no email: manda links para o relatório semanal
+# em XLSX/CSV/PDF, e esses links abrem sem login. Segui-los é a única forma de
+# saber quanto ela vai pagar — mas seguir um endereço que veio DENTRO de um
+# email é abrir uma porta, e por isso ela só abre para estes servidores.
+#
+# A verificação é feita DUAS vezes: no endereço de destino escrito no email, e
+# outra vez no endereço onde a descarga acabou por parar. As duas são precisas
+# porque os links da Bolt passam por um redireccionador da Amazon
+# (`awstrack.me`) — o primeiro endereço não é o final, e confiar só num deles
+# deixava passar um redireccionamento para outro sítio qualquer.
+DOMINIOS_DE_DESCARGA = {
+    "bolt": ("delivery-reporting.bolt.eu", "doclink.live.boltsvc.net"),
+}
+
+# Quantos ficheiros se descarregam por mensagem. Três chegam: o CSV (que traz
+# os totais escritos), o XLSX e a fatura em PDF.
+MAX_DESCARGAS_POR_MENSAGEM = 3
+
+# **Espaçar os pedidos à IA, em vez de bater na parede e esperar.**
+#
+# O plano gratuito do Gemini permite 20 pedidos por minuto. Disparar quinze de
+# seguida esgota a quota ao 20.º e a partir daí cada pedido custa uma espera de
+# quase um minuto — uma recolha inteira passava de segundos a mais de uma hora,
+# e o botão do ecrã desiste aos cinco minutos.
+#
+# Três segundos e dois décimos entre pedidos dão 18 por minuto, com folga. Uma
+# recolha normal (~15 mensagens) paga com isto uns cinquenta segundos, e não
+# apanha um único 429.
+INTERVALO_ENTRE_CHAMADAS = 3.2
+
+# **O modelo é FIXO, e não `gemini-flash-latest`.**
+#
+# Medido contra a conta a sério a 2026-09-05: a quota do plano gratuito é de
+# **20 pedidos por DIA e por modelo**, e o `gemini-flash-latest` aponta sempre
+# para o mais recente — que é justamente o que tem a quota mais apertada
+# (`gemini-3.8-flash`, 20/dia). Com a ingestão de facturas a usar a mesma
+# chave, esses vinte acabam de manhã e não sobra nada para a segunda-feira.
+# No mesmo instante em que o `-latest` recusava tudo, o `gemini-3.5-flash`
+# respondia à primeira.
+#
+# Fixo por duas razões: um alias muda de modelo debaixo dos pés (foi assim que
+# isto rebentou), e um relatório de dinheiro não deve mudar de leitor sem
+# alguém decidir.
+#
+# **Variável PRÓPRIA e não a `GEMINI_MODEL`**: essa é a da ingestão de
+# facturas, e mexer-lhe mudava o modelo que lê as facturas dos fornecedores —
+# outro problema, de outro dono.
+MODELO_POR_OMISSAO = "gemini-3.5-flash"
+
+# **E quando os vinte de um modelo acabam, passa-se ao seguinte.**
+#
+# A quota é por modelo e por dia. Vinte leituras chegam para uma segunda-feira
+# normal (quatro da Uber, cinco da Bolt, cinco da Glovo), mas não chegam para
+# a primeira corrida — que tem de recuperar o atraso — nem para um dia em que
+# alguém carregue duas vezes no botão. Medido: com o primeiro modelo esgotado,
+# os outros respondiam à primeira, no mesmo instante.
+#
+# Esperar não resolve nada quando a quota é DIÁRIA: a espera só faz sentido
+# quando o limite é por minuto, e aí ela continua a acontecer (ver o orçamento
+# mais abaixo). Contra uma quota diária, o que resolve é ir ao modelo a seguir.
+#
+# São todos da mesma família e a tarefa é a mesma: ler números que estão
+# escritos. Nenhum deles inventa contas — isso é o prompt que o proíbe.
+MODELOS_DE_RECURSO = (
+    "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+)
+
+# Os modelos cuja quota já se esgotou NESTA recolha, para não se voltar a
+# bater à mesma porta quinze vezes.
+_modelos_esgotados = set()
+
+# **O tecto do tempo que uma recolha pode passar à espera da quota.** Quando a
+# ingestão de facturas já gastou o minuto, ainda há 429 — mas uma recolha que
+# demore mais do que isto é uma recolha que ninguém vê acabar. Ao estourar,
+# desiste-se: as mensagens por ler ficam como aviso, e a próxima corrida
+# apanha-as (nada foi gravado a meio).
+ORCAMENTO_DE_ESPERA_SEGUNDOS = 150.0
+
+_ultima_chamada = 0.0
+_espera_gasta = 0.0
+
+
+def reiniciar_orcamento() -> None:
+    """Chamado no início de cada recolha: o orçamento de espera E a lista de
+    modelos esgotados são POR RECOLHA, não por processo. A quota é diária, mas
+    a corrida seguinte tem de voltar a tentar — pode ser noutro dia."""
+    global _espera_gasta
+    _espera_gasta = 0.0
+    _modelos_esgotados.clear()
 
 # Os tipos de anexo que a IA consegue mesmo ler. O `.xlsx` fica de fora de
 # propósito: não é aceite em linha pela API, e mandá-lo devolvia um erro que
@@ -83,6 +209,9 @@ PROMPT = (
     'pagamento ou de facturação — false se for publicidade, uma newsletter, um '
     'aviso de sistema ou qualquer outra coisa,\n'
     '"plataforma": "uber" | "bolt" | "glovo" | null,\n'
+    '"loja": "o nome da loja/restaurante a que este relatório diz respeito, tal '
+    "como aparece escrito (ex.: \"L'açaí Amadora\") — as plataformas mandam UM "
+    'relatório POR LOJA; null se não estiver escrito em lado nenhum",\n'
     '"periodo_inicio": "YYYY-MM-DD" ou null (a data em que começa o período a '
     "que o relatório diz respeito, se estiver escrita),\n"
     '"periodo_fim": "YYYY-MM-DD" ou null,\n'
@@ -107,8 +236,13 @@ PROMPT = (
     "REGRAS ABSOLUTAS:\n"
     "- NÃO INVENTES NENHUM NÚMERO. Um valor que não esteja escrito no documento "
     "é null. Nunca zero para dizer 'não sei'.\n"
-    "- Não calcules valores que não estejam escritos (não somes, não subtraias, "
-    "não convershas moedas).\n"
+    "- Não calcules valores em dinheiro que não estejam escritos (não somes, não "
+    "subtraias, não converhas moedas). Muitos destes relatórios trazem os totais "
+    "escritos no fim (ex.: 'Ganhos Semanais', 'Comissão semanal', 'Pagamento "
+    "líquido') — usa esses.\n"
+    "- A ÚNICA conta que podes fazer é CONTAR as linhas de pedidos de uma "
+    "listagem, para o campo 'pedidos', quando o total de pedidos não estiver "
+    "escrito em lado nenhum.\n"
     "- Os valores são números, sem símbolo de moeda e com ponto decimal.\n"
     "- Escreve os 'problemas' e as 'notas' em português de Portugal."
 )
@@ -166,10 +300,19 @@ def _cabecalho(msg, nome: str) -> str:
 
 
 def classificar(remetente: str, assunto: str) -> Optional[str]:
-    """De que plataforma é esta mensagem, ou `None` se não for de nenhuma."""
-    alvo = ("%s %s" % (remetente or "", assunto or "")).lower()
-    for chave, marcas in MARCAS.items():
-        if any(marca in alvo for marca in marcas):
+    """De que plataforma é este RELATÓRIO, ou `None`.
+
+    Exige as duas coisas — o endereço de envio **e** o assunto. Uma promoção
+    da Glovo tem "glovo" por todo o lado e não é um relatório; um relatório da
+    Uber vem sempre do mesmo endereço. Ver a nota em `RELATORIOS`, e o que
+    custou descobri-lo.
+    """
+    de = (remetente or "").lower()
+    titulo = (assunto or "").lower()
+    for chave, regra in RELATORIOS.items():
+        if not any(endereco in de for endereco in regra["de"]):
+            continue
+        if any(pedaco in titulo for pedaco in regra["assunto"]):
             return chave
     return None
 
@@ -248,6 +391,120 @@ def anexos_da_mensagem(msg) -> Dict:
     return {"lidos": lidos, "ignorados": ignorados}
 
 
+def html_da_mensagem(msg) -> str:
+    """O HTML em cru — só para se apanharem os `href`. O texto simples já os
+    perdeu, e é neles que a Bolt esconde o relatório."""
+    partes = []
+    for parte in msg.walk():
+        if (parte.get_content_type() or "").lower() != "text/html":
+            continue
+        if parte.get_filename():
+            continue
+        try:
+            carga = parte.get_payload(decode=True) or b""
+            partes.append(carga.decode(parte.get_content_charset() or "utf-8", "replace"))
+        except Exception:  # noqa: BLE001
+            continue
+    return "\n".join(partes)
+
+
+def _destino_pretendido(url: str) -> str:
+    """O servidor a que este endereço quer chegar.
+
+    Os links da Bolt vão embrulhados num redireccionador da Amazon
+    (`https://xxx.awstrack.me/L0/https:%2F%2Fdelivery-reporting.bolt.eu%2F...`),
+    por isso o servidor escrito no endereço não é o servidor onde o ficheiro
+    está. Desembrulha-se **um** nível: procura-se um endereço absoluto dentro
+    do caminho e devolve-se o servidor desse.
+
+    Nunca se procura no `?query`: um endereço permitido metido num parâmetro
+    (`...?next=https://delivery-reporting.bolt.eu`) não faz de um servidor
+    estranho um servidor de confiança — era exactamente assim que a barreira
+    se contornava.
+    """
+    partido = urlparse(url)
+    caminho = unquote(partido.path or "")
+    encontrado = re.search(r"https?://([^/\s]+)", caminho)
+    if encontrado:
+        return encontrado.group(1).lower()
+    return (partido.netloc or "").lower()
+
+
+def alvos_de_descarga(html: str, plataforma: str) -> List[str]:
+    """Os endereços deste email de onde se aceita descarregar um ficheiro.
+
+    Só os das plataformas que precisam disso (hoje, a Bolt), e só os que
+    apontam para os servidores declarados em `DOMINIOS_DE_DESCARGA`.
+    """
+    permitidos = DOMINIOS_DE_DESCARGA.get(plataforma)
+    if not permitidos or not html:
+        return []
+    saida: List[str] = []
+    for url in re.findall(r'href="(https?://[^"\s]+)"', html):
+        destino = _destino_pretendido(url)
+        if not any(destino == d or destino.endswith("." + d) for d in permitidos):
+            continue
+        if url not in saida:
+            saida.append(url)
+    return saida
+
+
+def _tipo_do_ficheiro(content_type: str, url: str) -> Optional[str]:
+    """O que se manda à IA e o que não vale a pena mandar.
+
+    O `.xlsx` fica de fora: a API não o aceita em linha, e o mesmo relatório
+    vem sempre também em CSV — que é o que traz os totais escritos.
+    """
+    tipo = (content_type or "").split(";")[0].strip().lower()
+    if "pdf" in tipo:
+        return "application/pdf"
+    if "csv" in tipo or tipo in ("text/plain", "text/tab-separated-values"):
+        return "text/plain"
+    return None
+
+
+def descarregar_ligados(html: str, plataforma: str,
+                        limite: int = MAX_DESCARGAS_POR_MENSAGEM) -> Dict:
+    """Vai buscar os relatórios que o email só referenciou por link.
+
+    Devolve o mesmo formato de `anexos_da_mensagem`. Verifica o servidor
+    **antes** de pedir e **outra vez** depois de seguir os
+    redireccionamentos — ver a nota em `DOMINIOS_DE_DESCARGA`.
+    """
+    permitidos = DOMINIOS_DE_DESCARGA.get(plataforma) or ()
+    lidos, ignorados = [], []
+    for url in alvos_de_descarga(html, plataforma):
+        if len(lidos) >= limite:
+            break
+        try:
+            with httpx.Client(timeout=60, follow_redirects=True) as cliente:
+                resposta = cliente.get(url)
+        except Exception as e:  # noqa: BLE001
+            ignorados.append("descarga falhou: %s" % str(e)[:80])
+            continue
+
+        # Onde a descarga foi PARAR, e não onde ela dizia que ia.
+        final = (urlparse(str(resposta.url)).netloc or "").lower()
+        if not any(final == d or final.endswith("." + d) for d in permitidos):
+            ignorados.append("descarga recusada: acabou em %s" % (final or "?"))
+            continue
+        if resposta.status_code != 200:
+            ignorados.append("descarga devolveu %d" % resposta.status_code)
+            continue
+
+        mime = _tipo_do_ficheiro(resposta.headers.get("content-type", ""), url)
+        carga = resposta.content or b""
+        if not mime:
+            # Um XLSX não é uma falha: o CSV do mesmo relatório vem a seguir.
+            continue
+        if not carga or len(carga) > MAX_BYTES_POR_ANEXO:
+            ignorados.append("ficheiro vazio ou grande de mais")
+            continue
+        nome = os.path.basename(urlparse(str(resposta.url)).path) or "relatorio"
+        lidos.append({"nome": nome[:120], "mime": mime, "bytes": carga})
+    return {"lidos": lidos, "ignorados": ignorados}
+
+
 def data_da_mensagem(msg) -> Optional[date]:
     """O dia em que a mensagem foi enviada, em hora de Lisboa aproximada pelo
     fuso que vem no próprio cabeçalho. Serve de recurso quando o relatório não
@@ -266,6 +523,47 @@ def data_da_mensagem(msg) -> Optional[date]:
 
 # --- A extracção pela IA -----------------------------------------------------
 
+def _modelos_a_tentar() -> List[str]:
+    """O modelo escolhido primeiro, e os de recurso a seguir — sem repetidos e
+    sem os que já se esgotaram nesta recolha."""
+    escolhido = os.environ.get("PLATAFORMAS_GEMINI_MODEL", MODELO_POR_OMISSAO)
+    ordem = [escolhido] + [m for m in MODELOS_DE_RECURSO if m != escolhido]
+    return [m for m in ordem if m not in _modelos_esgotados]
+
+
+def _pedir(modelo: str, partes: List[Dict], chave: str, timeout: int):
+    """Um pedido. Devolve a resposta do httpx, ou levanta o que a rede levantar."""
+    global _ultima_chamada
+    # Espaçar em vez de bater na parede — ver `INTERVALO_ENTRE_CHAMADAS`.
+    desde_a_ultima = time.monotonic() - _ultima_chamada
+    if desde_a_ultima < INTERVALO_ENTRE_CHAMADAS:
+        time.sleep(INTERVALO_ENTRE_CHAMADAS - desde_a_ultima)
+    _ultima_chamada = time.monotonic()
+    with httpx.Client(timeout=timeout) as cliente:
+        # A chave no cabeçalho e não no URL: no URL aparecia nos registos.
+        return cliente.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            "%s:generateContent" % modelo,
+            headers={"content-type": "application/json", "x-goog-api-key": chave},
+            json={
+                "contents": [{"parts": partes}],
+                "generationConfig": {
+                    "temperature": 0,
+                    "maxOutputTokens": 4096,
+                    "responseMimeType": "application/json",
+                    "thinkingConfig": {"thinkingLevel": "low"},
+                },
+            },
+        )
+
+
+def _mensagem_de_erro(resposta) -> str:
+    try:
+        return resposta.json().get("error", {}).get("message", "") or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _chamar_gemini(partes: List[Dict], timeout: int = 180) -> str:
     """O pedido ao Gemini. Devolve o texto em cru, ou `"ERRO:..."`.
 
@@ -273,45 +571,71 @@ def _chamar_gemini(partes: List[Dict], timeout: int = 180) -> str:
     propósito: este pacote é importado PELO `server.py`, e importá-lo de volta
     fechava um ciclo que impedia a API de arrancar. Difere no que interessa —
     aqui vão várias partes (o texto do email mais os anexos) e não um PDF só.
+
+    **Duas avarias diferentes, dois remédios diferentes.**
+
+    - **429 (quota).** É por MODELO e por DIA — medido contra a conta a sério.
+      Esperar não a devolve; o que a devolve é ir ao modelo seguinte. O modelo
+      fica marcado para não se voltar a bater à mesma porta quinze vezes.
+    - **503 (procura alta).** É um pico de segundos e passa sozinho: espera-se,
+      no mesmo modelo, dentro do orçamento de espera da recolha.
+
+    Quando já não há modelos, devolve-se um erro que se lê — a mensagem vira
+    um aviso no email e a corrida seguinte apanha o que ficou por ler.
     """
+    global _espera_gasta
     chave = os.environ.get("GEMINI_API_KEY")
     if not chave:
         return "ERRO:sem GEMINI_API_KEY no servidor"
-    modelo = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
-    corpo = {
-        "contents": [{"parts": partes}],
-        "generationConfig": {
-            "temperature": 0,
-            "maxOutputTokens": 4096,
-            "responseMimeType": "application/json",
-            "thinkingConfig": {"thinkingLevel": "low"},
-        },
-    }
-    url = ("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
-           % modelo)
-    try:
-        with httpx.Client(timeout=timeout) as cliente:
-            # A chave vai no cabeçalho e não no URL: no URL aparecia nos registos.
-            resposta = cliente.post(
-                url,
-                headers={"content-type": "application/json", "x-goog-api-key": chave},
-                json=corpo,
-            )
-    except Exception as e:  # noqa: BLE001
-        return "ERRO:rede: %s" % e
-    if resposta.status_code >= 400:
-        try:
-            detalhe = resposta.json().get("error", {}).get("message")
-        except Exception:  # noqa: BLE001
-            detalhe = None
-        return "ERRO:%s" % (detalhe or "HTTP %d" % resposta.status_code)
-    try:
-        dados = resposta.json()
-        candidato = (dados.get("candidates") or [{}])[0]
-        pedacos = (candidato.get("content") or {}).get("parts") or [{}]
-        return "".join(p.get("text", "") for p in pedacos if isinstance(p, dict))
-    except Exception:  # noqa: BLE001
-        return "ERRO:resposta da IA ilegível"
+
+    modelos = _modelos_a_tentar()
+    if not modelos:
+        return ("ERRO:a quota da IA esgotou-se hoje em todos os modelos — o que "
+                "ficou por ler entra na próxima recolha")
+
+    for modelo in modelos:
+        for tentativa in range(1, 6):
+            try:
+                resposta = _pedir(modelo, partes, chave, timeout)
+            except Exception as e:  # noqa: BLE001
+                return "ERRO:rede: %s" % e
+
+            if resposta.status_code == 429:
+                _modelos_esgotados.add(modelo)
+                logger.info("[plataformas] quota esgotada em %s — passo ao seguinte",
+                            modelo)
+                break  # passa ao modelo seguinte
+
+            if resposta.status_code == 503 and tentativa < 5:
+                mensagem = _mensagem_de_erro(resposta)
+                encontrado = re.search(r"retry in ([\d.]+)s", mensagem)
+                espera = min(max((float(encontrado.group(1)) if encontrado else 12.0),
+                                 5.0), 60.0)
+                if _espera_gasta + espera > ORCAMENTO_DE_ESPERA_SEGUNDOS:
+                    return ("ERRO:o modelo está com muita procura e o tempo de "
+                            "espera desta recolha esgotou-se — tenta daqui a um "
+                            "bocado")
+                _espera_gasta += espera
+                logger.info("[plataformas] %s ocupado: a esperar %.0fs (gasto %.0fs)",
+                            modelo, espera, _espera_gasta)
+                time.sleep(espera)
+                continue
+
+            if resposta.status_code >= 400:
+                return "ERRO:%s" % (_mensagem_de_erro(resposta)
+                                    or "HTTP %d" % resposta.status_code)
+
+            try:
+                dados = resposta.json()
+                candidato = (dados.get("candidates") or [{}])[0]
+                pedacos = (candidato.get("content") or {}).get("parts") or [{}]
+                return "".join(p.get("text", "") for p in pedacos
+                               if isinstance(p, dict))
+            except Exception:  # noqa: BLE001
+                return "ERRO:resposta da IA ilegível"
+
+    return ("ERRO:a quota da IA esgotou-se hoje em todos os modelos — o que ficou "
+            "por ler entra na próxima recolha")
 
 
 def ler_json_da_ia(cru: str) -> Dict:
@@ -359,6 +683,11 @@ def _numero(valor) -> Optional[float]:
         return None
 
 
+def _positivo(numero: Optional[float]) -> Optional[float]:
+    """O mesmo número sem sinal — e `None` continua `None`, nunca zero."""
+    return None if numero is None else abs(numero)
+
+
 def _inteiro(valor) -> Optional[int]:
     numero = _numero(valor)
     return None if numero is None else int(round(numero))
@@ -403,11 +732,36 @@ def periodo_do_relatorio(extraido: Dict, plataforma: str,
     return {"tipo": tipo, "inicio": inicio, "fim": fim, "origem": "calendário"}
 
 
+def chave_da_loja(nome) -> str:
+    """`L'açaí Amadora` -> `lacai-amadora`. Sem acentos, sem apóstrofos e sem
+    maiúsculas, para o mesmo nome escrito de duas maneiras dar a MESMA chave.
+
+    A Uber escreve `L'açai Oeiras` numa semana e `L'açaí Oeiras` noutra (com e
+    sem acento no i); sem esta normalização eram duas lojas diferentes, e o
+    aviso de «faltou uma loja» disparava todas as semanas.
+    """
+    texto = unicodedata.normalize("NFD", str(nome or ""))
+    texto = "".join(c for c in texto if unicodedata.category(c) != "Mn").lower()
+    texto = re.sub(r"[^a-z0-9]+", "-", texto).strip("-")
+    return texto[:60]
+
+
 def montar_registo(extraido: Dict, *, plataforma: str, periodo: Dict,
-                   origem: Dict) -> Dict:
-    """O documento que vai para a base de dados, com uma linha por plataforma e
-    período. O `id` é a chave da idempotência: correr o cron duas vezes escreve
-    duas vezes o mesmo documento, e não dois documentos."""
+                   origem: Dict, chave_de_recurso: str = "") -> Dict:
+    """O documento que vai para a base de dados: **um por plataforma, período e
+    LOJA**.
+
+    A loja entra na chave porque as plataformas mandam um relatório por loja —
+    a Uber quatro por semana, a Glovo cinco por quinzena. Sem ela, os quatro
+    documentos tinham o mesmo `id` e escreviam por cima uns dos outros: ficava
+    o último, e o email de segunda mostrava o valor de UMA loja como se fosse o
+    da semana inteira.
+
+    `chave_de_recurso` (o `Message-ID` do email) só é usada quando não há
+    maneira de saber a loja. É o menor dos males: dois relatórios sem loja
+    ficam como dois registos (e o ecrã diz que não os soube identificar), em
+    vez de um comer o outro em silêncio.
+    """
     lojas = []
     for loja in extraido.get("lojas") or []:
         if not isinstance(loja, dict):
@@ -427,10 +781,20 @@ def montar_registo(extraido: Dict, *, plataforma: str, periodo: Dict,
         if texto:
             problemas.append(texto[:300])
 
+    # A loja: o que a IA leu; senão, a única entrada da lista `lojas` (um
+    # relatório de uma loja só costuma trazê-la aí).
+    loja = str(extraido.get("loja") or "").strip()
+    if not loja and len(lojas) == 1:
+        loja = lojas[0]["nome"]
+    chave = chave_da_loja(loja) or ("sem-loja-%s" % chave_da_loja(chave_de_recurso)
+                                    or "sem-loja")
+
     inicio, fim = periodo["inicio"].isoformat(), periodo["fim"].isoformat()
     return {
-        "id": "%s:%s..%s" % (plataforma, inicio, fim),
+        "id": "%s:%s..%s:%s" % (plataforma, inicio, fim, chave),
         "plataforma": plataforma,
+        "loja": loja or None,
+        "loja_chave": chave,
         "tipo": periodo["tipo"],
         "periodo_inicio": inicio,
         "periodo_fim": fim,
@@ -439,8 +803,15 @@ def montar_registo(extraido: Dict, *, plataforma: str, periodo: Dict,
             "liquido": _numero(extraido.get("liquido")),
             "bruto": _numero(extraido.get("bruto")),
             "pedidos": _inteiro(extraido.get("pedidos")),
-            "comissao": _numero(extraido.get("comissao")),
-            "taxas": _numero(extraido.get("taxas")),
+            # **A comissão e as taxas guardam-se sempre POSITIVAS.** São
+            # cobranças, e os relatórios escrevem-nas ora com sinal ora sem
+            # ele — na primeira corrida a sério vieram `280.92` de uma loja e
+            # `-217.29` de outra, no mesmo relatório da mesma semana. Somar as
+            # duas dava um total que não quer dizer nada. Quem as mostra sabe
+            # que são um custo (`ajustes` fica com sinal, porque aí ele diz
+            # mesmo alguma coisa: um estorno desconta, uma compensação soma).
+            "comissao": _positivo(_numero(extraido.get("comissao"))),
+            "taxas": _positivo(_numero(extraido.get("taxas"))),
             "ajustes": _numero(extraido.get("ajustes")),
             "iva": _numero(extraido.get("iva")),
             "moeda": str(extraido.get("moeda") or "EUR")[:8],
@@ -467,9 +838,29 @@ def _mensagens_da_caixa(caixa: Dict, dias: int) -> List:
         ligacao.login(caixa.get("user"), caixa.get("pass"))
         ligacao.select("INBOX", readonly=True)
         desde = (datetime.now(timezone.utc) - timedelta(days=dias)).strftime("%d-%b-%Y")
-        estado, resultado = ligacao.search(None, "SINCE", desde)
-        numeros = resultado[0].split() if (estado == "OK" and resultado and resultado[0]) else []
-        numeros = list(reversed(numeros))[:MAX_MENSAGENS_POR_CAIXA]
+        # **Pergunta-se ao servidor pelos remetentes, em vez de trazer a caixa
+        # toda e filtrar aqui.** Uma destas caixas tem mil mensagens em vinte
+        # dias; descarregar todas para deitar fora 985 era pagar a leitura
+        # inteira de cada vez, e foi assim que a primeira versão ficou lenta.
+        numeros = set()
+        for regra in RELATORIOS.values():
+            for endereco in regra["de"]:
+                try:
+                    estado, resultado = ligacao.search(
+                        None, "SINCE", desde, "FROM", '"%s"' % endereco)
+                except Exception:  # noqa: BLE001 — um critério recusado não pára os outros
+                    continue
+                if estado == "OK" and resultado and resultado[0]:
+                    numeros.update(resultado[0].split())
+        # **Do MAIS RECENTE para o mais antigo, e isto não é um detalhe.**
+        #
+        # A quota da IA é limitada e a recolha tem um orçamento de espera. Ao
+        # ler pela ordem de chegada, o orçamento gastava-se nas semanas velhas
+        # (que já estão gravadas de corridas anteriores) e a semana ATUAL — a
+        # única de que o email de segunda fala — ficava por ler. Medido numa
+        # caixa a sério: 20 relatórios lidos, todos de semanas passadas, e a
+        # semana em causa sem um único.
+        numeros = sorted(numeros, key=int, reverse=True)[:MAX_MENSAGENS_POR_CAIXA]
         mensagens = []
         for numero in numeros:
             try:
@@ -502,9 +893,17 @@ def caixas_configuradas() -> List[Dict]:
 
 
 def recolher(hoje: date, caixas: Optional[List[Dict]] = None,
-             dias: int = DIAS_DE_PROCURA) -> Dict:
+             dias: int = DIAS_DE_PROCURA,
+             ja_lidos: Optional[set] = None) -> Dict:
     """Lê as caixas, manda o que encontrar à IA e devolve
     `{"registos": [...], "avisos": [...]}`.
+
+    **`ja_lidos` são os `Message-ID` que já estão gravados, e é o que faz isto
+    caber na quota.** A janela é de vinte dias, mas de uma corrida para a
+    outra só há meia dúzia de emails novos — sem esta lista, cada recolha
+    voltava a pagar à IA pelas três semanas anteriores, que já estão na base de
+    dados. Uma mensagem que FALHOU a ser lida não está gravada, logo não está
+    nesta lista, logo é tentada outra vez na corrida seguinte.
 
     Síncrona de propósito (imaplib e httpx são-no): quem chama corre-a numa
     thread, como o `fin_cron_ingest` faz.
@@ -514,6 +913,8 @@ def recolher(hoje: date, caixas: Optional[List[Dict]] = None,
     plataforma corrigiu.
     """
     caixas = caixas if caixas is not None else caixas_configuradas()
+    ja_lidos = ja_lidos or set()
+    reiniciar_orcamento()
     registos: Dict[str, Dict] = {}
     avisos: List[str] = []
     if not caixas:
@@ -535,9 +936,22 @@ def recolher(hoje: date, caixas: Optional[List[Dict]] = None,
             plataforma = classificar(remetente, assunto)
             if not plataforma:
                 continue
+            # Já lido numa corrida anterior: nem se abre, quanto mais pagar a IA.
+            if str(msg.get("Message-ID") or "")[:200] in ja_lidos:
+                continue
 
             corpo = texto_da_mensagem(msg)
             anexos = anexos_da_mensagem(msg)
+
+            # **A Bolt não põe um único número no email** — manda links para o
+            # relatório semanal em CSV/XLSX/PDF, e é lá dentro que está o
+            # «Ganhos Semanais». Sem isto, a linha dela ficava eternamente a
+            # "recebido, sem valores".
+            if plataforma in DOMINIOS_DE_DESCARGA:
+                descarregados = descarregar_ligados(html_da_mensagem(msg), plataforma)
+                anexos["lidos"].extend(descarregados["lidos"])
+                anexos["ignorados"].extend(descarregados["ignorados"])
+
             if not corpo and not anexos["lidos"]:
                 continue
 
@@ -561,8 +975,12 @@ def recolher(hoje: date, caixas: Optional[List[Dict]] = None,
             enviada_em = data_da_mensagem(msg)
             registo = montar_registo(
                 extraido, plataforma=plataforma, periodo=periodo,
+                chave_de_recurso=str(msg.get("Message-ID") or ""),
                 origem={
                     "assunto": assunto[:200],
+                    # **A marca que evita pagar duas vezes pelo mesmo email.**
+                    # Ver `ja_lidos` em `recolher`.
+                    "message_id": str(msg.get("Message-ID") or "")[:200],
                     "remetente": remetente[:200],
                     "data": enviada_em.isoformat() if enviada_em else None,
                     "caixa": etiqueta,

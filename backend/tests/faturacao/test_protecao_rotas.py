@@ -53,7 +53,12 @@ ROTAS_BOOTSTRAP_POS = {"/api/faturacao/pos/emparelhar"}
 #
 # Acrescentada em consciência, e com o mesmo cuidado da lista de cima: uma
 # rota que apareça aqui sem esse mecanismo próprio é uma rota aberta ao mundo.
-ROTAS_DE_CRON = {"/api/faturacao/cron/relatorio-diario"}
+ROTAS_DE_CRON = {"/api/faturacao/cron/relatorio-diario",
+                 # A volta dos 5 minutos que vai buscar ao Vendus as faturas
+                 # da app L'Açaí. Mesma guarda, com testes próprios em
+                 # `test_sincronizacao_rota.py`: sem `CRON_KEY` no ambiente,
+                 # 403 — e nem a palavra "None" a abre.
+                 "/api/faturacao/cron/sincronizar-app"}
 PREFIXO_POS = "/api/faturacao/pos/"
 
 _MECANISMOS_POS = (dispositivo_atual, operador_atual)

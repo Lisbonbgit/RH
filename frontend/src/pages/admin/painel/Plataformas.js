@@ -28,12 +28,22 @@ const PARECE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 const NOMES = { uber: 'Uber Eats', bolt: 'Bolt Food', glovo: 'Glovo' };
 
-/** ▲ 12,3% / ▼ 4,5% — ou nada, quando não há com que comparar. */
-function Variacao({ valor, termo }) {
+/**
+ * ▲ 12,3% / ▼ 4,5% — ou a razão por que não se compara.
+ *
+ * **«Sem semana anterior para comparar» só se pode escrever quando ela não
+ * existe.** Quando existe e a comparação é que não é honesta (faltou o
+ * relatório de uma loja, e três lojas contra quatro medem o relatório que
+ * faltou e não as vendas), a frase tem de ser outra — as duas significam
+ * coisas diferentes para quem lê.
+ */
+function Variacao({ valor, termo, houveAnterior }) {
   if (valor === null || valor === undefined) {
     return (
       <span className="text-xs text-muted-foreground">
-        sem {termo} para comparar
+        {houveAnterior
+          ? 'comparação suspensa — mudaram as lojas que reportaram'
+          : `sem ${termo} para comparar`}
       </span>
     );
   }
@@ -57,6 +67,7 @@ function Variacao({ valor, termo }) {
 function CartaoPlataforma({ linha }) {
   const { periodo, valores, estado } = linha;
   const lido = estado === 'lido';
+  const quantas = linha.lojas_que_reportaram || 0;
   const termo = linha.ritmo === 'semana' ? 'semana anterior' : 'quinzena anterior';
 
   return (
@@ -74,6 +85,14 @@ function CartaoPlataforma({ linha }) {
             <div>
               <p className="text-xs uppercase tracking-wide text-muted-foreground font-semibold">
                 A receber
+                {/* De quantas lojas é este número. As plataformas mandam um
+                    relatório por loja, e a soma de três não é a mesma coisa
+                    que a soma de quatro. */}
+                {quantas > 0 && (
+                  <span className="normal-case tracking-normal font-normal">
+                    {' · '}{quantas} loja{quantas === 1 ? '' : 's'}
+                  </span>
+                )}
               </p>
               <p className="text-2xl font-heading font-bold mt-0.5">
                 {euros(valores.liquido)}
@@ -88,7 +107,9 @@ function CartaoPlataforma({ linha }) {
               <span className="text-xs font-semibold text-primary">
                 {quandoPaga(periodo)}
               </span>
-              <Variacao valor={linha.variacao} termo={termo} />
+              <Variacao valor={linha.variacao} termo={termo}
+                houveAnterior={linha.anterior?.liquido !== null
+                  && linha.anterior?.liquido !== undefined} />
             </div>
 
             {(valores.comissao !== null || valores.taxas !== null
@@ -135,14 +156,25 @@ function CartaoPlataforma({ linha }) {
             )}
           </>
         ) : (
+          /* **Dois estados diferentes, e nenhum deles é zero.** «Não recebido»
+             é não ter chegado nada; «sem valores» é ter chegado e nós não
+             termos conseguido ler — e é essa a diferença que diz a quem lê se
+             vale a pena ir procurar ao portal da plataforma. */
           <div className="rounded-md bg-amber-50 dark:bg-amber-950/30 p-3 space-y-1">
             <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">
-              Relatório não recebido
+              {estado === 'sem_valores'
+                ? 'Relatório recebido, sem valores'
+                : 'Relatório não recebido'}
             </p>
             <p className="text-sm text-muted-foreground">
-              Não chegou à caixa nenhum email com o relatório de{' '}
-              {intervalo(periodo.inicio, periodo.fim)}. Os valores ficam por saber —
-              não são zero.
+              {estado === 'sem_valores'
+                ? `Chegaram ${quantas} relatório${quantas === 1 ? '' : 's'} de ${
+                  intervalo(periodo.inicio, periodo.fim)}, mas não foi possível ler `
+                  + 'deles nenhum valor. Os números estão no portal da plataforma — '
+                  + 'aqui ficam por saber, e não são zero.'
+                : `Não chegou à caixa nenhum email com o relatório de ${
+                  intervalo(periodo.inicio, periodo.fim)}. Os valores ficam por `
+                  + 'saber — não são zero.'}
             </p>
             <p className="text-xs text-muted-foreground pt-1">
               {quandoPaga(periodo, false)}
@@ -303,7 +335,10 @@ export default function Plataformas() {
             {total.pedidos !== null && total.pedidos !== undefined && (
               <span>{total.pedidos} pedidos</span>
             )}
-            {total.completo && <Variacao valor={total.variacao} termo="semana anterior" />}
+            {total.completo && (
+              <Variacao valor={total.variacao} termo="semana anterior"
+                houveAnterior={total.anterior !== null && total.anterior !== undefined} />
+            )}
           </div>
 
           {/* **A honestidade do número.** Com uma plataforma em falta, o total
@@ -498,6 +533,7 @@ export default function Plataformas() {
                   <TableRow>
                     <TableHead>Período</TableHead>
                     <TableHead>Plataforma</TableHead>
+                    <TableHead>Loja</TableHead>
                     <TableHead className="text-right">A receber</TableHead>
                     <TableHead className="text-right">Pedidos</TableHead>
                     <TableHead>Lido de</TableHead>
@@ -510,6 +546,9 @@ export default function Plataformas() {
                         {intervalo(r.periodo_inicio, r.periodo_fim)}
                       </TableCell>
                       <TableCell>{NOMES[r.plataforma] || r.plataforma}</TableCell>
+                      <TableCell className="max-w-[180px] truncate">
+                        {r.loja || <span className="text-muted-foreground">não identificada</span>}
+                      </TableCell>
                       <TableCell className="text-right font-semibold whitespace-nowrap">
                         {euros(r.valores?.liquido)}
                       </TableCell>

@@ -46,6 +46,12 @@ const formatarData = (iso) => {
   }).replace(', ', ' às ');
 };
 
+// O rótulo que o servidor põe na `origem` de um documento vindo da app
+// (`faturacao/documentos.py::_quem_e_onde`). Esta fatura não teve conta de
+// balcão nenhuma: não há operador, não há caixa e não há talão nosso — e o ecrã
+// tem de o DIZER, porque um "—" lê-se como "a ficha do operador foi apagada".
+const ORIGEM_APP = "App L'Açaí";
+
 const hoje = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Lisbon' });
 const primeiroDoMes = () => hoje().slice(0, 8) + '01';
 
@@ -141,6 +147,7 @@ export default function FatDocumentos() {
 
   const nomeDaLoja = (id) => lojas.find((l) => l.id === id)?.nome || '—';
   const paginas = Math.max(1, Math.ceil((dados.total || 0) / (dados.por_pagina || 50)));
+  const daApp = aberto?.origem === ORIGEM_APP;
 
   return (
     <div className="space-y-6">
@@ -405,7 +412,11 @@ export default function FatDocumentos() {
                   <p className="font-medium mb-2">Método de pagamento</p>
                   <div className="rounded-xl border divide-y">
                     {(aberto.pagamentos || []).length === 0 ? (
-                      <p className="p-3 text-sm text-muted-foreground">—</p>
+                      <p className="p-3 text-sm text-muted-foreground">
+                        {daApp
+                          ? 'Pago na app — o método não vem na leitura do Vendus.'
+                          : '—'}
+                      </p>
                     ) : (aberto.pagamentos || []).map((p, i) => (
                       <div key={i} className="flex justify-between gap-3 p-3 text-sm">
                         <span>{p.nome}</span>
@@ -444,7 +455,9 @@ export default function FatDocumentos() {
                 </p>
                 <p className="flex items-center gap-1.5">
                   <User className="h-4 w-4 text-muted-foreground shrink-0" />
-                  {aberto.operador_nome || '—'}
+                  {daApp
+                    ? 'Sem operador — a venda foi feita na app pelo cliente'
+                    : (aberto.operador_nome || '—')}
                 </p>
                 <p className="flex items-center gap-1.5">
                   <Store className="h-4 w-4 text-muted-foreground shrink-0" />
@@ -459,20 +472,25 @@ export default function FatDocumentos() {
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  onClick={reimprimir}
-                  disabled={!aberto.tem_talao || aReimprimir}
-                  title={aberto.tem_talao
-                    ? 'O papel sai na loja onde a fatura foi emitida'
-                    : 'Esta fatura não tem talão guardado'}
-                  data-testid="documento-reimprimir"
-                >
-                  {aReimprimir
-                    ? <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    : <Printer className="h-4 w-4 mr-2" />}
-                  Reimprimir na loja
-                </Button>
+                {/* Sem talão guardado não há bytes para mandar à impressora, e
+                    numa fatura da app não há sequer impressora nossa do lado
+                    dela. O botão SAI do ecrã em vez de ficar desligado: um
+                    botão apagado convida a carregar e a explicação está por
+                    baixo, escrita. */}
+                {aberto.tem_talao && (
+                  <Button
+                    variant="outline"
+                    onClick={reimprimir}
+                    disabled={aReimprimir}
+                    title="O papel sai na loja onde a fatura foi emitida"
+                    data-testid="documento-reimprimir"
+                  >
+                    {aReimprimir
+                      ? <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      : <Printer className="h-4 w-4 mr-2" />}
+                    Reimprimir na loja
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   onClick={abrirPdf}
@@ -490,8 +508,13 @@ export default function FatDocumentos() {
               </div>
               {!aberto.tem_talao && (
                 <p className="text-xs text-muted-foreground">
-                  Esta fatura foi emitida antes de o sistema passar a guardar o talão. O
-                  documento fiscal está bom; o que não há é papel para reimprimir daqui.
+                  {daApp
+                    ? 'Esta fatura foi emitida pela app L\'Açaí: não passou por caixa '
+                      + 'nenhuma e não há talão nosso para reimprimir. O documento '
+                      + 'fiscal está bom — o PDF certificado do Vendus está aqui ao lado.'
+                    : 'Esta fatura foi emitida antes de o sistema passar a guardar o '
+                      + 'talão. O documento fiscal está bom; o que não há é papel para '
+                      + 'reimprimir daqui.'}
                 </p>
               )}
             </div>

@@ -16,10 +16,10 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '../../../components/ui/alert-dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../../components/ui/table';
-import { Settings, Building2, Store, Users, Plus, Pencil, Trash2 } from 'lucide-react';
+import { Settings, Building2, Store, Users, Plus, Pencil, Trash2, Tags } from 'lucide-react';
 import { toast } from 'sonner';
 import PageHeader from '../../../components/PageHeader';
-import { kpiTone } from '../../../lib/finance';
+import { kpiTone, categoriasDaEmpresa, CATEGORIAS_PADRAO } from '../../../lib/finance';
 
 const ROLE_LABEL = { owner: 'Dono', partner: 'Sócio', accountant: 'Contabilista' };
 const canEditCompany = (role) => role === 'owner';
@@ -44,6 +44,43 @@ export default function FinInicio() {
   const [editingUnit, setEditingUnit] = useState(null);
   const [savingUnit, setSavingUnit] = useState(false);
   const [unitToDelete, setUnitToDelete] = useState(null);
+
+  // Dialog categorias (a lista é por empresa: cada uma tem o seu "Excel")
+  const [catsDialog, setCatsDialog] = useState(false);
+  const [catsCompany, setCatsCompany] = useState(null);
+  const [cats, setCats] = useState([]);
+
+  const openCatsDialog = (company) => {
+    setCatsCompany(company);
+    setCats(categoriasDaEmpresa(company).map((c) => ({ ...c })));
+    setCatsDialog(true);
+  };
+
+  const idDaEtiqueta = (label) =>
+    label.toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+
+  const saveCats = async () => {
+    const limpas = cats
+      .map((c) => ({ id: (c.id || idDaEtiqueta(c.label || '')), label: (c.label || '').trim() }))
+      .filter((c) => c.id && c.label);
+    if (!limpas.length) {
+      toast.error('A empresa precisa de pelo menos uma categoria.');
+      return;
+    }
+    try {
+      await updateFinCompany(catsCompany.id, {
+        name: catsCompany.name, nif: catsCompany.nif, categorias: limpas,
+      });
+      toast.success('Categorias guardadas.');
+      setCatsDialog(false);
+      fetchAll();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Não foi possível guardar.');
+    }
+  };
 
   useEffect(() => { fetchAll(); }, []);
 
@@ -252,6 +289,11 @@ export default function FinInicio() {
                               data-testid={`fin-edit-company-${company.id}`}>
                               <Pencil className="h-4 w-4" />
                             </Button>
+                            <Button variant="ghost" size="icon" title="Categorias"
+                              onClick={() => openCatsDialog(company)}
+                              data-testid={`fin-cats-${company.id}`}>
+                              <Tags className="h-4 w-4" />
+                            </Button>
                             <Button variant="ghost" size="icon"
                               onClick={() => { setSelectedCompany(company); setDeleteCompanyOpen(true); }}
                               data-testid={`fin-delete-company-${company.id}`}>
@@ -270,6 +312,47 @@ export default function FinInicio() {
           )}
         </CardContent>
       </Card>
+
+      {/* Dialog categorias da empresa */}
+      <Dialog open={catsDialog} onOpenChange={setCatsDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Categorias · {catsCompany?.name}</DialogTitle>
+            <DialogDescription>
+              Estas categorias são usadas na Conciliação e no relatório de Resultados.
+              Cada empresa tem as suas.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {cats.map((c, i) => (
+              <div key={c.id || i} className="flex items-center gap-2">
+                <Input value={c.label}
+                  onChange={(e) => setCats(cats.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))}
+                  data-testid={`fin-cat-input-${i}`} />
+                <Button variant="ghost" size="icon" title="Remover"
+                  onClick={() => setCats(cats.filter((_, j) => j !== i))}>
+                  <Trash2 className="h-4 w-4 text-destructive" />
+                </Button>
+              </div>
+            ))}
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setCats([...cats, { id: '', label: '' }])}
+            data-testid="fin-cat-add">
+            <Plus className="h-4 w-4 mr-2" />Acrescentar categoria
+          </Button>
+          <p className="text-xs text-muted-foreground">
+            Mudar o nome de uma categoria não desclassifica nada: as linhas já
+            classificadas continuam nela. Remover uma categoria deixa as linhas
+            dela a mostrar a chave antiga — reclassifica-as antes.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCats(CATEGORIAS_PADRAO.map((c) => ({ ...c })))}>
+              Repor a lista de origem
+            </Button>
+            <Button onClick={saveCats} data-testid="fin-cats-save">Guardar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Dialog criar/editar empresa */}
       <Dialog open={companyDialog} onOpenChange={setCompanyDialog}>

@@ -24,10 +24,10 @@ def html(registos=(), avisos=(), url=None):
 
 
 COMPLETO = [
-    registo("uber", *SEMANA, liquido=1200.0, pedidos=210,
-            problemas=["3 pedidos cancelados por falta de estafeta"],
-            lojas=[{"nome": "Alfragide", "liquido": 700.0, "pedidos": 120},
-                   {"nome": "Oeiras", "liquido": 500.0, "pedidos": 90}]),
+    # A Uber manda um relatório POR LOJA — é assim que eles chegam a sério.
+    registo("uber", *SEMANA, loja="Alfragide", liquido=700.0, pedidos=120,
+            problemas=["3 pedidos cancelados por falta de estafeta"]),
+    registo("uber", *SEMANA, loja="Oeiras", liquido=500.0, pedidos=90),
     registo("bolt", *SEMANA, liquido=540.25, pedidos=95),
     registo("glovo", *QUINZENA, liquido=880.10, pedidos=140),
     registo("uber", *SEMANA_ANTES, liquido=1000.0, pedidos=190),
@@ -73,7 +73,7 @@ def test_uma_plataforma_sem_relatorio_diz_o_que_falta_e_nao_mostra_zero():
     # **Só a Uber tem um valor "A receber".** A Bolt e a Glovo não chegaram, e
     # um cartão delas com um número seria um número inventado. (O rótulo do
     # total é "A receber esta semana", por isso não entra nesta contagem.)
-    assert saida.count(">A receber</p>") == 1
+    assert saida.count(">A receber <span") == 1
 
 
 def test_o_total_parcial_avisa_que_e_parcial():
@@ -152,9 +152,12 @@ def test_sem_problemas_o_bloco_diz_que_nao_houve_nenhum():
     assert "Nenhum relat\xf3rio assinalou problemas" in saida
 
 
-def test_as_lojas_aparecem_quando_o_relatorio_as_separa():
+def test_as_lojas_aparecem_uma_a_uma_e_o_cartao_diz_quantas_sao():
     saida = html(COMPLETO)
     assert "Alfragide" in saida and "Oeiras" in saida
+    # De quantas lojas e' o numero grande — sem isso, 1 200 EUR de duas lojas
+    # le-se igual a 1 200 EUR de quatro.
+    assert "2 lojas" in saida
 
 
 def test_os_avisos_da_recolha_vao_no_email():
@@ -172,8 +175,7 @@ def test_o_botao_do_painel_so_aparece_quando_ha_endereco():
 
 def test_o_nome_de_uma_loja_com_HTML_la_dentro_e_escapado():
     saida = html([registo("uber", *SEMANA, liquido=10.0,
-                          lojas=[{"nome": "<script>alerta()</script>",
-                                  "liquido": 10.0, "pedidos": 1}])])
+                          loja="<script>alerta()</script>")])
     assert "<script>" not in saida
     assert "&lt;script&gt;" in saida
 
@@ -208,3 +210,25 @@ def test_uma_semana_entre_dois_meses_mostra_os_dois_meses():
     """«31 a 6 set» lê-se como se fosse tudo em Setembro."""
     assert mail._intervalo("2026-08-31", "2026-09-06") == "31 ago a 6 set"
     assert mail._intervalo("2026-08-24", "2026-08-30") == "24 a 30 ago"
+
+
+def test_uma_loja_que_faltou_nao_se_escreve_como_falta_de_semana_anterior():
+    """Semana anterior há — o que mudou foram as lojas que reportaram. As duas
+    frases significam coisas diferentes para quem lê."""
+    saida = html([
+        registo("uber", *SEMANA, loja="Amadora", liquido=100.0),
+        registo("uber", *SEMANA_ANTES, loja="Amadora", liquido=90.0),
+        registo("uber", *SEMANA_ANTES, loja="Oeiras", liquido=200.0),
+    ])
+    assert "Compara\xe7\xe3o suspensa &mdash; mudaram as lojas" in saida
+    assert "Sem semana anterior para comparar" not in saida
+    # E o motivo aparece por extenso na lista de problemas.
+    assert "N\xe3o chegou o relat\xf3rio da loja \xabOeiras\xbb" in saida
+
+
+def test_uma_plataforma_que_chegou_sem_valores_diz_isso_e_nao_zero():
+    """A Bolt manda o relatório sem números quando os links não se leem.
+    «Recebido sem valores» manda alguém ao portal; «não recebido» não."""
+    saida = html([registo("bolt", *SEMANA, loja="Amadora", liquido=None)])
+    assert "Relat\xf3rio recebido, sem valores" in saida
+    assert "n\xe3o s\xe3o zero" in saida

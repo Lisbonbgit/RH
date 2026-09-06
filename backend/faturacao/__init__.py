@@ -78,6 +78,14 @@ router.include_router(_clientes)
 from .relatorios import router as _relatorios
 router.include_router(_relatorios)
 
+# O que saiu do ARMAZÉM (e não o que entrou na caixa): as gramagens escritas
+# nas personalizações, somadas por artigo do Estoque. Vive num caminho
+# próprio (`/consumo`) e não em `/relatorios/{dimensao}` de propósito — essa
+# rota tem um parâmetro que come tudo o que lhe passe à frente, e um
+# `/relatorios/consumo` respondia «Relatório desconhecido: consumo».
+from .consumo import router as _consumo
+router.include_router(_consumo)
+
 from .pos_auth import router as _pos_auth
 router.include_router(_pos_auth)
 
@@ -110,6 +118,14 @@ router.include_router(_documentos)
 # externa depois de um timeout).
 from .nota_credito import router as _nota_credito
 router.include_router(_nota_credito)
+
+# As faturas que a app L'Açaí emite pela MESMA caixa e pela MESMA série que as
+# cinco lojas, e que o portal nunca soube que existiam. Só LÊ o Vendus: nada
+# aqui escreve nele, e nada aqui toca em vendas, sessões de caixa ou reservas
+# fiscais — a decisão de quem entra vive em `sincronizacao_app.py`, sem Mongo
+# nem rede pelo meio.
+from .sincronizacao_rota import router as _sincronizacao
+router.include_router(_sincronizacao)
 
 # A FILA DE IMPRESSÃO e as rotas do programa da loja. Entra por último de
 # propósito: é o único módulo que ninguém mais importa por dentro (o

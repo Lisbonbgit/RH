@@ -30,6 +30,7 @@ import FinPagamentos from './pages/admin/financeiro/FinPagamentos';
 import FinVendas from './pages/admin/financeiro/FinVendas';
 import FinFornecedores from './pages/admin/financeiro/FinFornecedores';
 import FinExtrato from './pages/admin/financeiro/FinExtrato';
+import FinConciliacao from './pages/admin/financeiro/conciliacao/FinConciliacao';
 import FinRelatorios from './pages/admin/financeiro/FinRelatorios';
 import PainelGlobal from './pages/admin/financeiro/PainelGlobal';
 import PainelPlataformas from './pages/admin/painel/Plataformas';
@@ -64,6 +65,7 @@ import FatCategorias from './pages/admin/faturacao/FatCategorias';
 import FatDocumentos from './pages/admin/faturacao/FatDocumentos';
 import FatClientes from './pages/admin/faturacao/FatClientes';
 import FatRelatorios from './pages/admin/faturacao/FatRelatorios';
+import FatConsumo from './pages/admin/faturacao/FatConsumo';
 import FatPersonalizacoes from './pages/admin/faturacao/FatPersonalizacoes';
 import FatLojas from './pages/admin/faturacao/FatLojas';
 import FatPagamentos from './pages/admin/faturacao/FatPagamentos';
@@ -228,6 +230,7 @@ function AppRoutes() {
         <Route path="financeiro/relatorios" element={<FinRelatorios />} />
         <Route path="financeiro/fornecedores" element={<FinFornecedores />} />
         <Route path="financeiro/extrato" element={<FinExtrato />} />
+        <Route path="financeiro/conciliacao" element={<FinConciliacao />} />
 
         {/* ===== Estoque ===== */}
         <Route path="estoque" element={<Navigate to="/admin/estoque/visao-geral" replace />} />
@@ -267,6 +270,7 @@ function AppRoutes() {
         <Route path="faturacao/taloes-desconto" element={<ComingSoon icon={Percent} title="Talões de Desconto" subtitle="Faturação · Gestão" />} />
         <Route path="faturacao/clientes" element={<FatClientes />} />
         <Route path="faturacao/relatorios" element={<FatRelatorios />} />
+        <Route path="faturacao/consumo" element={<FatConsumo />} />
         <Route path="faturacao/compras" element={<ComingSoon icon={Truck} title="Compras" subtitle="Faturação · Gestão" note="Entrada de mercadoria a partir das faturas de compra que já existem no Financeiro." />} />
 
         {/* POS — o "Iniciar Ponto de Venda" já não vive aqui: é o botão do

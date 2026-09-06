@@ -3223,9 +3223,46 @@ def _fin_norm_nif(v):
 
 # ---------- Modelos Pydantic ----------
 
+# Categorias do Financeiro. Uma lista SO, partilhada pelas faturas (DRE) e
+# pelos movimentos (Conciliacao). Espelha CATEGORIAS_PADRAO de
+# frontend/src/lib/finance.js - se mudar aqui, muda la.
+FIN_CATEGORIAS_PADRAO = [
+    {"id": "entradas", "label": "Entradas"},
+    {"id": "salarios", "label": "Sal\u00e1rios"},
+    {"id": "utilitarios", "label": "Utilit\u00e1rios"},
+    {"id": "servicos", "label": "Servi\u00e7os"},
+    {"id": "impostos", "label": "Impostos"},
+    {"id": "investimento", "label": "Investimento Equipamentos"},
+    {"id": "supermercado", "label": "Supermercado"},
+    {"id": "fornecedor", "label": "Fornecedor"},
+    {"id": "seguros", "label": "Seguros"},
+    {"id": "marketing", "label": "Marketing"},
+    {"id": "cartoes_credito", "label": "Cart\u00f5es de Cr\u00e9dito"},
+    {"id": "dominios_sites", "label": "Dom\u00ednios e Sites"},
+    {"id": "transporte", "label": "Transporte"},
+    {"id": "rendas", "label": "Rendas"},
+    {"id": "outros", "label": "Outros"},
+]
+
+
+async def _fin_categorias_da_empresa(company_id: str):
+    """A lista da empresa, ou a de omiss\u00e3o. Nunca devolve vazio: um ecr\u00e3 sem
+    categorias nenhumas deixava a diretora financeira sem forma de classificar."""
+    comp = await db.fin_companies.find_one({"id": company_id}, {"_id": 0, "categorias": 1})
+    cats = (comp or {}).get("categorias")
+    if isinstance(cats, list) and cats:
+        return cats
+    return FIN_CATEGORIAS_PADRAO
+
+
+class FinCategoria(BaseModel):
+    id: str
+    label: str
+
 class FinCompanyCreate(BaseModel):
     name: str
     nif: Optional[str] = None
+    categorias: Optional[List[FinCategoria]] = None
 
 class FinCompanyResponse(BaseModel):
     id: str
@@ -3233,6 +3270,7 @@ class FinCompanyResponse(BaseModel):
     nif: Optional[str] = None
     role: Optional[str] = None
     created_at: Optional[str] = None
+    categorias: Optional[List[FinCategoria]] = None
 
 class FinUnitCreate(BaseModel):
     company_id: str
@@ -3381,9 +3419,23 @@ async def fin_update_company(company_id: str, payload: FinCompanyCreate, current
     name = (payload.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Indica o nome da empresa.")
-    await db.fin_companies.update_one(
-        {"id": company_id}, {"$set": {"name": name, "nif": _fin_norm_nif(payload.nif)}}
-    )
+    campos = {"name": name, "nif": _fin_norm_nif(payload.nif)}
+    # `exclude_unset`: as categorias so se escrevem quando vem MESMO no pedido.
+    # Sem isto, guardar o nome da empresa apagava a lista que ela montou.
+    if "categorias" in payload.model_dump(exclude_unset=True):
+        cats = [{"id": c.id.strip(), "label": c.label.strip()} for c in (payload.categorias or [])]
+        cats = [c for c in cats if c["id"] and c["label"]]
+        vistos = set()
+        unicas = []
+        for c in cats:
+            if c["id"] in vistos:
+                continue
+            vistos.add(c["id"])
+            unicas.append(c)
+        if not unicas:
+            raise HTTPException(status_code=400, detail="A empresa precisa de pelo menos uma categoria.")
+        campos["categorias"] = unicas
+    await db.fin_companies.update_one({"id": company_id}, {"$set": campos})
     updated = await db.fin_companies.find_one({"id": company_id}, {"_id": 0})
     return FinCompanyResponse(**updated, role="owner")
 
@@ -4567,6 +4619,22 @@ class FinMovementImport(BaseModel):
 class FinMovementTitle(BaseModel):
     title: Optional[str] = None
 
+class FinMovementFields(BaseModel):
+    """Campos que a Conciliacao edita celula a celula. Todos opcionais: o que
+    nao vier no pedido nao e escrito (ver `exclude_unset` no endpoint)."""
+    title: Optional[str] = None
+    category: Optional[str] = None
+    note: Optional[str] = None
+
+class FinMovementCreate(BaseModel):
+    """Linha escrita a mao na Conciliacao (ex.: 'Dinheiro Restante Mes Anterior')."""
+    company_id: str
+    date_lancamento: str
+    description: Optional[str] = None
+    amount: float
+    category: Optional[str] = None
+    note: Optional[str] = None
+
 class FinMovementLink(BaseModel):
     invoice_id: str
 
@@ -4647,6 +4715,37 @@ async def _fin_get_or_create_account(company_id, account_number, bank, name):
     await db.fin_bank_accounts.insert_one(acc)
     acc.pop("_id", None)
     return acc
+
+
+@api_router.get("/fin/bank-accounts/balances")
+async def fin_bank_account_balances(company_id: str, current_user: dict = Depends(get_current_user)):
+    """Saldo de CADA conta (o cartao "Valor Contas" da Conciliacao).
+
+    Nao pode ser feito no frontend: o desempate intra-dia e por `_id` (ordem de
+    insercao do extrato) e o `_id` vem excluido de todas as projecoes, por isso
+    o browser mostraria um movimento arbitrario do dia."""
+    scope = await _fin_report_scope(company_id, current_user)
+    accounts = await db.fin_bank_accounts.find({"company_id": scope}, {"_id": 0}).to_list(2000)
+    contas = []
+    for acc in accounts:
+        last = await db.fin_movements.find_one(
+            {"account_id": acc.get("id"), "balance": {"$ne": None}},
+            {"_id": 0, "balance": 1, "date_lancamento": 1},
+            sort=[("date_lancamento", -1), ("_id", -1)],
+        )
+        contas.append({
+            "account_id": acc.get("id"),
+            "company_id": acc.get("company_id"),
+            "bank": acc.get("bank"),
+            "name": acc.get("name") or acc.get("bank"),
+            "account_number": acc.get("account_number"),
+            # None = nao sabemos (conta sem movimentos). Nunca 0.
+            "balance": _fin_num(last.get("balance")) if last else None,
+            "date": last.get("date_lancamento") if last else None,
+        })
+    contas.sort(key=lambda c: (c.get("name") or "").lower())
+    total = round(sum(c["balance"] for c in contas if c["balance"] is not None), 2)
+    return {"contas": contas, "total": total}
 
 
 # ---------- Movimentos ----------
@@ -4760,6 +4859,86 @@ async def fin_set_movement_title(movement_id: str, payload: FinMovementTitle, cu
     await db.fin_movements.update_one({"id": movement_id}, {"$set": {"title": title}})
     return await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
 
+@api_router.put("/fin/movements/{movement_id}")
+async def fin_update_movement(movement_id: str, payload: FinMovementFields, current_user: dict = Depends(get_current_user)):
+    """Descricao, categoria e anotacao do movimento (a tabela da Conciliacao).
+    So escreve os campos que vierem MESMO no pedido."""
+    mv = await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+    if not mv:
+        raise HTTPException(status_code=404, detail="Movimento nao encontrado.")
+    await fin_require_editor(mv["company_id"], current_user)
+    enviados = payload.model_dump(exclude_unset=True)
+    campos = {}
+    if "title" in enviados:
+        campos["title"] = (payload.title or "").strip() or None
+    if "note" in enviados:
+        campos["note"] = (payload.note or "").strip() or None
+    if "category" in enviados:
+        cat = (payload.category or "").strip() or None
+        if cat:
+            validas = {c["id"] for c in await _fin_categorias_da_empresa(mv["company_id"])}
+            if cat not in validas:
+                raise HTTPException(status_code=400, detail="Categoria fora da lista da empresa.")
+        campos["category"] = cat
+    if campos:
+        await db.fin_movements.update_one({"id": movement_id}, {"$set": campos})
+    return await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+
+@api_router.post("/fin/movements")
+async def fin_create_movement(payload: FinMovementCreate, current_user: dict = Depends(get_current_user)):
+    """Linha a mao. Nao tem conta, nao tem saldo e nao tem dedup_key: nao passou
+    no banco, e o cartao de saldo e o importador nao a podem confundir com quem
+    passou."""
+    await fin_require_editor(payload.company_id, current_user)
+    data = (payload.date_lancamento or "").strip()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", data):
+        raise HTTPException(status_code=400, detail="Data invalida (aaaa-mm-dd).")
+    amt = _fin_clean_num(payload.amount)
+    if amt is None:
+        raise HTTPException(status_code=400, detail="Montante invalido.")
+    cat = (payload.category or "").strip() or None
+    if cat:
+        validas = {c["id"] for c in await _fin_categorias_da_empresa(payload.company_id)}
+        if cat not in validas:
+            raise HTTPException(status_code=400, detail="Categoria fora da lista da empresa.")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "account_id": None,
+        "company_id": payload.company_id,
+        "date_lancamento": data,
+        "date_valor": None,
+        "description": (payload.description or "").strip() or None,
+        "amount": amt,
+        "balance": None,
+        "currency": "EUR",
+        "title": None,
+        "category": cat,
+        "note": (payload.note or "").strip() or None,
+        "invoice_id": None,
+        "link_auto": False,
+        "attachment_path": None,
+        "manual": True,
+        "source": "manual",
+        "created_by": current_user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.fin_movements.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api_router.delete("/fin/movements/{movement_id}")
+async def fin_delete_movement(movement_id: str, current_user: dict = Depends(get_current_user)):
+    """Apaga uma linha escrita a mao. Movimentos do banco NAO se apagam - o
+    extrato e para reimportar, e apagar um deixava-o irrecuperavel pelo dedup."""
+    mv = await db.fin_movements.find_one({"id": movement_id}, {"_id": 0})
+    if not mv:
+        raise HTTPException(status_code=404, detail="Movimento nao encontrado.")
+    await fin_require_editor(mv["company_id"], current_user)
+    if not mv.get("manual"):
+        raise HTTPException(status_code=400, detail="So se apagam linhas escritas a mao.")
+    await db.fin_movements.delete_one({"id": movement_id})
+    return {"message": "Linha apagada."}
+
 @api_router.put("/fin/movements/{movement_id}/link")
 async def fin_link_movement(movement_id: str, payload: FinMovementLink, current_user: dict = Depends(get_current_user)):
     """Liga (manualmente) uma fatura ao movimento e marca-a paga."""
@@ -4844,6 +5023,170 @@ async def fin_get_movement_attachment(movement_id: str, current_user: dict = Dep
     if not path or not Path(path).exists():
         raise HTTPException(status_code=404, detail="Sem anexo.")
     return FileResponse(path, filename=f"movimento-{movement_id}.pdf")
+
+
+# ---------- Documentos do banco por email ----------
+#
+# Os bancos mandam duas coisas para a caixa, e sao DIFERENTES:
+#
+#  * o EXTRATO (novobanco, "Extrato de conta"): o periodo todo, com a coluna de
+#    saldo. E a verdade — passa pela validacao da cadeia de saldos.
+#  * o AVISO de lancamento (Millennium, "Documentos em formato digital"): UM
+#    movimento, SEM saldo. Medido na caixa a serio a 2026-09-05: 80 em 30 dias.
+#
+# O aviso entra na mesma, marcado `provisorio`, para o dinheiro aparecer no dia
+# em que acontece em vez de esperar pelo fecho do mes. Quando o extrato daquele
+# periodo chegar, ele MANDA e apaga os avisos que cobre. Sem isso, a mesma
+# transferencia ficava contada duas vezes: a descricao e o saldo diferem entre
+# os dois documentos, e nenhuma das travas de duplicados os reconhece.
+
+_FIN_BANCO_DIAS = 30      # janela de procura na caixa
+_FIN_BANCO_LIMITE = 8     # anexos por corrida (a quota da IA e 20/dia, partilhada)
+
+
+def _fin_fetch_bank_attachments_sync(mb):
+    """Anexos PDF vindos SO dos bancos. Sincrono — corre em thread.
+
+    Pergunta ao servidor de email pelos remetentes (SEARCH FROM) em vez de
+    trazer a caixa toda: uma destas caixas tem centenas de mensagens por semana,
+    e as dos bancos sao umas dezenas.
+    """
+    imap = imaplib.IMAP4_SSL(mb.get("host"), int(mb.get("port") or 993))
+    try:
+        imap.login(mb.get("user"), mb.get("pass"))
+        imap.select("INBOX", readonly=True)
+        since = (datetime.now(timezone.utc) - timedelta(days=_FIN_BANCO_DIAS)).strftime("%d-%b-%Y")
+        nums = []
+        for remetente in _FIN_REMETENTES_BANCO:
+            try:
+                typ, res = imap.search(None, "SINCE", since, "FROM", '"%s"' % remetente)
+            except Exception:  # noqa: BLE001 — um criterio recusado nao para os outros
+                continue
+            if typ == "OK" and res and res[0]:
+                nums.extend(res[0].split())
+        # Do mais recente para o mais antigo: com o limite por corrida, o que
+        # interessa e o dinheiro de hoje, nao o da semana passada.
+        nums = sorted(set(nums), key=int, reverse=True)
+        out = []
+        for num in nums:
+            try:
+                typ, dados = imap.fetch(num, "(BODY.PEEK[])")
+                if typ != "OK" or not dados or not dados[0]:
+                    continue
+                msg = _email.message_from_bytes(dados[0][1])
+                de = str(msg.get("From") or "")
+                for part in msg.walk():
+                    if part.get_content_maintype() == "multipart":
+                        continue
+                    fn = part.get_filename() or ""
+                    ctype = (part.get_content_type() or "").lower()
+                    if ctype != "application/pdf" and not fn.lower().endswith(".pdf"):
+                        continue
+                    payload = part.get_payload(decode=True)
+                    if not payload or len(payload) < 200:
+                        continue
+                    out.append({"file_name": fn or "documento.pdf", "bytes": payload, "from": de})
+            except Exception:  # noqa: BLE001 — uma mensagem estragada nao para o resto
+                continue
+        return out
+    finally:
+        try:
+            imap.logout()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _fin_desc_norm(s):
+    """Descricao normalizada, para comparar duas linhas do mesmo movimento."""
+    return re.sub(r"\s+", " ", str(s or "")).strip().lower()
+
+
+async def _fin_guardar_movimentos_do_banco(acc, movs, origem, provisorio):
+    """Grava os movimentos de um documento do banco. Devolve (inseridos, saltados).
+
+    Sem saldo nao ha dedup pelo saldo, por isso a chave inclui a descricao:
+    correr a recolha duas vezes sobre o mesmo aviso nao duplica nada.
+    """
+    canon = _fin_acct_digits(acc.get("account_number")) or ""
+    inseridos = 0
+    saltados = 0
+    agora = datetime.now(timezone.utc).isoformat()
+    for m in movs:
+        data = _fin_clean_date(m.get("date_lancamento"))
+        valor = _fin_clean_num(m.get("amount"))
+        if not data or valor is None:
+            saltados += 1
+            continue
+        desc = str(m.get("description") or "").strip() or None
+        saldo = _fin_clean_num(m.get("balance"))
+        saldo_k = "None" if saldo is None else f"{round(saldo, 2):.2f}"
+        chave = hashlib.sha1(
+            f"{canon}|{data}|{valor:.2f}|{saldo_k}|{_fin_desc_norm(desc)}".encode()
+        ).hexdigest()
+        if await db.fin_movements.find_one({"dedup_key": chave}, {"_id": 0, "id": 1}):
+            saltados += 1
+            continue
+        # O MESMO movimento ja ca esta por outro caminho? Mesma conta, mesmo dia,
+        # mesmo valor E mesma descricao. Sem a descricao, dois pagamentos iguais
+        # no mesmo dia — que acontecem — seriam tomados por um so.
+        candidatos = await db.fin_movements.find(
+            {"account_id": acc["id"], "date_lancamento": data},
+            {"_id": 0, "id": 1, "amount": 1, "description": 1},
+        ).to_list(500)
+        gemeo = None
+        for c in candidatos:
+            ca = _fin_clean_num(c.get("amount"))
+            if ca is None:
+                continue
+            if round(ca, 2) == round(valor, 2) and _fin_desc_norm(c.get("description")) == _fin_desc_norm(desc):
+                gemeo = c
+                break
+        if gemeo:
+            saltados += 1
+            continue
+        await db.fin_movements.insert_one({
+            "id": str(uuid.uuid4()),
+            "account_id": acc["id"],
+            "company_id": acc["company_id"],
+            "date_lancamento": data,
+            "date_valor": _fin_clean_date(m.get("date_valor")),
+            "description": desc,
+            "amount": valor,
+            "balance": saldo,
+            "currency": acc.get("currency") or "EUR",
+            "title": None,
+            "category": None,
+            "note": None,
+            "invoice_id": None,
+            "link_auto": False,
+            "attachment_path": None,
+            "dedup_key": chave,
+            "provisorio": bool(provisorio),
+            "source": origem,
+            "created_by": "cron",
+            "created_at": agora,
+        })
+        inseridos += 1
+    return inseridos, saltados
+
+
+async def _fin_substituir_provisorios(account_id, d_min, d_max):
+    """O extrato a serio manda: apaga os avisos provisorios que ele cobre.
+
+    NAO apaga os que ja tem fatura ligada. Alguem ligou aquilo a mao; apagar
+    desfazia trabalho humano e deixava a fatura dada por paga sem movimento
+    nenhum por tras. Esses ficam, e o gemeo do extrato e travado pela
+    comparacao de data+valor+descricao.
+    """
+    if not d_min or not d_max:
+        return 0
+    res = await db.fin_movements.delete_many({
+        "account_id": account_id,
+        "provisorio": True,
+        "invoice_id": None,
+        "date_lancamento": {"$gte": d_min, "$lte": d_max},
+    })
+    return getattr(res, "deleted_count", 0)
 
 
 # ---------- Conciliação automática (#4) ----------
@@ -5380,6 +5723,31 @@ def _fin_only_digits(s):
     return re.sub(r"\D+", "", str(s or ""))
 
 
+# **A quota gratuita do Gemini é 20 pedidos por dia E POR MODELO.**
+#
+# Por isso o modelo é FIXO e não `gemini-flash-latest`: um alias muda de modelo
+# debaixo dos pés e aponta sempre para o de quota mais apertada. E por isso há
+# modelos de recurso: quando os vinte de um acabam, passa-se ao seguinte, o que
+# multiplica por quatro o que se consegue ler num dia sem pagar nada.
+#
+# O módulo `plataformas` já vivia assim (plataformas/leitura.py:147-167); este
+# não, e era ele que ficava sem quota. As listas são deliberadamente separadas:
+# mexer numa não pode mudar o modelo que a outra usa.
+_FIN_GEMINI_MODELO = "gemini-3.5-flash"
+_FIN_GEMINI_RECURSO = (
+    "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+)
+
+
+def _fin_gemini_modelos():
+    """A ordem por que se batem as portas. GEMINI_MODEL, se estiver definido,
+    manda — e os de recurso vêm a seguir, sem repetir o primeiro."""
+    primeiro = os.environ.get("GEMINI_MODEL") or _FIN_GEMINI_MODELO
+    return [primeiro] + [m for m in _FIN_GEMINI_RECURSO if m != primeiro]
+
+
 def _fin_gemini_call(pdf_bytes, prompt, max_tokens, timeout):
     """Chama a API do Google Gemini (síncrono) com o PDF em base64 e um prompt.
     Devolve (raw_text, finish_reason). Em falha de rede/HTTP, finish_reason vem
@@ -5390,7 +5758,7 @@ def _fin_gemini_call(pdf_bytes, prompt, max_tokens, timeout):
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return "", "ERROR:sem GEMINI_API_KEY"
-    model = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+    modelos = _fin_gemini_modelos()
     body = {
         "contents": [{
             "parts": [
@@ -5412,33 +5780,42 @@ def _fin_gemini_call(pdf_bytes, prompt, max_tokens, timeout):
             "thinkingConfig": {"thinkingLevel": "low"},
         },
     }
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    attempts = 0
-    while True:
-        attempts += 1
-        try:
-            with httpx.Client(timeout=timeout) as http_client:
-                # Chave no HEADER (não no URL): evita que apareça nos logs do httpx.
-                resp = http_client.post(
-                    url,
-                    headers={"content-type": "application/json", "x-goog-api-key": api_key},
-                    json=body,
-                )
-        except Exception as exc:  # noqa: BLE001
-            return "", f"ERROR:rede IA: {exc}"
-        # 429 = limite de ritmo do plano gratuito (5/min). Espera o tempo
-        # sugerido pelo Google e repete (até 5 tentativas) para não falhar
-        # bursts de faturas. Depois disso, devolve o erro (fica p/ a próxima).
-        if resp.status_code == 429 and attempts <= 5:
+    resp = None
+    # **Primeira volta: percorrer os modelos SEM esperar.** A quota gratuita é
+    # por dia E POR MODELO. Com o primeiro esgotado, o seguinte responde à
+    # primeira, no mesmo instante — está medido no módulo das plataformas, que
+    # já vive assim. Esperar não devolve quota diária; mudar de porta devolve.
+    #
+    # **Segunda volta: aí sim, esperar.** Se TODOS deram 429, o que se apanhou
+    # já não é a quota do dia mas o limite por minuto (5/min), e esse passa.
+    ultima_espera = 0.0
+    for volta in range(2):
+        if volta:
+            # Todas as portas recusaram: o que se apanhou já não é a quota do
+            # dia — é o limite por minuto. Aí sim, esperar resolve.
+            _time.sleep(min(max(ultima_espera + 1.0, 5.0), 45.0))
+        for modelo in modelos:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
+            try:
+                with httpx.Client(timeout=timeout) as http_client:
+                    # Chave no HEADER (não no URL): não aparece nos logs do httpx.
+                    resp = http_client.post(
+                        url,
+                        headers={"content-type": "application/json", "x-goog-api-key": api_key},
+                        json=body,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                return "", f"ERROR:rede IA: {exc}"
+            if resp.status_code != 429:
+                break
             try:
                 msg = resp.json().get("error", {}).get("message", "")
             except Exception:  # noqa: BLE001
                 msg = ""
             mt = re.search(r"retry in ([\d.]+)s", msg or "")
-            delay = float(mt.group(1)) if mt else 22.0
-            _time.sleep(min(max(delay + 1.0, 5.0), 45.0))
-            continue
-        break
+            ultima_espera = float(mt.group(1)) if mt else 22.0
+        if resp is not None and resp.status_code != 429:
+            break
     if resp.status_code >= 400:
         try:
             err = resp.json().get("error", {}).get("message")
@@ -5472,6 +5849,30 @@ def _fin_extract_pdf_sync(pdf_bytes):
     return parsed if isinstance(parsed, dict) else {"error": "json IA inválido"}
 
 
+# Remetentes que sabemos NAO mandar faturas de fornecedor. Cada PDF que passa
+# daqui custa uma chamada a IA (quota do plano gratuito: 20 por dia, partilhada
+# com a leitura das plataformas), e todos estes eram enviados ao Gemini so para
+# ele responder "isto nao e uma fatura".
+#
+# Medido na caixa a serio a 2026-09-05: 80 avisos do Millennium e 31 relatorios
+# da Teya em 30 dias — mais de 100 chamadas por mes deitadas fora.
+#
+# NAO por aqui a Glovo nem a Uber: essas TAMBEM mandam faturas de comissao.
+_FIN_REMETENTES_BANCO = (
+    "alertas.empresas@millenniumbcp.pt",  # "Documentos em formato digital" (avisos)
+    "info@novobanco.pt",                  # "Extrato de conta"
+)
+_FIN_REMETENTES_SEM_FATURA = _FIN_REMETENTES_BANCO + (
+    "reporting@teya.com",                 # relatorios de liquidacao
+)
+
+
+def _fin_remetente_sem_faturas(de: str) -> bool:
+    """O remetente esta na lista dos que nunca mandam faturas?"""
+    d = (de or "").lower()
+    return any(x in d for x in _FIN_REMETENTES_SEM_FATURA)
+
+
 def _fin_fetch_pdf_attachments_sync(mb):
     """Liga a uma caixa IMAP, lê as mensagens da janela e devolve uma lista de
     {'file_name': str, 'bytes': bytes}. Síncrono — corre em thread."""
@@ -5480,7 +5881,10 @@ def _fin_fetch_pdf_attachments_sync(mb):
     imap = imaplib.IMAP4_SSL(host, port)
     try:
         imap.login(mb.get("user"), mb.get("pass"))
-        imap.select("INBOX")
+        # readonly=True + BODY.PEEK: e a caixa de correio do dono, e um agente
+        # automatico nao lhe pode mexer nos nao-lidos. O modulo plataformas ja
+        # fazia isto; este nao fazia e marcava tudo como lido todos os dias.
+        imap.select("INBOX", readonly=True)
         since = (datetime.now(timezone.utc) - timedelta(days=_FIN_INGEST_DAYS)).strftime("%d-%b-%Y")
         typ, msgnums = imap.search(None, "SINCE", since)
         ids = msgnums[0].split() if (typ == "OK" and msgnums and msgnums[0]) else []
@@ -5488,11 +5892,13 @@ def _fin_fetch_pdf_attachments_sync(mb):
         out = []
         for num in ids:
             try:
-                typ, msgdata = imap.fetch(num, "(RFC822)")
+                typ, msgdata = imap.fetch(num, "(BODY.PEEK[])")
                 if typ != "OK" or not msgdata or not msgdata[0]:
                     continue
                 raw = msgdata[0][1]
                 msg = _email.message_from_bytes(raw)
+                if _fin_remetente_sem_faturas(str(msg.get("From") or "")):
+                    continue
                 for part in msg.walk():
                     if part.get_content_maintype() == "multipart":
                         continue
@@ -5626,7 +6032,11 @@ async def fin_cron_ingest(key: str = Query(...)):
         marca, para o anexo repetir na próxima corrida em vez de se perder."""
         await db.fin_ingest_log.update_one(
             {"k": kk},
-            {"$setOnInsert": {"k": kk, "at": datetime.now(timezone.utc).isoformat()}},
+            # `t` marca de QUE leitor e a chave. Sem isto, um leitor de extratos
+            # que reutilizasse esta coleccao encontrava os sha1 ja la postos por
+            # este e importava zero, com 200 OK e sem se queixar.
+            {"$setOnInsert": {"k": kk, "t": "fatura",
+                              "at": datetime.now(timezone.utc).isoformat()}},
             upsert=True,
         )
 
@@ -6633,6 +7043,114 @@ def _fin_chain_check(movs):
         if abs(movs[i]["balance"] - (movs[i - 1]["balance"] + movs[i]["amount"])) > 0.01:
             return i
     return None
+
+
+@api_router.post("/fin/cron/extratos")
+async def fin_cron_bank_docs(key: str = Query(...)):
+    """Vai buscar a caixa de email os documentos que os BANCOS mandam.
+
+    Corre por cron. Cada caixa do IMAP_MAILBOXES ja traz o `company_nif`, e e
+    por ai que se sabe de que empresa e a conta quando ela ainda nao esta
+    registada. O roteamento normal e pelo NUMERO DE CONTA do documento, nao
+    pela caixa: um extrato so vai para a conta a que pertence.
+    """
+    cron_key = os.environ.get("CRON_KEY") or ""
+    if not cron_key or not secrets.compare_digest(key or "", cron_key):
+        raise HTTPException(status_code=403, detail="Chave inválida.")
+
+    raw = os.environ.get("IMAP_MAILBOXES") or _FIN_IMAP_RAW or "[]"
+    try:
+        mailboxes = json.loads(raw)
+        if not isinstance(mailboxes, list):
+            mailboxes = []
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("[fin-extratos] IMAP_MAILBOXES inválido: %s", _e)
+        mailboxes = []
+
+    resumo = {"anexos": 0, "documentos_lidos": 0, "movimentos": 0,
+              "saltados": 0, "provisorios_substituidos": 0, "erros": []}
+
+    async def marcar_visto(kk):
+        await db.fin_ingest_log.update_one(
+            {"k": kk, "t": "extrato"},
+            {"$setOnInsert": {"k": kk, "t": "extrato",
+                              "at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+
+    contas = await db.fin_bank_accounts.find({}, {"_id": 0}).to_list(2000)
+
+    for mb in mailboxes:
+        nif_caixa = _fin_norm_nif(mb.get("company_nif"))
+        empresa = await db.fin_companies.find_one({"nif": nif_caixa}, {"_id": 0}) if nif_caixa else None
+        try:
+            anexos = await asyncio.to_thread(_fin_fetch_bank_attachments_sync, mb)
+        except Exception as e:  # noqa: BLE001
+            resumo["erros"].append(f"{mb.get('user')}: {e}")
+            continue
+        for a in anexos:
+            if resumo["documentos_lidos"] >= _FIN_BANCO_LIMITE:
+                break
+            k = hashlib.sha1(a["bytes"]).hexdigest()
+            if await db.fin_ingest_log.find_one({"k": k, "t": "extrato"}):
+                continue
+            resumo["anexos"] += 1
+            ex = await asyncio.to_thread(_fin_extract_statement_sync, a["bytes"])
+            resumo["documentos_lidos"] += 1
+            if not isinstance(ex, dict) or ex.get("error"):
+                # Erro de IA/rede e TRANSITORIO: nao marcar, para repetir.
+                resumo["erros"].append(f"{a['file_name']}: {(ex or {}).get('error')}")
+                continue
+            movs_raw = ex.get("movements")
+            if not isinstance(movs_raw, list) or not movs_raw:
+                # Documento sem movimentos: definitivo para ESTE ficheiro.
+                await marcar_visto(k)
+                resumo["erros"].append(f"{a['file_name']}: sem movimentos")
+                continue
+            acct = _fin_acct_digits(ex.get("account_number"))
+            if not acct:
+                await marcar_visto(k)
+                resumo["erros"].append(f"{a['file_name']}: sem número de conta")
+                continue
+            iguais = [c for c in contas if _fin_acct_match(acct, _fin_acct_digits(c.get("account_number")))]
+            exatas = [c for c in iguais if _fin_acct_digits(c.get("account_number")) == acct]
+            acc = exatas[0] if exatas else (iguais[0] if iguais else None)
+            if not acc:
+                if not empresa:
+                    resumo["erros"].append(
+                        f"{a['file_name']}: conta {acct} desconhecida e a caixa "
+                        f"{mb.get('user')} não diz de que empresa é")
+                    await marcar_visto(k)
+                    continue
+                banco = "novobanco" if "novobanco" in (a.get("from") or "").lower() else "Millennium BCP"
+                acc = await _fin_get_or_create_account(empresa["id"], acct, banco, None)
+                contas.append(acc)
+            # Traz saldo em TODAS as linhas? Entao e um extrato a serio.
+            movs = [m for m in movs_raw if isinstance(m, dict)]
+            com_saldo = [m for m in movs if _fin_clean_num(m.get("balance")) is not None]
+            e_extrato = len(com_saldo) == len(movs) and len(movs) > 0
+            if e_extrato:
+                datas = sorted(_fin_clean_date(m.get("date_lancamento")) or "" for m in movs)
+                apagados = await _fin_substituir_provisorios(acc["id"], datas[0], datas[-1])
+                resumo["provisorios_substituidos"] += apagados
+            ins, salt = await _fin_guardar_movimentos_do_banco(
+                acc, movs, "bank_email", provisorio=not e_extrato)
+            resumo["movimentos"] += ins
+            resumo["saltados"] += salt
+            await marcar_visto(k)
+
+    if resumo["movimentos"]:
+        await _fin_auto_reconcile(None)
+    logger.info("[fin-extratos] %s", resumo)
+    return resumo
+
+
+@api_router.post("/fin/sync/extratos")
+async def fin_manual_sync_bank_docs(current_user: dict = Depends(get_current_user)):
+    """O mesmo, a pedido, a partir do painel."""
+    if not await _fin_user_is_editor_somewhere(current_user):
+        raise HTTPException(status_code=403, detail="Sem permissão.")
+    return await fin_cron_bank_docs(key=os.environ.get("CRON_KEY") or "")
 
 
 @api_router.post("/fin/movements/import-pdf")
@@ -9008,6 +9526,12 @@ async def startup_event():
         await db.fin_sales.create_index([("company_id", 1), ("date", 1)])
         await db.fin_sales.create_index([("company_id", 1), ("unit_id", 1), ("date", 1)])
         await db.bol_leituras.create_index([("origem", 1), ("comecou_em", -1)])
+        # A vista mensal da Conciliacao filtra por empresa + mes, e o saldo por
+        # conta procura o ultimo movimento de cada conta. Sem indice, as duas
+        # varrem a coleccao inteira.
+        await db.fin_movements.create_index([("company_id", 1), ("date_lancamento", -1)])
+        await db.fin_movements.create_index([("account_id", 1), ("date_lancamento", -1)])
+        await db.fin_movements.create_index([("invoice_id", 1)])
     except Exception:  # noqa: BLE001
         logger.warning("[fin] não foi possível criar os índices de fin_sales/bol_leituras")
 

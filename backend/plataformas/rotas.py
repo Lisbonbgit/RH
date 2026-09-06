@@ -149,10 +149,25 @@ async def _gravar_registos(db, registos: List[Dict]) -> int:
     return len(registos)
 
 
+async def _mensagens_ja_lidas(db) -> set:
+    """Os `Message-ID` dos emails que já foram lidos e gravados.
+
+    É isto que faz a recolha caber na quota da IA: a janela é de vinte dias,
+    mas de uma segunda para a outra só há meia dúzia de emails novos. Sem esta
+    lista, cada corrida voltava a pagar pelas três semanas anteriores.
+    """
+    guardados = await db[COLECOES["relatorios"]].find(
+        {}, {"_id": 0, "origem.message_id": 1}).to_list(LIMITE_DE_LEITURA)
+    return {(r.get("origem") or {}).get("message_id")
+            for r in guardados if (r.get("origem") or {}).get("message_id")}
+
+
 async def _recolher_e_gravar(db, hoje: date) -> Dict:
     """Lê as caixas (numa thread — `imaplib` e `httpx` são síncronos, como no
     `fin_cron_ingest`) e grava o que encontrar."""
-    saida = await asyncio.to_thread(leitura.recolher, hoje)
+    ja_lidos = await _mensagens_ja_lidas(db)
+    saida = await asyncio.to_thread(leitura.recolher, hoje, None,
+                                    leitura.DIAS_DE_PROCURA, ja_lidos)
     gravados = await _gravar_registos(db, saida["registos"])
     return {"lidos": gravados, "avisos": saida["avisos"]}
 

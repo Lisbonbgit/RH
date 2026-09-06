@@ -44,6 +44,7 @@ import {
   BarChart3,
   Truck,
   Landmark,
+  Scale,
   Megaphone,
   CalendarDays,
   Star,
@@ -111,6 +112,7 @@ const sections = [
       { path: '/admin/financeiro/relatorios', label: 'Relatórios', icon: BarChart3 },
       { path: '/admin/financeiro/fornecedores', label: 'Fornecedores', icon: Truck },
       { path: '/admin/financeiro/extrato', label: 'Extrato', icon: Landmark },
+      { path: '/admin/financeiro/conciliacao', label: 'Conciliação', icon: Scale },
     ],
   },
   {
@@ -181,6 +183,10 @@ const sections = [
       { group: 'Gestão', path: '/admin/faturacao/taloes-desconto', label: 'Talões de Desconto', icon: Percent },
       { group: 'Gestão', path: '/admin/faturacao/clientes', label: 'Clientes', icon: Users },
       { group: 'Gestão', path: '/admin/faturacao/relatorios', label: 'Relatórios', icon: BarChart3 },
+      // O que saiu do ARMAZÉM, e não o que entrou na caixa. Fica ao lado dos
+      // Relatórios porque é contra eles que se lê: a mesma janela de datas, a
+      // mesma loja, outra pergunta.
+      { group: 'Gestão', path: '/admin/faturacao/consumo', label: 'Consumo', icon: Scale },
       { group: 'Gestão', path: '/admin/faturacao/compras', label: 'Compras', icon: Truck },
 
       { group: 'POS', path: '/admin/faturacao/movimentos-caixa', label: 'Movimentos de Caixa', icon: Banknote },
