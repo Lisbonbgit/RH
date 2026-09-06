@@ -1552,6 +1552,7 @@ async def _carimbar_sai_na_fatura(
     # opções por carimbar.
     ids = list({o.get("grupo_id") for o in opcoes if o.get("grupo_id")})
     refs_das_opcoes = {}
+    consumo_das_opcoes = {}
     if ids:
         for g in await db[COLECOES["grupos_personalizacao"]].find(
             {"id": {"$in": ids}},
@@ -1561,6 +1562,15 @@ async def _carimbar_sai_na_fatura(
             for opcao_configurada in g.get("opcoes") or []:
                 if opcao_configurada.get("id"):
                     refs_das_opcoes[opcao_configurada["id"]] = opcao_configurada.get("vendus_ref")
+                    # O que esta opção GASTA, para o stock poder descer depois.
+                    # Só entra quando há mesmo um número: sem ele, os outros
+                    # dois campos não descontam nada e só faziam peso na linha.
+                    if opcao_configurada.get("consumo") is not None:
+                        consumo_das_opcoes[opcao_configurada["id"]] = (
+                            opcao_configurada.get("consumo"),
+                            opcao_configurada.get("consumo_unidade"),
+                            opcao_configurada.get("estoque_produto_id"),
+                        )
 
     carimbadas = []
     for o in opcoes:
@@ -1592,6 +1602,26 @@ async def _carimbar_sai_na_fatura(
             # já não tem — senão uma ligação desfeita no backoffice continuava
             # a facturar no artigo antigo até alguém dar por isso.
             o.pop("vendus_ref", None)
+        # **O que a opção GASTA viaja com a linha**, e pela regra dura do
+        # `vendus_ref` aqui em cima: vem SEMPRE da configuração, nunca do que
+        # o balcão envia. Aceitá-lo do cliente era deixar escolher, de fora,
+        # quanto se desconta do armazém — uma venda esvaziava o stock de
+        # granola.
+        #
+        # Carimba-se em vez de o ir buscar à configuração na hora de ler
+        # porque o relatório de consumo tem de ser reproduzível: sem carimbo,
+        # corrigir hoje a gramagem mudava sozinho o que o relatório disse do
+        # mês passado — e é contra esse relatório que se confere uma contagem
+        # do armazém. Mesmo retrato do `produto_preco` e do `nome_grupo`.
+        consumo = consumo_das_opcoes.get(o.get("id"))
+        if consumo:
+            o["consumo"], o["consumo_unidade"], o["estoque_produto_id"] = consumo
+        else:
+            # Uma medição desligada no backoffice deixa de descontar já na
+            # próxima linha — senão continuava a comer stock até alguém dar
+            # por isso, que é o que o `vendus_ref` já aprendeu ao lado.
+            for campo in ("consumo", "consumo_unidade", "estoque_produto_id"):
+                o.pop(campo, None)
         # Senão fica o carimbo que a opção já trazia, tal e qual — é o
         # retrato do dia em que a linha nasceu.
         carimbadas.append(o)

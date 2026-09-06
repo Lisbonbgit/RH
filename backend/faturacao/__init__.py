@@ -78,6 +78,14 @@ router.include_router(_clientes)
 from .relatorios import router as _relatorios
 router.include_router(_relatorios)
 
+# O que saiu do ARMAZÉM (e não o que entrou na caixa): as gramagens escritas
+# nas personalizações, somadas por artigo do Estoque. Vive num caminho
+# próprio (`/consumo`) e não em `/relatorios/{dimensao}` de propósito — essa
+# rota tem um parâmetro que come tudo o que lhe passe à frente, e um
+# `/relatorios/consumo` respondia «Relatório desconhecido: consumo».
+from .consumo import router as _consumo
+router.include_router(_consumo)
+
 from .pos_auth import router as _pos_auth
 router.include_router(_pos_auth)
 
