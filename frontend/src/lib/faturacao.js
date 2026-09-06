@@ -470,3 +470,10 @@ export const temMaisDe2CasasDecimais = (valor) => {
 // tem um `{dimensao}` que come tudo o que lhe passe à frente.
 export const getConsumo = (params) => api.get(`${API_URL}/faturacao/consumo`, { params });
 
+
+// O interruptor do desconto automático de stock — e a lista das lojas que
+// ainda não estão ligadas a uma unidade do Estoque, que é o que decide se
+// ligá-lo faz sentido hoje.
+export const getDescontoStock = () => api.get(`${API_URL}/faturacao/desconto-stock`);
+export const mudarDescontoStock = (ativo) => api.put(
+  `${API_URL}/faturacao/desconto-stock`, { ativo });

@@ -77,6 +77,7 @@ def test_uma_opcao_com_consumo_unidade_e_artigo_e_aceite():
         consumo=30,
         consumo_unidade="g",
         estoque_produto_id="est-granola",
+        estoque_unidade_medida="kg",
     )
     assert opcao.consumo == 30
     assert opcao.consumo_unidade == "g"
@@ -168,6 +169,7 @@ _GRUPO_GRAVADO = {
             "consumo": 30,
             "consumo_unidade": "g",
             "estoque_produto_id": "est-granola",
+            "estoque_unidade_medida": "kg",
         }
     ],
 }
@@ -217,6 +219,7 @@ def test_quem_fala_do_consumo_muda_mesmo_o_consumo(monkeypatch):
                 consumo=45,
                 consumo_unidade="g",
                 estoque_produto_id="est-granola",
+                estoque_unidade_medida="kg",
             )
         ],
     )
@@ -402,6 +405,7 @@ _GRUPO_COM_CONSUMO = {
             "consumo": 30,
             "consumo_unidade": "g",
             "estoque_produto_id": "est-granola",
+            "estoque_unidade_medida": "kg",
         }
     ],
 }
@@ -430,6 +434,8 @@ def test_juntar_linha_carimba_o_consumo_da_opcao(monkeypatch):
     assert opcao["consumo"] == 30
     assert opcao["consumo_unidade"] == "g"
     assert opcao["estoque_produto_id"] == "est-granola"
+    assert opcao["estoque_unidade_medida"] == "kg", (
+        "sem a unidade do artigo o desconto adivinha, e erra por mil")
 
 
 def test_o_consumo_vem_SEMPRE_da_configuracao_e_nunca_do_balcao(monkeypatch):
@@ -468,3 +474,52 @@ def test_uma_opcao_sem_consumo_na_configuracao_nao_leva_carimbo_nenhum(monkeypat
     assert "consumo" not in opcao
     assert "consumo_unidade" not in opcao
     assert "estoque_produto_id" not in opcao
+    assert "estoque_unidade_medida" not in opcao
+
+
+# --- A ficha e o artigo têm de medir a mesma coisa ---------------------------
+
+
+def test_uma_ficha_em_gramas_ligada_a_um_artigo_contado_em_UNIDADES_e_recusada():
+    """Sem esta guarda, «30 g» ligado a um artigo que conta unidades descontava
+    TRINTA pacotes de granola por copo — e o movimento de stock não leva
+    unidade nenhuma, portanto o Estoque não tinha como recusar."""
+    with pytest.raises(ValidationError) as excinfo:
+        OpcaoEntrada(nome="Granola", consumo=30, consumo_unidade="g",
+                     estoque_produto_id="est-granola", estoque_unidade_medida="un")
+    assert "medidas de coisas diferentes" in str(excinfo.value)
+
+
+def test_um_artigo_contado_em_CAIXAS_nao_se_deixa_ligar():
+    """Uma caixa de quê, com quantos? Deixar ligar e nunca descontar era pior:
+    uma ficha preenchida que não faz nada."""
+    with pytest.raises(ValidationError) as excinfo:
+        OpcaoEntrada(nome="Granola", consumo=30, consumo_unidade="g",
+                     estoque_produto_id="est-granola", estoque_unidade_medida="caixa")
+    assert "caixa" in str(excinfo.value)
+
+
+def test_um_artigo_SEM_a_unidade_dele_continua_a_ser_aceite():
+    """É o que está gravado desde a Fase 1: artigo ligado, unidade do artigo
+    por saber (o campo ainda não existia).
+
+    Recusar aqui fechava o ecrã à chave — a mensagem mandava escolher o artigo
+    outra vez, o ecrã reenviava o mesmo pedido, e falhava na mesma. A guarda
+    que interessa é a do DESCONTO, que salta uma ficha por acertar em vez de
+    adivinhar: nunca desconta errado, e diz porquê no registo."""
+    opcao = OpcaoEntrada(nome="Granola", consumo=30, consumo_unidade="g",
+                         estoque_produto_id="est-granola")
+    assert opcao.estoque_unidade_medida is None
+
+
+def test_mililitros_ligam_se_a_um_artigo_contado_em_litros():
+    opcao = OpcaoEntrada(nome="Leite condensado", consumo=20, consumo_unidade="ml",
+                         estoque_produto_id="est-leite", estoque_unidade_medida="L")
+    assert opcao.estoque_unidade_medida == "L"
+
+
+def test_uma_gramagem_SEM_artigo_nao_precisa_de_unidade_de_artigo():
+    """Escrever as gramagens de uma assentada e ligar os artigos depois tem de
+    continuar a ser possível — era isso que evitava deixar o ecrã a meio."""
+    opcao = OpcaoEntrada(nome="Granola", consumo=30, consumo_unidade="g")
+    assert opcao.estoque_unidade_medida is None

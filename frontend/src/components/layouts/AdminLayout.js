@@ -202,6 +202,7 @@ const sections = [
       { group: 'Configuração', path: '/admin/faturacao/config/dispositivos', label: 'Dispositivos', pai: '/admin/faturacao/config' },
       { group: 'Configuração', path: '/admin/faturacao/config/relatorio-diario', label: 'Relatório diário', pai: '/admin/faturacao/config' },
       { group: 'Configuração', path: '/admin/faturacao/config/modo-de-emissao', label: 'Modo de emissão', pai: '/admin/faturacao/config' },
+      { group: 'Configuração', path: '/admin/faturacao/config/desconto-stock', label: 'Desconto de stock', pai: '/admin/faturacao/config' },
     ],
   },
   {

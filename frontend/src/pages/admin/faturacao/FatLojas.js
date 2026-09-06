@@ -23,6 +23,7 @@ import {
   Store, Plus, Pencil, Trash2, Wallet, MapPin, Mail, Phone, Smartphone,
   RefreshCw,
 } from 'lucide-react';
+import { getEstoqueUnidades } from '../../../lib/api';
 import PageHeader from '../../../components/PageHeader';
 import { toast } from 'sonner';
 
@@ -30,6 +31,9 @@ const CP_REGEX = /^\d{4}-\d{3}$/;
 
 const emptyLojaForm = {
   nome: '', morada: '', codigo_postal: '', localidade: '', email: '', telefone: '', cae: '', ativa: true,
+  // A unidade do Estoque de onde sai o stock desta loja. Vazio = esta loja
+  // não desconta nada.
+  estoque_unidade_id: '',
 };
 const emptyCaixaForm = { nome: '', ativa: true };
 
@@ -59,6 +63,25 @@ export default function FatLojas() {
   const [lojaDialogOpen, setLojaDialogOpen] = useState(false);
   const [editingLoja, setEditingLoja] = useState(null);
   const [lojaForm, setLojaForm] = useState(emptyLojaForm);
+  // As unidades do Estoque, lidas quando o diálogo de uma loja abre — e não
+  // ao entrar no ecrã. O Estoque é outro serviço, noutro servidor: quem vem
+  // aqui só para mudar o nome de uma caixa não pode ficar pendurado nele.
+  const [unidadesDoEstoque, setUnidadesDoEstoque] = useState([]);
+  const [erroUnidades, setErroUnidades] = useState('');
+
+  const lerUnidadesDoEstoque = async () => {
+    setErroUnidades('');
+    try {
+      const { data } = await getEstoqueUnidades();
+      setUnidadesDoEstoque(data || []);
+    } catch (error) {
+      // Uma lista vazia com ar de sucesso dizia «não há unidades» e a loja
+      // ficava por ligar por engano. A frase é a do servidor.
+      setUnidadesDoEstoque([]);
+      setErroUnidades(detalhesErro(
+        error, 'Não foi possível ler as unidades do Estoque.').mensagem);
+    }
+  };
   const [lojaFieldErrors, setLojaFieldErrors] = useState({});
   const [savingLoja, setSavingLoja] = useState(false);
   const [deleteLojaTarget, setDeleteLojaTarget] = useState(null);
@@ -216,6 +239,7 @@ export default function FatLojas() {
     setLojaForm(emptyLojaForm);
     setLojaFieldErrors({});
     setLojaDialogOpen(true);
+    lerUnidadesDoEstoque();
   };
 
   const openEditLoja = (loja) => {
@@ -229,9 +253,11 @@ export default function FatLojas() {
       telefone: loja.telefone || '',
       cae: loja.cae || '',
       ativa: loja.ativa !== false,
+      estoque_unidade_id: loja.estoque_unidade_id || '',
     });
     setLojaFieldErrors({});
     setLojaDialogOpen(true);
+    lerUnidadesDoEstoque();
   };
 
   const handleSubmitLoja = async (e) => {
@@ -250,6 +276,11 @@ export default function FatLojas() {
       telefone: lojaForm.telefone.trim() || null,
       cae: lojaForm.cae.trim() || null,
       ativa: lojaForm.ativa,
+      // Sempre enviado, `null` quando não há ligação. O servidor preserva o
+      // que o pedido não mencionar (é o que protege a ponte de um curl ou de
+      // um build antigo) — mas este ecrã sabe do assunto e tem de conseguir
+      // desligar o que o dono desligou.
+      estoque_unidade_id: lojaForm.estoque_unidade_id || null,
     };
     // O PUT do servidor substitui o registo inteiro (não é um PATCH parcial).
     // empresa_id e rh_location_id não têm campo neste formulário — sem os
@@ -620,6 +651,32 @@ export default function FatLojas() {
                   data-testid="loja-cae-input"
                 />
                 <p className="text-xs text-muted-foreground">Código de Atividade Económica, usado nos documentos fiscais emitidos nesta loja.</p>
+              </div>
+              {/* **A ponte para o Estoque.** É daqui que sai a granola quando
+                  esta loja vende. Escolhe-se à mão, uma vez: casar por nome
+                  parte à primeira, porque os dois sistemas têm convenções
+                  diferentes. Vazio quer dizer «esta loja não desconta stock»,
+                  e é o estado de todas até alguém as ligar. */}
+              <div className="space-y-2">
+                <Label htmlFor="loja-estoque">Unidade do Estoque</Label>
+                <select
+                  id="loja-estoque"
+                  value={lojaForm.estoque_unidade_id}
+                  onChange={(e) => setLojaForm({ ...lojaForm, estoque_unidade_id: e.target.value })}
+                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                  data-testid="loja-estoque-unidade"
+                >
+                  <option value="">Não desconta stock</option>
+                  {unidadesDoEstoque.map((u) => (
+                    <option key={u.id} value={u.id}>{u.nome}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  {erroUnidades
+                    ? erroUnidades
+                    : 'De que armazém sai o stock quando esta loja vende. Sem isto escolhido, '
+                      + 'o desconto automático não desce nada nesta loja — e não dá erro nenhum.'}
+                </p>
               </div>
               <div className="flex items-center gap-2 pt-1">
                 <Switch id="loja-ativa" checked={lojaForm.ativa} onCheckedChange={(v) => setLojaForm({ ...lojaForm, ativa: v })} data-testid="loja-ativa-switch" />
