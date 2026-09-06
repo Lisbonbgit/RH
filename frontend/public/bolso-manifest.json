@@ -1,0 +1,32 @@
+{
+  "name": "Gestão de Bolso",
+  "short_name": "Bolso",
+  "description": "A faturação do grupo Lisbonb, no telemóvel.",
+  "start_url": "/bolso",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#1366F0",
+  "lang": "pt-PT",
+  "icons": [
+    {
+      "src": "/icones/bolso-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icones/bolso-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icones/bolso-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

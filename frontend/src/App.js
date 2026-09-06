@@ -77,6 +77,7 @@ import FatTrocarModo from './pages/admin/faturacao/FatTrocarModo';
 import FatMovimentosCaixa from './pages/admin/faturacao/FatMovimentosCaixa';
 import FatReservasPresas from './pages/admin/faturacao/FatReservasPresas';
 import PosApp from './pages/pos/PosApp';
+import BolsoApp from './pages/bolso/BolsoApp';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeProfile from './pages/employee/EmployeeProfile';
 import EmployeeTimeRecord from './pages/employee/EmployeeTimeRecord';
@@ -186,6 +187,18 @@ function AppRoutes() {
           POS vivem em localStorage (lib/pos.js), nunca no Authorization do
           backoffice. */}
       <Route path="/faturacao/pos" element={<PosApp />} />
+
+      {/* Gestão de Bolso — a faturação no telemóvel do gestor. Rota de TOPO,
+          fora do /admin e com layout próprio: o AdminLayout é uma gaveta de
+          seis secções pensada para um ecrã grande, e o que aqui se quer é o
+          número a zero toques. Leva `ProtectedRoute` na mesma (é o login do
+          portal que manda), e o que cada um vê continua a ser decidido pela
+          PERTENÇA às empresas, do lado do servidor. */}
+      <Route path="/bolso" element={
+        <ProtectedRoute allowedRoles={['admin', 'gerente', 'contabilista']}>
+          <BolsoApp />
+        </ProtectedRoute>
+      } />
       <Route path="/alterar-senha" element={
         <ChangePasswordRoute>
           <ChangePasswordPage />

@@ -40,6 +40,7 @@ try:
 except ImportError:
     HTTPX_AVAILABLE = False
 
+import bolso
 import fin_faturacao
 
 ROOT_DIR = Path(__file__).parent
@@ -8485,6 +8486,117 @@ async def fin_cron_vendus(
         out["written"], len(out["stores"]), len(out["errors"]),
     )
     return out
+
+
+# ====================================================================
+# ===== GESTÃO DE BOLSO — a faturação no telemóvel do gestor =====
+# ====================================================================
+# Secção `/bolso`: só-leitura, um pedido por ecrã, e a matemática toda no
+# módulo `bolso` (puro, testável sem Mongo). Aqui fica o que precisa da base
+# de dados e das guardas: a pertença (`_fin_report_scope`) e as leituras.
+
+# Os campos que o painel lê de `fin_sales`, e mais nenhum: uma projecção
+# estreita porque isto varre até dois anos de linhas a cada abertura.
+_BOLSO_CAMPOS = {
+    "_id": 0, "company_id": 1, "unit_id": 1, "date": 1, "amount": 1, "amount_net": 1,
+}
+
+
+@api_router.get("/bolso/painel")
+async def bolso_painel(
+    empresa: str = Query("all"),
+    current_user: dict = Depends(get_current_user),
+):
+    """O painel inteiro num pedido só.
+
+    **Um pedido, e não um por cartão**, porque isto abre no telemóvel do dono
+    com 4G de café: seis idas ao servidor eram seis oportunidades de metade do
+    ecrã ficar por preencher, e o ecrã não tem forma honesta de mostrar meio
+    painel.
+
+    O âmbito obedece à MESMA regra dos relatórios do Financeiro
+    (`_fin_report_scope`): `all` soma só as empresas onde este utilizador é
+    membro. **É por isso que a resposta diz sempre QUAIS foram somadas** — sem
+    uma linha em `fin_company_members`, `all` devolve zero em tudo sem um único
+    erro, e um total incompleto lê-se como um mau mês em vez de um problema de
+    configuração.
+    """
+    ambito = await _fin_report_scope(empresa, current_user)
+    hoje = bolso.hoje_em_lisboa()
+    js = bolso.janelas(hoje)
+
+    # A leitura mais antiga de que o painel precisa é o início do ano
+    # anterior equivalente (a comparação do cartão do Ano).
+    mais_antigo = min(
+        j[0] for j in (js["ano"], js["ano_anterior"], js["mes_anterior"]) if j
+    )
+    linhas = await db.fin_sales.find(
+        {"company_id": ambito,
+         "date": {"$gte": mais_antigo.isoformat(), "$lte": hoje.isoformat()}},
+        _BOLSO_CAMPOS,
+    ).to_list(500000)
+
+    # Só as linhas DESTE ano entram nos cartões, séries e repartição; as do
+    # ano passado servem uma coisa só — a comparação do cartão do Ano.
+    deste_ano = [l for l in linhas if (l.get("date") or "") >= js["ano"][0].isoformat()]
+
+    # Quem soma o quê, dito por nome. O denominador (as empresas que existem)
+    # vem daqui de dentro: `GET /api/fin/companies` devolve [] a quem não tem
+    # papéis, e contar "2 de 3" com um denominador que o cliente não pode
+    # conhecer era pior do que nomear.
+    todas = await db.fin_companies.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(500)
+    ids_no_ambito = ambito["$in"] if isinstance(ambito, dict) else [ambito]
+    somadas = [c for c in todas if c["id"] in ids_no_ambito]
+    de_fora = [c for c in todas if c["id"] not in ids_no_ambito]
+
+    if empresa == "all":
+        nomes = {c["id"]: c.get("name") for c in todas}
+        campo, reparte_por = "company_id", "empresa"
+    else:
+        unidades = await db.fin_units.find(
+            {"company_id": empresa}, {"_id": 0, "id": 1, "name": 1}
+        ).to_list(1000)
+        nomes = {u["id"]: u.get("name") for u in unidades}
+        campo, reparte_por = "unit_id", "loja"
+
+    # A proveniência: quando é que cada origem leu pela última vez. É o que
+    # transforma "não vendemos nada" em "ninguém leu" — a pergunta que o
+    # `bol_leituras` existe para responder.
+    leituras = await db.bol_leituras.find(
+        {}, {"_id": 0, "origem": 1, "terminou_em": 1, "completa": 1, "erros": 1}
+    ).sort("comecou_em", -1).to_list(60)
+    ultima_por_origem = {}
+    for r in leituras:
+        origem = r.get("origem")
+        if origem not in ultima_por_origem:
+            ultima_por_origem[origem] = {
+                "origem": origem,
+                "terminou_em": r.get("terminou_em"),
+                "completa": r.get("completa"),
+                "erros": (r.get("erros") or [])[:3],
+            }
+
+    return {
+        "hoje": hoje.isoformat(),
+        "ambito": {
+            "pedido": empresa,
+            "somadas": [{"id": c["id"], "nome": c.get("name")} for c in somadas],
+            "sem_acesso": [c.get("name") for c in de_fora],
+        },
+        "cartoes": {
+            "ontem": bolso.cartao(deste_ano, js["ontem"], js["ontem"], js["anteontem"]),
+            # Sem comparação, e a nota diz porquê — ver a regra 2 do módulo.
+            "hoje": bolso.cartao(deste_ano, js["hoje"], nota="dia a decorrer"),
+            "mes": bolso.cartao(deste_ano, js["mes"], js["mes_completo"], js["mes_anterior"]),
+            "ano": bolso.cartao(linhas, js["ano"], js["ano_completo"], js["ano_anterior"]),
+        },
+        "serie_dias": bolso.serie_de_dias(deste_ano, hoje),
+        "serie_meses": bolso.serie_de_meses(linhas, hoje),
+        "reparticao": bolso.repartir(deste_ano, js["mes"], campo, nomes),
+        "reparticao_por": reparte_por,
+        "dias_sem_vendas": bolso.dias_sem_linha(deste_ano, hoje),
+        "leituras": list(ultima_por_origem.values()),
+    }
 
 
 @api_router.post("/fin/cron/faturacao")
