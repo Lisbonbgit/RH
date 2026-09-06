@@ -1,4 +1,4 @@
-// Chamadas da Gestão de Bolso — instância própria de axios, deliberadamente à
+// Chamadas do painel "Gestão Lisbonb" — instância própria de axios, deliberadamente à
 // parte do `axios` global.
 //
 // O `AuthContext` guarda o JWT em `axios.defaults.headers.common`, que é um

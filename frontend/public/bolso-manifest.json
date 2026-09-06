@@ -1,6 +1,6 @@
 {
-  "name": "Gestão de Bolso",
-  "short_name": "Bolso",
+  "name": "Gestão Lisbonb",
+  "short_name": "Gestão",
   "description": "A faturação do grupo Lisbonb, no telemóvel.",
   "start_url": "/bolso",
   "scope": "/",

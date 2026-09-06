@@ -1,6 +1,6 @@
 {
-  "appId": "com.lisbonb.bolso",
-  "appName": "Gestão de Bolso",
+  "appId": "com.lisbonb.gestao",
+  "appName": "Gestão Lisbonb",
   "webDir": "www",
   "server": {
     "url": "https://rh.lisbonb.com/bolso",

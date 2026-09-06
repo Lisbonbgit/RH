@@ -189,7 +189,7 @@ function AppRoutes() {
           backoffice. */}
       <Route path="/faturacao/pos" element={<PosApp />} />
 
-      {/* Gestão de Bolso — a faturação no telemóvel do gestor. Rota de TOPO,
+      {/* Gestão Lisbonb (interno: "bolso") — a faturação no telemóvel do gestor. Rota de TOPO,
           fora do /admin e com layout próprio: o AdminLayout é uma gaveta de
           seis secções pensada para um ecrã grande, e o que aqui se quer é o
           número a zero toques. Leva `ProtectedRoute` na mesma (é o login do

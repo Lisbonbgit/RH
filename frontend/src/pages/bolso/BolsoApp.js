@@ -5,7 +5,11 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { euros, getPainel, percentagem, quandoFoi, TIMEOUT_MS } from '@/lib/bolso';
 
-// **Gestão de Bolso** — a faturação do grupo no telemóvel do gestor.
+// **Gestão Lisbonb** — a faturação do grupo no telemóvel do gestor.
+//
+// (No código chama-se "bolso" — a rota, a pasta, o `lib/bolso.js`. Foi o nome
+// de trabalho e ficou; o que o dono vê é "Gestão Lisbonb", que é o nome do
+// portal e o da app no telemóvel dele.)
 //
 // A forma é a do painel do Vendus que o dono já usa e conhece (números
 // grandes, medalha com a percentagem, o valor de comparação ao lado, e as
@@ -72,7 +76,7 @@ function useManifestoDoBolso() {
     document.head.appendChild(apple);
 
     const titulo = document.title;
-    document.title = 'Gestão de Bolso';
+    document.title = 'Gestão Lisbonb';
     return () => {
       if (link && anterior) link.setAttribute('href', anterior);
       apple.remove();
@@ -333,7 +337,7 @@ export default function BolsoApp() {
       <header className="sticky top-0 z-10 bg-card/95 backdrop-blur border-b">
         <div className="flex items-center gap-2 px-4 h-14">
           <div className="min-w-0 flex-1">
-            <p className="font-heading font-bold text-base leading-none">Gestão de Bolso</p>
+            <p className="font-heading font-bold text-base leading-none">Gestão Lisbonb</p>
             <p className="text-[11px] text-muted-foreground truncate mt-0.5">{nomeDoAmbito}</p>
           </div>
           <Button variant="ghost" size="icon" className="h-10 w-10" onClick={alternarIva}
