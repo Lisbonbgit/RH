@@ -48,16 +48,9 @@ from .relatorios import _data, _TECTO_DOCUMENTOS
 router = APIRouter()
 
 
-# Para somar «30 g» com «0,05 kg» é preciso uma medida comum. As famílias são
-# as três que existem: massa, volume e contagem. Cada uma soma-se na sua
-# unidade de base e nunca se mistura com outra — se um artigo aparecer com
-# gramas E com unidades, são duas linhas e não uma média sem sentido.
-_FAMILIAS = {
-    "g": ("massa", 0.001), "kg": ("massa", 1.0),
-    "ml": ("volume", 0.001), "L": ("volume", 1.0),
-    "un": ("contagem", 1.0),
-}
-_UNIDADE_BASE = {"massa": "kg", "volume": "L", "contagem": "un"}
+# A conversão vive em `unidades.py`, partilhada com a validação do catálogo:
+# duas cópias do mapa erram por um factor de mil quando divergem.
+from .unidades import UNIDADE_BASE as _UNIDADE_BASE, _FAMILIAS  # noqa: E402
 
 
 def _consumo_da_opcao(opcao: Dict, quantidade_da_linha: float) -> Optional[Dict]:
@@ -83,6 +76,10 @@ def _consumo_da_opcao(opcao: Dict, quantidade_da_linha: float) -> Optional[Dict]
         # linha em falta não é.
         "destino_id": opcao.get("estoque_produto_id"),
         "destino_nome": opcao.get("nome"),
+        # A unidade em que o ARTIGO conta, tal como foi carimbada na linha.
+        # Não é usada na soma do relatório (que soma na unidade de base da
+        # ficha) — é o desconto que a lê, para não converter às cegas.
+        "unidade_do_artigo": opcao.get("estoque_unidade_medida"),
         "familia": nome_da_familia,
         # `float(quantidade)` e não `int`: uma conta dividida por três grava
         # 0,3337 e um `int()` aqui apagava o consumo dessa parte por inteiro.

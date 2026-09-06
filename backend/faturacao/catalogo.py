@@ -226,14 +226,16 @@ async def apagar_subcategoria(
 TIPOS_DE_GRUPO = frozenset({"opcoes", "texto"})
 
 
-# As unidades em que se escreve o que uma opção GASTA (não o que custa).
-#
-# São as do peso do produto no Estoque (`PESO_UNIDADES` no EstoqueCatalogo) e
-# não as da unidade de stock (kg, L, un, caixa): quem escreve a ficha pensa em
-# «30 g de granola», não em «0,03 kg». A conversão para a unidade em que o
-# Estoque conta faz-se do lado de lá, na leitura — escrever já convertido era
-# pedir um zero a mais ao dono, todos os dias, para poupar uma divisão.
-UNIDADES_DE_CONSUMO = frozenset({"g", "kg", "ml", "L", "un"})
+# As unidades em que se escreve o que uma opção GASTA (não o que custa) e as
+# que um artigo do Estoque pode ter. Vivem em `unidades.py`, com a conversão,
+# porque é a mesma pergunta feita de dois lados — e duas cópias do mapa é uma
+# divergência que erra por um factor de mil.
+from .unidades import (  # noqa: E402
+    FAMILIA_DO_ARTIGO,
+    UNIDADES_DE_ARTIGO,
+    UNIDADES_DE_CONSUMO,
+    familia,
+)
 
 
 class OpcaoEntrada(BaseModel):
@@ -291,6 +293,12 @@ class OpcaoEntrada(BaseModel):
     consumo: Optional[float] = Field(default=None, ge=0, le=10000, allow_inf_nan=False)
     consumo_unidade: Optional[str] = None
     estoque_produto_id: Optional[str] = None
+    # **A unidade em que o ARTIGO do Estoque conta** — e não a que se escreveu
+    # na ficha. Carimba-se aqui, na configuração, porque o movimento de stock
+    # não leva unidade nenhuma: manda um número cru, interpretado do lado de
+    # lá. Sem saber que a granola se conta em quilos, «30 g» ia como `30` e
+    # tirava 30 kg por dose. Vem do artigo escolhido no ecrã.
+    estoque_unidade_medida: Optional[str] = None
 
     @field_validator("preco")
     @classmethod
@@ -324,6 +332,45 @@ class OpcaoEntrada(BaseModel):
             raise ValueError(
                 "O consumo de uma opção escreve-se com número E unidade (ex.: 30 «g»), "
                 "ou deixa-se os dois em branco."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _valida_o_artigo_do_estoque(self):
+        """A ficha e o artigo têm de medir a MESMA coisa.
+
+        Sem isto, «30 g» ligado a um artigo contado em unidades descontava
+        trinta pacotes de granola por copo, e ninguém dava por isso senão na
+        contagem do mês — o movimento de stock não leva unidade nenhuma para
+        o Estoque poder recusar.
+
+        A `caixa` recusa-se à cara: uma caixa de quê, com quantos? Só o
+        Estoque sabe, e nem sempre. Deixar ligar e nunca descontar era o pior
+        dos dois — uma ficha preenchida que não faz nada.
+        """
+        if self.estoque_unidade_medida is None:
+            # **Ausente é ACEITE, de propósito.** As personalizações ligadas na
+            # Fase 1 têm artigo e não têm este campo, porque ele ainda não
+            # existia. Recusá-las aqui fechava o ecrã à chave: a mensagem
+            # mandava escolher o artigo outra vez, o ecrã reenviava o mesmo
+            # pedido, e falhava na mesma — sem saída pela interface.
+            #
+            # A guarda que interessa não é esta: é a do DESCONTO
+            # (`estoque_saida.saidas_de_uma_venda`), que salta e regista toda a
+            # opção sem unidade do artigo em vez de adivinhar. Uma ficha por
+            # acertar não desconta nada; nunca desconta errado.
+            return self
+        if self.estoque_unidade_medida not in UNIDADES_DE_ARTIGO:
+            raise ValueError(
+                "Este artigo do Estoque conta em «%s» e não há conversão para isso. "
+                "Ligue a uma medida em %s, ou deixe a personalização sem artigo."
+                % (self.estoque_unidade_medida, ", ".join(sorted(UNIDADES_DE_ARTIGO)))
+            )
+        se_a_ficha = familia(self.consumo_unidade)
+        if se_a_ficha and se_a_ficha != FAMILIA_DO_ARTIGO[self.estoque_unidade_medida]:
+            raise ValueError(
+                "A ficha está escrita em «%s» e este artigo do Estoque conta em «%s» — "
+                "são medidas de coisas diferentes." % (self.consumo_unidade, self.estoque_unidade_medida)
             )
         return self
 
@@ -397,7 +444,8 @@ def _opcoes_com_id(opcoes: List[dict]) -> List[dict]:
 # Os campos que descrevem o que uma opção gasta. Andam sempre juntos porque
 # são a mesma frase («30 g de granola») repartida por três casas — e é por
 # isso que se preservam EM BLOCO. Ver a docstring abaixo.
-_CAMPOS_DE_CONSUMO = ("consumo", "consumo_unidade", "estoque_produto_id")
+_CAMPOS_DE_CONSUMO = (
+    "consumo", "consumo_unidade", "estoque_produto_id", "estoque_unidade_medida")
 
 # Os que se preservam um a um: cada um é uma frase inteira sozinho.
 #

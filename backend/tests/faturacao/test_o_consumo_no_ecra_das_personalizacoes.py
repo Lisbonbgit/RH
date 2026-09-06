@@ -262,3 +262,62 @@ def test_o_Estoque_em_baixo_NAO_estraga_o_formulario(tmp_path):
     assert saida["unidade"] == "ml"
     assert saida["gravado"], "com o Estoque em baixo deixou de se poder guardar"
     assert saida["gravado"][-1]["opcoes"][1]["consumo"] == 20
+
+
+# --- O contrato: o que o ecrã manda, o servidor tem de aceitar ----------------
+
+
+def test_o_payload_do_ecra_e_ACEITE_pelo_modelo_do_servidor(tmp_path):
+    """O teste que faltava, e o buraco por onde passou um bloqueador.
+
+    Todos os outros testes de ecrã falam com um servidor FABRICADO: afirmam o
+    que o ecrã manda, nunca se o servidor o aceitaria. Quando o modelo ganhou
+    o `estoque_unidade_medida` obrigatório, a suite inteira ficou verde com um
+    ecrã que nunca enviava esse campo — e o resultado seria um 422 em cada
+    gravação de um grupo com artigo ligado, sem saída pela interface: a
+    mensagem manda escolher o artigo outra vez, o ecrã reenvia o mesmo pedido,
+    e falha na mesma.
+
+    Aqui a ponta solta ata-se: o corpo que o ecrã constrói passa pelo
+    `OpcaoEntrada` verdadeiro. Se um dia o modelo apertar sem o ecrã saber,
+    este teste fica vermelho antes de o dono descobrir ao vivo.
+    """
+    from faturacao.catalogo import GrupoPersonalizacaoEntrada
+
+    # Gramas e não mililitros: o artigo `est-nutella` conta em quilos, e o
+    # servidor recusa — com razão — ligar uma ficha em ml a um artigo de
+    # massa. Foi este teste a apanhar a incoerência na fixture.
+    saida = _monta(_TOPPINGS, [
+        "await escrever('opcao-consumo-input-1', '20');",
+        "await escrever('opcao-consumo-unidade-1', 'g');",
+        "await clicar('ligar-artigo-estoque-1');",
+        "await clicar('artigo-do-estoque-est-nutella');",
+        "await submeter();",
+    ], tmp_path, "contrato.js")
+
+    corpo = saida["gravado"][-1]
+    # Levanta `ValidationError` se o ecrã e o servidor discordarem — e a
+    # mensagem do pydantic diz exactamente em que campo.
+    grupo = GrupoPersonalizacaoEntrada(**corpo)
+
+    granola, nutella = grupo.opcoes
+    assert granola.estoque_unidade_medida == "kg", (
+        "o ecrã perdeu a unidade do artigo que já estava gravada")
+    assert nutella.estoque_produto_id == "est-nutella"
+    assert nutella.estoque_unidade_medida == "kg", (
+        "escolher o artigo tem de trazer a unidade em que ele conta")
+
+
+def test_desligar_o_artigo_leva_a_unidade_dele_atras(tmp_path):
+    """Senão ficava uma unidade órfã de um artigo que já não está ligado — e o
+    servidor recusa o par partido."""
+    from faturacao.catalogo import GrupoPersonalizacaoEntrada
+
+    saida = _monta(_TOPPINGS, [
+        "await clicar('desligar-artigo-estoque-0');",
+        "await submeter();",
+    ], tmp_path, "desligar-contrato.js")
+
+    grupo = GrupoPersonalizacaoEntrada(**saida["gravado"][-1])
+    assert grupo.opcoes[0].estoque_produto_id is None
+    assert grupo.opcoes[0].estoque_unidade_medida is None

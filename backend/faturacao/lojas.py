@@ -30,6 +30,17 @@ class LojaEntrada(BaseModel):
     cae: Optional[str] = None
     empresa_id: Optional[str] = None
     rh_location_id: Optional[str] = None
+    # **A unidade do Estoque desta loja** — a ponte que faltava entre os dois
+    # sistemas, e o que diz de que armazém sai a granola desta venda.
+    #
+    # Escolhe-se à mão, uma vez, no ecrã das Lojas: são cinco. Casar por NOME
+    # era a tentação óbvia e parte à primeira — os dois lados têm convenções
+    # diferentes, e este repositório já tem a cicatriz de casar lojas por nome
+    # noutro sítio (a Uber escreve o nome da mesma loja de duas maneiras).
+    #
+    # `None` quer dizer «esta loja não desconta stock», e é o estado de todas
+    # até alguém as ligar.
+    estoque_unidade_id: Optional[str] = None
     ativa: bool = True
 
     @field_validator("codigo_postal")
@@ -75,10 +86,32 @@ async def obter_loja(loja_id: str, _: dict = Depends(gestor_atual)) -> dict:
     return loja
 
 
+# Os campos que um pedido que não fale deles NÃO pode apagar.
+#
+# Este PUT faz `$set` do modelo INTEIRO, e todos estes têm `= None` por
+# omissão: quem não os repita punha-os a nulo. A defesa existia — mas dentro
+# do browser (`FatLojas.js` reenvia-os, com a cicatriz escrita ao lado), e uma
+# defesa que vive no Chrome desliga-se com um curl, um script, ou um separador
+# com um build antigo.
+#
+# O que cada um custa quando se apaga sozinho: `empresa_id` e `rh_location_id`
+# desligam a loja da empresa e do RH; `estoque_unidade_id` faz o stock PARAR
+# de descer — e esse é o pior dos três, porque não dá erro nenhum. Mesmo molde
+# do `vendus_ref` no catálogo, que já custou uma conta do Vendus cheia de
+# artigos-lixo.
+_CAMPOS_QUE_O_SILENCIO_NAO_APAGA = ("empresa_id", "rh_location_id", "estoque_unidade_id")
+
+
 @router.put("/lojas/{loja_id}")
 async def editar_loja(loja_id: str, dados: LojaEntrada, _: dict = Depends(gestor_atual)) -> dict:
     db = obter_db()
-    r = await db[COLECOES["lojas"]].update_one({"id": loja_id}, {"$set": dados.model_dump()})
+    alteracoes = dados.model_dump()
+    # Quem QUISER mesmo desligar manda o campo a nulo explicitamente; quem não
+    # falar dele não lhe toca.
+    for campo in _CAMPOS_QUE_O_SILENCIO_NAO_APAGA:
+        if campo not in dados.model_fields_set:
+            alteracoes.pop(campo, None)
+    r = await db[COLECOES["lojas"]].update_one({"id": loja_id}, {"$set": alteracoes})
     if r.matched_count == 0:
         raise HTTPException(status_code=404, detail="Loja não encontrada")
     return await db[COLECOES["lojas"]].find_one({"id": loja_id}, {"_id": 0})
