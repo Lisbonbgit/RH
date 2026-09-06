@@ -334,7 +334,19 @@ export default function BolsoApp() {
 
   return (
     <div className="min-h-screen bg-muted/30">
-      <header className="sticky top-0 z-10 bg-card/95 backdrop-blur border-b">
+      {/* **Sem `backdrop-blur`, e não é gosto.** Um `backdrop-filter` num
+          elemento `sticky` é dos efeitos mais caros do WebView do iPhone: o
+          scroll perde a suavidade e a app parece pesada. Um fundo sólido faz
+          o mesmo trabalho e desliza.
+
+          O `padding-top` da área segura é o que faz este cabeçalho pintar a
+          faixa da barra de estado com a SUA cor — e portanto seguir o tema.
+          Sem ele ficava lá o fundo nativo da casca, que é branco numa app
+          escura. */}
+      <header
+        className="sticky top-0 z-10 bg-card border-b"
+        style={{ paddingTop: 'env(safe-area-inset-top)' }}
+      >
         <div className="flex items-center gap-2 px-4 h-14">
           <div className="min-w-0 flex-1">
             <p className="font-heading font-bold text-base leading-none">Gestão Lisbonb</p>
