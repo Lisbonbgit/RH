@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Toaster } from './components/ui/sonner';
 import { initNativeStatusBar } from './lib/statusbar';
@@ -96,6 +96,11 @@ import MarketingReports from './pages/admin/marketing/MarketingReports';
 // Protected Route Component - checks for authentication and must_change_password
 const ProtectedRoute = ({ children, allowedRoles }) => {
   const { user, loading, isAuthenticated, mustChangePassword } = useAuth();
+  // De ONDE veio quem foi mandado para o login. Sem isto, quem abre a app da
+  // Gestão Lisbonb (que arranca em /bolso), entra, e é despejado no
+  // /admin/resumo — o portal inteiro num ecrã de telemóvel, que não é nada do
+  // que ele foi lá ver. Ver `rotaDeAterragem` e o `LoginPage`.
+  const location = useLocation();
   
   if (loading) {
     return (
@@ -106,7 +111,7 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
   }
   
   if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
   
   // Redirect to change password if required

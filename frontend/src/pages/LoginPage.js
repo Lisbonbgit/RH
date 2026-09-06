@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { Capacitor } from '@capacitor/core';
 import { useAuth } from '../contexts/AuthContext';
 import { rotaDeAterragem } from '../lib/resumo';
@@ -26,6 +26,19 @@ const BrandMark = ({ size = 'md', glass = false }) => {
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  // **Para onde se volta depois de entrar.** Quem chegou aqui empurrado por
+  // uma rota protegida trouxe consigo o sítio de onde veio (`ProtectedRoute`
+  // guarda-o em `state.from`), e é para lá que se volta.
+  //
+  // Sem isto, quem abre a app "Gestão Lisbonb" — que arranca em `/bolso` —
+  // fazia login e era despejado no `/admin/resumo`: o portal de gestão
+  // inteiro, num ecrã de telemóvel. Nunca chegava a ver o painel que foi lá
+  // ver. `rotaDeAterragem` continua a decidir quando NÃO há sítio de onde se
+  // veio (uma entrada directa em /login, que é o caso do browser).
+  const location = useLocation();
+  const paraOndeVoltar = (papel) =>
+    location.state?.from
+    || rotaDeAterragem({ nativo: Capacitor.isNativePlatform(), papel });
   const { login, isAuthenticated, user } = useAuth();
   const [loading, setLoading] = useState(false);
 
@@ -34,7 +47,7 @@ export default function LoginPage() {
 
   React.useEffect(() => {
     if (isAuthenticated && user) {
-      navigate(rotaDeAterragem({ nativo: Capacitor.isNativePlatform(), papel: user.role }));
+      navigate(paraOndeVoltar(user.role));
     }
   }, [isAuthenticated, user, navigate]);
 
@@ -44,7 +57,7 @@ export default function LoginPage() {
     try {
       const userData = await login(loginEmail, loginPassword);
       toast.success('Sessão iniciada com sucesso!');
-      navigate(rotaDeAterragem({ nativo: Capacitor.isNativePlatform(), papel: userData.role }));
+      navigate(paraOndeVoltar(userData.role));
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Erro ao iniciar sessão');
     } finally {
