@@ -40,6 +40,8 @@ try:
 except ImportError:
     HTTPX_AVAILABLE = False
 
+import fin_faturacao
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -7932,6 +7934,40 @@ async def fin_cron_vendus(
         out["written"], len(out["stores"]), len(out["errors"]),
     )
     return out
+
+
+@api_router.post("/fin/cron/faturacao")
+async def fin_cron_faturacao(
+    key: str = Query(...),
+    since: Optional[str] = Query(None),
+    until: Optional[str] = Query(None),
+):
+    """A faturação do NOSSO POS a entrar no `fin_sales`, loja a loja.
+
+    Existe porque o sync do Vendus não consegue fazer isto: desde que o módulo
+    de faturação entrou nas cinco lojas da L'Açaí, todas as Faturas
+    Simplificadas saem pela mesma caixa API — e, do lado do Vendus, essa caixa
+    pertence a uma loja só. Quem sabe a loja de cada documento é o
+    `fat_documentos`, e é de lá que este caminho lê (ver `fin_faturacao`).
+
+    A janela por omissão é a mesma dos outros crons (os últimos 3 dias), e a
+    gravação é idempotente por origem — correr isto de hora a hora não duplica
+    nada e não toca no que o Vendus escreveu.
+    """
+    cron_key = os.environ.get("CRON_KEY")
+    if not cron_key or not secrets.compare_digest(str(key), str(cron_key)):
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+
+    since_s, until_s = _fin_vendus_default_range(since, until)
+    comecou = datetime.now(timezone.utc).isoformat()
+    try:
+        resultado = await fin_faturacao.sincronizar(db, since_s, until_s)
+    except Exception as exc:  # noqa: BLE001
+        resultado = {"written": 0, "errors": ["a corrida rebentou: %s" % exc]}
+        await _bol_registar_leitura("faturacao", since_s, until_s, comecou, resultado)
+        raise
+    await _bol_registar_leitura("faturacao", since_s, until_s, comecou, resultado)
+    return resultado
 
 
 # ====================================================================
