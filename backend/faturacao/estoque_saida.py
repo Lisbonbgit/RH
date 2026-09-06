@@ -38,6 +38,7 @@ documentos lidos do Vendus, sem venda nossa e sem opções nenhumas. O relatóri
 de Consumo já o diz em letra visível; quem ligar o interruptor tem de saber
 que o stock desce só pelo que sai do balcão.
 """
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -48,6 +49,7 @@ from pydantic import BaseModel
 from .auth import gestor_atual
 from .consumo import consumo_de_uma_venda
 from .db import COLECOES, obter_db
+from .unidades import FAMILIA_DO_ARTIGO
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +73,17 @@ async def desconto_ligado(db) -> bool:
     return bool((doc or {}).get("ativo"))
 
 
+async def _ligado_desde(db) -> Optional[str]:
+    """Quando o interruptor foi ligado — para não descontar o passado.
+
+    Uma reconciliação de reserva presa pode salvar hoje uma venda de há
+    semanas. Sem esta data, ligar o interruptor fazia sair do armazém o copo
+    que já tinha saído, e o stock ficava a menos sem ninguém perceber porquê.
+    """
+    doc = await db[COLECOES["definicoes"]].find_one({"id": CHAVE_DEFINICOES}, {"_id": 0})
+    return (doc or {}).get("mudado_em")
+
+
 def saidas_de_uma_venda(venda: Optional[Dict]) -> List[Dict]:
     """As saídas de stock que esta venda provoca, já na unidade do artigo.
 
@@ -88,22 +101,51 @@ def saidas_de_uma_venda(venda: Optional[Dict]) -> List[Dict]:
     catálogo garante que as duas famílias batem certo. É por isso que se pode
     mandar o número cru para um movimento que não leva unidade nenhuma.
     """
-    por_artigo: Dict = {}
+    por_chave: Dict = {}
     for gasto in consumo_de_uma_venda(venda):
         artigo = gasto.get("destino_id")
         if not artigo:
             continue
+        # **A unidade do ARTIGO lê-se aqui, e não se confia na configuração.**
+        #
+        # O validador do catálogo só corre quando alguém grava um grupo: tudo
+        # o que ficou gravado na Fase 1 tem artigo e NÃO tem esta unidade, e um
+        # artigo pode mudar de unidade do lado do Estoque depois do carimbo.
+        # Sem ler isto no ponto de uso, a defesa contra o factor de mil era
+        # uma frase numa docstring — o desconto convertia pela unidade da
+        # FICHA e mandava 0,03 para um artigo contado em pacotes.
+        #
+        # Uma ficha por acertar não desconta nada. Nunca desconta errado.
+        medida = gasto.get("unidade_do_artigo")
+        familia_do_artigo = FAMILIA_DO_ARTIGO.get(medida)
+        if familia_do_artigo is None:
+            logger.warning(
+                "[faturacao] a personalização «%s» está ligada ao artigo %s mas não se "
+                "sabe em que unidade ele conta (%r) — não desconta",
+                gasto.get("destino_nome"), artigo, medida)
+            continue
+        if familia_do_artigo != gasto["familia"]:
+            logger.error(
+                "[faturacao] a personalização «%s» está escrita em %s e o artigo %s conta "
+                "em «%s» — medidas de coisas diferentes, não desconta",
+                gasto.get("destino_nome"), gasto["familia"], artigo, medida)
+            continue
         # Junta-se por artigo antes de telefonar: um copo com três toppings do
         # mesmo artigo é UMA saída, não três chamadas de rede com a operadora
-        # à espera.
-        por_artigo[artigo] = por_artigo.get(artigo, 0.0) + gasto["quantidade"]
-    return [
-        {"produto_id": artigo, "quantidade": round(quantidade, 4)}
-        for artigo, quantidade in sorted(por_artigo.items())
-        # Zero não se manda: é uma medição legítima (o palito que não pesa) e
-        # um movimento de zero só faz lixo no histórico do Estoque.
-        if quantidade > 0
-    ]
+        # à espera. E a família entra na chave, como no relatório: o mesmo
+        # artigo escrito em quilos e em unidades são duas contas diferentes,
+        # e somá-las dava um número que não quer dizer nada.
+        chave = (artigo, gasto["familia"])
+        por_chave[chave] = por_chave.get(chave, 0.0) + gasto["quantidade"]
+    saidas = []
+    for (artigo, _familia), quantidade in sorted(por_chave.items()):
+        # Arredonda ANTES de decidir se vale a pena telefonar: um consumo
+        # minúsculo arredondava a zero e ia à mesma, e um movimento de zero só
+        # faz lixo no histórico do Estoque.
+        quantidade = round(quantidade, 4)
+        if quantidade > 0:
+            saidas.append({"produto_id": artigo, "quantidade": quantidade})
+    return saidas
 
 
 async def _reclama_a_venda(db, venda_id: str, quando: str) -> bool:
@@ -111,7 +153,8 @@ async def _reclama_a_venda(db, venda_id: str, quando: str) -> bool:
 
     A condição `{"stock_descontado_em": None}` casa tanto o campo ausente como
     o campo a nulo (é assim que o Mongo lê `None` numa igualdade), e o
-    `matched_count` distingue quem chegou primeiro. É o mesmo desenho de
+    `modified_count` distingue quem chegou primeiro — `matched_count` não
+    serviria: as duas chamadas CASAM com a venda, só uma é que a MUDA. É o mesmo desenho de
     reclamação que o núcleo fiscal já usa para as reservas.
     """
     r = await db[COLECOES["vendas"]].update_one(
@@ -134,9 +177,19 @@ async def descontar_venda(db, venda_id: str, *, agora: Optional[str] = None) -> 
 
     venda = await db[COLECOES["vendas"]].find_one(
         {"id": venda_id}, {"_id": 0, "id": 1, "linhas": 1, "loja_id": 1,
-                           "stock_descontado_em": 1})
+                           "stock_descontado_em": 1, "criada_em": 1})
     if not venda:
         return {"estado": "sem-venda"}
+    # Uma venda anterior ao dia em que o interruptor foi ligado não desconta:
+    # o copo saiu antes de isto existir, e a reconciliação de reservas presas
+    # pode trazê-la de volta semanas depois.
+    ligado_desde = await _ligado_desde(db)
+    criada_em = venda.get("criada_em")
+    if ligado_desde and criada_em and str(criada_em) < str(ligado_desde):
+        logger.info(
+            "[faturacao] venda %s é de antes de o desconto ser ligado (%s < %s) — "
+            "não desconta", venda_id, criada_em, ligado_desde)
+        return {"estado": "anterior-ao-interruptor"}
     if venda.get("stock_descontado_em"):
         return {"estado": "ja-descontado"}
 
@@ -167,8 +220,11 @@ async def descontar_venda(db, venda_id: str, *, agora: Optional[str] = None) -> 
     # portal inteiro atrás — RH e Financeiro incluídos.
     from estoque_cliente import descontar_saida
 
-    feitas, falhadas = [], []
-    for saida in saidas:
+    # **Em paralelo, e não uma a uma.** As saídas são independentes entre si e
+    # o tecto de espera é POR CHAMADA: em fila, um copo com quatro artigos
+    # ligados fazia a operadora esperar quatro vezes quatro segundos com o
+    # cliente à frente. Em paralelo, o pior caso volta a ser quatro.
+    async def _uma(saida):
         try:
             await descontar_saida(
                 unidade_id=unidade,
@@ -176,12 +232,16 @@ async def descontar_venda(db, venda_id: str, *, agora: Optional[str] = None) -> 
                 quantidade=saida["quantidade"],
                 actor="Faturação (venda %s)" % venda_id,
             )
-            feitas.append(saida)
+            return None
         except Exception as e:  # noqa: BLE001 — nada aqui pode parar uma fatura
-            falhadas.append(saida)
             logger.error(
                 "[faturacao] venda %s: a saída de %s de %s falhou: %s",
                 venda_id, saida["quantidade"], saida["produto_id"], e)
+            return saida
+
+    resultados = await asyncio.gather(*[_uma(s) for s in saidas])
+    falhadas = [r for r in resultados if r is not None]
+    feitas = [s for s, r in zip(saidas, resultados) if r is None]
 
     if falhadas:
         # A marca fica na mesma, e é a escolha menos má: tirá-la abria a porta
@@ -233,13 +293,16 @@ async def ler_desconto_stock(_: dict = Depends(gestor_atual)) -> dict:
 
 @router.put("/desconto-stock")
 async def mudar_desconto_stock(
-    dados: InterruptorEntrada, _: dict = Depends(gestor_atual)
+    dados: InterruptorEntrada, gestor: dict = Depends(gestor_atual)
 ) -> dict:
     db = obter_db()
     await db[COLECOES["definicoes"]].update_one(
         {"id": CHAVE_DEFINICOES},
         {"$set": {"ativo": dados.ativo,
-                  "mudado_em": datetime.now(timezone.utc).isoformat()}},
+                  "mudado_em": datetime.now(timezone.utc).isoformat(),
+                  # Quem ligou isto fica escrito: é uma decisão com
+                  # consequências no armazém, não uma preferência de ecrã.
+                  "mudado_por": (gestor or {}).get("nome") or (gestor or {}).get("email")}},
         upsert=True,
     )
     return await ler_desconto_stock(_={})

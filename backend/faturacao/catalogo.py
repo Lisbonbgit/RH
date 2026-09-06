@@ -349,11 +349,16 @@ class OpcaoEntrada(BaseModel):
         dos dois — uma ficha preenchida que não faz nada.
         """
         if self.estoque_unidade_medida is None:
-            if self.estoque_produto_id and self.consumo is not None:
-                raise ValueError(
-                    "Escolha outra vez o artigo do Estoque: falta saber em que unidade "
-                    "ele conta, e sem isso o desconto seria uma adivinha."
-                )
+            # **Ausente é ACEITE, de propósito.** As personalizações ligadas na
+            # Fase 1 têm artigo e não têm este campo, porque ele ainda não
+            # existia. Recusá-las aqui fechava o ecrã à chave: a mensagem
+            # mandava escolher o artigo outra vez, o ecrã reenviava o mesmo
+            # pedido, e falhava na mesma — sem saída pela interface.
+            #
+            # A guarda que interessa não é esta: é a do DESCONTO
+            # (`estoque_saida.saidas_de_uma_venda`), que salta e regista toda a
+            # opção sem unidade do artigo em vez de adivinhar. Uma ficha por
+            # acertar não desconta nada; nunca desconta errado.
             return self
         if self.estoque_unidade_medida not in UNIDADES_DE_ARTIGO:
             raise ValueError(

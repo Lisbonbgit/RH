@@ -38,6 +38,7 @@ def _monta(resposta, leituras, tmp_path, nome, falhar=False):
         "saida.texto = alvo.textContent;",
     ] + leituras + [
         "saida.pedidos = pedidos.map((p) => [p.metodo, String(p.url)]);",
+        "saida.corpos = pedidos.filter((p) => p.metodo === 'put').map((p) => p.corpo);",
         "process.stdout.write(JSON.stringify(saida));",
     ])
     return _montar_no_node(
@@ -88,6 +89,8 @@ def test_ligar_o_interruptor_manda_o_PUT(tmp_path):
     ], tmp_path, "ligar.js")
     puts = [p for p in saida["pedidos"] if p[0] == "put"]
     assert puts, saida["pedidos"]
+    # E na DIREÇÃO certa: um `mudar(false)` fixo mandava um PUT na mesma.
+    assert saida["corpos"] == [{"ativo": True}], saida["corpos"]
 
 
 def test_o_servidor_em_baixo_nao_deixa_o_interruptor_a_mentir(tmp_path):

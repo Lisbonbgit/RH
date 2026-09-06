@@ -30,6 +30,10 @@ const emptyOpcao = () => ({
   // O que a opção GASTA — texto vazio e não `null` porque os campos são
   // controlados, tal como o `vendus_ref` aqui ao lado.
   consumo: '', consumo_unidade: '', estoque_produto_id: '',
+  // A unidade em que o ARTIGO conta. Vem do artigo escolhido e viaja com
+  // ele: o movimento de stock não leva unidade nenhuma, e sem isto o
+  // desconto adivinha — com um factor de mil pelo meio.
+  estoque_unidade_medida: '',
 });
 
 // As mesmas do servidor (`catalogo.UNIDADES_DE_CONSUMO`). Escreve-se como se
@@ -126,6 +130,7 @@ export default function FatPersonalizacoes() {
         consumo: o.consumo ?? '',
         consumo_unidade: o.consumo_unidade || '',
         estoque_produto_id: o.estoque_produto_id || '',
+        estoque_unidade_medida: o.estoque_unidade_medida || '',
       })),
     });
     setFormError('');
@@ -218,8 +223,25 @@ export default function FatPersonalizacoes() {
     setEstoqueErro('');
     try {
       const { data } = await getEstoqueProdutos(MARCA_DO_ESTOQUE);
-      setProdutosEstoque(data || []);
+      const produtos = data || [];
+      setProdutosEstoque(produtos);
       setEstoqueEstado('pronto');
+      // **Sara o que a Fase 1 deixou por saber.** As personalizações ligadas
+      // antes deste campo existir têm artigo e não têm a unidade dele. Agora
+      // que o catálogo está lido, sabe-se — e preencher aqui faz com que
+      // guardar o grupo, por qualquer razão, deixe a ficha completa.
+      //
+      // Sem isto, uma ficha da Fase 1 continuava a não descontar nada (o
+      // desconto salta o que não sabe converter) e o dono não tinha por onde
+      // a compor: o ecrã não mostra a unidade do artigo em lado nenhum.
+      setForm((prev) => ({
+        ...prev,
+        opcoes: prev.opcoes.map((o) => {
+          if (!o.estoque_produto_id || o.estoque_unidade_medida) return o;
+          const artigo = produtos.find((p) => String(p.id) === String(o.estoque_produto_id));
+          return artigo ? { ...o, estoque_unidade_medida: artigo.unidade_medida || '' } : o;
+        }),
+      }));
     } catch (error) {
       // A frase do servidor, pela mesma razão que no Vendus: uma lista vazia
       // com ar de sucesso dizia «não há artigos no Estoque» e o topping ficava
@@ -238,7 +260,13 @@ export default function FatPersonalizacoes() {
   };
 
   const escolherProdutoDoEstoque = (produto) => {
-    updateOpcao(escolhaEstoque, { estoque_produto_id: produto.id });
+    // Os dois campos ANDAM JUNTOS. Guardar só o id deixava o servidor a
+    // recusar a gravação — e, pior, se ele aceitasse, o desconto ficava sem
+    // saber se «30» são gramas ou quilos.
+    updateOpcao(escolhaEstoque, {
+      estoque_produto_id: produto.id,
+      estoque_unidade_medida: produto.unidade_medida || '',
+    });
     setEscolhaEstoque(null);
   };
 
@@ -371,6 +399,7 @@ export default function FatPersonalizacoes() {
         consumo: String(o.consumo ?? '').trim() === '' ? null : Number(o.consumo),
         consumo_unidade: o.consumo_unidade || null,
         estoque_produto_id: o.estoque_produto_id || null,
+        estoque_unidade_medida: o.estoque_unidade_medida || null,
       })),
     };
     setSaving(true);
@@ -886,7 +915,8 @@ export default function FatPersonalizacoes() {
                             >Trocar</button>
                             <button
                               type="button" className="text-xs underline hover:text-destructive shrink-0"
-                              onClick={() => updateOpcao(index, { estoque_produto_id: '' })}
+                              onClick={() => updateOpcao(index, {
+                estoque_produto_id: '', estoque_unidade_medida: '' })}
                               data-testid={`desligar-artigo-estoque-${index}`}
                             >Desligar</button>
                           </>

@@ -514,3 +514,113 @@ def test_uma_loja_FECHADA_nao_entra_no_aviso(monkeypatch):
     from faturacao.estoque_saida import ler_desconto_stock
     _db_de_lojas([{"id": "l1", "nome": "Loja antiga", "ativa": False}], monkeypatch)
     assert _corre(ler_desconto_stock(_={}))["lojas_por_ligar"] == []
+
+
+# --- A unidade do artigo, lida ONDE O DINHEIRO ESTÁ --------------------------
+#
+# A validação do catálogo só corre quando alguém grava um grupo. Tudo o que
+# ficou gravado na Fase 1 tem artigo e não tem a unidade dele, e um artigo pode
+# mudar de unidade no Estoque depois do carimbo. Sem ler isto no desconto, a
+# defesa contra o factor de mil era uma frase numa docstring.
+
+
+def test_uma_ficha_da_FASE_1_sem_a_unidade_do_artigo_NAO_desconta(monkeypatch):
+    """Nunca desconta errado. Não desconta nada, e diz porquê no registo."""
+    db, estoque = _monta(monkeypatch, venda=_venda(opcoes=[_opcao(medida=None)]))
+    assert _corre(descontar_venda(db, "venda-1"))["estado"] == "nada-a-descontar"
+    assert estoque.chamadas == []
+
+
+def test_uma_ficha_em_GRAMAS_ligada_a_um_artigo_contado_em_UNIDADES_nao_desconta(monkeypatch):
+    """O erro que custa mais: 30 g contra um artigo em pacotes mandaria 0,03
+    pacotes por copo — um subdesconto de trinta vezes, e o stock nunca desce
+    até a ruptura chegar sem aviso. Ao contrário, mandaria quilos onde são
+    unidades."""
+    db, estoque = _monta(monkeypatch, venda=_venda(opcoes=[_opcao(medida="un")]))
+    assert _corre(descontar_venda(db, "venda-1"))["estado"] == "nada-a-descontar"
+    assert estoque.chamadas == []
+
+
+def test_um_artigo_contado_em_CAIXAS_nao_desconta(monkeypatch):
+    """Uma caixa de quê, com quantos? Não há conversão, e inventar uma era
+    pior do que não descontar."""
+    db, estoque = _monta(monkeypatch, venda=_venda(opcoes=[_opcao(medida="caixa")]))
+    assert _corre(descontar_venda(db, "venda-1"))["estado"] == "nada-a-descontar"
+    assert estoque.chamadas == []
+
+
+def test_o_mesmo_artigo_em_familias_diferentes_nao_se_soma(monkeypatch):
+    """Somar quilos com unidades no mesmo artigo dava um número que não quer
+    dizer nada. O relatório já os separa; o desconto tem de os separar
+    também — e aqui a família que não bate com a do artigo cai fora."""
+    db, estoque = _monta(monkeypatch, venda=_venda(opcoes=[
+        _opcao(consumo=30, unidade="g", medida="kg"),
+        _opcao(consumo=2, unidade="un", medida="kg"),
+    ]))
+    _corre(descontar_venda(db, "venda-1"))
+    assert len(estoque.chamadas) == 1
+    assert estoque.chamadas[0]["quantidade"] == 0.03, (
+        "somou unidades com quilos: %s" % estoque.chamadas)
+
+
+def test_uma_venda_ANTERIOR_a_ligar_o_interruptor_nao_desconta(monkeypatch):
+    """Uma reconciliação de reserva presa pode salvar hoje uma venda de há
+    semanas. Sem esta guarda, ligar o interruptor fazia sair do armazém um
+    copo que já tinha saído — e o stock ficava a menos sem se perceber
+    porquê."""
+    from faturacao import estoque_saida as mod
+    db = _Db(**{
+        "fat_vendas": _Coleccao([_venda(criada_em="2026-08-01T10:00:00+00:00")]),
+        "fat_lojas": _Coleccao([{"id": "loja-1", "nome": "Belém",
+                                 "estoque_unidade_id": "unid-belem"}]),
+        "fat_definicoes": _Coleccao([{"id": "desconto_stock", "ativo": True,
+                                      "mudado_em": "2026-09-06T00:00:00+00:00"}]),
+    })
+    estoque = _EstoqueFalso()
+    import estoque_cliente
+    monkeypatch.setattr(estoque_cliente, "descontar_saida", estoque)
+    monkeypatch.setattr(mod, "obter_db", lambda: db)
+
+    assert _corre(descontar_venda(db, "venda-1"))["estado"] == "anterior-ao-interruptor"
+    assert estoque.chamadas == []
+
+
+def test_uma_venda_POSTERIOR_a_ligar_o_interruptor_desconta(monkeypatch):
+    """A outra metade: a guarda da data não pode travar o dia-a-dia."""
+    from faturacao import estoque_saida as mod
+    db = _Db(**{
+        "fat_vendas": _Coleccao([_venda(criada_em="2026-09-06T11:00:00+00:00")]),
+        "fat_lojas": _Coleccao([{"id": "loja-1", "nome": "Belém",
+                                 "estoque_unidade_id": "unid-belem"}]),
+        "fat_definicoes": _Coleccao([{"id": "desconto_stock", "ativo": True,
+                                      "mudado_em": "2026-09-06T00:00:00+00:00"}]),
+    })
+    estoque = _EstoqueFalso()
+    import estoque_cliente
+    monkeypatch.setattr(estoque_cliente, "descontar_saida", estoque)
+    monkeypatch.setattr(mod, "obter_db", lambda: db)
+
+    assert _corre(descontar_venda(db, "venda-1"))["estado"] == "descontado"
+    assert len(estoque.chamadas) == 1
+
+
+def test_as_saidas_de_uma_venda_correm_em_PARALELO(monkeypatch):
+    """O tecto de espera é por chamada. Em fila, um copo com quatro artigos
+    ligados fazia a operadora esperar quatro vezes quatro segundos com o
+    cliente à frente."""
+    a_correr, maximo = [0], [0]
+
+    class _Lento(_EstoqueFalso):
+        async def __call__(self, **kw):
+            a_correr[0] += 1
+            maximo[0] = max(maximo[0], a_correr[0])
+            await asyncio.sleep(0)
+            a_correr[0] -= 1
+            return await super().__call__(**kw)
+
+    db, estoque = _monta(monkeypatch, venda=_venda(opcoes=[
+        _opcao(artigo="est-a"), _opcao(artigo="est-b"), _opcao(artigo="est-c"),
+    ]), estoque=_Lento())
+    _corre(descontar_venda(db, "venda-1"))
+    assert len(estoque.chamadas) == 3
+    assert maximo[0] > 1, "as saídas correram uma a uma"

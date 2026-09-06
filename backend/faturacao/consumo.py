@@ -76,6 +76,10 @@ def _consumo_da_opcao(opcao: Dict, quantidade_da_linha: float) -> Optional[Dict]
         # linha em falta não é.
         "destino_id": opcao.get("estoque_produto_id"),
         "destino_nome": opcao.get("nome"),
+        # A unidade em que o ARTIGO conta, tal como foi carimbada na linha.
+        # Não é usada na soma do relatório (que soma na unidade de base da
+        # ficha) — é o desconto que a lê, para não converter às cegas.
+        "unidade_do_artigo": opcao.get("estoque_unidade_medida"),
         "familia": nome_da_familia,
         # `float(quantidade)` e não `int`: uma conta dividida por três grava
         # 0,3337 e um `int()` aqui apagava o consumo dessa parte por inteiro.

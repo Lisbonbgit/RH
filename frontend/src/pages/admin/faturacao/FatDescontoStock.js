@@ -45,11 +45,22 @@ export default function FatDescontoStock() {
     try {
       const { data } = await mudarDescontoStock(ativo);
       setDados(data);
-      toast.success(ativo ? 'O stock passa a descer com as vendas.'
-        : 'O stock deixou de descer automaticamente.');
+      // A mensagem sai do que o servidor devolveu, e não do que se pediu:
+      // «passa a descer com as vendas» era meia verdade com lojas por ligar —
+      // essas continuam a não descontar, e sem erro nenhum.
+      const faltam = (data?.lojas_por_ligar || []).length;
+      if (!ativo) toast.success('O stock deixou de descer automaticamente.');
+      else if (faltam) {
+        toast.warning(`Ligado — mas ${faltam} loja(s) sem unidade do Estoque `
+          + 'continuam sem descontar.');
+      } else toast.success('O stock passa a descer com as vendas.');
     } catch (error) {
       const { mensagem } = detalhesErro(error, 'Não foi possível mudar o interruptor.');
       toast.error(mensagem);
+      // A resposta pode ter-se perdido DEPOIS de o servidor gravar. Voltar a
+      // ler é o que impede o ecrã de ficar a mostrar o estado antigo de um
+      // interruptor que já mudou.
+      ler();
     } finally {
       setAGuardar(false);
     }

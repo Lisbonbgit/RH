@@ -499,13 +499,17 @@ def test_um_artigo_contado_em_CAIXAS_nao_se_deixa_ligar():
     assert "caixa" in str(excinfo.value)
 
 
-def test_ligar_um_artigo_sem_dizer_em_que_unidade_ele_conta_e_recusado():
-    """É o caso do ecrã antigo, ou de um curl: sem a unidade do artigo o
-    desconto seria uma adivinha com factor mil."""
-    with pytest.raises(ValidationError) as excinfo:
-        OpcaoEntrada(nome="Granola", consumo=30, consumo_unidade="g",
-                     estoque_produto_id="est-granola")
-    assert "unidade" in str(excinfo.value).lower()
+def test_um_artigo_SEM_a_unidade_dele_continua_a_ser_aceite():
+    """É o que está gravado desde a Fase 1: artigo ligado, unidade do artigo
+    por saber (o campo ainda não existia).
+
+    Recusar aqui fechava o ecrã à chave — a mensagem mandava escolher o artigo
+    outra vez, o ecrã reenviava o mesmo pedido, e falhava na mesma. A guarda
+    que interessa é a do DESCONTO, que salta uma ficha por acertar em vez de
+    adivinhar: nunca desconta errado, e diz porquê no registo."""
+    opcao = OpcaoEntrada(nome="Granola", consumo=30, consumo_unidade="g",
+                         estoque_produto_id="est-granola")
+    assert opcao.estoque_unidade_medida is None
 
 
 def test_mililitros_ligam_se_a_um_artigo_contado_em_litros():
