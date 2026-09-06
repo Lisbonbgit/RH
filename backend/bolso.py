@@ -204,6 +204,18 @@ def cartao(linhas: List[Dict], janela, janela_actual=None, janela_anterior=None,
     if janela_actual and janela_anterior:
         agora = somar(linhas, janela_actual)
         antes = somar(linhas, janela_anterior)
+        # **Nenhuma linha no período anterior não é "zero euros".** O sistema
+        # começou em 2026: o cartão do Ano mostrava "1/1 a 5/9 de 2025: 0,00 €"
+        # ao lado do total, e isso lê-se como "no ano passado não vendemos
+        # nada" — uma afirmação sobre o negócio que ninguém mediu. Sem linhas,
+        # diz-se que não há dados e não se mostra valor nenhum.
+        if antes["linhas"] == 0:
+            saida["anterior"] = None
+            saida["anterior_rotulo"] = None
+            saida["actual_rotulo"] = None
+            saida["comparacao"] = None
+            saida["nota"] = "sem dados de %s para comparar" % _formata_intervalo(janela_anterior)
+            return saida
         saida["anterior"] = antes["total"]
         saida["variacao"] = variacao(agora["total"] or 0.0, antes["total"] or 0.0)
         # **Os dois rótulos separados, e não uma frase só.** O painel do Vendus

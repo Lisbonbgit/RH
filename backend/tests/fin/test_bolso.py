@@ -266,8 +266,12 @@ def test_a_comparacao_do_ano_diz_de_que_ANO_fala():
     agora um."""
     hoje = date(2026, 9, 5)
     js = bolso.janelas(hoje)
+    # Os dois lados TÊM de ter linhas: sem linhas no ano anterior o cartão
+    # passa a dizer "sem dados de ... para comparar" e não há frase nenhuma
+    # para verificar (ver o teste do zero, mais abaixo).
+    linhas = [_linha("2026-05-01", 10.0), _linha("2025-05-01", 8.0)]
 
-    c = bolso.cartao([_linha("2026-05-01", 10.0)], js["ano"], js["ano_completo"], js["ano_anterior"])
+    c = bolso.cartao(linhas, js["ano"], js["ano_completo"], js["ano_anterior"])
 
     assert "2026" in c["comparacao"] and "2025" in c["comparacao"], c["comparacao"]
     assert c["comparacao"].count("de 2026") == 1
@@ -309,3 +313,32 @@ def test_sem_vendas_ontem_nao_ha_progresso_nenhum():
 
     assert c["progresso"] is None
     assert c["anterior"] == 0.0
+
+
+def test_sem_UMA_LINHA_no_periodo_anterior_nao_se_diz_zero_euros():
+    """O sistema começou em 2026: no cartão do Ano, o período anterior não tem
+    uma única linha. Mostrar "1/1 a 5/9 de 2025: 0,00 €" lê-se como "no ano
+    passado não vendemos nada" — uma afirmação sobre o negócio que ninguém
+    mediu. Apanhado a olhar para a resposta da produção."""
+    js = bolso.janelas(date(2026, 9, 5))
+
+    c = bolso.cartao([_linha("2026-05-01", 500.0)], js["ano"], js["ano_completo"], js["ano_anterior"])
+
+    assert c["valor"] == 500.0, "o valor deste ano continua lá"
+    assert c["anterior"] is None, "não se escreve 0,00 € onde não há dados"
+    assert c["variacao"] is None
+    assert "sem dados" in c["nota"] and "2025" in c["nota"]
+
+
+def test_um_periodo_anterior_que_EXISTE_e_deu_zero_continua_a_dizer_zero():
+    """A distinção que interessa: uma loja que abriu e não vendeu nada nesse
+    dia TEM linha (a zero não gera linha em fin_sales, mas uma devolução que
+    anule as vendas gera). Aí o zero é um facto medido e mostra-se."""
+    js = bolso.janelas(date(2026, 9, 5))
+    linhas = [_linha("2026-09-04", 100.0),
+              _linha("2026-09-03", 50.0), _linha("2026-09-03", -50.0)]
+
+    c = bolso.cartao(linhas, js["ontem"], js["ontem"], js["anteontem"])
+
+    assert c["anterior"] == 0.0
+    assert c["nota"] is None, "houve linhas: o zero é medido, não é ausência"
