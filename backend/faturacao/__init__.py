@@ -86,6 +86,11 @@ router.include_router(_relatorios)
 from .consumo import router as _consumo
 router.include_router(_consumo)
 
+# O interruptor do desconto automático de stock (e o aviso das lojas por
+# ligar). O desconto em si não tem rota nenhuma — corre dentro da emissão.
+from .estoque_saida import router as _estoque_saida
+router.include_router(_estoque_saida)
+
 from .pos_auth import router as _pos_auth
 router.include_router(_pos_auth)
 

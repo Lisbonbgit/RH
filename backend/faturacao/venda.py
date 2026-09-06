@@ -1570,6 +1570,10 @@ async def _carimbar_sai_na_fatura(
                             opcao_configurada.get("consumo"),
                             opcao_configurada.get("consumo_unidade"),
                             opcao_configurada.get("estoque_produto_id"),
+                            # A unidade em que o ARTIGO conta viaja com o
+                            # resto: sem ela o desconto tinha de adivinhar, e
+                            # adivinhar aqui erra por um factor de mil.
+                            opcao_configurada.get("estoque_unidade_medida"),
                         )
 
     carimbadas = []
@@ -1615,12 +1619,14 @@ async def _carimbar_sai_na_fatura(
         # do armazém. Mesmo retrato do `produto_preco` e do `nome_grupo`.
         consumo = consumo_das_opcoes.get(o.get("id"))
         if consumo:
-            o["consumo"], o["consumo_unidade"], o["estoque_produto_id"] = consumo
+            (o["consumo"], o["consumo_unidade"], o["estoque_produto_id"],
+             o["estoque_unidade_medida"]) = consumo
         else:
             # Uma medição desligada no backoffice deixa de descontar já na
             # próxima linha — senão continuava a comer stock até alguém dar
             # por isso, que é o que o `vendus_ref` já aprendeu ao lado.
-            for campo in ("consumo", "consumo_unidade", "estoque_produto_id"):
+            for campo in ("consumo", "consumo_unidade", "estoque_produto_id",
+                          "estoque_unidade_medida"):
                 o.pop(campo, None)
         # Senão fica o carimbo que a opção já trazia, tal e qual — é o
         # retrato do dia em que a linha nasceu.

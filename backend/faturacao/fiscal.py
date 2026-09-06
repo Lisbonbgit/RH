@@ -1365,6 +1365,33 @@ async def _ligar_venda_ao_documento(
             ext_ref, documento["id"], e,
         )
 
+    # **O STOCK DESCE AQUI**, e este é o único sítio do backend onde pode
+    # descer: é a única escrita de `estado: "emitida"` numa venda, e é por
+    # onde passam os cinco caminhos que acabam num documento fiscal — a
+    # emissão feliz, as duas retomas de reserva incerta e os dois ramos da
+    # reconciliação de reservas presas. O sítio óbvio (ao lado do
+    # `enfileirar_venda_emitida`, que põe o talão na fila) tem um só chamador,
+    # dentro da rota `finalizar`, e deixava sem stock — em silêncio — toda a
+    # venda salva por reconciliação.
+    #
+    # **`except Exception` e não uma lista de excepções.** Os `except` da rota
+    # `finalizar` nomeiam-nas uma a uma e nenhuma é genérica: o que subisse
+    # daqui devolvia 500 ao balcão com a fatura JÁ entregue à AT — e o ecrã lê
+    # um 500 como «não saiu nada» e convida a operadora a emitir outra vez.
+    # Nada do stock vale uma fatura duplicada.
+    #
+    # O import é local pela razão escrita mais abaixo, no `enfileirar_venda_
+    # emitida`: o pacote é montado no arranque sem `try`, e um erro de
+    # importação num ficheiro novo derruba o portal inteiro.
+    try:
+        from .estoque_saida import descontar_venda
+        await descontar_venda(db, venda_id)
+    except Exception as e:  # noqa: BLE001 — o stock nunca pode parar uma fatura
+        logger.error(
+            "[faturacao] o desconto de stock da venda %s falhou (a fatura saiu na "
+            "mesma): %s", venda_id, e,
+        )
+
 
 async def _emitir_e_gravar(
     db,

@@ -66,6 +66,7 @@ import FatDocumentos from './pages/admin/faturacao/FatDocumentos';
 import FatClientes from './pages/admin/faturacao/FatClientes';
 import FatRelatorios from './pages/admin/faturacao/FatRelatorios';
 import FatConsumo from './pages/admin/faturacao/FatConsumo';
+import FatDescontoStock from './pages/admin/faturacao/FatDescontoStock';
 import FatPersonalizacoes from './pages/admin/faturacao/FatPersonalizacoes';
 import FatLojas from './pages/admin/faturacao/FatLojas';
 import FatPagamentos from './pages/admin/faturacao/FatPagamentos';
@@ -290,6 +291,7 @@ function AppRoutes() {
         <Route path="faturacao/config/dispositivos" element={<FatDispositivos />} />
         <Route path="faturacao/config/relatorio-diario" element={<FatRelatorioDiario />} />
         <Route path="faturacao/config/modo-de-emissao" element={<FatTrocarModo />} />
+        <Route path="faturacao/config/desconto-stock" element={<FatDescontoStock />} />
 
         {/* Os caminhos antigos, de antes da estrutura por secções */}
         <Route path="faturacao/lojas" element={<Navigate to="/admin/faturacao/config/lojas" replace />} />

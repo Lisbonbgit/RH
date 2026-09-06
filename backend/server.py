@@ -6409,14 +6409,18 @@ async def fin_ingest_estoque(
 # O stock/loja vive no sistema de Estoque (BD separada). O portal RH chama a API
 # do Estoque do lado do SERVIDOR, com a chave de serviço partilhada (a mesma das
 # faturas; nunca vai ao browser); o acesso é protegido pelo login de admin do RH.
-ESTOQUE_API_URL = os.environ.get("ESTOQUE_API_URL", "https://estoque.lisbonb.com/api")
+# O endereço e a chave passam a viver em `estoque_cliente`, que a Faturação
+# também importa para descontar stock quando uma fatura sai. Duas cópias do
+# endereço eram duas coisas para mudar no dia em que o Estoque mudasse de casa
+# — e a que ficasse para trás falhava em silêncio.
+from estoque_cliente import ESTOQUE_API_URL, EstoqueNaoConfigurado, cabecalhos as _estoque_cabecalhos  # noqa: E402
 
 
 def _estoque_headers():
-    key = os.environ.get("ESTOQUE_SERVICE_KEY")
-    if not key:
-        raise HTTPException(status_code=503, detail="Integração de estoque não configurada.")
-    return {"X-Service-Key": key}  # no HEADER, não no URL (evita a chave nos logs)
+    try:
+        return _estoque_cabecalhos()
+    except EstoqueNaoConfigurado as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 def _estoque_erro(r):
