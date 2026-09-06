@@ -1,0 +1,14 @@
+{
+  "name": "gestao-de-bolso",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A casca iOS da Gestão de Bolso — carrega o painel que está no ar.",
+  "dependencies": {
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/ios": "^6.0.0",
+    "@capacitor/status-bar": "^6.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.0.0"
+  }
+}

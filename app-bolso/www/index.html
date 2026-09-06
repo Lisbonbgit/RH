@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="pt">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Gestão de Bolso</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f5f7fb;
+        color: #0f172a;
+        text-align: center;
+        padding: 2rem;
+      }
+      p { max-width: 22rem; line-height: 1.5; }
+      strong { color: #1366f0; }
+    </style>
+  </head>
+  <body>
+    <!--
+      Esta página quase nunca aparece: o `server.url` do capacitor.config.json
+      manda a app carregar o painel que está no ar (https://rh.lisbonb.com/bolso),
+      e é essa a razão de ser desta casca — o painel muda com um deploy do
+      portal, sem uma build nova no TestFlight de cada vez.
+
+      Aparece num caso só, e é para esse que este texto existe: o telemóvel sem
+      rede nenhuma ao arrancar. Um ecrã branco em silêncio faz carregar no ícone
+      dez vezes; uma frase resolve.
+    -->
+    <p>
+      <strong>Gestão de Bolso</strong><br /><br />
+      Não foi possível chegar ao servidor. Confirme a ligação à internet e volte
+      a abrir a aplicação.
+    </p>
+  </body>
+</html>
