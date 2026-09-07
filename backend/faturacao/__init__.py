@@ -47,6 +47,9 @@ router.include_router(_motivos)
 from .catalogo import router as _catalogo
 router.include_router(_catalogo)
 
+from .deposito import router as _deposito
+router.include_router(_deposito)
+
 from .relatorio_rota import router as _relatorio
 router.include_router(_relatorio)
 

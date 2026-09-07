@@ -57,6 +57,7 @@ from .caixa_math import (
 )
 from .db import COLECOES, obter_db
 from .pos_auth import operador_atual
+from .deposito import valor_do_deposito
 from .precos import _tem_mais_de_2_casas_decimais
 
 logger = logging.getLogger(__name__)
@@ -761,6 +762,20 @@ def _resumo_do_turno(
         "base_tributavel": totais["base"],
         "iva_total": totais["iva"],
         "total_faturado": totais["total"],
+        # **A caução cobrada neste turno, dita por extenso.**
+        #
+        # Ela já está no `total_faturado` (é dinheiro que entrou e o Vendus
+        # soma-a) e NÃO está na facturação do painel (não é receita). Os dois
+        # números são os dois certos e, postos lado a lado sem legenda,
+        # produzem uma leitura falsa — é o erro que já se repetiu três vezes
+        # nesta base de código. Esta linha é a legenda.
+        #
+        # SEMPRE presente, mesmo a 0.0, pela mesma razão do
+        # `pagamentos_por_registar` aqui em cima: quem desenha não pode ter de
+        # adivinhar se a ausência quer dizer «não se cobrou» ou «esta versão
+        # não sabe responder».
+        "depositos": round(sum(
+            valor_do_deposito(v) for v in vendas if v.get("estado") == "emitida"), 2),
         # Documentos FISCAIS do turno, e uma nota de crédito é um deles — é o
         # que o Vendus conta e o que a contabilista reconcilia. Contá-la
         # deixava-a de fora do único número do Z que diz quantos papéis saíram.
@@ -1158,6 +1173,7 @@ async def fechar_caixa(
         "base_tributavel": resumo["base_tributavel"],
         "iva_total": resumo["iva_total"],
         "total_faturado": resumo["total_faturado"],
+        "depositos": resumo["depositos"],
         "quantos_documentos": resumo["quantos_documentos"],
         # SEMPRE presente, mesmo com `quantas: 0` — a mesma regra do
         # `emissao_por_confirmar` em `venda.py`: o ecrã não pode ter de

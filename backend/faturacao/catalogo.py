@@ -614,6 +614,15 @@ class ProdutoEntrada(BaseModel):
     # produto (`_valida_referencias`) — uma subcategoria de outra categoria
     # fazia o produto desaparecer da grelha sem ninguém perceber porquê.
     subcategoria_id: Optional[str] = None
+    # **Este produto cobra depósito de embalagem (SDR)?**
+    #
+    # Só as embalagens abrangidas: plástico e metal, menos de 3 litros. O
+    # vidro não entra, os copos do açaí não entram (são embalagem de serviço)
+    # e as bebidas com mais de 25% de lácteos também não. Ver `deposito.py`.
+    #
+    # `False` por omissão: um produto novo não cobra caução nenhuma até
+    # alguém dizer que sim.
+    tem_deposito: bool = False
     preco: float = Field(ge=0, allow_inf_nan=False)
     # **O que ESTE artigo custa a fazer** — opcional, e é o que acende as
     # colunas "Custos" e "Resultado" dos relatórios. Sem ele o relatório mostra

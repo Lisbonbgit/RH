@@ -385,7 +385,13 @@ def test_so_ha_UM_sitio_a_marcar_uma_venda_como_emitida():
     caminho — em silêncio, que é como a primeira versão disto já falhou.
 
     Este teste é o alarme: se ficar vermelho, ou se pendura o desconto também
-    no sítio novo, ou se faz o sítio novo passar por aqui."""
+    no sítio novo, ou se faz o sítio novo passar por aqui.
+
+    **Afirma UMA escrita em `fiscal.py`, e já não o número da linha.** Prender
+    o número fazia isto ficar vermelho a cada edição ACIMA dela — e a resposta
+    a um alarme desses é bater o número sem pensar, que é precisamente o
+    hábito que desliga o alarme a sério. A propriedade é «uma só», não «na
+    linha 1315»."""
     escritas = []
     for ficheiro in sorted(_FATURACAO.glob("*.py")):
         linhas = ficheiro.read_text(encoding="utf-8").splitlines()
@@ -399,7 +405,8 @@ def test_so_ha_UM_sitio_a_marcar_uma_venda_como_emitida():
             volta_atras = "\n".join(linhas[max(0, numero - 6):numero])
             if "$set" in volta_atras and 'COLECOES["vendas"]' in volta_atras:
                 escritas.append("%s:%d" % (ficheiro.name, numero))
-    assert escritas == ["fiscal.py:1315"], escritas
+    assert len(escritas) == 1, escritas
+    assert escritas[0].startswith("fiscal.py:"), escritas
 
 
 def test_o_enganche_esta_dentro_de_um_except_generico():

@@ -895,6 +895,26 @@ function PainelConta({
           onSair={onSairDaSeparacao}
         />
       ) : (<>
+      {/* **O depósito de embalagem, entre a lista e o total.**
+
+          Faixa própria e NÃO uma linha de produto — é o que a lei manda (linha
+          separada do preço do produto) e é como o Vendus o mostra. Fora do
+          contador de artigos aqui em baixo pela mesma razão: uma conta com uma
+          Coca-Cola tem UM produto, não dois.
+
+          Só aparece quando existe. Uma linha a 0,00 € em todas as contas de
+          açaí do dia era ruído permanente no ecrã mais usado da casa. */}
+      {totais.deposito > 0 ? (
+        <div className="shrink-0 mt-3 mx-3 flex items-baseline justify-between gap-3 border-t pt-2 text-sm"
+          data-testid="pos-faixa-deposito">
+          <span className="text-muted-foreground">
+            Depósito
+            <span className="text-xs"> · {totais.embalagens} {totais.embalagens === 1 ? 'embalagem' : 'embalagens'}</span>
+          </span>
+          <span className="tabular-nums font-medium">{euros(totais.deposito)}</span>
+        </div>
+      ) : null}
+
       <div className="shrink-0 mt-3 bg-primary text-primary-foreground px-4 py-3">
         <div className="flex items-baseline justify-between gap-3">
           <span className="text-sm font-semibold uppercase tracking-wide">Total</span>

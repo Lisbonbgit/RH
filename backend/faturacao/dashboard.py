@@ -121,6 +121,14 @@ def _valor_documento(doc: Dict, campo: str) -> float:
     if bruto is None:
         bruto = doc.get(_CAMPO_ALTERNATIVO.get(campo))
     valor = float(bruto or 0)
+    # **O depósito de embalagem sai daqui.** O `total` do documento traz a
+    # caução lá dentro — o Vendus soma-a como soma tudo — e caução não é
+    # receita: é dinheiro do cliente à guarda da loja, que ele pode reaver num
+    # ponto de recolha. Conta na gaveta (é lá que está) e não na facturação.
+    #
+    # Nos documentos anteriores a este campo o valor é `0.0` e nada muda,
+    # porque nenhum deles cobrou depósito.
+    valor = round(valor - float(doc.get("deposito") or 0), 2)
     if doc.get("tipo") == "NC":
         return -abs(valor)
     return valor

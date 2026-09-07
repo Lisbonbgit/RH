@@ -80,6 +80,7 @@ from zoneinfo import ZoneInfo
 from .escpos import (
     ALTO, A_ESQUERDA, CENTRADO, CORPO_NORMAL, DUPLO, NEGRITO, SEM_NEGRITO,
 )
+from .mapa_imposto import rotulo_da_taxa
 from .precos import _sem_acentos, e_grupo_de_variante
 from .reparticao import CASAS_DA_QUANTIDADE
 
@@ -569,15 +570,21 @@ def relatorio_z(z: Dict) -> str:
     partes.append(_titulo("IMPOSTO"))
     partes.append(_linha("Taxa  Doc.        Base", "IVA"))
     for linha in z.get("mapa_imposto") or []:
-        taxa = linha.get("taxa")
         # Uma taxa que o sistema não conhece sai como `?` e o total continua
         # a somar — nunca se inventa uma percentagem, e nunca se deita fora o
-        # dinheiro (ver `mapa_imposto.mapa_de_imposto`).
-        rotulo = "%s%%" % _euros(taxa) if taxa is not None else "?"
+        # dinheiro (ver `mapa_imposto.mapa_de_imposto`). O depósito de
+        # embalagem sai como «N/Sujeito», que não é a mesma coisa.
+        rotulo = rotulo_da_taxa(linha)
         partes.append(_linha(
             "%-6s%-5s%s" % (rotulo, linha.get("documentos") or 0, _euros(linha.get("base"))),
             _euros(linha.get("iva")),
         ))
+    # A caução, entre o mapa e os totais: ela está no TOTAL FATURADO e não
+    # está na base tributável, e sem esta linha as duas contas não fecham para
+    # quem lê o papel. Só aparece quando existe — um zero em todos os Z de
+    # todas as lojas seria ruído em papel que já é comprido.
+    if z.get("depositos"):
+        partes.append(_linha("Deposito (nao sujeito)", _euros(z.get("depositos"))))
     partes.append(_linha("Base tributavel", _euros(z.get("base_tributavel"))))
     partes.append(_linha("IVA", _euros(z.get("iva_total"))))
     partes.append(_linha("TOTAL FATURADO", _euros(z.get("total_faturado"))))

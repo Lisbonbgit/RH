@@ -174,6 +174,7 @@ const sections = [
       { group: 'Gestão', path: '/admin/faturacao/produtos/lista', label: 'Produtos', pai: '/admin/faturacao/produtos' },
       { group: 'Gestão', path: '/admin/faturacao/produtos/categorias', label: 'Categorias', pai: '/admin/faturacao/produtos' },
       { group: 'Gestão', path: '/admin/faturacao/produtos/personalizacoes', label: 'Personalizações', pai: '/admin/faturacao/produtos' },
+      { group: 'Gestão', path: '/admin/faturacao/produtos/deposito', label: 'Depósito', pai: '/admin/faturacao/produtos' },
       { group: 'Gestão', path: '/admin/faturacao/documentos', label: 'Documentos', icon: FileText },
       // Logo a seguir aos Documentos, que é onde estão as faturas que saíram:
       // esta é a lista das que ficaram a meio. Fica na Gestão (o grupo que
