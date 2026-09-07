@@ -1,9 +1,13 @@
 import React, { useState } from 'react';
 import { toast } from 'sonner';
-import { Lock, Loader2 } from 'lucide-react';
+import { Lock, Loader2, DoorOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import PosCampoValor from './PosCampoValor';
-import { abrirCaixa, detalhesErroPos, eurosPos, temMaisDe2CasasDecimaisPos } from '@/lib/pos';
+import {
+  abrirCaixa, abrirGavetaPos, detalhesErroPos, eurosPos,
+  razaoDeNaoImprimir, temMaisDe2CasasDecimaisPos,
+} from '@/lib/pos';
+import useEstadoDaImpressao from './useEstadoDaImpressao';
 
 const formatarData = (isoString) => {
   if (!isoString) return null;
@@ -24,6 +28,43 @@ const formatarData = (isoString) => {
 export default function PosCaixaFechada({ caixa, ultimoFecho, onAberta }) {
   const [fundo, setFundo] = useState('');
   const [aAbrir, setAAbrir] = useState(false);
+
+  // **A gaveta abre com a caixa fechada, e é de propósito.**
+  //
+  // Pedido do dono. A gaveta é uma gaveta: guarda-se lá o fundo à noite,
+  // tira-se troco de manhã antes de abrir o turno, procura-se uma moeda que
+  // caiu. Nada disso é uma venda, e obrigar a abrir um turno de caixa para
+  // lhe mexer punha um Z falso no sistema só para destrancar uma gaveta.
+  //
+  // Não há aqui nenhuma porta a abrir-se: a rota do servidor
+  // (`impressao.abrir_gaveta`) nunca exigiu turno nenhum — só a operadora
+  // autenticada — e o que faltava era o botão, que só existia no menu Caixa
+  // e esse menu não se desenha com o turno fechado.
+  //
+  // O que ela NÃO faz continua igual: não regista movimento, não mexe em
+  // dinheiro nenhum e não deixa vender. Abre a gaveta e mais nada.
+  const [aAbrirGaveta, setAAbrirGaveta] = useState(false);
+  const { estado: estadoImpressao } = useEstadoDaImpressao();
+  const razaoDeNaoAbrirGaveta = razaoDeNaoImprimir({
+    estado: estadoImpressao, aImprimir: aAbrirGaveta,
+  });
+
+  const abrirGaveta = async () => {
+    // Sem um `if (razaoDeNaoAbrirGaveta) return` aqui de propósito: quem
+    // trava é o `disabled` do botão, que é o que o teste mede. Uma segunda
+    // guarda no meio do caminho não se conseguia observar por porta nenhuma
+    // — e uma guarda que nenhum teste pode ver é uma guarda que se apaga sem
+    // ninguém dar por isso.
+    setAAbrirGaveta(true);
+    try {
+      await abrirGavetaPos();
+      toast.success('Gaveta aberta');
+    } catch (error) {
+      toast.error(detalhesErroPos(error, 'Não foi possível abrir a gaveta.').mensagem);
+    } finally {
+      setAAbrirGaveta(false);
+    }
+  };
 
   const podeAbrir = fundo !== '' && !temMaisDe2CasasDecimaisPos(fundo) && Number(fundo) >= 0 && !aAbrir;
 
@@ -75,6 +116,30 @@ export default function PosCaixaFechada({ caixa, ultimoFecho, onAberta }) {
           <Button size="lg" className="w-full h-14 text-base mt-6" disabled={!podeAbrir} onClick={abrir}>
             {aAbrir ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Abrir Caixa'}
           </Button>
+
+          {/* Secundário e por baixo: quem chega a este ecrã vem quase sempre
+              abrir o turno. A gaveta é a excepção — tirar troco, guardar o
+              fundo — e tem de estar à mão sem ser o botão que dá mais nas
+              vistas. Desligado quando não há programa de impressão a ouvir,
+              com a razão à frente, como no menu Caixa: a gaveta abre PELA
+              impressora e sem ela não há impulso nenhum. */}
+          <Button
+            variant="outline" size="lg"
+            className="w-full h-12 text-base mt-3"
+            disabled={!!razaoDeNaoAbrirGaveta}
+            onClick={abrirGaveta}
+            title={razaoDeNaoAbrirGaveta || undefined}
+            data-testid="abrir-gaveta-caixa-fechada"
+          >
+            {aAbrirGaveta
+              ? <Loader2 className="h-5 w-5 animate-spin" />
+              : <><DoorOpen className="h-5 w-5 mr-2" /> Abrir Gaveta</>}
+          </Button>
+          {razaoDeNaoAbrirGaveta && (
+            <p className="text-xs text-muted-foreground mt-2 leading-snug">
+              {razaoDeNaoAbrirGaveta}
+            </p>
+          )}
         </div>
       </div>
     </div>
