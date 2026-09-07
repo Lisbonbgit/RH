@@ -208,6 +208,15 @@ PROMPT = (
     "se não houver nenhum,\n"
     '"notas": "uma frase curta com o que mais importa" ou null}\n\n'
     "REGRAS ABSOLUTAS:\n"
+    "- **USA SÓ O BLOCO DO PERÍODO QUE VEM NO ASSUNTO.** Estes relatórios trazem "
+    "muitas vezes DOIS conjuntos de totais parecidos: o do período em causa e um "
+    "resumo CONSOLIDADO de outro período (por exemplo, a Uber junta um 'Resumo "
+    "consolidado do mês anterior' com o total do mês inteiro). O do período está "
+    "debaixo de 'Discriminação dos pagamentos' e acaba em 'Pagamento líquido'; o "
+    "consolidado acaba em 'Total líquido'. **Ignora por completo o consolidado** "
+    "— nem o valor, nem o número de pedidos, nem as taxas. Se tiveres dúvida "
+    "sobre qual é qual, escolhe aquele cujo número de pedidos bate com o total "
+    "da tabela diária do período.\n"
     "- NÃO INVENTES NENHUM NÚMERO. Um valor que não esteja escrito no documento "
     "é null. Nunca zero para dizer 'não sei'.\n"
     "- Não calcules valores em dinheiro que não estejam escritos (não somes, não "
@@ -648,6 +657,27 @@ def _numero(valor) -> Optional[float]:
         return None
 
 
+def pedidos_da_tabela_do_periodo(corpo: str) -> Optional[int]:
+    """Quantos pedidos diz a TABELA DIÁRIA do período — lida por nós, não pela IA.
+
+    Estes relatórios trazem uma tabela com uma linha por dia e uma linha de
+    `Total`, e essa tabela é sempre a do período em causa. É o único número do
+    email que se pode conferir sem perguntar a ninguém, e serve de padrão para
+    apanhar a IA a ler o bloco errado.
+
+    **Foi construído a partir de um erro real** (2026-09-07, L'açai Oeiras): a
+    IA leu o «Resumo consolidado do mês anterior» em vez da semana e o email
+    do dono anunciou 830,37 € em vez de 277,82 €. O número de pedidos
+    denunciava-o — 79 (o mês) contra 24 (a semana) que a tabela diária dizia.
+
+    `None` quando o relatório não traz tabela (a Bolt e a Glovo não trazem);
+    aí não há conferência a fazer e os valores da IA passam como estão.
+    """
+    encontrado = re.search(r"^\s*Total\s+(\d{1,5})\s+[\d\s.,]+\s*€", corpo or "",
+                           re.MULTILINE)
+    return int(encontrado.group(1)) if encontrado else None
+
+
 def _positivo(numero: Optional[float]) -> Optional[float]:
     """O mesmo número sem sinal — e `None` continua `None`, nunca zero."""
     return None if numero is None else abs(numero)
@@ -788,6 +818,59 @@ def montar_registo(extraido: Dict, *, plataforma: str, periodo: Dict,
         "origem": origem,
         "lido_em": datetime.now(timezone.utc).isoformat(),
     }
+
+
+CORRECAO = (
+    "ATENÇÃO: o número de pedidos que devolveste não bate com o total da tabela "
+    "diária deste relatório, que diz %d pedidos. Isso quer dizer que leste o "
+    "bloco errado — quase de certeza um resumo CONSOLIDADO de outro período "
+    "(mês anterior), e não o período deste relatório. Lê outra vez, usando SÓ o "
+    "bloco cujo total de pedidos é %d, e devolve o mesmo JSON."
+)
+
+# Os campos em dinheiro que se apagam quando não se consegue confiar na leitura.
+# O `pedidos` fica de fora: quando a tabela diária o diz, ele é o único número
+# que sabemos de certeza.
+CAMPOS_DE_DINHEIRO = ("liquido", "bruto", "comissao", "taxas", "ajustes", "iva")
+
+
+def conferir_contra_a_tabela(extraido: Dict, corpo: str, partes: List[Dict],
+                             chamar=None) -> Dict:
+    """Confere a leitura da IA contra a tabela diária do próprio relatório.
+
+    **Nasceu de um erro que chegou ao email do dono** (2026-09-07): a IA leu o
+    «Resumo consolidado do mês anterior» da Uber em vez da semana, e a loja de
+    Oeiras foi anunciada com 830,37 € quando o que ela ia receber eram 277,82 €.
+    Nas outras três lojas leu o bloco certo — e é essa inconsistência que faz
+    de uma instrução melhor no prompt uma esperança, e não uma garantia.
+
+    A tabela diária é o único número do email que se pode conferir sem
+    perguntar a ninguém. Quando o total dela não bate com o que a IA devolveu,
+    pergunta-se **uma** vez mais, a dizer-lhe qual é o total certo. Se ainda
+    assim não bater, **apagam-se os valores em dinheiro** e diz-se porquê: um
+    número errado num email sobre dinheiro é pior do que um «não consegui
+    ler» — que é a regra deste módulo inteiro.
+    """
+    esperado = pedidos_da_tabela_do_periodo(corpo)
+    if esperado is None:
+        return extraido  # sem tabela não há conferência (Bolt e Glovo não trazem)
+    if _inteiro(extraido.get("pedidos")) == esperado:
+        return extraido
+
+    chamar = chamar or _chamar_gemini
+    segunda = ler_json_da_ia(chamar(partes + [{"text": CORRECAO % (esperado, esperado)}]))
+    if not segunda.get("erro") and _inteiro(segunda.get("pedidos")) == esperado:
+        return segunda
+
+    seguro = dict(extraido)
+    for campo in CAMPOS_DE_DINHEIRO:
+        seguro[campo] = None
+    seguro["pedidos"] = esperado
+    seguro["problemas"] = list(extraido.get("problemas") or []) + [
+        "Os valores deste relatório não puderam ser confirmados: a leitura "
+        "devolveu %s pedidos e a tabela do período diz %d. Ficam por saber — "
+        "vê o email original." % (extraido.get("pedidos"), esperado)]
+    return seguro
 
 
 # --- O IMAP (a única parte que fala com a rede) ------------------------------
@@ -934,6 +1017,7 @@ def recolher(hoje: date, caixas: Optional[List[Dict]] = None,
                 continue
             if not extraido.get("e_relatorio"):
                 continue
+            extraido = conferir_contra_a_tabela(extraido, corpo, partes)
 
             periodo = periodo_do_relatorio(
                 extraido, plataforma, data_da_mensagem(msg), hoje)

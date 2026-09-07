@@ -784,3 +784,131 @@ def test_o_registo_guarda_o_message_id_para_a_proxima_corrida(monkeypatch):
                         '{"e_relatorio": true, "loja": "A", "liquido": 100}')
     saida = leitura.recolher(HOJE, caixas=[{"host": "h", "user": "u", "pass": "p"}])
     assert saida["registos"][0]["origem"]["message_id"] == "<ja-lido@uber.com>"
+
+
+# --- O bloco certo do relatório: a guarda da tabela diária -------------------
+#
+# Escrito a partir do erro que chegou ao email do dono (2026-09-07): a IA leu o
+# «Resumo consolidado do mês anterior» da Uber em vez da semana, e a loja de
+# Oeiras foi anunciada com 830,37 € quando ia receber 277,82 €.
+
+# O corpo REAL do email, encurtado. Os dois blocos, tal como a Uber os manda.
+CORPO_UBER_COM_OS_DOIS_BLOCOS = """Resumo do pagamento do período de pagamento: Aug 31, 2026 - Sep 06, 2026
+Data Pedidos Vendas Imposto sobre as vendas Vendas
+8/31/2026 1 19,45 € 2,53 € 21,98 €
+9/6/2026 5 91,42 € 11,88 € 103,30 €
+Total 24 382,93 € 49,77 € 432,70 €
+Discriminação dos pagamentos
+Vendas
+(24 Pedidos) 432,70 €
+Taxas de mercado -159,74 €
+Ajustes -2,45 €
+Pagamento líquido
+277,82 €
+Resumo consolidado do mês anterior - August 2026
+Vendas
+(79 Pedidos) 1 292,99 €
+Taxas de mercado -477,33 €
+Ajustes -9,80 €
+Total líquido
+830,37 €
+"""
+
+
+def test_a_tabela_diaria_diz_os_pedidos_do_PERIODO_e_nao_do_mes():
+    assert leitura.pedidos_da_tabela_do_periodo(CORPO_UBER_COM_OS_DOIS_BLOCOS) == 24
+
+
+def test_sem_tabela_nao_ha_conferencia_a_fazer():
+    """A Bolt e a Glovo não trazem tabela diária — os valores delas passam
+    como estão, sem inventar uma conferência que não existe."""
+    assert leitura.pedidos_da_tabela_do_periodo(
+        "Olá, o relatório semanal está nos links abaixo. L'açaí Amadora:") is None
+
+
+def test_uma_leitura_certa_passa_sem_segunda_pergunta():
+    chamadas = []
+    certo = {"e_relatorio": True, "liquido": 277.82, "pedidos": 24}
+    saida = leitura.conferir_contra_a_tabela(
+        certo, CORPO_UBER_COM_OS_DOIS_BLOCOS, [{"text": "x"}],
+        chamar=lambda partes, timeout=180: chamadas.append(1) or "{}")
+    assert saida == certo
+    assert chamadas == [], "gastou uma chamada à IA sem ser preciso"
+
+
+def test_o_bloco_do_MES_e_apanhado_e_perguntado_outra_vez():
+    """O erro a sério: 830,37 € com 79 pedidos, quando a tabela diz 24."""
+    errado = {"e_relatorio": True, "liquido": 830.37, "pedidos": 79, "comissao": 477.33}
+    perguntas = []
+
+    def segunda_tentativa(partes, timeout=180):
+        perguntas.append(partes[-1]["text"])
+        return '{"e_relatorio": true, "liquido": 277.82, "pedidos": 24}'
+
+    saida = leitura.conferir_contra_a_tabela(
+        errado, CORPO_UBER_COM_OS_DOIS_BLOCOS, [{"text": "x"}],
+        chamar=segunda_tentativa)
+    assert saida["liquido"] == 277.82 and saida["pedidos"] == 24
+    # E a segunda pergunta diz-lhe qual é o número certo.
+    assert "24" in perguntas[0] and "consolidado" in perguntas[0].lower()
+
+
+def test_se_a_segunda_leitura_tambem_falhar_os_valores_sao_APAGADOS():
+    """Um número errado num email sobre dinheiro é pior do que «não consegui
+    ler» — é a regra deste módulo inteiro."""
+    errado = {"e_relatorio": True, "liquido": 830.37, "bruto": 1292.99,
+              "pedidos": 79, "comissao": 477.33, "problemas": ["um estorno"]}
+    saida = leitura.conferir_contra_a_tabela(
+        errado, CORPO_UBER_COM_OS_DOIS_BLOCOS, [{"text": "x"}],
+        chamar=lambda partes, timeout=180: '{"e_relatorio": true, "pedidos": 79}')
+
+    assert saida["liquido"] is None and saida["comissao"] is None
+    assert saida["bruto"] is None
+    # O nº de pedidos fica: é o único que sabemos de certeza (di-lo a tabela).
+    assert saida["pedidos"] == 24
+    # E diz porquê, sem apagar o que já lá estava.
+    assert "um estorno" in saida["problemas"]
+    assert any("não puderam ser confirmados" in p for p in saida["problemas"])
+
+
+def test_a_guarda_corre_na_recolha_a_serio(monkeypatch):
+    """Não basta a função existir — tem de estar ligada ao caminho que corre."""
+    class ImapUber(_ImapFalso):
+        def fetch(self, numero, o_que):
+            cru = (b"From: Uber Eats <noreply@uber.com>\r\n"
+                   b"Subject: Resumo dos Pagamentos Uber Eats para Oeiras\r\n"
+                   b"Message-ID: <o@uber.com>\r\n"
+                   b'Content-Type: text/plain; charset="utf-8"\r\n\r\n'
+                   + CORPO_UBER_COM_OS_DOIS_BLOCOS.encode())
+            return "OK", [(numero, cru)]
+
+    respostas = ['{"e_relatorio": true, "loja": "Oeiras", "liquido": 830.37, "pedidos": 79}',
+                 '{"e_relatorio": true, "loja": "Oeiras", "liquido": 277.82, "pedidos": 24}']
+    monkeypatch.setattr(leitura.imaplib, "IMAP4_SSL", ImapUber)
+    monkeypatch.setattr(leitura, "_chamar_gemini",
+                        lambda partes, timeout=180: respostas.pop(0))
+
+    saida = leitura.recolher(HOJE, caixas=[{"host": "h", "user": "u", "pass": "p"}])
+    assert saida["registos"][0]["valores"]["liquido"] == 277.82
+    assert saida["registos"][0]["valores"]["pedidos"] == 24
+
+
+def test_le_se_a_TABELA_e_nao_a_primeira_linha_de_pedidos_que_aparecer():
+    """A distinção importa: `(N Pedidos)` aparece nos DOIS blocos, e a ordem
+    deles no email não é garantida. Só a linha `Total` da tabela diária é
+    sempre a do período. (Uma mutação passou por aqui: trocar a tabela pela
+    primeira linha `(N Pedidos)` dava o mesmo resultado no corpo real, porque
+    lá a semana vinha primeiro.)"""
+    ao_contrario = """Resumo consolidado do mês anterior - August 2026
+Vendas
+(79 Pedidos) 1 292,99 €
+Total líquido
+830,37 €
+Resumo do pagamento do período: Aug 31 - Sep 06
+Data Pedidos Vendas
+9/6/2026 5 91,42 € 11,88 € 103,30 €
+Total 24 382,93 € 49,77 € 432,70 €
+Pagamento líquido
+277,82 €
+"""
+    assert leitura.pedidos_da_tabela_do_periodo(ao_contrario) == 24
