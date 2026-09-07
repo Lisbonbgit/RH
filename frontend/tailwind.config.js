@@ -52,6 +52,9 @@ module.exports = {
                 input: 'hsl(var(--input))',
                 ring: 'hsl(var(--ring))',
                 success: 'hsl(var(--success))',
+                'success-strong': 'hsl(var(--success-strong))',
+                'destructive-strong': 'hsl(var(--destructive-strong))',
+                'warning-strong': 'hsl(var(--warning-strong))',
                 warning: 'hsl(var(--warning))',
                 info: 'hsl(var(--info))',
                 chart: {

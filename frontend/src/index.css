@@ -28,7 +28,11 @@
         --secondary: 210 45% 96%;
         --secondary-foreground: 212 45% 16%;
         --muted: 210 45% 96%;
-        --muted-foreground: 212 16% 47%;
+        /* 45% e não 47%: a 47% este cinzento dava 4,39:1 contra o fundo do
+           portal (medido no ecrã, não calculado) — abaixo dos 4,5:1 que o
+           texto normal exige, e é ele que escreve quase todo o texto
+           secundário. A 45% dá 4,66:1 e a diferença não se vê. */
+        --muted-foreground: 212 16% 45%;
         --accent: 205 70% 95%;
         --accent-foreground: 217 80% 35%;
         --destructive: 0 78% 58%;
@@ -47,6 +51,17 @@
         --success: 168 70% 38%;
         --warning: 35 92% 50%;
         --info: 217 88% 51%;
+        /* Versões CHEIAS dos semânticos: fundo sólido com texto branco por
+           cima (pastilhas de variação, selos de estado). Os tokens acima estão
+           afinados para texto colorido sobre fundo claro e, usados como fundo
+           de uma pastilha, dão 3,1:1 (verde) e 4,0:1 com branco — abaixo dos
+           4,5:1 que o texto normal exige. Estes escurecem o suficiente para
+           passar: 5,3:1 e 6,5:1, medidos. O âmbar é o pior de todos — como
+           TEXTO dava 2,32:1, ilegível — e por isso o `warning-strong` escurece
+           até ao ocre: 5,1:1, medido no ecrã. */
+        --success-strong: 168 70% 28%;
+        --destructive-strong: 0 72% 42%;
+        --warning-strong: 35 95% 32%;
     }
 
     /* Tema escuro — "midnight" azulado, coerente com a marca (ativado pela
@@ -80,6 +95,11 @@
         --success: 168 64% 44%;
         --warning: 35 92% 56%;
         --info: 217 92% 62%;
+        /* No escuro a pastilha também tem de se ver contra o cartão, por isso
+           não escurece tanto: 5,0:1 e 6,0:1 com branco. */
+        --success-strong: 168 60% 30%;
+        --destructive-strong: 0 65% 45%;
+        --warning-strong: 35 92% 62%;
     }
 }
 
@@ -188,5 +208,29 @@
     .mobile-full {
         width: 100% !important;
         max-width: 100% !important;
+    }
+}
+
+/* ===== Movimento reduzido =====
+   O iPhone tem um interruptor de sistema para "Reduzir movimento", e quem o
+   liga costuma ligá-lo por enjoo ou por vertigem — não por gosto. As animações
+   deste portal são todas decorativas ou de entrada, portanto a alternativa
+   honesta é não haver animação nenhuma: o conteúdo aparece, no sítio certo,
+   sem se mexer.
+
+   Fica aqui e não em cada ecrã porque é uma regra do SISTEMA: um ecrã novo
+   amanhã herda-a sem ter de se lembrar dela. */
+@media (prefers-reduced-motion: reduce) {
+    .animate-fade-in,
+    .animate-float {
+        animation: none !important;
+    }
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
     }
 }

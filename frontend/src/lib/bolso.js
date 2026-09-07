@@ -20,7 +20,16 @@ const API_URL = process.env.REACT_APP_BACKEND_URL + '/api/bolso';
 // nada no ecrã para olhar.
 export const TIMEOUT_MS = 15000;
 
-const api = axios.create({ baseURL: API_URL, timeout: TIMEOUT_MS });
+// **`no-cache` de propósito.** Isto é dinheiro, e o botão de recarregar tem
+// de ir mesmo ao servidor: uma resposta servida do cache do browser mostra
+// números velhos com um carimbo de agora, que é a pior combinação possível.
+// Apanhado a medir — uma resposta chegou mais depressa do que o atraso que o
+// servidor de ensaio tinha, e só o cache explica isso.
+const api = axios.create({
+  baseURL: API_URL,
+  timeout: TIMEOUT_MS,
+  headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+});
 
 api.interceptors.request.use((config) => {
   let token = null;
