@@ -312,6 +312,13 @@ export const getHistoricoDeCaixa = (params) =>
 export const getTurno = (id) =>
   api.get(`${API_URL}/faturacao/caixa/historico/${id}`);
 
+// --- Depósito de embalagem (SDR) ---
+export const getDefinicoesDeposito = () => api.get(`${API_URL}/faturacao/deposito`);
+export const gravarDefinicoesDeposito = (dados) =>
+  api.put(`${API_URL}/faturacao/deposito`, dados);
+export const getProdutosComDeposito = () =>
+  api.get(`${API_URL}/faturacao/deposito/produtos`);
+
 // --- Relatório diário por email ---
 export const getDefinicoesRelatorio = () =>
   api.get(`${API_URL}/faturacao/relatorio-diario/definicoes`);

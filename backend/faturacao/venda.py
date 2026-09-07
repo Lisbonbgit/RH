@@ -45,6 +45,11 @@ from pymongo.errors import DuplicateKeyError
 from .caixa import _obter_caixa_da_loja, _quem, _sessao_aberta
 from .db import COLECOES, obter_db
 from .pos_auth import operador_atual
+from .deposito import (
+    definicoes as definicoes_do_deposito,
+    embalagens_da_venda,
+    valor_do_deposito,
+)
 from .precos import _tem_mais_de_2_casas_decimais, erros_do_produto, linha_de_venda
 from .reparticao import (
     CASAS_DA_QUANTIDADE, ordem_das_fatias, quantidade_para, repartir_centimos,
@@ -981,11 +986,20 @@ def _totais(venda: Dict) -> Dict:
     desconto_linhas = round(sum(_desconto_da_linha(li) for li in linhas_vendus), 2)
     liquido_linhas = round(subtotal - desconto_linhas, 2)
     desconto_global = _desconto_global_eur(venda, liquido_linhas)
-    total = round(liquido_linhas - desconto_global, 2)
+    # **O depósito entra DEPOIS do desconto**, e é essa a ordem que interessa:
+    # a caução não se desconta. Somá-lo antes fazia um desconto de 50% devolver
+    # ao cliente metade de um dinheiro que ainda é dele.
+    deposito = valor_do_deposito(venda)
+    total = round(liquido_linhas - desconto_global + deposito, 2)
     return {
         "subtotal": subtotal,
         "desconto_linhas": desconto_linhas,
         "desconto_global": desconto_global,
+        # SEMPRE presente, mesmo a 0.0: quem desenha não pode ter de adivinhar
+        # se a ausência quer dizer «não há embalagens» ou «esta versão do
+        # servidor não sabe responder a isso».
+        "deposito": deposito,
+        "embalagens": embalagens_da_venda(venda),
         "total": total,
     }
 
@@ -1483,6 +1497,23 @@ async def venda_aberta(
     return _venda_publica(conta, emissao_por_confirmar=await _emissao_por_confirmar(db, conta))
 
 
+async def _deposito_do_produto(db, produto: Dict) -> Optional[float]:
+    """Quanto de depósito esta linha leva por unidade — ou `None`.
+
+    **Duas condições, e as duas têm de valer:** o interruptor geral está
+    ligado E este produto está marcado. Sem o interruptor, marcar produtos no
+    backoffice não cobra nada a ninguém — é o que permite ao dono preparar a
+    lista com calma e ligar quando quiser.
+
+    Uma leitura por linha juntada. É a mesma consulta que o carimbo das
+    opções já faz ao lado, na colecção mais pequena que existe (um documento),
+    e o caminho já é `await` de ponta a ponta."""
+    if not produto.get("tem_deposito"):
+        return None
+    config = await definicoes_do_deposito(db)
+    return config["valor"] if config["ativo"] else None
+
+
 async def _carimbar_sai_na_fatura(
     db, opcoes: List[Dict], preservar_carimbo: bool = False
 ) -> List[Dict]:
@@ -1662,6 +1693,7 @@ async def juntar_linha(
         raise HTTPException(status_code=422, detail="; ".join(erros))
 
     opcoes = await _carimbar_sai_na_fatura(db, dados.opcoes)
+    deposito_unitario = await _deposito_do_produto(db, produto)
 
     linha = {
         "id": str(uuid.uuid4()),
@@ -1678,6 +1710,17 @@ async def juntar_linha(
         # causa disto deixava a operadora com o cliente à frente sem poder
         # cobrar.
         "produto_vendus_ref": produto.get("vendus_ref"),
+        # **O QUINTO campo do retrato: o depósito de embalagem.**
+        #
+        # Guarda-se o VALOR e não um `True`, pela mesma razão que se guarda o
+        # `produto_preco` e não o id do produto: se a lei mudar o montante, ou
+        # o dono o afinar, uma conta aberta ontem fecha-se ao valor a que foi
+        # aberta. `None` na esmagadora maioria — só as bebidas em plástico e
+        # metal o levam (ver `deposito.py`).
+        #
+        # Lido da CONFIGURAÇÃO e do produto, nunca do pedido: quanto se cobra
+        # de caução ao cliente não se aceita de fora.
+        "deposito_unitario": deposito_unitario,
         "quantidade": dados.quantidade,
         "opcoes": opcoes,
         "respostas_texto": [r.model_dump() for r in dados.respostas_texto],

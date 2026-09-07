@@ -820,3 +820,28 @@ def test_a_resposta_de_SERVICO_e_um_degrau_maior_do_que_os_toppings():
     # ... e MAIOR do que os toppings, que é o que o dono pediu.
     topping = next(l for l in papel if "Morango" in l["texto"])
     assert topping["corpo"] == 0
+
+
+# --- o depósito de embalagem, no papel que a operadora assina -----------------
+
+def test_o_Z_em_papel_DIZ_a_caucao_cobrada():
+    """A caução está no TOTAL FATURADO e não está na base tributável. Sem esta
+    linha as duas contas não fecham para quem lê o papel — e quem o lê é a
+    operadora a assinar e a contabilista a reconciliar."""
+    papel = relatorio_z(_z(depositos=1.40))
+    assert "Deposito (nao sujeito)" in papel
+    assert "1,40" in papel
+
+
+def test_um_Z_SEM_caucao_nao_ganha_uma_linha_a_zero():
+    """Um zero em todos os Z de todas as lojas seria ruído em papel que já é
+    comprido. A linha só aparece quando houve depósito."""
+    assert "Deposito" not in relatorio_z(_z(depositos=0.0))
+    assert "Deposito" not in relatorio_z(_z())
+
+
+def test_a_linha_da_caucao_vem_ANTES_da_base_tributavel():
+    """A ordem em que um mapa de imposto se lê: primeiro o que não é
+    tributável, depois o que é."""
+    papel = relatorio_z(_z(depositos=0.30))
+    assert papel.index("Deposito (nao sujeito)") < papel.index("Base tributavel")

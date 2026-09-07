@@ -67,12 +67,31 @@ import math
 from typing import Dict, List, Optional
 
 from .fiscal import _itens_vendus
-from .precos import _TAXAS
+from .precos import CODIGO_NAO_SUJEITO, _TAXAS
 
 # O caminho inverso de `precos._TAXAS`: do código do Vendus (INT/NOR/RED/ISE)
 # para a percentagem. Derivado do mesmo dicionário, e não escrito outra vez,
 # para não haver forma de acrescentar uma taxa lá e ela não chegar aqui.
 _TAXA_DO_CODIGO = {codigo: taxa for taxa, codigo in _TAXAS.items()}
+
+
+def rotulo_da_taxa(linha: Dict) -> str:
+    """Como uma linha do mapa de imposto se lê: «13%», «Não sujeito», «?».
+
+    Existe para o `?` deixar de dizer duas coisas ao mesmo tempo. Ele é o
+    rótulo de uma taxa que o sistema NÃO conhece — e isso continua a ter de
+    aparecer assim, porque é um aviso. Mas o depósito de embalagem sai com
+    `NS`, que não é desconhecido: é «não sujeito a tributação», e escrevê-lo
+    como `?` mandava a contabilista procurar um defeito onde está a lei.
+
+    Num sítio só, porque o mesmo rótulo sai no Z em papel e nos ecrãs — e
+    duas versões dele acabariam a discordar sobre a mesma linha."""
+    taxa = linha.get("taxa")
+    if taxa is not None:
+        return "%s%%" % (int(taxa) if float(taxa) == int(taxa) else taxa)
+    if linha.get("tax_id") == CODIGO_NAO_SUJEITO:
+        return "N/Sujeito"
+    return "?"
 
 
 def _centimos(valor) -> int:

@@ -491,7 +491,11 @@ def test_abrir_venda_com_sucesso(monkeypatch):
     assert resultado["loja_id"] == "loja-1"
     assert resultado["linhas"] == []
     assert resultado["totais"] == {
-        "subtotal": 0.0, "desconto_linhas": 0.0, "desconto_global": 0.0, "total": 0.0,
+        "subtotal": 0.0, "desconto_linhas": 0.0, "desconto_global": 0.0,
+        # Sempre presentes, mesmo numa conta vazia — o ecrã do balcao nao pode
+        # ter de adivinhar se a ausencia quer dizer «sem embalagens» ou «esta
+        # versao do servidor nao sabe».
+        "deposito": 0.0, "embalagens": 0.0, "total": 0.0,
     }
 
 

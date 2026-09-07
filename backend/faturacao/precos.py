@@ -13,6 +13,20 @@ from typing import Dict, List, Optional
 # Códigos de imposto do Vendus.
 _TAXAS = {23: "NOR", 13: "INT", 6: "RED", 0: "ISE"}
 
+# **«Não sujeito» — e NÃO é IVA a 0%.**
+#
+# `ISE` é isento: está dentro do imposto, com taxa zero, e entra na base
+# tributável. `NS` é o que fica FORA do imposto, e a diferença é precisamente
+# o que o SAF-T lê. O único uso que tem cá é o depósito de embalagem (SDR),
+# que por lei «não está sujeito a tributação» (artigo 30.º-E do Decreto-Lei
+# n.º 152-D/2017) — é uma caução que se cobra, não uma venda.
+#
+# Fica DE PROPÓSITO fora de `_TAXAS`: não lhe corresponde percentagem nenhuma,
+# e pô-lo lá fazia `tax_id_de_taxa(0)` poder devolvê-lo e o mapa de imposto
+# calcular-lhe uma base como se fosse isento. Fora dele, o mapa já faz o que
+# tem de fazer — o valor conta no total e não conta na base tributável.
+CODIGO_NAO_SUJEITO = "NS"
+
 # Fonte de verdade única dos códigos válidos — reutilizada em catalogo.py
 # (validação do ProdutoEntrada.tax_id) e aqui em erros_do_produto, para as
 # duas nunca divergirem.
@@ -173,6 +187,14 @@ def erros_do_produto(produto: Dict) -> List[str]:
     tax_id = produto.get("tax_id")
     if not tax_id:
         erros.append("Sem IVA definido")
+    elif tax_id == CODIGO_NAO_SUJEITO:
+        # Dito por extenso, e não como «desconhecido»: NS é um código real do
+        # Vendus e alguém que o escreva aqui está a tentar fazer a coisa
+        # certa pelo caminho errado. Só o depósito o usa, e o depósito não é
+        # um produto do catálogo (`precos.linha_do_deposito`).
+        erros.append(
+            "«Não sujeito» só se aplica ao depósito de embalagem, não a um "
+            "produto — escolha uma taxa de IVA")
     elif tax_id not in _CODIGOS_IVA_VALIDOS:
         erros.append("Código de IVA desconhecido: %s" % tax_id)
     return erros

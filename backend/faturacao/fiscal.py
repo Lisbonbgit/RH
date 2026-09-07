@@ -55,6 +55,9 @@ from pymongo.errors import DuplicateKeyError
 
 from .auth import gestor_atual
 from .db import COLECOES, indice_idempotencia_confirmado, obter_db
+from .deposito import definicoes as definicoes_do_deposito
+from .deposito import valor_do_deposito
+from .deposito import linhas_do_deposito
 from .importacao import _nif_configurado
 from .modo import modo_efectivo
 from .pos_auth import operador_atual
@@ -398,7 +401,7 @@ def _percentagem_que_reproduz(bruto: float, alvo_liquido: float) -> float:
     return max(0.0, min(100.0, pct))
 
 
-def _itens_vendus(venda: Dict) -> List[Dict]:
+def _itens_vendus(venda: Dict, deposito_ref: Optional[str] = None) -> List[Dict]:
     """As linhas da venda no formato Vendus, com o desconto — próprio da
     linha mais a fatia do desconto GLOBAL que lhe calhar — sempre como
     `discount_percentage`, NUNCA `discount_amount`.
@@ -476,6 +479,21 @@ def _itens_vendus(venda: Dict) -> List[Dict]:
         if pct > 0:
             item["discount_percentage"] = pct
         saida.append(item)
+
+    # **O depósito de embalagem, no fim e à parte de tudo o resto.**
+    #
+    # Depois do ciclo de propósito: assim não entra na distribuição do
+    # desconto global, que é feita sobre `linhas_vendus`. Uma caução com
+    # desconto era devolver ao cliente dinheiro que ainda é dele — e a lei
+    # obriga a discriminá-la em linha separada do preço do produto (artigo
+    # 30.º-E do Decreto-Lei n.º 152-D/2017).
+    #
+    # `deposito_ref` é opcional porque esta função tem DOIS chamadores: a
+    # emissão, que tem a configuração à mão e passa a referência do artigo do
+    # Vendus, e o mapa de imposto, que só quer saber quanto vale a linha e em
+    # que código de imposto cai. Sem referência a linha sai à mesma, só sem
+    # `id` — e o mapa do Z fica igual, que é o que ali interessa.
+    saida.extend(linhas_do_deposito(venda, deposito_ref))
     return saida
 
 
@@ -1246,6 +1264,16 @@ async def _gravar_documento(
         # instante da emissão, e nunca se edita depois. `None` na esmagadora
         # maioria — que é o Consumidor Final.
         "cliente_nif": venda.get("cliente_nif"),
+        # **Quanto deste documento é CAUÇÃO e não receita.**
+        #
+        # Carimbado aqui porque é aqui que se sabe: o `total` que o Vendus
+        # devolve já traz o depósito lá dentro, e sem este campo não havia
+        # como o tirar depois sem ir buscar a venda — uma junção por linha em
+        # cada ecrã que soma dinheiro.
+        #
+        # `0.0` nos documentos anteriores a isto, que é o que eles valem: não
+        # cobraram depósito nenhum.
+        "deposito": valor_do_deposito(venda),
         "emitido_em": emitido_em,
     }
     try:
@@ -2011,7 +2039,13 @@ async def finalizar(
     # ramo que realmente emite.
     dados_pagamento = {"pagamentos": pagamentos_venda, "cliente_nif": dados.nif}
 
-    itens = _itens_vendus(venda)
+    # **A referência do artigo de depósito, resolvida AQUI** — pela mesma
+    # razão que o modo logo abaixo: `_itens_vendus` é pura e não lê a base de
+    # dados, e é esta camada a última que consegue. Sem ela a linha do
+    # depósito sai à mesma, só sem `id`, e o Vendus cria um artigo novo por
+    # venda — feio, nunca impeditivo.
+    ref_do_deposito = (await definicoes_do_deposito(db)).get("vendus_ref")
+    itens = _itens_vendus(venda, ref_do_deposito)
     cliente_payload = {"fiscal_id": dados.nif} if dados.nif else None
 
     # **O modo resolvido AQUI, e passado para baixo.** A emissão corre numa

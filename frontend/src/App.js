@@ -67,6 +67,7 @@ import FatClientes from './pages/admin/faturacao/FatClientes';
 import FatRelatorios from './pages/admin/faturacao/FatRelatorios';
 import FatConsumo from './pages/admin/faturacao/FatConsumo';
 import FatDescontoStock from './pages/admin/faturacao/FatDescontoStock';
+import FatDeposito from '@/pages/admin/faturacao/FatDeposito';
 import FatPersonalizacoes from './pages/admin/faturacao/FatPersonalizacoes';
 import FatLojas from './pages/admin/faturacao/FatLojas';
 import FatPagamentos from './pages/admin/faturacao/FatPagamentos';
@@ -280,6 +281,7 @@ function AppRoutes() {
         <Route path="faturacao/produtos/lista" element={<FatProdutos />} />
         <Route path="faturacao/produtos/categorias" element={<FatCategorias />} />
         <Route path="faturacao/produtos/personalizacoes" element={<FatPersonalizacoes />} />
+        <Route path="faturacao/produtos/deposito" element={<FatDeposito />} />
         <Route path="faturacao/documentos" element={<FatDocumentos />} />
         {/* A lista que as mensagens do POS já mandavam o gestor consultar
             ("chame o gestor, que resolve na lista de reservas fiscais presas")
