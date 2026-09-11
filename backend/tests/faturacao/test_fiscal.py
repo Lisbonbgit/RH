@@ -1777,6 +1777,70 @@ def test_finalizar_com_vendus_indisponivel_devolve_502_e_nao_marca_emitida(monke
     assert db[COLECOES["refs_fiscais"]]._documentos == []  # reserva libertada
 
 
+# O corpo REAL da recusa, como veio na fotografia do balcão a 2026-09-11.
+_RECUSA_DO_CLIENTE = (
+    '{"errors":[{"code":"A001","message":"Unable to create client - NIF '
+    'portugu\\u00eas inv\\u00e1lido. Se o cliente \\u00e9 portugu\\u00eas, '
+    'indique um NIF v\\u00e1lido."}]}'
+)
+
+
+def _finaliza_com_o_vendus_a_falhar(monkeypatch, erro, nif=None):
+    _configura_vendus_env(monkeypatch)
+    db = _db(vendas=[_venda(linhas=[_linha()])], tipos_pagamento=[_tipo_pagamento()])
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+
+    def fabrica(chave):
+        cliente = ClienteEmissaoVendusFalso(chave)
+        cliente.erro_criar = erro
+        cliente.resposta_procurar = None
+        return cliente
+
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", fabrica)
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(finalizar(
+            "venda-1",
+            PedidoFinalizarVenda(
+                pagamentos=[PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)],
+                nif=nif,
+            ),
+            operador=_operador(),
+        ))
+    return excinfo.value, db
+
+
+def test_o_Vendus_a_RECUSAR_o_cliente_da_uma_FRASE_e_nao_JSON_cru(monkeypatch):
+    """**O que a colaboradora viu, e não pode voltar a ver.** O dígito de
+    controlo apanha a maioria dos enganos, mas não todos — um em cada dez
+    telefones passa a aritmética —, e quando o Vendus recusa mesmo assim, o
+    ecrã mostrava «O Vendus não respondeu» com o JSON por baixo. As duas
+    coisas eram falsas: ele respondeu, e disse porquê.
+
+    422 e não 502 de propósito: é o código que o ecrã lê como «há algo por
+    corrigir nesta venda» (PosVenda.js::tipoDoErroDeEmissao)."""
+    erro, db = _finaliza_com_o_vendus_a_falhar(
+        monkeypatch, VendusHTTPErro(400, _RECUSA_DO_CLIENTE), nif="219363935")
+
+    assert erro.status_code == 422
+    assert "219363935" in erro.detail
+    assert "Unable to create client" not in erro.detail, (
+        "O JSON do Vendus voltou ao ecrã do balcão: %r" % erro.detail
+    )
+    assert "não saiu nenhum documento" in erro.detail.lower()
+    # E a promessa que sustenta o «volte a tentar»: nada emitido, conta aberta.
+    assert db[COLECOES["vendas"]]._documentos[0]["estado"] == "aberta"
+    assert db[COLECOES["refs_fiscais"]]._documentos == []
+
+
+def test_outra_recusa_qualquer_do_Vendus_continua_a_ser_502(monkeypatch):
+    """A tradução é de UM caso, não de todos. Um produto sem IVA ou uma chave
+    errada não são «confirme o NIF com o cliente» — dizer-lhe isso mandava-a
+    corrigir um número que está certo."""
+    erro, _ = _finaliza_com_o_vendus_a_falhar(
+        monkeypatch, VendusHTTPErro(400, "tax_id inválido"))
+    assert erro.status_code == 502
+
+
 # --- Validação do NIF e dos pagamentos (nível Pydantic) ------------------------
 
 
@@ -1790,6 +1854,65 @@ def test_nif_com_menos_de_9_digitos_e_recusado():
 def test_nif_none_e_aceite_consumidor_final():
     dados = PedidoFinalizarVenda(pagamentos=[PagamentoEntrada(tipo_pagamento_id="t1", valor=1.0)])
     assert dados.nif is None
+
+
+def _com_nif(nif):
+    return PedidoFinalizarVenda(
+        pagamentos=[PagamentoEntrada(tipo_pagamento_id="t1", valor=1.0)], nif=nif
+    )
+
+
+def test_o_TELEFONE_que_a_loja_escreveu_como_NIF_e_recusado():
+    """**A queixa, com o número real (2026-09-11).** Uma colaboradora emitiu
+    com o cliente `219 363 931` — um fixo de Lisboa, não um contribuinte. Tem
+    nove dígitos, por isso atravessava tudo, e quem dizia que não era o Vendus,
+    já com a venda feita: `A001, NIF português inválido`, JSON cru no ecrã do
+    balcão. Medido em produção nesse dia: 4 emissões falhadas em 4 dias."""
+    with pytest.raises(ValidationError) as erro:
+        _com_nif("219363931")
+    assert "não é um NIF válido" in str(erro.value), (
+        "A recusa saiu com outra frase — a operadora tem de ler porquê, não "
+        "'tem de ter 9 dígitos' (este tem nove)."
+    )
+
+
+def test_o_MESMO_numero_com_o_digito_de_controlo_certo_e_aceite():
+    """**A prova de que quem recusa é a ARITMÉTICA e não o prefixo.** É o mesmo
+    telefone com o último dígito trocado pelo que a conta manda (5).
+
+    Se alguém trocar um dia o dígito de controlo por uma lista de prefixos
+    permitidos, este teste fica vermelho — e é isso que ele existe para
+    impedir: uma lista recusa NIFs legítimos (45x, 70-79, 98x) de clientes que
+    ficam ao balcão sem ninguém lhes poder valer."""
+    assert _com_nif("219363935").nif == "219363935"
+
+
+def test_os_espacos_com_que_a_operadora_escreve_nao_atrapalham():
+    """Ela escreve como o cliente dita, aos grupos de três."""
+    assert _com_nif("517 542 510").nif == "517542510"
+
+
+def test_o_NIF_de_resto_ZERO_com_o_controlo_errado_e_recusado():
+    """A armadilha da aritmética: o resto 0 e o resto 1 dão os dois controlo 0.
+    Quem escrever «se o resto for 0, aceita» deixa passar o 111111111."""
+    with pytest.raises(ValidationError):
+        _com_nif("111111111")
+
+
+def test_nove_ZEROS_nao_sao_um_NIF():
+    """Passa o módulo 11 (soma 0, resto 0, controlo 0) e não existe: nenhum NIF
+    português começa por 0. É o único buraco que a aritmética não fecha, e
+    fecha-se com uma comparação — não com uma tabela de prefixos."""
+    with pytest.raises(ValidationError):
+        _com_nif("000000000")
+
+
+@pytest.mark.parametrize("nif", ["123456789", "500000000", "517542510", "295258144"])
+def test_os_NIFs_REAIS_continuam_a_passar(nif):
+    """Os que já vivem nesta suite e um lido em produção (o cliente da FS
+    06P2026/446). Apertar a regra não pode recusar quem já comprou: dos 211
+    documentos com NIF que estavam em produção a 2026-09-11, os 211 passam."""
+    assert _com_nif(nif).nif == nif
 
 
 def test_pagamentos_vazio_e_recusado():

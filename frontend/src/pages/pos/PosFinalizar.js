@@ -14,7 +14,7 @@ import PosCampoValor, { TecladoNumerico, comVirgula } from './PosCampoValor';
 import {
   contaTravada, duvidaPorApurar, detalhesErroPos, eurosPos as euros,
   temMaisDe2CasasDecimaisPos, avisoDoDocumento, previsaoDoDividir,
-  guardarNifDaConta, lerNifDaConta,
+  guardarNifDaConta, lerNifDaConta, nifValidoPT,
 } from '@/lib/pos';
 
 // O ecrã de finalizar (Plano 2C, Task 4): três cartões — Total, Cliente e
@@ -131,6 +131,24 @@ const soDigitos = (texto) => String(texto || '').replace(/\D/g, '');
 
 const nifPorExtenso = (digitos) =>
   digitos.length === 9 ? `${digitos.slice(0, 3)} ${digitos.slice(3, 6)} ${digitos.slice(6)}` : digitos;
+
+// O que o campo do NIF deixa escrever: dígitos e espaços, e NUNCA mais do que
+// nove dígitos — contados como dígitos, não como caracteres.
+//
+// O tecto por caracteres (`slice(0, 11)`) fazia as duas pontas mal. Com um
+// espaço a mais («219  363 935», o dedo a resvalar na barra) engolia o nono
+// dígito em silêncio, e ela carregava nas teclas sem nada acontecer; com o
+// teclado do PC deixava escrever dez e onze, e nesse estado o ecrã pedia-lhe
+// «faltam -1» e «10 de 9 dígitos» — a mandá-la ACRESCENTAR a um número que já
+// tinha demais, sem uma tecla no ecrã que o fizesse.
+const nifAteNove = (texto) => {
+  const limpo = String(texto || '').replace(/[^0-9 ]/g, '');
+  let digitos = 0;
+  for (let i = 0; i < limpo.length; i += 1) {
+    if (limpo[i] !== ' ' && (digitos += 1) > 9) return limpo.slice(0, i);
+  }
+  return limpo;
+};
 
 // "Dinheiro", "Dinheiro e Multibanco", "Dinheiro, Multibanco e Glovo" — para as
 // razões do bloqueio nomearem SEMPRE o pagamento em causa. Uma razão que diz
@@ -369,7 +387,17 @@ function CartaoTotal({ venda, desativado, onAplicarDesconto }) {
 function CartaoCliente({ nifTexto, onNifTexto, desativado }) {
   const [aEditar, setAEditar] = useState(false);
   const digitos = soDigitos(nifTexto);
-  const incompleto = digitos.length > 0 && digitos.length !== 9;
+  const incompleto = digitos.length > 0 && digitos.length < 9;
+  // Nove dígitos que não são NIF nenhum — um telefone, um engano de um
+  // dígito. O cartão mostrava-os a negrito, formatados, como se fossem um
+  // cliente: a dúvida só nascia no fim, na resposta do Vendus. Agora nasce
+  // aqui, com o cliente ainda à frente para repetir o número.
+  //
+  // `>= 9` e não `=== 9` por causa de um NIF com dez dígitos guardado antes
+  // deste remendo: «não é um NIF válido» é verdade sobre ele, e «faltam -1»
+  // não era.
+  const naoExiste = digitos.length >= 9 && !nifValidoPT(digitos);
+  const porCorrigir = incompleto || naoExiste;
 
   return (
     <Cartao
@@ -377,17 +405,22 @@ function CartaoCliente({ nifTexto, onNifTexto, desativado }) {
       icone={User}
       aEditar={aEditar}
       onEditar={() => setAEditar((v) => !v)}
-      editarLabel={incompleto ? 'Terminar o NIF do cliente' : 'Introduzir o NIF do cliente'}
+      editarLabel={
+        naoExiste ? 'Corrigir o NIF do cliente'
+          : incompleto ? 'Terminar o NIF do cliente' : 'Introduzir o NIF do cliente'
+      }
       desativado={desativado}
     >
-      {incompleto ? (
+      {porCorrigir ? (
         <div className="space-y-1">
           <p className="font-heading font-bold text-2xl text-destructive flex items-center gap-2">
             <AlertTriangle className="h-6 w-6 shrink-0" />
-            <span className="tracking-wider break-all">{digitos}</span>
+            <span className="tracking-wider break-all">{naoExiste ? nifPorExtenso(digitos) : digitos}</span>
           </p>
           <p className="text-sm text-destructive">
-            NIF por terminar — {digitos.length} de 9 dígitos. Assim não é possível emitir.
+            {naoExiste
+              ? 'Este número não é um NIF válido — confirme-o com o cliente. Assim não é possível emitir.'
+              : `NIF por terminar — ${digitos.length} de 9 dígitos. Assim não é possível emitir.`}
           </p>
         </div>
       ) : (
@@ -399,10 +432,10 @@ function CartaoCliente({ nifTexto, onNifTexto, desativado }) {
       {/* As duas saídas à distância de um toque, com o editor FECHADO: quem
           fechou o lápis sem querer não tem de descobrir que o problema se
           resolve lá dentro. */}
-      {incompleto && !aEditar && (
+      {porCorrigir && !aEditar && (
         <div className="mt-3 flex flex-col sm:flex-row gap-2">
           <Button type="button" className="h-12 flex-1" onClick={() => setAEditar(true)} disabled={desativado}>
-            Terminar o NIF
+            {naoExiste ? 'Corrigir o NIF' : 'Terminar o NIF'}
           </Button>
           <Button type="button" variant="outline" className="h-12 flex-1" onClick={() => onNifTexto('')} disabled={desativado}>
             Consumidor Final
@@ -415,7 +448,9 @@ function CartaoCliente({ nifTexto, onNifTexto, desativado }) {
           <div className="space-y-1.5">
             <Label htmlFor="nif-cliente">Contribuinte (opcional)</Label>
             {/* Aceita espaços na escrita ("123 456 789") e conta só os
-                dígitos — é o mesmo que o servidor faz
+                dígitos — e nove dígitos não chegam: têm de passar o dígito de
+                controlo (`nifValidoPT`), que é a mesma conta do servidor
+                (fiscal.py::_nif_portugues_valido). É o mesmo que o servidor faz
                 (fiscal.py::PedidoFinalizarVenda._valida_nif normaliza para
                 dígitos e exige 9). Sem NIF o Vendus assume Consumidor Final,
                 por isso o campo vazio é um estado legítimo e não um erro. */}
@@ -435,7 +470,7 @@ function CartaoCliente({ nifTexto, onNifTexto, desativado }) {
               <Input
                 id="nif-cliente"
                 value={nifTexto}
-                onChange={(e) => onNifTexto(e.target.value.replace(/[^0-9 ]/g, '').slice(0, 11))}
+                onChange={(e) => onNifTexto(nifAteNove(e.target.value))}
                 inputMode="numeric"
                 placeholder="Sem NIF — Consumidor Final"
                 disabled={desativado}
@@ -457,23 +492,34 @@ function CartaoCliente({ nifTexto, onNifTexto, desativado }) {
                 O NIF tem de ter 9 dígitos — faltam {9 - digitos.length}.
               </p>
             )}
+            {naoExiste && (
+              <p className="text-sm text-destructive">
+                Este número não é um NIF válido — confirme-o com o cliente.
+              </p>
+            )}
           </div>
           <div className="flex gap-2">
             <Button type="button" variant="outline" className="h-12 flex-1" onClick={() => onNifTexto('')} disabled={desativado || !nifTexto}>
               Consumidor Final
             </Button>
-            {/* Com o NIF a meio isto FECHA (e não confirma coisa nenhuma), em
-                vez de ficar cinzento: um botão morto aqui era o que empurrava
-                a operadora para o lápis, e o lápis era exactamente o caminho
-                que apagava a mensagem do ecrã sem apagar o problema. O que ela
-                escreveu fica guardado e o cartão fechado di-lo em vermelho. */}
+            {/* Com o NIF por corrigir isto FECHA (e não confirma coisa
+                nenhuma), em vez de ficar cinzento: um botão morto aqui era o
+                que empurrava a operadora para o lápis, e o lápis era
+                exactamente o caminho que apagava a mensagem do ecrã sem apagar
+                o problema. O que ela escreveu fica guardado e o cartão fechado
+                di-lo em vermelho.
+
+                `porCorrigir` e não `incompleto`: com o telefone da queixa
+                escrito, este botão saía realçado a dizer «Confirmar» a quatro
+                dedos da frase que acabara de dizer que o número não existe — e
+                num ecrã que se contradiz ganha sempre o botão aceso. */}
             <Button
               type="button"
-              variant={incompleto ? 'secondary' : 'default'}
+              variant={porCorrigir ? 'secondary' : 'default'}
               className="h-12 flex-1"
               onClick={() => setAEditar(false)}
             >
-              {incompleto ? 'Fechar' : 'Confirmar'}
+              {porCorrigir ? 'Fechar' : 'Confirmar'}
             </Button>
           </div>
         </div>
@@ -998,7 +1044,10 @@ export default function PosFinalizar({
   const haQuadroDePagamentos = mostrarQuadroDePagamentos(pagamentos, comCampoDeValor);
 
   const digitosNif = soDigitos(nifTexto);
-  const nifValido = digitosNif.length === 0 || digitosNif.length === 9;
+  // Sem NIF é um estado legítimo (Consumidor Final). Com NIF, tem de ser um
+  // NIF a sério: contar nove dígitos deixava passar um telefone, e quem o
+  // recusava era o Vendus, no fim, com a venda toda feita.
+  const nifValido = digitosNif.length === 0 || nifValidoPT(digitosNif);
 
   // As DUAS razões para congelar este ecrã — e são duas porque uma delas não
   // sobrevive a nada:
@@ -1036,15 +1085,24 @@ export default function PosFinalizar({
   // faltava fazer. Nada aqui pode bloquear o botão sem produzir uma razão.
   //
   // Os limites são os mesmos do servidor (fiscal.py::PagamentoEntrada: valor
-  // > 0 e no máximo 2 casas decimais; PedidoFinalizarVenda: 9 dígitos no NIF;
-  // finalizar: a soma tem de bater certo ao cêntimo), para o ecrã nunca deixar
-  // passar o que o servidor recusa nem recusar o que ele aceitaria.
+  // > 0 e no máximo 2 casas decimais; PedidoFinalizarVenda: nove dígitos QUE
+  // PASSEM o dígito de controlo, `_nif_portugues_valido`; finalizar: a soma
+  // tem de bater certo ao cêntimo), para o ecrã nunca deixar passar o que o
+  // servidor recusa nem recusar o que ele aceitaria.
   const motivoBloqueio = (() => {
     if (!temLinhas) return { texto: 'A conta não tem nenhum produto — não há nada para faturar.' };
     if (total <= 0) return { texto: 'O total tem de ser positivo para emitir — reveja o desconto aplicado à conta.' };
-    if (!nifValido) {
+    // Duas razões diferentes, e a ordem importa: com quatro dígitos escritos
+    // ninguém pode levar "este NIF não existe" — ainda não acabou de o
+    // escrever. A pergunta "este número existe?" só faz sentido ao nono.
+    if (digitosNif.length > 0 && digitosNif.length < 9) {
       return {
         texto: `O NIF do cliente está por terminar (${digitosNif.length} de 9 dígitos): termine-o no cartão Cliente, ou toque em Consumidor Final.`,
+      };
+    }
+    if (!nifValido) {
+      return {
+        texto: `${nifPorExtenso(digitosNif)} não é um NIF válido: confirme o número com o cliente no cartão Cliente, ou toque em Consumidor Final.`,
       };
     }
     if (pagamentos.length === 0) return { texto: 'Escolha como o cliente vai pagar.' };

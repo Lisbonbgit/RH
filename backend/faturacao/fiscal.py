@@ -1888,6 +1888,37 @@ class PagamentoEntrada(BaseModel):
         return v
 
 
+def _nif_portugues_valido(digitos: str) -> bool:
+    """O dígito de controlo da Autoridade Tributária: os oito primeiros
+    dígitos com pesos 9..2, soma módulo 11, e o resto diz qual tem de ser o
+    nono. É a MESMA aritmética que o Vendus aplica do outro lado.
+
+    Sem ela, contar nove dígitos deixava passar um telefone: 219 363 931 é um
+    fixo de Lisboa, foi ditado ao balcão como NIF, atravessou o portal inteiro
+    e só foi recusado pelo Vendus — com JSON cru à frente de quem estava a
+    atender e a venda toda por refazer.
+
+    **Só a aritmética, nunca uma lista de prefixos permitidos.** As gamas são
+    política da AT e mudam (o 3 das pessoas singulares nasceu quando o 2
+    esgotou; há as bandas 45, 70-79, 98 de não residentes, heranças e fundos):
+    uma tabela copiada hoje recusaria amanhã um cliente com o NIF certo na
+    mão, ao balcão, sem ninguém lhe poder valer. O dígito de controlo não tem
+    esse risco — não existe NIF português emitido que falhe a conta. A única
+    excepção que a aritmética não apanha é o zero à cabeça (000000000 passa o
+    módulo 11), e para esse basta uma comparação: não existe, nem pode existir,
+    um NIF começado por 0.
+
+    Medido em produção a 2026-09-11 antes de escrever isto: dos 211 documentos
+    com NIF de cliente, 211 passam esta regra. Nenhum cliente real é recusado
+    por ela.
+    """
+    if len(digitos) != 9 or digitos[0] == "0":
+        return False
+    soma = sum(int(d) * (9 - i) for i, d in enumerate(digitos[:8]))
+    resto = soma % 11
+    return (0 if resto < 2 else 11 - resto) == int(digitos[8])
+
+
 class PedidoFinalizarVenda(BaseModel):
     pagamentos: List[PagamentoEntrada] = Field(min_length=1)
     # Opcional: sem NIF, o Vendus assume Consumidor Final (ver
@@ -1900,9 +1931,25 @@ class PedidoFinalizarVenda(BaseModel):
     def _valida_nif(cls, v):
         if v is None or not v.strip():
             return None
-        digitos = "".join(c for c in v if c.isdigit())
+        # `c in "0123456789"` e NÃO `c.isdigit()`: o `isdigit()` do Python é
+        # Unicode e aceita algarismos árabe-índicos, de largura total e até
+        # expoentes — o `\D` do ecrã (lib/pos.js) só conhece o teclado normal.
+        # Com os dois alfabetos diferentes, "٢١٩٣٦٣٩٣٥" entrava por aqui e ia
+        # inteiro para o documento fiscal, e o "²" fazia o `int()` rebentar com
+        # uma mensagem de Python à frente de quem estava a atender.
+        digitos = "".join(c for c in v if c in "0123456789")
         if len(digitos) != 9:
             raise ValueError("O NIF tem de ter 9 dígitos.")
+        # A recusa acontece AQUI, no validador do Pydantic, e é de propósito:
+        # sai como 422 antes de a rota correr, portanto antes da reserva
+        # fiscal (`_reservar_ext_ref`). Levantada mais abaixo, deixava
+        # reservas presas por um NIF mal escrito.
+        if not _nif_portugues_valido(digitos):
+            raise ValueError(
+                "%s %s %s não é um NIF válido — confirme o número com o "
+                "cliente, ou emita sem NIF (Consumidor Final)."
+                % (digitos[:3], digitos[3:6], digitos[6:])
+            )
         return digitos
 
 
@@ -2138,6 +2185,36 @@ async def finalizar(
             # `DesfechoDaEmissaoIncerto`).
             logger.error("[faturacao] finalizar sem desfecho conhecido: %s", e)
             raise HTTPException(status_code=503, detail=str(e))
+        except VendusHTTPErro as e:
+            # **O Vendus RECUSOU o cliente — e isso não é "indisponível".**
+            #
+            # O 502 leva o ecrã ao aviso «O Vendus não respondeu» com o corpo
+            # cru por baixo (`VendusHTTPErro` traz 300 caracteres de JSON), e
+            # as duas coisas são falsas ao balcão: ele respondeu, e disse
+            # porquê. Um NIF que passa a aritmética mas que a AT não conhece
+            # cai aqui — é um dado por corrigir, e um 422 põe-no no aviso de
+            # dados (`PosVenda.js::tipoDoErroDeEmissao`), com uma frase em
+            # português em vez do JSON.
+            #
+            # Repetir continua a ser seguro: `VendusHTTPErro` é prova de que
+            # nada saiu (ver `_ERROS_COM_PROVA_DE_QUE_NADA_SAIU`) e a reserva
+            # já foi libertada antes de chegarmos aqui.
+            if "unable to create client" in (e.corpo or "").lower():
+                # A venda, e NÃO o número: o log é o único sítio do módulo que
+                # escreveria o contribuinte de uma pessoa identificável, e ele
+                # sai da máquina sem os cuidados que a base de dados tem. Quem
+                # precisa do número é a operadora, e esse vai na frase abaixo.
+                logger.warning("[faturacao] Vendus recusou o cliente da venda %s: %s", venda_id, e)
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "O Vendus recusou o NIF %s — não é um contribuinte que "
+                        "ele conheça. Confirme o número com o cliente, ou emita "
+                        "sem NIF (Consumidor Final). Não saiu nenhum documento."
+                        % (dados.nif or "")
+                    ),
+                )
+            raise HTTPException(status_code=502, detail="Vendus indisponível: %s" % e)
         except VendusErro as e:
             raise HTTPException(status_code=502, detail="Vendus indisponível: %s" % e)
 

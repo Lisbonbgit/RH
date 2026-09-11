@@ -189,6 +189,32 @@ export const lerNifDaConta = (vendaId) => {
   } catch (e) { return ''; }
 };
 
+// **... e o NIF que o cliente ditou tem de EXISTIR.**
+//
+// Nove dígitos não são um NIF: 219 363 931 é um fixo de Lisboa e foi ditado
+// ao balcão como contribuinte. O ecrã mostrava-o a negrito como cliente
+// válido, o EMITIR ficava aceso, e quem dizia que não era o Vendus — com
+// JSON cru à frente do cliente e a venda por refazer.
+//
+// O dígito de controlo da AT: os oito primeiros dígitos com pesos 9..2,
+// módulo 11. É a MESMA conta do servidor (`fiscal.py::_nif_portugues_valido`)
+// e tem de continuar a ser: um número que o ecrã aceite e a API recuse (ou o
+// contrário) deixa a operadora sem saber em quem acreditar.
+//
+// Isto NÃO é a guarda — a guarda é o servidor, que qualquer curl ou app antiga
+// alcança na mesma. É para o balcão saber ANTES de carregar em EMITIR, e não
+// pelo 400 do Vendus com a fila à espera. Só a aritmética, nunca uma lista de
+// prefixos: as gamas da AT mudam, e uma tabela velha recusa um cliente com o
+// NIF certo na mão (ver a docstring do lado do servidor).
+export const nifValidoPT = (texto) => {
+  const digitos = String(texto || '').replace(/\D/g, '');
+  if (digitos.length !== 9 || digitos[0] === '0') return false;
+  let soma = 0;
+  for (let i = 0; i < 8; i += 1) soma += Number(digitos[i]) * (9 - i);
+  const resto = soma % 11;
+  return (resto < 2 ? 0 : 11 - resto) === Number(digitos[8]);
+};
+
 
 // --- Dispositivo -------------------------------------------------------------
 
