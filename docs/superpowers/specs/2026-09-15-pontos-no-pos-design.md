@@ -113,14 +113,25 @@ Pedido: `{atcud_origem, nc_id, numero_nc, valor_nc, caucao_nc}`.
 
 ## App L'Açaí — ecrã (precisa de build, **só com autorização do dono**)
 
-- Início: a estatística "Código" do cartão de pontos abre o ecrã **"O meu QR"**:
-  - QR grande em fundo branco com margem, o código de cliente por baixo e "renova em Ns";
+Decisões do dono sobre os ecrãs (2026-09-15, depois de ver o cartão do Início):
+
+- **Ecrã novo "O meu QR":**
+  - QR grande em fundo branco com margem, o código de cliente COMPLETO por baixo e "renova em Ns";
   - texto: "Mostra este QR na caixa antes de pagar para ganhares pontos.";
   - pede um token novo a cada 40 s e sempre que o ecrã ganha foco; sem rede, mostra o erro e um "Tentar de novo";
   - mantém o ecrã aceso enquanto está aberto (`expo-keep-awake`, já instalado).
-- A biblioteca `react-native-qrcode-svg` e o `react-native-svg` já estão no binário 1.0.6.
-- `app.config.js`: o texto da permissão da câmara deixa de falar do caixa ("usada para ler o QR Code das faturas").
-- FAQ (`institucional.tsx`): explica que nas lojas os pontos se ganham a mostrar o QR na caixa.
+- **Cartão de pontos do Início** (`inicio.tsx`):
+  - ganha um botão **"Mostrar QR na caixa"** que abre "O meu QR";
+  - a estatística "Código" sai. Mostrava `client_code.slice(0, 6)` ("La5802"), que o dono confundia com o código da conta ("LA58027972") — é o mesmo código cortado;
+  - tocar no resto do cartão continua a levar à Felicidade.
+- **Topo da Felicidade** (`fidelidade.tsx`): mostra o mesmo que o cartão do Início — saldo, nível, pontos totais e "rumo ao próximo nível" com a barra — mais o botão "Mostrar QR na caixa". Quem toca no cartão chega a um sítio com a mesma informação.
+- **O "Ler fatura" desaparece da app neste build:**
+  - saem o cartão "Ler fatura e ganhar pontos" do Início e o "Lê o QR da fatura" da Felicidade, e o ecrã `ler-fatura.tsx` deixa de ter entrada;
+  - a regra no servidor continua a ser o interruptor: as versões antigas continuam a ler talões até o dono o desligar;
+  - reabrir o Ler fatura exigiria outro build (custo aceite pelo dono).
+- `react-native-qrcode-svg` e `react-native-svg` já estão no binário 1.0.6.
+- `app.config.js`: o texto da permissão da câmara deixa de falar do caixa a ler o QR de fidelidade dos clientes. Tem de descrever o uso que a câmara ainda tem no binário.
+- FAQ (`institucional.tsx`): explica que nas lojas os pontos se ganham a mostrar o QR na caixa antes de pagar. Sai tudo o que fala de ler a fatura e do prazo.
 
 ## POS (RH) — ecrã
 
