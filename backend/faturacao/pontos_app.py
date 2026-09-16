@@ -23,12 +23,13 @@ lado ser simples: um reenvio nunca credita duas vezes.
 import asyncio
 import logging
 import os
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
@@ -503,3 +504,33 @@ async def enfileirar_estorno(db, nota: Dict, documento_nc: Dict, *,
         agora or datetime.now(timezone.utc),
         documento_id=nota["documento_id"], nc_documento_id=documento_nc["id"],
         venda_id=nota.get("venda_id"), primeiro_nome=credito.get("primeiro_nome")))
+
+
+# --- A volta do cron -------------------------------------------------------------
+
+# O tecto de linhas por volta. Com a app em baixo, cada linha pode gastar os 4 s
+# do pedido: 50 são 200 s no pior caso, e duas voltas sobrepostas não se pisam
+# (a reserva decide). Num dia normal a volta encontra zero ou uma.
+_LIMITE_POR_VOLTA = 50
+
+
+@router.post("/cron/pontos-app")
+async def cron_pontos_app(key: str = Query(...)) -> dict:
+    """A porta de 1 em 1 minuto (`faturacao-pontos-cron.sh`). Protegida pela
+    `CRON_KEY`, sem JWT — o mesmo padrão de `/cron/sincronizar-app`: sem a
+    variável no ambiente ninguém entra, e `compare_digest` para o tempo da
+    comparação não dizer quantos caracteres estavam certos.
+
+    Envia uma a uma as linhas pendentes que já chegaram à hora e pára quando
+    não houver mais nenhuma — uma linha que falha fica com a próxima tentativa
+    no futuro, por isso a mesma volta não lhe volta a pegar."""
+    chave = os.environ.get("CRON_KEY")
+    if not chave or not secrets.compare_digest(str(key), str(chave)):
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+    db = obter_db()
+    enviadas = 0
+    for _ in range(_LIMITE_POR_VOLTA):
+        if await enviar(db) is None:
+            break
+        enviadas += 1
+    return {"enviadas": enviadas}

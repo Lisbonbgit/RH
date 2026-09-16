@@ -58,7 +58,10 @@ ROTAS_DE_CRON = {"/api/faturacao/cron/relatorio-diario",
                  # da app L'Açaí. Mesma guarda, com testes próprios em
                  # `test_sincronizacao_rota.py`: sem `CRON_KEY` no ambiente,
                  # 403 — e nem a palavra "None" a abre.
-                 "/api/faturacao/cron/sincronizar-app"}
+                 "/api/faturacao/cron/sincronizar-app",
+                 # O envio dos pontos L'Açaí à app, de 1 em 1 minuto. Mesma
+                 # guarda, com testes próprios em `test_os_pontos_da_app.py`.
+                 "/api/faturacao/cron/pontos-app"}
 PREFIXO_POS = "/api/faturacao/pos/"
 
 _MECANISMOS_POS = (dispositivo_atual, operador_atual)

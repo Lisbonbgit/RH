@@ -989,3 +989,69 @@ def test_os_pontos_a_rebentar_nao_estragam_a_nota_de_credito(monkeypatch):
     assert resposta["numero"]
     gravada = _corre(db[COLECOES["notas_credito"]].find_one({"id": resposta["id"]}))
     assert gravada["estado"] == "emitida"
+
+
+# --- A volta do cron -------------------------------------------------------------
+
+_SCRIPT_DO_CRON = Path(__file__).resolve().parents[3] / "faturacao-pontos-cron.sh"
+
+
+def test_sem_a_chave_certa_a_porta_do_cron_fecha(monkeypatch):
+    monkeypatch.setenv("CRON_KEY", "a-chave-certa")
+    with pytest.raises(HTTPException) as e:
+        _corre(pontos_app.cron_pontos_app(key="a-errada"))
+    assert e.value.status_code == 403
+
+
+def test_sem_CRON_KEY_no_ambiente_nem_a_palavra_None_abre_a_porta(monkeypatch):
+    monkeypatch.delenv("CRON_KEY", raising=False)
+    with pytest.raises(HTTPException) as e:
+        _corre(pontos_app.cron_pontos_app(key="None"))
+    assert e.value.status_code == 403
+
+
+def test_a_volta_envia_as_linhas_vencidas_e_deixa_as_outras(monkeypatch, app):
+    agora = datetime.now(timezone.utc)
+    antes = agora - timedelta(minutes=5)
+    vencida_1 = _credito(chave="credito:doc-1", criado_em=_iso(antes), proxima_tentativa_em=_iso(antes))
+    vencida_2 = _credito(chave="credito:doc-2", criado_em=_iso(antes), proxima_tentativa_em=_iso(antes))
+    futura = _credito(chave="credito:doc-3", proxima_tentativa_em=_iso(agora + timedelta(hours=1)))
+    db, fila = _db_da_fila(vencida_1, futura, vencida_2)
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+    monkeypatch.setenv("CRON_KEY", "a-chave-certa")
+    app.responde(200, {"estado": "creditado", "pontos": 17})
+
+    assert _corre(pontos_app.cron_pontos_app(key="a-chave-certa")) == {"enviadas": 2}
+    assert [l["estado"] for l in fila.linhas()] == ["feito", "pendente", "feito"]
+
+
+def test_com_a_app_em_baixo_a_volta_tenta_cada_linha_uma_vez_e_para(monkeypatch, app):
+    antes = _iso(datetime.now(timezone.utc) - timedelta(minutes=5))
+    db, _ = _db_da_fila(_credito(criado_em=antes, proxima_tentativa_em=antes))
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+    monkeypatch.setenv("CRON_KEY", "a-chave-certa")
+    app.responde(503, {"detail": "em baixo"})
+
+    assert _corre(pontos_app.cron_pontos_app(key="a-chave-certa")) == {"enviadas": 1}
+    assert len(app.pedidos) == 1
+
+
+def test_o_script_do_cron_bate_numa_rota_POST_que_existe_mesmo():
+    """O endereço LIDO do script é confrontado com o router — nunca afirmado
+    à mão (um caminho errado dá 404 de minuto a minuto, e um cron que falha não
+    avisa ninguém)."""
+    from faturacao import router
+    texto = _SCRIPT_DO_CRON.read_text(encoding="utf-8")
+    enderecos = re.findall(r'"http://localhost:8000(/api/[^"?]+)', texto)
+    assert enderecos, "o script não chama nenhum endereço — foi reescrito?"
+    posts = {r.path for r in router.routes if "POST" in r.methods}
+    assert set(enderecos) <= posts, (enderecos, sorted(p for p in posts if "/cron/" in p))
+    assert 'os.environ["CRON_KEY"]' in texto, "a chave vem do contentor, nunca do crontab"
+
+
+def test_o_script_do_cron_e_executavel_e_diz_como_se_instala_de_minuto_a_minuto():
+    texto = _SCRIPT_DO_CRON.read_text(encoding="utf-8")
+    assert os.access(_SCRIPT_DO_CRON, os.X_OK), (
+        "falta o bit de execução: git update-index --chmod=+x faturacao-pontos-cron.sh")
+    assert re.search(r"^#\s+\* \* \* \* \*\s+/root/RH/faturacao-pontos-cron\.sh",
+                     texto, re.MULTILINE)
