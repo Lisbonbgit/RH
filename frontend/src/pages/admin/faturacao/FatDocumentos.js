@@ -72,6 +72,10 @@ const MOTIVOS_DOS_PONTOS = {
   ligacao_desconhecida: 'a app não reconhece a leitura do QR',
   ligacao_expirada: 'a fatura saiu muito depois de o QR ser lido',
   ligacao_ja_usada: 'aquele QR já deu pontos noutra fatura',
+  // Não é recusa de negócio: é a app a recusar o CORPO à porta (um 400/413/422,
+  // ATCUD em falta, contrato desalinhado). Repetir não muda nada, e por isso
+  // aparece em minutos e não ao fim das 24 h.
+  contrato_recusado: 'a app não aceitou os dados desta fatura',
 };
 
 const textoDosPontosApp = (p) => {

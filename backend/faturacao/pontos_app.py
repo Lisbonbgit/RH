@@ -356,6 +356,21 @@ async def enviar(db, linha_id: Optional[str] = None, *, agora: Optional[datetime
                              {"estado": "recusado", "motivo": corpo.get("motivo")})
     if estado_da_app == "sem_efeito":
         return await _fechar(db, linha, reserva, agora, {"estado": "sem_efeito"})
+    # **As recusas da PORTA da app também não mudam por se repetirem.** Um 422
+    # é o corpo recusado pelo validador (`CreditarReq`) e nunca vai passar a
+    # 200; no saco do 5xx eram 13 tentativas espalhadas por 24 h e, no fim, a
+    # frase «Falhou ao fim de 24 h» — a de uma app em baixo, não a de um
+    # contrato partido. O gestor vê o problema em minutos e a app deixa de
+    # levar pedidos que já se sabe que vai recusar.
+    #
+    # O 404 fica DE FORA de propósito: é a rota por deployar (o RH a subir
+    # antes da app) e essa passa sozinha. O 401 também — chaves trocadas
+    # arranjam-se no `.env` sem reemitir nada.
+    if resposta.status_code in (400, 413, 422):
+        return await _fechar(db, linha, reserva, agora, {
+            "estado": "recusado", "motivo": "contrato_recusado",
+            "ultimo_erro": "HTTP %s: %s" % (resposta.status_code, resposta.text[:200]),
+        })
     # 401 (chaves trocadas), 5xx, ou um 200 que não diz nada do contrato.
     return await _falhou(db, linha, reserva, agora,
                          "HTTP %s: %s" % (resposta.status_code, resposta.text[:200]))

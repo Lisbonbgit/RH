@@ -388,6 +388,38 @@ def test_um_erro_tecnico_fica_pendente_conta_a_tentativa_e_espera_um_minuto(
     assert gravada["a_enviar_ate"] == pontos_app._NUNCA
 
 
+@pytest.mark.parametrize("estado_http", [400, 413, 422])
+def test_uma_recusa_da_PORTA_da_app_nao_se_repete_durante_24_horas(monkeypatch, app, estado_http):
+    """Um 422 é o corpo recusado pelo validador da app (`CreditarReq`) — nunca
+    vai passar a 200 por se repetir. Metido no mesmo saco do 5xx eram 13
+    tentativas espalhadas por 24 h e, no fim, «Falhou ao fim de 24 h», que é a
+    frase de uma app em baixo e não a de um contrato partido: o gestor só
+    percebia o problema um dia depois."""
+    db, fila = _db_da_fila(_credito())
+    app.responde(estado_http, {"detail": [{"loc": ["body", "numero"]}]})
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    gravada = fila.linhas()[0]
+    assert (gravada["estado"], gravada["motivo"]) == ("recusado", "contrato_recusado")
+    assert "HTTP %d" % estado_http in (gravada["ultimo_erro"] or "")
+    assert _corre(pontos_app.enviar(db, agora=AGORA + timedelta(days=1))) is None
+    assert len(app.pedidos) == 1, "uma recusa da porta não se repete"
+
+
+def test_um_404_do_SERVIDOR_da_app_CONTINUA_a_repetir_se(monkeypatch, app):
+    """O 404 fica de fora das recusas permanentes de propósito: é a rota por
+    deployar (o RH a subir antes da app, o passo 4 da ordem de arranque) e essa
+    passa sozinha quando a app chegar."""
+    db, fila = _db_da_fila(_credito())
+    app.responde(404, {"detail": "Not Found"})
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    gravada = fila.linhas()[0]
+    assert (gravada["estado"], gravada["tentativas"]) == ("pendente", 1)
+
+
 @pytest.mark.parametrize("erro", [httpx.ConnectError("sem rota"),
                                   httpx.ReadTimeout("a app não respondeu")])
 def test_a_rede_em_baixo_ou_o_tecto_dos_4_segundos_fica_pendente(monkeypatch, app, erro):
