@@ -30,7 +30,8 @@ from pathlib import Path
 import pytest
 
 from .test_a_faixa_do_modo_no_ecra import _montar_no_node
-from .test_arredondamento_do_ecra import _corpo_da_funcao, _ler
+from .test_arredondamento_do_ecra import _corpo_da_funcao, _corpo_da_seta, _ler
+from .test_as_fotos_no_ecra import _COMPONENTES as _COMPONENTES_COM_ID
 
 _POS_FINALIZAR = (Path(__file__).resolve().parents[3]
                   / "frontend" / "src" / "pages" / "pos" / "PosFinalizar.js")
@@ -262,3 +263,125 @@ def test_sem_NIF_continua_a_ser_Consumidor_Final(finalizar_com_nif):
     assert ecra["emitir"] == "nao", (
         "O EMITIR ficou morto numa venda sem NIF — é a venda mais comum de todas."
     )
+
+
+# --- O leitor de QR com o foco no campo do NIF --------------------------------
+#
+# Os pontos L'Açaí passam a ganhar-se a mostrar o QR da app na caixa, e o
+# leitor do POS HP é um TECLADO: escreve `LQ` + 22 letras e dígitos, uma tecla
+# de cada vez, e dá Enter. Com o foco no NIF por engano, cada tecla chega ao
+# `onChange` sozinha — e ignorar só as alterações com letras deixava entrar os
+# dígitos do código, um a um, no NIF da fatura. Uma fatura real à AT com um
+# NIF feito de pedaços de um QR.
+
+_CODIGO_DO_QR = "LQ7K2MN8P3QRSTUV4WXYZ9AB"
+
+
+def _no_campo(inicial, teclas, tmp_path):
+    """Corre o `escritaNoNif` do próprio ecrã sobre `teclas` —
+    `[[tecla, ms desde a anterior], ...]` — como o browser as entrega: cada
+    uma acrescentada ao que o campo tem. Devolve o que fica no campo."""
+    ecra = _ler(_POS_FINALIZAR)
+    saida = _montar_no_node("\n".join([
+        _corpo_da_funcao(ecra, "const nifAteNove = (texto) =>", _POS_FINALIZAR),
+        _corpo_da_seta(ecra, "const ESPERA_DO_LEITOR_MS =", _POS_FINALIZAR),
+        _corpo_da_funcao(
+            ecra, "const escritaNoNif = (texto, agora, fechadoAte) =>", _POS_FINALIZAR),
+        "let campo = %s;" % json.dumps(inicial),
+        "let fechadoAte = 0;",
+        "let agora = 1000;",
+        "for (const [tecla, passou] of %s) {" % json.dumps(teclas),
+        "  agora += passou;",
+        "  const escrita = escritaNoNif(campo + tecla, agora, fechadoAte);",
+        "  fechadoAte = escrita.fechadoAte;",
+        "  if (escrita.texto !== null) campo = escrita.texto;",
+        "}",
+        "process.stdout.write(JSON.stringify({ campo }));",
+    ]), tmp_path, "escrita-no-nif.js")
+    return saida["campo"]
+
+
+@pytest.mark.parametrize("inicial", ["", "5175"])
+def test_o_QR_escrito_pelo_leitor_no_campo_do_NIF_nao_deixa_la_nenhum_digito(inicial, tmp_path):
+    """A rajada do leitor: 15 ms entre teclas. Nem as letras nem os dígitos do
+    código entram — com o NIF vazio ou a meio."""
+    teclas = [[tecla, 15] for tecla in _CODIGO_DO_QR]
+    assert _no_campo(inicial, teclas, tmp_path) == inicial, (
+        "Os dígitos do QR entraram no NIF da fatura.")
+
+
+def test_depois_de_uma_letra_por_engano_a_mao_volta_a_escrever_passado_meio_segundo(tmp_path):
+    """O fecho não pode prender quem escreveu uma letra à mão: meio segundo
+    depois, o campo aceita outra vez."""
+    assert _no_campo("5175", [["a", 0], ["6", 600]], tmp_path) == "51756"
+
+
+def test_digitos_e_espacos_escritos_a_mao_continuam_a_entrar(tmp_path):
+    """O guarda contra o crivo apertado de mais: a escrita normal, aos grupos
+    de três, com o ritmo de um dedo."""
+    teclas = [[tecla, 150] for tecla in "219 363 935"]
+    assert _no_campo("", teclas, tmp_path) == "219 363 935"
+
+
+@pytest.fixture(scope="module")
+def leitor_no_nif(tmp_path_factory):
+    """O `PosFinalizar` montado com o editor do NIF ABERTO — o sítio errado
+    para o leitor escrever. Primeiro uma tecla à mão (a prova de que escrever
+    no campo funciona nesta montagem: sem ela, um campo que não aceitasse
+    nada deixava o guarda verde), depois a rajada do QR."""
+    cenario = "\n".join([
+        _COMPONENTES_COM_ID,
+        # O teclado do NIF vem do PosCampoValor, que o preâmbulo substitui por
+        # uma marca; sem o verdadeiro, abrir o editor rebentava.
+        "SUBSTITUIDOS.delete(path.join(POS, 'PosCampoValor.js'));",
+        "const lib = carregar(path.join(RAIZ, 'lib', 'pos.js'));",
+        "const Finalizar = carregar(path.join(POS, 'PosFinalizar.js')).default;",
+        "function escrever(el, valor) {",
+        "  Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')",
+        "    .set.call(el, valor);",
+        "  el.dispatchEvent(new dom.window.Event('input', { bubbles: true }));",
+        "}",
+        "(async () => {",
+        "  sessionStorage.clear();",
+        "  lib.guardarNifDaConta('v1', '5175');",
+        "  const alvo = document.getElementById('raiz');",
+        "  const raiz = createRoot(alvo);",
+        "  await act(async () => { raiz.render(React.createElement(Finalizar, {",
+        "    venda: %s," % _VENDA,
+        "    tiposPagamento: [{ id: 't1', nome: 'Dinheiro', pronto: true }],",
+        "    onVoltar: () => {}, onEmitir: () => {}, onAplicarDesconto: () => {},",
+        "  })); });",
+        "  await act(async () => {});",
+        "  const terminar = [...alvo.querySelectorAll('button')]",
+        "    .find((b) => (b.textContent || '').includes('Terminar o NIF'));",
+        "  if (!terminar) throw new Error('sem o botão Terminar o NIF: '",
+        "    + textoVisivel(alvo).slice(0, 400));",
+        "  await act(async () => { terminar.click(); });",
+        "  const campo = () => alvo.querySelector('#nif-cliente');",
+        "  if (!campo()) throw new Error('o editor do NIF não abriu: '",
+        "    + textoVisivel(alvo).slice(0, 400));",
+        "  await act(async () => { escrever(campo(), campo().value + '6'); });",
+        "  const aMao = campo().value;",
+        "  for (const tecla of %s) {" % json.dumps(_CODIGO_DO_QR),
+        "    await act(async () => { escrever(campo(), campo().value + tecla); });",
+        "  }",
+        "  const depoisDoLeitor = campo().value;",
+        "  await act(async () => { raiz.unmount(); });",
+        "  process.stdout.write(JSON.stringify({ aMao, depoisDoLeitor }));",
+        "})().catch((e) => { console.error(e); process.exit(3); });",
+    ])
+    return _montar_no_node(
+        cenario, tmp_path_factory.mktemp("leitor-no-nif"), "montar-leitor-no-nif.js")
+
+
+def test_no_ecra_montado_uma_tecla_a_mao_entra_no_NIF(leitor_no_nif):
+    assert leitor_no_nif["aMao"] == "51756", (
+        "Escrever no campo não funciona nesta montagem — o guarda seguinte "
+        "mediria o vazio.")
+
+
+def test_no_ecra_montado_o_QR_do_leitor_nao_mexe_no_NIF(leitor_no_nif):
+    """O fio entre a regra e o campo: um `onChange` que voltasse a chamar o
+    `nifAteNove` directamente punha aqui `517567283`."""
+    assert leitor_no_nif["depoisDoLeitor"] == "51756", (
+        "O leitor escreveu no NIF: %r" % leitor_no_nif["depoisDoLeitor"])

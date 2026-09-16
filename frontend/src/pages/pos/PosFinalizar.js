@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import {
   ArrowLeft, Pencil, X, ChevronDown, Loader2, AlertTriangle, CheckCircle2,
@@ -148,6 +148,27 @@ const nifAteNove = (texto) => {
     if (limpo[i] !== ' ' && (digitos += 1) > 9) return limpo.slice(0, i);
   }
   return limpo;
+};
+
+// **O leitor de QR com o foco no sítio errado.** O leitor do POS HP é um
+// teclado: escreve o código dos pontos L'Açaí (`LQ` + 22 letras e dígitos)
+// uma tecla de cada vez e dá Enter. Se o foco estiver aqui, cada tecla chega
+// como uma alteração SEPARADA — e ignorar só as que trazem letras não chega:
+// as letras caíam, os dígitos do código entravam um a um, e a fatura saía com
+// um NIF feito de pedaços do QR (com o QR de exemplo, «5175» passava a
+// «517572834»).
+//
+// Por isso uma letra FECHA o campo, e cada alteração que chegue com ele
+// fechado volta a empurrar o fecho: a rajada do leitor (dezenas de ms entre
+// teclas) cai inteira, e quem escreveu uma letra à mão volta a escrever
+// passado meio segundo. `texto: null` = deixar o campo como estava.
+const ESPERA_DO_LEITOR_MS = 500;
+
+const escritaNoNif = (texto, agora, fechadoAte) => {
+  if (/\p{L}/u.test(String(texto || '')) || agora < fechadoAte) {
+    return { texto: null, fechadoAte: agora + ESPERA_DO_LEITOR_MS };
+  }
+  return { texto: nifAteNove(texto), fechadoAte };
 };
 
 // "Dinheiro", "Dinheiro e Multibanco", "Dinheiro, Multibanco e Glovo" — para as
@@ -386,6 +407,8 @@ function CartaoTotal({ venda, desativado, onAplicarDesconto }) {
 // Final) sem ser preciso reabrir o lápis.
 function CartaoCliente({ nifTexto, onNifTexto, desativado }) {
   const [aEditar, setAEditar] = useState(false);
+  // Até quando o campo ignora escrita — ver `escritaNoNif`.
+  const fechadoAte = useRef(0);
   const digitos = soDigitos(nifTexto);
   const incompleto = digitos.length > 0 && digitos.length < 9;
   // Nove dígitos que não são NIF nenhum — um telefone, um engano de um
@@ -470,7 +493,11 @@ function CartaoCliente({ nifTexto, onNifTexto, desativado }) {
               <Input
                 id="nif-cliente"
                 value={nifTexto}
-                onChange={(e) => onNifTexto(nifAteNove(e.target.value))}
+                onChange={(e) => {
+                  const escrita = escritaNoNif(e.target.value, Date.now(), fechadoAte.current);
+                  fechadoAte.current = escrita.fechadoAte;
+                  if (escrita.texto !== null) onNifTexto(escrita.texto);
+                }}
                 inputMode="numeric"
                 placeholder="Sem NIF — Consumidor Final"
                 disabled={desativado}
