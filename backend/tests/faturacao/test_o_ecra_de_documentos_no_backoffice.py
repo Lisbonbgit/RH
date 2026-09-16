@@ -173,3 +173,110 @@ def test_a_fatura_aberta_diz_QUEM_a_emitiu_e_ONDE(ecra):
     assert "L'Açaí Alfragide" in aberta, aberta[:600]
     assert "Caixa Alfragide" in aberta, aberta[:600]
     assert "ATCUD A-1" in aberta, aberta[:600]
+
+
+# --- Os pontos L'Açaí do documento ---------------------------------------------
+#
+# A pergunta que chega ao gestor: «mostrei a app na caixa e não recebi os
+# pontos». O detalhe da fatura responde com a linha da fila `fat_pontos_app`
+# que o servidor manda em `pontos_app` — numa fatura o crédito, numa nota de
+# crédito o estorno. Cada estado em palavras, e um motivo que o ecrã ainda não
+# conheça aparece em cru: nunca em silêncio.
+
+_BASE_PONTOS = {
+    "tipo": "credito", "estado": "pendente", "pontos": None, "primeiro_nome": "Ana",
+    "motivo": None, "tentativas": 0, "ultimo_erro": None,
+    "atualizado_em": "2026-08-10T12:01:00+00:00",
+}
+
+_ESTADOS_DOS_PONTOS = [
+    ("credito_feito", "FS", {"estado": "feito", "pontos": 17, "tentativas": 1},
+     "17 pontos para Ana"),
+    ("um_ponto", "FS", {"estado": "feito", "pontos": 1, "tentativas": 1},
+     "1 ponto para Ana"),
+    ("a_tentar", "FS", {"tentativas": 3, "ultimo_erro": "HTTP 503"},
+     "A tentar enviar (3 tentativas — último erro: HTTP 503)"),
+    ("a_espera", "FS", {},
+     "À espera de ser enviado."),
+    # **Pendente com 0 tentativas mas com erro.** O servidor tem dois caminhos
+    # que esperam de propósito sem gastar tentativa: o estorno à espera do
+    # crédito e — o grave — a integração sem chave, em que NENHUM ponto está a
+    # ser enviado em lado nenhum. Decidida a frase por `tentativas`, o detalhe
+    # de todas as faturas dizia a frase tranquila de quem acabou de emitir, e
+    # esta é a única janela que o gestor tem para a fila.
+    ("a_espera_com_erro", "FS", {"ultimo_erro": "integração não configurada"},
+     "À espera — último erro: integração não configurada"),
+    ("plataforma", "FS", {"estado": "recusado", "motivo": "plataforma", "tentativas": 1},
+     "Recusado: pagamento por plataforma"),
+    ("motivo_novo", "FS", {"estado": "recusado", "motivo": "motivo_que_ainda_nao_existe"},
+     "Recusado: motivo_que_ainda_nao_existe"),
+    ("contrato_recusado", "FS",
+     {"estado": "recusado", "motivo": "contrato_recusado", "tentativas": 1,
+      "ultimo_erro": "HTTP 422: {\"detail\": [{\"loc\": [\"body\", \"atcud\"]}]}"},
+     "Recusado: a app não aceitou os dados desta fatura"),
+    ("falhado", "FS", {"estado": "falhado", "tentativas": 40, "ultimo_erro": "timeout"},
+     "Falhou ao fim de 24 h"),
+    ("estorno_feito", "NC", {"tipo": "estorno", "estado": "feito", "pontos": 5},
+     "Retirados 5 pontos a Ana"),
+    ("estorno_sem_efeito", "NC", {"tipo": "estorno", "estado": "sem_efeito"},
+     "Sem efeito — a fatura não chegou a dar pontos."),
+]
+
+
+@pytest.fixture(scope="module")
+def pontos(tmp_path_factory):
+    casos = {
+        nome: dict(_FATURA, tipo=tipo, pontos_app=dict(_BASE_PONTOS, **mudancas))
+        for nome, tipo, mudancas, _frase in _ESTADOS_DOS_PONTOS
+    }
+    casos["sem_pontos"] = dict(_FATURA, pontos_app=None)
+    cenario = "\n".join([
+        _COMPONENTES,
+        "const ADMIN = path.join(RAIZ, 'pages', 'admin', 'faturacao');",
+        "const FatDocumentos = carregar(path.join(ADMIN, 'FatDocumentos.js')).default;",
+        "const CASOS = %s;" % json.dumps(casos, ensure_ascii=False),
+        "RESPOSTAS_GESTAO['/faturacao/lojas'] = () => ({ data: %s });"
+        % json.dumps(_LOJAS, ensure_ascii=False),
+        "RESPOSTAS_GESTAO['/faturacao/documentos'] = () => ({ data: %s });"
+        % json.dumps(_LISTA, ensure_ascii=False),
+        "const alvo = document.getElementById('raiz');",
+        "const raiz = createRoot(alvo);",
+        "await act(async () => { raiz.render(React.createElement(FatDocumentos)); });",
+        "await act(async () => {});",
+        "await act(async () => {});",
+        "const linha = alvo.querySelector('[data-testid=\"documento-d1\"]');",
+        "if (!linha) throw new Error('sem linha da fatura: ' + textoVisivel(alvo).slice(0, 400));",
+        "const saida = {};",
+        # Cada caso é o MESMO documento aberto outra vez com outra resposta do
+        # servidor — o `sem_pontos` fica em último de propósito: prova que o
+        # bloco desaparece, e não só que nunca apareceu.
+        "for (const [nome, documento] of Object.entries(CASOS)) {",
+        "  RESPOSTAS_GESTAO['/faturacao/documentos/d1'] = () => ({ data: documento });",
+        "  await act(async () => { linha.click(); });",
+        "  await act(async () => {});",
+        "  const bloco = alvo.querySelector('[data-testid=\"documento-pontos-app\"]');",
+        "  saida[nome] = { aberta: textoVisivel(alvo).includes('Itens'),",
+        "    pontos: bloco ? textoVisivel(bloco) : null };",
+        "}",
+        "process.stdout.write(JSON.stringify(saida));",
+    ])
+    return _montar_no_node(
+        "(async () => {\n%s\n})().catch((e) => {"
+        " process.stderr.write(String(e && e.stack || e)); process.exit(1); });"
+        % cenario, tmp_path_factory.mktemp("documentos-pontos"), "montar-documentos-pontos.js")
+
+
+@pytest.mark.parametrize("nome,frase", [(n, f) for n, _t, _m, f in _ESTADOS_DOS_PONTOS])
+def test_o_detalhe_diz_o_que_aconteceu_aos_pontos_L_Acai(pontos, nome, frase):
+    caso = pontos[nome]
+    assert caso["aberta"], "o detalhe do documento não abriu"
+    assert caso["pontos"] is not None, "o detalhe não mostra a linha dos pontos L'Açaí"
+    assert "Pontos L'Açaí" in caso["pontos"], caso["pontos"]
+    assert frase in caso["pontos"], caso["pontos"]
+
+
+def test_um_documento_sem_QR_nao_mostra_linha_de_pontos(pontos):
+    """A maioria dos documentos. Uma linha vazia ou um «—» lia-se como «os
+    pontos perderam-se»."""
+    assert pontos["sem_pontos"]["aberta"]
+    assert pontos["sem_pontos"]["pontos"] is None

@@ -1,0 +1,218 @@
+import React, { useEffect, useRef, useState } from 'react';
+import jsQR from 'jsqr';
+import { AlertTriangle, Camera, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
+import { lerQrDePontos, detalhesErroPos, MSG_PONTOS_SEM_RESPOSTA } from '@/lib/pos';
+
+// A janela «Ler QR do cliente» dos pontos L'Açaí. Dois caminhos para o MESMO
+// pedido (`lib/pos.js::lerQrDePontos`):
+//
+//  · o leitor do POS HP, que é um teclado: escreve o código onde estiver o
+//    foco e dá Enter. Por isso o campo abre COM o foco e vive dentro de um
+//    <form> — o Enter de um campo num formulário é a submissão, sem apanhar
+//    teclas à mão;
+//  · a câmara do Surface: `getUserMedia` e o `jsQR` a descodificar as imagens.
+//    O Chrome para Windows não tem `BarcodeDetector`.
+//
+// **A câmara desliga porque esta janela só existe montada enquanto está
+// aberta** (o PosFinalizar desmonta-a ao fechar). O efeito que liga a câmara
+// devolve a limpeza que pára as pistas, e desmontar corre-a sempre: fechar
+// pela cruz, pelo «Fechar», por uma leitura bem sucedida ou por trocar de
+// conta. Uma luz de câmara acesa no balcão depois de fechar a janela é o
+// defeito que isto evita.
+
+// A câmara escolhida NESTE PC. Um Surface tem duas e só uma está virada para o
+// cliente; sem isto, a funcionária escolhia-a em cada venda. É do PC e não da
+// sessão — `localStorage` —, e o ecrã funciona sem ele.
+const CHAVE_CAMERA = 'pos_camera_do_qr';
+const cameraGuardada = () => {
+  try { return localStorage.getItem(CHAVE_CAMERA) || ''; } catch (e) { return ''; }
+};
+const guardarCamera = (id) => {
+  try { localStorage.setItem(CHAVE_CAMERA, id); } catch (e) { /* sem storage */ }
+};
+
+const MSG_SEM_CAMERA =
+  'Não foi possível abrir a câmara. Confirme que o browser a pode usar, ou leia o QR com o leitor.';
+
+export default function PosLerQr({ vendaId, onLigada, onFechar }) {
+  const [codigo, setCodigo] = useState('');
+  const [aLer, setALer] = useState(false);
+  const [erro, setErro] = useState(null);
+  // `null` = câmara desligada; '' = a câmara por omissão do sistema; outro
+  // texto = o `deviceId` escolhido.
+  const [camera, setCamera] = useState(null);
+  const [cameras, setCameras] = useState([]);
+  const video = useRef(null);
+  // Uma leitura de cada vez. O `aLer` do estado chega tarde de mais para
+  // decidir: dois Enter seguidos correm antes do render, e a câmara
+  // descodifica várias imagens por segundo.
+  const ocupado = useRef(false);
+  // O último código que a CÂMARA mandou. Depois de uma recusa o QR continua à
+  // frente dela, e sem isto cada imagem voltava a perguntar pelo mesmo código
+  // gasto. O leitor não passa por aqui: quem volta a ler com ele fá-lo de
+  // propósito.
+  const ultimoDaCamera = useRef('');
+
+  const ler = async (texto) => {
+    const lido = String(texto || '').trim();
+    if (!lido || ocupado.current) return;
+    ocupado.current = true;
+    setALer(true);
+    setErro(null);
+    try {
+      const { ligacao_id: id, primeiro_nome } = await lerQrDePontos(vendaId, lido);
+      onLigada({ id, primeiro_nome });
+    } catch (error) {
+      // 404 e 503 trazem a frase do servidor; sem resposta nenhuma (rede,
+      // tecto de espera) a consequência para o balcão é a do 503.
+      setErro(detalhesErroPos(error, MSG_PONTOS_SEM_RESPOSTA).mensagem);
+      // O leitor escreve POR CIMA do que estiver no campo: com o código
+      // recusado lá dentro, a leitura seguinte chegava colada a ele e era
+      // recusada também — sempre.
+      setCodigo('');
+    } finally {
+      ocupado.current = false;
+      setALer(false);
+    }
+  };
+  // O ciclo da câmara corre fora do render e ficava com o `ler` do primeiro.
+  const lerAgora = useRef(ler);
+  lerAgora.current = ler;
+
+  useEffect(() => {
+    if (camera === null) return undefined;
+    let parado = false;
+    let stream = null;
+    let volta = 0;
+    const tela = document.createElement('canvas');
+    const parar = () => {
+      if (stream) stream.getTracks().forEach((pista) => pista.stop());
+    };
+
+    const olhar = () => {
+      if (parado) return;
+      const v = video.current;
+      if (v && v.videoWidth > 0) {
+        tela.width = v.videoWidth;
+        tela.height = v.videoHeight;
+        const ctx = tela.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(v, 0, 0, tela.width, tela.height);
+        const imagem = ctx.getImageData(0, 0, tela.width, tela.height);
+        // O QR da app é preto sobre branco: não vale a pena procurar o inverso.
+        const achado = jsQR(imagem.data, tela.width, tela.height, { inversionAttempts: 'dontInvert' });
+        if (achado?.data && achado.data !== ultimoDaCamera.current) {
+          ultimoDaCamera.current = achado.data;
+          lerAgora.current(achado.data);
+        }
+      }
+      volta = requestAnimationFrame(olhar);
+    };
+
+    (async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: camera ? { deviceId: { exact: camera } } : true,
+        });
+        // Fechou-se a janela enquanto o browser abria a câmara: a limpeza já
+        // correu, sem pistas para parar — param-se aqui.
+        if (parado) { parar(); return; }
+        video.current.srcObject = stream;
+        await video.current.play();
+        // Os nomes das câmaras só vêm DEPOIS da autorização.
+        const todas = await navigator.mediaDevices.enumerateDevices();
+        if (parado) return;
+        setCameras(todas.filter((d) => d.kind === 'videoinput'));
+        olhar();
+      } catch (e) {
+        if (parado) return;
+        parar();
+        // Uma câmara guardada que já não existe não pode prender a janela
+        // nesta mensagem para sempre.
+        if (camera) guardarCamera('');
+        setErro(MSG_SEM_CAMERA);
+        setCamera(null);
+      }
+    })();
+
+    return () => {
+      parado = true;
+      if (volta) cancelAnimationFrame(volta);
+      parar();
+    };
+  }, [camera]);
+
+  return (
+    <Dialog open onOpenChange={(aberta) => { if (!aberta) onFechar(); }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Ler QR do cliente</DialogTitle>
+          <DialogDescription>
+            O cliente abre a app L'Açaí e toca em «Mostrar QR na caixa» antes de pagar.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); ler(codigo); }}>
+          <Input
+            id="qr-dos-pontos"
+            value={codigo}
+            onChange={(e) => setCodigo(e.target.value)}
+            autoFocus
+            autoComplete="off"
+            placeholder="Leia o QR com o leitor…"
+            className="h-14 flex-1 font-mono text-lg"
+          />
+          <Button type="submit" className="h-14 px-6" disabled={aLer || !codigo.trim()}>
+            {aLer ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Ler'}
+          </Button>
+        </form>
+
+        {erro && (
+          <div className="flex items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3">
+            <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+            <p className="text-sm">{erro}</p>
+          </div>
+        )}
+
+        {camera === null ? (
+          <Button
+            type="button"
+            variant="outline"
+            className="h-12 w-full"
+            onClick={() => { setErro(null); setCamera(cameraGuardada()); }}
+          >
+            <Camera className="h-5 w-5 mr-2" />
+            Usar câmara
+          </Button>
+        ) : (
+          <div className="space-y-2">
+            <video ref={video} muted playsInline className="w-full rounded-xl bg-black" />
+            {cameras.length > 1 && (
+              <select
+                aria-label="Câmara"
+                value={camera}
+                onChange={(e) => { guardarCamera(e.target.value); setCamera(e.target.value); }}
+                className="h-12 w-full rounded-md border bg-background px-3"
+              >
+                <option value="">Câmara por omissão</option>
+                {cameras.map((c, i) => (
+                  <option key={c.deviceId || i} value={c.deviceId}>
+                    {c.label || `Câmara ${i + 1}`}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
+
+        <Button type="button" variant="outline" className="h-12 w-full" onClick={onFechar}>
+          Fechar
+        </Button>
+      </DialogContent>
+    </Dialog>
+  );
+}

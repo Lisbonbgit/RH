@@ -9,9 +9,12 @@ tinha corrido bem, e ninguém deu por isso durante semanas.
 `test_pagina_ate_ao_fim_pelos_cabecalhos` é o teste directo dessa armadilha:
 uma resposta de 3 páginas tem de ser lida por inteiro, não só a primeira.
 """
+import importlib.util
+
 import httpx
 import pytest
 
+from faturacao.vendus import cliente as cliente_mod
 from faturacao.vendus.cliente import (
     ClienteVendus,
     ContaVendus,
@@ -287,3 +290,43 @@ def test_um_base64_ilegivel_rebenta_em_vez_de_gravar_lixo():
     with _cliente(handler) as c:
         with pytest.raises(VendusHTTPErro):
             c.pdf_do_documento(1, "normal")
+
+
+# --- O endereço da API: configurável só para o ENSAIO local -----------------
+
+
+def _base_url_carregada(monkeypatch, valor):
+    """O `BASE_URL` que o módulo calcula com este ambiente.
+
+    Carrega o ficheiro num módulo ISOLADO (nome próprio, fora do
+    `sys.modules`) em vez de `importlib.reload`: um reload do módulo a sério
+    redefinia `VendusErro` & companhia, e os testes que já importaram essas
+    classes passavam a apanhar excepções que deixavam de ser as mesmas."""
+    if valor is None:
+        monkeypatch.delenv("VENDUS_BASE_URL", raising=False)
+    else:
+        monkeypatch.setenv("VENDUS_BASE_URL", valor)
+    spec = importlib.util.spec_from_file_location(
+        "_cliente_vendus_isolado", cliente_mod.__file__)
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+def test_sem_a_variavel_o_endereco_e_o_vendus_a_serio(monkeypatch):
+    """A omissão é PRODUÇÃO. Uma instalação que nunca ouviu falar de
+    `VENDUS_BASE_URL` — que são todas as lojas — continua a falar com o
+    Vendus verdadeiro."""
+    modulo = _base_url_carregada(monkeypatch, None)
+    assert modulo.BASE_URL == "https://www.vendus.pt/ws/v1.1/"
+    assert str(modulo.ClienteVendus("k")._http.base_url) == "https://www.vendus.pt/ws/v1.1/"
+
+
+def test_com_a_variavel_o_cliente_fala_com_o_endereco_dela(monkeypatch):
+    """O ensaio local: um "Vendus de mentira" em 127.0.0.1 recebe os pedidos
+    sem chave nenhuma e sem tocar na conta real. Afirma-se o `base_url` do
+    cliente e não só a constante — uma constante que ninguém usasse dava este
+    teste por verde na mesma."""
+    modulo = _base_url_carregada(monkeypatch, "http://127.0.0.1:8799/ws/v1.1/")
+    assert modulo.BASE_URL == "http://127.0.0.1:8799/ws/v1.1/"
+    assert str(modulo.ClienteVendus("k")._http.base_url) == "http://127.0.0.1:8799/ws/v1.1/"

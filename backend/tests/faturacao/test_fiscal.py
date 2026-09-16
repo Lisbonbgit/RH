@@ -1339,7 +1339,10 @@ def test_finalizar_com_sucesso_emite_grava_e_marca_a_venda(monkeypatch):
     assert resultado["documento"]["atcud"] == "ATCUD-1"
     assert resultado["documento"]["modo"] == "tests"
     assert resultado["pagamentos"] == [
-        {"tipo_pagamento_id": "tipo-dinheiro", "nome": "Dinheiro", "tipo_fiscal": "NU", "valor": 8.99}
+        {"tipo_pagamento_id": "tipo-dinheiro", "nome": "Dinheiro", "tipo_fiscal": "NU",
+         # O id do Vendus é retrato como o nome e o tipo fiscal: é por ele que
+         # os pontos da app recusam as plataformas (`pontos_app`).
+         "vendus_payment_method_id": "316430468", "valor": 8.99}
     ]
     cliente = ClienteEmissaoVendusFalso.instancias[0]
     assert len(cliente.chamadas_criar) == 1

@@ -215,6 +215,52 @@ export const nifValidoPT = (texto) => {
   return (resto < 2 ? 0 : 11 - resto) === Number(digitos[8]);
 };
 
+// --- Os pontos L'Açaí da conta -----------------------------------------------
+//
+// **Ganha os pontos quem mostra a app na caixa antes de pagar.** O talão das
+// lojas era um bilhete ao portador: quem o apanhasse lia o QR fiscal na app e
+// ficava com os pontos. Agora a funcionária lê o QR que o CLIENTE mostra
+// (`lerQrDePontos`), o servidor pede à app uma ligação e devolve só o primeiro
+// nome, e o POS guarda-a até ao EMITIR, que a manda em `pontos_ligacao`. Nada
+// se grava na venda antes disso.
+//
+// Guardada com o ID DA CONTA, pelo molde do NIF aqui em cima e pela mesma
+// razão: numa conta repartida, uma ligação que passasse da primeira parte para
+// a segunda dava os pontos da fatura de uma pessoa a outra — e a app só
+// credita UMA fatura por ligação, por isso quem mostrou a app ficava sem nada.
+// Numa conta dividida lê-se o QR na parte de quem o mostra.
+const CHAVE_PONTOS_DA_CONTA = 'pos_pontos_da_conta';
+
+export const guardarPontosDaConta = (vendaId, ligacao) => {
+  // Sem conta não se escreve nada: a gaveta é uma só (ver guardarNifDaConta).
+  if (!vendaId) return;
+  guardarNaSessao(CHAVE_PONTOS_DA_CONTA, JSON.stringify({
+    vendaId,
+    ligacao: ligacao ? { id: ligacao.id, primeiro_nome: ligacao.primeiro_nome } : null,
+  }));
+};
+
+export const lerPontosDaConta = (vendaId) => {
+  if (!vendaId) return null;
+  try {
+    const guardado = JSON.parse(sessionStorage.getItem(CHAVE_PONTOS_DA_CONTA));
+    // A comparação de ids É a garantia. Sem ela, isto era um cliente à solta.
+    return guardado && guardado.vendaId === vendaId ? guardado.ligacao || null : null;
+  } catch (e) { return null; }
+};
+
+// Para quando o servidor nem chegou a responder (rede, tecto de espera). É a
+// frase do 503 da rota, porque para o balcão a consequência é a mesma: a
+// fatura segue sem pontos.
+export const MSG_PONTOS_SEM_RESPOSTA =
+  'Não foi possível falar com a app agora. A fatura pode seguir sem pontos.';
+
+// `POST /pos/pontos/ler` → `{ ligacao_id, primeiro_nome }`. 404 é QR recusado
+// e 503 é a app em baixo; as frases vêm no `detail`. A conta vai no pedido
+// para o servidor confirmar que está aberta e é desta loja.
+export const lerQrDePontos = async (vendaId, codigo) =>
+  (await api.post('/pos/pontos/ler', { venda_id: vendaId, codigo })).data;
+
 
 // --- Dispositivo -------------------------------------------------------------
 
@@ -652,7 +698,8 @@ export const duvidaPorApurar = (erroEmissao) =>
   !!erroEmissao && DUVIDAS_POR_APURAR.includes(erroEmissao.tipo);
 
 // A emissão da Fatura Simplificada real. `dados` = { pagamentos: [{
-// tipo_pagamento_id, valor }], nif }. Os erros deste pedido NÃO são todos
+// tipo_pagamento_id, valor }], nif, pontos_ligacao } — `pontos_ligacao` vai
+// SEMPRE, `null` quando não houve QR (ver PosFinalizar::emitir). Os erros deste pedido NÃO são todos
 // iguais e o ecrã tem de os distinguir (ver PosFinalizar): 503 quer dizer
 // que o servidor NÃO SABE se a fatura saiu — nunca convidar a repetir às
 // cegas.

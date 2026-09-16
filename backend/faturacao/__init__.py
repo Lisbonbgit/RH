@@ -135,6 +135,13 @@ router.include_router(_nota_credito)
 from .sincronizacao_rota import router as _sincronizacao
 router.include_router(_sincronizacao)
 
+# Os pontos L'Açaí dados na caixa: ler o QR da app, a fila dos créditos e
+# estornos, e a volta do cron que a esvazia. O `fiscal.py` e o
+# `nota_credito.py` chamam-no LOCALMENTE, dentro do gancho que enfileira, pela
+# mesma razão do stock e do papel: uma avaria aqui não pode travar uma fatura.
+from .pontos_app import router as _pontos_app
+router.include_router(_pontos_app)
+
 # A FILA DE IMPRESSÃO e as rotas do programa da loja. Entra por último de
 # propósito: é o único módulo que ninguém mais importa por dentro (o
 # `fiscal.py` e o `caixa.py` importam-no LOCALMENTE, dentro da função que
