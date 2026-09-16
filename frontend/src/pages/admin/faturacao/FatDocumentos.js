@@ -55,6 +55,48 @@ const ORIGEM_APP = "App L'Açaí";
 const hoje = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Lisbon' });
 const primeiroDoMes = () => hoje().slice(0, 8) + '01';
 
+// **O que aconteceu aos pontos L'Açaí deste documento.** O servidor manda
+// `pontos_app` — a linha da fila `fat_pontos_app`: numa fatura, o crédito ao
+// cliente que mostrou a app na caixa; numa nota de crédito, o estorno que ela
+// provocou. `null` quando não houve QR (a maioria), e aí não se desenha nada.
+//
+// É para o gestor responder a quem diz que não recebeu os pontos, por isso
+// cada estado diz em palavras o que se passou, e um estado ou motivo que este
+// ecrã ainda não conheça aparece em cru — nunca em silêncio.
+const MOTIVOS_DOS_PONTOS = {
+  plataforma: 'pagamento por plataforma',
+  sem_valor: 'a fatura não tem valor para pontos (só caução)',
+  acima_do_teto: 'a fatura passa o valor máximo que dá pontos',
+  fatura_bloqueada: 'a fatura está bloqueada na app',
+  fatura_de_outra_conta: 'a fatura já deu pontos a outra conta',
+  ligacao_desconhecida: 'a app não reconhece a leitura do QR',
+  ligacao_expirada: 'a fatura saiu muito depois de o QR ser lido',
+  ligacao_ja_usada: 'aquele QR já deu pontos noutra fatura',
+};
+
+const textoDosPontosApp = (p) => {
+  const pontos = p.pontos == null ? 'pontos' : `${p.pontos} ${p.pontos === 1 ? 'ponto' : 'pontos'}`;
+  if (p.estado === 'feito' && p.tipo === 'estorno') {
+    return `Retirados ${pontos}${p.primeiro_nome ? ` a ${p.primeiro_nome}` : ''}`;
+  }
+  if (p.estado === 'feito') {
+    return `${pontos[0].toUpperCase()}${pontos.slice(1)}${p.primeiro_nome ? ` para ${p.primeiro_nome}` : ''}`;
+  }
+  if (p.estado === 'pendente') {
+    return p.tentativas > 0
+      ? `A tentar enviar (${p.tentativas} ${p.tentativas === 1 ? 'tentativa' : 'tentativas'} — último erro: ${p.ultimo_erro || 'sem detalhe'})`
+      : 'À espera de ser enviado.';
+  }
+  if (p.estado === 'recusado') {
+    return `Recusado: ${MOTIVOS_DOS_PONTOS[p.motivo] || p.motivo || 'sem motivo'}`;
+  }
+  if (p.estado === 'sem_efeito') return 'Sem efeito — a fatura não chegou a dar pontos.';
+  if (p.estado === 'falhado') {
+    return `Falhou ao fim de 24 h${p.ultimo_erro ? ` — último erro: ${p.ultimo_erro}` : ''}`;
+  }
+  return `Estado desconhecido: ${p.estado}`;
+};
+
 export default function FatDocumentos() {
   const [filtros, setFiltros] = useState({
     de: primeiroDoMes(), ate: hoje(), loja_id: 'todas', tipo: 'todos', q: '',
@@ -445,6 +487,20 @@ export default function FatDocumentos() {
                   </div>
                 </div>
               </div>
+
+              {aberto.pontos_app && (
+                <div className="rounded-xl border p-3 text-sm" data-testid="documento-pontos-app">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
+                    Pontos L'Açaí
+                  </p>
+                  <p className="font-medium">{textoDosPontosApp(aberto.pontos_app)}</p>
+                  {aberto.pontos_app.atualizado_em && (
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Atualizado {formatarData(aberto.pontos_app.atualizado_em)}
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Quem emitiu, onde e quando — as três perguntas que a fatura
                   não responde sozinha e as primeiras que se fazem sobre um
