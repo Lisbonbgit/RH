@@ -87,9 +87,17 @@ const textoDosPontosApp = (p) => {
     return `${pontos[0].toUpperCase()}${pontos.slice(1)}${p.primeiro_nome ? ` para ${p.primeiro_nome}` : ''}`;
   }
   if (p.estado === 'pendente') {
-    return p.tentativas > 0
-      ? `A tentar enviar (${p.tentativas} ${p.tentativas === 1 ? 'tentativa' : 'tentativas'} — último erro: ${p.ultimo_erro || 'sem detalhe'})`
-      : 'À espera de ser enviado.';
+    if (p.tentativas > 0) {
+      return `A tentar enviar (${p.tentativas} ${p.tentativas === 1 ? 'tentativa' : 'tentativas'} — último erro: ${p.ultimo_erro || 'sem detalhe'})`;
+    }
+    // **Pendente com 0 tentativas não quer dizer «acabou de sair».** O servidor
+    // tem dois caminhos que esperam de propósito sem gastar tentativa: o
+    // estorno à espera do crédito da fatura e — o grave — a integração sem
+    // chave (`APP_LACAI_CHAVE` por pôr no `.env` do servidor), em que NENHUM
+    // ponto está a ser enviado em lado nenhum. Decidida por `tentativas`, a
+    // frase tranquila aparecia em todas as faturas e calava o motivo.
+    if (p.ultimo_erro) return `À espera — último erro: ${p.ultimo_erro}`;
+    return 'À espera de ser enviado.';
   }
   if (p.estado === 'recusado') {
     return `Recusado: ${MOTIVOS_DOS_PONTOS[p.motivo] || p.motivo || 'sem motivo'}`;

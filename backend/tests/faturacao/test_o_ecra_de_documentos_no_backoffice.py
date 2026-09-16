@@ -198,6 +198,14 @@ _ESTADOS_DOS_PONTOS = [
      "A tentar enviar (3 tentativas — último erro: HTTP 503)"),
     ("a_espera", "FS", {},
      "À espera de ser enviado."),
+    # **Pendente com 0 tentativas mas com erro.** O servidor tem dois caminhos
+    # que esperam de propósito sem gastar tentativa: o estorno à espera do
+    # crédito e — o grave — a integração sem chave, em que NENHUM ponto está a
+    # ser enviado em lado nenhum. Decidida a frase por `tentativas`, o detalhe
+    # de todas as faturas dizia a frase tranquila de quem acabou de emitir, e
+    # esta é a única janela que o gestor tem para a fila.
+    ("a_espera_com_erro", "FS", {"ultimo_erro": "integração não configurada"},
+     "À espera — último erro: integração não configurada"),
     ("plataforma", "FS", {"estado": "recusado", "motivo": "plataforma", "tentativas": 1},
      "Recusado: pagamento por plataforma"),
     ("motivo_novo", "FS", {"estado": "recusado", "motivo": "motivo_que_ainda_nao_existe"},
