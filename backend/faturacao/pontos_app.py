@@ -431,6 +431,21 @@ async def enfileirar_credito(db, venda_id: str, documento: Dict, *,
     ligacao = (venda or {}).get("pontos_ligacao")
     if not ligacao:
         return
+    # **Sem ATCUD não há linha nenhuma a fazer.** Um documento REAL pode não o
+    # ter: o Vendus só é recusado quando faltam o `id` E o `atcud`
+    # (`vendus/emissao._documento_da_criacao`), por isso um 2xx com `id` e sem
+    # ATCUD é aceite de propósito e gravado com `atcud: None`. A app exige-o
+    # (`CreditarReq.atcud`, `min_length=1`) e é por ele que deduplica — enfileirar
+    # assim eram 24 h de 422 e os pontos perdidos na mesma. Mas nunca em
+    # silêncio: é o único rasto de que aquele cliente mostrou a app e não
+    # recebeu nada.
+    atcud = documento.get("atcud")
+    if not atcud:
+        logger.error(
+            "[faturacao] pontos da app: o documento %s da venda %s não tem ATCUD — "
+            "o crédito NÃO entra na fila (a app precisa dele para deduplicar) e o "
+            "cliente que mostrou a app fica sem pontos", documento["id"], venda_id)
+        return
     meios = []
     for pagamento in venda.get("pagamentos") or []:
         identificador = pagamento.get("vendus_payment_method_id")
@@ -459,8 +474,12 @@ async def enfileirar_credito(db, venda_id: str, documento: Dict, *,
     payload = {
         "ligacao_id": ligacao.get("id"),
         "documento_id": documento["id"],
-        "atcud": documento.get("atcud"),
-        "numero": documento.get("numero"),
+        "atcud": atcud,
+        # `or ""` e não o `.get` cru: os campos de texto da app têm default
+        # vazio, mas em pydantic 2 um `None` explícito NÃO cai no default de um
+        # `str` — rebenta com 422. O número é só o histórico do cliente e não
+        # vale perder os pontos por ele faltar.
+        "numero": documento.get("numero") or "",
         "emitido_em": documento.get("emitido_em"),
         "total": round(float(documento.get("total") or 0), 2),
         "caucao": round(float(documento.get("deposito") or 0), 2),
@@ -506,7 +525,10 @@ async def enfileirar_estorno(db, nota: Dict, documento_nc: Dict, *,
     payload = {
         "atcud_origem": credito["payload"]["atcud"],
         "nc_id": documento_nc["id"],
-        "numero_nc": documento_nc.get("numero"),
+        # `or ""` pela razão do crédito: um `None` explícito é 422 na app. O
+        # `atcud_origem` fica protegido por arrasto — sem ATCUD não chegou a
+        # existir linha de crédito, e sem ela não se enfileira estorno nenhum.
+        "numero_nc": documento_nc.get("numero") or "",
         "valor_nc": round(float(nota.get("total") or 0), 2),
         "caucao_nc": caucao_em_centimos / 100.0,
     }

@@ -831,6 +831,37 @@ def test_a_venda_salva_pela_RECONCILIACAO_tambem_da_os_pontos(monkeypatch, envio
     assert envios == [linha["id"]]
 
 
+def test_uma_fatura_SEM_ATCUD_nao_entra_na_fila_e_fica_no_log(envios, caplog):
+    """**Um documento real pode não ter ATCUD.** O Vendus só é recusado quando
+    falta o `id` E o `atcud` (`vendus/emissao.py`), por isso um 2xx com `id` e
+    sem ATCUD é aceite de propósito e gravado com `atcud: None`.
+
+    Enfileirá-lo era mandar `atcud: null` à app, que o recusa à porta
+    (`CreditarReq.atcud` é `min_length=1`, e em pydantic 2 um `None` explícito
+    não cai no default): 422 a cada tentativa, 24 h a bater à porta e os pontos
+    perdidos na mesma. Sem ATCUD a app nem consegue deduplicar — não há linha
+    nenhuma a fazer. Mas nunca em silêncio: é o único rasto de que aquele
+    cliente mostrou a app e não recebeu nada."""
+    db, fila = _db_da_emissao(_venda_com_pontos())
+
+    with caplog.at_level(logging.ERROR, logger="faturacao.pontos_app"):
+        _ligar(db, _documento_fs(atcud=None))
+
+    assert fila.linhas() == [] and envios == []
+    assert "doc-1" in caplog.text and "ATCUD" in caplog.text
+
+
+def test_uma_fatura_sem_NUMERO_vai_com_texto_vazio(envios):
+    """`CreditarReq.numero` tem default `""` — mas um `None` explícito rebenta
+    na mesma (422). O número é só texto para o histórico do cliente, e não vale
+    a pena perder os pontos por ele faltar."""
+    db, fila = _db_da_emissao(_venda_com_pontos())
+
+    _ligar(db, _documento_fs(numero=None))
+
+    assert fila.linhas()[0]["payload"]["numero"] == ""
+
+
 def test_um_documento_em_modo_tests_nunca_enfileira(envios):
     db, fila = _db_da_emissao(_venda_com_pontos())
     _ligar(db, _documento_fs(modo="tests"))
@@ -964,6 +995,17 @@ def test_a_nota_de_uma_fatura_com_pontos_enfileira_o_estorno_com_o_contrato_da_a
         "valor_nc": 10.4, "caucao_nc": 0.2,
     }
     assert envios == [linha["id"]]
+
+
+def test_uma_nota_sem_NUMERO_vai_com_texto_vazio(envios):
+    """O mesmo que na fatura: `EstornarReq.numero_nc` tem default `""`, mas um
+    `None` explícito é 422 — e um estorno recusado à porta deixava os pontos
+    daquela devolução no cliente."""
+    db, fila = _db_da_fila(_credito(estado="feito", pontos=17))
+
+    _corre(pontos_app.enfileirar_estorno(db, _nota(), _documento_nc(numero=None)))
+
+    assert fila.linhas()[1]["payload"]["numero_nc"] == ""
 
 
 def test_a_nota_de_uma_fatura_SEM_pontos_nao_enfileira_nada(envios):
