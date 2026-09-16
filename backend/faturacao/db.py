@@ -85,6 +85,12 @@ COLECOES = {
     # responda melhor, e sem o TTL a colecção guardava os BYTES de cada talão
     # de cinco lojas para sempre.
     "trabalhos_impressao": "fat_trabalhos_impressao",
+    # A FILA DOS PONTOS L'AÇAÍ (`faturacao/pontos_app.py`): um crédito por
+    # Fatura Simplificada lida com o QR da app, e um estorno por nota de
+    # crédito dessa fatura, à espera de chegarem à app. Fica para sempre, como
+    # os documentos: é o registo de quem ganhou que pontos em que fatura, e a
+    # 2.ª fase lê-o para o relatório de concentração.
+    "pontos_app": "fat_pontos_app",
 }
 
 _cliente = None  # type: Optional[AsyncIOMotorClient]
@@ -371,6 +377,15 @@ INDICES = [
     # ontem ou da semana passada. Nada de fiscal se perde aqui — os
     # documentos ficam em `fat_documentos`, e o talão certificado com eles.
     ("fat_trabalhos_impressao", [("apagar_depois_de", 1)], {"expireAfterSeconds": 0}),
+    # **UM CRÉDITO POR FATURA, UM ESTORNO POR NOTA** (`pontos_app._enfileirar`).
+    # A chave é `credito:{documento_id}` ou `estorno:{nc_documento_id}`, e o
+    # gancho que a insere (`fiscal._ligar_venda_ao_documento`) corre mais do
+    # que uma vez por venda — é este índice, e não uma leitura antes de
+    # inserir, que faz a segunda passagem não entrar.
+    ("fat_pontos_app", [("chave", 1)], {"unique": True}),
+    # A pergunta do envio e do cron, uma vez por minuto: «que linhas pendentes
+    # já chegaram à hora?».
+    ("fat_pontos_app", [("estado", 1), ("proxima_tentativa_em", 1)], {}),
 ]
 
 
