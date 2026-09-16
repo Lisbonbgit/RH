@@ -1420,6 +1420,23 @@ async def _ligar_venda_ao_documento(
             "mesma): %s", venda_id, e,
         )
 
+    # **OS PONTOS L'AÇAÍ entram na fila AQUI**, pelas razões do stock logo
+    # acima: é a única escrita de `emitida` e por aqui passam os cinco
+    # caminhos que acabam num documento fiscal. Uma venda salva pela
+    # reconciliação dá os pontos a quem mostrou a app, como a emissão feliz.
+    #
+    # Um `try` à parte e não o do stock: um Estoque em baixo não pode levar os
+    # pontos do cliente, nem o contrário. E `except Exception` pela mesma regra
+    # de ouro — um 500 aqui era a funcionária a emitir a fatura outra vez.
+    try:
+        from .pontos_app import enfileirar_credito
+        await enfileirar_credito(db, venda_id, documento)
+    except Exception as e:  # noqa: BLE001 — os pontos nunca podem parar uma fatura
+        logger.error(
+            "[faturacao] os pontos L'Açaí da venda %s não entraram na fila (a "
+            "fatura saiu na mesma): %s", venda_id, e,
+        )
+
 
 async def _emitir_e_gravar(
     db,
@@ -1919,8 +1936,23 @@ def _nif_portugues_valido(digitos: str) -> bool:
     return (0 if resto < 2 else 11 - resto) == int(digitos[8])
 
 
+class LigacaoDePontos(BaseModel):
+    """A ligação que o `POST /pos/pontos/ler` devolveu e o ecrã guardou.
+
+    Só o id e o primeiro nome: o id é o que a app precisa para creditar, e o
+    nome é o que o backoffice mostra («17 pontos para Ana»). Nada disto é
+    validado contra a app aqui — um id inventado chega à app, que responde
+    `ligacao_desconhecida`, e a fatura já saiu sem esperar por isso."""
+
+    id: str = Field(min_length=1, max_length=100)
+    primeiro_nome: str = Field(max_length=100)
+
+
 class PedidoFinalizarVenda(BaseModel):
     pagamentos: List[PagamentoEntrada] = Field(min_length=1)
+    # O cliente que mostrou a app na caixa, ou `None`. Opcional e nunca
+    # obrigatório: o cartão dos pontos no ecrã não bloqueia o EMITIR.
+    pontos_ligacao: Optional[LigacaoDePontos] = None
     # Opcional: sem NIF, o Vendus assume Consumidor Final (ver
     # vendus/emissao.py). Normalizado só a dígitos — "123 456 789" e
     # "123456789" têm de ser a mesma coisa para o Vendus.
@@ -2057,6 +2089,15 @@ async def finalizar(
             "tipo_pagamento_id": tipo["id"],
             "nome": tipo.get("nome"),
             "tipo_fiscal": tipo.get("tipo_fiscal"),
+            # O id do Vendus vai no retrato pela MESMA razão dos outros dois, e
+            # com um motivo a mais: é por esta lista que a app L'Açaí recusa
+            # pontos em encomendas de plataforma (Uber Eats, Glovo, Bolt, que
+            # ela conhece por id). Reconstruí-la mais tarde de
+            # `fat_tipos_pagamento` — e `pontos_app.enfileirar_credito` corre
+            # também na reconciliação, dias depois — encolhia-a em silêncio se
+            # o gestor tivesse mexido no tipo, e a recusa falhava ABERTA. A
+            # linha acima garante que ele existe sempre neste instante (422).
+            "vendus_payment_method_id": tipo["vendus_payment_method_id"],
             "valor": p.valor,
         })
         pagamentos_vendus.append({"id": tipo["vendus_payment_method_id"], "amount": p.valor})
@@ -2084,7 +2125,16 @@ async def finalizar(
     # idempotência escondia o erro — as duas respostas eram 200, mas o Z não
     # batia com o que saiu no papel). `finalizar_venda` só grava isto no
     # ramo que realmente emite.
-    dados_pagamento = {"pagamentos": pagamentos_venda, "cliente_nif": dados.nif}
+    #
+    # `pontos_ligacao` vai SEMPRE, a `None` quando não há — como o
+    # `cliente_nif`. Uma tentativa falhada com o QR de um cliente, repetida
+    # depois sem ele, não pode deixar esse cliente agarrado à venda: o gancho
+    # da emissão lê a venda, e dava-lhe os pontos de uma compra que não fez.
+    dados_pagamento = {
+        "pagamentos": pagamentos_venda,
+        "cliente_nif": dados.nif,
+        "pontos_ligacao": dados.pontos_ligacao.model_dump() if dados.pontos_ligacao else None,
+    }
 
     # **A referência do artigo de depósito, resolvida AQUI** — pela mesma
     # razão que o modo logo abaixo: `_itens_vendus` é pura e não lê a base de

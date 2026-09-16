@@ -634,3 +634,263 @@ def test_a_tentativa_imediata_volta_logo_e_engole_os_erros(monkeypatch):
     assert len(tarefas) == 1 and chamadas == ["linha-1"]
     assert tarefas[0].done() and tarefas[0].exception() is None, "o erro saiu da tarefa"
     assert no_fim == 0, "a tarefa acabada tem de sair de _EM_CURSO"
+
+
+# --- O crédito, na emissão ------------------------------------------------------
+
+_FATURACAO = Path(__file__).resolve().parents[2] / "faturacao"
+
+
+@pytest.fixture
+def envios(monkeypatch):
+    """Substitui a tentativa imediata por um registo: aqui só importa QUE linha
+    se mandou, e nenhuma tarefa fica a correr depois do teste."""
+    enviados = []
+    monkeypatch.setattr(pontos_app, "tentar_ja", lambda db, linha_id: enviados.append(linha_id))
+    return enviados
+
+
+def _venda_com_pontos(**over):
+    """Uma venda ANTIGA de propósito: os pagamentos não têm o retrato do id do
+    Vendus (`vendus_payment_method_id`), que só passa a ser gravado nesta task.
+    É o caminho de recuo — a releitura de `fat_tipos_pagamento` — que fica
+    assim exercitado por omissão."""
+    v = {
+        "id": "venda-1", "loja_id": "loja-1", "sessao_id": "sessao-1",
+        "caixa_id": "caixa-1", "operador_id": "op-1", "estado": "aberta",
+        "linhas": [], "cliente_nif": None,
+        "pagamentos": [
+            {"tipo_pagamento_id": "tipo-dinheiro", "nome": "Dinheiro", "tipo_fiscal": "NU", "valor": 2.0},
+            {"tipo_pagamento_id": "tipo-glovo", "nome": "Glovo", "tipo_fiscal": "OU", "valor": 10.1},
+        ],
+        "pontos_ligacao": {"id": "lig-1", "primeiro_nome": "Ana"},
+    }
+    v.update(over)
+    return v
+
+
+def _documento_fs(**over):
+    d = {"id": "doc-1", "venda_id": "venda-1", "loja_id": "loja-1", "tipo": "FS",
+         "modo": "normal", "numero": "FS 05P2026/1824", "atcud": "JJ3K-1824",
+         "total": 12.1, "deposito": 0.2, "emitido_em": "2026-09-15T11:59:58+00:00"}
+    d.update(over)
+    return d
+
+
+def _db_da_emissao(venda):
+    fila = _Fila()
+    db = DbFalsa({
+        COLECOES["vendas"]: ColeccaoFalsa([venda]),
+        COLECOES["refs_fiscais"]: ColeccaoFalsa([]),
+        COLECOES["tipos_pagamento"]: ColeccaoFalsa([
+            _tipo_pagamento(),
+            _tipo_pagamento(id="tipo-glovo", nome="Glovo", tipo_fiscal="OU",
+                            vendus_payment_method_id="176663078"),
+        ]),
+        COLECOES["lojas"]: ColeccaoFalsa([{"id": "loja-1", "nome": "Belém"}]),
+        COLECOES["utilizadores"]: ColeccaoFalsa([{"id": "op-1", "nome": "Rafaela"}]),
+        COLECOES["pontos_app"]: fila,
+    })
+    return db, fila
+
+
+def _ligar(db, documento):
+    _corre(fiscal_mod._ligar_venda_ao_documento(
+        db, "ext-1", "venda-1", documento, reserva_id="ref-1"))
+
+
+def test_a_fatura_emitida_com_cliente_ligado_enfileira_o_credito_com_o_contrato_da_app(envios):
+    db, fila = _db_da_emissao(_venda_com_pontos())
+
+    _ligar(db, _documento_fs())
+
+    [linha] = fila.linhas()
+    assert (linha["chave"], linha["tipo"], linha["estado"]) == ("credito:doc-1", "credito", "pendente")
+    assert (linha["documento_id"], linha["venda_id"], linha["primeiro_nome"]) == ("doc-1", "venda-1", "Ana")
+    assert linha["payload"] == {
+        "ligacao_id": "lig-1", "documento_id": "doc-1", "atcud": "JJ3K-1824",
+        "numero": "FS 05P2026/1824", "emitido_em": "2026-09-15T11:59:58+00:00",
+        "total": 12.1, "caucao": 0.2, "meios_pagamento": ["316430468", "176663078"],
+        "loja_nome": "Belém", "operador_nome": "Rafaela",
+    }
+    assert envios == [linha["id"]], "a tentativa imediata tem de sair logo"
+
+
+def test_o_id_do_VENDUS_vem_do_retrato_da_venda_mesmo_sem_o_tipo_de_pagamento(envios):
+    """`meios_pagamento` é a ÚNICA coisa por onde a app recusa Uber Eats, Glovo
+    e Bolt (`plataformas.py`, que compara ids). Reconstruí-la de
+    `fat_tipos_pagamento` no instante de enfileirar — e este gancho também
+    corre na reconciliação, dias depois de o gestor mexer nos tipos — dava uma
+    lista mais curta por causa de um tipo apagado, e a guarda falhava ABERTA:
+    pontos numa encomenda de plataforma, que é a fuga que o motivo `plataforma`
+    existe para tapar."""
+    venda = _venda_com_pontos(pagamentos=[
+        {"tipo_pagamento_id": "tipo-glovo", "nome": "Glovo", "tipo_fiscal": "OU",
+         "valor": 12.1, "vendus_payment_method_id": "176663078"},
+    ])
+    db, fila = _db_da_emissao(venda)
+    db._coleccoes[COLECOES["tipos_pagamento"]] = ColeccaoFalsa([])  # o gestor apagou o tipo
+
+    _ligar(db, _documento_fs())
+
+    assert fila.linhas()[0]["payload"]["meios_pagamento"] == ["176663078"]
+
+
+def test_um_pagamento_sem_id_do_vendus_nao_encolhe_a_lista_em_SILENCIO(envios, caplog):
+    """Uma venda de ANTES do retrato, cujo tipo perdeu entretanto o mapeamento:
+    já não há como saber se foi Glovo, e a lista sai mais curta do que os
+    pagamentos. Não se inventa nada — mas também não acontece em silêncio: é o
+    único rasto de que a recusa por plataforma pode ter falhado aberta naquela
+    fatura."""
+    db, fila = _db_da_emissao(_venda_com_pontos())
+    db._coleccoes[COLECOES["tipos_pagamento"]] = ColeccaoFalsa([_tipo_pagamento()])  # sem o Glovo
+
+    with caplog.at_level(logging.ERROR, logger="faturacao.pontos_app"):
+        _ligar(db, _documento_fs())
+
+    assert fila.linhas()[0]["payload"]["meios_pagamento"] == ["316430468"]
+    assert "tipo-glovo" in caplog.text and "doc-1" in caplog.text
+
+
+def test_o_gancho_corre_duas_vezes_e_o_credito_entra_uma(envios):
+    """`_ligar_venda_ao_documento` corre mais do que uma vez para a mesma venda
+    (o retry que reencontra o documento, a reconciliação por cima de uma
+    emissão em voo)."""
+    db, fila = _db_da_emissao(_venda_com_pontos())
+    _ligar(db, _documento_fs())
+    _ligar(db, _documento_fs())
+    assert len(fila.linhas()) == 1
+    assert len(envios) == 1
+
+
+_EXT_REF = "pos-loja-1-sessao-1-venda-1"
+
+
+def _db_da_reconciliacao(venda):
+    """A venda que ficou para trás em `aberta` com a FS REAL já gravada: o ramo
+    de `reconciliar_reserva_presa` (fiscal.py:3442) que religa a venda ao
+    documento sem precisar de falar com o Vendus."""
+    db, fila = _db_da_emissao(venda)
+    db._coleccoes[COLECOES["documentos"]] = ColeccaoFalsa(
+        [_documento_fs(ext_ref=_EXT_REF)], indices_unicos=_unicos_de("fat_documentos"))
+    db._coleccoes[COLECOES["refs_fiscais"]] = ColeccaoFalsa([{
+        "id": "r1", "ext_ref": _EXT_REF, "venda_id": "venda-1",
+        "criado_em": "2026-09-14T20:00:00+00:00", "incerta": True}])
+    db._coleccoes[COLECOES["sessoes_caixa"]] = ColeccaoFalsa([{
+        "id": "sessao-1", "loja_id": "loja-1", "caixa_id": "caixa-1", "estado": "aberta"}])
+    return db, fila
+
+
+def test_a_venda_salva_pela_RECONCILIACAO_tambem_da_os_pontos(monkeypatch, envios):
+    """O caminho até `emitida` mais fácil de esquecer: dias depois, o gestor
+    traz para o sistema a fatura que o Vendus já tinha. Quem mostrou a app na
+    caixa recebe os pontos à mesma — e é aqui que a venda é RELIDA, com os
+    tipos de pagamento possivelmente já mexidos."""
+    db, fila = _db_da_reconciliacao(_venda_com_pontos())
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+
+    resposta = _corre(fiscal_mod.reconciliar_reserva_presa(
+        "venda-1", None, gestor={"email": "dono@lacai.pt"}))
+
+    assert resposta["veio_do_vendus_agora"] is False
+    [linha] = fila.linhas()
+    assert (linha["chave"], linha["venda_id"]) == ("credito:doc-1", "venda-1")
+    assert linha["payload"]["meios_pagamento"] == ["316430468", "176663078"]
+    assert envios == [linha["id"]]
+
+
+def test_um_documento_em_modo_tests_nunca_enfileira(envios):
+    db, fila = _db_da_emissao(_venda_com_pontos())
+    _ligar(db, _documento_fs(modo="tests"))
+    assert fila.linhas() == [] and envios == []
+
+
+def test_uma_venda_sem_cliente_ligado_nao_enfileira(envios):
+    db, fila = _db_da_emissao(_venda_com_pontos(pontos_ligacao=None))
+    _ligar(db, _documento_fs())
+    assert fila.linhas() == [] and envios == []
+
+
+def test_os_pontos_a_rebentar_nao_impedem_a_venda_de_ficar_emitida(monkeypatch):
+    db, _ = _db_da_emissao(_venda_com_pontos())
+
+    async def _explode(*a, **kw):
+        raise RuntimeError("tudo mal")
+
+    monkeypatch.setattr(pontos_app, "enfileirar_credito", _explode)
+    _ligar(db, _documento_fs())
+
+    gravada = _corre(db[COLECOES["vendas"]].find_one({"id": "venda-1"}))
+    assert (gravada["estado"], gravada["documento_id"]) == ("emitida", "doc-1")
+
+
+def test_o_enganche_dos_pontos_esta_dentro_de_um_except_generico():
+    """Um `except` que nomeasse excepções deixava passar as outras — e uma
+    excepção que suba daqui devolve 500 ao balcão com a fatura já na AT."""
+    texto = (_FATURACAO / "fiscal.py").read_text(encoding="utf-8")
+    bloco = texto[texto.index("from .pontos_app import enfileirar_credito"):]
+    bloco = bloco[:bloco.index("\n\nasync def")]
+    assert "except Exception" in bloco, bloco[:400]
+
+
+class _VendusNormal(ClienteEmissaoVendusFalso):
+    """O duplo do Vendus da rota, a devolver uma fatura REAL (modo `normal`) —
+    só essas dão pontos."""
+
+    def __init__(self, chave):
+        super().__init__(chave)
+        self.resposta_criar = _bruto(modo="normal")
+
+
+def _finalizar(monkeypatch, venda, **pedido):
+    _configura_vendus_env(monkeypatch)
+    monkeypatch.setattr(db_mod, "_indice_idempotencia_ok", True)
+    db = _db(vendas=[venda], tipos_pagamento=[_tipo_pagamento()])
+    db._coleccoes[COLECOES["lojas"]] = ColeccaoFalsa([{"id": "loja-1", "nome": "Belém"}])
+    db._coleccoes[COLECOES["utilizadores"]] = ColeccaoFalsa([{"id": "op-1", "nome": "Rafaela"}])
+    fila = _Fila()
+    db._coleccoes[COLECOES["pontos_app"]] = fila
+    monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(fiscal_mod, "ClienteEmissaoVendus", _VendusNormal)
+    _corre(fiscal_mod.finalizar(
+        "venda-1",
+        PedidoFinalizarVenda(
+            pagamentos=[PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)],
+            **pedido),
+        operador=_operador()))
+    return db, fila
+
+
+def test_o_finalizar_grava_a_ligacao_na_venda_e_a_fatura_enfileira_o_credito(monkeypatch, envios):
+    db, fila = _finalizar(monkeypatch, _venda(linhas=[_linha()]),
+                          pontos_ligacao={"id": "lig-1", "primeiro_nome": "Ana"})
+
+    gravada = _corre(db[COLECOES["vendas"]].find_one({"id": "venda-1"}))
+    assert gravada["pontos_ligacao"] == {"id": "lig-1", "primeiro_nome": "Ana"}
+    [linha] = fila.linhas()
+    assert linha["payload"]["ligacao_id"] == "lig-1"
+    assert (linha["payload"]["atcud"], linha["payload"]["numero"]) == ("ATCUD-1", "FS 2026/1")
+    assert (linha["payload"]["total"], linha["payload"]["caucao"]) == (8.99, 0.0)
+    assert linha["payload"]["meios_pagamento"] == ["316430468"]
+    assert len(envios) == 1
+
+
+def test_sem_ligacao_o_finalizar_grava_pontos_ligacao_a_None_por_cima_da_antiga(monkeypatch, envios):
+    """Uma tentativa anterior leu o QR do Rui e falhou; a operadora repetiu sem
+    ele. A venda não pode ficar com o Rui agarrado — e a fatura não lhe pode
+    dar os pontos."""
+    velha = _venda(linhas=[_linha()], pontos_ligacao={"id": "lig-velha", "primeiro_nome": "Rui"})
+
+    db, fila = _finalizar(monkeypatch, velha)
+
+    gravada = _corre(db[COLECOES["vendas"]].find_one({"id": "venda-1"}))
+    assert "pontos_ligacao" in gravada and gravada["pontos_ligacao"] is None
+    assert fila.linhas() == [] and envios == []
+
+
+def test_uma_ligacao_sem_id_e_recusada_antes_da_rota_correr():
+    """422 no validador, antes da reserva fiscal — como o NIF mal escrito."""
+    with pytest.raises(ValidationError):
+        PedidoFinalizarVenda(
+            pagamentos=[PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)],
+            pontos_ligacao={"id": "", "primeiro_nome": "Ana"})

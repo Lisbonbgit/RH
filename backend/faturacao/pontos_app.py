@@ -385,3 +385,78 @@ async def _fechar(db, linha: Dict, reserva: str, agora: datetime, campos: Dict) 
         {"id": linha["id"], "a_enviar_ate": reserva}, {"$set": campos})
     linha.update(campos)
     return linha
+
+
+# --- O crédito, na emissão ------------------------------------------------------
+
+
+async def enfileirar_credito(db, venda_id: str, documento: Dict, *,
+                             agora: Optional[datetime] = None) -> None:
+    """Põe na fila o crédito desta Fatura Simplificada, se a venda tiver um
+    cliente ligado. Chamado no fim de `fiscal._ligar_venda_ao_documento`.
+
+    - **Só o modo `normal`.** Uma fatura em `tests` não existe na AT, e
+      creditar pontos por ela era dar pontos por nada.
+    - **A ligação lê-se da VENDA gravada**, não do pedido: é a venda que chega
+      aos cinco caminhos da emissão, a reconciliação incluída.
+    - **O corpo é o contrato de `/api/pos-integracao/creditar`**, e fica
+      gravado na linha: os reenvios mandam exactamente o mesmo, dias depois
+      se for preciso, sem voltar a ler a venda.
+
+    Os meios de pagamento vão pelo id do VENDUS — é por eles, e só por eles,
+    que a app recusa Uber Eats, Glovo e Bolt — e saem do RETRATO gravado na
+    venda (`fiscal.finalizar`), que é o que valia no dia. A releitura de
+    `fat_tipos_pagamento` é só o recuo para as vendas de antes desse campo
+    existir; um pagamento que não dê id nenhum fica de fora da lista, mas
+    NUNCA em silêncio (é assim que a recusa por plataforma falharia aberta).
+    A caução vai à parte (`deposito`, carimbado no documento pela emissão): os
+    pontos contam sobre o total sem ela. O operador é o dono da CONTA
+    (`operador_id` da venda), o mesmo que o backoffice mostra no documento."""
+    if documento.get("modo") != "normal":
+        return
+    venda = await db[COLECOES["vendas"]].find_one({"id": venda_id})
+    ligacao = (venda or {}).get("pontos_ligacao")
+    if not ligacao:
+        return
+    meios = []
+    for pagamento in venda.get("pagamentos") or []:
+        identificador = pagamento.get("vendus_payment_method_id")
+        if not identificador:
+            tipo = await db[COLECOES["tipos_pagamento"]].find_one(
+                {"id": pagamento.get("tipo_pagamento_id")},
+                {"_id": 0, "vendus_payment_method_id": 1})
+            identificador = (tipo or {}).get("vendus_payment_method_id")
+        if identificador:
+            meios.append(str(identificador))
+        else:
+            # Uma lista mais curta do que os pagamentos é a recusa por
+            # plataforma a falhar ABERTA — a app não tem como saber que aquele
+            # pagamento foi Glovo. Não se adivinha nada, mas fica escrito: é o
+            # único sítio onde alguém pode vir a perceber porque é que aquela
+            # fatura deu pontos.
+            logger.error(
+                "[faturacao] pontos da app: o pagamento %r da venda %s (documento "
+                "%s) não tem id do Vendus — `meios_pagamento` vai mais curto e a "
+                "app não consegue recusar uma plataforma por ele",
+                pagamento.get("tipo_pagamento_id"), venda_id, documento["id"])
+    loja = await db[COLECOES["lojas"]].find_one(
+        {"id": venda.get("loja_id")}, {"_id": 0, "nome": 1})
+    operador = await db[COLECOES["utilizadores"]].find_one(
+        {"id": venda.get("operador_id")}, {"_id": 0, "nome": 1})
+    payload = {
+        "ligacao_id": ligacao.get("id"),
+        "documento_id": documento["id"],
+        "atcud": documento.get("atcud"),
+        "numero": documento.get("numero"),
+        "emitido_em": documento.get("emitido_em"),
+        "total": round(float(documento.get("total") or 0), 2),
+        "caucao": round(float(documento.get("deposito") or 0), 2),
+        "meios_pagamento": meios,
+        "loja_nome": (loja or {}).get("nome") or "",
+        "operador_nome": (operador or {}).get("nome") or "",
+    }
+    await _enfileirar(db, _linha_nova(
+        "credito", "credito:%s" % documento["id"], payload,
+        agora or datetime.now(timezone.utc),
+        documento_id=documento["id"], venda_id=venda_id,
+        primeiro_nome=ligacao.get("primeiro_nome")))
