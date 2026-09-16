@@ -1414,6 +1414,20 @@ async def emitir_nota_credito(
             "emitido_em": documento_nc.get("emitido_em"),
         }},
     )
+    # **OS PONTOS DESTA DEVOLUÇÃO**, logo a seguir à marca `emitida` e antes
+    # do papel: se a fatura de origem deu pontos pela app, a nota tira-lhos na
+    # proporção do que devolve (a conta é da app). Nada aqui pode estragar uma
+    # nota de crédito REAL já entregue à AT — um 500 era o ecrã a convidar a
+    # operadora a devolver o dinheiro outra vez. O import é local pela razão do
+    # `fiscal.py`.
+    try:
+        from .pontos_app import enfileirar_estorno
+        await enfileirar_estorno(db, nota, documento_nc)
+    except Exception as e:  # noqa: BLE001 — os pontos nunca podem parar uma devolução
+        logger.error(
+            "[faturacao] a nota de crédito %s saiu mas o estorno dos pontos L'Açaí "
+            "não entrou na fila: %s", nota["id"], e,
+        )
     # **O PAPEL DO CLIENTE**, e é o último passo desta rota pela mesma razão
     # que é o último do `fiscal.finalizar`: o talão é CONSEQUÊNCIA do
     # documento fiscal, nunca condição dele. Um cliente que devolve sai da

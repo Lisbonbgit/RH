@@ -35,6 +35,7 @@ from pymongo.errors import DuplicateKeyError
 
 from .db import COLECOES, obter_db
 from .pos_auth import operador_atual
+from .precos import CODIGO_NAO_SUJEITO
 from .venda import _garante_aberta, _obter_venda_da_loja
 
 logger = logging.getLogger(__name__)
@@ -460,3 +461,45 @@ async def enfileirar_credito(db, venda_id: str, documento: Dict, *,
         agora or datetime.now(timezone.utc),
         documento_id=documento["id"], venda_id=venda_id,
         primeiro_nome=ligacao.get("primeiro_nome")))
+
+
+# --- O estorno, na nota de crédito ----------------------------------------------
+
+
+async def enfileirar_estorno(db, nota: Dict, documento_nc: Dict, *,
+                             agora: Optional[datetime] = None) -> None:
+    """Põe na fila o estorno desta nota de crédito, se a fatura de origem tiver
+    uma linha de crédito. Chamado em `nota_credito.emitir_nota_credito`, logo a
+    seguir à marca `emitida`.
+
+    Não interessa aqui se o crédito já chegou à app: a linha entra na mesma, e
+    é o ENVIO que espera por ele (ou a fecha `sem_efeito` se ele nunca entrar).
+
+    **A caução da nota são as linhas `NS`.** O depósito de embalagem é a única
+    coisa deste POS fora do imposto (`precos.CODIGO_NAO_SUJEITO`), e a nota
+    credita-o como qualquer outra linha da fatura. Os pontos contam sem ela,
+    por isso a app precisa de a saber para tirar a proporção certa. Somada em
+    cêntimos inteiros, como todo o dinheiro deste módulo."""
+    if documento_nc.get("modo") != "normal":
+        return
+    credito = await db[COLECOES["pontos_app"]].find_one(
+        {"chave": "credito:%s" % nota["documento_id"]}, {"_id": 0})
+    if not credito:
+        return
+    caucao_em_centimos = sum(
+        round(float(linha.get("total") or 0) * 100)
+        for linha in nota.get("linhas") or []
+        if linha.get("tax_id") == CODIGO_NAO_SUJEITO
+    )
+    payload = {
+        "atcud_origem": credito["payload"]["atcud"],
+        "nc_id": documento_nc["id"],
+        "numero_nc": documento_nc.get("numero"),
+        "valor_nc": round(float(nota.get("total") or 0), 2),
+        "caucao_nc": caucao_em_centimos / 100.0,
+    }
+    await _enfileirar(db, _linha_nova(
+        "estorno", "estorno:%s" % documento_nc["id"], payload,
+        agora or datetime.now(timezone.utc),
+        documento_id=nota["documento_id"], nc_documento_id=documento_nc["id"],
+        venda_id=nota.get("venda_id"), primeiro_nome=credito.get("primeiro_nome")))

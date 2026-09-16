@@ -894,3 +894,98 @@ def test_uma_ligacao_sem_id_e_recusada_antes_da_rota_correr():
         PedidoFinalizarVenda(
             pagamentos=[PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)],
             pontos_ligacao={"id": "", "primeiro_nome": "Ana"})
+
+
+# --- O estorno, na nota de crédito ----------------------------------------------
+
+
+def _nota(**over):
+    n = {
+        "id": "intencao-1", "documento_id": "doc-1", "venda_id": "venda-1",
+        "total": 10.4,
+        "linhas": [
+            {"indice": 1, "titulo": "Açaí Regular", "tax_id": "INT", "total": 10.2},
+            {"indice": 4, "titulo": "Depósito", "tax_id": "NS", "total": 0.2},
+        ],
+    }
+    n.update(over)
+    return n
+
+
+def _documento_nc(**over):
+    d = {"id": "nc-1", "tipo": "NC", "numero": "NC 05P2026/12", "modo": "normal"}
+    d.update(over)
+    return d
+
+
+def test_a_nota_de_uma_fatura_com_pontos_enfileira_o_estorno_com_o_contrato_da_app(envios):
+    db, fila = _db_da_fila(_credito(estado="feito", pontos=17))
+
+    _corre(pontos_app.enfileirar_estorno(db, _nota(), _documento_nc()))
+
+    linha = fila.linhas()[1]
+    assert (linha["chave"], linha["tipo"], linha["estado"]) == ("estorno:nc-1", "estorno", "pendente")
+    assert (linha["documento_id"], linha["nc_documento_id"]) == ("doc-1", "nc-1")
+    assert linha["primeiro_nome"] == "Ana"
+    assert linha["payload"] == {
+        "atcud_origem": "JJ3K-1824", "nc_id": "nc-1", "numero_nc": "NC 05P2026/12",
+        "valor_nc": 10.4, "caucao_nc": 0.2,
+    }
+    assert envios == [linha["id"]]
+
+
+def test_a_nota_de_uma_fatura_SEM_pontos_nao_enfileira_nada(envios):
+    db, fila = _db_da_fila()
+    _corre(pontos_app.enfileirar_estorno(db, _nota(), _documento_nc()))
+    assert fila.linhas() == [] and envios == []
+
+
+def test_uma_nota_em_modo_tests_nao_tira_pontos_a_ninguem(envios):
+    db, fila = _db_da_fila(_credito(estado="feito", pontos=17))
+    _corre(pontos_app.enfileirar_estorno(db, _nota(), _documento_nc(modo="tests")))
+    assert len(fila.linhas()) == 1 and envios == []
+
+
+def test_a_mesma_nota_so_enfileira_um_estorno(envios):
+    db, fila = _db_da_fila(_credito(estado="feito", pontos=17))
+    _corre(pontos_app.enfileirar_estorno(db, _nota(), _documento_nc()))
+    _corre(pontos_app.enfileirar_estorno(db, _nota(), _documento_nc()))
+    assert len(fila.linhas()) == 2 and len(envios) == 1
+
+
+def _ambiente_da_nota(monkeypatch):
+    monkeypatch.setattr(db_mod, "_indice_notas_credito_ok", True)
+    _configura_vendus_env(monkeypatch)
+    VendusNCFalso.instancias.clear()
+    VendusNCFalso.emitidos = 0
+    monkeypatch.setattr(nc_mod, "ClienteEmissaoVendus", VendusNCFalso)
+
+
+def test_a_rota_da_nota_enfileira_o_estorno_DEPOIS_de_a_marcar_emitida(monkeypatch):
+    _ambiente_da_nota(monkeypatch)
+    db = _db_nc()
+    vistas = []
+
+    async def _regista(db_, nota, documento_nc, agora=None):
+        gravada = await db_[COLECOES["notas_credito"]].find_one({"id": nota["id"]})
+        vistas.append((gravada["estado"], documento_nc["numero"], nota["documento_id"]))
+
+    monkeypatch.setattr(pontos_app, "enfileirar_estorno", _regista)
+    resposta = _emitir(db, monkeypatch)
+
+    assert vistas == [("emitida", resposta["numero"], "doc-1")]
+
+
+def test_os_pontos_a_rebentar_nao_estragam_a_nota_de_credito(monkeypatch):
+    _ambiente_da_nota(monkeypatch)
+    db = _db_nc()
+
+    async def _explode(*a, **kw):
+        raise RuntimeError("tudo mal")
+
+    monkeypatch.setattr(pontos_app, "enfileirar_estorno", _explode)
+    resposta = _emitir(db, monkeypatch)
+
+    assert resposta["numero"]
+    gravada = _corre(db[COLECOES["notas_credito"]].find_one({"id": resposta["id"]}))
+    assert gravada["estado"] == "emitida"
