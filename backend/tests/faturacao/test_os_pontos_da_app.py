@@ -204,6 +204,18 @@ def test_sem_configuracao_da_503_e_nem_sai_para_a_rede(monkeypatch, app, variave
     assert app.pedidos == []
 
 
+def test_um_URL_com_a_porta_estragada_da_503_e_nao_um_500(monkeypatch, app):
+    """Um erro de dedo na PORTA do `APP_LACAI_URL` — `8OO1` com letras O em vez
+    de zeros — levanta `httpx.InvalidURL`, que NÃO é `httpx.HTTPError` (herda
+    directamente de `Exception`). Apanhado só o `HTTPError`, a excepção subia e
+    a funcionária lia «Internal Server Error» em vez da frase que lhe diz que a
+    fatura pode seguir sem pontos."""
+    monkeypatch.setenv("APP_LACAI_URL", "http://olacai-api:8OO1")
+    with pytest.raises(HTTPException) as e:
+        _ler(monkeypatch, _db_do_ler())
+    assert (e.value.status_code, e.value.detail) == (503, _MSG_APP)
+
+
 def test_uma_venda_de_OUTRA_loja_e_404_e_a_app_nem_e_chamada(monkeypatch, app):
     """A app consome o QR na primeira leitura: perguntar-lhe antes de conferir
     a venda gastava o QR do cliente numa recusa."""
@@ -387,6 +399,26 @@ def test_a_rede_em_baixo_ou_o_tecto_dos_4_segundos_fica_pendente(monkeypatch, ap
     gravada = fila.linhas()[0]
     assert (gravada["estado"], gravada["tentativas"]) == ("pendente", 1)
     assert gravada["ultimo_erro"].startswith("rede: ")
+
+
+def test_um_URL_com_a_porta_estragada_conta_tentativa_e_nao_congela_a_fila(monkeypatch, app):
+    """**O defeito que isto prende.** `httpx.InvalidURL` — o que um `8OO1` com
+    letras no `APP_LACAI_URL` do `.env` levanta — não é `httpx.HTTPError`, e
+    escapava ao `except`. A linha já estava RESERVADA quando a excepção subia:
+    ninguém gravava desfecho nenhum, ela ficava `pendente` com 0 tentativas e
+    sem relógio das 24 h (o backoffice a dizer «À espera de ser enviado.» para
+    sempre) — e a volta do cron morria nessa primeira linha, com os pontos de
+    todas as lojas parados em silêncio."""
+    monkeypatch.setenv("APP_LACAI_URL", "http://olacai-api:8OO1")
+    db, fila = _db_da_fila(_credito())
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    gravada = fila.linhas()[0]
+    assert (gravada["estado"], gravada["tentativas"]) == ("pendente", 1)
+    assert gravada["primeira_falha_tecnica_em"] == _iso(AGORA), (
+        "o relógio das 24 h tem de arrancar — isto é uma falha técnica")
+    assert gravada["a_enviar_ate"] == pontos_app._NUNCA, "a reserva tem de ser largada"
 
 
 def test_um_200_com_um_estado_que_o_contrato_nao_tem_e_erro_tecnico(monkeypatch, app):

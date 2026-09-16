@@ -134,7 +134,12 @@ async def ler_qr_de_pontos(
             "loja_nome": (loja or {}).get("nome") or "",
             "operador_nome": operador.get("nome") or "",
         })
-    except (IntegracaoNaoConfigurada, httpx.HTTPError) as e:
+    # `Exception` e não `httpx.HTTPError`: um erro de dedo na PORTA do
+    # `APP_LACAI_URL` (`8OO1` com letras) levanta `httpx.InvalidURL`, que herda
+    # directamente de `Exception` e escapava ao tuplo. Para a funcionária tudo
+    # o que venha daqui é o mesmo: a app não respondeu, a fatura segue sem
+    # pontos — «Internal Server Error» não era a frase de ninguém.
+    except Exception as e:  # noqa: BLE001
         logger.warning(
             "[faturacao] ler QR de pontos (venda %s): a app não respondeu — %s: %s",
             dados.venda_id, type(e).__name__, e)
@@ -329,7 +334,13 @@ async def enviar(db, linha_id: Optional[str] = None, *, agora: Optional[datetime
             "proxima_tentativa_em": _iso(agora + timedelta(minutes=1)),
             "ultimo_erro": "integração não configurada",
         })
-    except httpx.HTTPError as e:
+    # Tudo o resto que venha de `_chamar_app` é falha TÉCNICA — e `Exception` e
+    # não `httpx.HTTPError` porque `httpx.InvalidURL` (a porta do
+    # `APP_LACAI_URL` mal escrita) não é `HTTPError`. Escapando daqui, a linha
+    # ficava presa com a reserva já feita e desfecho nenhum gravado — pendente
+    # com 0 tentativas e sem relógio das 24 h — e a volta do cron morria nela,
+    # parando os pontos de todas as lojas em silêncio.
+    except Exception as e:  # noqa: BLE001
         return await _falhou(db, linha, reserva, agora, "rede: %s %s" % (type(e).__name__, e))
 
     corpo = _json_ou_nada(resposta) if resposta.status_code == 200 else None
