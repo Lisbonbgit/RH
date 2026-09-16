@@ -49,7 +49,17 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://www.vendus.pt/ws/v1.1/"
+# O endereço da API. A omissão é o Vendus a sério — é o que vale em todas as
+# lojas, e nenhuma delas define esta variável. `VENDUS_BASE_URL` existe para
+# UMA coisa: apontar um ENSAIO LOCAL a um "Vendus de mentira" (um servidor
+# nosso em 127.0.0.1) e poder exercer a cadeia inteira — emitir, ler, nota de
+# crédito — sem chave nenhuma e sem criar um único documento na conta real.
+# **Nunca em produção**: definida lá, as vendas deixavam de chegar à
+# Autoridade Tributária e ninguém dava por isso — a emissão respondia "200" na
+# mesma, vinda do sítio errado. Lê-se do ambiente como tudo o resto deste
+# pacote (VENDUS_ACCOUNTS aqui ao lado, VENDUS_MODE e VENDUS_REGISTER_ID em
+# emissao.py).
+BASE_URL = os.environ.get("VENDUS_BASE_URL") or "https://www.vendus.pt/ws/v1.1/"
 POR_PAGINA = 100  # o máximo aceite pela API Vendus (mesmo valor do Financeiro)
 
 # Limite defensivo (mesmo espírito de _FIN_VENDUS_MAX_PROD_PAGES em
