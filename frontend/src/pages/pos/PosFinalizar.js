@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import {
   ArrowLeft, Pencil, X, ChevronDown, Loader2, AlertTriangle, CheckCircle2,
   ShieldAlert, Ban, User, Receipt, Printer, CreditCard, Coins, Divide, Scissors, Users,
-  Minus, Plus,
+  Minus, Plus, Gift, QrCode,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,10 +11,12 @@ import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible';
 import PosCampoValor, { TecladoNumerico, comVirgula } from './PosCampoValor';
+import PosLerQr from './PosLerQr';
 import {
   contaTravada, duvidaPorApurar, detalhesErroPos, eurosPos as euros,
   temMaisDe2CasasDecimaisPos, avisoDoDocumento, previsaoDoDividir,
   guardarNifDaConta, lerNifDaConta, nifValidoPT,
+  guardarPontosDaConta, lerPontosDaConta,
 } from '@/lib/pos';
 
 // O ecrã de finalizar (Plano 2C, Task 4): três cartões — Total, Cliente e
@@ -555,6 +557,47 @@ function CartaoCliente({ nifTexto, onNifTexto, desativado }) {
   );
 }
 
+// --- Pontos L'Açaí -----------------------------------------------------------
+
+// **Ganha os pontos quem mostra a app na caixa antes de pagar.** A funcionária
+// lê o QR que o cliente mostra (a janela `PosLerQr`), e a ligação viaja no
+// EMITIR em `pontos_ligacao`; os pontos só entram depois de a Fatura
+// Simplificada sair, do lado do servidor.
+//
+// **Este cartão nunca entra no `motivoBloqueio`.** Os pontos são do cliente,
+// não da fatura: com a app em baixo, um QR expirado ou um cliente sem
+// telemóvel, a venda segue. Um EMITIR preso por causa dos pontos era a fila
+// parada por uma coisa que não é fiscal.
+//
+// Só o PRIMEIRO nome, cortado pela app: o ecrã da caixa está à vista da loja.
+function CartaoPontos({ ligacao, onLer, onRemover, desativado }) {
+  return (
+    <Cartao titulo="Pontos L'Açaí" icone={Gift}>
+      {ligacao ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="font-heading font-bold text-2xl min-w-0 break-words">
+            {`Pontos para: ${ligacao.primeiro_nome} ✓`}
+          </p>
+          <Button type="button" variant="outline" className="h-12" onClick={onRemover} disabled={desativado}>
+            Remover
+          </Button>
+        </div>
+      ) : (
+        <Button
+          type="button"
+          variant="outline"
+          className="h-12 mt-2 w-full sm:w-auto"
+          onClick={onLer}
+          disabled={desativado}
+        >
+          <QrCode className="h-5 w-5 mr-2" />
+          Ler QR do cliente
+        </Button>
+      )}
+    </Cartao>
+  );
+}
+
 // --- Pagamento ---------------------------------------------------------------
 
 function BotaoTipo({ tipo, escolhido, onEscolher, desativado }) {
@@ -989,10 +1032,24 @@ export default function PosFinalizar({
   // O NIF sobrevive a sair deste ecrã para juntar mais um artigo à conta —
   // preso ao id DESTA conta, ver `lib/pos.js::guardarNifDaConta`.
   const [nifTexto, setNifTexto] = useState(() => lerNifDaConta(venda?.id));
+  // O cliente dos pontos L'Açaí, pelo mesmo molde e pela mesma razão
+  // (`lib/pos.js::guardarPontosDaConta`). Guarda-se no gesto — ler ou remover —
+  // e não num efeito, para a montagem do ecrã nunca escrever na gaveta.
+  const [ligacao, setLigacao] = useState(() => lerPontosDaConta(venda?.id));
+  const [aLerQr, setALerQr] = useState(false);
+  const mudarLigacao = (nova) => {
+    setLigacao(nova);
+    guardarPontosDaConta(venda?.id, nova);
+  };
 
   // Trocar de conta (cobrar outra parte de uma conta repartida) recomeça do
-  // NIF daquela conta — nunca herda o da anterior.
-  useEffect(() => { setNifTexto(lerNifDaConta(venda?.id)); }, [venda?.id]);
+  // NIF e dos pontos daquela conta — nunca herda os da anterior. E fecha a
+  // janela do QR, que era da outra conta.
+  useEffect(() => {
+    setNifTexto(lerNifDaConta(venda?.id));
+    setLigacao(lerPontosDaConta(venda?.id));
+    setALerQr(false);
+  }, [venda?.id]);
 
   // Guarda ao escrever, e não ao sair: sair pode ser um toque em «Voltar» ou
   // um F5 da operadora, e nenhum dos dois passa por aqui a avisar.
@@ -1267,6 +1324,10 @@ export default function PosFinalizar({
         valor: Number(p.valor),
       })),
       nif: digitosNif || null,
+      // SEMPRE presente, `null` quando não houve QR: o servidor grava-o em
+      // `dados_pagamento` em cada tentativa, e uma tentativa sem pontos nunca
+      // deixa agarrado à venda o cliente de uma anterior.
+      pontos_ligacao: ligacao ? { id: ligacao.id, primeiro_nome: ligacao.primeiro_nome } : null,
     });
   };
 
@@ -1347,6 +1408,22 @@ export default function PosFinalizar({
           )}
 
           <CartaoCliente nifTexto={nifTexto} onNifTexto={setNifTexto} desativado={aEmitir || congelada} />
+
+          <CartaoPontos
+            ligacao={ligacao}
+            onLer={() => setALerQr(true)}
+            onRemover={() => mudarLigacao(null)}
+            desativado={aEmitir || congelada}
+          />
+          {/* Montada só enquanto está aberta: desmontar é o que desliga a
+              câmara (ver PosLerQr). */}
+          {aLerQr && (
+            <PosLerQr
+              vendaId={venda?.id}
+              onLigada={(nova) => { mudarLigacao(nova); setALerQr(false); }}
+              onFechar={() => setALerQr(false)}
+            />
+          )}
 
           <Cartao titulo="Pagamento" icone={CreditCard}>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 mt-2">
