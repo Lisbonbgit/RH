@@ -159,6 +159,7 @@ async def ler_qr_de_pontos(
         "primeiro_nome": str(corpo.get("primeiro_nome") or ""),
     }
 
+
 # --- A fila -------------------------------------------------------------------
 
 # **O «nunca» de `a_enviar_ate`, e não `None`.** No Mongo, `null` não casa com
