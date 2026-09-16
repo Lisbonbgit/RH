@@ -152,7 +152,7 @@ export default function PosLerQr({ vendaId, onLigada, onFechar }) {
         <DialogHeader>
           <DialogTitle>Ler QR do cliente</DialogTitle>
           <DialogDescription>
-            O cliente abre a app L'Açaí em Início → Código e mostra o QR antes de pagar.
+            O cliente abre a app L'Açaí e toca em «Mostrar QR na caixa» antes de pagar.
           </DialogDescription>
         </DialogHeader>
 
