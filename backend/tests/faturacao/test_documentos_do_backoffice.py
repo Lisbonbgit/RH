@@ -19,7 +19,9 @@ from fastapi import HTTPException
 
 from faturacao import documentos as doc_mod
 from faturacao.db import COLECOES
-from faturacao.documentos import documento_do_backoffice, documentos_do_backoffice
+from faturacao.documentos import (
+    documento_do_backoffice, documentos_do_backoffice, obter_documento,
+)
 
 from .test_venda import ColeccaoFalsa, DbFalsa, _corre
 
@@ -276,3 +278,87 @@ def test_o_NIF_do_documento_tem_precedencia_sobre_o_da_venda(monkeypatch):
     _db(monkeypatch, [doc], vendas=[_venda("v-a2", cliente_nif=None)])
     r = _corre(documento_do_backoffice("a2", _={}))
     assert r["cliente_nif"] == "244772903"
+
+
+# --- Os pontos L'Açaí no detalhe ------------------------------------------------
+
+
+def _linha_de_pontos(chave, **over):
+    linha = {
+        "id": "p-" + chave, "chave": chave, "tipo": chave.split(":")[0],
+        "estado": "feito", "pontos": 17, "primeiro_nome": "Ana", "motivo": None,
+        "tentativas": 1, "ultimo_erro": None, "atualizado_em": "2026-09-15T12:00:05+00:00",
+        "payload": {"ligacao_id": "lig-1", "atcud": "ATCUD-d1"},
+        "a_enviar_ate": "1970-01-01T00:00:00+00:00",
+    }
+    linha.update(over)
+    return linha
+
+
+def _com_pontos(db, *linhas):
+    db._coleccoes[COLECOES["pontos_app"]] = ColeccaoFalsa([], list(linhas))
+
+
+def test_o_detalhe_da_fatura_diz_os_pontos_da_app(monkeypatch):
+    db = _db(monkeypatch,
+             [_documento("d1", "FS 1/1", 10.20, "2026-08-10T12:00:00+00:00", venda_id="v1")],
+             vendas=[_venda("v1")])
+    _com_pontos(db, _linha_de_pontos("credito:d1"))
+
+    r = _corre(documento_do_backoffice("d1", _={}))
+
+    assert r["pontos_app"] == {
+        "tipo": "credito", "estado": "feito", "pontos": 17, "primeiro_nome": "Ana",
+        "motivo": None, "tentativas": 1, "ultimo_erro": None,
+        "atualizado_em": "2026-09-15T12:00:05+00:00",
+    }
+
+
+def test_o_detalhe_da_nota_de_credito_mostra_o_ESTORNO_dela_e_nao_o_credito_da_fatura(monkeypatch):
+    db = _db(monkeypatch,
+             [_documento("n1", "NC 1/1", 10.20, "2026-08-11T12:00:00+00:00", tipo="NC")])
+    _com_pontos(db,
+                _linha_de_pontos("credito:d1"),
+                _linha_de_pontos("estorno:n1", estado="pendente", pontos=None, tentativas=3,
+                                 ultimo_erro="HTTP 503: em baixo"))
+
+    r = _corre(documento_do_backoffice("n1", _={}))
+
+    assert (r["pontos_app"]["tipo"], r["pontos_app"]["estado"]) == ("estorno", "pendente")
+    assert (r["pontos_app"]["tentativas"], r["pontos_app"]["ultimo_erro"]) == (3, "HTTP 503: em baixo")
+
+
+def test_uma_fatura_sem_app_mostrada_tem_pontos_app_a_None(monkeypatch):
+    db = _db(monkeypatch,
+             [_documento("d1", "FS 1/1", 10.20, "2026-08-10T12:00:00+00:00", venda_id="v1")],
+             vendas=[_venda("v1")])
+    _com_pontos(db, _linha_de_pontos("credito:outro"))
+    assert _corre(documento_do_backoffice("d1", _={}))["pontos_app"] is None
+
+
+def test_o_corpo_enviado_a_app_nao_sai_para_o_ecra(monkeypatch):
+    """O `payload` leva a ligação do cliente; o ecrã não precisa dela."""
+    db = _db(monkeypatch,
+             [_documento("d1", "FS 1/1", 10.20, "2026-08-10T12:00:00+00:00", venda_id="v1")],
+             vendas=[_venda("v1")])
+    _com_pontos(db, _linha_de_pontos("credito:d1"))
+    r = _corre(documento_do_backoffice("d1", _={}))
+    assert "payload" not in r["pontos_app"] and "lig-1" not in str(r)
+
+
+def test_o_detalhe_do_POS_continua_SEM_a_linha_dos_pontos(monkeypatch):
+    """A promessa feita ao C2: o `GET /pos/documentos/{id}` fica igual — o
+    balcão não mostra pontos e o `lib/pos.js` não os lê.
+
+    O montador (`_detalhe_do_documento`) é o MESMO para as duas rotas, e a
+    linha nova está a um `resposta[...] =` de distância de escorregar para lá:
+    é este teste que prende a promessa."""
+    db = _db(monkeypatch,
+             [_documento("d1", "FS 1/1", 10.20, "2026-08-10T12:00:00+00:00", venda_id="v1")],
+             vendas=[_venda("v1")])
+    _com_pontos(db, _linha_de_pontos("credito:d1"))
+
+    do_pos = _corre(obter_documento("d1", operador={"loja_id": "loja-1"}))
+
+    assert "pontos_app" not in do_pos
+    assert "Ana" not in str(do_pos)

@@ -534,3 +534,25 @@ async def cron_pontos_app(key: str = Query(...)) -> dict:
             break
         enviadas += 1
     return {"enviadas": enviadas}
+
+
+# --- O backoffice ---------------------------------------------------------------
+
+
+async def pontos_app_do_documento(db, documento: Dict) -> Optional[Dict]:
+    """A linha «Pontos L'Açaí» do detalhe de um documento no backoffice: numa
+    fatura o crédito, numa nota de crédito o estorno DELA. `None` quando não há
+    linha nenhuma — o cliente não mostrou a app.
+
+    Só os campos que o ecrã escreve («17 pontos para Ana», «A tentar enviar (3
+    tentativas — último erro: …)», «Recusado: pagamento por plataforma»). O
+    corpo enviado à app fica de fora: tem a ligação do cliente, e o ecrã não
+    precisa dela para nada."""
+    tipo = "estorno" if documento.get("tipo") == "NC" else "credito"
+    linha = await db[COLECOES["pontos_app"]].find_one(
+        {"chave": "%s:%s" % (tipo, documento.get("id"))}, {"_id": 0})
+    if not linha:
+        return None
+    return {campo: linha.get(campo) for campo in (
+        "tipo", "estado", "pontos", "primeiro_nome", "motivo",
+        "tentativas", "ultimo_erro", "atualizado_em")}

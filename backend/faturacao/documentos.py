@@ -86,6 +86,7 @@ from .mapa_imposto import (
 )
 from .auth import gestor_atual
 from .periodos import janela_de_datas
+from .pontos_app import pontos_app_do_documento
 from .pos_auth import operador_atual
 from .vendus.cliente import ClienteVendus, VendusErro, obter_conta
 
@@ -840,12 +841,18 @@ async def documento_do_backoffice(
     documento_id: str, _: dict = Depends(gestor_atual)
 ) -> dict:
     """A MESMA fatura que o POS mostra — mesmo montador, sem o âmbito da loja
-    (o gestor vê todas)."""
+    (o gestor vê todas).
+
+    Mais a linha **«Pontos L'Açaí»** (`pontos_app`), que só o gestor vê: numa
+    fatura o crédito, numa nota de crédito o estorno dela, `None` quando o
+    cliente não mostrou a app. O balcão não precisa dela e o POS não a lê."""
     db = obter_db()
     documento = await db[COLECOES["documentos"]].find_one({"id": documento_id})
     if not documento:
         raise HTTPException(status_code=404, detail="Documento não encontrado")
-    return await _detalhe_do_documento(db, documento, com_contexto=True)
+    resposta = await _detalhe_do_documento(db, documento, com_contexto=True)
+    resposta["pontos_app"] = await pontos_app_do_documento(db, documento)
+    return resposta
 
 
 _MSG_SEM_ID_NO_VENDUS = (
