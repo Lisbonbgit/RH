@@ -362,3 +362,76 @@ def test_o_detalhe_do_POS_continua_SEM_a_linha_dos_pontos(monkeypatch):
 
     assert "pontos_app" not in do_pos
     assert "Ana" not in str(do_pos)
+
+
+# --- O envio da fatura por email, no mesmo detalhe -------------------------------
+
+
+def _linha_de_email(documento_id, **over):
+    linha = _linha_de_pontos("fatura_email:%s" % documento_id,
+                             tipo="fatura_email", pontos=None)
+    linha["payload"] = {"ligacao_id": "lig-1", "documento_id": documento_id,
+                        "vendus_document_id": 368200354, "modo": "normal"}
+    linha.update(over)
+    return linha
+
+
+def test_o_detalhe_da_fatura_diz_o_estado_do_ENVIO_POR_EMAIL(monkeypatch):
+    db = _db(monkeypatch,
+             [_documento("d1", "FS 1/1", 10.20, "2026-08-10T12:00:00+00:00", venda_id="v1")],
+             vendas=[_venda("v1")])
+    _com_pontos(db, _linha_de_pontos("credito:d1"),
+                _linha_de_email("d1", estado="falhado", tentativas=13,
+                                ultimo_erro="HTTP 503: em baixo"))
+
+    r = _corre(documento_do_backoffice("d1", _={}))
+
+    assert r["fatura_email"]["estado"] == "falhado"
+    assert (r["fatura_email"]["tentativas"], r["fatura_email"]["ultimo_erro"]) \
+        == (13, "HTTP 503: em baixo")
+    assert r["pontos_app"]["estado"] == "feito", "a linha dos pontos fica como estava"
+
+
+def test_uma_fatura_SEM_ATCUD_mostra_o_email_ainda_que_nao_tenha_pontos(monkeypatch):
+    """**O caso que a procura por `credito:<id>` deixava invisível.** Um
+    documento REAL pode não ter ATCUD, e sem ele `enfileirar_credito` não cria
+    linha nenhuma (a app deduplica os pontos por ele). O envio do email NÃO
+    herda essa guarda — existe à mesma, e é exactamente a fatura em que alguém
+    precisa de ver o que lhe aconteceu."""
+    db = _db(monkeypatch,
+             [_documento("d1", "FS 1/1", 10.20, "2026-08-10T12:00:00+00:00", venda_id="v1")],
+             vendas=[_venda("v1")])
+    _com_pontos(db, _linha_de_email("d1"))
+
+    r = _corre(documento_do_backoffice("d1", _={}))
+
+    assert r["pontos_app"] is None
+    assert r["fatura_email"]["estado"] == "feito"
+
+
+def test_uma_fatura_sem_envio_por_email_tem_a_chave_a_None(monkeypatch):
+    db = _db(monkeypatch,
+             [_documento("d1", "FS 1/1", 10.20, "2026-08-10T12:00:00+00:00", venda_id="v1")],
+             vendas=[_venda("v1")])
+    _com_pontos(db, _linha_de_pontos("credito:d1"))
+    assert _corre(documento_do_backoffice("d1", _={}))["fatura_email"] is None
+
+
+def test_o_corpo_do_envio_tambem_nao_sai_para_o_ecra(monkeypatch):
+    """O payload do envio leva a ligação do cliente, como o dos pontos."""
+    db = _db(monkeypatch,
+             [_documento("d1", "FS 1/1", 10.20, "2026-08-10T12:00:00+00:00", venda_id="v1")],
+             vendas=[_venda("v1")])
+    _com_pontos(db, _linha_de_email("d1"))
+    r = _corre(documento_do_backoffice("d1", _={}))
+    assert "payload" not in r["fatura_email"] and "lig-1" not in str(r)
+
+
+def test_o_detalhe_do_POS_continua_sem_o_envio_por_email(monkeypatch):
+    """A mesma promessa da linha dos pontos: o balcão não mostra isto, e o
+    montador é o MESMO para as duas rotas."""
+    db = _db(monkeypatch,
+             [_documento("d1", "FS 1/1", 10.20, "2026-08-10T12:00:00+00:00", venda_id="v1")],
+             vendas=[_venda("v1")])
+    _com_pontos(db, _linha_de_email("d1"))
+    assert "fatura_email" not in _corre(obter_documento("d1", operador={"loja_id": "loja-1"}))

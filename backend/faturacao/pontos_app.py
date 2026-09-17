@@ -839,20 +839,40 @@ async def cron_pontos_app(key: str = Query(...)) -> dict:
 # --- O backoffice ---------------------------------------------------------------
 
 
-async def pontos_app_do_documento(db, documento: Dict) -> Optional[Dict]:
-    """A linha «Pontos L'Açaí» do detalhe de um documento no backoffice: numa
-    fatura o crédito, numa nota de crédito o estorno DELA. `None` quando não há
-    linha nenhuma — o cliente não mostrou a app.
+# Só os campos que o ecrã escreve («17 pontos para Ana», «A tentar enviar (3
+# tentativas — último erro: …)», «Recusado: pagamento por plataforma»). O corpo
+# enviado à app fica de fora: tem a ligação do cliente, e o ecrã não precisa
+# dela para nada.
+_CAMPOS_PARA_O_ECRA = (
+    "tipo", "estado", "pontos", "primeiro_nome", "motivo",
+    "tentativas", "ultimo_erro", "atualizado_em")
 
-    Só os campos que o ecrã escreve («17 pontos para Ana», «A tentar enviar (3
-    tentativas — último erro: …)», «Recusado: pagamento por plataforma»). O
-    corpo enviado à app fica de fora: tem a ligação do cliente, e o ecrã não
-    precisa dela para nada."""
-    tipo = "estorno" if documento.get("tipo") == "NC" else "credito"
-    linha = await db[COLECOES["pontos_app"]].find_one(
-        {"chave": "%s:%s" % (tipo, documento.get("id"))}, {"_id": 0})
+
+async def _linha_para_o_ecra(db, chave: str) -> Optional[Dict]:
+    linha = await db[COLECOES["pontos_app"]].find_one({"chave": chave}, {"_id": 0})
     if not linha:
         return None
-    return {campo: linha.get(campo) for campo in (
-        "tipo", "estado", "pontos", "primeiro_nome", "motivo",
-        "tentativas", "ultimo_erro", "atualizado_em")}
+    return {campo: linha.get(campo) for campo in _CAMPOS_PARA_O_ECRA}
+
+
+async def pontos_app_do_documento(db, documento: Dict) -> Dict:
+    """As duas linhas da fila que o detalhe de um documento no backoffice
+    mostra: `pontos` (numa fatura o crédito, numa nota de crédito o estorno
+    DELA) e `fatura_email` (o envio da fatura por email). Cada uma `None` quando
+    não existe — o cliente não mostrou a app, ou levou talão.
+
+    **Duas e não uma, porque nem sempre andam juntas.** Um documento REAL sem
+    ATCUD não chega a ter linha de crédito (`enfileirar_credito` desiste, a app
+    deduplica os pontos por ele) e tem linha de email à mesma — o envio não
+    herda essa guarda. Procurar só por `credito:<id>` deixava esse envio
+    invisível para toda a gente, e é exactamente a fatura em que alguém precisa
+    de o ver."""
+    tipo = "estorno" if documento.get("tipo") == "NC" else "credito"
+    return {
+        "pontos": await _linha_para_o_ecra(db, "%s:%s" % (tipo, documento.get("id"))),
+        # Uma nota de crédito nunca tem linha de email (as notas saem sempre em
+        # papel — a devolução é o momento em que o cliente está chateado), e a
+        # chave `fatura_email:<nc-id>` não existe: dá `None` por si só.
+        "fatura_email": await _linha_para_o_ecra(
+            db, "fatura_email:%s" % documento.get("id")),
+    }

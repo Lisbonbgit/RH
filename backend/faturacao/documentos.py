@@ -843,15 +843,20 @@ async def documento_do_backoffice(
     """A MESMA fatura que o POS mostra — mesmo montador, sem o âmbito da loja
     (o gestor vê todas).
 
-    Mais a linha **«Pontos L'Açaí»** (`pontos_app`), que só o gestor vê: numa
-    fatura o crédito, numa nota de crédito o estorno dela, `None` quando o
-    cliente não mostrou a app. O balcão não precisa dela e o POS não a lê."""
+    Mais as duas linhas da fila da app, que só o gestor vê: **«Pontos L'Açaí»**
+    (`pontos_app` — numa fatura o crédito, numa nota de crédito o estorno dela)
+    e **o envio da fatura por email** (`fatura_email`). `None` cada uma quando
+    não existe. O balcão não precisa delas e o POS não as lê."""
     db = obter_db()
     documento = await db[COLECOES["documentos"]].find_one({"id": documento_id})
     if not documento:
         raise HTTPException(status_code=404, detail="Documento não encontrado")
     resposta = await _detalhe_do_documento(db, documento, com_contexto=True)
-    resposta["pontos_app"] = await pontos_app_do_documento(db, documento)
+    linhas_da_app = await pontos_app_do_documento(db, documento)
+    # Duas chaves e não um objecto aninhado: `pontos_app` fica com a forma
+    # EXACTA de hoje, que é a que o `FatDocumentos.js` já lê.
+    resposta["pontos_app"] = linhas_da_app["pontos"]
+    resposta["fatura_email"] = linhas_da_app["fatura_email"]
     return resposta
 
 
