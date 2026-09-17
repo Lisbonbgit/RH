@@ -12,7 +12,9 @@
 
 - Âmbito: **só** `/Users/matheus.moraes/Developer/RH/backend`. Nem um ficheiro do `frontend/`, nem nada do repo `applacai-fatura-email`.
 - A decisão de não imprimir um documento fiscal vem **sempre** de `fat_pontos_qr`, nunca do corpo do pedido. `LigacaoDePontos` (`fiscal.py:1939-1948`) **não ganha campo nenhum**.
-- `enfileirar_fatura_email` devolve `False` — e o papel sai — quando: `documento["modo"] != "normal"`; `documento["vendus_document_id"]` está vazio; a venda não tem `pontos_ligacao`; não há linha em `fat_pontos_qr` para aquele `ligacao_id` ou ela tem `fatura_por_email: False`; `venda["cliente_nif"]` está preenchido; a escrita falhou por qualquer razão.
+- `enfileirar_fatura_email` devolve `False` — e o papel sai — quando: `documento["modo"] != "normal"`; `documento["vendus_document_id"]` está vazio; a venda não tem `pontos_ligacao`; não há linha em `fat_pontos_qr` para aquele `ligacao_id` ou ela tem `fatura_por_email: False`; a escrita falhou por qualquer razão.
+- **O NIF não decide nada — o seletor do cliente é o único que manda.** Com a preferência ligada, a fatura vai por email **haja ou não haja NIF**: o NIF vai escrito na fatura como sempre foi (copiado para o documento na emissão, `fiscal.py:1266`) e é essa fatura, com NIF, que segue para o email da conta de quem mostrou o QR. Decisão do dono a 2026-09-17, e ele conhece o balcão: «depende da opção se quer ou não por email a fatura. o seletor é que manda.» Quem mostra a app e quem pede a fatura são a mesma pessoa; num grupo só uma pessoa fica com os pontos e, quando querem faturas separadas, dividem a conta — cada parte com o seu QR e o seu NIF. Medido: **10,4% das vendas levam NIF** (286 em 2755 nos últimos 30 dias) e só **1,6%** são partes de conta dividida; a guarda antiga custava 1 em cada 10 faturas que podiam poupar papel.
+- **Risco assumido pelo dono, explicitamente:** num grupo em que uma pessoa mostra a app e OUTRA pede a fatura com o NIF dela, sem dividirem a conta, essa fatura vai para o email de quem mostrou a app. Recupera-se num toque — o separador Faturação já reimprime qualquer documento.
 - **A guarda do `vendus_document_id` é obrigatória e não é a do ATCUD.** `vendus/emissao._documento_da_criacao:702` só recusa quando faltam `id` **E** `atcud`: um 2xx com ATCUD e sem `id` é aceite de propósito e grava `vendus_document_id: None` (é por isso que `documentos.pdf_do_documento` tem o `_MSG_SEM_ID_NO_VENDUS` e um 422 dedicado, `documentos.py:892-894`). Sem ela o papel saltava-se e `_pdf_da_fatura` devolvia `b""` para sempre — 13 tentativas, `falhado` às 24 h, e nem papel nem email.
 - `enfileirar_fatura_email` **não herda a guarda do ATCUD** de `enfileirar_credito` (`pontos_app.py:457-463`): um documento real pode não ter ATCUD, a app precisa dele para deduplicar os PONTOS, e o email precisa é do id do VENDUS.
 - Um `DuplicateKeyError` na inserção da linha do email conta como **`True`**: a linha já lá estava, e devolver `False` fazia sair papel numa fatura que já ia por email.
@@ -166,7 +168,16 @@ def test_so_o_PAPEL_e_a_PREFERENCIA_DO_QR_se_apagam_sozinhos():
 
 Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_os_pontos_da_app.py tests/faturacao/test_indices.py -q`
 
-Expected: FAIL — `KeyError: 'pontos_qr'` em `test_ler_o_qr_GRAVA_a_preferencia_de_fatura_por_email`, `AssertionError` em `test_ler_o_qr_devolve_a_ligacao_o_primeiro_nome_e_o_SIM_NAO_do_email` (a resposta ainda tem duas chaves), lista vazia em `test_a_coleccao_do_qr_apaga_se_sozinha_ao_fim_de_DUAS_HORAS` e um só TTL em `test_so_o_PAPEL_e_a_PREFERENCIA_DO_QR_se_apagam_sozinhos`.
+Expected: FAIL — **seis**, que são todos os testes desta tarefa:
+
+1. `test_ler_o_qr_devolve_a_ligacao_o_primeiro_nome_e_o_SIM_NAO_do_email` — `AssertionError`: a resposta ainda tem duas chaves;
+2. `test_ler_o_qr_GRAVA_a_preferencia_de_fatura_por_email` — `KeyError: 'fatura_por_email'`, e não `'pontos_qr'`: a primeira afirmação do teste é `_ler(...)["fatura_por_email"]`, e é a resposta da rota que rebenta antes de se chegar à colecção;
+3. `test_sem_preferencia_nao_fica_linha_nenhuma_na_coleccao` — `KeyError: 'fatura_por_email'`, pela mesma razão;
+4. `test_uma_escrita_FALHADA_devolve_falso_em_vez_de_prometer_email` — `KeyError: 'pontos_qr'`, esse sim: a linha que arma o duplo (`db._coleccoes[COLECOES["pontos_qr"]] = _Rebenta()`) corre antes de `_ler` e o `COLECOES` ainda não tem a entrada;
+5. `test_a_coleccao_do_qr_apaga_se_sozinha_ao_fim_de_DUAS_HORAS` — `AssertionError`: lista vazia, o índice ainda não existe;
+6. `test_so_o_PAPEL_e_a_PREFERENCIA_DO_QR_se_apagam_sozinhos` — `AssertionError`: um só TTL.
+
+A lista é exaustiva de propósito. Num Step «correr e ver falhar», uma lista que parece completa e não é põe quem executa a duvidar da árvore em vez de duvidar do plano.
 
 - [ ] **Step 3: Implementação mínima**
 
@@ -279,6 +290,12 @@ E, na docstring do módulo (`pontos_app.py:10-12`), trocar a frase que passou a 
 Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_os_pontos_da_app.py tests/faturacao/test_indices.py tests/faturacao/test_arranque.py -q`
 
 Expected: PASS
+
+E os guardas provam-se por **mutação**, à mão, antes do commit — nenhum destes testes foi visto vermelho por uma razão que seja a dele: até aqui só falharam por não haver implementação nenhuma. Desfazer cada mutação a seguir:
+
+1. **a armadilha do TTL**: em `_gravar_qr_da_ligacao`, trocar `"criada_em": datetime.now(timezone.utc)` por `"criada_em": _iso(datetime.now(timezone.utc))` → `test_ler_o_qr_GRAVA_a_preferencia_de_fatura_por_email` tem de ficar VERMELHO no `isinstance(linha["criada_em"], datetime)`. É a mutação que mais importa desta tarefa: o resto do módulo grava datas como string ISO, o Mongo aceita a string sem se queixar, **e o índice TTL sobre ela não apaga nada** — sem este vermelho, a colecção crescia para sempre e ninguém dava por isso;
+2. tirar o `if not fatura_por_email: return False` do princípio de `_gravar_qr_da_ligacao` → `test_sem_preferencia_nao_fica_linha_nenhuma_na_coleccao` tem de ficar VERMELHO nas duas afirmações (a resposta passa a `True` e fica lá uma linha), porque o `insert_one` grava `fatura_por_email: True` à fixa;
+3. tirar o `try`/`except Exception` que embrulha o `insert_one` → `test_uma_escrita_FALHADA_devolve_falso_em_vez_de_prometer_email` tem de ficar VERMELHO com o `RuntimeError("Atlas em baixo")` a subir até à rota — que é exactamente o 503 ao balcão, depois de a app já ter consumido o código do QR, que a guarda existe para impedir.
 
 - [ ] **Step 5: Commit**
 
@@ -511,7 +528,12 @@ def test_o_ENVIO_tem_25_s_e_quem_esta_ao_BALCAO_continua_com_4(monkeypatch, app,
 
 Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_os_pontos_da_app.py -q`
 
-Expected: FAIL — `test_um_tipo_NOVO_nao_pode_ir_parar_a_estornar` com `AssertionError: assert 'http://olacai-api:8001/api/pos-integracao/estornar' == '.../fatura-email'`, e `AttributeError: module 'faturacao.pontos_app' has no attribute 'ClienteVendus'` na fixture `vendus`.
+Expected: FAIL — **ERROR** na maior parte e `AssertionError` em dois, e a distinção não é pedantismo: quem executa tem de saber que um `E` no sumário do pytest é o esperado aqui e não um sinal de árvore estragada.
+
+- **ERROR na fixture `vendus`**, com `AttributeError: module 'faturacao.pontos_app' has no attribute 'ClienteVendus'`, nos **oito** itens que a pedem (sete funções, uma delas parametrizada em dois): `test_um_tipo_NOVO_nao_pode_ir_parar_a_estornar`, `test_enviado_e_ja_enviado_fecham_a_linha_como_FEITA[enviado|ja_enviado]`, `test_o_PDF_vai_no_corpo_e_NUNCA_fica_gravado_na_fila`, `test_o_MODO_DO_DOCUMENTO_e_o_que_vai_buscar_o_PDF`, `test_SEM_PDF_a_app_nem_e_chamada_e_a_fila_REPETE`, `test_o_VENDUS_a_REBENTAR_tambem_e_falha_tecnica_e_nao_um_500` e `test_o_ENVIO_tem_25_s_e_quem_esta_ao_BALCAO_continua_com_4`. O `monkeypatch.setattr(pontos_app, "ClienteVendus", ...)` levanta no SETUP — `faturacao/pontos_app.py` não importa `ClienteVendus` nem `obter_conta` (os imports estão em `:23-40`) — e por isso `test_um_tipo_NOVO...` **nunca chega à afirmação do URL**.
+- **AssertionError** nos dois que não pedem a fixture: `test_um_tipo_DESCONHECIDO_fecha_a_linha_em_vez_de_MATAR_o_cron` (hoje o ternário manda o `marciano` para `/estornar`, a app a fingir responde 200 com `{}` e a linha acaba em `("pendente", None)` em vez de `("sem_efeito", "tipo_desconhecido")`) e `test_a_volta_do_cron_SOBREVIVE_a_uma_linha_de_tipo_desconhecido` (os estados saem `["feito", "feito"]`).
+
+A prova de que `test_um_tipo_NOVO...` vê mesmo `/estornar` — que é o que este Step queria mostrar e não consegue — fica para a mutação 1 do Step 4, que é onde ela é possível.
 
 - [ ] **Step 3: Implementação mínima**
 
@@ -668,6 +690,15 @@ Em `enviar`, substituir as linhas 323-325:
 Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_os_pontos_da_app.py tests/faturacao/test_documentos_do_backoffice.py -q`
 
 Expected: PASS
+
+E os guardas provam-se por **mutação**, à mão, antes do commit (desfazer cada uma a seguir):
+
+1. **a avaria que mata o cron**: em `enviar`, trocar `_ACCAO_DO_TIPO.get(linha["tipo"])` por `_ACCAO_DO_TIPO[linha["tipo"]]` → `test_um_tipo_DESCONHECIDO_fecha_a_linha_em_vez_de_MATAR_o_cron` **e** `test_a_volta_do_cron_SOBREVIVE_a_uma_linha_de_tipo_desconhecido` têm de ficar VERMELHOS com `KeyError: 'marciano'`. É a pior avaria deste módulo — os pontos e os emails de todas as lojas parados em silêncio, de minuto a minuto — e sem este vermelho a diferença entre `.get` e `[...]` é uma linha que a próxima pessoa «arruma»;
+2. **o ternário de volta**: no mapa, trocar a entrada por `"fatura_email": "estornar"` → `test_um_tipo_NOVO_nao_pode_ir_parar_a_estornar` tem de ficar VERMELHO com `assert 'http://olacai-api:8001/api/pos-integracao/estornar' == '.../fatura-email'`. **É aqui, e só aqui, que esse teste é visto vermelho pela razão dele** — no Step 2 a fixture `vendus` rebenta no setup e a afirmação do URL nunca corre;
+3. em `_pdf_da_fatura`, trocar `payload.get("modo") or "normal"` por `"normal"` à fixa → `test_o_MODO_DO_DOCUMENTO_e_o_que_vai_buscar_o_PDF` tem de ficar VERMELHO (`[(368200354, 'normal')]` em vez de `[(368200354, 'tests')]`). É a armadilha do 404 do Vendus, que já apanhou a app L'Açaí;
+4. tirar o `if not pdf: return await _falhou(...)` → `test_SEM_PDF_a_app_nem_e_chamada_e_a_fila_REPETE` tem de ficar VERMELHO em `app.pedidos == []`: a app passa a ser chamada com `pdf_base64` vazio, que é entregar ao cliente uma fatura que não é fatura nenhuma.
+
+Os outros dois guardas desta tarefa não levam mutação à parte porque **são** constantes e os testes afirmam-nas de frente: tirar `"enviado"`/`"ja_enviado"` de `_RESPOSTAS_FEITAS` ou apagar `_TIMEOUT_POR_ACCAO` põe `test_enviado_e_ja_enviado_fecham_a_linha_como_FEITA` e `test_o_ENVIO_tem_25_s_e_quem_esta_ao_BALCAO_continua_com_4` vermelhos sem mais nada a mudar.
 
 - [ ] **Step 5: Commit**
 
@@ -987,17 +1018,39 @@ def test_uma_fatura_SEM_ID_DO_VENDUS_sai_em_PAPEL(monkeypatch, envios):
     assert _emails(db) == []
 
 
-def test_com_NIF_ESCRITO_o_papel_sai_a_mesma(monkeypatch, envios):
-    """O NIF é por parte da conta e a ligação do QR é de quem mostrou a app:
-    quando divergem, a fatura da empresa ia para a caixa de correio do colega.
-    Quem escreve um NIF quer o documento ali."""
+def test_com_NIF_ESCRITO_a_fatura_vai_A_MESMA_por_email(monkeypatch, envios):
+    """**O NIF não decide nada — o seletor do cliente é o único que manda.**
+    Palavras do dono: «depende da opção se quer ou não por email a fatura. o
+    seletor é que manda.»
+
+    O NIF vai escrito na fatura como sempre foi — a emissão copia-o da venda
+    para o documento (`fiscal.py:1266`) — e é ESSA fatura, com NIF, que segue
+    para o email da conta de quem mostrou o QR. Quem mostra a app e quem pede a
+    fatura são a mesma pessoa; num grupo só uma fica com os pontos e, quando
+    querem faturas separadas, dividem a conta, e aí cada parte leva o seu QR e
+    o seu NIF.
+
+    A guarda antiga (papel a sair só por haver NIF escrito) custava 1 em cada
+    10 faturas: 10,4% das vendas levam NIF e só 1,6% são partes de conta
+    dividida.
+
+    **O teste inverteu-se, não se apagou.** O caso do NIF continua coberto; o
+    que mudou é o que se espera dele — agora prova que o NIF NÃO muda nada."""
     db = _db_de_venda(qr=_QR_LIGADO)
 
     _finalizar(db, monkeypatch, cliente=_VendusNormal,
                pontos_ligacao=_LIGACAO, nif="219363935")
 
-    assert len(_fila(db)) == 1
-    assert _emails(db) == []
+    assert _fila(db) == [], "com a preferência ligada, o NIF não faz sair papel"
+    documento = db._coleccoes[COLECOES["documentos"]]._documentos[0]
+    assert documento["cliente_nif"] == "219363935", (
+        "o NIF vai escrito na fatura como sempre foi")
+    # **`[linha] = _emails(db)` e nunca uma igualdade à colecção toda:** nesta
+    # MESMA chamada a `finalizar`, o `_ligar_venda_ao_documento` já pôs a linha
+    # do CRÉDITO dos pontos na mesma fila (`fiscal.py:1431-1433`). São duas
+    # linhas em `fat_pontos_app`, e só uma delas é o email.
+    [linha] = _emails(db)
+    assert linha["chave"] == "fatura_email:%s" % documento["id"]
 
 
 def test_sem_LINHA_NO_QR_o_papel_sai_mesmo_com_a_ligacao_na_venda(monkeypatch, envios):
@@ -1026,7 +1079,15 @@ def test_com_a_preferencia_DESLIGADA_na_linha_do_qr_sai_papel(monkeypatch, envio
 
 Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_o_papel_sai_da_emissao_e_do_fecho.py -q`
 
-Expected: FAIL — `test_2_COM_A_PREFERENCIA_LIGADA_nao_sai_papel_e_fica_a_linha_do_email` com `AssertionError: assert [{...talao...}] == []` (o papel continua a sair) e `ValueError: not enough values to unpack (expected 1, got 0)` na linha do email.
+Expected: FAIL — **três, e só três**, todos pela mesma razão (hoje o papel sai sempre e a fila do email está vazia):
+
+1. `test_2_COM_A_PREFERENCIA_LIGADA_nao_sai_papel_e_fica_a_linha_do_email` — `AssertionError` em `assert _fila(db) == []`, na primeira afirmação. O `[linha] = _emails(db)` nunca chega a correr, portanto **não se espera `ValueError` nenhum** aqui;
+2. `test_2b_a_MESMA_emissao_a_passar_duas_vezes_manda_UM_email_e_nao_traz_papel` — `AssertionError: assert 0 == 1` em `len(_emails(db))`;
+3. `test_com_NIF_ESCRITO_a_fatura_vai_A_MESMA_por_email` — `AssertionError` em `assert _fila(db) == []`.
+
+**Os outros seis casos da secção nova passam já, e é suposto**: `test_1_SEM_LIGACAO...`, `test_3_com_a_FILA_DO_EMAIL_a_rebentar...`, `test_4_em_MODO_TESTS...`, `test_uma_fatura_SEM_ID_DO_VENDUS_sai_em_PAPEL`, `test_sem_LINHA_NO_QR_o_papel_sai_mesmo_com_a_ligacao_na_venda` e `test_com_a_preferencia_DESLIGADA_na_linha_do_qr_sai_papel` afirmam todos que **sai papel e não há linha de email** — que é exactamente o que este servidor faz hoje, sem implementação nenhuma. São os guardas de `enfileirar_fatura_email`, e nenhum deles é visto vermelho nem antes nem depois do Step 3: apagar a guarda que cada um cobre deixa-os verdes por acidente. **É por isso que o Step 4 desta tarefa tem mutações**, e não só um `pytest` a passar.
+
+(O ficheiro corre inteiro, portanto os cinco casos da emissão que já lá estavam — `test_FINALIZAR_uma_venda_poe_UM_papel_na_fila...` e companhia — têm de continuar verdes. A colecção `COLECOES["pontos_qr"]` que o `_com_fila` arma já existe: veio da Task 1, que corre antes desta.)
 
 - [ ] **Step 3: Implementação mínima**
 
@@ -1060,10 +1121,17 @@ async def enfileirar_fatura_email(db, venda: Dict, documento: Dict, *,
     - não há linha em `fat_pontos_qr` para aquela ligação, ou ela diz `False`:
       **é essa linha, do servidor, que decide**. Um `pontos_ligacao` forjado no
       corpo do EMITIR não pode fazer desaparecer o documento de ninguém;
-    - `venda["cliente_nif"]` está preenchido: o NIF é por parte da conta e a
-      ligação é de quem mostrou a app — quando divergem, a fatura da empresa ia
-      para a caixa de correio do colega. Quem escreve um NIF quer o papel ali;
     - a escrita falhou por qualquer razão.
+
+    **O NIF não está nesta lista, e é de propósito.** O seletor do cliente é o
+    único que manda: com a preferência ligada a fatura vai por email haja ou não
+    haja NIF, e o NIF vai escrito nela como sempre foi (a emissão copia-o da
+    venda para o documento, `fiscal.py:1266`). Quem mostra a app e quem pede a
+    fatura são a mesma pessoa; num grupo, quando querem faturas separadas,
+    dividem a conta e cada parte leva o seu QR e o seu NIF. O caso em que uma
+    pessoa mostra a app e outra pede a fatura com o NIF dela, sem dividirem a
+    conta, é risco assumido pelo dono: essa fatura vai para o email de quem
+    mostrou a app, e recupera-se reimprimindo no separador Faturação.
 
     **Um `DuplicateKeyError` conta como `True`.** A linha já lá estava — o
     gancho da emissão corre mais do que uma vez por venda — e devolver `False`
@@ -1091,8 +1159,9 @@ async def enfileirar_fatura_email(db, venda: Dict, documento: Dict, *,
     ligacao = (venda or {}).get("pontos_ligacao") or {}
     if not ligacao.get("id"):
         return False
-    if (venda.get("cliente_nif") or "").strip():
-        return False
+    # **Nenhuma guarda ao `cliente_nif`**, e é a decisão do dono: o seletor do
+    # cliente é o único que manda, e uma fatura com NIF vai por email como
+    # qualquer outra — com o NIF escrito nela (`fiscal.py:1266`).
 
     linha = _linha_nova(
         "fatura_email", "fatura_email:%s" % documento["id"],
@@ -1146,12 +1215,16 @@ Em `backend/faturacao/fiscal.py`, substituir as linhas 2296-2298:
         # email foi MESMO criada — `enfileirar_fatura_email` devolve `True` só
         # nesse caso, e devolve `False` para tudo o resto (modo de testes, sem
         # id do Vendus, sem QR lido, sem a marca do servidor em `fat_pontos_qr`,
-        # com NIF escrito, escrita falhada). Nunca há desfecho em que o cliente
-        # fique sem talão E sem email.
+        # escrita falhada). Nunca há desfecho em que o cliente fique sem talão
+        # E sem email.
+        #
+        # **O NIF não entra nesta decisão**: o seletor do cliente é o único que
+        # manda, e uma fatura com NIF vai por email com o NIF escrito nela
+        # (copiado da venda para o documento na linha 1266, aqui em cima).
         #
         # A venda é a `venda_actualizada` e nunca o corpo do pedido: quem perde
         # a corrida da reserva (`_esperar_documento_do_vencedor`) também chega
-        # aqui, e só a venda gravada tem a ligação e o NIF que valeram.
+        # aqui, e só a venda gravada tem a ligação que valeu.
         if not await enfileirar_fatura_email(db, venda_actualizada or venda, documento):
             await enfileirar_venda_emitida(db, venda_actualizada or venda, documento)
     except Exception as e:  # noqa: BLE001 — perde-se o papel, nunca o registo
@@ -1162,6 +1235,31 @@ Em `backend/faturacao/fiscal.py`, substituir as linhas 2296-2298:
 Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_o_papel_sai_da_emissao_e_do_fecho.py tests/faturacao/test_fiscal.py tests/faturacao/test_impressao.py tests/faturacao/test_os_pontos_da_app.py -q`
 
 Expected: PASS
+
+**E agora as mutações — este Step não está feito sem elas.** Seis dos nove casos da secção nova já passavam ANTES do Step 3 (ver o Step 2): são os guardas de `enfileirar_fatura_email`, e um teste que está verde antes e depois da implementação é um teste que nada obriga a existir. Cada mutação é à mão, corre-se o ficheiro, confirma-se o VERMELHO, e **desfaz-se antes da seguinte**:
+
+1. **repor a guarda do NIF — a que prova a decisão do dono.** Em `enfileirar_fatura_email`, no lugar exacto do comentário que diz «Nenhuma guarda ao `cliente_nif`» (logo a seguir ao `if not ligacao.get("id")`), pôr a regra que saiu:
+
+   ```python
+       if documento.get("cliente_nif"):
+           return False
+   ```
+
+   → `test_com_NIF_ESCRITO_a_fatura_vai_A_MESMA_por_email` tem de ficar **VERMELHO** em `assert _fila(db) == []`, com o talão de volta à fila.
+
+   **É esta a mutação que prova a decisão do dono: sem ela, o caso do NIF passava a ser um teste que nada consegue partir.** Hoje ele só é vermelho por ainda não haver implementação nenhuma — o papel sai em qualquer dos dois casos — e a partir do Step 3 fica verde para sempre, sem ninguém saber se é por causa da decisão ou por acidente. A guarda que saiu custava 1 em cada 10 faturas (10,4% das vendas levam NIF, 1,6% são partes de conta dividida) e o dono disse-o com todas as letras: «depende da opção se quer ou não por email a fatura. o seletor é que manda.» Este vermelho é o que prende essa frase ao código. O plano irmão faz o mesmo do lado do ecrã (`docs/superpowers/plans/2026-09-17-fatura-por-email-C-ecras.md`, Step 4 da Task correspondente).
+
+2. **a guarda do id do Vendus.** Tirar as quatro linhas do `if not documento.get("vendus_document_id"):` (o `logger.error` incluído) → `test_uma_fatura_SEM_ID_DO_VENDUS_sai_em_PAPEL` tem de ficar VERMELHO nas duas afirmações finais: a fila do papel fica vazia e `_emails(db)` passa a ter uma linha. É o único desfecho proibido — nem talão nem email, 13 tentativas de um PDF que nunca vem — e sem este vermelho a guarda é um `if` que ninguém sabe porque lá está.
+
+3. **a guarda do modo.** Tirar o `if documento.get("modo") != "normal": return False` → `test_4_em_MODO_TESTS_sai_papel_e_nao_se_manda_email_nenhum` tem de ficar VERMELHO. Uma fatura em `tests` não existe na AT.
+
+4. **a leitura de `fat_pontos_qr` — a fonte da verdade do papel.** Dentro do `try`, apagar as duas linhas do `if not (marca or {}).get("fatura_por_email"): return False`, deixando a leitura sem efeito → `test_sem_LINHA_NO_QR_o_papel_sai_mesmo_com_a_ligacao_na_venda` **e** `test_com_a_preferencia_DESLIGADA_na_linha_do_qr_sai_papel` têm de ficar VERMELHOS. É o vermelho que prova que um `pontos_ligacao` forjado no corpo do EMITIR não faz desaparecer o documento de ninguém.
+
+5. **o `DuplicateKeyError` como sucesso.** Trocar `except DuplicateKeyError: return True` por `return False` → `test_2b_a_MESMA_emissao_a_passar_duas_vezes_manda_UM_email_e_nao_traz_papel` tem de ficar VERMELHO em `_fila(db) == []`: a segunda passagem do gancho da emissão volta a pôr papel numa fatura que já ia por email.
+
+6. **a escrita falhada como papel.** No `except Exception` de baixo, trocar `return False` por `return True` → `test_3_com_a_FILA_DO_EMAIL_a_rebentar_o_PAPEL_SAI_a_mesma` tem de ficar VERMELHO em `len(_fila(db)) == 1`. É a promessa que sustenta o desenho: nunca há desfecho sem talão e sem email.
+
+**O guarda que nenhuma mutação parte, e fica escrito porque é verdade:** `if not ligacao.get("id"): return False` é uma saída antecipada, não uma guarda. Tirá-la deixa `test_1_SEM_LIGACAO_sai_papel_e_nao_ha_linha_de_email_nenhuma` verde de qualquer das formas — sem ligação também não há linha em `fat_pontos_qr`, e quem devolve `False` passa a ser a mutação 4. Quem sustenta mesmo esse caso é a leitura do QR; a saída antecipada só poupa uma ida à base de dados em quase todas as vendas.
 
 - [ ] **Step 5: Commit**
 
@@ -1274,7 +1372,9 @@ def test_o_detalhe_do_POS_continua_sem_o_envio_por_email(monkeypatch):
 
 Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_documentos_do_backoffice.py -q`
 
-Expected: FAIL com `KeyError: 'fatura_email'` em `test_o_detalhe_da_fatura_diz_o_estado_do_ENVIO_POR_EMAIL` (e nos outros quatro da secção nova).
+Expected: FAIL com `KeyError: 'fatura_email'` em **quatro** dos cinco testes da secção nova: `test_o_detalhe_da_fatura_diz_o_estado_do_ENVIO_POR_EMAIL`, `test_uma_fatura_SEM_ATCUD_mostra_o_email_ainda_que_nao_tenha_pontos` (este passa o `r["pontos_app"] is None` e rebenta na linha seguinte), `test_uma_fatura_sem_envio_por_email_tem_a_chave_a_None` e `test_o_corpo_do_envio_tambem_nao_sai_para_o_ecra`.
+
+**O quinto — `test_o_detalhe_do_POS_continua_sem_o_envio_por_email` — PASSA já**, e é suposto: a rota do balcão (`documentos.obter_documento:524`) nunca acrescentou chave nenhuma da fila da app; quem o faz é só a do gestor (`documentos.py:854`), e o irmão que já existe prova a mesma promessa da mesma forma (`tests/faturacao/test_documentos_do_backoffice.py:349-364`, `assert "pontos_app" not in do_pos`). É um teste verde antes e depois do Step 3 — por isso a prova dele é a mutação 1 do Step 4.
 
 - [ ] **Step 3: Implementação mínima**
 
@@ -1346,6 +1446,21 @@ Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/fa
 
 Expected: PASS
 
+E as duas mutações, à mão, antes do commit (desfazer cada uma a seguir):
+
+1. **a promessa feita ao balcão.** Em `documentos.obter_documento` (`documentos.py:523-546`, a rota do POS), trocar o `return` por:
+
+   ```python
+       resposta = await _detalhe_do_documento(db, documento)
+       resposta["fatura_email"] = (
+           await pontos_app_do_documento(db, documento))["fatura_email"]
+       return resposta
+   ```
+
+   → `test_o_detalhe_do_POS_continua_sem_o_envio_por_email` tem de ficar VERMELHO. **É o único teste desta tarefa que está verde antes E depois do Step 3** (ver o Step 2), e o montador `_detalhe_do_documento` é o MESMO para as duas rotas — a linha nova está mesmo a um `resposta[...] =` de escorregar para o balcão.
+
+2. **a lista branca do ecrã.** Em `_linha_para_o_ecra`, trocar o `return {campo: linha.get(campo) for campo in _CAMPOS_PARA_O_ECRA}` por `return linha` → `test_o_corpo_do_envio_tambem_nao_sai_para_o_ecra` tem de ficar VERMELHO (o `payload` com a `lig-1` do cliente passa a sair para o ecrã), e com ele o `test_o_corpo_enviado_a_app_nao_sai_para_o_ecra` que já lá estava — o que confirma, de passagem, que as duas linhas passam mesmo pelo mesmo montador.
+
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -1374,6 +1489,13 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Produces: `POST /api/faturacao/documentos/{documento_id}/reenviar-email` (gestor) → `{"reenviado": True, "estado": "pendente"}`, 404 com `_MSG_SEM_LINHA_DE_EMAIL` quando não há linha.
 
 > **Nota de caminho, deliberada.** O desenho escreve `POST /pos/faturacao/documentos/{id}/reenviar-email`, mas o router do módulo já é montado com `prefix="/api/faturacao"` (`faturacao/__init__.py:33`): à letra, o endereço real ficava `/api/faturacao/pos/faturacao/documentos/...`, com «faturacao» duas vezes e um «pos» numa rota de gestor — e o prefixo `/api/faturacao/pos/` obriga, por `test_protecao_rotas.py`, ao mecanismo do POS em vez de `gestor_atual`. Usa-se o irmão que já existe — `@router.post("/documentos/{documento_id}/reimprimir")` (`impressao.py:924`), também de gestor, também sobre o documento — e o teste do caminho afirma o endereço **montado**, para a frente do backoffice não ter de o adivinhar.
+
+> **Nota de desenho, deliberada (a segunda).** O desenho (`docs/superpowers/specs/2026-09-17-fatura-por-email-design.md:169-173`) escreve que o reenviar «repõe **ou cria** a linha» com **cinco campos**. Este plano afasta-se dele nas duas coisas, e nas duas de propósito:
+>
+> - **Não cria.** Sem linha é 404 com `_MSG_SEM_LINHA_DE_EMAIL`. Uma fatura sem envio por email é uma fatura sem QR lido: não há endereço para onde a mandar, e criar a linha era inventar um destinatário — o documento de um cliente a sair para a conta de outro. O que essa fatura tem é o «Imprimir» do separador Faturação, e a mensagem do 404 diz-lho por palavras.
+> - **Repõe SETE campos e não cinco.** Aos cinco do desenho juntam-se `ultimo_erro` e `motivo`, porque entretanto a Task 4 pôs os dois em `_CAMPOS_PARA_O_ECRA`: deixados lá, o detalhe do documento escrevia «A tentar enviar (0 tentativas — último erro: HTTP 503: em baixo)» por cima de uma linha acabada de repor.
+>
+> As duas estão justificadas na docstring da rota, e ficam também aqui pela mesma razão que a nota do caminho: quem puser o desenho ao lado do plano tem de saber qual dos dois vale. Vale o plano; o desenho é que está por actualizar. As duas escolhas provam-se por mutação no Step 4.
 
 - [ ] **Step 1: Escrever o teste que falha**
 
@@ -1464,9 +1586,16 @@ def test_a_rota_de_reenviar_esta_montada_no_router_e_e_ESTE_o_endereco():
 
 - [ ] **Step 2: Correr e ver falhar**
 
-Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_os_pontos_da_app.py -q -k reenviar`
+Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_os_pontos_da_app.py -q`
 
-Expected: FAIL com `AttributeError: module 'faturacao.pontos_app' has no attribute 'reenviar_fatura_por_email'`.
+**O ficheiro inteiro, sem `-k`**, como em todas as outras tarefas deste plano (ver a nota 3 das «Notas da revisão»): um `-k` afinado à mão volta a divergir na primeira vez que alguém acrescentar um teste com outro nome, e o ficheiro inteiro corre em segundos.
+
+Expected: FAIL — **quatro**, e são os quatro desta secção:
+
+1. `test_reenviar_repoe_os_SETE_campos_e_manda_ja`, `test_reenviar_serve_uma_linha_ja_FEITA` e `test_reenviar_uma_fatura_que_nunca_teve_email_e_404`, os três com `AttributeError: module 'faturacao.pontos_app' has no attribute 'reenviar_fatura_por_email'`;
+2. `test_a_rota_de_reenviar_esta_montada_no_router_e_e_ESTE_o_endereco` com `AssertionError`: o endereço ainda não está no router.
+
+Todo o resto do ficheiro — as secções das Tasks 1 e 2, que já lá estão — tem de continuar verde.
 
 - [ ] **Step 3: Implementação mínima**
 
@@ -1542,6 +1671,24 @@ async def reenviar_fatura_por_email(
 Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_os_pontos_da_app.py tests/faturacao/test_protecao_rotas.py tests/faturacao/test_caminhos_do_pos.py -q`
 
 Expected: PASS
+
+E as três mutações, à mão, antes do commit — as duas primeiras são as duas divergências do desenho, provadas (desfazer cada uma a seguir):
+
+1. **repor os cinco campos do desenho**, tirando `"ultimo_erro": None` e `"motivo": None` do `$set` → `test_reenviar_repoe_os_SETE_campos_e_manda_ja` tem de ficar VERMELHO nas duas últimas afirmações. É a divergência que a Task 4 criou: sem estes dois campos o gestor lê «A tentar enviar (0 tentativas — último erro: HTTP 503: em baixo)» sobre uma linha que ele acabou de repor. Os outros cinco campos têm afirmação própria no mesmo teste, por isso tirar qualquer um deles põe-no vermelho da mesma forma;
+
+2. **repor o «ou cria» do desenho**: trocar o `if linha is None: raise HTTPException(...)` por
+
+   ```python
+       if linha is None:
+           linha = _linha_nova(
+               "fatura_email", "fatura_email:%s" % documento_id, {}, agora,
+               documento_id=documento_id)
+           await db[COLECOES["pontos_app"]].insert_one(dict(linha))
+   ```
+
+   → `test_reenviar_uma_fatura_que_nunca_teve_email_e_404` tem de ficar VERMELHO com `Failed: DID NOT RAISE <class 'fastapi.exceptions.HTTPException'>`. É o vermelho que prova que não se inventa um destinatário para uma fatura que nunca teve QR lido;
+
+3. **o caminho**: trocar o decorador por `@router.post("/pos/faturacao/documentos/{documento_id}/reenviar-email")`, que é o que o desenho escreve à letra → `test_a_rota_de_reenviar_esta_montada_no_router_e_e_ESTE_o_endereco` tem de ficar VERMELHO, com o endereço montado a sair `/api/faturacao/pos/faturacao/documentos/{documento_id}/reenviar-email`. É a prova de que o teste confronta mesmo o **router** e não o que o código escreve — o engano do prefixo já partiu o POS três vezes.
 
 - [ ] **Step 5: Commit**
 
@@ -1731,6 +1878,12 @@ E, a seguir ao cálculo de `por_sair` (linha 771) e dentro do `return` (linhas 7
 Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_impressao.py tests/faturacao/test_indices.py tests/faturacao/test_arranque.py tests/faturacao/test_o_separador_de_faturacao_no_ecra.py -q`
 
 Expected: PASS
+
+E o filtro do `count_documents` prova-se por **mutação** — tem três condições e cada uma tem o seu teste; um filtro com uma condição a menos continua a devolver um número, e um número errado neste ecrã é um aviso vermelho que a loja aprende a ignorar. Desfazer cada mutação a seguir:
+
+1. tirar `"loja_id": loja_id` do filtro → `test_o_alarme_e_da_LOJA_e_nao_das_outras` tem de ficar VERMELHO (2 em vez de 1): a operadora de Belém passava a ver o envio falhado de Oeiras — e a carregar em «Já vi» por ele;
+2. tirar `"tipo": "fatura_email"` → `test_uma_linha_de_PONTOS_falhada_nao_conta_como_email_por_enviar` tem de ficar VERMELHO (1 em vez de 0): um crédito falhado é chato, mas a fatura dele SAIU em papel, e este aviso diz outra coisa;
+3. acrescentar `"pendente"` à lista do `$in` → `test_um_envio_a_caminho_ou_feito_nao_acende_nada[pendente]` tem de ficar VERMELHO: a fila tenta-o de minuto a minuto, e acusá-lo era acender o alarme em todas as faturas por email do dia.
 
 - [ ] **Step 5: Commit**
 
@@ -2032,6 +2185,13 @@ Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/fa
 
 Expected: PASS
 
+E as quatro mutações, à mão, antes do commit (desfazer cada uma a seguir). São as quatro decisões aritméticas desta tarefa, e um número errado no email das 23:30 é pior do que número nenhum — quem o lê deixa de acreditar no resto:
+
+1. **o tecto**: em `relatorio_diario`, trocar `por_email = min(faturas_por_email, len(faturas_de_hoje))` por `por_email = faturas_por_email` → `test_a_contagem_nunca_passa_o_total_de_faturas_do_dia` tem de ficar VERMELHO, com `(4, -3)` em vez de `(1, 0)`. A fila conta-se em UTC e os documentos em dias de Lisboa: na fronteira, o relatório acusava-se a si próprio com um número negativo;
+2. **as notas de crédito**: trocar `faturas_de_hoje = [d for d in docs_de_hoje if d.get("tipo") != "NC"]` por `faturas_de_hoje = docs_de_hoje` → `test_uma_NOTA_DE_CREDITO_nao_conta_como_papel_desta_linha` tem de ficar VERMELHO, com `(1, 1)` em vez de `(1, 0)`;
+3. **o dia fechado**: em `relatorio_email`, tirar o `if (por_email or em_papel)` (escrever a linha sempre) → `test_num_dia_SEM_FATURAS_a_linha_nao_aparece` tem de ficar VERMELHO, com «0 faturas por email, 0 em papel» num dia sem vendas;
+4. **o filtro da rota** tem duas condições e as duas contam: tirar `"tipo": "fatura_email"` do `count_documents` dá 3, e tirar o `"criado_em": {"$gte": ...}` dá 4 → `test_a_ROTA_conta_as_linhas_do_DIA_e_so_as_do_EMAIL` tem de ficar VERMELHO nas duas (espera 2). É por isto que o `_Coleccao` do Step 1 passou a casar filtros: com o duplo de antes, as duas mutações ficavam VERDES.
+
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -2063,7 +2223,7 @@ Expected: PASS, com o total **acima de 3296** (as tarefas acrescentam ~45 testes
 
 ## Notas da revisão
 
-Os treze achados da crítica foram todos confirmados contra o código e **todos aplicados**. Nenhum estava errado. Três notas sobre a forma como foram aplicados, e um defeito que a crítica não apanhou:
+Os treze achados da crítica foram todos confirmados contra o código e **todos aplicados**. Nenhum estava errado. Três notas sobre a forma como foram aplicados, um defeito que a crítica não apanhou, a decisão do dono que mudou o plano depois — e, no ponto 6, a segunda volta de verificação que se lhe seguiu. **Seis pontos ao todo:**
 
 1. **O achado do `ligacao_id` reaproveitado (baixa) foi aplicado pela via da limitação escrita, não pela da guarda.** A crítica oferecia duas saídas. A guarda proposta — `find_one({"tipo": "fatura_email", "payload.ligacao_id": …})` dentro do mesmo `try` — corre em **todas** as emissões com QR, sobre uma colecção que `db.py:88-92` diz que «fica para sempre», e não há índice em `payload.ligacao_id` nem forma barata de o ter (um índice por campo de payload numa colecção que cresce todos os dias). Trocava um desfecho raro por um varrimento de colecção no caminho de cada fatura das cinco lojas. Fica em **Global Constraints**, com o mecanismo da app (5xx para tudo o que não seja sucesso, §`/fatura-email` ponto 4 do desenho) escrito como o que mantém a linha a repetir em vez de fechar `recusado`.
 
@@ -2071,4 +2231,27 @@ Os treze achados da crítica foram todos confirmados contra o código e **todos 
 
 3. **O achado dos `-k` (baixa) foi aplicado correndo o ficheiro inteiro nos Steps 2 de todas as tarefas**, e não afinando termos. Um `-k` afinado à mão volta a divergir na primeira vez que alguém acrescentar um teste com outro nome; o ficheiro inteiro nunca diverge, e é o que a Task 3 já fazia.
 
-4. **Defeito que a crítica não apanhou, corrigido de passagem:** o `test_com_NIF_ESCRITO_o_papel_sai_a_mesma` do plano antigo usava `nif="244772903"` — que **não é um NIF português válido** (soma 190, resto 3, dígito de controlo 8 e não 3). `PedidoFinalizarVenda._valida_nif` (`fiscal.py:1961-1985`) recusa-o no validador do Pydantic: o teste rebentava com `ValidationError` antes de a rota correr e nunca chegava a medir o papel. Passou a `"219363935"`, que é o que o próprio `test_fiscal.py:1825` já usa. Na mesma volta, o `_finalizar` ganhou o parâmetro `nif=None` — a via que a crítica preferia — e o bloco morto com o `if False` desapareceu, junto com a nota em prosa que mandava não o escrever.
+4. **Defeito que a crítica não apanhou, corrigido de passagem:** o teste do NIF do plano antigo usava `nif="244772903"` — que **não é um NIF português válido** (soma 190, resto 3, dígito de controlo 8 e não 3). `PedidoFinalizarVenda._valida_nif` (`fiscal.py:1961-1985`) recusa-o no validador do Pydantic: o teste rebentava com `ValidationError` antes de a rota correr e nunca chegava a medir o papel. Passou a `"219363935"`, que é o que o próprio `test_fiscal.py:1825` já usa. Na mesma volta, o `_finalizar` ganhou o parâmetro `nif=None` — a via que a crítica preferia — e o bloco morto com o `if False` desapareceu, junto com a nota em prosa que mandava não o escrever.
+
+5. **Decisão do dono, 2026-09-17: o NIF deixou de decidir seja o que for.** O plano tinha uma guarda a fazer sair papel sempre que houvesse NIF escrito, mesmo com a preferência ligada. Essa guarda **saiu** — dos Global Constraints, da docstring e do corpo de `enfileirar_fatura_email`, do teste que a media e dos comentários do bloco da emissão em `fiscal.py`. Palavras dele: «depende da opção se quer ou não por email a fatura. o seletor é que manda.» O raciocínio é do balcão: quem mostra a app e quem pede a fatura são a mesma pessoa; num grupo só uma fica com os pontos e, quando querem faturas separadas, dividem a conta — cada parte com o seu QR e o seu NIF. Medido: **10,4% das vendas levam NIF** (286 em 2755 nos últimos 30 dias) e só **1,6%** são partes de conta dividida, portanto a guarda custava 1 em cada 10 faturas que podiam poupar papel para cobrir um caso residual. O risco que sobra — uma pessoa mostra a app, outra pede a fatura com o NIF dela, e não dividem a conta — está **assumido explicitamente pelo dono** e recupera-se a um toque, reimprimindo no separador Faturação.
+
+   **O teste não se apagou: inverteu-se.** `test_com_NIF_ESCRITO_o_papel_sai_a_mesma` passou a `test_com_NIF_ESCRITO_a_fatura_vai_A_MESMA_por_email`, e prova agora o contrário do que provava — com NIF escrito E a preferência ligada, **não sai papel**, o NIF fica escrito no documento e a linha do email existe. O parâmetro `nif=None` do `_finalizar` fica: é dele que o teste invertido precisa. E a afirmação da linha do email é `[linha] = _emails(db)`, nunca uma igualdade à colecção toda: na mesma chamada a `finalizar`, o `_ligar_venda_ao_documento` já pôs a linha do crédito dos pontos na mesma fila (`fiscal.py:1431-1433`).
+
+   A contagem do Fecho não muda: um teste invertido não é um teste a mais.
+
+6. **Segunda volta de verificação, 2026-09-17 (depois da decisão do dono).** Sete achados novos, todos confirmados contra o código e **todos aplicados**; nenhum estava errado.
+
+   **O que faltava mesmo era a prova por mutação.** Um `grep -i muta` neste plano não devolvia nada, e o plano irmão (o C) já a fazia. O caso é grave no teste do NIF: `test_com_NIF_ESCRITO_a_fatura_vai_A_MESMA_por_email` só era vermelho por ainda não haver implementação nenhuma — hoje o papel sai em qualquer dos dois casos — e a partir do Step 3 ficava verde para sempre, sem nada no plano a obrigá-lo a existir. A decisão do dono passou a ter a mutação 1 do Step 4 da Task 3 (repor `if documento.get("cliente_nif"): return False`), e o teste tem de ficar VERMELHO nela.
+
+   A olhar para as outras tarefas, o problema era maior do que um teste: no Step 2 da Task 3, **seis dos nove casos novos já passavam antes da implementação** — são os guardas de `enfileirar_fatura_email`, e todos afirmam «sai papel e não há linha de email», que é o que este servidor faz hoje sem código nenhum. O mesmo em ponto pequeno na Task 4 (`test_o_detalhe_do_POS_continua_sem_o_envio_por_email` está verde antes e depois). Cada Step 4 das Tasks 1 a 7 ganhou o seu bloco de mutações — 25 ao todo — e cada uma nomeia o teste que tem de ficar vermelho. Uma coisa fica escrita porque é verdade e não se resolve: `if not ligacao.get("id")` é uma saída antecipada e não um guarda; nenhuma mutação a põe vermelha, porque quem sustenta esse caso é a leitura do QR.
+
+   Os outros seis achados eram contagens e expectativas de «correr e ver falhar» que a decisão do dono, ou as tarefas irmãs, deixaram desalinhadas. Todos recontados no código, nenhum estimado:
+
+   - **Task 1, Step 2** nomeava quatro falhas de seis. Faltavam `test_sem_preferencia_nao_fica_linha_nenhuma_na_coleccao` e `test_uma_escrita_FALHADA_devolve_falso_em_vez_de_prometer_email`. De passagem, o erro do primeiro da lista estava trocado: é `KeyError: 'fatura_por_email'` (a resposta da rota, que ainda tem duas chaves) e não `KeyError: 'pontos_qr'` — esse é o do quarto, onde a linha que arma o duplo corre antes de `_ler`.
+   - **Task 2, Step 2** prometia um `AssertionError` do URL em `test_um_tipo_NOVO_nao_pode_ir_parar_a_estornar` **e** um `AttributeError` na fixture `vendus`. As duas não podem acontecer no mesmo teste: `faturacao/pontos_app.py` não importa `ClienteVendus` (`:23-40`), o `monkeypatch.setattr` levanta no SETUP, e o teste dá **ERROR** sem nunca chegar à afirmação. Passou a dizer a verdade — oito itens em ERROR, dois em `AssertionError` — e a afirmação do URL foi para onde é possível: a mutação 2 do Step 4.
+   - **Task 3, Step 2** nomeava duas falhas de três (faltava `test_2b_a_MESMA_emissao_a_passar_duas_vezes_manda_UM_email_e_nao_traz_papel`) e prometia um `ValueError: not enough values to unpack` que nunca acontece — o `assert _fila(db) == []` rebenta antes de se chegar ao `[linha] = _emails(db)`.
+   - **Task 4, Step 2** dizia «e nos outros quatro da secção nova», o que dá cinco. São **três**: `test_o_detalhe_do_POS_continua_sem_o_envio_por_email` passa antes da implementação, porque a rota do balcão (`documentos.py:523-546`) nunca leva chave nenhuma da fila da app.
+   - **Task 5, Step 2** era o único `-k` que restava no plano (`-k reenviar`) e contradizia a nota 3 aqui em cima, que diz «todas as tarefas». Caiu o `-k`.
+   - **Task 5** afastava-se do desenho em duas coisas (não cria a linha; repõe sete campos e não cinco) sem uma nota a dizer qual dos dois vale, ao contrário da mudança do caminho, que já tinha a sua. Ganhou a «Nota de desenho, deliberada» — e as duas escolhas passaram a ser provadas pelas mutações 1 e 2 do Step 4.
+
+   **Nada disto mexeu em código de produto nem no número do Fecho:** as mutações são à mão e desfazem-se antes do commit, e uma expectativa corrigida não é um teste a mais.

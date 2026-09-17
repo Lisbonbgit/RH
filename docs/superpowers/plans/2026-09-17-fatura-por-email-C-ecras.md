@@ -23,9 +23,9 @@
 - **O `/pos/` da spec:162 é gralha.** A spec escreve `POST /pos/faturacao/documentos/{id}/reenviar-email`, mas as rotas do gestor vivem em `${API_URL}/faturacao/...` (`lib/faturacao.js:8` e `:273-274`, `documentos.py:839`, `impressao.py:924` — todas `/documentos/...`, sem `/pos/`). O caminho acordado com a Frente B é **`POST /api/faturacao/documentos/{id}/reenviar-email`**, montado no `router` do módulo `faturacao` ao lado do `/documentos/{documento_id}/reimprimir`.
 - **O endereço de email NUNCA aparece no POS** e nunca entra na gaveta do `sessionStorage`. Só o sim/não.
 - **A preferência NUNCA viaja no corpo do EMITIR.** O `pontos_ligacao` do `POST /pos/venda/{id}/finalizar` continua a ser exactamente `{id, primeiro_nome}` ou `null` (`PosFinalizar.js:1330`) — o servidor nunca lê a preferência do corpo de um pedido do browser.
-- **O ecrã não diz «enviada» no instante do EMITIR:** o `tentar_ja` agenda e volta logo (`pontos_app.py:243-256`). A frase é `Fatura vai por email — não é preciso esperar pelo papel.`
-- **As três condições que o ecrã pode ver** (spec, «Emitir»): preferência ligada, NIF vazio, `documento["modo"] == "normal"`. A quarta (existir mesmo a linha na fila) é do servidor e o ecrã não a conhece — por isso a frase é sobre a INTENÇÃO.
-- **O NIF que conta é o da VENDA GRAVADA, com o do ecrã como recurso.** O servidor decide por `venda["cliente_nif"]`; o ecrã tem `venda.cliente_nif` na resposta do EMITIR (`fiscal.py:2308`) e o `nifTexto` da gaveta antes disso. Ler só o `nifTexto` deixava o ecrã prometer email sobre um documento que o servidor mandou imprimir.
+- **O ecrã não diz «enviada» no instante do EMITIR:** o `tentar_ja` agenda e volta logo (`pontos_app.py:253-267`). A frase é `Fatura vai por email — não é preciso esperar pelo papel.`
+- **Das CINCO condições do servidor, o ecrã aplica TRÊS.** O servidor só salta o papel quando, tudo junto: `documento["modo"] == "normal"`; `documento["vendus_document_id"]` não está vazio; a venda tem `pontos_ligacao`; existe linha em `fat_pontos_qr` para aquela ligação e ela diz `fatura_por_email: True`; e a escrita na fila correu (spec, «Emitir», e os Global Constraints do plano B). **O ecrã aplica as três que chegam ao browser:** a ligação com a preferência ligada, o `modo` e o `vendus_document_id` — os dois últimos vêm no `_resposta_documento` (`fiscal.py:1988-1998`), que manda seis campos, e o `vendus_document_id` até já está desenhado no ecrã (`PosFinalizar.js:961`). **As duas que ficam de fora** são a linha do `fat_pontos_qr` em si — este lado vê só a CÓPIA da preferência que ficou na gaveta ao ler o QR, e uma gaveta adulterada faz o cartão mentir à operadora sem mudar o que o servidor faz — e a escrita na fila. Por isso a frase do ecrã é sobre a INTENÇÃO («vai por email») e nunca sobre o desfecho («enviada»).
+- **O NIF não decide nada: o seletor do cliente é o único que manda** (decisão do dono, 2026-09-17, e substitui o que este plano dizia antes). Com a preferência ligada a fatura vai por email **haja ou não haja NIF**; o NIF vai escrito na fatura como sempre foi, e ela segue por email para o email da conta de quem mostrou o QR. A razão é do balcão, e é dele: quem mostra a app e quem pede a fatura são a mesma pessoa; num grupo só uma pessoa fica com os pontos e, quando querem faturas separadas, dividem a conta — e aí cada parte fica com o seu QR e o seu NIF. Medido antes de decidir: **10,4% das vendas levam NIF** (286 em 2755 nos últimos 30 dias) e só **1,6%** são partes de conta dividida — manter a regra antiga custava 1 em cada 10 faturas que podiam poupar papel. **Risco aceite pelo dono, explicitamente:** se num grupo uma pessoa mostrar a app e OUTRA pedir a fatura com o NIF dela, sem dividirem a conta, essa fatura vai para o email de quem mostrou a app — recupera-se a reimprimir no separador Faturação, que já o faz a um toque. **Para este plano isto quer dizer uma coisa só: o ecrã não lê o NIF de lado nenhum** — e com isso cai a razão de ir buscar o `cliente_nif` da venda gravada.
 - **A gaveta da conta passa a ter TRÊS campos, sempre** — `{id, primeiro_nome, fatura_por_email}`, escolhidos um a um. Isso parte seis asserções de igualdade exacta que já existem, e a Task 1 actualiza-as no mesmo commit (Step 4): não se afrouxa nenhuma para `>=` nem se apaga comparação nenhuma — são os guardas que protegem a gaveta.
 - **Não há lista nova no POS.** Só um filtro «por enviar» no separador que já existe.
 - **Depende da Frente B.** As Tasks 2 e 5 acrescentam chamadas novas; as Tasks 1, 3 e 4 não acrescentam chamada nenhuma. **Ordem: ou a Frente B primeiro, ou as Tasks 1, 3 e 4 primeiro** (o ficheiro de teste nasce na Task 1 já com todos os imports no cabeçalho, por isso a Task 3 corre sem a Task 2).
@@ -81,11 +81,13 @@ import pytest
 
 from .test_a_faixa_do_modo_no_ecra import _montar_no_node
 from .test_as_fotos_no_ecra import _COMPONENTES
-# Os cinco nomes seguintes são usados pelas partes de baixo deste ficheiro (o
-# cartão e o ecrã do documento emitido) e estão importados AQUI EM CIMA de
-# propósito: um import acrescentado a meio do ficheiro fazia a parte que o
-# usasse rebentar na RECOLHA — `NameError` antes de correr teste nenhum — se
-# alguém executasse as tarefas deste plano por outra ordem.
+# São SEIS nomes, e estão todos AQUI EM CIMA de propósito. Dois deles — o
+# `_UTEIS` e o `_CODIGO` — são usados já pela fixture desta task, aqui mesmo em
+# baixo; os outros quatro (`_correr`, `_EMITIDA`, `_EMITIR`, `_no_finalizar`) só
+# pelas partes de baixo do ficheiro, o cartão e o ecrã do documento emitido. Um
+# import acrescentado a meio do ficheiro fazia a parte que o usasse rebentar na
+# RECOLHA — `NameError` antes de correr teste nenhum — se alguém executasse as
+# tarefas deste plano por outra ordem.
 from .test_o_dividir_e_o_separar_no_ecra import _correr  # noqa: F401
 from .test_os_pontos_no_ecra_do_pos import (  # noqa: F401
     _CODIGO, _EMITIDA, _EMITIR, _UTEIS, _no_finalizar,
@@ -292,7 +294,7 @@ EOF
 
 **Files:**
 - Modify: `frontend/src/lib/pos.js:262` (acrescentar a chamada da preferência a seguir ao `lerQrDePontos`)
-- Modify: `frontend/src/pages/pos/PosFinalizar.js:14-20` (import do `lib/pos`), `:562-599` (o comentário do cartão e a função `CartaoPontos` — **a linha 560 é o separador `// --- Pontos L'Açaí ---` e fica onde está**), `:1039-1043` (estado), `:1412-1417` (uso do cartão)
+- Modify: `frontend/src/pages/pos/PosFinalizar.js:15-20` (import do `lib/pos`), `:562-599` (o comentário do cartão e a função `CartaoPontos` — **a linha 560 é o separador `// --- Pontos L'Açaí ---` e fica onde está**), `:1039-1043` (estado), `:1412-1417` (uso do cartão)
 - Test: `backend/tests/faturacao/test_a_fatura_por_email_no_ecra_do_pos.py`
 
 **Interfaces:**
@@ -408,7 +410,10 @@ def test_o_cartao_escreve_o_que_o_SERVIDOR_devolveu_e_nao_o_que_se_pediu(cartao)
     resposta é 200 com `false` — a app já tinha desligado a preferência pelo
     telemóvel, ou o valor de lá é outro. Um `mudarLigacao({ ...ligacao,
     fatura_por_email: valor })` deixava o cartão a prometer email com a app a
-    dizer o contrário, e passava nos outros quatro testes deste ficheiro."""
+    dizer o contrário, e passava nos outros CINCO testes do cartão — contados
+    um a um: o inicial, o do endereço, o «voltar ao papel», o do corpo do
+    EMITIR, e a RECUSA, onde o `await` rebenta ANTES da escrita e por isso o
+    cartão fica certo por acidente."""
     assert cartao["corposPreferencia"][2] == {
         "venda_id": "v-1", "ligacao_id": "lig-1", "valor": True}
     assert "Fatura em papel" in cartao["depoisDaDivergencia"], \
@@ -453,7 +458,7 @@ export const guardarPreferenciaDeFaturaPorEmail = async (vendaId, ligacaoId, val
     { venda_id: vendaId, ligacao_id: ligacaoId, valor })).data;
 ```
 
-Em `frontend/src/pages/pos/PosFinalizar.js`, acrescentar ao import do `@/lib/pos` (linhas 14-20) a entrada `guardarPreferenciaDeFaturaPorEmail,` a seguir a `lerPontosDaConta,`.
+Em `frontend/src/pages/pos/PosFinalizar.js`, acrescentar ao import do `@/lib/pos` (linhas 15-20) a entrada `guardarPreferenciaDeFaturaPorEmail,` a seguir a `lerPontosDaConta,`.
 
 Substituir o comentário e a função `CartaoPontos` (linhas **562-599**, deixando o separador `// --- Pontos L'Açaí ---` da linha 560 intacto) por:
 
@@ -604,12 +609,13 @@ EOF
 
 **Files:**
 - Modify: `frontend/src/lib/pos.js:1404` (função nova a seguir ao `avisoDoDocumento`)
-- Modify: `frontend/src/pages/pos/PosFinalizar.js:3-7` (ícone `Mail`), `:14-20` (import do `lib/pos`), `:823` (assinatura do `DocumentoEmitido`), `:949-959` (a frase do papel), `:1336-1342` (uso do `DocumentoEmitido`)
+- Modify: `frontend/src/pages/pos/PosFinalizar.js:3-7` (ícone `Mail`), `:15-20` (import do `lib/pos`), `:823` (assinatura do `DocumentoEmitido`), `:949-959` (a frase do papel), `:1336-1342` (uso do `DocumentoEmitido`)
 - Test: `backend/tests/faturacao/test_a_fatura_por_email_no_ecra_do_pos.py`
 
 **Interfaces:**
 - Consumes: `estadoDoModo`, `MODO_NORMAL` (já em `lib/pos.js:1302-1318`); `lerPontosDaConta` (Task 1).
-- Produces: `aFaturaVaiPorEmail({ ligacao, nif, documento }) -> boolean`; `DocumentoEmitido({ documento, troco, recuperado, onVoltar, rotuloVoltar, porEmail })`.
+- Produces: `aFaturaVaiPorEmail({ ligacao, documento }) -> boolean`; `DocumentoEmitido({ documento, troco, recuperado, onVoltar, rotuloVoltar, porEmail })`.
+- **Não consome o NIF, e é de propósito:** o seletor do cliente é o único que manda (ver Global Constraints). O ecrã não lê `venda.cliente_nif` nem `nifTexto` para esta decisão.
 
 - [ ] **Step 1: Escrever o teste que falha**
 
@@ -618,9 +624,12 @@ Acrescentar ao fim de `backend/tests/faturacao/test_a_fatura_por_email_no_ecra_d
 ```python
 # --- Depois do EMITIR ---------------------------------------------------------
 #
-# Quatro montagens, porque são quatro regras diferentes da spec e cada uma tem
-# de poder falhar sozinha. As respostas do `finalizar` são a do `_no_finalizar`,
-# com o que é preciso trocado.
+# Quatro montagens, porque são quatro regras diferentes e cada uma tem de poder
+# falhar sozinha. TRÊS são as condições do servidor que este lado consegue
+# aplicar — a preferência, o `modo` e o `vendus_document_id` —, e a quarta é a
+# decisão do dono sobre o NIF, provada pelo avesso: a spec REVOGOU essa regra, e
+# o teste existe para que repô-la fique vermelho. As respostas do `finalizar`
+# são a do `_no_finalizar`, com o que é preciso trocado.
 
 _FRASE_EMAIL = "Fatura vai por email — não é preciso esperar pelo papel."
 _FRASE_PAPEL = "assim que o agente de impressão da loja existir"
@@ -649,28 +658,20 @@ def emitida_por_email(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
-def emitida_com_nif_escrito(tmp_path_factory):
-    """**Com NIF escrito na caixa, o papel sai à mesma.** O NIF é de quem paga
-    e a ligação é de quem mostrou a app: quando divergem, a fatura da empresa
-    ia para a caixa de correio do colega. O NIF entra pela gaveta da conta, que
-    é de onde o ecrã o lê ao montar (`lerNifDaConta`, `PosFinalizar.js:1034`)."""
-    return _emitiu(
+def emitida_com_nif(tmp_path_factory):
+    """**Com NIF, e com a preferência ligada: vai por email à mesma.**
+
+    As DUAS fontes do NIF na MESMA montagem, de propósito — a que a operadora
+    tem escrita na caixa (a gaveta da conta, de onde o ecrã a lê ao montar:
+    `lerNifDaConta`, `PosFinalizar.js:1034`) e a que ficou gravada na venda e
+    volta na resposta do EMITIR (`cliente_nif`, `fiscal.py:2308`). Se alguém
+    voltar a pôr o NIF a decidir — por uma delas ou pela outra —, é aqui que
+    fica vermelho, e é por isso que não são duas montagens."""
+    return _emitiu("\n".join([
         "lib.guardarNifDaConta('v-1', '517542510');",
-        tmp_path_factory, "emitida-nif-escrito")
-
-
-@pytest.fixture(scope="module")
-def emitida_com_nif_gravado_no_servidor(tmp_path_factory):
-    """**O mesmo, mas com o NIF só do lado do SERVIDOR.** A venda gravada tem
-    `cliente_nif` e o ecrã não tem nada escrito — é o que acontece a quem perde
-    a corrida da reserva (a venda que volta é a do vencedor) e a quem recuperou
-    a conta com a gaveta do browser já limpa. O servidor decide por
-    `venda["cliente_nif"]`; um ecrã que lesse só o campo dele prometia email
-    sobre um documento que saiu em papel."""
-    return _emitiu(
         "RESPOSTAS_POS['POST /pos/venda/v-1/finalizar'] = () => ({ data: %s });"
         % json.dumps(dict(_EMITIDA, cliente_nif="517542510"), ensure_ascii=False),
-        tmp_path_factory, "emitida-nif-gravado")
+    ]), tmp_path_factory, "emitida-com-nif")
 
 
 @pytest.fixture(scope="module")
@@ -684,6 +685,29 @@ def emitida_em_testes(tmp_path_factory):
         tmp_path_factory, "emitida-testes")
 
 
+@pytest.fixture(scope="module")
+def emitida_sem_id_do_vendus(tmp_path_factory):
+    """**Sem `vendus_document_id` o servidor manda PAPEL, e o ecrã tem de dizer
+    o mesmo.**
+
+    Não é um caso inventado: um 2xx do Vendus com ATCUD e sem `id` é aceite de
+    propósito (`vendus/emissao.py:702` só recusa quando faltam os DOIS) e grava
+    `vendus_document_id: None`. Nesse documento não há PDF para ir buscar — é o
+    mesmo caso que responde 422 no botão «PDF da fatura»
+    (`documentos.py:894`) —, por isso `enfileirar_fatura_email` devolve `False`
+    (plano B) e o talão sai pela `enfileirar_venda_emitida`.
+
+    O ecrã VÊ este campo: vem no `_resposta_documento` (`fiscal.py:1988-1998`) e
+    o próprio `PosFinalizar.js:961` já o desenha. Prometer email aqui mandava a
+    operadora dar o cliente por servido, e ele saía sem talão e sem email."""
+    sem_id = dict(_EMITIDA,
+                  documento=dict(_EMITIDA["documento"], vendus_document_id=None))
+    return _emitiu(
+        "RESPOSTAS_POS['POST /pos/venda/v-1/finalizar'] = () => ({ data: %s });"
+        % json.dumps(sem_id, ensure_ascii=False),
+        tmp_path_factory, "emitida-sem-id")
+
+
 def test_com_a_preferencia_ligada_o_ecra_do_documento_diz_que_vai_por_email(emitida_por_email):
     assert _FRASE_EMAIL in emitida_por_email["emitido"], \
         emitida_por_email["emitido"][:800]
@@ -693,26 +717,32 @@ def test_com_a_preferencia_ligada_o_ecra_do_documento_diz_que_vai_por_email(emit
 
 def test_o_ecra_NAO_diz_enviada_no_instante_do_EMITIR(emitida_por_email):
     """No instante do EMITIR o envio ainda não aconteceu: o `tentar_ja` agenda
-    e volta logo (`pontos_app.py:243-256`). «Enviada» é uma afirmação sobre uma
+    e volta logo (`pontos_app.py:253-267`). «Enviada» é uma afirmação sobre uma
     coisa que pode ainda falhar treze vezes — e o ecrã não afirma o que não
     sabe."""
     ecra = emitida_por_email["emitido"]
     assert "enviada" not in ecra.lower(), ecra[:800]
 
 
-def test_com_NIF_escrito_na_caixa_o_ecra_continua_a_falar_de_PAPEL(emitida_com_nif_escrito):
-    assert _FRASE_PAPEL in emitida_com_nif_escrito["emitido"], \
-        emitida_com_nif_escrito["emitido"][:800]
-    assert "por email" not in emitida_com_nif_escrito["emitido"], \
-        emitida_com_nif_escrito["emitido"][:800]
+def test_o_NIF_NAO_muda_a_frase_porque_quem_manda_e_o_seletor(emitida_com_nif):
+    """**O contribuinte deixou de decidir seja o que for** (decisão do dono,
+    2026-09-17): «depende da opção se quer ou não por email a fatura; o seletor
+    é que manda». Com a preferência ligada a fatura vai por email haja ou não
+    haja NIF — o NIF vai escrito nela como sempre foi —, e segue para o email
+    da conta de quem mostrou o QR.
 
+    Ao balcão quem mostra a app e quem pede a fatura são a mesma pessoa; num
+    grupo só uma pessoa fica com os pontos e, quando querem faturas separadas,
+    dividem a conta, e aí cada parte leva o seu QR e o seu NIF.
 
-def test_com_NIF_gravado_na_VENDA_o_ecra_continua_a_falar_de_PAPEL(
-        emitida_com_nif_gravado_no_servidor):
-    assert _FRASE_PAPEL in emitida_com_nif_gravado_no_servidor["emitido"], \
-        emitida_com_nif_gravado_no_servidor["emitido"][:800]
-    assert "por email" not in emitida_com_nif_gravado_no_servidor["emitido"], \
-        emitida_com_nif_gravado_no_servidor["emitido"][:800]
+    **O risco está aceite e escrito:** se uma pessoa do grupo mostrar a app e
+    OUTRA pedir a fatura com o NIF dela sem dividirem a conta, essa fatura vai
+    para o email de quem mostrou a app — e recupera-se a reimprimir no
+    separador Faturação, a um toque."""
+    assert _FRASE_EMAIL in emitida_com_nif["emitido"], \
+        emitida_com_nif["emitido"][:800]
+    assert _FRASE_PAPEL not in emitida_com_nif["emitido"], \
+        emitida_com_nif["emitido"][:800]
 
 
 def test_em_modo_de_TESTES_o_ecra_continua_a_falar_de_PAPEL(emitida_em_testes):
@@ -721,15 +751,28 @@ def test_em_modo_de_TESTES_o_ecra_continua_a_falar_de_PAPEL(emitida_em_testes):
     # E a faixa do modo continua lá: o documento de testes não vale nada.
     assert "SEM VALOR FISCAL" in emitida_em_testes["emitido"], \
         emitida_em_testes["emitido"][:800]
+
+
+def test_um_documento_SEM_id_do_Vendus_fala_de_PAPEL(emitida_sem_id_do_vendus):
+    """**A condição que faltava ao ecrã.** Com a preferência ligada e o modo
+    `normal`, mas sem id do Vendus, o servidor põe o talão na fila — e um ecrã
+    a dizer «não é preciso esperar pelo papel» deixava o cliente sem nada."""
+    ecra = emitida_sem_id_do_vendus["emitido"]
+    assert _FRASE_PAPEL in ecra, ecra[:800]
+    assert "por email" not in ecra, ecra[:800]
 ```
 
 - [ ] **Step 2: Correr e ver falhar**
 
-Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_a_fatura_por_email_no_ecra_do_pos.py -q -k emitida`
+Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/faturacao/test_a_fatura_por_email_no_ecra_do_pos.py -q -k "documento or enviada or NIF or TESTES"`
 
-Expected: FAIL **num só** — `test_com_a_preferencia_ligada_o_ecra_do_documento_diz_que_vai_por_email`, com `assert 'Fatura vai por email — não é preciso esperar pelo papel.' in '...O talão passa a sair sozinho assim que o agente de impressão da loja existir...'` (o ecrã do documento emitido só conhece a frase do papel).
+(**O `-k` nomeia os cinco TESTES desta task, e não as fixtures nem palavras do nome do ficheiro.** São duas armadilhas, as duas medidas neste repositório: o `-k` casa com o nome do teste **e com o dos pais dele**, mas nunca com o nome de uma fixture. Em `test_os_pontos_no_ecra_do_pos.py`, `-k guardado` (uma fixture) dá «no tests collected (19 deselected)» e `-k no_ecra_do_pos` (o nome do MÓDULO) colhe os 19. Como este ficheiro se chama `test_a_fatura_por_email...`, um `-k` com «fatura», «por_email» ou «ecra» apanhava o ficheiro inteiro; e um `-k` que não apanha nada parece um Step 2 a correr bem. O quinto teste, `test_um_documento_SEM_id_do_Vendus_fala_de_PAPEL`, entra pela palavra «documento» — contado nome a nome: essa palavra não aparece em nenhum dos oito testes das Tasks 1 e 2, nem no nome do módulo.)
 
-**Os outros quatro passam já, e é suposto:** não são o motor desta task, são os guardas contra a implementação ingénua (`porEmail = !!(ligacao && ligacao.fatura_por_email)`, sem o NIF e sem o modo). A prova deles é por mutação, no Step 4.
+Expected: FAIL **em DOIS** — `test_com_a_preferencia_ligada_o_ecra_do_documento_diz_que_vai_por_email` e `test_o_NIF_NAO_muda_a_frase_porque_quem_manda_e_o_seletor`, os dois com `assert 'Fatura vai por email — não é preciso esperar pelo papel.' in '...O talão passa a sair sozinho assim que o agente de impressão da loja existir...'` (o ecrã do documento emitido só conhece a frase do papel, e não a diz a ninguém).
+
+**Os outros TRÊS passam já, e é suposto:** o do modo e o do id do Vendus são os guardas contra a implementação ingénua (`porEmail = !!(ligacao && ligacao.fatura_por_email)`, sem mais nada) e o do «enviada» é o guarda contra a frase que afirma o desfecho. Antes da implementação o ecrã fala sempre de papel, por isso os três passam por não haver ainda frase nenhuma de email — a prova deles é por mutação, no Step 4.
+
+**O do NIF conta duas vezes**, e é o único assim: falha agora porque o ecrã ainda não tem frase de email nenhuma, passa com a implementação deste Step 3 — e volta a falhar no dia em que alguém puser o NIF a decidir outra vez (Step 4, mutação 2). É o guarda da decisão do dono, e é por isso que o caso do NIF não desapareceu do ficheiro: inverteu-se.
 
 - [ ] **Step 3: Implementação mínima**
 
@@ -740,25 +783,39 @@ Em `frontend/src/lib/pos.js`, a seguir ao `avisoDoDocumento` (depois da linha 14
 // **A fatura desta venda vai por email?** — a pergunta do ecrã do documento
 // emitido, e só dele.
 //
-// São as MESMAS condições que o servidor usa para saltar o papel
-// (`faturacao/fiscal.py::enfileirar_fatura_email`), menos a que este lado não
-// pode ver: existir mesmo a linha na fila. Por isso a frase do ecrã é sobre a
-// INTENÇÃO («vai por email») e nunca sobre o desfecho («enviada») — quem
-// decide é o servidor, e no instante do EMITIR o envio ainda nem começou.
+// São TRÊS das CINCO condições que o servidor usa para saltar o papel
+// (`backend/faturacao/pontos_app.py::enfileirar_fatura_email`, ao lado do
+// `enfileirar_credito` — o `fiscal.py` só a chama). As duas que faltam não
+// chegam a este lado: a linha do `fat_pontos_qr` em si (aqui há só a cópia da
+// preferência que ficou na gaveta) e a escrita na fila. Por isso a frase do
+// ecrã é sobre a INTENÇÃO («vai por email») e nunca sobre o desfecho
+// («enviada») — quem decide é o servidor, e no instante do EMITIR o envio
+// ainda nem começou.
 //
 // - sem ligação, ou com a preferência desligada, sai papel como sempre;
-// - **com NIF sai papel à mesma**: o NIF é de quem paga e a ligação é de quem
-//   mostrou a app — quando divergem, a fatura da empresa ia para a caixa de
-//   correio do colega. Quem chama passa o NIF da VENDA GRAVADA quando ele
-//   existe, que é o campo por onde o servidor decide;
+// - **sem `vendus_document_id` sai papel**, e é uma condição do ecrã e não só
+//   do servidor: um 2xx do Vendus com ATCUD e sem `id` é aceite de propósito e
+//   grava `vendus_document_id: None`, e sem o id não há PDF para mandar a
+//   ninguém (é o 422 do botão «PDF da fatura», `documentos.py:894`). O
+//   servidor põe o talão na fila nesse caso; um ecrã a prometer email deixava
+//   o cliente sem talão E sem email. Este lado VÊ o campo — vem no
+//   `_resposta_documento` e já está desenhado no ecrã;
+// - **o NIF não decide nada, e isso está decidido** (o dono, 2026-09-17): o
+//   seletor do cliente é o único que manda. Com a preferência ligada a fatura
+//   vai por email haja ou não haja NIF — o NIF vai escrito nela como sempre
+//   foi — e segue para o email da conta de quem mostrou o QR. Quem mostra a
+//   app e quem pede a fatura são a mesma pessoa; um grupo que queira faturas
+//   separadas divide a conta, e aí cada parte leva o seu QR e o seu NIF. Por
+//   isso esta função **não recebe NIF nenhum**: um parâmetro que ninguém lê é
+//   um convite a voltar a lê-lo;
 // - um documento que não é `normal` (o modo `tests`) sai em papel e não vai a
 //   lado nenhum: não vale nada e não há o que mandar.
 //
 // Vive aqui e não dentro do JSX pela regra do módulo: uma condição escrita no
 // meio de um `<span>` não se corre em teste nenhum.
-export const aFaturaVaiPorEmail = ({ ligacao, nif, documento }) => (
+export const aFaturaVaiPorEmail = ({ ligacao, documento }) => (
   !!(ligacao && ligacao.fatura_por_email)
-  && String(nif || '').replace(/\D/g, '') === ''
+  && !!(documento && documento.vendus_document_id)
   && estadoDoModo(documento && documento.modo) === MODO_NORMAL
 );
 ```
@@ -766,7 +823,7 @@ export const aFaturaVaiPorEmail = ({ ligacao, nif, documento }) => (
 Em `frontend/src/pages/pos/PosFinalizar.js`:
 
 1. no import dos ícones (linhas 3-7), acrescentar `Mail,` à lista;
-2. no import do `@/lib/pos` (linhas 14-20), acrescentar `aFaturaVaiPorEmail,`;
+2. no import do `@/lib/pos` (linhas 15-20), acrescentar `aFaturaVaiPorEmail,`;
 3. a assinatura do `DocumentoEmitido` (linha 823) passa a:
 
 ```js
@@ -812,17 +869,13 @@ function DocumentoEmitido({ documento, troco, recuperado, onVoltar, rotuloVoltar
         recuperado={documentoRecuperado}
         onVoltar={onVoltar}
         rotuloVoltar={parte ? 'Voltar às partes' : null}
-        // **O NIF que conta é o que ficou GRAVADO na venda**, porque é por ele
-        // que o servidor decidiu (`fiscal.py::finalizar` lê
-        // `venda["cliente_nif"]`). O `nifTexto` é o que a operadora tem escrito
-        // à frente e vale antes de emitir e quando a venda não traz o campo —
-        // depois de uma releitura, ou com a gaveta do browser já limpa, era o
-        // único e dizia «vazio» sobre uma fatura com NIF.
-        porEmail={aFaturaVaiPorEmail({
-          ligacao,
-          nif: venda?.cliente_nif ?? nifTexto,
-          documento,
-        })}
+        // **O NIF não entra aqui, e é de propósito** (decisão do dono,
+        // 2026-09-17): o seletor do cliente é o único que manda. Com a
+        // preferência ligada a fatura vai por email com NIF e sem NIF — o NIF
+        // vai escrito nela —, para o email da conta de quem mostrou o QR. Nem
+        // `venda?.cliente_nif`, nem `nifTexto`: se algum deles voltar a esta
+        // chamada, o `test_o_NIF_NAO_muda_a_frase...` fica vermelho.
+        porEmail={aFaturaVaiPorEmail({ ligacao, documento })}
       />
 ```
 
@@ -832,11 +885,11 @@ Run: `cd /Users/matheus.moraes/Developer/RH/backend && .venv/bin/pytest tests/fa
 
 Expected: PASS
 
-E os guardas provam-se por mutação, à mão, antes do commit (desfazer as duas mutações a seguir):
+E os guardas provam-se por mutação, à mão, antes do commit (desfazer as três mutações a seguir):
 
-1. tirar a linha do NIF do `aFaturaVaiPorEmail` → `test_com_NIF_escrito_na_caixa...` e `test_com_NIF_gravado_na_VENDA...` têm de ficar VERMELHOS;
-2. tirar a linha do `estadoDoModo` → `test_em_modo_de_TESTES...` tem de ficar VERMELHO;
-3. trocar `nif: venda?.cliente_nif ?? nifTexto` por `nif: nifTexto` → só `test_com_NIF_gravado_na_VENDA...` fica vermelho.
+1. tirar a linha do `estadoDoModo` do `aFaturaVaiPorEmail` → `test_em_modo_de_TESTES...` tem de ficar VERMELHO;
+2. **repor o NIF a decidir**, que é a regra que saiu: no `PosFinalizar.js`, trocar a chamada por `porEmail={aFaturaVaiPorEmail({ ligacao, documento }) && !venda?.cliente_nif && !nifTexto}` → `test_o_NIF_NAO_muda_a_frase...` tem de ficar VERMELHO. É esta a mutação que prova a decisão do dono: sem ela, o caso do NIF passava a ser um teste que nada consegue partir.
+3. tirar a linha do `vendus_document_id` do `aFaturaVaiPorEmail` → `test_um_documento_SEM_id_do_Vendus_fala_de_PAPEL` tem de ficar VERMELHO, e mais nenhum: as outras três montagens trazem o `vendus_document_id: 1` do `_EMITIDA`.
 
 - [ ] **Step 5: Commit**
 
@@ -849,9 +902,15 @@ POS: depois do EMITIR o ecrã diz que a fatura vai por email
 
 «Fatura vai por email — não é preciso esperar pelo papel.», e nunca
 «enviada»: no instante do EMITIR o envio ainda não aconteceu. A decisão é do
-aFaturaVaiPorEmail em lib/pos.js — preferência ligada, sem NIF e documento em
-modo normal, as mesmas condições que o servidor usa. O NIF é lido da venda
-gravada quando ela o traz, que é o campo por onde o servidor decide.
+aFaturaVaiPorEmail em lib/pos.js — preferência ligada, documento em modo
+normal e com id do Vendus: as TRÊS das cinco condições do servidor que chegam
+ao browser. Sem id do Vendus não há PDF para mandar e o servidor põe o talão
+na fila, por isso o ecrã fala de papel.
+
+O NIF não decide nada: o seletor do cliente é o único que manda. Com a
+preferência ligada a fatura vai por email haja ou não haja NIF, com o NIF
+escrito nela, para o email da conta de quem mostrou o QR. O ecrã deixou de
+ler o NIF, e o teste que dizia o contrário está invertido a prová-lo.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -1259,7 +1318,9 @@ def test_um_motivo_de_recusa_aparece_em_PORTUGUES_como_o_dos_pontos(recusada):
     """Os dois blocos ficam lado a lado no mesmo diálogo, e a fila é a mesma
     (`fat_pontos_app`): um em português e outro em código-máquina era o mesmo
     motivo escrito de duas maneiras à mesma pessoa. O mapa
-    `MOTIVOS_DOS_PONTOS` já existe dez linhas acima."""
+    `MOTIVOS_DOS_PONTOS` já existe no mesmo ficheiro (`FatDocumentos.js:66-79`),
+    é o que o `textoDosPontosApp` (`:81-110`) usa, e a função nova entra logo a
+    seguir a ele — não se escreve uma segunda tabela."""
     assert "aquele QR já deu pontos noutra fatura" in recusada["aberto"], \
         recusada["aberto"]
     assert "ligacao_ja_usada" not in recusada["aberto"], recusada["aberto"]
@@ -1478,8 +1539,25 @@ EOF
 
 Onze pontos aplicados. Três mereceram desvio, e a razão vai escrita porque muda o que o executor tem à frente:
 
-1. **«Ler o NIF de `documento.cliente_nif`» está errado — o campo não existe aí.** `_resposta_documento` (`fiscal.py:1257-1268`) manda exactamente seis campos: `id`, `vendus_document_id`, `numero`, `atcud`, `total`, `modo`. O `cliente_nif` viaja no nível da **venda**, acrescentado à mão em `fiscal.py:2308`, e o `PosVenda` aplica-o com `aplicarVenda(data)` — por isso a fonte certa é `venda?.cliente_nif ?? nifTexto`, que é o que a Task 3 passa a usar. O caso de teste também mudou: montar o caminho do `documentoRecuperado` obrigava a passar pelo `apurarAEmissao`, e o vão prova-se com um terço do cenário — a resposta do EMITIR a trazer `cliente_nif` com a gaveta do NIF vazia. O defeito de fundo era real e está corrigido.
+1. **«Ler o NIF de `documento.cliente_nif`» estava errado — e depois a decisão do dono deitou fora a pergunta toda.** A revisão tinha apanhado que o campo não existe aí: `_resposta_documento` (`fiscal.py:1988-1998`) manda exactamente seis campos — `id`, `vendus_document_id`, `numero`, `atcud`, `total`, `modo` — e o `cliente_nif` viaja no nível da **venda**, acrescentado à mão em `fiscal.py:2308`, com o `PosVenda` a aplicá-lo em `aplicarVenda(data)`; a fonte certa seria `venda?.cliente_nif ?? nifTexto`. **A 2026-09-17 o dono decidiu que o NIF não decide nada** — «depende da opção se quer ou não por email a fatura; o seletor é que manda» —, e com isso caiu a condição, a fonte, o `?? nifTexto` e uma das montagens: restou UM teste, invertido, a provar que o NIF **não** muda a frase, com as duas fontes do NIF no mesmo cenário para nenhuma delas poder voltar em silêncio. A confirmação sobre `_resposta_documento` fica escrita porque continua a valer para quem for lá buscar outro campo — e o número da linha estava errado nesta nota (`1257-1268` é o registo do documento que se GRAVA, esse sim com `cliente_nif`).
 2. **O filtro «por enviar»: escolhida a segunda das duas vias, e não a primeira.** Contar só os becos sem saída (`falhado`/`recusado`/`sem_efeito`) tapava o buraco do contador que acende no minuto normal, mas abria outro pior: um `pendente` encalhado acende o alarme da loja (que tem janela) e não apareceria no filtro — a operadora vê o aviso e não encontra a fatura a que tem de dar papel. Por isso o contrato da lista do POS passa a trazer `fatura_email_por_enviar: bool`, calculado pelo MESMO predicado do `count_documents` do alarme. Consequência prática: a Task 4 deixa de acrescentar função nenhuma a `lib/pos.js` (não há decisão neste lado para testar) e o campo `fatura_email` cru sai do contrato da lista do POS — o balcão não o desenha em lado nenhum.
 3. **Um defeito que a crítica não apanhou, e que teria posto a Task 5 vermelha na mesma:** o teste comparava `saida.pedidos` por igualdade (`"POST /faturacao/..." in pedidos`). O `url` guardado em `pedidos` é `(baseURL || '') + url`, e o `API_URL` do backoffice é `process.env.REACT_APP_BACKEND_URL + '/api'` — em Node essa variável não existe e o caminho chega literalmente como `undefined/api/faturacao/...`. A casa já compara com `endswith` (`test_o_ecra_de_documentos_no_backoffice.py:118-139`); o teste da Task 5 passa a fazer o mesmo, com um `_quantos()` para contar as duas leituras do documento.
 
 E duas confirmações que mudaram números no plano: a linha 560 do `PosFinalizar.js` é mesmo o separador `// --- Pontos L'Açaí ---` (o intervalo da Task 2 passou a 562-599), e o handler novo do backoffice entra depois da linha 200 (o `abrirPdf` acaba aí, não na 198).
+
+Duas correcções de passagem, à volta da decisão do dono, as duas medidas no repositório e não de cabeça:
+
+- **O import do `@/lib/pos` no `PosFinalizar.js` é 15-20, não 14-20** (a linha 14 é o `import PosLerQr from './PosLerQr';`). Corrigido nas Tasks 2 e 3, nos quatro sítios onde aparecia.
+- **O `-k emitida` do Step 2 da Task 3 não colhia teste nenhum.** O `-k` do pytest casa com o nome do teste e com o dos pais dele, **nunca com o nome de uma fixture** — e `emitida...` só existia em fixtures. Ao mesmo tempo, o nome do MÓDULO conta: num ficheiro chamado `test_a_fatura_por_email_no_ecra_do_pos.py`, um `-k` com «fatura» ou «por_email» colhe o ficheiro inteiro. Medido nos dois sentidos em `test_os_pontos_no_ecra_do_pos.py`: `-k guardado` (fixture) dá «no tests collected (19 deselected)» e `-k no_ecra_do_pos` (módulo) colhe os 19. O Step 2 passou a `-k "documento or enviada or NIF or TESTES"`, que nomeia os testes daquela task e mais nenhum (eram quatro nessa passagem; são cinco depois de a condição do `vendus_document_id` trazer o seu). Um `-k` vazio é o pior dos enganos num Step «correr e ver falhar»: não falha nada, e parece que correu bem.
+
+### Segunda passagem — os achados do verificador, aplicados
+
+Sete pontos, e o buraco de desenho fechado. Todos se confirmaram no código real antes de mexer; nenhum ficou por aplicar por estar errado.
+
+1. **O buraco do `vendus_document_id`: FECHADO, com teste.** Era a decisão que faltava tomar. Com `documento["vendus_document_id"]` vazio o servidor devolve `False` no `enfileirar_fatura_email` e manda imprimir (`enfileirar_venda_emitida`) — e o ecrã prometia «Fatura vai por email». Não é caso de laboratório: `vendus/emissao.py:702` só recusa um 2xx quando faltam `id` **E** `atcud`, portanto um documento real pode ficar com `vendus_document_id: None`, e é esse mesmo caso que dá 422 no botão «PDF da fatura» (`documentos.py:894`). O ecrã **vê** o campo — `_resposta_documento` manda-o nos seus seis campos (`fiscal.py:1988-1998`) e o `PosFinalizar.js:961` já o desenha —, por isso o velho «menos a que este lado não pode ver» era falso a dobrar. O `aFaturaVaiPorEmail` ganhou `&& !!(documento && documento.vendus_document_id)`, e com ele veio a montagem própria (`emitida_sem_id_do_vendus`, feita como a do modo `tests`: `dict(_EMITIDA, documento=dict(_EMITIDA["documento"], vendus_document_id=None))`), o teste `test_um_documento_SEM_id_do_Vendus_fala_de_PAPEL` e a mutação 3 do Step 4. **Neste ficheiro nenhuma condição entra sem a montagem que a parte.**
+2. **«As duas condições que o ecrã pode ver» era um decremento mecânico.** O servidor tem CINCO (`modo`, `vendus_document_id`, `pontos_ligacao`, a linha do `fat_pontos_qr`, a escrita na fila — plano B, Global Constraints) e o ecrã aplica TRÊS. As duas que ficam de fora estão agora nomeadas: a linha do `fat_pontos_qr` (este lado tem só a cópia da gaveta) e a escrita na fila.
+3. **O apontador do módulo estava a mandar o executor ao ficheiro errado.** O `enfileirar_fatura_email` é da Frente B e nasce em `backend/faturacao/pontos_app.py`, ao lado do `enfileirar_credito`; o `fiscal.py` só o chama. O comentário do `aFaturaVaiPorEmail` dizia `faturacao/fiscal.py::enfileirar_fatura_email`.
+4. **Contagens corrigidas, contadas e não estimadas.** Os imports do cabeçalho da Task 1 são SEIS e não cinco (`_correr`, `_CODIGO`, `_EMITIDA`, `_EMITIR`, `_UTEIS`, `_no_finalizar`), e dois deles — `_UTEIS` e `_CODIGO` — são usados já pela fixture da própria Task 1, não «pelas partes de baixo». A escrita optimista do cartão passaria nos outros CINCO testes do cartão (não «quatro deste ficheiro»), a RECUSA incluída, onde o `await` rebenta antes da escrita e o cartão fica certo por acidente. O `MOTIVOS_DOS_PONTOS` não está «dez linhas acima»: está em `FatDocumentos.js:66-79`, o `textoDosPontosApp` que o usa ocupa `:81-110`, e a função nova entra a seguir à 110. E o bloco «Depois do EMITIR» tem agora QUATRO montagens — três condições do servidor mais a decisão do dono provada pelo avesso —, e não «três regras da spec»: a spec revogou a do NIF.
+5. **O `-k` continua a nomear só os testes desta task, agora cinco.** O teste novo entra pela palavra «documento», que não aparece em nenhum dos oito testes das Tasks 1 e 2 nem no nome do módulo — verificado nome a nome. E o Step 2 passa a esperar FAIL em DOIS com TRÊS a passar já: antes da implementação o ecrã fala sempre de papel.
+6. **Uma correcção que não vinha nos achados, medida agora:** o `tentar_ja` está em `pontos_app.py:253-267`; o `243-256` que o plano citava nos dois sítios apanhava o fim da docstring da função anterior. É o mesmo defeito do ponto 3 — um apontador que manda o executor ler outra coisa —, por isso foi corrigido na mesma passagem.
+7. **O NIF continua a não decidir nada, e o guarda é partível.** Confirmado por leitura do ficheiro inteiro: o `aFaturaVaiPorEmail` não recebe `nif`, a chamada no `PosFinalizar.js` não passa `venda?.cliente_nif` nem `nifTexto`, e a mutação 2 do Step 4 repõe a regra morta e põe o teste vermelho. Nada a mudar.

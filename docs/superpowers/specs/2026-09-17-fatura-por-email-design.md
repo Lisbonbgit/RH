@@ -37,17 +37,21 @@ continuam a sair.
 3. **As notas de crédito saem sempre em papel.** A devolução é rara e é o momento em que o cliente
    está chateado.
 4. **Sem pontos, sem email.** Quem não mostra o QR leva talão, como sempre.
+5. **O seletor manda, e só ele.** O contribuinte escrito na caixa **não decide nada**: com a preferência
+   ligada a fatura vai por email haja ou não haja NIF. Palavras do dono: *"depende da opção se quer ou
+   não por email a fatura. o seletor é que manda."* Num grupo só uma pessoa fica com os pontos e, quando
+   querem faturas separadas, dividem a conta — cada parte com o seu QR e o seu NIF.
 
 ## Mudanças ao desenho aprovado no chat (e porquê)
 
-Vinte achados sobreviveram à verificação de 42 agentes contra o código. Cinco mudam o desenho:
+Vinte achados sobreviveram à verificação de 42 agentes contra o código. Quatro mudam o desenho.
+(Um quinto — *"com NIF escrito, o papel sai à mesma"* — chegou a entrar e **o dono revogou-o**: ver a
+decisão 5. Fica medido o que teria custado: 10,4% das vendas levam NIF, 286 em 2755 nos últimos 30 dias.)
 
 - **A preferência não se grava na conta na Fase 1**: vale só para aquela venda. Enquanto a app não
   tiver o interruptor, uma preferência permanente ligada pelo staff é um consentimento que o cliente
   não vê nem consegue desligar. Na Fase 2 passa a preferência de conta, como o dono pediu.
 - **O papel só se salta se a linha do email foi mesmo criada** — as duas decisões passam a ser uma só.
-- **Com NIF escrito, o papel sai à mesma.** O NIF é por parte da conta e a ligação do QR é de quem
-  mostrou a app: quando divergem, a fatura da empresa ia para a caixa de correio do colega.
 - **Quem descarrega o PDF do Vendus é o POS, não a app** — o POS já tem o código medido e passa o
   `mode` do próprio documento; a app nunca fala com o Vendus nesta frente.
 - **O email do cliente não sai da app, nem mascarado.** O POS recebe só um sim/não.
@@ -115,9 +119,12 @@ if not await enfileirar_fatura_email(db, venda_actualizada or venda, documento):
 linha `fatura_email:<documento_id>` na fila. Devolve `False` — e o papel sai — quando:
 
 - `documento["modo"] != "normal"` (o ponto 8: em `tests` o papel sai e não há email);
+- `documento["vendus_document_id"]` está vazio — **e é esta a guarda que este fio precisa, não a do
+  ATCUD**. O Vendus só é recusado quando faltam o `id` E o `atcud` (`vendus/emissao.py:702`), por isso
+  um documento real pode ter ATCUD e não ter id; sem id não há PDF para descarregar, e suprimir o papel
+  aí era ficar sem os dois;
 - a venda não tem `pontos_ligacao`;
 - o `fat_pontos_qr` daquele `ligacao_id` não existe ou tem `fatura_por_email: False`;
-- `venda["cliente_nif"]` está preenchido (quem escreve um NIF quer o documento ali);
 - a escrita na fila falhou por qualquer razão.
 
 **Um `DuplicateKeyError` conta como `True`**: a linha já lá estava (a rota corre mais do que uma vez
@@ -284,4 +291,7 @@ manda segundo email, e um que prove que sem PDF a resposta é 5xx.
   de relay — são endereços a sério e bloqueá-los tirava a funcionalidade a todos os clientes de iPhone
   com login Apple. **Por medir:** quantas contas usam relay (a leitura da base de clientes foi travada
   em 2026-09-17; repetir com autorização).
+- **A fatura com o NIF de outra pessoa vai para o email de quem mostrou o QR.** Num grupo que não
+  divida a conta, quem pediu a fatura com o NIF dele fica sem nada na mão. Decisão do dono (decisão 5),
+  com a saída pelo "Imprimir" do separador Faturação, que já está a um toque.
 - **A poupança da Fase 1 é limitada pela adopção do QR**, que hoje é zero.
