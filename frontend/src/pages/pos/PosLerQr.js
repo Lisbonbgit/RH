@@ -65,6 +65,22 @@ const apitar = (hz, ms) => {
 const APITO_LIDO = () => apitar(1320, 110);      // agudo e curto: leu
 const APITO_RECUSADO = () => apitar(220, 260);   // grave e longo: não leu
 
+// **Abrir a câmara sozinha ao abrir a janela?** É do PC, como a escolha da
+// câmara, e pela mesma razão: as 5 caixas não são iguais. Numa loja lê-se com o
+// leitor do POS HP, que não tem câmara nenhuma — lá isto desliga-se uma vez e
+// ninguém volta a pensar nisso. Nas outras poupa um clique por cliente, com a
+// fila à frente.
+//
+// Ligado por omissão: é o que serve a maioria das caixas, e quem não quer
+// desliga. Um PC sem `localStorage` comporta-se como ligado.
+const CHAVE_AUTO = 'pos_camera_auto_do_qr';
+const autoGuardado = () => {
+  try { return localStorage.getItem(CHAVE_AUTO) !== '0'; } catch (e) { return true; }
+};
+const guardarAuto = (ligado) => {
+  try { localStorage.setItem(CHAVE_AUTO, ligado ? '1' : '0'); } catch (e) { /* sem storage */ }
+};
+
 const MSG_SEM_CAMERA =
   'Não foi possível abrir a câmara. Confirme que o browser a pode usar, ou leia o QR com o leitor.';
 
@@ -74,7 +90,17 @@ export default function PosLerQr({ vendaId, onLigada, onFechar }) {
   const [erro, setErro] = useState(null);
   // `null` = câmara desligada; '' = a câmara por omissão do sistema; outro
   // texto = o `deviceId` escolhido.
-  const [camera, setCamera] = useState(null);
+  //
+  // **Abre JÁ**, sem esperar por um segundo toque: o cliente está à frente com o
+  // telemóvel na mão e cada clique é tempo de fila. Quem lê com o leitor do POS
+  // HP não perde nada — o campo continua com o foco e o leitor escreve lá.
+  const [auto, setAuto] = useState(autoGuardado);
+  const [camera, setCamera] = useState(() => (autoGuardado() ? cameraGuardada() : null));
+  // A câmara foi aberta por alguém, ou abriu-se sozinha? Só o pedido EXPLÍCITO
+  // merece uma mensagem de erro: numa caixa SEM câmara (o POS HP), a abertura
+  // automática falharia em TODAS as vendas e o balcão levava com um aviso
+  // vermelho a cada cliente, sobre uma coisa que nem estava a tentar fazer.
+  const pedidaPorAlguem = useRef(false);
   const [cameras, setCameras] = useState([]);
   const video = useRef(null);
   // Uma leitura de cada vez. O `aLer` do estado chega tarde de mais para
@@ -170,7 +196,7 @@ export default function PosLerQr({ vendaId, onLigada, onFechar }) {
         // Uma câmara guardada que já não existe não pode prender a janela
         // nesta mensagem para sempre.
         if (camera) guardarCamera('');
-        setErro(MSG_SEM_CAMERA);
+        if (pedidaPorAlguem.current) setErro(MSG_SEM_CAMERA);
         setCamera(null);
       }
     })();
@@ -219,7 +245,11 @@ export default function PosLerQr({ vendaId, onLigada, onFechar }) {
             type="button"
             variant="outline"
             className="h-12 w-full"
-            onClick={() => { setErro(null); setCamera(cameraGuardada()); }}
+            onClick={() => {
+              pedidaPorAlguem.current = true;
+              setErro(null);
+              setCamera(cameraGuardada());
+            }}
           >
             <Camera className="h-5 w-5 mr-2" />
             Usar câmara
@@ -244,6 +274,31 @@ export default function PosLerQr({ vendaId, onLigada, onFechar }) {
             )}
           </div>
         )}
+
+        {/* A preferência DESTE PC. Fica sempre à vista — escondê-la atrás da
+            câmara aberta deixava-a inalcançável exactamente na caixa onde ela
+            interessa, que é aquela onde a câmara não abre. */}
+        <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={auto}
+            onChange={(e) => {
+              const ligado = e.target.checked;
+              setAuto(ligado);
+              guardarAuto(ligado);
+              // Ligar aqui abre já, para se ver que ficou ligado. Desligar não
+              // fecha o que está aberto: a leitura a decorrer não se interrompe.
+              if (ligado && camera === null) {
+                pedidaPorAlguem.current = true;
+                setErro(null);
+                setCamera(cameraGuardada());
+              }
+            }}
+            data-testid="qr-camera-auto"
+            className="h-4 w-4"
+          />
+          Abrir a câmara automaticamente nesta caixa
+        </label>
 
         <Button type="button" variant="outline" className="h-12 w-full" onClick={onFechar}>
           Fechar
