@@ -397,6 +397,13 @@ INDICES = [
     # A pergunta do envio e do cron, uma vez por minuto: «que linhas pendentes
     # já chegaram à hora?».
     ("fat_pontos_app", [("estado", 1), ("proxima_tentativa_em", 1)], {}),
+    # A pergunta do ALARME do balcão — «esta loja tem faturas que iam por email
+    # e não foram?» — feita de 20 em 20 segundos, em cinco lojas, o dia inteiro
+    # (`impressao.estado_da_impressao`). Ao contrário da fila do papel, esta
+    # colecção **fica para sempre**: sem índice próprio era um varrimento
+    # completo de uma colecção que só cresce, e os dois índices de cima
+    # respondem a outras perguntas (a unicidade e a do cron).
+    ("fat_pontos_app", [("loja_id", 1), ("tipo", 1), ("estado", 1)], {}),
     # **O TTL DA PREFERÊNCIA DO QR — 2 horas.** O campo é uma DATA a sério (e
     # não a string ISO que o resto do módulo grava): o Mongo só sabe expirar
     # por um campo do tipo Date, e um índice TTL sobre uma string não apaga

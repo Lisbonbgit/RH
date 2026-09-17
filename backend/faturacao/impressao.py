@@ -748,6 +748,9 @@ async def estado_da_impressao(operador: Dict = Depends(operador_atual)) -> dict:
     que parece funcionar.** Sem esta pergunta, o «Imprimir» ficava bonito, o
     trabalho entrava na fila, caducava trinta minutos depois e ninguém sabia
     de nada — a operadora dava o cliente por servido e o papel nunca existiu.
+
+    E a mesma pergunta para as faturas que iam por email: **essas não têm papel
+    a compensá-las**, e é por aqui que a loja fica a saber no mesmo dia.
     """
     db = obter_db()
     loja_id = operador["loja_id"]
@@ -769,10 +772,29 @@ async def estado_da_impressao(operador: Dict = Depends(operador_atual)) -> dict:
         if t.get("estado") in (PENDENTE, RESERVADO)
         and (_quando(t.get("validade_ate")) or agora) >= agora
     )
+    # **As faturas que iam por email e não foram.** O único caso desta loja em
+    # que falta um documento ao cliente e **não há papel a compensá-lo**: em
+    # tudo o resto desta fila, o talão está a um toque de distância no separador
+    # Faturação. Os três estados são becos sem saída — `falhado` desistiu ao fim
+    # de 24 h, `recusado` é uma recusa da app ou do contrato que não muda por se
+    # repetir, e `sem_efeito` fechou sem chegar a haver envio. Um `pendente` fica
+    # de fora de propósito: a fila tenta-o de minuto a minuto, e acusá-lo era um
+    # aviso que se aprende a ignorar.
+    #
+    # Contado no servidor e não na lista, porque o POS já pergunta por este
+    # estado de 20 em 20 segundos: é o caminho mais barato para a falha chegar a
+    # uma pessoa no mesmo dia, sem ecrã novo nenhum. O índice que o serve está
+    # declarado em `db.INDICES` — esta colecção não tem TTL e só cresce.
+    emails_falhados = await db[COLECOES["pontos_app"]].count_documents({
+        "loja_id": loja_id,
+        "tipo": "fatura_email",
+        "estado": {"$in": ["falhado", "recusado", "sem_efeito"]},
+    })
     return {
         "ha_programa": ultima_recolha is not None,
         "ultima_recolha_em": ultima_recolha,
         "por_sair": por_sair,
+        "emails_falhados": emails_falhados,
         # Os FALHADOS só contam enquanto ninguém os deu por vistos. Sem isto o
         # aviso ficava no ecrã SETE DIAS — até o TTL do Mongo apagar o
         # trabalho — sem forma nenhuma de o tirar de lá: a operadora

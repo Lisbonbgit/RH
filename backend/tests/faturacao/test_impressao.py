@@ -1296,3 +1296,76 @@ def test_uma_RECOLHA_sem_fuso_nao_derruba_o_ECRA(monkeypatch):
     rebentar por cima dela."""
     db = _db(dispositivos=[_dispositivo(ultima_recolha_em="2026-08-22T19:00:00")])
     assert _estado(db, monkeypatch)["ha_programa"] is False
+
+
+# --- 12. Os envios por email SEM SAÍDA ---------------------------------------
+#
+# Uma fatura que ia por email e não foi **não tem papel a compensá-la** — ao
+# contrário de tudo o resto desta fila, onde o talão está sempre a um toque de
+# distância no separador Faturação. O POS já pergunta por este estado de 20 em
+# 20 segundos: é o caminho mais barato para a falha chegar a uma pessoa no
+# mesmo dia, e não se faz lista nova nenhuma por causa disso.
+
+
+def _linha_de_email(**over):
+    linha = {"id": "fe-1", "chave": "fatura_email:doc-1", "tipo": "fatura_email",
+             "loja_id": "loja-1", "estado": "falhado"}
+    linha.update(over)
+    return linha
+
+
+def _com_emails(db, *linhas):
+    db._coleccoes[COLECOES["pontos_app"]] = ColeccaoFalsa([], list(linhas))
+    return db
+
+
+@pytest.mark.parametrize("estado", ["falhado", "recusado", "sem_efeito"])
+def test_um_envio_sem_saida_acende_o_alarme_da_loja(monkeypatch, estado):
+    """Os três são becos sem saída: nenhum volta a ser tentado sozinho, e em
+    nenhum deles saiu papel."""
+    db = _com_emails(_db(), _linha_de_email(estado=estado))
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+
+    assert _corre(estado_da_impressao(operador=_operador()))["emails_falhados"] == 1
+
+
+@pytest.mark.parametrize("estado", ["pendente", "feito"])
+def test_um_envio_a_caminho_ou_feito_nao_acende_nada(monkeypatch, estado):
+    """Um `pendente` ainda vai ser tentado (a fila corre de minuto a minuto) e
+    um `feito` já saiu. Acusar qualquer um deles era um aviso que se aprende a
+    ignorar."""
+    db = _com_emails(_db(), _linha_de_email(estado=estado))
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+
+    assert _corre(estado_da_impressao(operador=_operador()))["emails_falhados"] == 0
+
+
+def test_o_alarme_e_da_LOJA_e_nao_das_outras(monkeypatch):
+    """Cinco lojas partilham a colecção; a operadora de Belém não pode ver o
+    envio falhado de Oeiras — e ainda menos carregar em «Já vi» por ele."""
+    db = _com_emails(_db(),
+                     _linha_de_email(estado="falhado"),
+                     _linha_de_email(id="fe-2", chave="fatura_email:doc-2",
+                                     loja_id="loja-2", estado="falhado"))
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+
+    assert _corre(estado_da_impressao(operador=_operador()))["emails_falhados"] == 1
+
+
+def test_uma_linha_de_PONTOS_falhada_nao_conta_como_email_por_enviar(monkeypatch):
+    """A mesma colecção guarda os créditos e os estornos. Um crédito falhado é
+    chato — o cliente ficou sem pontos — mas a fatura dele SAIU em papel, e o
+    aviso que este número acende diz outra coisa."""
+    db = _com_emails(_db(), _linha_de_email(
+        id="c-1", chave="credito:doc-1", tipo="credito", estado="falhado"))
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+
+    assert _corre(estado_da_impressao(operador=_operador()))["emails_falhados"] == 0
+
+
+def test_uma_loja_SEM_envios_nenhuns_continua_a_responder_zero(monkeypatch):
+    """A colecção pode nem existir — o duplo cria-a vazia, como o Mongo."""
+    db = _db()
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+
+    assert _corre(estado_da_impressao(operador=_operador()))["emails_falhados"] == 0
