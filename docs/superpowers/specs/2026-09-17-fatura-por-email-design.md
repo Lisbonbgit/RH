@@ -205,15 +205,20 @@ Fase 2 passa a ler de `users.fatura_por_email`. **O email não sai daqui, nem ma
 
 Corpo: `{ligacao_id, valor: bool, operador_nome, loja_nome}`. Escreve o valor **na ligação** (Fase 1),
 não na conta. Recusa quando a ligação não existe, já foi usada (`atcud` preenchido) ou está fora da
-janela de tempo que a rota de creditar já usa — a preferência só se muda com um QR lido agora, ao
-balcão, com o cliente à frente.
+janela do `DEPOIS_DA_LIGACAO` (2 h) que o `/creditar` já usa — a preferência só se muda com um QR lido
+agora, ao balcão, com o cliente à frente. **O `ANTES_DA_LIGACAO` (2 min) não se aplica**: existe porque o
+`/creditar` compara o `emitido_em` do relógio do RH com o `criada_em` do nosso; aqui os dois valores são
+do mesmo relógio e `agora >= criada` é sempre verdade.
 
 Regista em `auditoria` (`auditoria.registar`, que já existe): quem ligou, em que loja, para que
 cliente. Sem isto não há prova nenhuma de que o cliente aceitou receber a fatura desmaterializada, e
 essa aceitação é dele, não do staff.
 
-Manda uma push transacional (`type: "points"`, o único que as apps publicadas sabem encaminhar):
-*"A fatura desta compra vai para o teu email."*
+**A push não sai daqui.** Sai do `/fatura-email`, depois de o Resend aceitar — uma push no momento da
+escolha promete o que ainda não aconteceu, e é a única coisa que fica na mão do cliente quando o papel
+já não saiu. O tipo é `"fatura"`: o `routeForNotification` das apps publicadas acaba em
+`default: return "/notificacoes"`, por isso um tipo novo degrada bem — a afirmação de que só `"points"`
+servia estava errada, e foi medida no código.
 
 ### `POST /api/pos-integracao/fatura-email` (nova)
 
