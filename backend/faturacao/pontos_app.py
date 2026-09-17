@@ -264,6 +264,62 @@ def _iso(momento: datetime) -> str:
     return momento.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
+# --- O «por enviar», num sítio só ---------------------------------------------
+
+# Os becos sem saída de uma linha: nenhum destes volta a ser tentado sozinho.
+ESTADOS_SEM_SAIDA = ("falhado", "recusado", "sem_efeito")
+
+# **Quando é que um `pendente` deixa de ser «a caminho» e passa a avaria.** O
+# cron corre de minuto a minuto e a maior espera entre tentativas técnicas é de
+# 30 minutos (`_ESPERAS_EM_MINUTOS`), por isso o caminho normal — emitir,
+# enviar, `feito` — nunca chega aqui. Chegam os encalhes, que de outra maneira
+# não se dizem em lado nenhum:
+#
+# - a chave da app por configurar: o `except IntegracaoNaoConfigurada` de
+#   `enviar` reagenda de minuto a minuto **para sempre**, sem gastar tentativa e
+#   sem carimbar `primeira_falha_tecnica_em` — a linha nunca chega a `falhado`;
+# - o cron por instalar: ninguém pega na linha e ela fica `pendente` intacta;
+# - a app em baixo há mais de meia hora, antes de as 24 h desistirem.
+#
+# Em todos eles **não saiu email e não saiu papel** (a decisão do dono é não
+# imprimir quando o email foi enfileirado): é exactamente o caso que o alarme da
+# loja existe para apanhar, e sem esta janela ele dizia ZERO.
+MINUTOS_ATE_O_PENDENTE_ACENDER = 30
+
+
+def filtro_das_faturas_por_enviar(loja_id: str, agora: datetime) -> Dict:
+    """**O predicado do «por enviar» — e vive aqui para viver só num sítio.**
+
+    Responde a «esta loja tem faturas que iam por email e não foram?», e é o
+    mesmo filtro para os três consumidores:
+
+    - o ALARME do balcão conta-o (`impressao.estado_da_impressao`);
+    - o «Já vi» carimba exactamente o que o alarme contou
+      (`impressao.marcar_falhados_vistos`) — carimbar mais do que isso era
+      calar uma falha que ainda não aconteceu;
+    - o `fatura_email_por_enviar` da lista do POS tem de sair daqui também
+      (plano C, Task 4). Um botão e um alarme a contar coisas diferentes são
+      duas mentiras: o aviso vermelho sem nenhuma fatura no filtro, ou a
+      fatura no filtro sem aviso nenhum.
+
+    `visto_em` não nasce na linha de propósito (`_linha_nova`): a igualdade a
+    `None` do Mongo casa com o campo ausente, e só o «Já vi» o escreve."""
+    return {
+        "loja_id": loja_id,
+        "tipo": "fatura_email",
+        "visto_em": None,
+        "$or": [
+            {"estado": {"$in": list(ESTADOS_SEM_SAIDA)}},
+            # A janela: ver `MINUTOS_ATE_O_PENDENTE_ACENDER`. É `criado_em` e
+            # não `atualizado_em` porque a linha encalhada na configuração
+            # reescreve o `atualizado_em` a cada minuto — contra esse campo, a
+            # janela nunca fechava e o pior dos encalhes ficava calado.
+            {"estado": "pendente", "criado_em": {"$lte": _iso(
+                agora - timedelta(minutes=MINUTOS_ATE_O_PENDENTE_ACENDER))}},
+        ],
+    }
+
+
 def _linha_nova(tipo: str, chave: str, payload: Dict, agora: datetime, **campos) -> Dict:
     """Uma linha da fila com TODOS os campos presentes desde o nascimento: a
     reserva compara `proxima_tentativa_em` e `a_enviar_ate`, e um campo ausente

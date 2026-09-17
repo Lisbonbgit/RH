@@ -380,7 +380,9 @@ export default function PosMenuCaixa({
                 disabled={aDarPorVisto}
                 onSelect={(e) => { e.preventDefault(); darPorVisto(); }}
               >
-                <Check className="h-4 w-4 mr-2" /> Já vi os papéis que falharam
+                {/* «papéis» já não chega: o mesmo toque desliga também o aviso
+                    das faturas que não seguiram por email. */}
+                <Check className="h-4 w-4 mr-2" /> Já vi os avisos
                 {aDarPorVisto && <Loader2 className="ml-auto h-3.5 w-3.5 animate-spin" />}
               </DropdownMenuItem>
             )}

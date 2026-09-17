@@ -1719,6 +1719,11 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: `loja_id` na linha `fatura_email` (Task 3) e os estados que `_fechar`/`_falhou` escrevem (Task 2).
 - Produces: `GET /pos/impressao/estado` ganha a chave `emails_falhados: int`. As chaves `ha_programa`, `ultima_recolha_em`, `por_sair` e `falhados` ficam como estão. `db.INDICES` ganha `("fat_pontos_app", [("loja_id", 1), ("tipo", 1), ("estado", 1)], {})`.
 
+> **O que ficou EXECUTADO difere destes Steps em duas coisas (correcção da revisão, 2026-09-18) — e é a versão executada que vale:**
+>
+> 1. **O predicado tem JANELA e vive num sítio só:** `pontos_app.filtro_das_faturas_por_enviar(loja_id, agora)` conta os becos sem saída **e** o `pendente` mais velho do que `pontos_app.MINUTOS_ATE_O_PENDENTE_ACENDER` (30 min). Sem a janela, o pior encalhe de todos ficava calado — com a chave da app por configurar, o `except IntegracaoNaoConfigurada` de `enviar` reagenda de minuto a minuto para sempre: não sai email, não sai papel, e o alarme dizia ZERO. É também a janela que o plano C (`…-C-ecras.md:20`) já dava por assente para o `fatura_email_por_enviar` da lista do POS, que tem de usar esta mesma função.
+> 2. **O alarme desliga-se:** o «Já vi» que já existia (`impressao.marcar_falhados_vistos`) passa a carimbar `visto_em` nestas linhas, pelo MESMO predicado, e o filtro exige `visto_em: None`. Sem isso o aviso não tinha saída nenhuma — `fat_pontos_app` não tem TTL e um `recusado` é terminal a sério (o «Reenviar» devolve-o ao mesmo estado): um documento recusado punha a frase vermelha no balcão para sempre. O `lib/pos.js` acompanha (`avisoDaFilaDeImpressao` di-lo em primeiro lugar, `haFalhadosPorVer` faz aparecer o botão).
+
 - [ ] **Step 1: Escrever o teste que falha**
 
 No fim de `backend/tests/faturacao/test_impressao.py` (a seguir à linha 1298):

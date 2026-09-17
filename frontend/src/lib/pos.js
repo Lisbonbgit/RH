@@ -1637,6 +1637,20 @@ export const razaoDeNaoImprimirPedido = ({ venda, estado, aImprimir } = {}) =>
 // segredo entre o servidor e o log.
 export const avisoDaFilaDeImpressao = (estado) => {
   if (!estado) return null;
+  // **As faturas por email vêm PRIMEIRO, e a ordem não é indiferente.** Em
+  // tudo o resto desta fila o papel está a um toque no separador Faturação:
+  // falhou, reimprime-se. Uma fatura que ia por email e não foi é o único caso
+  // em que o cliente fica sem documento nenhum — e a decisão do dono é que,
+  // enfileirado o email, o talão NÃO sai. Dizer «2 papéis à espera» por cima
+  // disto era responder ao problema pequeno.
+  const emails = Number(estado.emails_falhados || 0);
+  if (emails > 0) {
+    return emails === 1
+      ? 'Uma fatura não seguiu por email. Imprima-a pelo separador Faturação e '
+        + 'entregue o papel ao cliente.'
+      : `${emails} faturas não seguiram por email. Imprima-as pelo separador `
+        + 'Faturação e entregue o papel aos clientes.';
+  }
   const falhados = Number(estado.falhados || 0);
   if (falhados > 0) {
     return falhados === 1
@@ -1665,7 +1679,13 @@ export const avisoDaFilaDeImpressao = (estado) => {
 // ecrã. A operadora reimprimia o papel pelo separador Faturação, resolvia o
 // assunto, e continuava a ver a mesma frase a semana inteira — que é a
 // maneira de ensinar uma loja a não olhar para os avisos.
-export const haFalhadosPorVer = (estado) => Number(estado?.falhados || 0) > 0;
+//
+// **E conta também as faturas por email**, senão o aviso novo nascia ainda
+// pior: `fat_pontos_app` não tem TTL nenhum, um `recusado` é terminal a sério
+// (o «Reenviar» do backoffice devolve-o ao mesmo estado), e sem este botão a
+// frase vermelha ficava no balcão para SEMPRE por causa de um documento.
+export const haFalhadosPorVer = (estado) =>
+  Number(estado?.falhados || 0) > 0 || Number(estado?.emails_falhados || 0) > 0;
 
 // --- A NOTA DE CRÉDITO -------------------------------------------------------
 //

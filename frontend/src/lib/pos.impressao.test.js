@@ -115,6 +115,21 @@ describe('avisoDaFilaDeImpressao', () => {
       .toMatch(/4 papéis à espera/);
   });
 
+  test('a fatura que NÃO SEGUIU por email é dita — e é a primeira', () => {
+    // O único caso em que o cliente fica sem documento NENHUM: enfileirado o
+    // email, o talão não sai (decisão do dono). Em tudo o resto desta fila o
+    // papel está a um toque no separador Faturação, por isso esta frase passa
+    // à frente das outras duas.
+    const uma = avisoDaFilaDeImpressao({ ...COM_PROGRAMA, emails_falhados: 1 });
+    expect(uma).toMatch(/não seguiu por email/);
+    expect(uma).toMatch(/Faturação/);
+    expect(avisoDaFilaDeImpressao({ ...COM_PROGRAMA, emails_falhados: 3 }))
+      .toMatch(/^3 faturas/);
+    expect(avisoDaFilaDeImpressao({
+      ...COM_PROGRAMA, emails_falhados: 1, falhados: 2, por_sair: 5,
+    })).toMatch(/não seguiu por email/);
+  });
+
   test('o FALHADO vence o que está por sair', () => {
     // "Há 2 papéis à espera" ao lado de um que já não vai sair lê-se como
     // paciência; o que a operadora precisa de saber é que um se perdeu.
@@ -134,5 +149,13 @@ describe('haFalhadosPorVer', () => {
     expect(haFalhadosPorVer({ ...COM_PROGRAMA, por_sair: 2 })).toBe(false);
     expect(haFalhadosPorVer(null)).toBe(false);
     expect(haFalhadosPorVer(undefined)).toBe(false);
+  });
+
+  test('e o botão aparece também pelas faturas que não seguiram por email', () => {
+    // Este é o aviso que MAIS precisa do botão: `fat_pontos_app` não tem TTL,
+    // um `recusado` é terminal a sério, e sem isto um único documento
+    // recusado punha a frase vermelha no balcão para sempre.
+    expect(haFalhadosPorVer({ ...COM_PROGRAMA, emails_falhados: 1 })).toBe(true);
+    expect(haFalhadosPorVer({ ...COM_PROGRAMA, emails_falhados: 0 })).toBe(false);
   });
 });
