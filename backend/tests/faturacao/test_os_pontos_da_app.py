@@ -1459,14 +1459,17 @@ def test_reenviar_repoe_os_SETE_campos_e_manda_ja(monkeypatch):
         ultimo_erro="HTTP 503: em baixo", motivo="contrato_recusado"))
     monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
 
+    antes = _iso(datetime.now(timezone.utc))
     resposta = _corre(pontos_app.reenviar_fatura_por_email("doc-1", _={}))
 
     linha = _linha_reposta(fila)
     assert linha["estado"] == "pendente"
     assert linha["tentativas"] == 0
     assert linha["primeira_falha_tecnica_em"] is None
-    assert linha["proxima_tentativa_em"] <= pontos_app._iso(
-        datetime.now(timezone.utc))
+    assert antes <= linha["proxima_tentativa_em"] <= _iso(datetime.now(timezone.utc)), (
+        "a janela é do relógio REAL e não do AGORA do fixture: o AGORA está no "
+        "passado, e sem o limite de baixo esta afirmação passava sobre a hora "
+        "que a última falha marcou — o campo ficava por prender")
     assert linha["a_enviar_ate"] == pontos_app._NUNCA
     assert linha["ultimo_erro"] is None
     assert linha["motivo"] is None
