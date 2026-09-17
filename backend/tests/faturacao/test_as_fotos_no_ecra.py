@@ -131,10 +131,17 @@ _COMPONENTES = "\n".join([
     "  onClick: props.onClick, disabled: props.disabled, type: 'button',",
     "  'data-testid': props['data-testid'],",
     "}, props.children);",
+    # O duplo do campo deitava fora TUDO o que não estivesse nesta lista, e um
+    # teste que afirmasse uma dessas propriedades media o vazio: o atributo nunca
+    # chegava ao DOM e a asserção falhava (ou, pior, passava por omissão).
+    # `inputMode` e `autoFocus` entraram a 2026-09-17, quando o campo do QR
+    # passou a calar o teclado do Windows com a câmara aberta — e isso só se
+    # prova se o duplo os deixar passar.
     "const Campo = (props) => React.createElement('input', {",
     "  id: props.id, value: props.value === undefined ? '' : props.value,",
     "  onChange: props.onChange, placeholder: props.placeholder,",
     "  disabled: props.disabled, 'data-testid': props['data-testid'],",
+    "  inputMode: props.inputMode, autoFocus: props.autoFocus,",
     "});",
     "const Caixa = (props) => (props.open",
     "  ? React.createElement('div', { 'data-dialogo': 'aberto' }, props.children)",

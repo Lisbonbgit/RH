@@ -225,6 +225,12 @@ export default function PosLerQr({ vendaId, onLigada, onFechar }) {
             onChange={(e) => setCodigo(e.target.value)}
             autoFocus
             autoComplete="off"
+            // **Sem teclado do Windows por cima da câmara.** O campo mantém o
+            // FOCO — o leitor do POS é um teclado e continua a escrever nele —,
+            // mas com a câmara aberta diz-se ao browser que não há aqui nada
+            // para escrever à mão, e o teclado no ecrã não salta. Fechada a
+            // câmara (a caixa do leitor), volta ao normal.
+            inputMode={camera === null ? undefined : 'none'}
             placeholder="Leia o QR da app com o leitor…"
             className="h-14 flex-1 font-mono text-lg"
           />

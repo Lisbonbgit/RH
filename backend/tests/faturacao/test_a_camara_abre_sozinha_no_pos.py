@@ -102,7 +102,9 @@ def ecra(tmp_path_factory):
         "    deixar_abrir = true;",
         "    const e = await abrir();",
         "    saida.abriu = { pedidos: e.pedidos(), erro: ultimoErro,",
-        "      temVideo: !!e.alvo.querySelector('video'), visivel: e.visivel() };",
+        "      temVideo: !!e.alvo.querySelector('video'), visivel: e.visivel(),",
+        "      inputMode: e.alvo.querySelector('#qr-dos-pontos').getAttribute('inputmode'),",
+        "      focado: document.activeElement === e.alvo.querySelector('#qr-dos-pontos') };",
         "    await e.fechar();",
         "    deixar_abrir = false;",
         "  }",
@@ -110,7 +112,9 @@ def ecra(tmp_path_factory):
         "  {",
         "    const e = await abrir();",
         "    saida.automatico = { pedidos: e.pedidos(), visivel: e.visivel(),",
-        "      marcado: !!(e.auto() && e.auto().checked), temBotao: !!e.botaoCamara() };",
+        "      marcado: !!(e.auto() && e.auto().checked), temBotao: !!e.botaoCamara(),",
+        "      inputMode: e.alvo.querySelector('#qr-dos-pontos').getAttribute('inputmode'),",
+        "      focado: document.activeElement === e.alvo.querySelector('#qr-dos-pontos') };",
         "    await e.fechar();",
         "  }",
         # 2) Carregar no botão DE PROPÓSITO, com a câmara a falhar: aí vê-se o erro.
@@ -200,3 +204,31 @@ def test_com_camara_a_serio_o_video_aparece_e_nao_ha_erro(ecra):
     assert ecra["abriu"]["pedidos"] == 1
     assert ecra["abriu"]["temVideo"] is True
     assert "Não foi possível abrir a câmara" not in ecra["abriu"]["visivel"]
+
+
+# --- o teclado do Windows -------------------------------------------------------
+# Queixa do dono, 2026-09-17: «tem como eu clicar no pos em ler o qr do cliente e
+# não abrir o teclado do pc? isso atrapalha». Num Surface com toque, o `autoFocus`
+# do campo (que existe para o LEITOR do POS escrever nele) faz saltar o teclado do
+# Windows por cima da imagem da câmara.
+#
+# A saída não pode ser tirar o foco: o leitor é um teclado e escreve onde o foco
+# estiver. Tira-se só o TECLADO VIRTUAL, com `inputmode="none"`, e só enquanto a
+# câmara está aberta.
+
+
+def test_com_a_camara_ABERTA_nao_ha_teclado_virtual(ecra):
+    assert ecra["abriu"]["inputMode"] == "none", ecra["abriu"]
+
+
+def test_mas_o_campo_CONTINUA_com_o_foco_para_o_leitor(ecra):
+    """Se o remédio para o teclado fosse tirar o foco, o leitor do POS deixava
+    de escrever no sítio certo — e a leitura por código de barras morria."""
+    assert ecra["abriu"]["focado"] is True, ecra["abriu"]
+
+
+def test_sem_camara_o_campo_volta_a_aceitar_teclado(ecra):
+    """Na caixa do leitor HP a câmara não abre. Aí o campo é o único caminho, e
+    nada nos autoriza a impedir alguém de escrever nele."""
+    assert ecra["automatico"]["inputMode"] is None, ecra["automatico"]
+    assert ecra["automatico"]["focado"] is True, ecra["automatico"]
