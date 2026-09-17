@@ -19,6 +19,7 @@ import pytest
 
 from faturacao import db as db_mod
 from faturacao import impressao as imp
+from faturacao import pontos_app as pa
 from faturacao.db import COLECOES
 
 from . import test_fiscal as tf
@@ -37,16 +38,43 @@ def _indice_confirmado():
     db_mod.marcar_indice_idempotencia(None)
 
 
+@pytest.fixture
+def envios(monkeypatch):
+    """A tentativa imediata substituída por um registo. Aqui prova-se o PAPEL:
+    uma tarefa em segundo plano a falar com a app ficava viva depois do teste, e
+    o asyncio só guarda referências FRACAS às tarefas (molde de
+    `test_os_pontos_da_app.envios`)."""
+    enviados = []
+    monkeypatch.setattr(pa, "tentar_ja", lambda db, linha_id: enviados.append(linha_id))
+    return enviados
+
+
+class Explode:
+    """Uma colecção que levanta em CADA escrita — o Atlas em baixo a meio de uma
+    emissão que já entregou a fatura à Autoridade Tributária."""
+
+    async def insert_one(self, doc):
+        raise RuntimeError("Atlas em baixo")
+
+
 def _chave_do_trabalho(doc):
     return doc.get("chave")
 
 
-def _com_fila(db):
-    """Acrescenta a colecção da fila ao duplo de `test_fiscal`, com o índice
-    único a ser cumprido — é ele que decide se a mesma emissão a passar duas
-    vezes faz um talão ou dois."""
+def _com_fila(db, qr=()):
+    """Acrescenta ao duplo de `test_fiscal` as três colecções deste fio, com os
+    índices únicos a serem cumpridos.
+
+    **`fat_pontos_app` com `unico=` e não à solta:** o `DbFalsa.__getitem__` faz
+    `setdefault`, por isso uma colecção nova nasce SEM índice nenhum — e uma
+    prova de que a mesma emissão não manda dois emails passava por acaso. A
+    chave é a mesma do índice de `db.py` (`fat_pontos_app.chave`), e é ela que
+    decide se uma emissão a passar duas vezes faz um envio ou dois."""
     db._coleccoes[COLECOES["trabalhos_impressao"]] = ColeccaoFalsa(
         [], [], unico=_chave_do_trabalho)
+    db._coleccoes[COLECOES["pontos_app"]] = ColeccaoFalsa(
+        [], [], unico=_chave_do_trabalho)
+    db._coleccoes[COLECOES["pontos_qr"]] = ColeccaoFalsa([], list(qr))
     return db
 
 
@@ -54,28 +82,44 @@ def _fila(db):
     return db._coleccoes[COLECOES["trabalhos_impressao"]]._documentos
 
 
+def _emails(db):
+    return [linha for linha in db._coleccoes[COLECOES["pontos_app"]]._documentos
+            if linha["tipo"] == "fatura_email"]
+
+
 # --- A emissão ----------------------------------------------------------------
 
 
-def _finalizar(db, monkeypatch):
+class _VendusNormal(tf.ClienteEmissaoVendusFalso):
+    """O duplo do Vendus da rota a devolver uma fatura REAL (modo `normal`). O
+    `_bruto()` de `test_fiscal` devolve `tests`, e em `tests` o papel sai sempre
+    — sem isto, o caso da preferência ligada passava pela razão errada."""
+
+    def __init__(self, chave):
+        super().__init__(chave)
+        self.resposta_criar = tf._bruto(modo="normal")
+
+
+def _finalizar(db, monkeypatch, cliente=None, pontos_ligacao=None, nif=None):
     tf._configura_vendus_env(monkeypatch)
     monkeypatch.setattr(tf.fiscal_mod, "obter_db", lambda: db)
     monkeypatch.setattr(
-        tf.fiscal_mod, "ClienteEmissaoVendus", tf.ClienteEmissaoVendusFalso)
+        tf.fiscal_mod, "ClienteEmissaoVendus", cliente or tf.ClienteEmissaoVendusFalso)
     tf.ClienteEmissaoVendusFalso.instancias.clear()
     return _corre(tf.finalizar(
         "venda-1",
-        tf.PedidoFinalizarVenda(pagamentos=[
-            tf.PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)]),
+        tf.PedidoFinalizarVenda(
+            pagamentos=[tf.PagamentoEntrada(tipo_pagamento_id="tipo-dinheiro", valor=8.99)],
+            pontos_ligacao=pontos_ligacao, nif=nif),
         operador=tf._operador(),
     ))
 
 
-def _db_de_venda():
+def _db_de_venda(qr=()):
     return _com_fila(tf._db(
         vendas=[tf._venda(linhas=[tf._linha()])],
         tipos_pagamento=[tf._tipo_pagamento()],
-    ))
+    ), qr=qr)
 
 
 def test_FINALIZAR_uma_venda_poe_UM_papel_na_fila_e_e_o_do_CLIENTE(monkeypatch):
@@ -128,11 +172,6 @@ def test_a_FATURA_CONTINUA_BOA_quando_a_fila_de_impressao_rebenta(monkeypatch):
     Aqui a fila rebenta em cheio (a colecção levanta em cada escrita) e a
     resposta da rota tem de sair igual: venda emitida, documento gravado."""
     db = _db_de_venda()
-
-    class Explode:
-        async def insert_one(self, doc):
-            raise RuntimeError("Atlas em baixo")
-
     db._coleccoes[COLECOES["trabalhos_impressao"]] = Explode()
     resultado = _finalizar(db, monkeypatch)
     assert resultado["estado"] == "emitida"
@@ -151,6 +190,183 @@ def test_um_RETRY_da_mesma_emissao_nao_faz_um_segundo_talao(monkeypatch):
     db._coleccoes[COLECOES["vendas"]]._documentos[0]["estado"] = "aberta"
     _finalizar(db, monkeypatch)
     assert len(_fila(db)) == 1
+
+
+# --- O papel que NÃO sai: a fatura por email ------------------------------------
+#
+# Os quatro casos do desenho, todos pela ROTA REAL. A regra que os une: o papel
+# só se salta quando a linha do email foi MESMO criada — as duas decisões são
+# uma só, e não há desfecho em que não saia nem papel nem email.
+
+_LIGACAO = {"id": "lig-1", "primeiro_nome": "Ana"}
+_QR_LIGADO = [{"ligacao_id": "lig-1", "fatura_por_email": True}]
+
+
+def test_1_SEM_LIGACAO_sai_papel_e_nao_ha_linha_de_email_nenhuma(monkeypatch, envios):
+    """O caso normal, que é o de quase toda a gente: quem não mostra a app leva
+    talão, como sempre."""
+    db = _db_de_venda()
+
+    resultado = _finalizar(db, monkeypatch, cliente=_VendusNormal)
+
+    assert resultado["estado"] == "emitida"
+    assert len(_fila(db)) == 1
+    assert _emails(db) == []
+
+
+def test_2_COM_A_PREFERENCIA_LIGADA_nao_sai_papel_e_fica_a_linha_do_email(monkeypatch, envios):
+    """O caso que a funcionalidade existe para fazer. A preferência é lida de
+    `fat_pontos_qr` — do servidor — e não do corpo do EMITIR."""
+    db = _db_de_venda(qr=_QR_LIGADO)
+
+    resultado = _finalizar(db, monkeypatch, cliente=_VendusNormal,
+                           pontos_ligacao=_LIGACAO)
+
+    assert resultado["estado"] == "emitida"
+    assert _fila(db) == [], "com a fatura a ir por email, o talão não se imprime"
+    documento = db._coleccoes[COLECOES["documentos"]]._documentos[0]
+    [linha] = _emails(db)
+    assert linha["chave"] == "fatura_email:%s" % documento["id"]
+    assert linha["loja_id"] == "loja-1", "a loja é por onde o alarme do POS conta"
+    assert linha["payload"] == {
+        "ligacao_id": "lig-1",
+        "documento_id": documento["id"],
+        "vendus_document_id": documento["vendus_document_id"],
+        "numero": "FS 2026/1",
+        "modo": "normal",
+    }
+    # **`in` e não `== [id]`.** Nesta MESMA chamada a `finalizar`, o
+    # `_ligar_venda_ao_documento` já enfileirou o crédito dos pontos
+    # (`fiscal.py:1431-1433`) — modo normal, ligação gravada na venda antes da
+    # emissão, ATCUD presente — e o `_enfileirar` de lá também chama
+    # `tentar_ja`. O id do crédito está na lista ANTES de o papel se decidir; o
+    # que se prende aqui é que o do email também lá vai parar.
+    assert linha["id"] in envios, "a tentativa imediata do email tem de sair logo"
+
+
+def test_2b_a_MESMA_emissao_a_passar_duas_vezes_manda_UM_email_e_nao_traz_papel(monkeypatch, envios):
+    """**O `DuplicateKeyError` conta como sucesso.** O gancho da emissão corre
+    mais do que uma vez por venda (o retry que reencontra o documento, a
+    reconciliação de uma reserva presa); devolver `False` na segunda passagem
+    fazia sair papel numa fatura que já ia por email."""
+    db = _db_de_venda(qr=_QR_LIGADO)
+    _finalizar(db, monkeypatch, cliente=_VendusNormal, pontos_ligacao=_LIGACAO)
+    db._coleccoes[COLECOES["vendas"]]._documentos[0]["estado"] = "aberta"
+
+    _finalizar(db, monkeypatch, cliente=_VendusNormal, pontos_ligacao=_LIGACAO)
+
+    assert len(_emails(db)) == 1
+    assert _fila(db) == [], "a segunda passagem não pode fazer sair papel"
+
+
+def test_3_com_a_FILA_DO_EMAIL_a_rebentar_o_PAPEL_SAI_a_mesma(monkeypatch, envios):
+    """**O desfecho que não pode existir é não sair nem papel nem email.** Aqui
+    a colecção da fila levanta em cada escrita: a linha do email não chega a
+    existir, `enfileirar_fatura_email` devolve `False`, e o talão sai como se
+    nada disto existisse — com a resposta da rota igual, porque as duas chamadas
+    estão no mesmo `try/except`."""
+    db = _db_de_venda(qr=_QR_LIGADO)
+    db._coleccoes[COLECOES["pontos_app"]] = Explode()
+
+    resultado = _finalizar(db, monkeypatch, cliente=_VendusNormal,
+                           pontos_ligacao=_LIGACAO)
+
+    assert resultado["estado"] == "emitida"
+    assert len(_fila(db)) == 1, "sem linha de email, o papel tem de sair"
+
+
+def test_4_em_MODO_TESTS_sai_papel_e_nao_se_manda_email_nenhum(monkeypatch, envios):
+    """Uma fatura em `tests` não existe na AT. Mandá-la por email ao cliente era
+    entregar-lhe um papel com ar de fatura que não é fatura nenhuma — e o `mode`
+    de um documento de testes nem sequer devolve PDF pela porta normal."""
+    db = _db_de_venda(qr=_QR_LIGADO)
+
+    resultado = _finalizar(db, monkeypatch, pontos_ligacao=_LIGACAO)
+
+    assert resultado["estado"] == "emitida"
+    assert len(_fila(db)) == 1
+    assert _emails(db) == []
+
+
+def test_uma_fatura_SEM_ID_DO_VENDUS_sai_em_PAPEL(monkeypatch, envios):
+    """**A guarda que impede o único desfecho proibido.** O Vendus só é recusado
+    quando faltam o `id` E o `atcud` (`vendus/emissao._documento_da_criacao`):
+    um 2xx com ATCUD e sem `id` é aceite de propósito e grava
+    `vendus_document_id: None` — é por isso que o botão «PDF da fatura» do
+    backoffice tem um 422 dedicado (`documentos._MSG_SEM_ID_NO_VENDUS`).
+
+    Sem esta guarda o papel saltava-se e `_pdf_da_fatura` devolvia `b""` para
+    sempre: 13 tentativas, `falhado` às 24 h, e o cliente sem talão E sem
+    email."""
+    class _SemId(_VendusNormal):
+        def __init__(self, chave):
+            super().__init__(chave)
+            self.resposta_criar = tf._bruto(modo="normal", id=None)
+
+    db = _db_de_venda(qr=_QR_LIGADO)
+
+    resultado = _finalizar(db, monkeypatch, cliente=_SemId, pontos_ligacao=_LIGACAO)
+
+    assert resultado["estado"] == "emitida"
+    assert len(_fila(db)) == 1, "sem id do Vendus não há PDF — o papel tem de sair"
+    assert _emails(db) == []
+
+
+def test_com_NIF_ESCRITO_a_fatura_vai_A_MESMA_por_email(monkeypatch, envios):
+    """**O NIF não decide nada — o seletor do cliente é o único que manda.**
+    Palavras do dono: «depende da opção se quer ou não por email a fatura. o
+    seletor é que manda.»
+
+    O NIF vai escrito na fatura como sempre foi — a emissão copia-o da venda
+    para o documento (`fiscal.py:1266`) — e é ESSA fatura, com NIF, que segue
+    para o email da conta de quem mostrou o QR. Quem mostra a app e quem pede a
+    fatura são a mesma pessoa; num grupo só uma fica com os pontos e, quando
+    querem faturas separadas, dividem a conta, e aí cada parte leva o seu QR e
+    o seu NIF.
+
+    A guarda antiga (papel a sair só por haver NIF escrito) custava 1 em cada
+    10 faturas: 10,4% das vendas levam NIF e só 1,6% são partes de conta
+    dividida.
+
+    **O teste inverteu-se, não se apagou.** O caso do NIF continua coberto; o
+    que mudou é o que se espera dele — agora prova que o NIF NÃO muda nada."""
+    db = _db_de_venda(qr=_QR_LIGADO)
+
+    _finalizar(db, monkeypatch, cliente=_VendusNormal,
+               pontos_ligacao=_LIGACAO, nif="219363935")
+
+    assert _fila(db) == [], "com a preferência ligada, o NIF não faz sair papel"
+    documento = db._coleccoes[COLECOES["documentos"]]._documentos[0]
+    assert documento["cliente_nif"] == "219363935", (
+        "o NIF vai escrito na fatura como sempre foi")
+    # **`[linha] = _emails(db)` e nunca uma igualdade à colecção toda:** nesta
+    # MESMA chamada a `finalizar`, o `_ligar_venda_ao_documento` já pôs a linha
+    # do CRÉDITO dos pontos na mesma fila (`fiscal.py:1431-1433`). São duas
+    # linhas em `fat_pontos_app`, e só uma delas é o email.
+    [linha] = _emails(db)
+    assert linha["chave"] == "fatura_email:%s" % documento["id"]
+
+
+def test_sem_LINHA_NO_QR_o_papel_sai_mesmo_com_a_ligacao_na_venda(monkeypatch, envios):
+    """A ligação na venda não chega: um `pontos_ligacao` forjado no corpo do
+    EMITIR não pode fazer desaparecer o documento de ninguém. Sem a linha do
+    servidor — porque expirou, porque a escrita falhou, porque o cliente não
+    pediu — sai papel."""
+    db = _db_de_venda()
+
+    _finalizar(db, monkeypatch, cliente=_VendusNormal, pontos_ligacao=_LIGACAO)
+
+    assert len(_fila(db)) == 1
+    assert _emails(db) == []
+
+
+def test_com_a_preferencia_DESLIGADA_na_linha_do_qr_sai_papel(monkeypatch, envios):
+    db = _db_de_venda(qr=[{"ligacao_id": "lig-1", "fatura_por_email": False}])
+
+    _finalizar(db, monkeypatch, cliente=_VendusNormal, pontos_ligacao=_LIGACAO)
+
+    assert len(_fila(db)) == 1
+    assert _emails(db) == []
 
 
 # --- A devolução --------------------------------------------------------------

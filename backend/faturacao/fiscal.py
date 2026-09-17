@@ -2295,7 +2295,23 @@ async def finalizar(
     # venda.
     try:
         from .impressao import enfileirar_venda_emitida
-        await enfileirar_venda_emitida(db, venda_actualizada or venda, documento)
+        from .pontos_app import enfileirar_fatura_email
+        # **As duas decisões são UMA.** O papel só se salta quando a linha do
+        # email foi MESMO criada — `enfileirar_fatura_email` devolve `True` só
+        # nesse caso, e devolve `False` para tudo o resto (modo de testes, sem
+        # id do Vendus, sem QR lido, sem a marca do servidor em `fat_pontos_qr`,
+        # escrita falhada). Nunca há desfecho em que o cliente fique sem talão
+        # E sem email.
+        #
+        # **O NIF não entra nesta decisão**: o seletor do cliente é o único que
+        # manda, e uma fatura com NIF vai por email com o NIF escrito nela
+        # (copiado da venda para o documento na linha 1266, aqui em cima).
+        #
+        # A venda é a `venda_actualizada` e nunca o corpo do pedido: quem perde
+        # a corrida da reserva (`_esperar_documento_do_vencedor`) também chega
+        # aqui, e só a venda gravada tem a ligação que valeu.
+        if not await enfileirar_fatura_email(db, venda_actualizada or venda, documento):
+            await enfileirar_venda_emitida(db, venda_actualizada or venda, documento)
     except Exception as e:  # noqa: BLE001 — perde-se o papel, nunca o registo
         logger.error(
             "[faturacao] a fatura %s saiu mas não foi possível pôr o papel na "

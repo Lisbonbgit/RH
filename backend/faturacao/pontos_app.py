@@ -650,6 +650,117 @@ async def enfileirar_credito(db, venda_id: str, documento: Dict, *,
         primeiro_nome=ligacao.get("primeiro_nome")))
 
 
+# --- A fatura por email, na emissão ---------------------------------------------
+
+
+async def enfileirar_fatura_email(db, venda: Dict, documento: Dict, *,
+                                  agora: Optional[datetime] = None) -> bool:
+    """Põe na fila o envio por email desta Fatura Simplificada. **Devolve `True`
+    só quando, no fim, existe mesmo a linha `fatura_email:<documento_id>`** — e
+    é por esse `True` que `fiscal.finalizar` decide não pôr papel na fila.
+
+    As duas decisões são UMA: o papel só se salta se o email foi mesmo
+    enfileirado. Nunca há desfecho em que não saia papel nem email.
+
+    Devolve `False` — e o talão sai como sempre — quando:
+
+    - `documento["modo"] != "normal"`: uma fatura em `tests` não existe na AT, e
+      o Vendus nem devolve PDF dela pela porta normal;
+    - `documento["vendus_document_id"]` está vazio: **sem o id do Vendus não há
+      PDF para ir buscar**, hoje nem daqui a um mês. O Vendus só é recusado
+      quando faltam o `id` E o `atcud` (`vendus/emissao._documento_da_criacao`),
+      por isso um 2xx com ATCUD e sem `id` é aceite de propósito e gravado com
+      `vendus_document_id: None` — é o caso que `documentos.pdf_do_documento`
+      traduz num 422 dedicado. Saltar o papel aqui era 13 tentativas de um PDF
+      que nunca vem e o cliente sem talão E sem email;
+    - a venda não tem `pontos_ligacao`: sem QR não há para onde enviar;
+    - não há linha em `fat_pontos_qr` para aquela ligação, ou ela diz `False`:
+      **é essa linha, do servidor, que decide**. Um `pontos_ligacao` forjado no
+      corpo do EMITIR não pode fazer desaparecer o documento de ninguém;
+    - a escrita falhou por qualquer razão.
+
+    **O NIF não está nesta lista, e é de propósito.** O seletor do cliente é o
+    único que manda: com a preferência ligada a fatura vai por email haja ou não
+    haja NIF, e o NIF vai escrito nela como sempre foi (a emissão copia-o da
+    venda para o documento, `fiscal.py:1266`). Quem mostra a app e quem pede a
+    fatura são a mesma pessoa; num grupo, quando querem faturas separadas,
+    dividem a conta e cada parte leva o seu QR e o seu NIF. O caso em que uma
+    pessoa mostra a app e outra pede a fatura com o NIF dela, sem dividirem a
+    conta, é risco assumido pelo dono: essa fatura vai para o email de quem
+    mostrou a app, e recupera-se reimprimindo no separador Faturação.
+
+    **Um `DuplicateKeyError` conta como `True`.** A linha já lá estava — o
+    gancho da emissão corre mais do que uma vez por venda — e devolver `False`
+    aí fazia sair papel numa fatura que já ia por email.
+
+    **Não herda a guarda do ATCUD do `enfileirar_credito`**: um documento REAL
+    pode não o ter, a app precisa dele para deduplicar os PONTOS, e o email
+    precisa é do id do VENDUS (acima). Herdá-la era o caso em que não sai papel
+    nem email e não fica linha nenhuma para alguém ver.
+
+    A venda vem de quem chama e é a GRAVADA (`fiscal.py:2271`), nunca o corpo do
+    pedido: quem perde a corrida da reserva também chega àquela linha, e só a
+    venda gravada tem a verdade.
+
+    **O PDF não entra na linha**, só o id do documento e o modo com que ele foi
+    emitido: a fila não tem TTL e fica para sempre, e 92 KB por fatura para
+    sempre não. Quem o vai buscar é o envio (`_pdf_da_fatura`)."""
+    if documento.get("modo") != "normal":
+        return False
+    if not documento.get("vendus_document_id"):
+        logger.error(
+            "[faturacao] a fatura %s não tem id do Vendus — sem ele não há PDF "
+            "para enviar, e o talão sai em PAPEL como sempre", documento["id"])
+        return False
+    ligacao = (venda or {}).get("pontos_ligacao") or {}
+    if not ligacao.get("id"):
+        return False
+    # **Nenhuma guarda ao `cliente_nif`**, e é a decisão do dono: o seletor do
+    # cliente é o único que manda, e uma fatura com NIF vai por email como
+    # qualquer outra — com o NIF escrito nela (`fiscal.py:1266`).
+
+    linha = _linha_nova(
+        "fatura_email", "fatura_email:%s" % documento["id"],
+        {
+            "ligacao_id": str(ligacao["id"]),
+            "documento_id": documento["id"],
+            # Nosso e não da app: é por ele que se pede o PDF ao Vendus.
+            "vendus_document_id": documento.get("vendus_document_id"),
+            # `or ""` e não o `.get` cru, pela razão do crédito: em pydantic 2
+            # um `None` explícito NÃO cai no default de um `str`.
+            "numero": documento.get("numero") or "",
+            # **O modo DO DOCUMENTO**, carimbado agora: um documento emitido em
+            # `tests` pedido com `mode=normal` responde 404, e o botão que muda
+            # o modo da loja não pode partir o reenvio de faturas antigas.
+            "modo": documento.get("modo") or "normal",
+        },
+        agora or datetime.now(timezone.utc),
+        documento_id=documento["id"], venda_id=venda.get("id"),
+        # **A loja vai na linha**, e é por ela que o alarme do POS conta os
+        # envios sem saída (`impressao.estado_da_impressao`).
+        loja_id=venda.get("loja_id"),
+        primeiro_nome=ligacao.get("primeiro_nome"))
+
+    # A leitura do QR e a escrita da linha DENTRO do mesmo `try`: se a leitura
+    # rebentasse cá fora, o `except` da rota do finalizar engolia-a e não saía
+    # papel NEM email — o único desfecho que este desenho não admite.
+    try:
+        marca = await db[COLECOES["pontos_qr"]].find_one(
+            {"ligacao_id": str(ligacao["id"])}, {"_id": 0, "fatura_por_email": 1})
+        if not (marca or {}).get("fatura_por_email"):
+            return False
+        await db[COLECOES["pontos_app"]].insert_one(dict(linha))
+    except DuplicateKeyError:
+        return True
+    except Exception as e:  # noqa: BLE001 — sem linha, o papel sai
+        logger.error(
+            "[faturacao] a fatura %s não entrou na fila do email (o talão sai em "
+            "papel): %s", documento["id"], e)
+        return False
+    tentar_ja(db, linha["id"])
+    return True
+
+
 # --- O estorno, na nota de crédito ----------------------------------------------
 
 
