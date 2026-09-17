@@ -95,6 +95,15 @@ def janela(tmp_path_factory):
         "    saida.vazio = j.lidos().length;",
         "    await j.fechar();",
         "  }",
+        # O código da CONTA («LA» + 8 dígitos) escrito no campo do leitor. A
+        # janela tem de o reconhecer SOZINHA — sem pedido nenhum ao servidor.
+        "  {",
+        "    const j = await abrir(ANA);",
+        "    await lerComOLeitor(j.alvo, 'LA12345678');",
+        "    saida.conta = { visivel: textoVisivel(j.alvo), lidos: j.lidos().length,",
+        "      ligadas: j.ligadas, campo: j.alvo.querySelector('#qr-dos-pontos').value };",
+        "    await j.fechar();",
+        "  }",
         "  for (const [nome, resposta] of [",
         "    ['invalido', falha(404, %s)]," % json.dumps(_MSG_QR_INVALIDO),
         "    ['em_baixo', falha(503, %s)]," % json.dumps(_MSG_APP_EM_BAIXO),
@@ -133,6 +142,27 @@ def test_o_codigo_do_leitor_vai_ao_servidor_com_a_conta_e_liga_o_cliente(janela)
 
 def test_um_Enter_sem_codigo_nao_pergunta_nada(janela):
     assert janela["vazio"] == 0
+
+
+def test_o_codigo_da_CONTA_e_explicado_pela_JANELA_sem_perguntar_ao_servidor(janela):
+    """**A guarda do formato tem de estar LIGADA ao ecrã, não só existir.**
+
+    A função pura `recadoDeCodigoQrErrado` prova-se sozinha em
+    test_o_codigo_errado_no_qr_do_pos.py — mas nada obrigava o `PosLerQr` a
+    chamá-la. Trocar a linha por `const recado = null` deixava a suite inteira
+    verde (442 passed) e o balcão voltava a ouvir «QR inválido ou expirado» para
+    um código de conta, que é a frase que originou este pedido.
+
+    Três coisas de uma vez: a frase certa aparece, NÃO se gasta uma viagem ao
+    servidor, e o campo fica limpo para a leitura seguinte (o leitor escreve por
+    cima, e com o código recusado lá dentro a leitura seguinte chegava colada a
+    ele).
+    """
+    conta = janela["conta"]
+    assert "código da conta do cliente" in conta["visivel"], conta["visivel"][:400]
+    assert conta["lidos"] == 0, "o código da conta não pode ir ao servidor"
+    assert conta["ligadas"] == []
+    assert conta["campo"] == ""
 
 
 @pytest.mark.parametrize("caso,frase", [

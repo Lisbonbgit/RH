@@ -262,6 +262,33 @@ export const lerQrDePontos = async (vendaId, codigo) =>
   (await api.post('/pos/pontos/ler', { venda_id: vendaId, codigo })).data;
 
 
+// **O que está no campo é mesmo um QR?** Responde-se aqui e não no servidor,
+// porque a pergunta não é sobre a conta de ninguém: é sobre o FORMATO do que
+// foi escrito, e a resposta certa evita uma viagem para voltar com «QR
+// inválido» — a frase que não explica nada a quem escreveu outra coisa.
+//
+// São dois códigos parecidos de mais, e o balcão troca-os:
+//   · «LQ» + 22 caracteres é o QR, que a app cria quando o cliente toca em
+//     «Mostrar QR na caixa» e que vale 45 segundos e uma leitura;
+//   · «LA» + 8 dígitos é o código da CONTA, o que o cliente dá a um amigo.
+//     Não serve aqui de propósito: os pontos são de quem mostra a app na
+//     caixa, não de quem sabe um número de cor — era essa a burla do talão
+//     no lixo que este ecrã veio fechar.
+//
+// Devolve a frase a mostrar, ou `null` quando o formato serve (se estiver
+// gasto ou expirado, é o servidor que o diz).
+export const recadoDeCodigoQrErrado = (texto) => {
+  const t = String(texto || '').replace(/\s/g, '').toUpperCase();
+  if (!t || /^LQ[A-Z0-9]{22}$/.test(t)) return null;
+  if (/^LA[0-9]{8}$/.test(t)) {
+    return 'Esse é o código da conta do cliente, não o QR. O código da conta não dá '
+      + 'pontos — peça ao cliente para abrir a app e tocar em «Mostrar QR na caixa».';
+  }
+  return 'Isto não é o código do QR. O cliente abre a app L\'Açaí, toca em «Mostrar QR '
+    + 'na caixa» e mostra-o ao leitor — o código começa por «LQ» e dura 45 segundos.';
+};
+
+
 // --- Dispositivo -------------------------------------------------------------
 
 export const getDeviceToken = () => ler(CHAVE_DISPOSITIVO);

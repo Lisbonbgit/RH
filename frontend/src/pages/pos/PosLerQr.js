@@ -6,7 +6,8 @@ import { Input } from '@/components/ui/input';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
-import { lerQrDePontos, detalhesErroPos, MSG_PONTOS_SEM_RESPOSTA } from '@/lib/pos';
+import { lerQrDePontos, detalhesErroPos, MSG_PONTOS_SEM_RESPOSTA,
+  recadoDeCodigoQrErrado } from '@/lib/pos';
 
 // A janela «Ler QR do cliente» dos pontos L'Açaí. Dois caminhos para o MESMO
 // pedido (`lib/pos.js::lerQrDePontos`):
@@ -36,6 +37,34 @@ const guardarCamera = (id) => {
   try { localStorage.setItem(CHAVE_CAMERA, id); } catch (e) { /* sem storage */ }
 };
 
+// **O apito da leitura.** O leitor do POS HP apita sozinho; a câmara do Surface
+// não apita nada, e sem som a funcionária fica a olhar para o ecrã à espera de
+// perceber se leu — com a fila à frente. Um oscilador do browser em vez de um
+// ficheiro de som: não há nada para carregar, nada que falhe a meio de uma venda
+// e nada para copiar para 5 PCs. Falhar é silêncio, nunca um erro: um PC sem
+// placa de som não pode partir a leitura.
+const apitar = (hz, ms) => {
+  try {
+    const Audio = window.AudioContext || window.webkitAudioContext;
+    if (!Audio) return;
+    const ctx = new Audio();
+    // O Chrome arranca-o SUSPENSO enquanto o documento não tiver tido um toque.
+    // Aqui já teve (abrir a janela é um clique), mas a leitura pela câmara
+    // chega sozinha — e um `resume()` a mais não custa nada.
+    if (ctx.state === 'suspended') ctx.resume();
+    const osc = ctx.createOscillator();
+    const vol = ctx.createGain();
+    osc.frequency.value = hz;
+    vol.gain.value = 0.12;                 // o balcão é perto do cliente
+    osc.connect(vol).connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + ms / 1000);
+    osc.onended = () => ctx.close();
+  } catch (e) { /* sem som, a leitura vale na mesma */ }
+};
+const APITO_LIDO = () => apitar(1320, 110);      // agudo e curto: leu
+const APITO_RECUSADO = () => apitar(220, 260);   // grave e longo: não leu
+
 const MSG_SEM_CAMERA =
   'Não foi possível abrir a câmara. Confirme que o browser a pode usar, ou leia o QR com o leitor.';
 
@@ -61,15 +90,22 @@ export default function PosLerQr({ vendaId, onLigada, onFechar }) {
   const ler = async (texto) => {
     const lido = String(texto || '').trim();
     if (!lido || ocupado.current) return;
+    // O formato responde-se aqui: quem escreveu o código da CONTA («LA») em vez
+    // do QR («LQ») merece ouvir isso, e não um «QR inválido» do servidor que o
+    // deixa a tentar outra vez o mesmo.
+    const recado = recadoDeCodigoQrErrado(lido);
+    if (recado) { APITO_RECUSADO(); setErro(recado); setCodigo(''); return; }
     ocupado.current = true;
     setALer(true);
     setErro(null);
     try {
       const { ligacao_id: id, primeiro_nome } = await lerQrDePontos(vendaId, lido);
+      APITO_LIDO();
       onLigada({ id, primeiro_nome });
     } catch (error) {
       // 404 e 503 trazem a frase do servidor; sem resposta nenhuma (rede,
       // tecto de espera) a consequência para o balcão é a do 503.
+      APITO_RECUSADO();
       setErro(detalhesErroPos(error, MSG_PONTOS_SEM_RESPOSTA).mensagem);
       // O leitor escreve POR CIMA do que estiver no campo: com o código
       // recusado lá dentro, a leitura seguinte chegava colada a ele e era
@@ -163,7 +199,7 @@ export default function PosLerQr({ vendaId, onLigada, onFechar }) {
             onChange={(e) => setCodigo(e.target.value)}
             autoFocus
             autoComplete="off"
-            placeholder="Leia o QR com o leitor…"
+            placeholder="Leia o QR da app com o leitor…"
             className="h-14 flex-1 font-mono text-lg"
           />
           <Button type="submit" className="h-14 px-6" disabled={aLer || !codigo.trim()}>
