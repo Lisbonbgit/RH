@@ -24,6 +24,7 @@ A app é idempotente por ATCUD e por nota de crédito, e é isso que deixa este
 lado ser simples: um reenvio nunca credita duas vezes.
 """
 import asyncio
+import base64
 import logging
 import os
 import secrets
@@ -41,6 +42,7 @@ from .db import COLECOES, obter_db
 from .pos_auth import operador_atual
 from .precos import CODIGO_NAO_SUJEITO
 from .venda import _garante_aberta, _obter_venda_da_loja
+from .vendus.cliente import ClienteVendus, obter_conta
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,14 @@ router = APIRouter()
 # e pela mesma razão: quem espera pelo Ler é a funcionária com o cliente à
 # frente. Uma app em baixo diz-se depressa, e a fatura segue sem pontos.
 TIMEOUT_SEGUNDOS = 4.0
+
+# **O tempo por ACÇÃO.** Os 4 s acima são para quem está ao balcão à espera (o
+# Ler, o creditar, o estornar): uma app em baixo diz-se depressa e a fatura
+# segue sem pontos. O envio da fatura por email é outra coisa — leva o PDF em
+# base64 (~120 KB de texto) e corre em segundo plano, onde ninguém espera por
+# ele. Com 4 s cortava-se um envio que ia bem a meio, e a fila repetia-o para
+# sempre a cada volta do cron.
+_TIMEOUT_POR_ACCAO = {"fatura-email": 25.0}
 
 # Os testes trocam isto por um `httpx.MockTransport`; `None` é o transporte
 # normal do httpx.
@@ -79,7 +89,10 @@ async def _chamar_app(acao: str, corpo: Dict) -> httpx.Response:
     chave = (os.environ.get("APP_LACAI_CHAVE") or "").strip()
     if not url or not chave:
         raise IntegracaoNaoConfigurada("integração não configurada")
-    async with httpx.AsyncClient(timeout=TIMEOUT_SEGUNDOS, transport=_transporte) as http:
+    async with httpx.AsyncClient(
+        timeout=_TIMEOUT_POR_ACCAO.get(acao, TIMEOUT_SEGUNDOS),
+        transport=_transporte,
+    ) as http:
         return await http.post(
             "%s/api/pos-integracao/%s" % (url, acao),
             json=corpo,
@@ -233,7 +246,12 @@ _RESERVA_SEGUNDOS = 60
 _ESPERAS_EM_MINUTOS = (1, 2, 5, 10, 30)
 _DESISTIR_AO_FIM_DE = timedelta(hours=24)
 
-_RESPOSTAS_FEITAS = ("creditado", "ja_creditado", "estornado", "ja_estornado")
+# `enviado`/`ja_enviado` são a resposta do envio da fatura por email — o segundo
+# é a idempotência da app a dizer «esta fatura já saiu». Fora desta lista, um
+# `ja_enviado` caía no saco do 5xx: 13 tentativas espalhadas por 24 h de uma
+# fatura que o cliente já tinha na caixa de correio.
+_RESPOSTAS_FEITAS = ("creditado", "ja_creditado", "estornado", "ja_estornado",
+                     "enviado", "ja_enviado")
 
 # As tentativas imediatas ainda a correr — ver `tentar_ja`.
 _EM_CURSO = set()
@@ -367,9 +385,45 @@ async def enviar(db, linha_id: Optional[str] = None, *, agora: Optional[datetime
                 "motivo": "credito_%s" % (estado_do_credito or "inexistente"),
             })
 
-    acao = "creditar" if linha["tipo"] == "credito" else "estornar"
+    # **`.get` e nunca `[...]`.** Um `KeyError` aqui levantava-se DEPOIS de a
+    # reserva estar feita e subia por `cron_pontos_app`, que não tem `try`
+    # nenhum: a volta do cron respondia 500 e morria, parando os pontos e os
+    # emails de todas as lojas em silêncio, de minuto a minuto. É a avaria que
+    # o comentário logo abaixo (o `except Exception` da rede) existe para
+    # impedir, e o ternário de antes nunca a podia provocar.
+    acao = _ACCAO_DO_TIPO.get(linha["tipo"])
+    if acao is None:
+        logger.error(
+            "[faturacao] pontos da app: a linha %s (%s) tem um tipo que este "
+            "servidor não conhece (%r) — fica sem efeito e a volta do cron "
+            "continua", linha["id"], linha["chave"], linha["tipo"])
+        return await _fechar(db, linha, reserva, agora, {
+            "estado": "sem_efeito", "motivo": "tipo_desconhecido"})
+    corpo_do_pedido = linha["payload"]
+    if linha["tipo"] == "fatura_email":
+        # **Sem PDF não se chama a app.** Mandá-la enviar um email sem anexo era
+        # entregar ao cliente uma fatura que não é fatura nenhuma. É falha
+        # TÉCNICA (o Vendus pode estar em baixo, a conta por configurar) e por
+        # isso a fila repete — com a espera crescente e as 24 h de sempre.
+        try:
+            pdf = await _pdf_da_fatura(linha["payload"])
+        except Exception as e:  # noqa: BLE001 — o que vier do Vendus é técnico
+            return await _falhou(db, linha, reserva, agora,
+                                 "PDF do Vendus: %s %s" % (type(e).__name__, e))
+        if not pdf:
+            return await _falhou(db, linha, reserva, agora,
+                                 "o Vendus não devolveu PDF nenhum")
+        # O corpo é construído campo a campo e não é o payload com mais uma
+        # chave: o `vendus_document_id` e o `modo` são nossos, servem para ir
+        # buscar o PDF, e a app não tem nada que os receber.
+        corpo_do_pedido = {
+            "ligacao_id": linha["payload"]["ligacao_id"],
+            "documento_id": linha["payload"]["documento_id"],
+            "numero": linha["payload"].get("numero") or "",
+            "pdf_base64": base64.b64encode(pdf).decode(),
+        }
     try:
-        resposta = await _chamar_app(acao, linha["payload"])
+        resposta = await _chamar_app(acao, corpo_do_pedido)
     except IntegracaoNaoConfigurada:
         # «Não se perde nada»: sem configuração a linha ESPERA — não falhou.
         # O molde é o do estorno à espera do crédito, aqui em cima: não gasta
@@ -460,6 +514,46 @@ async def _fechar(db, linha: Dict, reserva: str, agora: datetime, campos: Dict) 
         {"id": linha["id"], "a_enviar_ate": reserva}, {"$set": campos})
     linha.update(campos)
     return linha
+
+
+# **O tipo da linha → a rota da app, por MAPA e não por ternário.** O ternário
+# que aqui estava (`"creditar" if tipo == "credito" else "estornar"`) mandava
+# qualquer tipo NOVO para `/estornar`: a app recebia um corpo que não conhece,
+# respondia 422, e a linha fechava `recusado` sem ninguém perceber que o envio
+# nunca tinha sido tentado.
+_ACCAO_DO_TIPO = {
+    "credito": "creditar",
+    "estorno": "estornar",
+    "fatura_email": "fatura-email",
+}
+
+
+async def _pdf_da_fatura(payload: Dict) -> bytes:
+    """O PDF **certificado** desta fatura, ido buscar ao Vendus. `b""` quando
+    não há por onde o ir buscar.
+
+    **Não é um PDF nosso, e é de propósito**: o documento fiscal é o do Vendus,
+    com o ATCUD, o hash e o QR que a Autoridade Tributária conhece. É a mesma
+    ida buscar que o botão «PDF da fatura» do backoffice já faz
+    (`documentos.pdf_do_documento`).
+
+    **O `mode` é o DO DOCUMENTO** e vem gravado no payload da linha, nunca o
+    modo em que a loja está hoje: um documento emitido em `tests` pedido com
+    `mode=normal` responde 404 — o Vendus guarda os dois mundos separados
+    (medido ao vivo na conta real, ver `ClienteVendus.pdf_do_documento`). Um
+    botão que mude o modo da loja não pode partir o reenvio de faturas antigas.
+
+    Numa thread porque o cliente do Vendus é síncrono e a fila corre no event
+    loop — o mesmo `asyncio.to_thread` da emissão e do botão do backoffice."""
+    vendus_id = payload.get("vendus_document_id")
+    if not vendus_id:
+        return b""
+    conta = obter_conta()
+    if conta is None:
+        return b""
+    with ClienteVendus(conta.chave) as cliente:
+        return await asyncio.to_thread(
+            cliente.pdf_do_documento, vendus_id, payload.get("modo") or "normal")
 
 
 # --- O crédito, na emissão ------------------------------------------------------

@@ -15,6 +15,7 @@ Nenhum teste fala com a app a sério: o transporte do httpx é um
 `MockTransport`, e sem `APP_LACAI_URL` no ambiente nem sequer há endereço.
 """
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -417,6 +418,193 @@ def test_a_mesma_chave_so_entra_uma_vez_na_fila(monkeypatch):
 
     assert len(fila.linhas()) == 1
     assert enviados == [fila.linhas()[0]["id"]], "a segunda passagem não pode mandar nada"
+
+
+# --- O tipo novo: a fatura por email --------------------------------------------
+
+_PDF = b"%PDF-1.3\nfingido\n%%EOF"
+
+
+def _fatura_email(**over):
+    linha = pontos_app._linha_nova(
+        "fatura_email", "fatura_email:doc-1",
+        {"ligacao_id": "lig-1", "documento_id": "doc-1",
+         "vendus_document_id": 368200354, "numero": "FS 05P2026/1824",
+         "modo": "normal"},
+        AGORA, documento_id="doc-1", venda_id="venda-1", loja_id="loja-1",
+        primeiro_nome="Ana")
+    linha.update(over)
+    return linha
+
+
+class _VendusDoPdf:
+    """O cliente do Vendus a fingir, com o registo do que lhe foi pedido — é
+    pelo `modo` que este duplo guarda que se prova a armadilha do 404."""
+
+    pedidos = []
+
+    def __init__(self, chave):
+        self.chave = chave
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def pdf_do_documento(self, documento_id, modo):
+        _VendusDoPdf.pedidos.append((documento_id, modo))
+        return _PDF
+
+
+@pytest.fixture
+def vendus(monkeypatch):
+    _VendusDoPdf.pedidos = []
+    monkeypatch.setattr(pontos_app, "ClienteVendus", _VendusDoPdf)
+    monkeypatch.setattr(
+        pontos_app, "obter_conta",
+        lambda *a, **kw: type("Conta", (), {"chave": "chave-teste"})())
+    return _VendusDoPdf
+
+
+def test_um_tipo_NOVO_nao_pode_ir_parar_a_estornar(monkeypatch, app, vendus):
+    """O ternário que lá estava (`"creditar" if tipo == "credito" else
+    "estornar"`) mandava qualquer tipo novo para `/estornar` — a app recebia um
+    corpo que não conhece, respondia 422, e a linha fechava `recusado` sem
+    ninguém perceber que o email nunca tinha sido tentado."""
+    db, _ = _db_da_fila(_fatura_email())
+    app.responde(200, {"estado": "enviado"})
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    assert str(app.pedidos[0].url) == \
+        "http://olacai-api:8001/api/pos-integracao/fatura-email"
+
+
+def test_um_tipo_DESCONHECIDO_fecha_a_linha_em_vez_de_MATAR_o_cron(monkeypatch, app):
+    """**Um `KeyError` aqui era a pior avaria deste módulo.** `enviar` é chamado
+    por `cron_pontos_app` sem `try` nenhum: a excepção subia DEPOIS de a reserva
+    estar feita, a rota do cron respondia 500, e a volta morria — os pontos e os
+    emails de TODAS as lojas parados, em silêncio, de minuto a minuto. É a mesma
+    avaria que o comentário de `pontos_app.py:337-344` existe para impedir.
+
+    Fecha-se a linha `sem_efeito`: larga a reserva, não repete, fica escrita."""
+    db, fila = _db_da_fila(_fatura_email(tipo="marciano", chave="marciano:doc-9"))
+
+    assert _corre(pontos_app.enviar(db, agora=AGORA)) is not None
+
+    gravada = fila.linhas()[0]
+    assert (gravada["estado"], gravada["motivo"]) == ("sem_efeito", "tipo_desconhecido")
+    assert gravada["a_enviar_ate"] == pontos_app._NUNCA, "a reserva tem de ser largada"
+    assert app.pedidos == [], "um tipo que não se conhece não se manda a lado nenhum"
+
+
+def test_a_volta_do_cron_SOBREVIVE_a_uma_linha_de_tipo_desconhecido(monkeypatch, app):
+    """A prova pela porta a sério: com a linha estragada em primeiro lugar, a
+    volta tem de continuar e enviar a boa que vem a seguir."""
+    monkeypatch.setenv("CRON_KEY", "k")
+    db, fila = _db_da_fila(
+        _fatura_email(tipo="marciano", chave="marciano:doc-9"), _credito())
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+    app.responde(200, {"estado": "creditado", "pontos": 17})
+
+    assert _corre(pontos_app.cron_pontos_app(key="k"))["enviadas"] == 2
+    assert [l["estado"] for l in fila.linhas()] == ["sem_efeito", "feito"]
+
+
+@pytest.mark.parametrize("resposta", ["enviado", "ja_enviado"])
+def test_enviado_e_ja_enviado_fecham_a_linha_como_FEITA(monkeypatch, app, vendus, resposta):
+    """`ja_enviado` é a idempotência da app a responder: a fila repetiu, o email
+    já tinha saído. Fora de `_RESPOSTAS_FEITAS`, isto caía no saco do 5xx e eram
+    13 tentativas por 24 h de uma fatura já entregue."""
+    db, fila = _db_da_fila(_fatura_email())
+    app.responde(200, {"estado": resposta})
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    gravada = fila.linhas()[0]
+    assert gravada["estado"] == "feito"
+    assert gravada["a_enviar_ate"] == pontos_app._NUNCA, "a reserva tem de ser largada"
+
+
+def test_o_PDF_vai_no_corpo_e_NUNCA_fica_gravado_na_fila(monkeypatch, app, vendus):
+    """A fila não tem TTL e fica para sempre. 92 KB por fatura para sempre não —
+    daí o payload guardar só o id do documento e o PDF ser ido buscar a cada
+    tentativa."""
+    db, fila = _db_da_fila(_fatura_email())
+    app.responde(200, {"estado": "enviado"})
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    corpo = app.corpo()
+    assert corpo == {
+        "ligacao_id": "lig-1", "documento_id": "doc-1",
+        "numero": "FS 05P2026/1824",
+        "pdf_base64": base64.b64encode(_PDF).decode(),
+    }
+    assert "pdf_base64" not in fila.linhas()[0]["payload"]
+    assert "vendus_document_id" not in corpo, "o id do Vendus é nosso, não da app"
+
+
+def test_o_MODO_DO_DOCUMENTO_e_o_que_vai_buscar_o_PDF(monkeypatch, app, vendus):
+    """Um documento emitido em `tests` pedido com `mode=normal` responde 404 — o
+    Vendus guarda os dois mundos separados (medido ao vivo na conta real, ver
+    `ClienteVendus.pdf_do_documento`). O modo tem de sair do PAYLOAD da linha e
+    nunca do modo em que a loja está hoje, que muda com um botão."""
+    db, _ = _db_da_fila(_fatura_email(payload=dict(
+        _fatura_email()["payload"], modo="tests")))
+    app.responde(200, {"estado": "enviado"})
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    assert vendus.pedidos == [(368200354, "tests")]
+
+
+def test_SEM_PDF_a_app_nem_e_chamada_e_a_fila_REPETE(monkeypatch, app, vendus):
+    """Mandar a app enviar um email sem anexo era entregar ao cliente uma fatura
+    que não é fatura nenhuma. Sem PDF é falha TÉCNICA: conta a tentativa, afasta
+    a seguinte, e a volta do cron de 1 em 1 minuto tenta outra vez."""
+    monkeypatch.setattr(_VendusDoPdf, "pdf_do_documento",
+                        lambda self, documento_id, modo: b"")
+    db, fila = _db_da_fila(_fatura_email())
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    gravada = fila.linhas()[0]
+    assert (gravada["estado"], gravada["tentativas"]) == ("pendente", 1)
+    assert gravada["proxima_tentativa_em"] > _iso(AGORA)
+    assert app.pedidos == [], "a app não pode ser chamada sem o anexo"
+
+
+def test_o_VENDUS_a_REBENTAR_tambem_e_falha_tecnica_e_nao_um_500(monkeypatch, app, vendus):
+    """A ida buscar o PDF é rede: um timeout ou uma chave trocada levantam. Fora
+    de um `try`, isso subia para o cron e matava a volta de todas as lojas."""
+    def _rebenta(self, documento_id, modo):
+        raise RuntimeError("Vendus em baixo")
+
+    monkeypatch.setattr(_VendusDoPdf, "pdf_do_documento", _rebenta)
+    db, fila = _db_da_fila(_fatura_email())
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    gravada = fila.linhas()[0]
+    assert (gravada["estado"], gravada["tentativas"]) == ("pendente", 1)
+    assert "Vendus em baixo" in gravada["ultimo_erro"]
+
+
+def test_o_ENVIO_tem_25_s_e_quem_esta_ao_BALCAO_continua_com_4(monkeypatch, app, vendus):
+    """Os 4 s são para a funcionária com o cliente à frente: uma app em baixo
+    diz-se depressa e a fatura segue sem pontos. O envio do email leva o PDF em
+    base64 (~120 KB de texto) e corre em segundo plano, onde ninguém espera —
+    com 4 s cortava-se a meio e a fila repetia para sempre um envio que ia bem."""
+    db, _ = _db_da_fila(_fatura_email(), _credito())
+    app.responde(200, {"estado": "enviado"})
+    _corre(pontos_app.enviar(db, agora=AGORA))
+    app.responde(200, {"estado": "creditado", "pontos": 17})
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    assert app.pedidos[0].extensions["timeout"]["read"] == 25.0
+    assert app.pedidos[1].extensions["timeout"]["read"] == 4.0
 
 
 @pytest.mark.parametrize("resposta", ["creditado", "ja_creditado"])
