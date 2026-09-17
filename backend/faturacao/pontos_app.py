@@ -8,8 +8,11 @@ Três peças, e uma regra acima das três: **nada daqui pode impedir uma fatura
 de sair nem atrasar o EMITIR.**
 
 1. **Ler** (`POST /pos/pontos/ler`) — troca o código do QR por uma ligação na
-   app e devolve só o primeiro nome. Não grava nada na venda: é o ecrã que
-   guarda a ligação e a manda no finalizar (`fiscal.PedidoFinalizarVenda`).
+   app e devolve só o primeiro nome e um sim/não à fatura por email. Não grava
+   nada na VENDA — é o ecrã que guarda a ligação e a manda no finalizar
+   (`fiscal.PedidoFinalizarVenda`) — mas grava a preferência do email em
+   `fat_pontos_qr`, porque suprimir um documento fiscal não se decide por um
+   campo do corpo de um pedido do browser.
 2. **A fila** (`fat_pontos_app`) — uma linha por crédito (FS) e por estorno
    (NC), com chave única. Nasce DEPOIS de o documento existir e nunca antes:
    os pontos só entram com a fatura já entregue à AT.
@@ -102,6 +105,42 @@ class PedidoLerQr(BaseModel):
     codigo: str = Field(min_length=1, max_length=200)
 
 
+async def _gravar_qr_da_ligacao(db, ligacao_id: str, fatura_por_email: bool) -> bool:
+    """Grava em `fat_pontos_qr` a preferência desta leitura, e diz se ficou lá.
+
+    **É esta linha, e não o corpo do EMITIR, que decide se sai papel**
+    (`enfileirar_fatura_email`). A ligação já viaja no `dados_pagamento` do
+    finalizar (`fiscal.py:2136`) e isso é aceitável para pontos; para SUPRIMIR
+    um documento fiscal não é — um campo forjado pelo browser, ou um defeito no
+    ecrã, fazia desaparecer o documento do cliente. Esta linha é do servidor e
+    caduca sozinha em 2 horas.
+
+    **Só se escreve quando a preferência está LIGADA.** Uma preferência
+    desligada e uma linha que não existe querem dizer exactamente a mesma coisa
+    — sai papel — e a colecção fica com uma linha por fatura desmaterializada
+    em vez de uma por leitura do QR.
+
+    **Nunca levanta.** Uma escrita falhada é papel a sair, que é o lado seguro;
+    levantar era um 503 ao balcão depois de a app já ter consumido o código do
+    QR, e a funcionária a pedir ao cliente um código novo que já não servia."""
+    if not fatura_por_email:
+        return False
+    try:
+        await db[COLECOES["pontos_qr"]].insert_one({
+            "ligacao_id": ligacao_id,
+            "fatura_por_email": True,
+            # Uma DATA a sério e não a string ISO do resto do módulo: o índice
+            # TTL de `db.py` só expira por um campo do tipo Date.
+            "criada_em": datetime.now(timezone.utc),
+        })
+    except Exception as e:  # noqa: BLE001 — sem linha sai papel, que é o lado seguro
+        logger.error(
+            "[faturacao] a preferência de fatura por email da ligação %s NÃO ficou "
+            "gravada (a fatura desta venda sai em papel): %s", ligacao_id, e)
+        return False
+    return True
+
+
 @router.post("/pos/pontos/ler")
 async def ler_qr_de_pontos(
     dados: PedidoLerQr, operador: Dict = Depends(operador_atual)
@@ -161,9 +200,17 @@ async def ler_qr_de_pontos(
             "[faturacao] ler QR de pontos (venda %s): resposta inesperada da app "
             "(HTTP %s): %s", dados.venda_id, resposta.status_code, resposta.text[:200])
         raise HTTPException(status_code=503, detail=_MSG_APP_INDISPONIVEL)
+    ligacao_id = str(corpo["ligacao_id"])
     return {
-        "ligacao_id": str(corpo["ligacao_id"]),
+        "ligacao_id": ligacao_id,
         "primeiro_nome": str(corpo.get("primeiro_nome") or ""),
+        # **O que se devolve é o que ficou GRAVADO**, nunca o que a app disse.
+        # O ecrã usa isto só para desenhar o cartão do Finalizar; se ele for
+        # adulterado, o pior que acontece é o cartão mentir ao staff — mas se
+        # devolvêssemos a preferência da app sem a gravar, o cartão prometia
+        # email por cima de um talão a sair, que é a mentira que interessa.
+        "fatura_por_email": await _gravar_qr_da_ligacao(
+            db, ligacao_id, bool(corpo.get("fatura_por_email"))),
     }
 
 

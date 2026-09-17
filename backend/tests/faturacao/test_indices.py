@@ -280,17 +280,23 @@ def test_a_pergunta_do_programa_da_loja_tem_indice_e_traz_a_ORDEM():
             [("loja_id", 1), ("estado", 1), ("criado_em", 1)], {}) in INDICES
 
 
-def test_a_fila_de_impressao_apaga_se_sozinha_e_e_a_UNICA_que_o_faz():
-    """O TTL. Esta colecção guarda os BYTES de cada talão de cinco lojas; sem
-    ele crescia para sempre. Nada de fiscal se perde — o documento e o talão
-    certificado ficam em `fat_documentos`.
+def test_so_o_PAPEL_e_a_PREFERENCIA_DO_QR_se_apagam_sozinhos():
+    """Os TTL. A fila de impressão guarda os BYTES de cada talão de cinco lojas
+    e `fat_pontos_qr` guarda uma escolha que só vale naquela ida ao balcão; sem
+    eles, as duas cresciam para sempre. Nada de fiscal se perde — o documento e
+    o talão certificado ficam em `fat_documentos`, e o registo do envio fica em
+    `fat_pontos_app`, que NÃO tem TTL nenhum.
 
-    E é a única: um TTL em `fat_documentos`, `fat_vendas` ou
-    `fat_refs_fiscais` apagava registo fiscal, e a reserva de uma venda
-    emitida é o que sustenta a idempotência da emissão para sempre."""
+    E são estas duas e mais nenhuma: um TTL em `fat_documentos`, `fat_vendas`,
+    `fat_pontos_app` ou `fat_refs_fiscais` apagava registo fiscal, e a reserva
+    de uma venda emitida é o que sustenta a idempotência da emissão para
+    sempre."""
     com_ttl = [
         (coleccao, chaves)
         for (coleccao, chaves, opcoes) in INDICES
         if "expireAfterSeconds" in opcoes
     ]
-    assert com_ttl == [("fat_trabalhos_impressao", [("apagar_depois_de", 1)])]
+    assert com_ttl == [
+        ("fat_trabalhos_impressao", [("apagar_depois_de", 1)]),
+        ("fat_pontos_qr", [("criada_em", 1)]),
+    ]

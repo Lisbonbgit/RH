@@ -116,9 +116,17 @@ def _ler(monkeypatch, db, codigo="LQABCDEFGHJKLMNPQRSTUVWX", venda_id="venda-1")
         pontos_app.PedidoLerQr(venda_id=venda_id, codigo=codigo), operador=_operador()))
 
 
-def test_ler_o_qr_devolve_a_ligacao_e_so_o_primeiro_nome(monkeypatch, app):
+def test_ler_o_qr_devolve_a_ligacao_o_primeiro_nome_e_o_SIM_NAO_do_email(monkeypatch, app):
+    """A resposta tem TRÊS chaves e não duas — e o `False` aqui não é um
+    pormenor: o corpo da app não trouxe `fatura_por_email` nenhum, e o que sai
+    é o que FICOU GRAVADO em `fat_pontos_qr` (nada), nunca o que a app disse.
+
+    Sem linha não se promete email: o cartão do Finalizar desenha-se pelo valor
+    que sai daqui, e um cartão a dizer «Fatura por email» por cima de um talão
+    a sair é o ecrã a mentir à funcionária."""
     app.responde(200, {"ligacao_id": "lig-1", "primeiro_nome": "Ana"})
-    assert _ler(monkeypatch, _db_do_ler()) == {"ligacao_id": "lig-1", "primeiro_nome": "Ana"}
+    assert _ler(monkeypatch, _db_do_ler()) == {
+        "ligacao_id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False}
 
 
 def test_ler_manda_a_loja_e_o_operador_do_TOKEN_com_a_chave_no_cabecalho(monkeypatch, app):
@@ -231,6 +239,72 @@ def test_uma_venda_que_ja_nao_esta_aberta_e_409_e_a_app_nem_e_chamada(monkeypatc
         _ler(monkeypatch, _db_do_ler(vendas=[_venda_aberta(estado=estado)]))
     assert e.value.status_code == 409
     assert app.pedidos == []
+
+
+# --- A preferência de fatura por email, gravada no SERVIDOR ---------------------
+#
+# A decisão de **não imprimir um documento fiscal** não pode vir do corpo de um
+# pedido do browser. A ligação já viaja no `dados_pagamento` do finalizar
+# (`fiscal.py:2136`) e isso chega para pontos; para SUPRIMIR papel não chega —
+# um campo forjado, ou um defeito no ecrã, fazia desaparecer o documento do
+# cliente. Daí `fat_pontos_qr`: é do servidor, caduca sozinha em 2 horas, e a
+# AUSÊNCIA dela é o lado seguro (sai papel, como sempre).
+
+
+def test_ler_o_qr_GRAVA_a_preferencia_de_fatura_por_email(monkeypatch, app):
+    app.responde(200, {"ligacao_id": "lig-1", "primeiro_nome": "Ana",
+                       "fatura_por_email": True})
+    db = _db_do_ler()
+
+    assert _ler(monkeypatch, db)["fatura_por_email"] is True
+
+    [linha] = db[COLECOES["pontos_qr"]]._documentos
+    assert (linha["ligacao_id"], linha["fatura_por_email"]) == ("lig-1", True)
+    assert isinstance(linha["criada_em"], datetime), (
+        "o TTL do Mongo só expira por um campo do tipo Date — sobre uma string "
+        "não apaga nada, e não dá erro nenhum a dizê-lo")
+
+
+def test_sem_preferencia_nao_fica_linha_nenhuma_na_coleccao(monkeypatch, app):
+    """Uma preferência desligada e uma linha que não existe querem dizer a mesma
+    coisa — sai papel. Gravar `False` era uma linha por leitura do QR para nada."""
+    app.responde(200, {"ligacao_id": "lig-1", "primeiro_nome": "Ana",
+                       "fatura_por_email": False})
+    db = _db_do_ler()
+
+    assert _ler(monkeypatch, db)["fatura_por_email"] is False
+    assert db[COLECOES["pontos_qr"]]._documentos == []
+
+
+def test_uma_escrita_FALHADA_devolve_falso_em_vez_de_prometer_email(monkeypatch, app):
+    """**O ecrã nunca pode prometer o que não ficou gravado.** Sem a linha sai
+    papel (`enfileirar_fatura_email`), e um cartão a dizer «Fatura por email»
+    por cima de um talão a sair é o ecrã a mentir à funcionária.
+
+    E não pode ser 500: a app já consumiu o código do QR quando chegamos aqui, e
+    um erro faria a funcionária pedir ao cliente um código novo que já não
+    serve para nada."""
+    app.responde(200, {"ligacao_id": "lig-1", "primeiro_nome": "Ana",
+                       "fatura_por_email": True})
+    db = _db_do_ler()
+
+    class _Rebenta:
+        async def insert_one(self, doc):
+            raise RuntimeError("Atlas em baixo")
+
+    db._coleccoes[COLECOES["pontos_qr"]] = _Rebenta()
+
+    assert _ler(monkeypatch, db)["fatura_por_email"] is False
+
+
+def test_a_coleccao_do_qr_apaga_se_sozinha_ao_fim_de_DUAS_HORAS():
+    """Uma conta pode ficar aberta muito depois da leitura — daí não ser um
+    minuto — mas a preferência é daquela ida ao balcão e não da conta. Duas
+    horas é o compromisso escrito no desenho."""
+    from faturacao.db import INDICES
+    ttl = [opcoes for (coleccao, chaves, opcoes) in INDICES
+           if coleccao == "fat_pontos_qr" and chaves == [("criada_em", 1)]]
+    assert ttl == [{"expireAfterSeconds": 7200}]
 
 
 def test_a_rota_de_ler_esta_montada_no_router_do_modulo():

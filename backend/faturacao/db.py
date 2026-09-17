@@ -91,6 +91,17 @@ COLECOES = {
     # os documentos: é o registo de quem ganhou que pontos em que fatura, e a
     # 2.ª fase lê-o para o relatório de concentração.
     "pontos_app": "fat_pontos_app",
+    # **A PREFERÊNCIA DA LEITURA DO QR** (`pontos_app._gravar_qr_da_ligacao`):
+    # uma linha por QR lido em que o cliente quer a fatura por email — e só
+    # nesses. É a **fonte da verdade do papel**: a decisão de não imprimir um
+    # documento fiscal não pode vir do corpo de um pedido do browser, onde um
+    # campo forjado (ou um defeito no ecrã) fazia desaparecer o documento do
+    # cliente.
+    #
+    # Caduca sozinha em 2 horas (índice TTL abaixo) porque a escolha é daquela
+    # ida ao balcão, não da conta — e porque a falta da linha faz sair papel,
+    # que é o lado seguro de uma colecção que se apaga.
+    "pontos_qr": "fat_pontos_qr",
 }
 
 _cliente = None  # type: Optional[AsyncIOMotorClient]
@@ -386,6 +397,16 @@ INDICES = [
     # A pergunta do envio e do cron, uma vez por minuto: «que linhas pendentes
     # já chegaram à hora?».
     ("fat_pontos_app", [("estado", 1), ("proxima_tentativa_em", 1)], {}),
+    # **O TTL DA PREFERÊNCIA DO QR — 2 horas.** O campo é uma DATA a sério (e
+    # não a string ISO que o resto do módulo grava): o Mongo só sabe expirar
+    # por um campo do tipo Date, e um índice TTL sobre uma string não apaga
+    # nada — nem dá erro, o que é pior. Aqui `expireAfterSeconds` são os 7200 e
+    # não 0 porque a data gravada é a da CRIAÇÃO e não a da validade (ao
+    # contrário de `fat_trabalhos_impressao.apagar_depois_de`).
+    #
+    # Nenhum registo fiscal mora aqui: o documento fica em `fat_documentos` e o
+    # registo do envio em `fat_pontos_app`, que não tem TTL nenhum.
+    ("fat_pontos_qr", [("criada_em", 1)], {"expireAfterSeconds": 7200}),
 ]
 
 
