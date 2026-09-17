@@ -38,6 +38,7 @@ from pydantic import BaseModel, Field
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
+from .auth import gestor_atual
 from .db import COLECOES, obter_db
 from .pos_auth import operador_atual
 from .precos import CODIGO_NAO_SUJEITO
@@ -876,3 +877,67 @@ async def pontos_app_do_documento(db, documento: Dict) -> Dict:
         "fatura_email": await _linha_para_o_ecra(
             db, "fatura_email:%s" % documento.get("id")),
     }
+
+
+_MSG_SEM_LINHA_DE_EMAIL = (
+    "Esta fatura não tem envio por email — o cliente não mostrou a app na caixa, "
+    "ou pediu o talão. O documento fiscal continua bom e reimprime-se na loja."
+)
+
+
+@router.post("/documentos/{documento_id}/reenviar-email")
+async def reenviar_fatura_por_email(
+    documento_id: str, _: dict = Depends(gestor_atual)
+) -> dict:
+    """«Reenviar» — a fatura volta à fila do email. **Para QUALQUER documento
+    com linha, não só para os falhados.**
+
+    O caso frequente não é o da linha vermelha: é «não me chegou» com a linha em
+    `feito`. «Enviado» aqui quer dizer «o Resend aceitou», não «entregou» — uma
+    caixa cheia, um relay com o reencaminhamento desligado, a pasta do spam.
+    Deixar este botão só para as falhadas era não ter botão nenhum para o
+    problema que as pessoas trazem.
+
+    **Repõe SETE campos numa escrita, e só depois manda.** Repor só o estado é
+    um botão que dá uma tentativa e volta logo a `falhado`:
+
+    - `tentativas` a 0, senão a espera seguinte começa já nos 30 minutos;
+    - `primeira_falha_tecnica_em` a `None`, senão o relógio das 24 h vinha de
+      ontem e a primeira falha a seguir ao toque desistia na hora;
+    - `proxima_tentativa_em` a agora, senão a linha ficava à espera da hora que
+      a última falha lhe marcou;
+    - `a_enviar_ate` ao `_NUNCA`, senão uma reserva presa de um processo morto
+      fazia o `find_one_and_update` de `enviar` nunca mais lhe pegar;
+    - `estado` a `pendente`, que é o que o cron procura;
+    - `ultimo_erro` e `motivo` a `None`, porque são o que o detalhe do documento
+      ESCREVE no ecrã (`_CAMPOS_PARA_O_ECRA`): deixados lá, o gestor lia «A
+      tentar enviar (0 tentativas — último erro: HTTP 503: em baixo)» ou
+      «Recusado: contrato_recusado» sobre uma linha acabada de repor.
+
+    Uma escrita condicional só no fim (`find_one_and_update`) e não uma leitura
+    seguida de um `update`: duas pessoas a carregar no botão ao mesmo tempo
+    escrevem a mesma coisa, e a resposta traz a linha como ficou.
+
+    **Não cria linha nenhuma.** Uma fatura sem envio por email é uma fatura sem
+    QR lido: não há endereço para onde mandar, e inventar um destinatário era
+    mandar o documento de um cliente para a conta de outro. O que essa fatura
+    tem é o «Imprimir» do separador Faturação."""
+    db = obter_db()
+    agora = datetime.now(timezone.utc)
+    linha = await db[COLECOES["pontos_app"]].find_one_and_update(
+        {"chave": "fatura_email:%s" % documento_id},
+        {"$set": {
+            "estado": "pendente",
+            "tentativas": 0,
+            "primeira_falha_tecnica_em": None,
+            "proxima_tentativa_em": _iso(agora),
+            "a_enviar_ate": _NUNCA,
+            "ultimo_erro": None,
+            "motivo": None,
+            "atualizado_em": _iso(agora),
+        }},
+        projection={"_id": 0}, return_document=ReturnDocument.AFTER)
+    if linha is None:
+        raise HTTPException(status_code=404, detail=_MSG_SEM_LINHA_DE_EMAIL)
+    tentar_ja(db, linha["id"])
+    return {"reenviado": True, "estado": linha["estado"]}

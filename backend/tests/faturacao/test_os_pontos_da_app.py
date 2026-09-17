@@ -1423,3 +1423,85 @@ def test_o_script_do_cron_e_executavel_e_diz_como_se_instala_de_minuto_a_minuto(
         "falta o bit de execução: git update-index --chmod=+x faturacao-pontos-cron.sh")
     assert re.search(r"^#\s+\* \* \* \* \*\s+/root/RH/faturacao-pontos-cron\.sh",
                      texto, re.MULTILINE)
+
+
+# --- Reenviar a fatura por email -------------------------------------------------
+#
+# **Para QUALQUER documento, não só para os falhados.** O caso frequente é «não
+# me chegou» com a linha em `feito` — a caixa cheia, o relay da Apple com o
+# reencaminhamento desligado, o email na pasta do spam. Um botão que só
+# funcionasse sobre linhas falhadas não servia para o caso que existe.
+
+
+def _linha_reposta(fila):
+    return fila.linhas()[0]
+
+
+def test_reenviar_repoe_os_SETE_campos_e_manda_ja(monkeypatch):
+    """**Repor só o estado é um botão que dá uma tentativa e volta logo a
+    `falhado`.** Com `tentativas: 13` e `primeira_falha_tecnica_em` de ontem, a
+    primeira falha a seguir ao toque passava dos 24 h e desistia na hora; com
+    `proxima_tentativa_em` no futuro, a linha ficava pendente meia hora sem
+    ninguém perceber porquê; e com `a_enviar_ate` de uma reserva presa, o
+    `find_one_and_update` de `enviar` nunca mais lhe pegava.
+
+    E o `ultimo_erro`/`motivo` da falha anterior TÊM de sair com os outros: o
+    detalhe do documento mostra os dois (`_CAMPOS_PARA_O_ECRA`), e uma linha
+    acabada de repor a pendente a dizer «0 tentativas — último erro: HTTP 503»
+    é o ecrã a mentir ao gestor sobre o estado de agora."""
+    enviados = []
+    monkeypatch.setattr(pontos_app, "tentar_ja", lambda db, linha_id: enviados.append(linha_id))
+    db, fila = _db_da_fila(_fatura_email(
+        estado="falhado", tentativas=13,
+        primeira_falha_tecnica_em=_iso(AGORA - timedelta(hours=30)),
+        proxima_tentativa_em=_iso(AGORA + timedelta(minutes=30)),
+        a_enviar_ate=_iso(AGORA + timedelta(hours=3)),
+        ultimo_erro="HTTP 503: em baixo", motivo="contrato_recusado"))
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+
+    resposta = _corre(pontos_app.reenviar_fatura_por_email("doc-1", _={}))
+
+    linha = _linha_reposta(fila)
+    assert linha["estado"] == "pendente"
+    assert linha["tentativas"] == 0
+    assert linha["primeira_falha_tecnica_em"] is None
+    assert linha["proxima_tentativa_em"] <= pontos_app._iso(
+        datetime.now(timezone.utc))
+    assert linha["a_enviar_ate"] == pontos_app._NUNCA
+    assert linha["ultimo_erro"] is None
+    assert linha["motivo"] is None
+    assert enviados == [linha["id"]], "a tentativa imediata é DEPOIS da escrita"
+    assert resposta["reenviado"] is True
+
+
+def test_reenviar_serve_uma_linha_ja_FEITA(monkeypatch):
+    """«Não me chegou» é o caso frequente, e a linha dele está em `feito`."""
+    monkeypatch.setattr(pontos_app, "tentar_ja", lambda db, linha_id: None)
+    db, fila = _db_da_fila(_fatura_email(estado="feito"))
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+
+    _corre(pontos_app.reenviar_fatura_por_email("doc-1", _={}))
+
+    assert _linha_reposta(fila)["estado"] == "pendente"
+
+
+def test_reenviar_uma_fatura_que_nunca_teve_email_e_404(monkeypatch):
+    """Não se inventa um envio: sem QR lido não há para onde mandar, e o que
+    esta fatura tem é o botão de reimprimir na loja."""
+    monkeypatch.setattr(pontos_app, "tentar_ja", lambda db, linha_id: None)
+    db, _ = _db_da_fila(_credito())
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as e:
+        _corre(pontos_app.reenviar_fatura_por_email("doc-1", _={}))
+
+    assert e.value.status_code == 404
+
+
+def test_a_rota_de_reenviar_esta_montada_no_router_e_e_ESTE_o_endereco():
+    """O endereço afirmado é o MONTADO, com o prefixo do módulo — afirmar o
+    caminho que o código escreve nunca apanha um prefixo errado, e é isso que já
+    partiu o POS três vezes."""
+    from faturacao import router
+    caminhos = {(metodo, r.path) for r in router.routes for metodo in r.methods}
+    assert ("POST", "/api/faturacao/documentos/{documento_id}/reenviar-email") in caminhos
