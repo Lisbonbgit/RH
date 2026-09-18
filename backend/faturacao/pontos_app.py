@@ -238,9 +238,9 @@ async def ler_qr_de_pontos(
 # --- A preferência (o botão do cartão, depois de o QR já estar lido) -----------
 
 
-async def _apagar_qr_da_ligacao(db, ligacao_id: str) -> None:
+async def _apagar_qr_da_ligacao(db, ligacao_id: str) -> bool:
     """O inverso de `_gravar_qr_da_ligacao`: tira a linha de `fat_pontos_qr`
-    desta ligação.
+    desta ligação, e — a MESMA forma do irmão — diz o que FICOU lá.
 
     **É este apagamento, e não a falta de escrita, que faz o «Voltar ao papel»
     funcionar.** `_gravar_qr_da_ligacao` só grava quando a preferência está
@@ -250,8 +250,26 @@ async def _apagar_qr_da_ligacao(db, ligacao_id: str) -> None:
     `delete_many` e não `delete_one`: não há índice único sobre `ligacao_id`
     (só o TTL de `criada_em`), por isso a colecção pode ter mais do que uma
     linha para a mesma ligação, e uma que ficasse para trás era o mesmo
-    defeito outra vez."""
-    await db[COLECOES["pontos_qr"]].delete_many({"ligacao_id": ligacao_id})
+    defeito outra vez.
+
+    **Nunca levanta, e um apagamento FALHADO devolve `True`.** Levantar era um
+    «Internal Server Error» ao balcão — a frase que este módulo inteiro existe
+    para evitar — e, pior, o desfecho mais mentiroso possível: a linha do
+    `fat_pontos_qr` SOBREVIVE a uma escrita falhada, e é ela que manda saltar
+    o papel (`enfileirar_fatura_email`). A funcionária carregava em «Voltar ao
+    papel», via um erro, e o talão continuava suprimido na mesma. Devolver
+    `True` é dizer a verdade — a linha ficou lá, a fatura ainda vai por email —
+    e é o que faz o cartão do ecrã mostrar o estado a sério, para ela voltar a
+    tentar."""
+    try:
+        await db[COLECOES["pontos_qr"]].delete_many({"ligacao_id": ligacao_id})
+    except Exception as e:  # noqa: BLE001 — a linha ficou lá, e é isso que se devolve
+        logger.error(
+            "[faturacao] a preferência de fatura por email da ligação %s NÃO foi "
+            "apagada (a fatura desta venda continua a ir por email): %s",
+            ligacao_id, e)
+        return True
+    return False
 
 
 class PedidoPreferenciaPontos(BaseModel):
@@ -340,9 +358,11 @@ async def preferencia_de_pontos(
     if fatura_por_email:
         gravado = await _gravar_qr_da_ligacao(db, dados.ligacao_id, True)
     else:
-        # Apagar, e não só deixar de escrever — ver `_apagar_qr_da_ligacao`.
-        await _apagar_qr_da_ligacao(db, dados.ligacao_id)
-        gravado = False
+        # Apagar, e não só deixar de escrever — ver `_apagar_qr_da_ligacao`. E
+        # o que se devolve é o que ELE diz que ficou, nunca um `False` assumido:
+        # um apagamento falhado deixa a linha viva e a fatura continua a ir por
+        # email.
+        gravado = await _apagar_qr_da_ligacao(db, dados.ligacao_id)
     return {"fatura_por_email": gravado}
 
 

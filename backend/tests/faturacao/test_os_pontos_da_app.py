@@ -432,6 +432,39 @@ def test_a_app_em_baixo_devolve_503_e_nao_toca_no_qr(monkeypatch, app):
     assert db[COLECOES["pontos_qr"]]._documentos == [linha_antiga]
 
 
+def test_um_apagamento_FALHADO_diz_a_verdade_em_vez_de_um_500(monkeypatch, app):
+    """O gémeo de `test_uma_escrita_FALHADA_devolve_falso_em_vez_de_prometer_email`,
+    do outro lado do botão.
+
+    **É o pior desfecho possível desta rota, e não pode ser um 500.** Se o
+    apagamento falhar, a linha do `fat_pontos_qr` SOBREVIVE — e é ela que manda
+    saltar o papel (`enfileirar_fatura_email`). Uma excepção a subir daqui era a
+    funcionária a carregar em «Voltar ao papel», a ver «Internal Server Error», e
+    o talão do cliente suprimido na mesma. A resposta tem de dizer o que ficou
+    mesmo lá (`True`, ainda vai por email), para ela voltar a tentar."""
+    app.responde(200, {"estado": "gravada", "fatura_por_email": False})
+
+    class _Rebenta(_ColeccaoDoQR):
+        async def delete_many(self, filtro):
+            raise RuntimeError("Atlas em baixo")
+
+    db = _db_da_preferencia()
+    db._coleccoes[COLECOES["pontos_qr"]] = _Rebenta([_linha_do_qr()])
+
+    assert _preferencia(monkeypatch, db, valor=False) == {"fatura_por_email": True}
+
+
+def test_a_rota_da_preferencia_esta_montada_no_router_do_modulo():
+    """O gémeo de `test_a_rota_de_ler_esta_montada_no_router_do_modulo`, e pela
+    mesma razão: os testes acima chamam a FUNÇÃO, não a rota, por isso um
+    caminho errado no decorador (`/pos/pontos/preferencias`, ou o decorador em
+    falta) deixava-os todos verdes. O `test_caminhos_do_pos.py` só morde quando
+    o `lib/pos.js` da frente C estiver commitado; este morde já."""
+    from faturacao import router
+    assert any(r.path == "/api/faturacao/pos/pontos/preferencia"
+               and "POST" in r.methods for r in router.routes)
+
+
 # --- A fila e o envio ---------------------------------------------------------
 
 
