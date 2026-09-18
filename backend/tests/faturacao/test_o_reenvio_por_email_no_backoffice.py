@@ -13,6 +13,13 @@ a sério, o axios de GESTÃO fabricado à frente, e o que se afirma é o que o
 gestor LÊ (`textoVisivel`) e o que o ecrã MANDA. Os caminhos comparam-se com
 `endswith`: o `url` guardado traz o prefixo do `REACT_APP_BACKEND_URL`, que em
 Node não existe e vem literalmente como `undefined/api`.
+
+**As FRASES estão todas numa tabela** (`_ESTADOS_DO_EMAIL`), como as do gémeo
+`textoDosPontosApp` estão no `_ESTADOS_DOS_PONTOS` do mesmo ficheiro de testes:
+o `textoDoEnvioPorEmail` tem oito saídas e uma frase sem caso é uma frase que
+se pode reescrever — ou apagar — com a suite verde. A montagem do botão
+(carregar, reler) fica à parte, no cenário `falhada`: essa é interacção e não
+texto.
 """
 import json
 
@@ -22,20 +29,65 @@ from .test_a_faixa_do_modo_no_ecra import _montar_no_node
 from .test_as_fotos_no_ecra import _COMPONENTES
 from .test_o_ecra_de_documentos_no_backoffice import _FATURA, _LISTA, _LOJAS
 
-_FALHADA = dict(_FATURA, fatura_email={
-    "estado": "falhado", "tentativas": 13, "motivo": None,
-    "ultimo_erro": "HTTP 500: {\"detail\":\"envio falhou\"}",
-    "atualizado_em": "2026-09-17T18:05:00+00:00"})
+_BASE_EMAIL = {
+    "estado": "pendente", "tentativas": 0, "motivo": None, "ultimo_erro": None,
+    "atualizado_em": "2026-09-17T18:05:00+00:00",
+}
+
+# Cada saída do `textoDoEnvioPorEmail` (`FatDocumentos.js:123-152`) tem aqui a
+# sua linha, e a frase é a que o gestor LÊ — partir qualquer uma das frases no
+# ficheiro põe vermelho o caso respectivo, e só esse.
+_ESTADOS_DO_EMAIL = [
+    # **«Enviada» é o que o servidor de envio aceitou, e não o que o cliente
+    # recebeu.** É esta frase que impede o gestor de responder «foi enviada» a
+    # quem está a dizer a verdade; sem caso, bastava alguém encurtá-la.
+    ("feito", {"estado": "feito", "tentativas": 1},
+     "Enviada — aceite pelo servidor de envio (não é prova de entrega)"),
+    ("a_tentar", {"tentativas": 3, "ultimo_erro": "HTTP 503"},
+     "A tentar enviar (3 tentativas — último erro: HTTP 503)"),
+    # O singular e o «sem detalhe» na mesma linha: são os dois ramos pequenos
+    # do mesmo texto, e uma tentativa sem erro guardado é o que dá a fila logo
+    # a seguir ao primeiro empurrão.
+    ("a_tentar_uma_vez_sem_erro", {"tentativas": 1},
+     "A tentar enviar (1 tentativa — último erro: sem detalhe)"),
+    ("a_espera", {}, "À espera de ser enviada."),
+    # **Pendente com 0 tentativas mas com erro.** Há caminhos que esperam de
+    # propósito sem gastar tentativa — e o grave é a integração sem chave, em
+    # que NENHUM email está a ser enviado em lado nenhum. É a única janela que
+    # o gestor tem para esse caso; decidida a frase só por `tentativas`,
+    # aparecia a frase tranquila em todas as faturas e calava o motivo.
+    ("a_espera_com_erro", {"ultimo_erro": "integração não configurada"},
+     "À espera — último erro: integração não configurada"),
+    # O motivo sai em PORTUGUÊS, pelo mapa que já lá estava
+    # (`MOTIVOS_DOS_PONTOS`, `FatDocumentos.js:66-79`): os dois blocos ficam
+    # lado a lado no mesmo diálogo, e um em português e outro em código-máquina
+    # era o mesmo motivo escrito de duas maneiras à mesma pessoa.
+    ("recusado", {"estado": "recusado", "tentativas": 1, "motivo": "ligacao_ja_usada"},
+     "Recusado pela app: aquele QR já deu pontos noutra fatura"),
+    ("sem_efeito", {"estado": "sem_efeito"},
+     "Sem efeito — esta fatura não chegou a ir por email."),
+    # **O cliente ficou sem documento nenhum** — o talão não saiu (decisão do
+    # dono) e o email também não. A única forma de alguém dar por isso é a
+    # frase dizê-lo, com o erro ao lado: sem o erro, o gestor não sabe se foi o
+    # endereço, se foi a app ou se foi o envio.
+    ("falhado", {"estado": "falhado", "tentativas": 13,
+                 "ultimo_erro": "HTTP 500: {\"detail\":\"envio falhou\"}"},
+     "Falhou ao fim de 24 h — último erro: HTTP 500: {\"detail\":\"envio falhou\"}. "
+     "O cliente ficou sem documento: reenvie, ou mande reimprimir na loja."),
+    # Um estado que este ecrã ainda não conheça aparece em CRU, nunca em
+    # silêncio — é a regra do gémeo dos pontos.
+    ("estado_desconhecido", {"estado": "coisa_que_ainda_nao_existe"},
+     "Estado desconhecido: coisa_que_ainda_nao_existe"),
+]
+
+_FALHADA = dict(_FATURA, fatura_email=dict(
+    _BASE_EMAIL, estado="falhado", tentativas=13,
+    ultimo_erro="HTTP 500: {\"detail\":\"envio falhou\"}"))
 # Como a linha fica DEPOIS de o botão a repor: pendente, zero tentativas, sem
 # erro nenhum — é o que prova que o ecrã releu o documento em vez de desenhar
 # o que tinha.
-_REPOSTA = dict(_FATURA, fatura_email={
-    "estado": "pendente", "tentativas": 0, "motivo": None, "ultimo_erro": None,
-    "atualizado_em": "2026-09-17T18:30:00+00:00"})
-_RECUSADA = dict(_FATURA, fatura_email={
-    "estado": "recusado", "tentativas": 1, "motivo": "ligacao_ja_usada",
-    "ultimo_erro": None, "atualizado_em": "2026-09-17T18:05:00+00:00"})
-_SEM_EMAIL = dict(_FATURA, fatura_email=None)
+_REPOSTA = dict(_FATURA, fatura_email=dict(
+    _BASE_EMAIL, atualizado_em="2026-09-17T18:30:00+00:00"))
 
 
 def _cenario(detalhe_inicial):
@@ -111,39 +163,69 @@ def falhada(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
-def recusada(tmp_path_factory):
+def estados(tmp_path_factory):
+    """O MESMO documento aberto uma vez por estado, com a resposta do servidor
+    trocada entre cliques — o molde do `pontos` do
+    `test_o_ecra_de_documentos_no_backoffice.py`. O `sem_email` fica em último
+    de propósito: prova que o bloco DESAPARECE, e não só que nunca apareceu."""
+    casos = {
+        nome: dict(_FATURA, fatura_email=dict(_BASE_EMAIL, **mudancas))
+        for nome, mudancas, _frase in _ESTADOS_DO_EMAIL
+    }
+    casos["sem_email"] = dict(_FATURA, fatura_email=None)
+    cenario = "\n".join([
+        _COMPONENTES,
+        "const ADMIN = path.join(RAIZ, 'pages', 'admin', 'faturacao');",
+        "const FatDocumentos = carregar(path.join(ADMIN, 'FatDocumentos.js')).default;",
+        "const CASOS = %s;" % json.dumps(casos, ensure_ascii=False),
+        "RESPOSTAS_GESTAO['/faturacao/lojas'] = () => ({ data: %s });"
+        % json.dumps(_LOJAS, ensure_ascii=False),
+        "RESPOSTAS_GESTAO['/faturacao/documentos'] = () => ({ data: %s });"
+        % json.dumps(_LISTA, ensure_ascii=False),
+        "const alvo = document.getElementById('raiz');",
+        "const raiz = createRoot(alvo);",
+        "await act(async () => { raiz.render(React.createElement(FatDocumentos)); });",
+        "await act(async () => {});",
+        "await act(async () => {});",
+        "const linha = alvo.querySelector('[data-testid=\"documento-d1\"]');",
+        "if (!linha) throw new Error('sem linha da fatura: ' + textoVisivel(alvo).slice(0, 400));",
+        "const saida = {};",
+        "for (const [nome, documento] of Object.entries(CASOS)) {",
+        "  RESPOSTAS_GESTAO['/faturacao/documentos/d1'] = () => ({ data: documento });",
+        "  await act(async () => { linha.click(); });",
+        "  await act(async () => {});",
+        "  const bloco = alvo.querySelector('[data-testid=\"documento-fatura-email\"]');",
+        "  saida[nome] = { aberta: textoVisivel(alvo).includes('Itens'),",
+        "    email: bloco ? textoVisivel(bloco) : null,",
+        "    tem_botao: !!alvo.querySelector('[data-testid=\"documento-reenviar-email\"]') };",
+        "}",
+        "process.stdout.write(JSON.stringify(saida));",
+    ])
     return _montar_no_node(
-        _cenario(_RECUSADA), tmp_path_factory.mktemp("reenvio-recusada"),
-        "reenvio-recusada.js")
+        "(async () => {\n%s\n})().catch((e) => {"
+        " process.stderr.write(String(e && e.stack || e)); process.exit(1); });"
+        % cenario, tmp_path_factory.mktemp("estados-do-email"),
+        "montar-estados-do-email.js")
 
 
-@pytest.fixture(scope="module")
-def sem_email(tmp_path_factory):
-    return _montar_no_node(
-        _cenario(_SEM_EMAIL), tmp_path_factory.mktemp("reenvio-sem"), "reenvio-sem.js")
+@pytest.mark.parametrize("nome,frase", [(n, f) for n, _m, f in _ESTADOS_DO_EMAIL])
+def test_o_detalhe_diz_o_que_aconteceu_ao_EMAIL_desta_fatura(estados, nome, frase):
+    caso = estados[nome]
+    assert caso["aberta"], "o detalhe do documento não abriu"
+    assert caso["email"] is not None, "o detalhe não mostra a linha do email"
+    assert "Fatura por email" in caso["email"], caso["email"]
+    assert frase in caso["email"], caso["email"]
+    # O botão reenvia QUALQUER documento com linha de email, e não só os
+    # falhados: o caso frequente é a linha estar em `feito` e o cliente não ter
+    # nada na caixa.
+    assert caso["tem_botao"] is True, caso
 
 
-def test_o_detalhe_diz_que_o_envio_FALHOU_e_o_ultimo_erro(falhada):
-    """«Falhou ao fim de 24 h» sem o erro é uma notícia sem saída: o gestor
-    tem de poder dizer à loja se foi o endereço, se foi a app ou se foi o
-    envio."""
-    assert falhada["aberto"] is not None, "o detalhe não mostra a linha do email"
-    assert "Fatura por email" in falhada["aberto"], falhada["aberto"]
-    assert "Falhou ao fim de 24 h" in falhada["aberto"], falhada["aberto"]
-    assert "envio falhou" in falhada["aberto"], falhada["aberto"]
-    assert "ficou sem documento" in falhada["aberto"], falhada["aberto"]
-
-
-def test_um_motivo_de_recusa_aparece_em_PORTUGUES_como_o_dos_pontos(recusada):
-    """Os dois blocos ficam lado a lado no mesmo diálogo, e a fila é a mesma
-    (`fat_pontos_app`): um em português e outro em código-máquina era o mesmo
-    motivo escrito de duas maneiras à mesma pessoa. O mapa
-    `MOTIVOS_DOS_PONTOS` já existe no mesmo ficheiro (`FatDocumentos.js:66-79`),
-    é o que o `textoDosPontosApp` (`:81-110`) usa, e a função nova entra logo a
-    seguir a ele — não se escreve uma segunda tabela."""
-    assert "aquele QR já deu pontos noutra fatura" in recusada["aberto"], \
-        recusada["aberto"]
-    assert "ligacao_ja_usada" not in recusada["aberto"], recusada["aberto"]
+def test_o_motivo_da_recusa_nunca_aparece_em_CRU(estados):
+    """A frase já é afirmada em português na tabela; o que este guarda junta é
+    que o código-máquina não vem ATRÁS dela entre parênteses."""
+    assert "ligacao_ja_usada" not in estados["recusado"]["email"], \
+        estados["recusado"]["email"]
 
 
 def test_o_botao_de_reenviar_esta_ao_lado_dos_dois_que_ja_la_estavam(falhada):
@@ -166,9 +248,10 @@ def test_reenviar_pede_ao_servidor_e_RELE_o_documento(falhada):
     assert "Falhou" not in falhada["depois"], falhada["depois"]
 
 
-def test_um_documento_que_NAO_ia_por_email_nao_mostra_bloco_nem_botao(sem_email):
+def test_um_documento_que_NAO_ia_por_email_nao_mostra_bloco_nem_botao(estados):
     """A esmagadora maioria dos documentos. Um bloco vazio ou um «—» lia-se
     como «o email perdeu-se», e o botão convidava a mandar por email uma
     fatura de um cliente que nunca deu email nenhum."""
-    assert sem_email["aberto"] is None
-    assert sem_email["tem_botao"] is False
+    assert estados["sem_email"]["aberta"]
+    assert estados["sem_email"]["email"] is None
+    assert estados["sem_email"]["tem_botao"] is False
