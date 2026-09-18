@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   getDocumentos, getDocumento, getLojas, getDocumentoPdf, reimprimirDocumento,
-  detalhesErro,
+  reenviarEmailDocumento, detalhesErro,
 } from '../../../lib/faturacao';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Button } from '../../../components/ui/button';
@@ -17,7 +17,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../../components/ui/table';
 import {
   FileText, Search, Loader2, ChevronLeft, ChevronRight, AlertTriangle,
-  Printer, User, Store, Receipt, CheckCircle2, Ban, Download,
+  Printer, User, Store, Receipt, CheckCircle2, Ban, Download, Mail,
 } from 'lucide-react';
 import PageHeader from '../../../components/PageHeader';
 import { toast } from 'sonner';
@@ -109,6 +109,49 @@ const textoDosPontosApp = (p) => {
   return `Estado desconhecido: ${p.estado}`;
 };
 
+// **O que aconteceu ao email desta fatura.** O servidor manda `fatura_email` —
+// a linha `fatura_email:<id>` da mesma fila `fat_pontos_app`. `null` quando
+// esta fatura não ia por email (a esmagadora maioria: sem QR não há email), e
+// aí não se desenha nada.
+//
+// **«Enviada» quer dizer «o servidor de envio aceitou», e não «o cliente
+// recebeu».** Não há recetor de devoluções em lado nenhum: uma caixa cheia, ou
+// um relay com o reencaminhamento desligado, fecha a linha como feita na mesma.
+// A frase diz o que se sabe e nada mais — é isso que impede o gestor de
+// responder «foi enviada» a quem está a dizer a verdade.
+const textoDoEnvioPorEmail = (e) => {
+  if (e.estado === 'feito') {
+    return 'Enviada — aceite pelo servidor de envio (não é prova de entrega)';
+  }
+  if (e.estado === 'pendente') {
+    if (e.tentativas > 0) {
+      return `A tentar enviar (${e.tentativas} ${e.tentativas === 1 ? 'tentativa' : 'tentativas'} — último erro: ${e.ultimo_erro || 'sem detalhe'})`;
+    }
+    // Pendente com 0 tentativas não quer dizer «acabou de sair»: há caminhos
+    // que esperam de propósito sem gastar tentativa (a integração sem chave é
+    // o grave — nada está a ser enviado em lado nenhum).
+    if (e.ultimo_erro) return `À espera — último erro: ${e.ultimo_erro}`;
+    return 'À espera de ser enviada.';
+  }
+  if (e.estado === 'recusado') {
+    // **O mesmo mapa dos pontos**, e nunca uma segunda tabela: a fila é a
+    // mesma e os motivos são os mesmos. Os dois blocos ficam lado a lado neste
+    // diálogo — um em português e outro em cru era o mesmo motivo escrito de
+    // duas maneiras à mesma pessoa. Motivos novos, só do email, acrescentam-se
+    // ao MOTIVOS_DOS_PONTOS aqui em cima.
+    return `Recusado pela app: ${MOTIVOS_DOS_PONTOS[e.motivo] || e.motivo || 'sem motivo'}`;
+  }
+  if (e.estado === 'sem_efeito') {
+    return 'Sem efeito — esta fatura não chegou a ir por email.';
+  }
+  if (e.estado === 'falhado') {
+    // **O cliente ficou sem documento nenhum** — o talão não saiu. É o risco
+    // aceite pelo dono, e a única forma de alguém dar por ele é estar escrito.
+    return `Falhou ao fim de 24 h${e.ultimo_erro ? ` — último erro: ${e.ultimo_erro}` : ''}. O cliente ficou sem documento: reenvie, ou mande reimprimir na loja.`;
+  }
+  return `Estado desconhecido: ${e.estado}`;
+};
+
 export default function FatDocumentos() {
   const [filtros, setFiltros] = useState({
     de: primeiroDoMes(), ate: hoje(), loja_id: 'todas', tipo: 'todos', q: '',
@@ -121,6 +164,7 @@ export default function FatDocumentos() {
   const [aAbrir, setAAbrir] = useState(false);
   const [aReimprimir, setAReimprimir] = useState(false);
   const [aPdf, setAPdf] = useState(false);
+  const [aReenviar, setAReenviar] = useState(false);
 
   useEffect(() => {
     getLojas().then(({ data }) => setLojas(data || [])).catch(() => {});
@@ -196,6 +240,26 @@ export default function FatDocumentos() {
       toast.error(detalhesErro(error, 'Não foi possível obter o PDF.').mensagem);
     } finally {
       setAPdf(false);
+    }
+  };
+
+  const reenviar = async () => {
+    if (!aberto || aReenviar) return;
+    setAReenviar(true);
+    try {
+      await reenviarEmailDocumento(aberto.id);
+      // O que se promete é o que se sabe: a linha voltou à FILA. Dizer
+      // «enviada» daqui era afirmar o que só o envio dirá — e este botão
+      // existe precisamente porque «enviada» já tinha sido dito uma vez.
+      toast.success('Fatura outra vez na fila do email — sai no minuto seguinte.');
+      // E relê-se o documento: o estado que fica no ecrã é o que o servidor
+      // gravou, e não o que este lado gostava que tivesse acontecido.
+      const { data } = await getDocumento(aberto.id);
+      setAberto(data);
+    } catch (error) {
+      toast.error(detalhesErro(error, 'Não foi possível reenviar esta fatura.').mensagem);
+    } finally {
+      setAReenviar(false);
     }
   };
 
@@ -514,6 +578,20 @@ export default function FatDocumentos() {
                 </div>
               )}
 
+              {aberto.fatura_email && (
+                <div className="rounded-xl border p-3 text-sm" data-testid="documento-fatura-email">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
+                    Fatura por email
+                  </p>
+                  <p className="font-medium">{textoDoEnvioPorEmail(aberto.fatura_email)}</p>
+                  {aberto.fatura_email.atualizado_em && (
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Atualizado {formatarData(aberto.fatura_email.atualizado_em)}
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* Quem emitiu, onde e quando — as três perguntas que a fatura
                   não responde sozinha e as primeiras que se fazem sobre um
                   documento que não se reconhece. */}
@@ -573,6 +651,25 @@ export default function FatDocumentos() {
                     : <Download className="h-4 w-4 mr-2" />}
                   PDF da fatura
                 </Button>
+                {/* Só aparece quando esta fatura tem linha de email: um botão
+                    para mandar por email uma fatura de um cliente que nunca
+                    deu email nenhum não tem para onde a mandar. Sai do ecrã em
+                    vez de ficar cinzento, pela regra do «Reimprimir» aqui ao
+                    lado. */}
+                {aberto.fatura_email && (
+                  <Button
+                    variant="outline"
+                    onClick={reenviar}
+                    disabled={aReenviar}
+                    title="Volta a pôr esta fatura na fila do email, para o endereço da conta do cliente"
+                    data-testid="documento-reenviar-email"
+                  >
+                    {aReenviar
+                      ? <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      : <Mail className="h-4 w-4 mr-2" />}
+                    Reenviar por email
+                  </Button>
+                )}
               </div>
               {!aberto.tem_talao && (
                 <p className="text-xs text-muted-foreground">
