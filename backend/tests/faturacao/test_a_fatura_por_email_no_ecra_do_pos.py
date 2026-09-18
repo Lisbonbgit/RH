@@ -309,12 +309,20 @@ def test_uma_resposta_TARDIA_nao_ressuscita_o_cliente_ja_removido(tardia):
 
 # --- Depois do EMITIR ---------------------------------------------------------
 #
-# Quatro montagens, porque são quatro regras diferentes e cada uma tem de poder
-# falhar sozinha. TRÊS são as condições do servidor que este lado consegue
-# aplicar — a preferência, o `modo` e o `vendus_document_id` —, e a quarta é a
-# decisão do dono sobre o NIF, provada pelo avesso: a spec REVOGOU essa regra, e
-# o teste existe para que repô-la fique vermelho. As respostas do `finalizar`
-# são a do `_no_finalizar`, com o que é preciso trocado.
+# **A frase vem do SERVIDOR, e este ecrã não a volta a calcular.** A decisão são
+# cinco condições (`pontos_app.enfileirar_fatura_email`) e o browser só vê três:
+# a linha do `fat_pontos_qr` — que é quem manda, e caduca ao fim de 2 h — e a
+# escrita na fila nunca chegam cá. O `finalizar` já a tomou nesta mesma chamada
+# e devolve-a em `documento.fatura_por_email` (`fiscal.py`); por isso cada
+# montagem daqui para baixo troca ESSE campo na resposta do `finalizar`, que é
+# o que o servidor a sério faria.
+#
+# Cinco montagens, porque são cinco regras diferentes e cada uma tem de poder
+# falhar sozinha: a resposta a dizer email, a mesma com NIF escrito (a decisão
+# do dono, provada pelo avesso — a spec REVOGOU a regra do NIF, e o teste existe
+# para que repô-la fique vermelho), as duas em que o servidor manda papel
+# (`tests` e sem `vendus_document_id`), e a DIVERGÊNCIA — a gaveta a dizer email
+# e o servidor a dizer papel, que é o caso que este lado não tinha como saber.
 
 _FRASE_EMAIL = "Fatura vai por email — não é preciso esperar pelo papel."
 _FRASE_PAPEL = "assim que o agente de impressão da loja existir"
@@ -323,6 +331,18 @@ _LIDO_COM_EMAIL = "\n".join([
     "RESPOSTAS_POS['POST /pos/pontos/ler'] = () => ({ data: {",
     "  ligacao_id: 'lig-1', primeiro_nome: 'Ana', fatura_por_email: true } });",
 ])
+
+
+def _finalizar_responde(**documento):
+    """A resposta do `finalizar` com o documento trocado — é ela que o ecrã lê.
+
+    Escrita a partir do `_EMITIDA` partilhado e nunca por cima dele: o mesmo
+    dicionário serve as montagens dos outros ficheiros (uma venda sem QR
+    nenhum, por exemplo), e um `fatura_por_email: true` lá dentro punha a frase
+    do email em ecrãs que nunca leram QR nenhum."""
+    emitida = dict(_EMITIDA, documento=dict(_EMITIDA["documento"], **documento))
+    return ("RESPOSTAS_POS['POST /pos/venda/v-1/finalizar'] = () => ({ data: %s });"
+            % json.dumps(emitida, ensure_ascii=False))
 
 
 def _emitiu(extra, tmp_path_factory, nome):
@@ -339,7 +359,8 @@ def _emitiu(extra, tmp_path_factory, nome):
 
 @pytest.fixture(scope="module")
 def emitida_por_email(tmp_path_factory):
-    return _emitiu("", tmp_path_factory, "emitida-email")
+    return _emitiu(_finalizar_responde(fatura_por_email=True),
+                   tmp_path_factory, "emitida-email")
 
 
 @pytest.fixture(scope="module")
@@ -352,22 +373,23 @@ def emitida_com_nif(tmp_path_factory):
     volta na resposta do EMITIR (`cliente_nif`, `fiscal.py:2308`). Se alguém
     voltar a pôr o NIF a decidir — por uma delas ou pela outra —, é aqui que
     fica vermelho, e é por isso que não são duas montagens."""
+    com_nif = dict(_EMITIDA, cliente_nif="517542510",
+                   documento=dict(_EMITIDA["documento"], fatura_por_email=True))
     return _emitiu("\n".join([
         "lib.guardarNifDaConta('v-1', '517542510');",
         "RESPOSTAS_POS['POST /pos/venda/v-1/finalizar'] = () => ({ data: %s });"
-        % json.dumps(dict(_EMITIDA, cliente_nif="517542510"), ensure_ascii=False),
+        % json.dumps(com_nif, ensure_ascii=False),
     ]), tmp_path_factory, "emitida-com-nif")
 
 
 @pytest.fixture(scope="module")
 def emitida_em_testes(tmp_path_factory):
     """Modo `tests`: papel e nenhum email — o documento não vale nada e não há
-    nada para mandar a ninguém."""
-    em_testes = dict(_EMITIDA, documento=dict(_EMITIDA["documento"], modo="tests"))
-    return _emitiu(
-        "RESPOSTAS_POS['POST /pos/venda/v-1/finalizar'] = () => ({ data: %s });"
-        % json.dumps(em_testes, ensure_ascii=False),
-        tmp_path_factory, "emitida-testes")
+    nada para mandar a ninguém. É o servidor que o diz (`fatura_por_email:
+    false`), e a faixa do modo continua a ser desenhada pelo `modo` do
+    documento."""
+    return _emitiu(_finalizar_responde(modo="tests", fatura_por_email=False),
+                   tmp_path_factory, "emitida-testes")
 
 
 @pytest.fixture(scope="module")
@@ -382,15 +404,26 @@ def emitida_sem_id_do_vendus(tmp_path_factory):
     (`documentos.py:894`) —, por isso `enfileirar_fatura_email` devolve `False`
     (plano B) e o talão sai pela `enfileirar_venda_emitida`.
 
-    O ecrã VÊ este campo: vem no `_resposta_documento` (`fiscal.py:1988-1998`) e
-    o próprio `PosFinalizar.js:961` já o desenha. Prometer email aqui mandava a
-    operadora dar o cliente por servido, e ele saía sem talão e sem email."""
-    sem_id = dict(_EMITIDA,
-                  documento=dict(_EMITIDA["documento"], vendus_document_id=None))
+    O ecrã já não repete esta condição — lê a resposta do servidor, que neste
+    caso diz `false`. Prometer email aqui mandava a operadora dar o cliente por
+    servido, e ele saía sem talão e sem email."""
     return _emitiu(
-        "RESPOSTAS_POS['POST /pos/venda/v-1/finalizar'] = () => ({ data: %s });"
-        % json.dumps(sem_id, ensure_ascii=False),
+        _finalizar_responde(vendus_document_id=None, fatura_por_email=False),
         tmp_path_factory, "emitida-sem-id")
+
+
+@pytest.fixture(scope="module")
+def emitida_com_o_servidor_a_dizer_PAPEL(tmp_path_factory):
+    """**A DIVERGÊNCIA, e é o caso que este lado não tem como saber.**
+
+    Tudo o que o browser vê diz email: o QR foi lido com a preferência ligada, o
+    documento é `normal` e tem `vendus_document_id`. E o servidor responde
+    `fatura_por_email: false` — a linha do `fat_pontos_qr` caducou (TTL de 2 h),
+    ou a escrita na fila levantou. Ele põe o talão na fila, como deve; um ecrã a
+    refazer a conta escrevia «não é preciso esperar pelo papel», o papel saía na
+    impressora, ninguém o entregava, e o cliente ia-se embora sem nada."""
+    return _emitiu(_finalizar_responde(fatura_por_email=False),
+                   tmp_path_factory, "emitida-divergencia")
 
 
 def test_com_a_preferencia_ligada_o_ecra_do_documento_diz_que_vai_por_email(emitida_por_email):
@@ -439,9 +472,26 @@ def test_em_modo_de_TESTES_o_ecra_continua_a_falar_de_PAPEL(emitida_em_testes):
 
 
 def test_um_documento_SEM_id_do_Vendus_fala_de_PAPEL(emitida_sem_id_do_vendus):
-    """**A condição que faltava ao ecrã.** Com a preferência ligada e o modo
-    `normal`, mas sem id do Vendus, o servidor põe o talão na fila — e um ecrã
-    a dizer «não é preciso esperar pelo papel» deixava o cliente sem nada."""
+    """Com a preferência ligada e o modo `normal`, mas sem id do Vendus, o
+    servidor põe o talão na fila — e um ecrã a dizer «não é preciso esperar
+    pelo papel» deixava o cliente sem nada."""
     ecra = emitida_sem_id_do_vendus["emitido"]
     assert _FRASE_PAPEL in ecra, ecra[:800]
     assert "por email" not in ecra, ecra[:800]
+
+
+def test_quando_o_SERVIDOR_diz_papel_o_ecra_diz_papel(emitida_com_o_servidor_a_dizer_PAPEL):
+    """**O caso que só existe quando as duas metades discordam.**
+
+    A gaveta diz email, o documento é `normal` e tem id do Vendus — tudo o que
+    este lado consegue ver aponta para email. O servidor é que sabe o resto (a
+    linha do `fat_pontos_qr` caducada, a escrita na fila falhada) e responde
+    `false`: o talão VAI sair na impressora. O ecrã tem de dizer isso, senão
+    ninguém o entrega e não fica registo nenhum de um cliente que se foi embora
+    sem documento.
+
+    Refazer a conta no browser punha aqui a frase do email — é essa a mutação
+    que este teste existe para apanhar."""
+    ecra = emitida_com_o_servidor_a_dizer_PAPEL["emitido"]
+    assert _FRASE_PAPEL in ecra, ecra[:800]
+    assert _FRASE_EMAIL not in ecra, ecra[:800]

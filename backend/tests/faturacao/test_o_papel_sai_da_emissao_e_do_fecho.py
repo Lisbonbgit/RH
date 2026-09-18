@@ -212,6 +212,7 @@ def test_1_SEM_LIGACAO_sai_papel_e_nao_ha_linha_de_email_nenhuma(monkeypatch, en
     assert resultado["estado"] == "emitida"
     assert len(_fila(db)) == 1
     assert _emails(db) == []
+    assert resultado["documento"]["fatura_por_email"] is False
 
 
 def test_2_COM_A_PREFERENCIA_LIGADA_nao_sai_papel_e_fica_a_linha_do_email(monkeypatch, envios):
@@ -224,6 +225,11 @@ def test_2_COM_A_PREFERENCIA_LIGADA_nao_sai_papel_e_fica_a_linha_do_email(monkey
 
     assert resultado["estado"] == "emitida"
     assert _fila(db) == [], "com a fatura a ir por email, o talão não se imprime"
+    # **A decisão vai na resposta, porque é ela que o ecrã lê.** Refeita no
+    # browser, a frase «não é preciso esperar pelo papel» aparecia por cima de
+    # um talão que saiu mesmo — e nenhum dos casos abaixo se distinguia deste
+    # sem esta chave.
+    assert resultado["documento"]["fatura_por_email"] is True
     documento = db._coleccoes[COLECOES["documentos"]]._documentos[0]
     [linha] = _emails(db)
     assert linha["chave"] == "fatura_email:%s" % documento["id"]
@@ -273,6 +279,8 @@ def test_3_com_a_FILA_DO_EMAIL_a_rebentar_o_PAPEL_SAI_a_mesma(monkeypatch, envio
 
     assert resultado["estado"] == "emitida"
     assert len(_fila(db)) == 1, "sem linha de email, o papel tem de sair"
+    assert resultado["documento"]["fatura_por_email"] is False, (
+        "a fila rebentou e o papel saiu: o ecrã TEM de falar de papel")
 
 
 def test_4_em_MODO_TESTS_sai_papel_e_nao_se_manda_email_nenhum(monkeypatch, envios):
@@ -286,6 +294,7 @@ def test_4_em_MODO_TESTS_sai_papel_e_nao_se_manda_email_nenhum(monkeypatch, envi
     assert resultado["estado"] == "emitida"
     assert len(_fila(db)) == 1
     assert _emails(db) == []
+    assert resultado["documento"]["fatura_por_email"] is False
 
 
 def test_uma_fatura_SEM_ID_DO_VENDUS_sai_em_PAPEL(monkeypatch, envios):
@@ -310,6 +319,7 @@ def test_uma_fatura_SEM_ID_DO_VENDUS_sai_em_PAPEL(monkeypatch, envios):
     assert resultado["estado"] == "emitida"
     assert len(_fila(db)) == 1, "sem id do Vendus não há PDF — o papel tem de sair"
     assert _emails(db) == []
+    assert resultado["documento"]["fatura_por_email"] is False
 
 
 def test_com_NIF_ESCRITO_a_fatura_vai_A_MESMA_por_email(monkeypatch, envios):

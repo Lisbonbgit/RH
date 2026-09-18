@@ -2293,6 +2293,12 @@ async def finalizar(
     # `_verificar_vendas_dinheiro` aqui em cima: mantém o núcleo fiscal a não
     # depender, à importação, de um módulo cuja avaria não pode travar uma
     # venda.
+    # **A resposta ao ecrã sai DAQUI, e não de uma segunda conta no browser.**
+    # `False` até se saber o contrário: se o bloco abaixo rebentar antes de
+    # decidir, o talão está na fila (ou perdeu-se, e fica escrito no log) e o
+    # ecrã tem de falar de PAPEL. Prometer email num caso destes deixava o
+    # cliente sem nada — ver o `fatura_por_email` da resposta, no fim.
+    fatura_por_email = False
     try:
         from .impressao import enfileirar_venda_emitida
         from .pontos_app import enfileirar_fatura_email
@@ -2310,7 +2316,9 @@ async def finalizar(
         # A venda é a `venda_actualizada` e nunca o corpo do pedido: quem perde
         # a corrida da reserva (`_esperar_documento_do_vencedor`) também chega
         # aqui, e só a venda gravada tem a ligação que valeu.
-        if not await enfileirar_fatura_email(db, venda_actualizada or venda, documento):
+        fatura_por_email = await enfileirar_fatura_email(
+            db, venda_actualizada or venda, documento)
+        if not fatura_por_email:
             await enfileirar_venda_emitida(db, venda_actualizada or venda, documento)
     except Exception as e:  # noqa: BLE001 — perde-se o papel, nunca o registo
         logger.error(
@@ -2323,6 +2331,20 @@ async def finalizar(
     resposta["pagamentos"] = venda_actualizada.get("pagamentos", [])
     resposta["cliente_nif"] = venda_actualizada.get("cliente_nif")
     resposta["documento"] = _resposta_documento(documento)
+    # **A decisão que este servidor ACABOU de tomar, dita ao ecrã.** São CINCO
+    # condições (`pontos_app.enfileirar_fatura_email`), e o browser só consegue
+    # ver três: a linha do `fat_pontos_qr` — que é quem manda, e pode ter
+    # caducado pelo TTL de 2 h — e a escrita na fila ficam de fora. Refeita no
+    # browser, a frase «Fatura vai por email — não é preciso esperar pelo
+    # papel» aparecia por cima de um talão que saiu na impressora: ninguém o
+    # entregava, o cliente ia-se embora sem nada, e não ficava registo nenhum.
+    #
+    # Só aqui e não dentro do `_resposta_documento`: a reconciliação
+    # (`reconciliar_pela_ext_ref`) devolve o mesmo bloco e não enfileira email
+    # nenhum — mandar `False` de lá era responder a uma pergunta que aquela
+    # rota não faz, e a regra do `_venda_publica` diz que a chave ausente é
+    # «não sei», nunca «não».
+    resposta["documento"]["fatura_por_email"] = fatura_por_email
     return resposta
 
 

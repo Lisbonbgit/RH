@@ -582,8 +582,12 @@ function CartaoCliente({ nifTexto, onNifTexto, desativado }) {
 // sai é o servidor, pelo `fat_pontos_qr` que ele gravou ao ler o QR. Uma
 // gaveta adulterada faz o cartão mentir à operadora — não faz desaparecer o
 // documento do cliente.
+//
+// **É o único sítio onde a pergunta se faz deste lado**, e é por não haver cá
+// resposta nenhuma do servidor: antes do EMITIR ainda não há documento. Depois
+// do EMITIR quem responde é o servidor (ver `DocumentoEmitido`).
 function CartaoPontos({ ligacao, onLer, onRemover, onPreferencia, aMudarPreferencia, desativado }) {
-  const porEmail = !!(ligacao && ligacao.fatura_por_email);
+  const porEmail = aFaturaVaiPorEmail({ ligacao });
   return (
     <Cartao titulo="Pontos L'Açaí" icone={Gift}>
       {ligacao ? (
@@ -1423,13 +1427,24 @@ export default function PosFinalizar({
         recuperado={documentoRecuperado}
         onVoltar={onVoltar}
         rotuloVoltar={parte ? 'Voltar às partes' : null}
-        // **O NIF não entra aqui, e é de propósito** (decisão do dono,
-        // 2026-09-17): o seletor do cliente é o único que manda. Com a
-        // preferência ligada a fatura vai por email com NIF e sem NIF — o NIF
-        // vai escrito nela —, para o email da conta de quem mostrou o QR. Nem
-        // `venda?.cliente_nif`, nem `nifTexto`: se algum deles voltar a esta
-        // chamada, o `test_o_NIF_NAO_muda_a_frase...` fica vermelho.
-        porEmail={aFaturaVaiPorEmail({ ligacao, documento })}
+        // **A resposta do SERVIDOR, e não uma segunda conta aqui.** Ele já
+        // decidiu nesta mesma chamada — é o booleano de
+        // `pontos_app.enfileirar_fatura_email`, que `fiscal.py::finalizar`
+        // devolve em `documento.fatura_por_email` — e são CINCO condições, das
+        // quais este lado só vê três: a linha do `fat_pontos_qr` (que é quem
+        // manda, e caduca ao fim de 2 h) e a escrita na fila nunca chegam cá.
+        // Decidido no browser, bastava a linha do QR ter caducado para o ecrã
+        // escrever «não é preciso esperar pelo papel» por cima de um talão que
+        // saiu mesmo na impressora: ninguém o entrega, o cliente vai-se embora
+        // sem nada, e não fica registo nenhum.
+        //
+        // Ausente (servidor antigo, ou o documento recuperado pelo
+        // `PosVenda::apurarAEmissao`, que o relê por outra rota) vale `false` —
+        // a frase do papel, que é a única que nunca deixa alguém sem
+        // documento. **O NIF continua a não entrar aqui** (decisão do dono,
+        // 2026-09-17): o seletor do cliente é o único que manda, e agora nem
+        // sequer há onde o meter.
+        porEmail={!!documento?.fatura_por_email}
       />
     );
   }

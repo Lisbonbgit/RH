@@ -1434,44 +1434,35 @@ export const avisoDoDocumento = (documento) => {
   };
 };
 
-// **A fatura desta venda vai por email?** — a pergunta do ecrã do documento
-// emitido, e só dele.
+// **A fatura desta conta vai por email?** — a pergunta do cartão dos pontos,
+// ANTES do EMITIR, que é o único sítio onde não há resposta do servidor
+// nenhuma para ler.
 //
-// São TRÊS das CINCO condições que o servidor usa para saltar o papel
-// (`backend/faturacao/pontos_app.py::enfileirar_fatura_email`, ao lado do
-// `enfileirar_credito` — o `fiscal.py` só a chama). As duas que faltam não
-// chegam a este lado: a linha do `fat_pontos_qr` em si (aqui há só a cópia da
-// preferência que ficou na gaveta) e a escrita na fila. Por isso a frase do
-// ecrã é sobre a INTENÇÃO («vai por email») e nunca sobre o desfecho
-// («enviada») — quem decide é o servidor, e no instante do EMITIR o envio
-// ainda nem começou.
+// Depois do EMITIR **não se refaz esta conta**: o servidor manda a decisão que
+// tomou em `documento.fatura_por_email` (`fiscal.py::finalizar`), e é essa que
+// o ecrã do documento emitido usa. São CINCO condições
+// (`backend/faturacao/pontos_app.py::enfileirar_fatura_email`) e este lado só
+// vê três — a linha do `fat_pontos_qr`, que é quem manda e pode ter caducado
+// pelo TTL de 2 h, e a escrita na fila ficam de fora. Refeita aqui, a frase
+// «não é preciso esperar pelo papel» aparecia por cima de um talão que saiu
+// mesmo na impressora, e o cliente ia-se embora sem nada.
 //
-// - sem ligação, ou com a preferência desligada, sai papel como sempre;
-// - **sem `vendus_document_id` sai papel**, e é uma condição do ecrã e não só
-//   do servidor: um 2xx do Vendus com ATCUD e sem `id` é aceite de propósito e
-//   grava `vendus_document_id: None`, e sem o id não há PDF para mandar a
-//   ninguém (é o 422 do botão «PDF da fatura», `documentos.py:894`). O
-//   servidor põe o talão na fila nesse caso; um ecrã a prometer email deixava
-//   o cliente sem talão E sem email. Este lado VÊ o campo — vem no
-//   `_resposta_documento` e já está desenhado no ecrã;
-// - **o NIF não decide nada, e isso está decidido** (o dono, 2026-09-17): o
-//   seletor do cliente é o único que manda. Com a preferência ligada a fatura
-//   vai por email haja ou não haja NIF — o NIF vai escrito nela como sempre
-//   foi — e segue para o email da conta de quem mostrou o QR. Quem mostra a
-//   app e quem pede a fatura são a mesma pessoa; um grupo que queira faturas
-//   separadas divide a conta, e aí cada parte leva o seu QR e o seu NIF. Por
-//   isso esta função **não recebe NIF nenhum**: um parâmetro que ninguém lê é
-//   um convite a voltar a lê-lo;
-// - um documento que não é `normal` (o modo `tests`) sai em papel e não vai a
-//   lado nenhum: não vale nada e não há o que mandar.
+// **O que este cartão diz pode ser mentira, e isso está decidido**: a
+// preferência vem da gaveta do `sessionStorage`; quem decide se o papel sai é
+// o servidor, pelo `fat_pontos_qr` que ele próprio gravou ao ler o QR. Uma
+// gaveta adulterada faz o cartão mentir à operadora — não faz desaparecer o
+// documento do cliente, e a frase do ecrã do documento já não vem daqui.
+//
+// **O NIF não decide nada, e isso está decidido** (o dono, 2026-09-17): o
+// seletor do cliente é o único que manda. Com a preferência ligada a fatura vai
+// por email haja ou não haja NIF — o NIF vai escrito nela como sempre foi — e
+// segue para o email da conta de quem mostrou o QR. Por isso esta função **não
+// recebe NIF nenhum**: um parâmetro que ninguém lê é um convite a voltar a
+// lê-lo.
 //
 // Vive aqui e não dentro do JSX pela regra do módulo: uma condição escrita no
 // meio de um `<span>` não se corre em teste nenhum.
-export const aFaturaVaiPorEmail = ({ ligacao, documento }) => (
-  !!(ligacao && ligacao.fatura_por_email)
-  && !!(documento && documento.vendus_document_id)
-  && estadoDoModo(documento && documento.modo) === MODO_NORMAL
-);
+export const aFaturaVaiPorEmail = ({ ligacao }) => !!(ligacao && ligacao.fatura_por_email);
 
 // A MESMA pergunta, no backoffice — e a única diferença deliberada.
 //
