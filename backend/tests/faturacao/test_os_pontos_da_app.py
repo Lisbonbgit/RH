@@ -31,6 +31,7 @@ from pydantic import ValidationError
 
 from faturacao import db as db_mod
 from faturacao import fiscal as fiscal_mod
+from faturacao import impressao as imp_mod
 from faturacao import nota_credito as nc_mod
 from faturacao import pontos_app
 from faturacao.db import COLECOES
@@ -549,6 +550,23 @@ def _casa(doc, filtro):
     return True
 
 
+def _escrever_set(doc, campos):
+    """O `$set` do Mongo, **caminhos com ponto incluídos**: `payload.forcar`
+    escreve DENTRO do payload e deixa o resto dele onde estava.
+
+    Escrito à letra (`doc["payload.forcar"] = True`, que é o que um
+    `dict.update` faz), o duplo guardava uma chave de nome esquisito ao lado do
+    payload: o `enviar` lia `linha["payload"].get("forcar")` a `None`, não
+    mandava `forcar` nenhum à app, e o teste do reenvio forçado ficava verde
+    sobre um botão que continuava a responder `ja_enviado` sem mandar email."""
+    for campo, valor in campos.items():
+        alvo = doc
+        partes = campo.split(".")
+        for parte in partes[:-1]:
+            alvo = alvo.setdefault(parte, {})
+        alvo[partes[-1]] = valor
+
+
 class _Fila(ColeccaoFalsa):
     """`fat_pontos_app`: o duplo de `test_fiscal` — com o único de `chave` LIDO
     de `db.INDICES`, para o teste cair se o índice desaparecer — mais a reserva
@@ -563,7 +581,7 @@ class _Fila(ColeccaoFalsa):
         await asyncio.sleep(0)
         for doc in self._documentos:
             if _casa(doc, filtro):
-                doc.update(atualizacao["$set"])
+                _escrever_set(doc, atualizacao["$set"])
                 return deepcopy(doc)
         return None
 
@@ -1694,6 +1712,93 @@ def test_reenviar_serve_uma_linha_ja_FEITA(monkeypatch):
     _corre(pontos_app.reenviar_fatura_por_email("doc-1", _={}))
 
     assert _linha_reposta(fila)["estado"] == "pendente"
+
+
+def test_o_reenvio_leva_FORCAR_a_app_e_o_resto_do_payload_fica(monkeypatch, app, vendus):
+    """**Sem isto o botão não reenvia nada, e é o caso para que foi feito.**
+
+    A chave de idempotência da app é o `documento_id` e não tem validade: a
+    tentativa que se segue à reposição manda o MESMO corpo de antes, a app
+    responde `ja_enviado` **sem mandar email nenhum**, e como `ja_enviado` está
+    em `_RESPOSTAS_FEITAS` a linha fecha outra vez em `feito`. O gestor lia
+    «Enviada» por cima de nada: o cliente que ligou a dizer que não recebeu
+    continuava sem receber.
+
+    O `forcar` fica no PAYLOAD e não só no corpo desta tentativa — se esta
+    falhar, as repetições da fila têm de o levar também."""
+    db, fila = _db_da_fila(_fatura_email(estado="feito"))
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+    app.responde(200, {"estado": "enviado"})
+
+    _corre(pontos_app.reenviar_fatura_por_email("doc-1", _={}))
+    # O `tentar_ja` da rota corre em segundo plano; aqui faz-se a MESMA
+    # tentativa pela porta da fila, que é a que o cron repete.
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    assert _linha_reposta(fila)["payload"]["forcar"] is True
+    assert _linha_reposta(fila)["payload"]["vendus_document_id"] == 368200354, (
+        "o caminho com ponto tem de escrever DENTRO do payload — um $set à "
+        "letra substituía o payload inteiro e o PDF deixava de se ir buscar")
+    assert app.corpo()["forcar"] is True, app.corpo()
+
+
+def test_o_reenvio_devolve_a_linha_ao_ALARME_do_balcao(monkeypatch):
+    """**A linha renascia INVISÍVEL.** O «Já vi» do balcão carimba `visto_em`,
+    e o predicado do «por enviar» exige-o a `None` — é o mesmo predicado para o
+    alarme, para o «Já vi» e para o filtro do separador Faturação. Reposta a
+    `pendente` com o carimbo de ontem, a linha saía do alarme para sempre: se o
+    reenvio voltasse a falhar, o alarme dizia zero, o botão dizia (0) e a lista
+    dizia «Nenhuma fatura desta loja está à espera» — com o cliente sem email e
+    sem papel."""
+    monkeypatch.setattr(pontos_app, "tentar_ja", lambda db, linha_id: None)
+    db, fila = _db_da_fila(_fatura_email(
+        estado="falhado", visto_em=_iso(AGORA - timedelta(hours=3))))
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+    monkeypatch.setattr(imp_mod, "obter_db", lambda: db)
+    assert _corre(imp_mod.estado_da_impressao(
+        operador=_operador()))["emails_falhados"] == 0, (
+        "carimbada pelo «Já vi», a linha está fora do alarme — é o ponto de "
+        "partida deste defeito")
+
+    _corre(pontos_app.reenviar_fatura_por_email("doc-1", _={}))
+
+    assert _linha_reposta(fila)["visto_em"] is None
+    # E se o reenvio vier a falhar, acende como qualquer outra.
+    fila.linhas()[0]["estado"] = "falhado"
+    assert _corre(imp_mod.estado_da_impressao(
+        operador=_operador()))["emails_falhados"] == 1
+
+
+def test_um_pendente_JA_VISTO_que_acaba_por_FALHAR_volta_a_acender(monkeypatch, app, vendus):
+    """A outra ponta do mesmo campo. O «Já vi» carimba o que o alarme contou —
+    e o alarme conta os `pendente` com mais de meia hora, que ainda estão a ser
+    tentados. Um deles que acabe mesmo em beco sem saída é uma falha NOVA: o
+    toque de hoje de manhã calou um envio a caminho, não esta."""
+    db, fila = _db_da_fila(_fatura_email(
+        estado="pendente", tentativas=13, visto_em=_iso(AGORA - timedelta(hours=3)),
+        primeira_falha_tecnica_em=_iso(AGORA - timedelta(hours=30))))
+    app.responde(503, {"detail": "em baixo"})
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    gravada = fila.linhas()[0]
+    assert gravada["estado"] == "falhado", "as 24 h passaram — é um beco sem saída"
+    assert gravada["visto_em"] is None
+
+
+def test_uma_falha_que_AINDA_REPETE_nao_reacende_o_que_ja_foi_visto(monkeypatch, app, vendus):
+    """O contrário, e é o que impede o aviso que se aprende a ignorar: uma
+    tentativa falhada que a fila vai repetir continua a ser o encalhe que a
+    pessoa deu por visto. Só o beco sem saída é notícia nova."""
+    db, fila = _db_da_fila(_fatura_email(
+        estado="pendente", visto_em=_iso(AGORA - timedelta(hours=3))))
+    app.responde(503, {"detail": "em baixo"})
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    gravada = fila.linhas()[0]
+    assert (gravada["estado"], gravada["tentativas"]) == ("pendente", 1)
+    assert gravada["visto_em"] == _iso(AGORA - timedelta(hours=3))
 
 
 def test_reenviar_uma_fatura_que_nunca_teve_email_e_404(monkeypatch):

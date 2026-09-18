@@ -623,6 +623,22 @@ async def enviar(db, linha_id: Optional[str] = None, *, agora: Optional[datetime
             "numero": linha["payload"].get("numero") or "",
             "pdf_base64": base64.b64encode(pdf).decode(),
         }
+        # **O `forcar`, e SÓ quando ele lá está.** A app deduplica por
+        # `documento_id` sem validade nenhuma: sem este campo, a segunda vez
+        # que a mesma fatura lhe bate à porta responde `ja_enviado` **sem
+        # mandar email nenhum** — e `ja_enviado` está em `_RESPOSTAS_FEITAS`,
+        # por isso a linha fechava em `feito` e o gestor lia sucesso por cima
+        # de nada. É exactamente o caso do botão «Reenviar»: o cliente liga a
+        # dizer que não recebeu, a linha já está em `feito`.
+        #
+        # **Quem o põe é só a rota `reenviar-email`**, no payload da linha (e
+        # fica lá, para as repetições desta reposição o levarem também). A fila
+        # normal — o `tentar_ja` da emissão e o cron — nunca o manda: o
+        # `.get` devolve `None` e a chave nem aparece no corpo. Uma app velha
+        # que o receba tem de o ignorar (o contrato proíbe `extra="forbid"` do
+        # lado dela), e um POS velho que não o mande continua como sempre.
+        if linha["payload"].get("forcar"):
+            corpo_do_pedido["forcar"] = True
     try:
         resposta = await _chamar_app(acao, corpo_do_pedido)
     except IntegracaoNaoConfigurada:
@@ -709,8 +725,25 @@ async def _falhou(db, linha: Dict, reserva: str, agora: datetime, erro: str) -> 
 async def _fechar(db, linha: Dict, reserva: str, agora: datetime, campos: Dict) -> Dict:
     """Grava o desfecho e larga a reserva — só se a reserva ainda for ESTA. Se
     o envio demorou mais do que `_RESERVA_SEGUNDOS` e outro processo pegou na
-    linha entretanto, é a escrita dele que vale."""
+    linha entretanto, é a escrita dele que vale.
+
+    **Uma linha que ACABA em beco sem saída volta a acender o alarme.** O «Já
+    vi» do balcão (`impressao.marcar_falhados_vistos`) carimba tudo o que o
+    alarme contou — e o predicado conta os `pendente` com mais de
+    `MINUTOS_ATE_O_PENDENTE_ACENDER`, que ainda estão a ser tentados. Carimbado
+    esse, a linha saía do alarme E do filtro «Por enviar» PARA SEMPRE: se o
+    envio viesse depois a falhar de vez, o balcão nunca mais o sabia — e é o
+    caso em que não há papel nenhum a compensar o email que não saiu. Tirar o
+    carimbo aqui é dizer «isto é NOVO»: o que o toque de ontem calou foi um
+    envio a caminho, não esta falha.
+
+    Só nos becos sem saída (`ESTADOS_SEM_SAIDA`), e não a cada tentativa
+    falhada: um `pendente` a repetir continua a ser o que a pessoa deu por
+    visto, e reacender a cada volta do cron era o aviso que se aprende a
+    ignorar."""
     campos = dict(campos, a_enviar_ate=_NUNCA, atualizado_em=_iso(agora))
+    if campos.get("estado") in ESTADOS_SEM_SAIDA:
+        campos["visto_em"] = None
     await db[COLECOES["pontos_app"]].update_one(
         {"id": linha["id"], "a_enviar_ate": reserva}, {"$set": campos})
     linha.update(campos)
@@ -1098,7 +1131,7 @@ async def reenviar_fatura_por_email(
     Deixar este botão só para as falhadas era não ter botão nenhum para o
     problema que as pessoas trazem.
 
-    **Repõe SETE campos numa escrita, e só depois manda.** Repor só o estado é
+    **Repõe NOVE campos numa escrita, e só depois manda.** Repor só o estado é
     um botão que dá uma tentativa e volta logo a `falhado`:
 
     - `tentativas` a 0, senão a espera seguinte começa já nos 30 minutos;
@@ -1112,7 +1145,25 @@ async def reenviar_fatura_por_email(
     - `ultimo_erro` e `motivo` a `None`, porque são o que o detalhe do documento
       ESCREVE no ecrã (`_CAMPOS_PARA_O_ECRA`): deixados lá, o gestor lia «A
       tentar enviar (0 tentativas — último erro: HTTP 503: em baixo)» ou
-      «Recusado: contrato_recusado» sobre uma linha acabada de repor.
+      «Recusado: contrato_recusado» sobre uma linha acabada de repor;
+    - `visto_em` a `None`, senão a linha renasce INVISÍVEL. O «Já vi» do balcão
+      (`impressao.marcar_falhados_vistos`) carimba este campo, e é ele que o
+      predicado do «por enviar» exige a `None`
+      (`filtro_das_faturas_por_enviar`) — o MESMO predicado do alarme da loja e
+      do filtro «Por enviar» do separador Faturação. Uma linha reposta a
+      `pendente` com `tentativas: 0` é, por definição, «outra vez a caminho»:
+      se voltar a falhar tem de acender como qualquer outra, e com o carimbo
+      antigo o alarme dizia zero, o botão dizia (0) e a lista dizia «Nenhuma
+      fatura desta loja está à espera»;
+    - `payload.forcar` a `True` — **e é ele que faz o botão reenviar mesmo.** A
+      chave de idempotência da app é o `documento_id` e não tem validade: sem
+      este campo, o `tentar_ja` aqui em baixo manda exactamente o mesmo corpo
+      de antes, a app responde `ja_enviado` **sem mandar email nenhum**, e como
+      `ja_enviado` está em `_RESPOSTAS_FEITAS` a linha fecha outra vez em
+      `feito` — o ecrã dizia «sai no minuto seguinte», um minuto depois dizia
+      «Enviada», e não tinha saído nada. Fica no PAYLOAD (e não só no corpo
+      desta tentativa) para as repetições desta reposição o levarem também, se
+      a primeira falhar. Ver o corpo do `fatura_email` em `enviar`.
 
     Uma escrita condicional só no fim (`find_one_and_update`) e não uma leitura
     seguida de um `update`: duas pessoas a carregar no botão ao mesmo tempo
@@ -1134,6 +1185,11 @@ async def reenviar_fatura_por_email(
             "a_enviar_ate": _NUNCA,
             "ultimo_erro": None,
             "motivo": None,
+            "visto_em": None,
+            # O caminho com ponto escreve DENTRO do payload e deixa o resto
+            # dele intacto — o `ligacao_id`, o `vendus_document_id` e o `modo`
+            # do documento continuam lá.
+            "payload.forcar": True,
             "atualizado_em": _iso(agora),
         }},
         projection={"_id": 0}, return_document=ReturnDocument.AFTER)

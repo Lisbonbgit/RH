@@ -119,6 +119,19 @@ def _corresponde(item, filtro):
             # pelas reservas desta sessão pelo prefixo da `ext_ref`.
             if not any(re.search(valor["$regex"], str(v or "")) for v in valores):
                 return False
+        # `$lte`/`$lt` — a JANELA do «por enviar»
+        # (`pontos_app.filtro_das_faturas_por_enviar`, pelo `criado_em`), que é
+        # metade do predicado que o alarme do balcão conta. As datas guardam-se
+        # como ISO em UTC e comparam-se como STRING, que é o que o Mongo faz
+        # (e o mesmo ramo que o duplo de test_venda.py já tinha). Sem ele, esta
+        # metade do `$or` NUNCA casava: o duplo respondia zero e um teste da
+        # janela ficava verde a medir o contrário do que diz.
+        elif isinstance(valor, dict) and ("$lte" in valor or "$lt" in valor):
+            comparaveis = [v for v in valores if isinstance(v, str)]
+            if "$lte" in valor and not any(v <= valor["$lte"] for v in comparaveis):
+                return False
+            if "$lt" in valor and not any(v < valor["$lt"] for v in comparaveis):
+                return False
         elif valor not in valores:
             return False
     return True
@@ -217,6 +230,14 @@ class ColeccaoFalsa:
         await asyncio.sleep(0)
         encontrados = [d for d in self._documentos if _corresponde(d, filtro)]
         return _como_o_motor(encontrados[0]) if encontrados else None
+
+    async def count_documents(self, filtro=None):
+        """Pelo MESMO `_corresponde` do `find` — é o alarme dos emails por
+        enviar que conta assim (`impressao.estado_da_impressao`), e um duplo
+        que contasse por outro caminho deixava o alarme e a lista a divergir
+        dentro do próprio teste."""
+        await asyncio.sleep(0)
+        return sum(1 for d in self._documentos if _corresponde(d, filtro))
 
     async def insert_one(self, doc):
         await asyncio.sleep(0)  # ponto de "corrida" — simula I/O real
