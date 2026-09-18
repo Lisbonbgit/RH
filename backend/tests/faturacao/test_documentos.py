@@ -142,7 +142,7 @@ def _grupo_toppings(**over):
 
 
 def _db(registo, documentos=None, vendas=None, produtos=None, grupos=None,
-        caixas=None, sessoes=None, com_indice_do_posto=False):
+        caixas=None, sessoes=None, com_indice_do_posto=False, pontos_app=None):
     return DbFalsa({
         COLECOES["documentos"]: ColeccaoFalsa(registo, documentos),
         COLECOES["vendas"]: ColeccaoFalsa(
@@ -154,6 +154,10 @@ def _db(registo, documentos=None, vendas=None, produtos=None, grupos=None,
         COLECOES["sessoes_caixa"]: ColeccaoFalsa(
             registo, [_sessao()] if sessoes is None else sessoes),
         COLECOES["refs_fiscais"]: ColeccaoFalsa(registo, []),
+        # A fila de `fatura_email` (`fat_pontos_app`) — o `fatura_email_por_enviar`
+        # da lista lê-a pelo MESMO predicado que o alarme da loja conta
+        # (`pontos_app.filtro_das_faturas_por_enviar`).
+        COLECOES["pontos_app"]: ColeccaoFalsa(registo, pontos_app),
     })
 
 
@@ -189,6 +193,42 @@ def test_a_lista_traz_o_que_a_operadora_precisa_para_encontrar_a_fatura(monkeypa
     assert linha["pagamentos"] == [{"nome": "Multibanco", "valor": 11.64}]
     assert linha["modo"] == "normal"
     assert linha["tem_venda"] is True
+
+
+def test_a_lista_marca_QUAL_documento_esta_por_enviar_por_email(monkeypatch):
+    """O sinal vem do MESMO predicado que o alarme da loja conta
+    (`pontos_app.filtro_das_faturas_por_enviar`) — nunca decidido aqui de
+    novo, senão o botão do separador Faturação e o alarme contavam coisas
+    diferentes."""
+    encalhada = _documento(id="doc-encalhada", numero="FS 05P2026/1900",
+                          venda_id="venda-1", ext_ref="e-encalhada")
+    db = _db(
+        [], documentos=[_documento(), encalhada], vendas=[_venda_emitida()],
+        pontos_app=[{
+            "chave": "fatura_email:doc-encalhada", "tipo": "fatura_email",
+            "loja_id": "loja-1", "estado": "falhado",
+            "criado_em": "2026-08-21T21:41:00+00:00",
+        }],
+    )
+    monkeypatch.setattr(doc_mod, "obter_db", lambda: db)
+
+    documentos = {d["numero"]: d for d in _corre(
+        listar_documentos(operador=_operador()))["documentos"]}
+    assert documentos["FS 05P2026/1900"]["fatura_email_por_enviar"] is True
+    # A OUTRA fatura, sem linha nenhuma na fila, não é «por enviar»: o sinal é
+    # por documento, não um alarme da loja inteira a acender tudo.
+    assert documentos["FS 05P2026/1824"]["fatura_email_por_enviar"] is False
+
+
+def test_sem_fila_nenhuma_nada_e_por_enviar(monkeypatch):
+    """Sem `fat_pontos_app`, `fatura_email_por_enviar` é sempre `False` — e
+    não a ausência da chave, que o ecrã tinha de tratar como "versão antiga
+    da API" (regra de `_venda_publica`)."""
+    db = _db([], documentos=[_documento()], vendas=[_venda_emitida()])
+    monkeypatch.setattr(doc_mod, "obter_db", lambda: db)
+
+    (linha,) = _corre(listar_documentos(operador=_operador()))["documentos"]
+    assert linha["fatura_email_por_enviar"] is False
 
 
 def test_a_lista_vem_da_mais_recente_para_a_mais_antiga(monkeypatch):

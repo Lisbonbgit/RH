@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import {
   Receipt, Search, Loader2, HelpCircle, Printer, FileMinus, Copy, ArrowLeft,
-  AlertTriangle,
+  AlertTriangle, Mail,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -381,6 +381,9 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
   const [lista, setLista] = useState(null);
   const [erro, setErro] = useState(null);
   const [pesquisa, setPesquisa] = useState('');
+  // **Só as que estão por enviar por email.** Um filtro, e não uma lista nova:
+  // a lista dos documentos da loja já existe e já tem o «Imprimir» em cada um.
+  const [soPorEnviar, setSoPorEnviar] = useState(false);
   const [abertaId, setAbertaId] = useState(null);
   const [fatura, setFatura] = useState(null);
   const [erroFatura, setErroFatura] = useState(null);
@@ -529,7 +532,19 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
     }
   }, [fatura, aImprimir, recarregarImpressao]);
 
-  const documentos = (lista?.documentos || []).filter((d) => casaComAPesquisaPos(d, pesquisa));
+  // **Quem decide se uma fatura está «por enviar» é o servidor**, e chega aqui
+  // já decidido em `fatura_email_por_enviar`: é o mesmo sinal — janela
+  // incluída — que o alarme da loja conta (`impressao.py::estado_da_impressao`).
+  // Decidido neste lado, o número do botão e o do alarme divergiam, e o dia em
+  // que o alarme dissesse a verdade era o dia em que a fatura não estava aqui.
+  const documentos = (lista?.documentos || [])
+    .filter((d) => casaComAPesquisaPos(d, pesquisa))
+    .filter((d) => !soPorEnviar || d.fatura_email_por_enviar);
+  // Contado sobre a lista INTEIRA e não sobre a filtrada: é o número que diz
+  // se vale a pena carregar no botão, e um número que mudasse com a pesquisa
+  // respondia a outra pergunta.
+  const porEnviar = (lista?.documentos || [])
+    .filter((d) => d.fatura_email_por_enviar).length;
 
   return (
     <>
@@ -609,14 +624,29 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
             )
           ) : (
             <>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  value={pesquisa}
-                  onChange={(e) => setPesquisa(e.target.value)}
-                  placeholder="Número, valor, artigo ou pagamento"
-                  className="pl-9 h-11"
-                />
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative flex-1 min-w-[12rem]">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    value={pesquisa}
+                    onChange={(e) => setPesquisa(e.target.value)}
+                    placeholder="Número, valor, artigo ou pagamento"
+                    className="pl-9 h-11"
+                  />
+                </div>
+                {/* O número à vista no próprio botão: sem ele, a operadora
+                    tinha de o carregar para saber se havia alguma coisa por
+                    enviar — e o normal é não haver. */}
+                <Button
+                  type="button"
+                  variant={soPorEnviar ? 'default' : 'outline'}
+                  className="h-11"
+                  aria-pressed={soPorEnviar}
+                  onClick={() => setSoPorEnviar((v) => !v)}
+                >
+                  <Mail className="h-4 w-4 mr-1" />
+                  Por enviar{porEnviar > 0 ? ` (${porEnviar})` : ''}
+                </Button>
               </div>
 
               {erro ? (
@@ -636,7 +666,12 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
                       <p className="px-4 py-6 text-sm text-muted-foreground text-center">
                         {(lista.documentos || []).length === 0
                           ? 'Ainda não há nenhuma fatura emitida nesta loja.'
-                          : 'Nenhuma fatura destas bate com o que escreveu.'}
+                          : soPorEnviar
+                            // Dizer «nenhuma bate com o que escreveu» a quem não
+                            // escreveu nada manda-a procurar um erro de escrita
+                            // que não existe.
+                            ? 'Nenhuma fatura desta loja está à espera de ir por email.'
+                            : 'Nenhuma fatura destas bate com o que escreveu.'}
                       </p>
                     ) : documentos.map((d) => (
                       <LinhaDaLista key={d.id} documento={d} agora={agora} onAbrir={setAbertaId} />

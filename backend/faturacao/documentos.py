@@ -72,7 +72,7 @@ import logging
 import math
 import os
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -86,7 +86,7 @@ from .mapa_imposto import (
 )
 from .auth import gestor_atual
 from .periodos import janela_de_datas
-from .pontos_app import pontos_app_do_documento
+from .pontos_app import filtro_das_faturas_por_enviar, pontos_app_do_documento
 from .pos_auth import operador_atual
 from .vendus.cliente import ClienteVendus, VendusErro, obter_conta
 
@@ -272,7 +272,8 @@ def _pagamentos_publicos(venda: Optional[Dict]) -> List[Dict]:
     ]
 
 
-def _documento_na_lista(documento: Dict, venda: Optional[Dict]) -> Dict:
+def _documento_na_lista(documento: Dict, venda: Optional[Dict],
+                        por_enviar: bool = False) -> Dict:
     artigos, mais = _resumo_dos_artigos(venda)
     return {
         "id": documento.get("id"),
@@ -295,7 +296,34 @@ def _documento_na_lista(documento: Dict, venda: Optional[Dict]) -> Dict:
         # `True`, pela regra de `_venda_publica`: o ecrã não adivinha se a
         # chave em falta quer dizer "não" ou "versão antiga da API".
         "tem_venda": venda is not None,
+        # Decidido pelo MESMO predicado que o alarme da loja conta
+        # (`pontos_app.filtro_das_faturas_por_enviar`) — nunca de novo aqui,
+        # senão o filtro «Por enviar» do separador Faturação e o alarme
+        # contavam coisas diferentes.
+        "fatura_email_por_enviar": por_enviar,
     }
+
+
+async def _ids_por_enviar(db, loja_id: str, documentos: List[Dict]) -> set:
+    """Os ids desta PÁGINA de documentos que têm uma linha `fatura_email` por
+    enviar — pelo MESMO predicado que o alarme da loja conta
+    (`pontos_app.filtro_das_faturas_por_enviar`). Uma segunda decisão aqui era
+    a divergência que essa função existe para não deixar existir: o botão do
+    separador Faturação e o alarme do balcão têm de contar a mesma coisa.
+
+    Restrita às chaves `fatura_email:<id>` desta página, e não a todas as da
+    loja: a fila não tem TTL e só cresce, e a pergunta é sempre sobre os
+    documentos que já estão na mão."""
+    ids = [d["id"] for d in documentos if d.get("id")]
+    if not ids:
+        return set()
+    chaves = ["fatura_email:%s" % i for i in ids]
+    linhas = await db[COLECOES["pontos_app"]].find(
+        {**filtro_das_faturas_por_enviar(loja_id, datetime.now(timezone.utc)),
+         "chave": {"$in": chaves}},
+        {"_id": 0, "chave": 1},
+    ).to_list(len(chaves))
+    return {l["chave"].split(":", 1)[1] for l in linhas}
 
 
 @router.get("/pos/documentos")
@@ -326,9 +354,12 @@ async def listar_documentos(operador: Dict = Depends(operador_atual)) -> dict:
     vendas = await _vendas_por_id(
         db, [d["venda_id"] for d in documentos if d.get("venda_id")]
     )
+    por_enviar_ids = await _ids_por_enviar(db, operador["loja_id"], documentos)
     return {
         "documentos": [
-            _documento_na_lista(d, vendas.get(d.get("venda_id"))) for d in documentos
+            _documento_na_lista(
+                d, vendas.get(d.get("venda_id")), d.get("id") in por_enviar_ids)
+            for d in documentos
         ],
         # O tecto vai na resposta para o ecrã poder dizer o número em vez de
         # uma vaga "as mais recentes" — duas cópias do mesmo limite, uma de
