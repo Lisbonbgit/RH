@@ -150,6 +150,21 @@ class _Cursor:
         return list(self._docs)[:limite]
 
 
+def _casa(doc, filtro):
+    """Igualdade e `$gte` — o mínimo que este ficheiro precisa, e o mínimo que
+    faz um teste de contagem valer alguma coisa. Sem isto, `_Coleccao` devolvia
+    tudo a qualquer filtro e a contagem das faturas por email ficava verde com
+    o tipo errado, com o campo de data errado, ou sem filtro nenhum."""
+    for chave, valor in (filtro or {}).items():
+        atual = doc.get(chave)
+        if isinstance(valor, dict) and "$gte" in valor:
+            if atual is None or not atual >= valor["$gte"]:
+                return False
+        elif atual != valor:
+            return False
+    return True
+
+
 class _Coleccao:
     def __init__(self, docs=(), por_id=None):
         self._docs = list(docs)
@@ -159,7 +174,10 @@ class _Coleccao:
         return self._por_id.get(filtro.get("id"))
 
     def find(self, filtro=None, projeccao=None):
-        return _Cursor(self._docs)
+        return _Cursor([d for d in self._docs if _casa(d, filtro)])
+
+    async def count_documents(self, filtro=None):
+        return len([d for d in self._docs if _casa(d, filtro)])
 
 
 class _Db:
@@ -260,3 +278,108 @@ def test_uma_loja_SEM_ID_nao_casa_com_a_ausencia_de_definicao():
                          lojas=[{"id": None, "nome": "?"}],
                          documentos=[], turnos=[])
     assert r["lojas"][0]["caixa"] is not None
+
+
+# --- «X faturas por email, Y em papel» -------------------------------------------
+#
+# A medição que transforma a promessa num número, no canal que já existe. O
+# tecto desta funcionalidade é a adopção do QR — que no dia em que foi construída
+# era ZERO — e o número a vigiar é este, não o código.
+
+
+def test_o_relatorio_diz_quantas_faturas_foram_por_EMAIL_e_quantas_em_PAPEL():
+    dados = montar_relatorio(
+        dia="2026-09-01", ate="23:30", lojas=list(LOJAS),
+        documentos=[dict(DOC_APP, id="d%d" % i) for i in range(10)],
+        turnos=[], faturas_por_email=3)
+
+    assert dados["geral"]["faturas_por_email"] == 3
+    assert dados["geral"]["faturas_em_papel"] == 7
+
+
+def test_uma_NOTA_DE_CREDITO_nao_conta_como_papel_desta_linha():
+    """As notas saem sempre em papel, mas esta linha é sobre o talão da COMPRA
+    — misturá-las fazia o número em papel subir sem nada ter mudado."""
+    dados = montar_relatorio(
+        dia="2026-09-01", ate="23:30", lojas=list(LOJAS),
+        documentos=[DOC_APP, dict(DOC_APP, id="n1", tipo="NC", total_bruto=-6.85)],
+        turnos=[], faturas_por_email=1)
+
+    assert (dados["geral"]["faturas_por_email"], dados["geral"]["faturas_em_papel"]) == (1, 0)
+
+
+def test_a_contagem_nunca_passa_o_total_de_faturas_do_dia():
+    """A fila conta-se pelo dia UTC e os documentos pelo dia de LISBOA: na
+    fronteira, os dois podem discordar. Duas linhas do mesmo email a dizerem
+    «4 por email, -1 em papel» era o relatório a acusar-se a si próprio."""
+    dados = montar_relatorio(
+        dia="2026-09-01", ate="23:30", lojas=list(LOJAS),
+        documentos=[DOC_APP], turnos=[], faturas_por_email=4)
+
+    assert (dados["geral"]["faturas_por_email"], dados["geral"]["faturas_em_papel"]) == (1, 0)
+
+
+def test_a_linha_aparece_escrita_no_EMAIL_que_o_dono_abre():
+    dados = montar_relatorio(
+        dia="2026-09-01", ate="23:30", lojas=list(LOJAS),
+        documentos=[dict(DOC_APP, id="d%d" % i) for i in range(10)],
+        turnos=[], faturas_por_email=3)
+
+    assert "3 faturas por email, 7 em papel" in html_do_relatorio(dados)
+
+
+def test_num_dia_SEM_FATURAS_a_linha_nao_aparece():
+    """Zero por email e zero em papel não é uma medição — é um dia fechado."""
+    dados = montar_relatorio(dia="2026-09-01", ate="23:30", lojas=list(LOJAS),
+                             documentos=[], turnos=[], faturas_por_email=0)
+
+    assert "em papel" not in html_do_relatorio(dados)
+
+
+def test_a_ROTA_conta_as_linhas_do_DIA_e_so_as_do_EMAIL():
+    """O módulo das contas é puro: se ninguém lhe disser quantas foram, o número
+    nunca chega ao email das 23:30.
+
+    A fixture traz de propósito uma linha de CRÉDITO e uma fatura por email de
+    ONTEM: contar tudo, filtrar pelo campo errado ou não filtrar nada dá 4 e não
+    2 — que são os três enganos que este teste vem prender."""
+    from faturacao.db import COLECOES
+    from faturacao.relatorio_rota import _juntar_dados
+
+    db = _Db({COLECOES["pontos_app"]: _Coleccao([
+        {"tipo": "fatura_email", "estado": "feito",
+         "criado_em": "2026-09-01T12:00:00+00:00"},
+        {"tipo": "fatura_email", "estado": "pendente",
+         "criado_em": "2026-09-01T19:30:00+00:00"},
+        {"tipo": "fatura_email", "estado": "feito",
+         "criado_em": "2026-08-31T20:00:00+00:00"},
+        {"tipo": "credito", "estado": "feito",
+         "criado_em": "2026-09-01T12:00:01+00:00"},
+    ])})
+    assert _corre(_juntar_dados(db, "2026-09-01"))["faturas_por_email"] == 2
+
+
+def test_o_relatorio_e_montado_COM_a_contagem_do_email(monkeypatch):
+    from faturacao import relatorio_rota as rota
+
+    vistos = {}
+
+    async def juntar(db, dia):
+        return {"documentos": [], "lojas": [], "turnos": [],
+                "loja_da_app": None, "faturas_por_email": 5}
+
+    def montar(**kw):
+        vistos.update(kw)
+        return {"dia": kw["dia"], "geral": {"faturacao": 0.0}, "lojas": []}
+
+    async def enviar(html, para, assunto):
+        return {"id": "e1"}
+
+    monkeypatch.setattr(rota, "obter_db", lambda: _Db({}))
+    monkeypatch.setattr(rota, "_juntar_dados", juntar)
+    monkeypatch.setattr(rota, "montar_relatorio", montar)
+    monkeypatch.setattr(rota, "html_do_relatorio", lambda dados, url_do_painel=None: "<p></p>")
+    monkeypatch.setattr(rota, "_enviar", enviar)
+
+    _corre(rota._produzir_e_enviar(["a@b.pt"], None))
+    assert vistos.get("faturas_por_email") == 5
