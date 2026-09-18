@@ -342,8 +342,14 @@ async def preferencia_de_pontos(
     corpo = _json_ou_nada(resposta) if resposta.status_code == 200 else None
     estado = corpo.get("estado") if isinstance(corpo, dict) else None
     if estado == "recusado":
+        # `str(...)` e não o `.get` cru: a chave de um dicionário tem de ser
+        # lavável, e um `motivo` não-escalar (uma LISTA, um objecto) levanta
+        # `TypeError: unhashable type` — aqui FORA do `try` de cima, por isso
+        # subia crua e a funcionária lia «Internal Server Error», que é a frase
+        # que este módulo inteiro existe para não mostrar. Convertido, um motivo
+        # que não esteja no mapa leva a frase genérica, como qualquer outro.
         status, frase = _RECUSAS_DA_PREFERENCIA.get(
-            corpo.get("motivo"), (409, _MSG_RECUSA_GENERICA))
+            str(corpo.get("motivo") or ""), (409, _MSG_RECUSA_GENERICA))
         raise HTTPException(status_code=status, detail=frase)
     if estado != "gravada":
         # 401 (chave trocada), 5xx, ou um 200 sem a forma do contrato: a

@@ -372,6 +372,52 @@ def test_ligar_a_preferencia_grava_a_linha_do_qr_e_devolve_o_que_a_app_disse(mon
     assert (linha["ligacao_id"], linha["fatura_por_email"]) == ("lig-1", True)
 
 
+def test_a_preferencia_manda_a_loja_e_o_operador_do_TOKEN_com_a_chave_no_cabecalho(monkeypatch, app):
+    """O gémeo de `test_ler_manda_a_loja_e_o_operador_do_TOKEN_com_a_chave_no_cabecalho`,
+    e existe pela razão que já matou o POS três vezes: **afirmar o caminho que o
+    código escreve nunca apanha um prefixo errado**. Nenhum outro teste desta
+    rota olha para o pedido que saiu — um `/pos-integracao/preferencias` com «s»
+    deixava-os todos verdes e, ao balcão, o botão do cartão respondia 503 para
+    sempre. O teste do router, aqui em baixo, prende a rota que ENTRA; este
+    prende a chamada que SAI.
+
+    O corpo é o contrato do desenho (`2026-09-17-fatura-por-email-design.md:211`)
+    e os quatro campos contam: sem o `valor` o «Voltar ao papel» não viaja para
+    a app e ela grava sempre a mesma coisa; sem a loja e o operador não fica
+    prova nenhuma de quem ligou a preferência, e essa auditoria é a única prova
+    de que o cliente aceitou receber a fatura desmaterializada."""
+    app.responde(200, {"estado": "gravada", "fatura_por_email": False})
+    _preferencia(monkeypatch, _db_da_preferencia(qr=[_linha_do_qr()]), valor=False)
+
+    pedido = app.pedidos[0]
+    assert pedido.method == "POST"
+    assert str(pedido.url) == "http://olacai-api:8001/api/pos-integracao/preferencia"
+    assert pedido.headers["X-Service-Key"] == "chave-de-teste"
+    assert "chave-de-teste" not in str(pedido.url)
+    assert app.corpo() == {
+        "ligacao_id": "lig-1", "valor": False,
+        "loja_nome": "Belém", "operador_nome": "Rafaela",
+    }
+
+
+def test_quem_decide_e_a_APP_e_nao_o_valor_que_se_pediu(monkeypatch, app):
+    """**A app é quem decide**, e é preciso um caso em que ela DISCORDE para
+    isso ficar preso: nos outros testes desta rota o valor que se pede e o que a
+    app responde são o mesmo, por isso devolver o `valor` do pedido em vez do
+    corpo da app passava por todos.
+
+    Pedir «Enviar por email» e a app dizer que não (uma conta sem endereço
+    confirmado, o consentimento retirado do lado dela) tem de acabar em papel: a
+    resposta ao ecrã é `False` e a linha do `fat_pontos_qr` vai-se abaixo — é ela
+    que manda saltar o talão (`enfileirar_fatura_email`), e deixá-la viva era o
+    cliente sem papel e sem email."""
+    app.responde(200, {"estado": "gravada", "fatura_por_email": False})
+    db = _db_da_preferencia(qr=[_linha_do_qr()])
+
+    assert _preferencia(monkeypatch, db, valor=True) == {"fatura_por_email": False}
+    assert db[COLECOES["pontos_qr"]]._documentos == []
+
+
 def test_desligar_a_preferencia_APAGA_a_linha_do_qr(monkeypatch, app):
     """É este teste que impede o talão de continuar suprimido depois de o
     cliente pedir papel: sem o apagamento, a linha antiga (`fatura_por_email:
@@ -419,6 +465,22 @@ def test_uma_recusa_da_app_vira_uma_frase_em_portugues(monkeypatch, app):
     assert 400 <= e.value.status_code < 500
     assert "ligacao_ja_usada" not in e.value.detail
     assert e.value.detail  # uma frase que diga à funcionária o que fazer
+
+
+def test_um_motivo_NAO_ESCALAR_na_recusa_nao_vira_um_500(monkeypatch, app):
+    """A procura do motivo no mapa das recusas corre FORA do `try` que apanha a
+    app em baixo: um `motivo` que venha em LISTA levantava `TypeError:
+    unhashable type` e subia cru — «Internal Server Error» ao balcão, que é a
+    frase que este módulo inteiro existe para não mostrar. É uma recusa como as
+    outras: 409 e a frase que diz à funcionária o que fazer a seguir."""
+    app.responde(200, {"estado": "recusado", "motivo": ["ligacao_ja_usada"]})
+
+    with pytest.raises(HTTPException) as e:
+        _preferencia(monkeypatch, _db_da_preferencia(), valor=True)
+    assert e.value.status_code == 409
+    assert e.value.detail == (
+        "Não foi possível gravar a preferência agora — peça ao cliente para "
+        "mostrar o QR outra vez.")
 
 
 def test_a_app_em_baixo_devolve_503_e_nao_toca_no_qr(monkeypatch, app):
