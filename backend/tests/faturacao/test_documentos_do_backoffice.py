@@ -251,6 +251,23 @@ def test_a_lista_mostra_o_NIF_QUE_ESTA_NO_DOCUMENTO(monkeypatch):
     assert r["documentos"][0]["cliente_nif"] == "244772903"
 
 
+def test_a_linha_do_backoffice_NAO_diz_se_a_fatura_esta_por_enviar(monkeypatch):
+    """**Calar-se é o certo aqui; dizer `false` era mentir.**
+
+    O «por enviar» é por LOJA e tem uma janela (`pontos_app` —
+    `filtro_das_faturas_por_enviar`), e esta lista mistura as lojas todas:
+    calculá-lo aqui dava uma TERCEIRA contagem a manter de pé ao lado do
+    alarme do balcão e do botão do POS. Enquanto ninguém a pedir, o campo não
+    sai — e não sai a `false`, que é o que o argumento por omissão fazia: com
+    a chave presente, o ecrã lia «esta fatura não está por enviar» em TODAS,
+    incluindo as que estão, sem maneira de distinguir isso de «esta rota não
+    calculou». O estado do envio de UMA fatura tem sítio e está provado: o
+    detalhe, em `fatura_email`."""
+    _db(monkeypatch, [_da_app()])
+    r = _corre(documentos_do_backoffice(_={}))
+    assert "fatura_email_por_enviar" not in r["documentos"][0], r["documentos"][0]
+
+
 def test_o_detalhe_mostra_o_NIF_QUE_ESTA_NO_DOCUMENTO(monkeypatch):
     _db(monkeypatch, [_da_app()])
     r = _corre(documento_do_backoffice("a1", _={}))

@@ -13,11 +13,13 @@ refrigerante a 23 %) — e os descontos são de 0,29 €, que é um número que 
 se reparte bem por duas linhas e por isso apanha quem o reparta mal.
 """
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
 
 from faturacao import documentos as doc_mod
+from faturacao import pontos_app as pontos_app_mod
 from faturacao import venda as venda_mod
 from faturacao.db import COLECOES
 from faturacao.documentos import (
@@ -226,6 +228,61 @@ def test_sem_fila_nenhuma_nada_e_por_enviar(monkeypatch):
     da API" (regra de `_venda_publica`)."""
     db = _db([], documentos=[_documento()], vendas=[_venda_emitida()])
     monkeypatch.setattr(doc_mod, "obter_db", lambda: db)
+
+    (linha,) = _corre(listar_documentos(operador=_operador()))["documentos"]
+    assert linha["fatura_email_por_enviar"] is False
+
+
+# A JANELA do «por enviar» — a outra metade do predicado.
+#
+# Os dois testes de cima casam pelo PRIMEIRO ramo do `$or`
+# (`estado: "falhado"`, um beco sem saída) e pela fila vazia: nenhum deles
+# chega a olhar para o `criado_em`, e a janela — que é a razão de ser deste
+# sinal — ficava sem teste nenhum. São os MESMOS dois casos que o
+# `test_impressao.py` prova para o alarme do balcão, e este lado tem de os
+# provar para poder dizer que conta a mesma coisa.
+_T0 = datetime(2026, 8, 22, 19, 0, 0, tzinfo=timezone.utc)
+
+
+def _pendente_de_ha(minutos):
+    """Uma linha `fatura_email` ainda `pendente`, nascida há tantos minutos."""
+    return {
+        "chave": "fatura_email:doc-1", "tipo": "fatura_email",
+        "loja_id": "loja-1", "estado": "pendente",
+        "criado_em": (_T0 - timedelta(minutes=minutos)).isoformat(),
+    }
+
+
+def _com_o_relogio_parado(monkeypatch, db):
+    """`documentos._agora` devolve `_T0` — e nada mais do módulo sabe que
+    horas são. Sem este selo a janela não se podia afirmar: o teste teria de
+    esperar 31 minutos reais."""
+    monkeypatch.setattr(doc_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(doc_mod, "_agora", lambda: _T0)
+
+
+def test_um_pendente_ENCALHADO_esta_por_enviar(monkeypatch):
+    """Meia hora `pendente` já não é «a caminho»: com a chave da app por
+    configurar, a linha reagenda-se de minuto a minuto para sempre — não sai
+    email, e (decisão do dono) não saiu papel. É a fatura para a qual a
+    operadora precisa deste filtro, e é a que o alarme do balcão conta."""
+    db = _db([], documentos=[_documento()], vendas=[_venda_emitida()],
+             pontos_app=[_pendente_de_ha(
+                 pontos_app_mod.MINUTOS_ATE_O_PENDENTE_ACENDER + 1)])
+    _com_o_relogio_parado(monkeypatch, db)
+
+    (linha,) = _corre(listar_documentos(operador=_operador()))["documentos"]
+    assert linha["fatura_email_por_enviar"] is True
+
+
+def test_um_pendente_ACABADO_DE_NASCER_nao_esta_por_enviar(monkeypatch):
+    """O minuto normal entre o EMITIR e o cron não é nada: um contador que
+    acende em TODAS as faturas por email do dia ensina-se a ignorar, e o
+    alarme ao lado estaria calado — as duas contagens a divergir é exactamente
+    o que o predicado partilhado existe para impedir."""
+    db = _db([], documentos=[_documento()], vendas=[_venda_emitida()],
+             pontos_app=[_pendente_de_ha(1)])
+    _com_o_relogio_parado(monkeypatch, db)
 
     (linha,) = _corre(listar_documentos(operador=_operador()))["documentos"]
     assert linha["fatura_email_por_enviar"] is False

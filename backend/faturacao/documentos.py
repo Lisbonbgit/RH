@@ -128,6 +128,16 @@ def _centimos(valor) -> int:
     return int(round(float(valor or 0) * 100))
 
 
+def _agora() -> datetime:
+    """O relógio do módulo num sítio só — o mesmo selo de `impressao._agora`,
+    e pela mesma razão: a JANELA do «por enviar»
+    (`pontos_app.MINUTOS_ATE_O_PENDENTE_ACENDER`) só se prende por teste se
+    houver onde pôr a hora à mão. Lido em linha, `datetime.now()` fazia com
+    que a metade do predicado que decide se um `pendente` já encalhou nunca
+    pudesse ser afirmada: um teste teria de esperar 31 minutos reais."""
+    return datetime.now(timezone.utc)
+
+
 # --- As linhas que vêm da API do Vendus (as faturas da app) -------------------
 #
 # **Não passam por validação nenhuma.** A sincronização confere o
@@ -273,9 +283,9 @@ def _pagamentos_publicos(venda: Optional[Dict]) -> List[Dict]:
 
 
 def _documento_na_lista(documento: Dict, venda: Optional[Dict],
-                        por_enviar: bool = False) -> Dict:
+                        por_enviar: Optional[bool]) -> Dict:
     artigos, mais = _resumo_dos_artigos(venda)
-    return {
+    linha = {
         "id": documento.get("id"),
         # A referência que está impressa no talão que o cliente traz na mão.
         "numero": documento.get("numero"),
@@ -296,12 +306,24 @@ def _documento_na_lista(documento: Dict, venda: Optional[Dict],
         # `True`, pela regra de `_venda_publica`: o ecrã não adivinha se a
         # chave em falta quer dizer "não" ou "versão antiga da API".
         "tem_venda": venda is not None,
-        # Decidido pelo MESMO predicado que o alarme da loja conta
-        # (`pontos_app.filtro_das_faturas_por_enviar`) — nunca de novo aqui,
-        # senão o filtro «Por enviar» do separador Faturação e o alarme
-        # contavam coisas diferentes.
-        "fatura_email_por_enviar": por_enviar,
     }
+    # Decidido pelo MESMO predicado que o alarme da loja conta
+    # (`pontos_app.filtro_das_faturas_por_enviar`) — nunca de novo aqui, senão
+    # o filtro «Por enviar» do separador Faturação e o alarme contavam coisas
+    # diferentes.
+    #
+    # **`None` quer dizer «esta rota não sabe», e então a chave NÃO SAI** — e o
+    # argumento não tem valor por omissão de propósito, para que nenhum
+    # chamador novo caia no `False` por distracção. Um `False` caladinho era
+    # pior do que a ausência: a lista do backoffice jurava, em TODOS os
+    # documentos, que nenhum estava por enviar — um terceiro contador a dizer
+    # outra coisa que o alarme e o botão —, e com a chave presente o ecrã não
+    # tinha como distinguir «não está por enviar» de «esta rota não calculou».
+    # Ausente, a regra do `_venda_publica` faz o resto: quem não a receber sabe
+    # que não recebeu resposta nenhuma.
+    if por_enviar is not None:
+        linha["fatura_email_por_enviar"] = por_enviar
+    return linha
 
 
 async def _ids_por_enviar(db, loja_id: str, documentos: List[Dict]) -> set:
@@ -319,7 +341,7 @@ async def _ids_por_enviar(db, loja_id: str, documentos: List[Dict]) -> set:
         return set()
     chaves = ["fatura_email:%s" % i for i in ids]
     linhas = await db[COLECOES["pontos_app"]].find(
-        {**filtro_das_faturas_por_enviar(loja_id, datetime.now(timezone.utc)),
+        {**filtro_das_faturas_por_enviar(loja_id, _agora()),
          "chave": {"$in": chaves}},
         {"_id": 0, "chave": 1},
     ).to_list(len(chaves))
@@ -854,7 +876,16 @@ async def documentos_do_backoffice(
         # uma coluna) e o NIF do cliente, que está na venda e é por onde o
         # gestor procura a fatura de uma empresa.
         "documentos": [
-            dict(_documento_na_lista(d, vendas.get(d.get("venda_id"))),
+            # `por_enviar=None`: **esta lista não responde a essa pergunta.** O
+            # predicado é por LOJA e por janela, e aqui cada linha pode ser de
+            # uma loja diferente — calculá-lo daria uma terceira contagem para
+            # manter de pé, e não há hoje ecrã nenhum a lê-la (o «por enviar»
+            # vive no separador Faturação do POS, e o estado do envio de UMA
+            # fatura está no detalhe, em `fatura_email`). Quando o backoffice
+            # precisar do sinal, calcula-se por loja e passa-se aqui — é para
+            # isso que o argumento não tem valor por omissão.
+            dict(_documento_na_lista(d, vendas.get(d.get("venda_id")),
+                                     por_enviar=None),
                  loja_id=d.get("loja_id"),
                  cliente_nif=(d.get("cliente_nif")
                               or (vendas.get(d.get("venda_id")) or {}).get("cliente_nif")))
