@@ -16,7 +16,7 @@ import {
   contaTravada, duvidaPorApurar, detalhesErroPos, eurosPos as euros,
   temMaisDe2CasasDecimaisPos, avisoDoDocumento, previsaoDoDividir,
   guardarNifDaConta, lerNifDaConta, nifValidoPT,
-  guardarPontosDaConta, lerPontosDaConta,
+  guardarPontosDaConta, lerPontosDaConta, guardarPreferenciaDeFaturaPorEmail,
 } from '@/lib/pos';
 
 // O ecrã de finalizar (Plano 2C, Task 4): três cartões — Total, Cliente e
@@ -570,17 +570,51 @@ function CartaoCliente({ nifTexto, onNifTexto, desativado }) {
 // parada por uma coisa que não é fiscal.
 //
 // Só o PRIMEIRO nome, cortado pela app: o ecrã da caixa está à vista da loja.
-function CartaoPontos({ ligacao, onLer, onRemover, desativado }) {
+//
+// **E para onde vai a fatura** — email ou papel —, que é a única coisa que
+// muda entre as duas frases. **O ENDEREÇO NUNCA APARECE**: só o sim/não. Um
+// ecrã de caixa com o email de um cliente por cima é uma porta de enumeração,
+// e o POS não precisa dele para nada (o servidor nem sequer o manda).
+//
+// **O que este cartão diz pode ser mentira, e isso está decidido.** A
+// preferência vem da gaveta do `sessionStorage`; quem decide mesmo se o papel
+// sai é o servidor, pelo `fat_pontos_qr` que ele gravou ao ler o QR. Uma
+// gaveta adulterada faz o cartão mentir à operadora — não faz desaparecer o
+// documento do cliente.
+function CartaoPontos({ ligacao, onLer, onRemover, onPreferencia, aMudarPreferencia, desativado }) {
+  const porEmail = !!(ligacao && ligacao.fatura_por_email);
   return (
     <Cartao titulo="Pontos L'Açaí" icone={Gift}>
       {ligacao ? (
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        // O `data-testid` existe para os guardas poderem ler ESTE cartão e não
+        // o ecrã inteiro: a prova de que o endereço não aparece tem de ser
+        // sobre o sítio onde ele apareceria.
+        <div
+          className="flex flex-wrap items-center justify-between gap-3"
+          data-testid="cartao-pontos"
+        >
           <p className="font-heading font-bold text-2xl min-w-0 break-words">
-            {`Pontos para: ${ligacao.primeiro_nome} ✓`}
+            {`Pontos para: ${ligacao.primeiro_nome} ✓ · ${
+              porEmail ? 'Fatura por email ✉' : 'Fatura em papel'}`}
           </p>
-          <Button type="button" variant="outline" className="h-12" onClick={onRemover} disabled={desativado}>
-            Remover
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            {/* Ao lado do «Remover» que já lá estava, e não por cima dele: são
+                duas coisas diferentes — tirar o cliente da fatura, e escolher
+                por onde ele a recebe. */}
+            <Button
+              type="button"
+              variant="outline"
+              className="h-12"
+              onClick={() => onPreferencia(!porEmail)}
+              disabled={desativado || aMudarPreferencia}
+            >
+              {aMudarPreferencia && <Loader2 className="h-5 w-5 mr-2 animate-spin" />}
+              {porEmail ? 'Voltar ao papel' : 'Enviar por email'}
+            </Button>
+            <Button type="button" variant="outline" className="h-12" onClick={onRemover} disabled={desativado}>
+              Remover
+            </Button>
+          </div>
         </div>
       ) : (
         <Button
@@ -1041,6 +1075,29 @@ export default function PosFinalizar({
     setLigacao(nova);
     guardarPontosDaConta(venda?.id, nova);
   };
+  const [aMudarPreferencia, setAMudarPreferencia] = useState(false);
+  // **Primeiro o servidor, e depois o que ELE devolveu.** A preferência é um
+  // consentimento do cliente: quem a grava (e a audita, e avisa o telemóvel
+  // dele) é a app, através do servidor. Escrever no ecrã antes da resposta era
+  // deixar o cartão a prometer email com a app a ter recusado a mudança — e
+  // quem vier a seguir lê a promessa, não a mensagem que já passou.
+  //
+  // E escreve-se `dados.fatura_por_email`, nunca o `valor` que se pediu: um
+  // 200 pode trazer outro valor (o cliente desligou a preferência no telemóvel
+  // entretanto), e nesse caso quem tem razão é a app.
+  const mudarPreferencia = async (valor) => {
+    if (!ligacao || aMudarPreferencia) return;
+    setAMudarPreferencia(true);
+    try {
+      const dados = await guardarPreferenciaDeFaturaPorEmail(venda?.id, ligacao.id, valor);
+      mudarLigacao({ ...ligacao, fatura_por_email: !!(dados && dados.fatura_por_email) });
+    } catch (error) {
+      toast.error(detalhesErroPos(
+        error, 'Não foi possível mudar isto agora — a fatura sai em papel.').mensagem);
+    } finally {
+      setAMudarPreferencia(false);
+    }
+  };
 
   // Trocar de conta (cobrar outra parte de uma conta repartida) recomeça do
   // NIF e dos pontos daquela conta — nunca herda os da anterior. E fecha a
@@ -1413,6 +1470,8 @@ export default function PosFinalizar({
             ligacao={ligacao}
             onLer={() => setALerQr(true)}
             onRemover={() => mudarLigacao(null)}
+            onPreferencia={mudarPreferencia}
+            aMudarPreferencia={aMudarPreferencia}
             desativado={aEmitir || congelada}
           />
           {/* Montada só enquanto está aberta: desmontar é o que desliga a

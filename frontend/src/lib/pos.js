@@ -282,6 +282,16 @@ export const MSG_PONTOS_SEM_RESPOSTA =
 export const lerQrDePontos = async (vendaId, codigo) =>
   (await api.post('/pos/pontos/ler', { venda_id: vendaId, codigo })).data;
 
+// `POST /pos/pontos/preferencia` → `{ fatura_por_email }`. **O que conta é o
+// que o servidor devolve, e não o que se pediu:** quem grava a preferência é a
+// app (é dela o consentimento do cliente, e é ela que o audita), e uma recusa
+// — a ligação já usada, o QR lido há muito — não pode ficar no cartão como se
+// tivesse passado. A conta vai no pedido pela razão do `ler`: o servidor
+// confirma que está aberta e é desta loja.
+export const guardarPreferenciaDeFaturaPorEmail = async (vendaId, ligacaoId, valor) =>
+  (await api.post('/pos/pontos/preferencia',
+    { venda_id: vendaId, ligacao_id: ligacaoId, valor })).data;
+
 
 // **O que está no campo é mesmo um QR?** Responde-se aqui e não no servidor,
 // porque a pergunta não é sobre a conta de ninguém: é sobre o FORMATO do que
