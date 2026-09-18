@@ -543,6 +543,13 @@ export default function PosFaturacao({ caixa, onContaCopiada }) {
   // Contado sobre a lista INTEIRA e não sobre a filtrada: é o número que diz
   // se vale a pena carregar no botão, e um número que mudasse com a pesquisa
   // respondia a outra pergunta.
+  //
+  // **E a lista traz TODAS as que estão por enviar**, mesmo as mais antigas do
+  // que o tecto de documentos que a página mostra (`documentos.py`:
+  // `listar_documentos`). Sem isso, este número e o do alarme do balcão eram
+  // dois conjuntos diferentes com o mesmo nome: o alarme conta a loja inteira,
+  // e passados 200 documentos ele acendia com a lista a dizer «Nenhuma fatura
+  // desta loja está à espera de ir por email».
   const porEnviar = (lista?.documentos || [])
     .filter((d) => d.fatura_email_por_enviar).length;
 

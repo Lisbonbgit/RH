@@ -288,6 +288,48 @@ def test_um_pendente_ACABADO_DE_NASCER_nao_esta_por_enviar(monkeypatch):
     assert linha["fatura_email_por_enviar"] is False
 
 
+def test_uma_fatura_POR_ENVIAR_mais_antiga_do_que_o_TECTO_entra_na_lista(monkeypatch):
+    """**O alarme e o botão «Por enviar» contavam conjuntos diferentes.** O
+    predicado é o mesmo, mas o alarme do balcão conta todas as linhas da loja —
+    sem limite de tempo, sobre uma colecção sem TTL — e o botão deduzia-se da
+    página de `_LIMITE_LISTA` documentos. Passados 200 documentos (um dia numa
+    loja movimentada), o alarme acendia e a lista respondia «Nenhuma fatura
+    desta loja está à espera de ir por email»: a operadora sem por onde dar o
+    papel a um cliente que ficou sem email E sem talão.
+
+    Aqui a fatura por enviar é a MAIS ANTIGA de 201, e o que se afirma é que os
+    dois números batem certo — o do alarme, contado pela rota real do balcão, e
+    o que a lista marca."""
+    from faturacao import impressao as imp_mod
+    antiga = _documento(id="doc-antiga", numero="FS 05P2026/1799",
+                        venda_id="venda-antiga", ext_ref="e-antiga",
+                        emitido_em="2026-08-20T10:00:00+00:00")
+    recentes = [
+        _documento(id="doc-%03d" % i, numero="FS 05P2026/%d" % (2000 + i),
+                   venda_id="venda-%03d" % i, ext_ref="e-%03d" % i,
+                   emitido_em="2026-08-21T%02d:%02d:00+00:00" % (i // 60, i % 60))
+        for i in range(doc_mod._LIMITE_LISTA)
+    ]
+    db = _db([], documentos=recentes + [antiga], vendas=[],
+             pontos_app=[{
+                 "chave": "fatura_email:doc-antiga", "tipo": "fatura_email",
+                 "loja_id": "loja-1", "estado": "falhado",
+                 "criado_em": "2026-08-20T10:00:00+00:00",
+             }])
+    monkeypatch.setattr(doc_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(imp_mod, "obter_db", lambda: db)
+
+    resposta = _corre(listar_documentos(operador=_operador()))
+
+    por_enviar = [d for d in resposta["documentos"] if d["fatura_email_por_enviar"]]
+    assert [d["numero"] for d in por_enviar] == ["FS 05P2026/1799"], (
+        "a fatura por enviar caiu para fora do tecto da página")
+    alarme = _corre(imp_mod.estado_da_impressao(operador=_operador()))
+    assert len(por_enviar) == alarme["emails_falhados"], (
+        "o alarme do balcão e o botão «Por enviar» têm de contar o MESMO "
+        "conjunto, não só usar o mesmo predicado")
+
+
 def test_a_lista_vem_da_mais_recente_para_a_mais_antiga(monkeypatch):
     """A fatura que o cliente veio buscar é quase sempre das últimas.
 

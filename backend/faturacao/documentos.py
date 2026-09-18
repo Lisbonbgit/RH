@@ -36,6 +36,12 @@ que turno comprou.
   cliente que volta. A resposta traz `ha_mais`, e o ecrã DIZ que está a
   mostrar as N mais recentes: uma lista truncada que não se assume é uma
   lista que mente sobre o que não encontrou.
+  **Com uma excepção, e é o que impede a mentira ao contrário:** as faturas
+  que estão POR ENVIAR por email entram na página mesmo que sejam mais
+  antigas do que o tecto. O alarme do balcão conta-as sobre a loja inteira
+  (`impressao.estado_da_impressao`); deixadas de fora, o aviso acendia e a
+  lista respondia «Nenhuma fatura desta loja está à espera de ir por email» —
+  e é a única fatura desta casa em que não há papel nenhum a compensar.
 
 ## O dinheiro é do servidor, e vem de quem já o somou
 
@@ -326,26 +332,31 @@ def _documento_na_lista(documento: Dict, venda: Optional[Dict],
     return linha
 
 
-async def _ids_por_enviar(db, loja_id: str, documentos: List[Dict]) -> set:
-    """Os ids desta PÁGINA de documentos que têm uma linha `fatura_email` por
-    enviar — pelo MESMO predicado que o alarme da loja conta
+async def _ids_por_enviar(db, loja_id: str) -> set:
+    """Os ids dos documentos DESTA LOJA com uma linha `fatura_email` por enviar
+    — pelo MESMO predicado que o alarme do balcão conta
     (`pontos_app.filtro_das_faturas_por_enviar`). Uma segunda decisão aqui era
     a divergência que essa função existe para não deixar existir: o botão do
-    separador Faturação e o alarme do balcão têm de contar a mesma coisa.
+    separador Faturação e o alarme têm de contar a mesma coisa.
 
-    Restrita às chaves `fatura_email:<id>` desta página, e não a todas as da
-    loja: a fila não tem TTL e só cresce, e a pergunta é sempre sobre os
-    documentos que já estão na mão."""
-    ids = [d["id"] for d in documentos if d.get("id")]
-    if not ids:
-        return set()
-    chaves = ["fatura_email:%s" % i for i in ids]
+    **A pergunta é sobre a LOJA e não sobre a página, e é essa a correcção.**
+    Restrita às chaves desta página de `_LIMITE_LISTA` documentos, o predicado
+    era o mesmo mas o CONJUNTO não: o alarme conta todas as linhas da loja, sem
+    limite de tempo, sobre uma colecção que não tem TTL. Passados 200
+    documentos — um dia numa loja movimentada — o alarme acendia e a lista
+    dizia «Nenhuma fatura desta loja está à espera de ir por email», com o
+    cliente daquela fatura sem email e sem papel. Quem a puxa para a página é a
+    `listar_documentos`, aqui em baixo.
+
+    O tecto é o da lista, e por isso são no máximo `_LIMITE_LISTA` ids: são
+    FALHAS, e o normal é zero. Uma loja com mais de 200 por enviar tem o
+    pipeline do email em baixo há dias, e aí quem fala é o alarme do balcão —
+    que continua a contar todas, porque conta por `count_documents`."""
     linhas = await db[COLECOES["pontos_app"]].find(
-        {**filtro_das_faturas_por_enviar(loja_id, _agora()),
-         "chave": {"$in": chaves}},
+        filtro_das_faturas_por_enviar(loja_id, _agora()),
         {"_id": 0, "chave": 1},
-    ).to_list(len(chaves))
-    return {l["chave"].split(":", 1)[1] for l in linhas}
+    ).to_list(_LIMITE_LISTA)
+    return {l["chave"].split(":", 1)[1] for l in linhas if l.get("chave")}
 
 
 @router.get("/pos/documentos")
@@ -373,10 +384,27 @@ async def listar_documentos(operador: Dict = Depends(operador_atual)) -> dict:
     ha_mais = len(documentos) > _LIMITE_LISTA
     documentos = documentos[:_LIMITE_LISTA]
 
+    # **As que estão POR ENVIAR entram na página venham de onde vierem.** O
+    # botão «Por enviar» do separador conta as linhas que trazem
+    # `fatura_email_por_enviar`, e o alarme do balcão conta a loja inteira: se
+    # uma fatura por enviar ficasse de fora deste tecto, o alarme acendia e a
+    # lista dizia que não havia nada — a operadora sem por onde dar o papel a
+    # um cliente que ficou sem email E sem talão. São sempre um punhado (são
+    # falhas, e o normal é nenhuma), e por serem mais antigas do que a página
+    # entram no fim, que é onde a ordem por data as põe.
+    por_enviar_ids = await _ids_por_enviar(db, operador["loja_id"])
+    em_falta = sorted(por_enviar_ids - {d.get("id") for d in documentos})
+    if em_falta:
+        documentos += await (
+            db[COLECOES["documentos"]]
+            .find({"loja_id": operador["loja_id"], "id": {"$in": em_falta}})
+            .sort("emitido_em", -1)
+            .to_list(len(em_falta))
+        )
+
     vendas = await _vendas_por_id(
         db, [d["venda_id"] for d in documentos if d.get("venda_id")]
     )
-    por_enviar_ids = await _ids_por_enviar(db, operador["loja_id"], documentos)
     return {
         "documentos": [
             _documento_na_lista(
