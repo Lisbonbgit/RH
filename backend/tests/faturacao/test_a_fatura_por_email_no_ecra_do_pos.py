@@ -231,3 +231,77 @@ def test_a_preferencia_NAO_viaja_no_corpo_do_EMITIR(cartao):
     assert len(cartao["corpos"]) == 1, cartao["corpos"]
     assert cartao["corpos"][0]["pontos_ligacao"] == {
         "id": "lig-1", "primeiro_nome": "Ana"}
+
+
+# --- A resposta que chega depois de o cliente já ter saído do ecrã ------------
+
+
+@pytest.fixture(scope="module")
+def tardia(tmp_path_factory):
+    """Carrega no botão da preferência e, **com o pedido ainda em voo**, tira o
+    cliente da fatura pelo «Remover». Só depois é que o servidor responde — a
+    dizer que sim, que ficou por email."""
+    cenario = _no_finalizar("\n".join([
+        # A preferência começa DESLIGADA: o botão diz «Enviar por email», e o
+        # que o servidor vai responder (`true`) é a resposta mais perigosa que
+        # há — a que, escrita às cegas, põe o cliente de volta no cartão a
+        # prometer um email que ninguém pediu.
+        "RESPOSTAS_POS['POST /pos/pontos/ler'] = () => ({ data: {",
+        "  ligacao_id: 'lig-1', primeiro_nome: 'Ana', fatura_por_email: false,",
+        "  email: %s } });" % json.dumps(_EMAIL_DO_CLIENTE),
+        # Fica pendurada até ao `soltar`: é a única maneira de pôr o dedo da
+        # operadora ENTRE o pedido e a resposta, que é onde o defeito vive.
+        "let soltar = null;",
+        "RESPOSTAS_POS['POST /pos/pontos/preferencia'] =",
+        "  () => new Promise((r) => { soltar = r; });",
+    ]))
+    return _correr("\n".join([
+        cenario,
+        "const temCartao = () => !!alvo.querySelector('[data-testid=\"cartao-pontos\"]');",
+        # O «Remover» DO CARTÃO, e vivo. Scoped ao cartão porque é ali que o
+        # defeito se fecharia à martelada — desligar o botão enquanto o pedido
+        # voa fecha esta porta e deixa a outra (trocar de conta) aberta, e de
+        # caminho prende a mão da operadora a um pedido que não é dela.
+        "const removerVivo = () => [...alvo.querySelectorAll(",
+        "  '[data-testid=\"cartao-pontos\"] button')].find(",
+        "  (b) => (b.textContent || '').includes('Remover') && !b.disabled);",
+        "await carregar_em('Ler QR do cliente');",
+        "await lerComOLeitor(alvo, %s);" % json.dumps(_CODIGO),
+        "await carregar_em('Enviar por email');",
+        "const removerEstavaVivo = !!removerVivo();",
+        "if (removerEstavaVivo) await act(async () => { removerVivo().click(); });",
+        "const cartaoLogoAposRemover = temCartao();",
+        # E agora o servidor responde — tarde, e a dizer que sim.
+        "await act(async () => { soltar({ data: { fatura_por_email: true } }); });",
+        "await act(async () => {});",
+        "const cartaoDepoisDaResposta = temCartao();",
+        "const ecraDepois = textoVisivel(alvo);",
+        "const guardadaDepois = lib.lerPontosDaConta('v-1');",
+        _EMITIR,
+        "process.stdout.write(JSON.stringify({ removerEstavaVivo,",
+        "  cartaoLogoAposRemover, cartaoDepoisDaResposta, ecraDepois,",
+        "  guardadaDepois, emitirVivo, corpos }));",
+    ]), tmp_path_factory, "tardia-email")
+
+
+def test_o_Remover_fica_vivo_enquanto_a_preferencia_esta_em_voo(tardia):
+    """Tirar o cliente da fatura não espera pela app. O pedido da preferência
+    é do cliente; o «Remover» é da operadora, e a fila é dela."""
+    assert tardia["removerEstavaVivo"] is True
+    assert tardia["cartaoLogoAposRemover"] is False
+
+
+def test_uma_resposta_TARDIA_nao_ressuscita_o_cliente_ja_removido(tardia):
+    """**O cartão a dizer uma coisa e a verdade ser outra, desta vez pelo
+    relógio.** Com o pedido em voo e o cliente já removido, um
+    `mudarLigacao({ ...ligacao, ... })` a seguir ao `await` escrevia a ligação
+    capturada no instante do toque: o cliente voltava ao cartão, à gaveta
+    `pos_pontos_da_conta`, e daí ao `pontos_ligacao` do EMITIR — pontos para
+    uma pessoa que a operadora tinha acabado de tirar da fatura."""
+    assert tardia["cartaoDepoisDaResposta"] is False, tardia["ecraDepois"][:600]
+    assert "Ler QR do cliente" in tardia["ecraDepois"], tardia["ecraDepois"][:600]
+    assert "Pontos para: Ana" not in tardia["ecraDepois"], tardia["ecraDepois"][:600]
+    assert tardia["guardadaDepois"] is None
+    assert tardia["emitirVivo"] is True
+    assert len(tardia["corpos"]) == 1, tardia["corpos"]
+    assert tardia["corpos"][0]["pontos_ligacao"] is None, tardia["corpos"][0]

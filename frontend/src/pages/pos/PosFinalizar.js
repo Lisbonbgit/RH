@@ -1076,6 +1076,15 @@ export default function PosFinalizar({
     guardarPontosDaConta(venda?.id, nova);
   };
   const [aMudarPreferencia, setAMudarPreferencia] = useState(false);
+  // **Quem está no cartão AGORA**, e não quem lá estava no instante do toque.
+  // A resposta da preferência pode chegar com o cliente já fora da fatura: o
+  // «Remover» fica vivo enquanto o pedido voa (e tem de ficar — tirar o
+  // cliente é da operadora e a fila é dela), e trocar de parte da conta troca
+  // a ligação por baixo. Escrita às cegas a seguir ao `await`, a resposta
+  // RESSUSCITAVA o cliente removido: no cartão, na gaveta, e daí no
+  // `pontos_ligacao` do EMITIR. Mesmo molde do `lerAgora` do `PosLerQr`.
+  const ligacaoAgora = useRef(ligacao);
+  ligacaoAgora.current = ligacao;
   // **Primeiro o servidor, e depois o que ELE devolveu.** A preferência é um
   // consentimento do cliente: quem a grava (e a audita, e avisa o telemóvel
   // dele) é a app, através do servidor. Escrever no ecrã antes da resposta era
@@ -1090,6 +1099,9 @@ export default function PosFinalizar({
     setAMudarPreferencia(true);
     try {
       const dados = await guardarPreferenciaDeFaturaPorEmail(venda?.id, ligacao.id, valor);
+      // O cartão já não é deste cliente: esta resposta é de uma pergunta que
+      // ficou sem dono. Cala-se — escrevê-la era pôr de volta quem saiu.
+      if (ligacaoAgora.current?.id !== ligacao.id) return;
       mudarLigacao({ ...ligacao, fatura_por_email: !!(dados && dados.fatura_por_email) });
     } catch (error) {
       toast.error(detalhesErroPos(
