@@ -317,6 +317,119 @@ def test_a_rota_de_ler_esta_montada_no_router_do_modulo():
                for r in router.routes)
 
 
+# --- A preferência do cartão (ligar/desligar, depois de o QR já estar lido) -----
+#
+# `POST /pos/pontos/preferencia` é o botão do cartão do Finalizar (plano C):
+# troca a preferência de fatura por email de uma ligação já lida. O contrato é
+# o mesmo `fat_pontos_qr` do `ler` — a app decide, o servidor grava, e a
+# resposta ao ecrã é sempre o que FICOU, nunca o que se pediu.
+
+
+class _ColeccaoDoQR(ColeccaoFalsa):
+    """`ColeccaoFalsa` não sabe apagar em lote — só esta rota o precisa, e só
+    por `ligacao_id`. Não há índice único sobre o campo (só o TTL de
+    `criada_em`), por isso é `delete_many` a sério e não `delete_one`: uma
+    leitura repetida de antes desta task pode ter deixado mais do que uma
+    linha para trás, e uma que ficasse era o mesmo defeito outra vez."""
+
+    async def delete_many(self, filtro):
+        alvo = filtro["ligacao_id"]
+        antes = len(self._documentos)
+        self._documentos[:] = [d for d in self._documentos if d.get("ligacao_id") != alvo]
+        return type("R", (), {"deleted_count": antes - len(self._documentos)})()
+
+
+def _db_da_preferencia(qr=None, vendas=None):
+    return DbFalsa({
+        COLECOES["vendas"]: ColeccaoFalsa([_venda_aberta()] if vendas is None else vendas),
+        COLECOES["lojas"]: ColeccaoFalsa([{"id": "loja-1", "nome": "Belém"}]),
+        COLECOES["pontos_qr"]: _ColeccaoDoQR([] if qr is None else qr),
+    })
+
+
+def _linha_do_qr(**over):
+    linha = {"ligacao_id": "lig-1", "fatura_por_email": True,
+             "criada_em": datetime.now(timezone.utc)}
+    linha.update(over)
+    return linha
+
+
+def _preferencia(monkeypatch, db, valor, venda_id="venda-1", ligacao_id="lig-1"):
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+    return _corre(pontos_app.preferencia_de_pontos(
+        pontos_app.PedidoPreferenciaPontos(
+            venda_id=venda_id, ligacao_id=ligacao_id, valor=valor),
+        operador=_operador()))
+
+
+def test_ligar_a_preferencia_grava_a_linha_do_qr_e_devolve_o_que_a_app_disse(monkeypatch, app):
+    app.responde(200, {"estado": "gravada", "fatura_por_email": True})
+    db = _db_da_preferencia()
+
+    assert _preferencia(monkeypatch, db, valor=True) == {"fatura_por_email": True}
+
+    [linha] = db[COLECOES["pontos_qr"]]._documentos
+    assert (linha["ligacao_id"], linha["fatura_por_email"]) == ("lig-1", True)
+
+
+def test_desligar_a_preferencia_APAGA_a_linha_do_qr(monkeypatch, app):
+    """É este teste que impede o talão de continuar suprimido depois de o
+    cliente pedir papel: sem o apagamento, a linha antiga (`fatura_por_email:
+    True`) ficava viva e `enfileirar_fatura_email` continuava a saltar o
+    papel."""
+    app.responde(200, {"estado": "gravada", "fatura_por_email": False})
+    db = _db_da_preferencia(qr=[_linha_do_qr()])
+
+    assert _preferencia(monkeypatch, db, valor=False) == {"fatura_por_email": False}
+    assert db[COLECOES["pontos_qr"]]._documentos == []
+
+
+def test_ligar_duas_vezes_nao_deixa_duas_linhas(monkeypatch, app):
+    app.responde(200, {"estado": "gravada", "fatura_por_email": True})
+    db = _db_da_preferencia()
+
+    _preferencia(monkeypatch, db, valor=True)
+    _preferencia(monkeypatch, db, valor=True)
+
+    assert len(db[COLECOES["pontos_qr"]]._documentos) == 1
+
+
+def test_a_venda_de_outra_loja_nao_deixa_mexer_na_preferencia(monkeypatch, app):
+    db = _db_da_preferencia(vendas=[_venda_aberta(loja_id="loja-2")])
+    with pytest.raises(HTTPException) as e:
+        _preferencia(monkeypatch, db, valor=True)
+    assert (e.value.status_code, e.value.detail) == (404, "Venda não encontrada.")
+    assert app.pedidos == []
+
+
+def test_a_venda_ja_emitida_nao_deixa_mexer_na_preferencia(monkeypatch, app):
+    db = _db_da_preferencia(vendas=[_venda_aberta(estado="emitida")])
+    with pytest.raises(HTTPException) as e:
+        _preferencia(monkeypatch, db, valor=True)
+    assert e.value.status_code == 409
+    assert app.pedidos == []
+
+
+def test_uma_recusa_da_app_vira_uma_frase_em_portugues(monkeypatch, app):
+    app.responde(200, {"estado": "recusado", "motivo": "ligacao_ja_usada"})
+    db = _db_da_preferencia()
+
+    with pytest.raises(HTTPException) as e:
+        _preferencia(monkeypatch, db, valor=True)
+    assert 400 <= e.value.status_code < 500
+    assert "ligacao_ja_usada" not in e.value.detail
+    assert e.value.detail  # uma frase que diga à funcionária o que fazer
+
+
+def test_a_app_em_baixo_devolve_503_e_nao_toca_no_qr(monkeypatch, app):
+    app.rebenta(httpx.ReadTimeout("a app não respondeu"))
+    linha_antiga = _linha_do_qr()
+    db = _db_da_preferencia(qr=[dict(linha_antiga)])
+
+    with pytest.raises(HTTPException) as e:
+        _preferencia(monkeypatch, db, valor=False)
+    assert (e.value.status_code, e.value.detail) == (503, _MSG_APP)
+    assert db[COLECOES["pontos_qr"]]._documentos == [linha_antiga]
 
 
 # --- A fila e o envio ---------------------------------------------------------

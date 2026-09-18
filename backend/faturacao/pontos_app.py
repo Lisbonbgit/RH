@@ -136,10 +136,17 @@ async def _gravar_qr_da_ligacao(db, ligacao_id: str, fatura_por_email: bool) -> 
 
     **Nunca levanta.** Uma escrita falhada é papel a sair, que é o lado seguro;
     levantar era um 503 ao balcão depois de a app já ter consumido o código do
-    QR, e a funcionária a pedir ao cliente um código novo que já não servia."""
+    QR, e a funcionária a pedir ao cliente um código novo que já não servia.
+
+    **Idempotente por leitura antes de escrever.** Chamada duas vezes para a
+    mesma ligação (o botão «Ligar» do cartão carregado duas vezes) não pode
+    deixar duas linhas — não há índice único sobre `ligacao_id` (só o TTL de
+    `criada_em`) a impedi-lo."""
     if not fatura_por_email:
         return False
     try:
+        if await db[COLECOES["pontos_qr"]].find_one({"ligacao_id": ligacao_id}):
+            return True
         await db[COLECOES["pontos_qr"]].insert_one({
             "ligacao_id": ligacao_id,
             "fatura_por_email": True,
@@ -226,6 +233,117 @@ async def ler_qr_de_pontos(
         "fatura_por_email": await _gravar_qr_da_ligacao(
             db, ligacao_id, bool(corpo.get("fatura_por_email"))),
     }
+
+
+# --- A preferência (o botão do cartão, depois de o QR já estar lido) -----------
+
+
+async def _apagar_qr_da_ligacao(db, ligacao_id: str) -> None:
+    """O inverso de `_gravar_qr_da_ligacao`: tira a linha de `fat_pontos_qr`
+    desta ligação.
+
+    **É este apagamento, e não a falta de escrita, que faz o «Voltar ao papel»
+    funcionar.** `_gravar_qr_da_ligacao` só grava quando a preferência está
+    LIGADA e nunca apaga nada — sem isto, desligar deixava a linha antiga viva
+    e o talão do cliente continuava suprimido depois de ele ter pedido papel.
+
+    `delete_many` e não `delete_one`: não há índice único sobre `ligacao_id`
+    (só o TTL de `criada_em`), por isso a colecção pode ter mais do que uma
+    linha para a mesma ligação, e uma que ficasse para trás era o mesmo
+    defeito outra vez."""
+    await db[COLECOES["pontos_qr"]].delete_many({"ligacao_id": ligacao_id})
+
+
+class PedidoPreferenciaPontos(BaseModel):
+    venda_id: str = Field(min_length=1, max_length=100)
+    ligacao_id: str = Field(min_length=1, max_length=100)
+    valor: bool
+
+
+_MSG_LIGACAO_JA_USADA = (
+    "Este QR já foi usado nesta ou noutra fatura — peça ao cliente para o "
+    "abrir outra vez."
+)
+_MSG_LIGACAO_EXPIRADA = (
+    "A leitura do QR já expirou — peça ao cliente para o mostrar outra vez."
+)
+_MSG_RECUSA_GENERICA = (
+    "Não foi possível gravar a preferência agora — peça ao cliente para "
+    "mostrar o QR outra vez."
+)
+
+# O motivo CRU da app (`_recusa` do lado dela é 200 com o motivo, nunca um
+# 4xx) → (status HTTP, frase em português). Um motivo que não esteja aqui leva
+# a frase genérica — mas NUNCA o código-máquina, que não diz à funcionária o
+# que fazer a seguir.
+_RECUSAS_DA_PREFERENCIA = {
+    "ligacao_desconhecida": (409, _MSG_LIGACAO_JA_USADA),
+    "ligacao_ja_usada": (409, _MSG_LIGACAO_JA_USADA),
+    "fora_da_janela": (409, _MSG_LIGACAO_EXPIRADA),
+}
+
+
+@router.post("/pos/pontos/preferencia")
+async def preferencia_de_pontos(
+    dados: PedidoPreferenciaPontos, operador: Dict = Depends(operador_atual)
+) -> dict:
+    """Liga ou desliga a fatura por email de uma ligação já lida — o botão do
+    cartão do Finalizar.
+
+    **A venda confere-se ANTES de falar com a app**, o mesmo molde do
+    `ler_qr_de_pontos` — mas aqui a razão não é poupar um QR de uso único (essa
+    ligação já foi consumida na leitura): é que mudar a preferência de uma
+    venda que já não está aberta não muda nada nenhures, e só mentia ao ecrã.
+
+    **A app é quem decide** — é dela o consentimento do cliente e a auditoria
+    de quem ligou a preferência e onde. A resposta que sai daqui nunca é o
+    `valor` pedido: é o que FICOU em `fat_pontos_qr` depois de a app
+    responder, a mesma regra do `ler`."""
+    db = obter_db()
+    venda = await _obter_venda_da_loja(db, dados.venda_id, operador["loja_id"])
+    _garante_aberta(venda)
+    loja = await db[COLECOES["lojas"]].find_one(
+        {"id": operador["loja_id"]}, {"_id": 0, "nome": 1})
+    try:
+        resposta = await _chamar_app("preferencia", {
+            "ligacao_id": dados.ligacao_id,
+            "valor": dados.valor,
+            "loja_nome": (loja or {}).get("nome") or "",
+            "operador_nome": operador.get("nome") or "",
+        })
+    # O mesmo `except Exception` do `ler`, e pela mesma razão: um erro de dedo
+    # na PORTA do `APP_LACAI_URL` levanta `httpx.InvalidURL`, que não é
+    # `HTTPError`. Para a funcionária tudo o que vier daqui é «a app não
+    # respondeu» — nunca um «Internal Server Error».
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[faturacao] preferência de pontos (venda %s, ligação %s): a app "
+            "não respondeu — %s: %s", dados.venda_id, dados.ligacao_id,
+            type(e).__name__, e)
+        raise HTTPException(status_code=503, detail=_MSG_APP_INDISPONIVEL)
+    corpo = _json_ou_nada(resposta) if resposta.status_code == 200 else None
+    estado = corpo.get("estado") if isinstance(corpo, dict) else None
+    if estado == "recusado":
+        status, frase = _RECUSAS_DA_PREFERENCIA.get(
+            corpo.get("motivo"), (409, _MSG_RECUSA_GENERICA))
+        raise HTTPException(status_code=status, detail=frase)
+    if estado != "gravada":
+        # 401 (chave trocada), 5xx, ou um 200 sem a forma do contrato: a
+        # mesma frase do `ler` — para a funcionária, a app não está a
+        # responder.
+        logger.error(
+            "[faturacao] preferência de pontos (venda %s, ligação %s): "
+            "resposta inesperada da app (HTTP %s): %s", dados.venda_id,
+            dados.ligacao_id, resposta.status_code, resposta.text[:200])
+        raise HTTPException(status_code=503, detail=_MSG_APP_INDISPONIVEL)
+    fatura_por_email = bool(corpo.get("fatura_por_email"))
+    if fatura_por_email:
+        gravado = await _gravar_qr_da_ligacao(db, dados.ligacao_id, True)
+    else:
+        # Apagar, e não só deixar de escrever — ver `_apagar_qr_da_ligacao`.
+        await _apagar_qr_da_ligacao(db, dados.ligacao_id)
+        gravado = False
+    return {"fatura_por_email": gravado}
 
 
 # --- A fila -------------------------------------------------------------------
