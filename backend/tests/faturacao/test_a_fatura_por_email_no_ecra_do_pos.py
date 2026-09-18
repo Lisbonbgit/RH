@@ -305,3 +305,143 @@ def test_uma_resposta_TARDIA_nao_ressuscita_o_cliente_ja_removido(tardia):
     assert tardia["emitirVivo"] is True
     assert len(tardia["corpos"]) == 1, tardia["corpos"]
     assert tardia["corpos"][0]["pontos_ligacao"] is None, tardia["corpos"][0]
+
+
+# --- Depois do EMITIR ---------------------------------------------------------
+#
+# Quatro montagens, porque são quatro regras diferentes e cada uma tem de poder
+# falhar sozinha. TRÊS são as condições do servidor que este lado consegue
+# aplicar — a preferência, o `modo` e o `vendus_document_id` —, e a quarta é a
+# decisão do dono sobre o NIF, provada pelo avesso: a spec REVOGOU essa regra, e
+# o teste existe para que repô-la fique vermelho. As respostas do `finalizar`
+# são a do `_no_finalizar`, com o que é preciso trocado.
+
+_FRASE_EMAIL = "Fatura vai por email — não é preciso esperar pelo papel."
+_FRASE_PAPEL = "assim que o agente de impressão da loja existir"
+
+_LIDO_COM_EMAIL = "\n".join([
+    "RESPOSTAS_POS['POST /pos/pontos/ler'] = () => ({ data: {",
+    "  ligacao_id: 'lig-1', primeiro_nome: 'Ana', fatura_por_email: true } });",
+])
+
+
+def _emitiu(extra, tmp_path_factory, nome):
+    cenario = _no_finalizar("\n".join([_LIDO_COM_EMAIL, extra]))
+    return _correr("\n".join([
+        cenario,
+        "await carregar_em('Ler QR do cliente');",
+        "await lerComOLeitor(alvo, %s);" % json.dumps(_CODIGO),
+        _EMITIR,
+        "process.stdout.write(JSON.stringify({",
+        "  emitido: textoVisivel(alvo), emitirVivo, corpos }));",
+    ]), tmp_path_factory, nome)
+
+
+@pytest.fixture(scope="module")
+def emitida_por_email(tmp_path_factory):
+    return _emitiu("", tmp_path_factory, "emitida-email")
+
+
+@pytest.fixture(scope="module")
+def emitida_com_nif(tmp_path_factory):
+    """**Com NIF, e com a preferência ligada: vai por email à mesma.**
+
+    As DUAS fontes do NIF na MESMA montagem, de propósito — a que a operadora
+    tem escrita na caixa (a gaveta da conta, de onde o ecrã a lê ao montar:
+    `lerNifDaConta`, `PosFinalizar.js:1034`) e a que ficou gravada na venda e
+    volta na resposta do EMITIR (`cliente_nif`, `fiscal.py:2308`). Se alguém
+    voltar a pôr o NIF a decidir — por uma delas ou pela outra —, é aqui que
+    fica vermelho, e é por isso que não são duas montagens."""
+    return _emitiu("\n".join([
+        "lib.guardarNifDaConta('v-1', '517542510');",
+        "RESPOSTAS_POS['POST /pos/venda/v-1/finalizar'] = () => ({ data: %s });"
+        % json.dumps(dict(_EMITIDA, cliente_nif="517542510"), ensure_ascii=False),
+    ]), tmp_path_factory, "emitida-com-nif")
+
+
+@pytest.fixture(scope="module")
+def emitida_em_testes(tmp_path_factory):
+    """Modo `tests`: papel e nenhum email — o documento não vale nada e não há
+    nada para mandar a ninguém."""
+    em_testes = dict(_EMITIDA, documento=dict(_EMITIDA["documento"], modo="tests"))
+    return _emitiu(
+        "RESPOSTAS_POS['POST /pos/venda/v-1/finalizar'] = () => ({ data: %s });"
+        % json.dumps(em_testes, ensure_ascii=False),
+        tmp_path_factory, "emitida-testes")
+
+
+@pytest.fixture(scope="module")
+def emitida_sem_id_do_vendus(tmp_path_factory):
+    """**Sem `vendus_document_id` o servidor manda PAPEL, e o ecrã tem de dizer
+    o mesmo.**
+
+    Não é um caso inventado: um 2xx do Vendus com ATCUD e sem `id` é aceite de
+    propósito (`vendus/emissao.py:702` só recusa quando faltam os DOIS) e grava
+    `vendus_document_id: None`. Nesse documento não há PDF para ir buscar — é o
+    mesmo caso que responde 422 no botão «PDF da fatura»
+    (`documentos.py:894`) —, por isso `enfileirar_fatura_email` devolve `False`
+    (plano B) e o talão sai pela `enfileirar_venda_emitida`.
+
+    O ecrã VÊ este campo: vem no `_resposta_documento` (`fiscal.py:1988-1998`) e
+    o próprio `PosFinalizar.js:961` já o desenha. Prometer email aqui mandava a
+    operadora dar o cliente por servido, e ele saía sem talão e sem email."""
+    sem_id = dict(_EMITIDA,
+                  documento=dict(_EMITIDA["documento"], vendus_document_id=None))
+    return _emitiu(
+        "RESPOSTAS_POS['POST /pos/venda/v-1/finalizar'] = () => ({ data: %s });"
+        % json.dumps(sem_id, ensure_ascii=False),
+        tmp_path_factory, "emitida-sem-id")
+
+
+def test_com_a_preferencia_ligada_o_ecra_do_documento_diz_que_vai_por_email(emitida_por_email):
+    assert _FRASE_EMAIL in emitida_por_email["emitido"], \
+        emitida_por_email["emitido"][:800]
+    assert _FRASE_PAPEL not in emitida_por_email["emitido"], \
+        emitida_por_email["emitido"][:800]
+
+
+def test_o_ecra_NAO_diz_enviada_no_instante_do_EMITIR(emitida_por_email):
+    """No instante do EMITIR o envio ainda não aconteceu: o `tentar_ja` agenda
+    e volta logo (`pontos_app.py:253-267`). «Enviada» é uma afirmação sobre uma
+    coisa que pode ainda falhar treze vezes — e o ecrã não afirma o que não
+    sabe."""
+    ecra = emitida_por_email["emitido"]
+    assert "enviada" not in ecra.lower(), ecra[:800]
+
+
+def test_o_NIF_NAO_muda_a_frase_porque_quem_manda_e_o_seletor(emitida_com_nif):
+    """**O contribuinte deixou de decidir seja o que for** (decisão do dono,
+    2026-09-17): «depende da opção se quer ou não por email a fatura; o seletor
+    é que manda». Com a preferência ligada a fatura vai por email haja ou não
+    haja NIF — o NIF vai escrito nela como sempre foi —, e segue para o email
+    da conta de quem mostrou o QR.
+
+    Ao balcão quem mostra a app e quem pede a fatura são a mesma pessoa; num
+    grupo só uma pessoa fica com os pontos e, quando querem faturas separadas,
+    dividem a conta, e aí cada parte leva o seu QR e o seu NIF.
+
+    **O risco está aceite e escrito:** se uma pessoa do grupo mostrar a app e
+    OUTRA pedir a fatura com o NIF dela sem dividirem a conta, essa fatura vai
+    para o email de quem mostrou a app — e recupera-se a reimprimir no
+    separador Faturação, a um toque."""
+    assert _FRASE_EMAIL in emitida_com_nif["emitido"], \
+        emitida_com_nif["emitido"][:800]
+    assert _FRASE_PAPEL not in emitida_com_nif["emitido"], \
+        emitida_com_nif["emitido"][:800]
+
+
+def test_em_modo_de_TESTES_o_ecra_continua_a_falar_de_PAPEL(emitida_em_testes):
+    assert _FRASE_PAPEL in emitida_em_testes["emitido"], emitida_em_testes["emitido"][:800]
+    assert "por email" not in emitida_em_testes["emitido"], emitida_em_testes["emitido"][:800]
+    # E a faixa do modo continua lá: o documento de testes não vale nada.
+    assert "SEM VALOR FISCAL" in emitida_em_testes["emitido"], \
+        emitida_em_testes["emitido"][:800]
+
+
+def test_um_documento_SEM_id_do_Vendus_fala_de_PAPEL(emitida_sem_id_do_vendus):
+    """**A condição que faltava ao ecrã.** Com a preferência ligada e o modo
+    `normal`, mas sem id do Vendus, o servidor põe o talão na fila — e um ecrã
+    a dizer «não é preciso esperar pelo papel» deixava o cliente sem nada."""
+    ecra = emitida_sem_id_do_vendus["emitido"]
+    assert _FRASE_PAPEL in ecra, ecra[:800]
+    assert "por email" not in ecra, ecra[:800]

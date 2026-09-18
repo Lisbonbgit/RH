@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import {
   ArrowLeft, Pencil, X, ChevronDown, Loader2, AlertTriangle, CheckCircle2,
-  ShieldAlert, Ban, User, Receipt, Printer, CreditCard, Coins, Divide, Scissors, Users,
+  ShieldAlert, Ban, User, Receipt, Printer, Mail, CreditCard, Coins, Divide, Scissors, Users,
   Minus, Plus, Gift, QrCode,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -17,6 +17,7 @@ import {
   temMaisDe2CasasDecimaisPos, avisoDoDocumento, previsaoDoDividir,
   guardarNifDaConta, lerNifDaConta, nifValidoPT,
   guardarPontosDaConta, lerPontosDaConta, guardarPreferenciaDeFaturaPorEmail,
+  aFaturaVaiPorEmail,
 } from '@/lib/pos';
 
 // O ecrã de finalizar (Plano 2C, Task 4): três cartões — Total, Cliente e
@@ -854,7 +855,7 @@ function AvisoErro({ erro }) {
 // 17,35 € paga com 20 €, ela lia "Troco € 2,65", carregava em EMITIR e o 2,65
 // desaparecia. Ficava a tirar o troco de memória, com fila à frente — que é
 // onde os enganos acontecem, e a diferença só aparece no fecho de caixa.
-function DocumentoEmitido({ documento, troco, recuperado, onVoltar, rotuloVoltar }) {
+function DocumentoEmitido({ documento, troco, recuperado, onVoltar, rotuloVoltar, porEmail }) {
   // **O carimbo DESTA fatura**, e não o modo do instante em que a página foi
   // carregada: um turno que começou em `tests` e a que o gestor mudou o
   // servidor a meio tem documentos dos dois tipos à frente, e o que vale para
@@ -980,15 +981,29 @@ function DocumentoEmitido({ documento, troco, recuperado, onVoltar, rotuloVoltar
             <p className="mt-5 font-heading font-bold text-4xl tabular-nums">{euros(documento?.total)}</p>
           </section>
 
-          {/* O talão sai sozinho quando o agente de impressão existir (Plano
+          {/* Para onde vai o documento do cliente. Duas frases, e a diferença
+              entre elas é se alguém tem de esperar ali de pé.
+
+              **Não diz «enviada»**: no instante do EMITIR o envio ainda não
+              aconteceu — o `tentar_ja` agenda em segundo plano e volta logo
+              (`pontos_app.py`). O que se promete é a INTENÇÃO, que é o que
+              este lado sabe; se falhar, aparece no alarme da loja e no
+              relatório da noite, não aqui.
+
+              O talão sai sozinho quando o agente de impressão existir (Plano
               3). Enquanto não existir, isto é uma frase e não um botão: um
               botão "Imprimir" que não imprime nada fazia a operadora carregar
               três vezes e dar o cliente por servido sem talão nenhum. */}
           <section className="rounded-2xl border bg-card p-4 text-sm text-muted-foreground flex items-start gap-2">
-            <Printer className="h-4 w-4 shrink-0 mt-0.5" />
+            {porEmail
+              ? <Mail className="h-4 w-4 shrink-0 mt-0.5" />
+              : <Printer className="h-4 w-4 shrink-0 mt-0.5" />}
             <span>
-              O talão passa a sair sozinho assim que o agente de impressão da loja existir — ainda
-              não existe. Por agora, o documento fica no Vendus e pode ser reimpresso a partir de lá.
+              {porEmail
+                ? 'Fatura vai por email — não é preciso esperar pelo papel.'
+                : 'O talão passa a sair sozinho assim que o agente de impressão da loja '
+                  + 'existir — ainda não existe. Por agora, o documento fica no Vendus e '
+                  + 'pode ser reimpresso a partir de lá.'}
             </span>
           </section>
 
@@ -1408,6 +1423,13 @@ export default function PosFinalizar({
         recuperado={documentoRecuperado}
         onVoltar={onVoltar}
         rotuloVoltar={parte ? 'Voltar às partes' : null}
+        // **O NIF não entra aqui, e é de propósito** (decisão do dono,
+        // 2026-09-17): o seletor do cliente é o único que manda. Com a
+        // preferência ligada a fatura vai por email com NIF e sem NIF — o NIF
+        // vai escrito nela —, para o email da conta de quem mostrou o QR. Nem
+        // `venda?.cliente_nif`, nem `nifTexto`: se algum deles voltar a esta
+        // chamada, o `test_o_NIF_NAO_muda_a_frase...` fica vermelho.
+        porEmail={aFaturaVaiPorEmail({ ligacao, documento })}
       />
     );
   }
