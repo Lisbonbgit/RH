@@ -130,6 +130,27 @@ describe('avisoDaFilaDeImpressao', () => {
     })).toMatch(/não seguiu por email/);
   });
 
+  test('email falhado E papel falhado — saem as DUAS frases, não só a primeira', () => {
+    // O aviso que se engolia. `avisoDaFilaDeImpressao` fazia `return` no ramo
+    // dos emails, e este é o ÚNICO sítio do POS onde os `falhados` aparecem:
+    // com um email por enviar ao mesmo tempo que um papel perdido, a frase do
+    // papel nunca chegava ao ecrã. E o «Já vi os avisos» carimba as duas
+    // colecções no mesmo toque — a operadora dispensava um aviso que nunca
+    // tinha visto, e ficava um cliente sem documento nenhum que ninguém
+    // chegou a saber que existia.
+    const aviso = avisoDaFilaDeImpressao({
+      ...COM_PROGRAMA, emails_falhados: 1, falhados: 2, por_sair: 5,
+    });
+    expect(aviso).toMatch(/não seguiu por email/);
+    expect(aviso).toMatch(/2 papéis não chegaram a sair/);
+    // O email continua à frente — é o caso em que não há papel nenhum a
+    // compensar a falta.
+    expect(aviso.indexOf('email')).toBeLessThan(aviso.indexOf('papéis'));
+    // E o «à espera» continua calado: quem tem coisa perdida não precisa de
+    // ouvir falar de paciência.
+    expect(aviso).not.toMatch(/à espera/);
+  });
+
   test('o FALHADO vence o que está por sair', () => {
     // "Há 2 papéis à espera" ao lado de um que já não vai sair lê-se como
     // paciência; o que a operadora precisa de saber é que um se perdeu.

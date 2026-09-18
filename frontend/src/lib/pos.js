@@ -1713,23 +1713,34 @@ export const avisoDaFilaDeImpressao = (estado) => {
   // em que o cliente fica sem documento nenhum — e a decisão do dono é que,
   // enfileirado o email, o talão NÃO sai. Dizer «2 papéis à espera» por cima
   // disto era responder ao problema pequeno.
+  //
+  // **Mas primeiro não é em vez de: as duas frases SOMAM-SE.** Houve uma
+  // versão em que o email fazia `return` aqui e cortava a função a meio, e
+  // então, com um email falhado ao mesmo tempo que um papel perdido, a frase
+  // dos PAPÉIS — que só existe aqui, em todo o POS — nunca chegava ao ecrã.
+  // E o botão «Já vi os avisos» carimba as duas colecções no mesmo toque: o
+  // aviso do papel que não saiu era dispensado sem nunca ter sido lido, que é
+  // o mesmo que não o ter. A precedência continua a existir, mas só sobre o
+  // `por_sair` — o que está À ESPERA cala-se enquanto houver coisa perdida.
+  const frases = [];
   const emails = Number(estado.emails_falhados || 0);
   if (emails > 0) {
-    return emails === 1
+    frases.push(emails === 1
       ? 'Uma fatura não seguiu por email. Imprima-a pelo separador Faturação e '
         + 'entregue o papel ao cliente.'
       : `${emails} faturas não seguiram por email. Imprima-as pelo separador `
-        + 'Faturação e entregue o papel aos clientes.';
+        + 'Faturação e entregue o papel aos clientes.');
   }
   const falhados = Number(estado.falhados || 0);
   if (falhados > 0) {
-    return falhados === 1
+    frases.push(falhados === 1
       ? 'Um papel não chegou a sair na impressora. Reimprima-o pelo separador '
         + 'Faturação depois de ver o papel e a ligação da impressora.'
       : `${falhados} papéis não chegaram a sair na impressora. Reimprima-os `
         + 'pelo separador Faturação depois de ver o papel e a ligação da '
-        + 'impressora.';
+        + 'impressora.');
   }
+  if (frases.length) return frases.join(' ');
   const porSair = Number(estado.por_sair || 0);
   if (porSair > 0) {
     return porSair === 1
