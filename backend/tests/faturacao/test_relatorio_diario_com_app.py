@@ -383,3 +383,37 @@ def test_o_relatorio_e_montado_COM_a_contagem_do_email(monkeypatch):
 
     _corre(rota._produzir_e_enviar(["a@b.pt"], None))
     assert vistos.get("faturas_por_email") == 5
+
+
+def test_as_faturas_da_LOJA_DA_APP_nao_contam_como_papel():
+    """A app cobra por Stripe e as suas FS nunca passaram por uma impressora.
+
+    Somá-las ao «em papel» punha um chão permanente no número que o dono foi
+    mandado vigiar — a adopção do QR ao balcão — feito de faturas que nunca
+    podem mudar de balde: não há QR para ler numa encomenda paga por Stripe. É
+    a mesma invariante da `caixa`: a loja da app não entra nos números do
+    balcão.
+    """
+    dados = montar_relatorio(
+        dia="2026-09-01", ate="23:30", lojas=list(LOJAS), loja_da_app="loja-app",
+        documentos=[dict(DOC_APP, id="a1"), dict(DOC_APP, id="a2")],
+        turnos=[], faturas_por_email=0)
+
+    assert (dados["geral"]["faturas_por_email"], dados["geral"]["faturas_em_papel"]) == (0, 0)
+    assert "em papel" not in html_do_relatorio(dados)
+
+
+def test_um_documento_SEM_LOJA_conta_como_papel_num_portal_sem_app():
+    """O `loja_da_app and` da exclusão, pela mesma razão que o da `caixa`.
+
+    Sem ele, `None == None` dava por loja da app todo o documento gravado sem
+    `loja_id` — e num portal que nunca configurou a sincronização o «em papel»
+    calava-se em silêncio, que é o pior desfecho para um número que existe para
+    ser vigiado.
+    """
+    dados = montar_relatorio(
+        dia="2026-09-01", ate="23:30", lojas=list(LOJAS),
+        documentos=[dict(DOC_APP, id="s1", loja_id=None)],
+        turnos=[], faturas_por_email=0)
+
+    assert (dados["geral"]["faturas_por_email"], dados["geral"]["faturas_em_papel"]) == (0, 1)

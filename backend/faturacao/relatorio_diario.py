@@ -331,11 +331,25 @@ def montar_relatorio(
     # momento em que o cliente está chateado), e contá-las aqui fazia o número
     # em papel subir sem nada ter mudado no talão da compra.
     #
+    # **A loja da app fica de fora pela mesma razão que as notas de crédito.**
+    # Esta linha é sobre o TALÃO DO BALCÃO: as Faturas Simplificadas que a
+    # sincronização do Vendus grava na loja da app nunca passaram por uma
+    # impressora e nunca podem mudar de balde — não há QR para ler numa
+    # encomenda paga por Stripe. Contá-las punha um chão permanente no «em
+    # papel» que não tem nada que ver com a adopção do QR, que é o número que
+    # esta linha existe para vigiar. É a mesma invariante que este módulo já
+    # aplica à caixa: a loja da app não entra nos números do balcão.
+    #
+    # O `loja_da_app and` não é decorativo — ver o comentário da `caixa`: sem
+    # ele, uma loja gravada sem `id` casava com o `None` de quem não configurou
+    # a sincronização.
+    #
     # O `min` não é decoração: a fila conta-se pelo dia UTC e os documentos pelo
     # dia de LISBOA, e na fronteira podem discordar. Duas linhas do mesmo email a
     # dizerem «4 por email, -1 em papel» era o relatório a acusar-se a si
     # próprio, e quem o lê deixava de acreditar no resto.
-    faturas_de_hoje = [d for d in docs_de_hoje if d.get("tipo") != "NC"]
+    faturas_de_hoje = [d for d in docs_de_hoje if d.get("tipo") != "NC"
+                       and not (loja_da_app and d.get("loja_id") == loja_da_app)]
     por_email = min(faturas_por_email, len(faturas_de_hoje))
 
     return {
