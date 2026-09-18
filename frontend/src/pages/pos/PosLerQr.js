@@ -125,9 +125,10 @@ export default function PosLerQr({ vendaId, onLigada, onFechar }) {
     setALer(true);
     setErro(null);
     try {
-      const { ligacao_id: id, primeiro_nome } = await lerQrDePontos(vendaId, lido);
+      const { ligacao_id: id, primeiro_nome, fatura_por_email } =
+        await lerQrDePontos(vendaId, lido);
       APITO_LIDO();
-      onLigada({ id, primeiro_nome });
+      onLigada({ id, primeiro_nome, fatura_por_email: !!fatura_por_email });
     } catch (error) {
       // 404 e 503 trazem a frase do servidor; sem resposta nenhuma (rede,
       // tecto de espera) a consequência para o balcão é a do 503.
