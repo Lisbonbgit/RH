@@ -88,6 +88,7 @@ from pymongo.errors import DuplicateKeyError
 
 from .auth import gestor_atual
 from .caixa import _obter_caixa_da_loja, _sessao_aberta
+from .deposito import definicoes as definicoes_do_deposito
 from .db import (
     COLECOES,
     indice_notas_credito_confirmado,
@@ -165,6 +166,13 @@ _MSG_CENTIMO_IRREPRODUZIVEL = (
     "entregue à Autoridade Tributária diga outro valor — e um documento que "
     "diga um número enquanto a gaveta é aberta por outro não se emite. "
     "Credite a linha inteira, ou uma quantidade certa dela."
+)
+_MSG_LINHA_SEM_ARTIGO = (
+    "A nota de crédito NÃO foi emitida e nada foi enviado à Autoridade "
+    "Tributária: a linha «%s» não está ligada a um artigo do Vendus, e o "
+    "Vendus exige esse artigo em TODAS as linhas de uma nota de crédito "
+    "(devolve «Param id is missing for item»). A fatura fica exactamente "
+    "como estava. Ligue o artigo em Configuração e tente outra vez."
 )
 _MSG_TOTAL_NAO_POSITIVO = (
     "O total a creditar tem de ser positivo — confirme as quantidades."
@@ -275,7 +283,8 @@ def por_apurar_por_linha(notas: List[Dict]) -> Dict[int, int]:
     ])
 
 
-def linhas_creditaveis(venda: Optional[Dict], notas: List[Dict]) -> List[Dict]:
+def linhas_creditaveis(venda: Optional[Dict], notas: List[Dict],
+                       deposito_ref: Optional[str] = None) -> List[Dict]:
     """As linhas da fatura como o ecrã da nota de crédito as mostra: Produto ·
     Qtd. (editável, com o MÁXIMO à vista) · Preço/Uni. · Total.
 
@@ -289,7 +298,17 @@ def linhas_creditaveis(venda: Optional[Dict], notas: List[Dict]) -> List[Dict]:
     creditada fica na lista com `disponivel: 0` — some-la era pior: a
     operadora procurava o artigo que o cliente traz na mão, não o encontrava,
     e concluía que a fatura não era aquela."""
-    itens = _itens_vendus(venda or {})
+    # **O `deposito_ref` tem de entrar por aqui, e a fatura é a prova.**
+    # `_itens_vendus` é pura e não lê a base de dados, por isso a referência
+    # do artigo de depósito é resolvida por quem chama — `fiscal.py:2145` já o
+    # fazia na emissão da fatura, e este ficheiro não. O resultado media-se na
+    # conta real: as FS 06P2026/3319 e /3329 de Oeiras (21/09) saíram com a
+    # linha «Depósito» a apontar para o artigo 345983786, e a nota de crédito
+    # reconstruía a MESMA linha sem `id` nenhum. O Vendus recusa-a — «Param id
+    # is missing for item» — e a loja ficou sem poder creditar uma fatura que
+    # ele próprio tinha aceitado. O comentário do lado da fatura diz "feio,
+    # nunca impeditivo"; do lado da nota de crédito é impeditivo.
+    itens = _itens_vendus(venda or {}, deposito_ref)
     ja = ja_creditado_por_linha(notas)
     por_apurar = por_apurar_por_linha(notas)
     creditaveis = []
@@ -889,6 +908,30 @@ def _sem_id_vendus(linhas: List[Dict]) -> List[Dict]:
     ]
 
 
+def _recusar_linha_sem_artigo(escolhidas: List[Dict]) -> None:
+    """422 se alguma linha escolhida não tem artigo do Vendus — **antes de se
+    escrever seja o que for**.
+
+    `itens_vendus_da_nota` corre depois de a intenção estar gravada e o
+    crédito reservado: recusar lá deixava a nota presa no ecrã, a dizer «já
+    foi creditado» sobre uma nota que nunca saiu (`_libertar_intencao` existe
+    por causa dessa família de casos). Uma linha sem `id` não depende de nada
+    que aconteça entretanto, portanto decide-se cedo.
+
+    Vive numa função só porque são DOIS os sítios que a têm de ter: a emissão
+    e a pré-visualização. O contrato desta última está escrito na docstring
+    dela — «É a MESMA validação da emissão (o travão incluído): a operadora vê
+    a recusa enquanto escolhe, e não depois de carregar em EMITIR com o
+    cliente à frente» — e um travão só na emissão tornava essa frase falsa."""
+    sem_artigo = next(
+        (l for l in escolhidas if l.get("id_vendus") is None), None)
+    if sem_artigo is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=_MSG_LINHA_SEM_ARTIGO % (sem_artigo.get("titulo") or "?"),
+        )
+
+
 def _resumo_da_nota(linhas: List[Dict]) -> Dict:
     """O dinheiro de uma selecção de linhas: o mapa de imposto (Taxa · Base ·
     IVA · Total), o subtotal e o total.
@@ -977,7 +1020,8 @@ async def pre_visualizar_nota_credito(
     db = obter_db()
     _, venda = await _fatura_creditavel(db, documento_id, operador["loja_id"])
     notas = await _notas_do_documento(db, documento_id)
-    creditaveis = linhas_creditaveis(venda, notas)
+    deposito_ref = (await definicoes_do_deposito(db)).get("vendus_ref")
+    creditaveis = linhas_creditaveis(venda, notas, deposito_ref)
     if not dados.linhas:
         # Nenhuma linha escolhida não é um erro: é o estado em que o ecrã
         # abre. Responde-se com o dinheiro a zero, e não com um 422 que
@@ -988,6 +1032,7 @@ async def pre_visualizar_nota_credito(
             creditaveis, [linha.model_dump() for linha in dados.linhas])
     except NotaDeCreditoInvalida as e:
         raise HTTPException(status_code=422, detail=str(e))
+    _recusar_linha_sem_artigo(escolhidas)
     return _resumo_da_nota(escolhidas)
 
 
@@ -1274,12 +1319,15 @@ async def emitir_nota_credito(
     # a escrita condicional lá em baixo, que fazem a reserva do crédito ser
     # atómica em vez de um ler-verificar-escrever que não trava nada.
     selo, notas = await _selo_e_notas(db, documento_id)
-    creditaveis = linhas_creditaveis(venda, notas)
+    deposito_ref = (await definicoes_do_deposito(db)).get("vendus_ref")
+    creditaveis = linhas_creditaveis(venda, notas, deposito_ref)
     try:
         escolhidas = escolher_linhas(
             creditaveis, [linha.model_dump() for linha in dados.linhas])
     except NotaDeCreditoInvalida as e:
         raise HTTPException(status_code=422, detail=str(e))
+
+    _recusar_linha_sem_artigo(escolhidas)
 
     total = total_das_linhas(escolhidas)
     if total <= 0:
