@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import PosDialogoProduto from './PosDialogoProduto';
 import PosFinalizar from './PosFinalizar';
+import PosLerQr from './PosLerQr';
 import PosPedidoGuiado, { resumoDoPedido } from './PosPedidoGuiado';
 import PosReparticao from './PosReparticao';
 import useEstadoDaImpressao from './useEstadoDaImpressao';
@@ -32,6 +33,7 @@ import {
   contaDeOutraCaixa, imprimirPedidoPos,
   razaoDeNaoImprimirPedido as razaoDeNaoImprimirPedidoLib,
   urlDaFotoPos,
+  guardarPontosDaConta, lerPontosDaConta,
   eurosPos as euros,
 } from '@/lib/pos';
 
@@ -1934,6 +1936,9 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
             ? `Conta dividida por ${(data.partes || []).length} pessoas. Cobre uma de cada vez.`
             : `Conta separada em ${(data.partes || []).length} partes. Cobre uma de cada vez.`,
         );
+        // A mãe passou a `separada` e nunca será faturada: uma ligação lida
+        // nela não chega a fatura nenhuma. Ver `esquecerOsPontosDaMae`.
+        esquecerOsPontosDaMae(maeId);
         if (primeira) cobrarParte(primeira);
       } catch (error) {
         const status = error?.response?.status;
@@ -2065,6 +2070,89 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
     setVista('finalizar');
   }, [aplicarVenda, mostrarDocumento]);
 
+  // --- Os pontos, ANTES do ecrã de pagamento ---------------------------------
+  //
+  // **A pergunta chega antes da conta ir para o pagamento, e chega com a câmara
+  // já acesa.** O cartão «Pontos L'Açaí» do ecrã de pagamento continua lá (é por
+  // onde se lê o QR que chega atrasado, ou se remove quem foi lido por engano),
+  // mas ninguém carregava nele: o cliente já tinha guardado o telemóvel. Aqui a
+  // janela abre sozinha com a câmara a olhar, e a operadora só tem duas saídas —
+  // mostrar o QR à câmara (é «sim») ou carregar em «Não». As duas seguem para o
+  // pagamento.
+  //
+  // **O que ela faz é EXACTAMENTE a janela que já existia** (`PosLerQr`): o
+  // mesmo pedido, o mesmo apito, o mesmo leitor do POS HP a escrever no campo,
+  // a mesma preferência de câmara desta caixa. Só muda a pergunta no topo e o
+  // rótulo da saída. Duplicá-la aqui era ter dois sítios a arranjar da próxima
+  // vez que a leitura mudasse.
+  // **A CONTA a quem se está a perguntar, e não um «está aberta».** Com um
+  // booleano, a pergunta sobrevivia à conta: tocar no último artigo e carregar
+  // logo em FINALIZAR abre a janela com a escrita ainda no ar; se essa escrita
+  // voltar 409 (a conta foi resolvida pelo gestor, o turno fechou), o
+  // `contaFicouParaTras` larga a conta e a janela desaparece do ecrã — mas o
+  // booleano ficava `true`, e o PRIMEIRO produto do cliente seguinte fazia a
+  // pergunta ressuscitar sozinha, com a câmara acesa, sem ninguém lhe ter
+  // tocado. Guardado o id, a janela só existe enquanto for daquela conta.
+  const [pontosPara, setPontosPara] = useState(null);
+
+  // A conta a quem JÁ se perguntou — inclusive quem respondeu «Não», que não
+  // deixa rasto nenhum na gaveta dos pontos. Uma pergunta por conta: quem sai
+  // do pagamento para juntar uma água e volta a carregar em FINALIZAR não leva
+  // com a câmara à cara outra vez, e quem quiser ler à segunda tem o «Ler QR
+  // do cliente» no cartão do pagamento, que é onde essa intenção já vive.
+  const jaPerguntou = useRef(null);
+
+  // A dúvida por apurar NÃO se limpa aqui, pela mesma razão da seta de voltar
+  // (ver `voltarDoFinalizar`): ir ao ecrã de pagamento não é saber o que
+  // aconteceu à emissão anterior, e limpá-la punha o EMITIR aceso outra vez à
+  // distância de dois toques.
+  const irParaOPagamento = useCallback(() => {
+    setPontosPara(null);
+    setErroEmissao((anterior) => (duvidaPorApurar(anterior) ? anterior : null));
+    mostrarDocumento(null, false);
+    setVista('finalizar');
+  }, [mostrarDocumento]);
+
+  // **Não se pergunta duas vezes pela mesma conta.** Nem a quem já mostrou o
+  // QR (um segundo QR por cima do primeiro deixava o primeiro cliente sem
+  // nada: a app só credita UMA fatura por ligação), nem a quem já disse que
+  // não. Sem conta também não: o botão está morto sem linhas, e uma janela que
+  // pede o QR de nada não tem onde guardar a resposta (`guardarPontosDaConta`
+  // recusa sem id).
+  const finalizarPelaConta = useCallback(() => {
+    const id = venda?.id;
+    if (id && jaPerguntou.current !== id && !lerPontosDaConta(id)) {
+      jaPerguntou.current = id;
+      setPontosPara(id);
+      return;
+    }
+    irParaOPagamento();
+  }, [venda?.id, irParaOPagamento]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // **A conta que se parte esquece o cliente que lhe foi lido.** A ligação
+  // fica presa ao id da CONTA, e repartir cria contas novas: a leitura da
+  // conta inteira ou seguia o RESTO — e a fatura da outra pessoa saía com o
+  // nome de quem mostrou a app, que assim perdia os pontos da sua própria
+  // compra — ou ficava órfã numa mãe que nunca chega a ser faturada. As duas
+  // acabavam com o cliente a ouvir o apito e a não receber ponto nenhum.
+  //
+  // Esquecer é a regra que já estava escrita (`lib/pos.js`: «numa conta
+  // dividida lê-se o QR na parte de quem o mostra»), e diz-se à operadora,
+  // porque o QR que o cliente mostrou fica gasto e ele tem de abrir outro.
+  // Também se esquece a PERGUNTA: a conta que perdeu a leitura merece ser
+  // perguntada de novo.
+  // Identidade estável (sem dependências) de propósito: o `repartir` nasce
+  // ACIMA desta linha e chama-a de dentro do corpo — pô-la nas dependências
+  // dele era ler uma `const` ainda por inicializar, que é a razão pela qual o
+  // `cobrarParte` também lá não está. Sem identidade a mudar, não há closure
+  // velha para apanhar.
+  const esquecerOsPontosDaMae = useCallback((maeId) => {
+    if (!maeId || !lerPontosDaConta(maeId)) return;
+    guardarPontosDaConta(maeId, null);
+    if (jaPerguntou.current === maeId) jaPerguntou.current = null;
+    toast.info('Os pontos não passam para as partes — leia outra vez o QR na parte de quem o mostra.');
+  }, []);
+
   // **A chamada que grava.** Devolve a parte desta pessoa (para cobrar já) e a
   // conta com o que sobrou — e é a parte que fica à frente, porque é ela que
   // se vai pagar. A conta com o resto volta sozinha assim que esta fatura
@@ -2083,6 +2171,10 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
       try {
         const { data } = await separarParte(maeId, linhas);
         setSeparando(null);
+        // Aqui a mãe SOBREVIVE, com o resto lá dentro — e era ela que ficava
+        // com a ligação: a fatura de quem paga o resto saía com o nome de quem
+        // mostrou a app numa parte anterior. Ver `esquecerOsPontosDaMae`.
+        esquecerOsPontosDaMae(maeId);
         cobrarParte(data.parte);
       } catch (error) {
         if (error?.response?.status === 401) { operadorInvalido(); return; }
@@ -2100,7 +2192,8 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
         setASepararParte(false);
       }
     });
-  }, [aSepararParte, separando, executar, cobrarParte, operadorInvalido, recarregarVenda]);
+  }, [aSepararParte, separando, executar, cobrarParte, esquecerOsPontosDaMae,
+    operadorInvalido, recarregarVenda]);
 
   // **A seta de voltar desfaz a divisão** e devolve a conta inteira, pronta a
   // receber mais artigos — a regra que o dono deu depois de ficar preso com a
@@ -2826,15 +2919,10 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
             onTirarDaSeparacao={tirarDaSeparacao}
             onCobrarPessoa={cobrarEstaPessoa}
             onSairDaSeparacao={sairDaSeparacao}
-            /* A dúvida por apurar NÃO se limpa aqui, pela mesma razão da seta
-               de voltar (ver `voltarDoFinalizar`): ir ao ecrã de pagamento não
-               é saber o que aconteceu à emissão anterior, e limpá-la punha o
-               EMITIR aceso outra vez à distância de dois toques. */
-            onFinalizar={() => {
-              setErroEmissao((anterior) => (duvidaPorApurar(anterior) ? anterior : null));
-              mostrarDocumento(null, false);
-              setVista('finalizar');
-            }}
+            /* O FINALIZAR já não vai direito ao pagamento: pergunta primeiro
+               pelos pontos (ver `finalizarPelaConta`, e a dúvida por apurar
+               tratada no `irParaOPagamento`). */
+            onFinalizar={finalizarPelaConta}
             onCancelar={() => setAConfirmarCancelar(true)}
             razaoDeNaoImprimirPedido={razaoDeNaoImprimirPedido}
             onImprimirPedido={imprimirPedido}
@@ -2862,6 +2950,23 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
           aGravar={aGravar}
           onGravar={gravarPedidoGuiado}
           onFechar={() => setPedidoGuiado(null)}
+        />
+      )}
+
+      {/* Montada só enquanto está aberta, e é isso que desliga a câmara ao sair
+          (ver PosLerQr). As duas saídas seguem para o pagamento: a leitura
+          guarda a ligação na gaveta desta conta e o ecrã de pagamento apanha-a
+          ao montar (`PosFinalizar` lê `lerPontosDaConta`), o «Não» segue sem
+          ligação nenhuma. Nem uma nem outra prende a venda: os pontos são do
+          cliente, a fatura não espera por eles. */}
+      {pontosPara && pontosPara === venda?.id && (
+        <PosLerQr
+          key={pontosPara}
+          vendaId={venda.id}
+          titulo="Quer atribuir os pontos?"
+          rotuloFechar="Não"
+          onLigada={(nova) => { guardarPontosDaConta(venda.id, nova); irParaOPagamento(); }}
+          onFechar={irParaOPagamento}
         />
       )}
 

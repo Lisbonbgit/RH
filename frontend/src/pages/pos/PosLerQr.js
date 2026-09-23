@@ -84,7 +84,13 @@ const guardarAuto = (ligado) => {
 const MSG_SEM_CAMERA =
   'Não foi possível abrir a câmara. Confirme que o browser a pode usar, ou leia o QR com o leitor.';
 
-export default function PosLerQr({ vendaId, onLigada, onFechar }) {
+// **`titulo` e `rotuloFechar` são a MESMA janela com outra pergunta.** Aberta
+// pelo cartão do ecrã de pagamento, a pergunta é «Ler QR do cliente» e sai-se
+// por «Fechar». Aberta sozinha ao carregar em FINALIZAR (`PosVenda`), a
+// pergunta é «Quer atribuir os pontos?» e sai-se por «Não» — porque aí ninguém
+// pediu para ler nada, e a operadora tem de ver num relance que carregar em
+// «Não» segue para o pagamento. O que a janela FAZ é igual nos dois sítios.
+export default function PosLerQr({ vendaId, onLigada, onFechar, titulo, rotuloFechar }) {
   const [codigo, setCodigo] = useState('');
   const [aLer, setALer] = useState(false);
   const [erro, setErro] = useState(null);
@@ -113,6 +119,22 @@ export default function PosLerQr({ vendaId, onLigada, onFechar }) {
   // propósito.
   const ultimoDaCamera = useRef('');
 
+  // **Uma janela fechada não fala mais.** O `await lerQrDePontos` pode demorar
+  // (o servidor espera até 4 s pela app, o tecto do axios é 15 s) e o
+  // desmontar não cancela pedido nenhum: o `ler` continua vivo no closure e
+  // volta a um ecrã que já é outro. Sem esta ref, a resposta atrasada de uma
+  // leitura que a operadora já desistiu de esperar — carregou em «Não», ou
+  // fechou a janela — apitava um «leu» sobre um ecrã sem leitura nenhuma e
+  // chamava `onLigada`: no ecrã de pagamento repunha um cliente removido, e na
+  // pergunta do FINALIZAR guardava na conta uma ligação que ela recusou e
+  // mandava o ecrã para trás POR CIMA de uma Fatura Simplificada já emitida.
+  //
+  // Só se cala o desfecho. O pedido segue e a ligação nasce do lado da app —
+  // não há nada a desfazer, e uma ligação que nunca chega a uma fatura não
+  // credita ninguém.
+  const vivo = useRef(true);
+  useEffect(() => () => { vivo.current = false; }, []);
+
   const ler = async (texto) => {
     const lido = String(texto || '').trim();
     if (!lido || ocupado.current) return;
@@ -126,9 +148,11 @@ export default function PosLerQr({ vendaId, onLigada, onFechar }) {
     setErro(null);
     try {
       const { ligacao_id: id, primeiro_nome } = await lerQrDePontos(vendaId, lido);
+      if (!vivo.current) return;
       APITO_LIDO();
       onLigada({ id, primeiro_nome });
     } catch (error) {
+      if (!vivo.current) return;
       // 404 e 503 trazem a frase do servidor; sem resposta nenhuma (rede,
       // tecto de espera) a consequência para o balcão é a do 503.
       APITO_RECUSADO();
@@ -210,9 +234,17 @@ export default function PosLerQr({ vendaId, onLigada, onFechar }) {
 
   return (
     <Dialog open onOpenChange={(aberta) => { if (!aberta) onFechar(); }}>
-      <DialogContent className="max-w-lg">
+      {/* **Não se sai daqui por engano.** Por omissão o Radix fecha a janela
+          ao primeiro toque FORA dela — e a cortina do diálogo cobre o ecrã
+          todo, o botão FINALIZAR incluído. Numa caixa onde se carrega duas
+          vezes por hábito, o segundo toque do duplo-clique aterrava na cortina
+          e despachava a pergunta dos pontos em silêncio: a operadora via o
+          ecrã de pagamento e nunca saberia que lhe tinha sido perguntada
+          alguma coisa. As saídas ficam as que se vêem — ler o QR, o botão de
+          baixo, a cruz e o ESC. */}
+      <DialogContent className="max-w-lg" onInteractOutside={(e) => e.preventDefault()}>
         <DialogHeader>
-          <DialogTitle>Ler QR do cliente</DialogTitle>
+          <DialogTitle>{titulo || 'Ler QR do cliente'}</DialogTitle>
           <DialogDescription>
             O cliente abre a app L'Açaí e toca em «Mostrar QR na caixa» antes de pagar.
           </DialogDescription>
@@ -307,7 +339,7 @@ export default function PosLerQr({ vendaId, onLigada, onFechar }) {
         </label>
 
         <Button type="button" variant="outline" className="h-12 w-full" onClick={onFechar}>
-          Fechar
+          {rotuloFechar || 'Fechar'}
         </Button>
       </DialogContent>
     </Dialog>
