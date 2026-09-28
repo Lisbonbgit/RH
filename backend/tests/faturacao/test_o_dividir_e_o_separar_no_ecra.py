@@ -67,9 +67,13 @@ _CATALOGO = {
 }
 
 
-def _arranque(respostas_extra):
+def _arranque(respostas_extra, parar_nos_pontos=False):
     """O POS montado com a conta dos dois artigos à frente, e o ecrã de
-    pagamento aberto — que é onde os dois botões vivem."""
+    pagamento aberto — que é onde os dois botões vivem.
+
+    `parar_nos_pontos=True` pára um passo antes, com a pergunta dos pontos à
+    frente (é o que o FINALIZAR abre). Só quem for provar ESSA janela a quer —
+    todos os outros cenários querem o ecrã de pagamento."""
     return "\n".join([
         _COMPONENTES,
         "const path2 = require('path');",
@@ -105,6 +109,22 @@ def _arranque(respostas_extra):
         "  await act(async () => {});",
         "};",
         "await carregar_em('FINALIZAR');",
+        # **O FINALIZAR já não chega ao pagamento sozinho.** Entre ele e o ecrã
+        # de pagamento está a pergunta dos pontos (`PosVenda`: a janela do QR
+        # com a câmara acesa), e a saída dela é o «Não» — o caminho que a
+        # operadora faz em todas as vendas sem app. É por isso que está aqui:
+        # sem esta linha, os cenários destes quatro ficheiros aterravam todos
+        # na janela e não no ecrã de pagamento que vêm provar.
+        #
+        # **O `if` não é rede, e não se leia como tal:** a pergunta não aparece
+        # nas contas que já têm cliente lido (nem nas que já responderam), e um
+        # cenário que prepare isso chega ao pagamento sem passar por aqui — sem
+        # o `if`, morria à procura de um botão que o ecrã tem razão para não
+        # mostrar. Se a pergunta desaparecesse do produto, esta linha saltava
+        # em silêncio e estes testes continuavam verdes. **Quem defende a
+        # existência dela é test_os_pontos_no_ecra_do_pos.py**, que a abre de
+        # propósito e afirma o que lá está.
+        "" if parar_nos_pontos else "if (botao('Não')) await carregar_em('Não');",
     ])
 
 

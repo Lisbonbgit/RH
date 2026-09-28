@@ -26,6 +26,7 @@ from .sincronizacao_app import (
     deve_importar,
     documento_para_gravar,
     estado_do_vendus,
+    numero_da_fatura_creditada,
 )
 from .vendus.cliente import obter_conta
 from .vendus.emissao import (
@@ -236,8 +237,23 @@ async def sincronizar(db, *, dias: List[str], simular: bool = False) -> Dict:
                         _saltar(resultado, doc, "desapareceu do Vendus")
                         continue
 
+                    # **A nota de crédito vai para a loja da fatura que
+                    # rectifica, e não para a da app.** Ver
+                    # `numero_da_fatura_creditada`. Só se desvia quando a
+                    # fatura de origem está mesmo cá dentro com uma loja: uma
+                    # NC sobre uma fatura que nunca importámos não tem para
+                    # onde ir, e a loja da app é onde ela já estava.
+                    destino = loja_id
+                    numero_origem = numero_da_fatura_creditada(cru)
+                    if numero_origem:
+                        origem = await coleccao.find_one(
+                            {"numero": numero_origem},
+                            {"_id": 0, "loja_id": 1})
+                        if (origem or {}).get("loja_id"):
+                            destino = origem["loja_id"]
+
                     try:
-                        pronto = documento_para_gravar(cru, loja_id)
+                        pronto = documento_para_gravar(cru, destino)
                     except (ValueError, VendusRespostaIlegivel) as e:
                         # Sem ATCUD, sem id, ou com um total que não se lê:
                         # fica de fora, mas em voz alta.

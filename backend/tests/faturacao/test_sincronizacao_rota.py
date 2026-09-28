@@ -61,8 +61,11 @@ _ESTADO = {}
 
 class _ColeccaoFalsa:
     def __init__(self, gravados, insert_rebenta=None, ja_gravados=(),
-                 colide_com_outro=False, nao_da_app=()):
+                 colide_com_outro=False, nao_da_app=(), lojas_por_numero=None):
         self.gravados = gravados
+        # `{numero da FS: loja_id}` — a pergunta que a NC faz à base para
+        # saber de que balcão é a fatura que rectifica.
+        self.lojas_por_numero = dict(lojas_por_numero or {})
         self.insert_rebenta = insert_rebenta
         self.ja_gravados = set(ja_gravados)
         # Quem já leva `anulado: True` na base. Separado dos `ja_gravados`
@@ -78,6 +81,11 @@ class _ColeccaoFalsa:
         self.colide_com_outro = colide_com_outro
 
     async def find_one(self, filtro, projeccao=None):
+        # A procura pela FATURA DE ORIGEM é por número, e não tem nada que ver
+        # com o `vendus_document_id` que `_corresponde` exige.
+        if "numero" in filtro:
+            loja = self.lojas_por_numero.get(filtro["numero"])
+            return {"loja_id": loja} if loja else None
         if not self._corresponde(filtro):
             return None
         return {"_id": "x"}
@@ -187,11 +195,11 @@ class _ClienteFalso:
 
 def _montar(monkeypatch, gravados, *, documentos, rebenta_ao_ler=False,
             rebenta_a_listar=False, insert_rebenta=None, ja_gravados=(),
-            colide_com_outro=False, nao_da_app=()):
+            colide_com_outro=False, nao_da_app=(), lojas_por_numero=None):
     monkeypatch.setitem(
         _ESTADO, "coleccao",
         _ColeccaoFalsa(gravados, insert_rebenta, ja_gravados, colide_com_outro,
-                       nao_da_app))
+                       nao_da_app, lojas_por_numero))
     # As definições vêm da BASE, não de um `_definicoes` substituído: é o que
     # deixa `test_so_toca_nas_coleccoes_certas` ver as duas colecções que a
     # sincronização toca de verdade.
@@ -205,6 +213,97 @@ def _montar(monkeypatch, gravados, *, documentos, rebenta_ao_ler=False,
                             rebenta_a_listar=rebenta_a_listar)
     monkeypatch.setattr(rota, "ClienteEmissaoVendus", lambda *a, **kw: cliente)
     return cliente
+
+
+# A NOTA DE CRÉDITO feita à MÃO no painel do Vendus, como o Vendus a devolveu
+# mesmo: `GET documents/376684666`, lido em produção a 2026-09-22. Sem
+# `external_reference` (não saiu do nosso POS) e com cada linha a apontar para
+# a FS que rectifica — e essa FS é de OEIRAS.
+OEIRAS = "7b764593-73da-4ded-b0bd-f5affcda1235"
+
+_NC_28 = {
+    "id": 376684666, "type": "NC", "number": "NC 06P2026/28",
+    "atcud": "J6SHGSNX-28", "date": "2026-09-22",
+    "local_time": "2026-09-22 10:52:11",
+    "status": {"id": "N", "date": "2026-09-22 09:52:11"},
+    "amount_gross": "23.64", "amount_net": "20.92",
+    "external_reference": "",
+    "client": {"name": "Consumidor Final", "fiscal_id": "999999990"},
+    "items": [
+        {"qty": 1, "title": "Açaí (Regular)", "id": 145268982,
+         "reference_document": "FS 06P2026/3319",
+         "amounts": {"gross_total": "8.99", "net_total": "7.96"},
+         "tax": {"id": "INT", "rate": 13}},
+        {"qty": 3, "title": "Pão de Queijo", "id": 145270258,
+         "reference_document": "FS 06P2026/3319",
+         "amounts": {"gross_total": "5.70", "net_total": "5.04"},
+         "tax": {"id": "INT", "rate": 13}},
+    ],
+}
+
+
+def _nc(**over):
+    d = dict(_NC_28)
+    d.update(over)
+    return d
+
+
+# --- A loja da NOTA DE CRÉDITO -----------------------------------------------
+
+def test_a_nota_de_credito_vai_para_a_loja_da_FATURA_que_rectifica(monkeypatch):
+    """**48,79 € na loja errada, medidos a 22/09/2026.** As NC 28 e 29, feitas
+    à mão no painel do Vendus sobre duas FS de Oeiras, entraram como «App
+    Online»: Oeiras ficou inflacionada pelas facturas sem as devoluções, e a
+    App Online apareceu no Dashboard do dono a −39,80 €."""
+    gravados = []
+    _montar(monkeypatch, gravados, documentos=[_NC_28],
+            lojas_por_numero={"FS 06P2026/3319": OEIRAS})
+
+    resultado = _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-22"]))
+
+    assert resultado["gravados"] == 1
+    assert gravados[0]["numero"] == "NC 06P2026/28"
+    assert gravados[0]["loja_id"] == OEIRAS
+
+
+def test_sem_a_fatura_de_origem_na_base_fica_onde_ja_estava(monkeypatch):
+    """Uma NC sobre uma fatura que nunca importámos não tem para onde ir.
+    Adivinhar era o mesmo defeito ao contrário."""
+    gravados = []
+    _montar(monkeypatch, gravados, documentos=[_NC_28], lojas_por_numero={})
+
+    _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-22"]))
+
+    assert gravados[0]["loja_id"] == LOJA
+
+
+def test_linhas_de_faturas_DIFERENTES_nao_escolhem_loja_nenhuma(monkeypatch):
+    """Não há UMA loja de origem, portanto não se escolhe. Pegar na primeira
+    era inventar — e inventar em silêncio."""
+    gravados = []
+    baralhada = _nc(items=[
+        dict(_NC_28["items"][0], reference_document="FS 06P2026/3319"),
+        dict(_NC_28["items"][1], reference_document="FS 06P2026/3329"),
+    ])
+    _montar(monkeypatch, gravados, documentos=[baralhada],
+            lojas_por_numero={"FS 06P2026/3319": OEIRAS,
+                              "FS 06P2026/3329": OEIRAS})
+
+    _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-22"]))
+
+    assert gravados[0]["loja_id"] == LOJA
+
+
+def test_a_fatura_da_app_continua_a_ir_para_a_loja_da_app(monkeypatch):
+    """A cerca ao contrário: uma FS da app não tem `reference_document`
+    nenhum, e nada nesta correcção lhe pode tocar."""
+    gravados = []
+    _montar(monkeypatch, gravados, documentos=[_FS_446],
+            lojas_por_numero={"FS 06P2026/3319": OEIRAS})
+
+    _corre(rota.sincronizar(_DBFalsa(), dias=["2026-09-01"]))
+
+    assert gravados[0]["loja_id"] == LOJA
 
 
 # --- A porta do cron ---------------------------------------------------------

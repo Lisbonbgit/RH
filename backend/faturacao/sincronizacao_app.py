@@ -88,6 +88,42 @@ def deve_importar(doc: Dict) -> Tuple[bool, str]:
     return True, "da app (ref %s)" % ref
 
 
+def numero_da_fatura_creditada(doc: Dict) -> Optional[str]:
+    """A fatura que esta nota de crédito rectifica — `"FS 06P2026/3319"` — ou
+    `None` quando não se sabe dizer.
+
+    **Existe para a NC não ir parar à loja errada.** Quem chama arruma tudo o
+    que lê desta caixa na loja da app, porque é a única que conhece — e é
+    certo para uma venda da app, que não tem origem nenhuma. Uma nota de
+    crédito TEM origem: rectifica uma fatura que saiu de um balcão. Medido a
+    22/09/2026: as NC 06P2026/28 e /29, feitas à mão no painel do Vendus sobre
+    duas FS de Oeiras, entraram como «App Online» — 48,79 € tirados da loja
+    errada e postos na loja errada, com o total do grupo a bater certo e o
+    mapa por loja a mentir nas duas pontas.
+
+    **As duas formas do campo.** Ao EMITIR mandamos
+    `{"document_number": ..., "document_row": ...}`
+    (`nota_credito.itens_vendus_da_nota`); ao LER, o Vendus devolve só o
+    número, uma string — medido no `GET documents/376684666`. Aceitam-se as
+    duas: uma leitura escrita só para a forma que enviámos nunca via nenhuma
+    das notas que interessa arrumar.
+
+    **Discordarem é não saber.** Se as linhas apontarem para faturas
+    diferentes, não há UMA loja de origem para escolher, e escolher a primeira
+    era inventar. Fica `None` e quem chama arruma como arrumava — visível no
+    ecrã, em vez de silenciosamente errado.
+    """
+    numeros = set()
+    for item in doc.get("items") or []:
+        ref = item.get("reference_document")
+        if isinstance(ref, dict):
+            ref = ref.get("document_number")
+        ref = str(ref or "").strip()
+        if ref:
+            numeros.add(ref)
+    return numeros.pop() if len(numeros) == 1 else None
+
+
 # O Vendus escreve o NIF do consumidor final assim. Copiá-lo para
 # `cliente_nif` enchia o ecrã de Clientes de tracinhos.
 _NIF_VAZIO = {"", "---------", "999999990"}

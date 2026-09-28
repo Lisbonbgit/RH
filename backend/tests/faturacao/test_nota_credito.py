@@ -542,6 +542,134 @@ def test_o_toque_repetido_devolve_o_NUMERO_e_o_ATCUD_da_nota_que_saiu(monkeypatc
     assert segunda["devolucao"]["valor"] == 20.40
 
 
+# --- O DEPÓSITO na nota de crédito -------------------------------------------
+#
+# **Medido na conta real a 22/09/2026, e custou duas notas de crédito à mão.**
+# As FS 06P2026/3319 e /3329 de Oeiras (21/09) saíram com a linha «Depósito» a
+# apontar para o artigo 345983786 do Vendus — `fiscal.py` resolve a referência
+# antes de emitir. A nota de crédito reconstruía a MESMA fatura pela MESMA
+# função (`_itens_vendus`) mas sem essa referência, e a linha ia sem `id`. O
+# Vendus recusa: «Param id is missing for item». A loja ficou sem poder
+# creditar uma fatura que o próprio Vendus tinha aceitado, e as notas tiveram
+# de ser feitas à mão no painel — que é o que depois as arrumou na loja errada.
+#
+# O `id` só é EXIGIDO na NC, nunca na fatura: é por isso que isto passou meses
+# sem aparecer, e é por isso que os testes abaixo tocam a ROTA. Uma afirmação
+# sobre `linhas_creditaveis(venda, notas, REF)` ficava verde com os três sítios
+# que a chamam a esquecerem-se do terceiro argumento — que era o defeito.
+
+REF_DEPOSITO = "345983786"   # o artigo de depósito real da conta do dono
+
+
+def _db_com_deposito(ref=REF_DEPOSITO):
+    """A fatura das três linhas, mais a caução da água. `ref=None` é a
+    configuração por estrear: o depósito ligado sem artigo do Vendus."""
+    db = _db_nc(vendas=[_venda_faturada(linhas=[
+        _linha_acai(), _linha_agua(deposito_unitario=0.10), _linha_cola()])])
+    db._coleccoes[COLECOES["definicoes"]] = ColeccaoFalsa(
+        [{"id": "deposito", "ativo": True, "valor": 0.10, "vendus_ref": ref}])
+    return db
+
+
+def test_a_linha_do_deposito_sai_para_o_vendus_COM_o_artigo(monkeypatch):
+    """O corpo que vai para o Vendus, e não o que o ecrã mostra: a linha 4 é a
+    caução, e leva o `id` do artigo tal como a fatura o levou."""
+    db = _db_com_deposito()
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+
+    _corre(emitir_nota_credito(
+        "doc-1", _pedido(linhas=[{"indice": 4, "quantidade": 1}]),
+        operador=_operador()))
+
+    enviadas = VendusNCFalso.instancias[0].chamadas_criar[0]["linhas"]
+    assert len(enviadas) == 1
+    assert enviadas[0]["title"] == "Depósito"
+    assert enviadas[0]["id"] == int(REF_DEPOSITO)
+    assert enviadas[0]["reference_document"] == {
+        "document_number": "FS 05P2026/1824", "document_row": 4}
+
+
+def test_a_caucao_aparece_no_ecra_como_linha_creditavel(monkeypatch):
+    """A caução é uma linha da fatura como as outras, e o ecrã tem de a
+    propor: o cliente que devolve a garrafa tem direito aos 0,10 €. O
+    `id_vendus` NÃO sai daqui (`_sem_id_vendus`) — é configuração da ligação
+    ao Vendus e o balcão não tem nada que a ver."""
+    db = _db_com_deposito()
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+
+    ecra = _corre(preparar_nota_credito("doc-1", operador=_operador()))
+
+    caucao = [li for li in ecra["linhas"] if li["titulo"] == "Depósito"]
+    assert len(caucao) == 1
+    assert caucao[0]["indice"] == 4
+    assert caucao[0]["total"] == 0.10
+    assert "id_vendus" not in caucao[0]
+
+
+def test_com_o_artigo_configurado_a_caucao_pre_visualiza_se(monkeypatch):
+    """O outro lado do travão, e é ele que impede a correcção de se tornar
+    um bloqueio: com o artigo configurado, escolher a caução dá os 0,10 €."""
+    db = _db_com_deposito()
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+
+    resumo = _corre(pre_visualizar_nota_credito(
+        "doc-1", PedidoPreVisualizar(linhas=[{"indice": 4, "quantidade": 1}]),
+        operador=_operador()))
+
+    assert resumo["total"] == 0.10
+
+
+def test_a_recusa_chega_ENQUANTO_a_operadora_escolhe(monkeypatch):
+    """A pré-visualização promete, por escrito, ser «a MESMA validação da
+    emissão (o travão incluído)». Um travão só na emissão tornava essa frase
+    falsa e a operadora só descobria ao carregar em EMITIR — com o cliente à
+    frente e a gaveta aberta."""
+    db = _db_com_deposito(ref=None)
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as e:
+        _corre(pre_visualizar_nota_credito(
+            "doc-1", PedidoPreVisualizar(linhas=[{"indice": 4, "quantidade": 1}]),
+            operador=_operador()))
+
+    assert e.value.status_code == 422
+    assert "Depósito" in e.value.detail
+
+
+def test_sem_artigo_do_vendus_RECUSA_e_nao_escreve_nada(monkeypatch):
+    """**E recusa ANTES de escrever.** `itens_vendus_da_nota` corre depois de
+    a intenção estar gravada e o crédito reservado: rebentar lá deixava a nota
+    presa no ecrã, a dizer «já foi creditado» sobre uma nota que nunca saiu.
+    Nada vai à AT, nada fica na base, e a operadora lê o que tem de fazer."""
+    db = _db_com_deposito(ref=None)
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as e:
+        _corre(emitir_nota_credito(
+            "doc-1", _pedido(linhas=[{"indice": 4, "quantidade": 1}]),
+            operador=_operador()))
+
+    assert e.value.status_code == 422
+    assert "Depósito" in e.value.detail
+    assert "Param id is missing for item" in e.value.detail
+    assert VendusNCFalso.instancias == []
+    assert db[COLECOES["notas_credito"]].chamadas_insert == 0
+
+
+def test_as_OUTRAS_linhas_creditam_se_na_mesma_sem_o_artigo_do_deposito(monkeypatch):
+    """A recusa é da linha escolhida, não da fatura. Um açaí devolvido credita
+    -se com a configuração do depósito por estrear — bloquear a fatura inteira
+    era castigar o cliente por uma definição que ninguém preencheu."""
+    db = _db_com_deposito(ref=None)
+    monkeypatch.setattr(nc_mod, "obter_db", lambda: db)
+
+    saiu = _corre(emitir_nota_credito(
+        "doc-1", _pedido(linhas=[{"indice": 1, "quantidade": 1}]),
+        operador=_operador()))
+
+    assert saiu["numero"] == "NC 05P2026/12"
+
+
 def _ha_segundos(segundos):
     """Um `criada_em` a uma distância CONHECIDA do relógio de agora.
 
