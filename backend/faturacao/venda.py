@@ -275,6 +275,12 @@ _MSG_PARTE_NAO_SE_DIVIDE = (
     "levava com ela as pessoas que ainda faltavam cobrar da primeira. Quem não "
     "paga a sua parte cancela-a; o resto cobra-se."
 )
+_MSG_VOUCHER_NAO_SE_REPARTE = (
+    "Esta conta tem uma recompensa L'Açaí aplicada e não se pode repartir. "
+    "Tire o cliente da fatura («Remover», no cartão dos pontos) para o "
+    "desconto sair da conta, reparta-a, e leia o QR outra vez na parte que "
+    "leva o açaí."
+)
 _MSG_ENTREGAR_SO_A_TRAVADA = (
     "Esta conta não está travada — não há nada para entregar ao gestor. Uma "
     "conta normal acaba aqui: cobre-a ou cancele-a. Só a conta com uma "
@@ -503,6 +509,36 @@ def _garante_que_nao_e_ja_uma_parte(venda: Dict) -> None:
     subdivide — cancela-se, e cobra-se o resto."""
     if venda.get("conta_mae_id"):
         raise HTTPException(status_code=409, detail=_MSG_PARTE_NAO_SE_DIVIDE)
+
+
+def _garante_que_nao_tem_voucher(venda: Dict) -> None:
+    """**Uma conta com uma recompensa L'Açaí aplicada não se reparte** — nem
+    pelo `dividir`, nem pelo `separar`, nem pelo `separar-parte`. Fase 1 do
+    desenho de 2026-09-22, "Fora de âmbito", e é uma recusa de DINHEIRO.
+
+    O que as três rotas fazem a uma linha marcada é `_copia_da_linha`, que é um
+    `deepcopy`: o `voucher_id` e uma fatia do `desconto_eur` viajam para as
+    partes. Daí saem dois estragos, os dois reais:
+
+    - **Faturas Simplificadas a 0,00 € que ninguém autorizou.** O travão do
+      zero (`fiscal._tem_linha_de_voucher`) pergunta só se a conta tem uma
+      linha com marca E desconto — e passa a haver uma em CADA parte. Um
+      voucher de 7,20 € vira N documentos fiscais reais a zero, entregues à
+      Autoridade Tributária. O ecrã do POS já recusa isto, mas um ecrã não é
+      uma tranca (regra 3 do cabeçalho: os ecrãs do POS desenham-se sem
+      servidor nenhum).
+    - **O cliente leva o produto E fica com a recompensa.** A ligação do QR
+      vive no `sessionStorage` presa ao id da conta e não passa para as partes
+      (`PosFinalizar::lerPontosDaConta`): o EMITIR de cada parte vai sem
+      `pontos_ligacao`, o `/creditar` nunca corre, o `consume_voucher` da app
+      nunca acontece e a reserva volta a `active`. É exactamente o desfecho
+      que a regra de ouro 3 proíbe.
+
+    A saída cabe numa frase e é o que a operadora faria de qualquer maneira:
+    tirar o cliente da fatura (o «Remover» limpa a marca e o desconto), repartir
+    a conta, e ler o QR na parte que leva o açaí."""
+    if any(li.get("voucher_id") for li in venda.get("linhas") or []):
+        raise HTTPException(status_code=409, detail=_MSG_VOUCHER_NAO_SE_REPARTE)
 
 
 def _garante_do_balcao(venda: Dict) -> None:
@@ -2003,7 +2039,73 @@ async def _cancelar_conta(db, venda: Dict, operador: Dict) -> dict:
         )
 
     venda.update(atualizacao)
+    await _devolver_o_voucher_ao_cliente(venda)
     return _venda_publica(venda)
+
+
+async def _devolver_o_voucher_ao_cliente(venda: Dict) -> None:
+    """A conta cancelada avisa a app, para a recompensa voltar à carteira do
+    cliente. **Nunca impede o cancelamento.**
+
+    **O cenário, e é o mais banal que há ao balcão:** o cliente mostra o QR, muda
+    de ideias, a funcionária carrega em «Cancelar conta». Do lado da app o
+    voucher ficou `reserved` (`pos:{ligação}`) e a carteira só lista os
+    ACTIVOS — a recompensa DESAPARECE do telemóvel dele, sem explicação. E se ele
+    voltar à caixa e mostrar o QR outra vez, a ligação nova não encontra voucher
+    activo nenhum: a app responde `{}` e o cartão da caixa fica MUDO — nem «sem
+    produto», nem «sem casar», nada. Sem este aviso a reserva só morre quando a
+    ligação sai da janela das 2 h (`services_vouchers.release_stale_reservations`
+    com `ligacao_do_balcao_morta`), e até lá o cliente está sem o produto e sem a
+    recompensa: a metade má da regra de ouro 3.
+
+    **Corre DEPOIS da escrita do cancelamento, e a ordem é a regra de ouro 3 na
+    outra direcção.** Libertar primeiro e o cancelamento falhar a seguir (a
+    emissão ganhou a corrida, ou a reserva fiscal apareceu e a compensação repôs
+    a conta) deixava a Fatura Simplificada sair COM o desconto e o `/creditar`
+    sem nada para consumir — o cliente levava o açaí E ficava com a recompensa.
+    Por isso: primeiro a conta morre, só depois se devolve o voucher.
+
+    **A ligação é a única chave que nomeia a reserva do lado da app** (o
+    `reserved_by` é `pos:{ligacao_id}`). Ela vive no `sessionStorage` do ecrã, e
+    o servidor só a grava na venda no EMITIR (`fiscal.finalizar_venda`,
+    `pontos_ligacao`) — numa conta cancelada não chega a haver EMITIR. Enquanto
+    `pontos_app.voucher_ao_balcao` não gravar essa ligação ao aplicar o desconto,
+    não há nada aqui para nomear, e isso **grita no registo** em vez de passar
+    em silêncio (regra de ouro 2): um voucher preso sem ninguém perceber porquê é
+    o pior desfecho de todos.
+
+    **Engole tudo** (`except Exception`): a app em baixo, a integração sem
+    endereço configurado, ou esta função a chamar amanhã algo que mudou de nome
+    do outro lado. A conta cancela-se SEMPRE — é a única saída que a operadora
+    tem para arrumar uma conta, e a reserva do voucher morre sozinha em 2 h, que
+    é tarde mas é o lado seguro."""
+    if not any(li.get("voucher_id") for li in venda.get("linhas") or []):
+        # O caso normal, a esmagadora maioria dos cancelamentos: nem se importa
+        # o `pontos_app` nem se gasta um pedido de rede com quem espera ao
+        # balcão.
+        return
+    ligacao_id = ((venda.get("pontos_ligacao") or {}).get("id") or "").strip()
+    if not ligacao_id:
+        logger.error(
+            "[faturacao] a venda %s foi cancelada com uma recompensa L'Açaí "
+            "aplicada e SEM ligação do QR gravada — não há como pedir à app que "
+            "a liberte, e ela fica presa até a ligação morrer (2 h): o cliente "
+            "não vê a recompensa na carteira e o cartão da caixa fica mudo se "
+            "ele voltar", venda.get("id"))
+        return
+    try:
+        # Importação tardia: o `pontos_app` importa deste módulo, e um import
+        # no topo rebentava o arranque (o mesmo molde do `_resposta_documento`
+        # em `GET /pos/venda/{id}`).
+        from .pontos_app import _libertar_na_app
+
+        await _libertar_na_app(ligacao_id, venda.get("id") or "")
+    except Exception as e:  # noqa: BLE001 — ver a docstring: cancelar nunca falha por isto
+        logger.error(
+            "[faturacao] a venda %s foi cancelada mas não se conseguiu pedir à "
+            "app que libertasse a recompensa (ligação %s) — %s: %s (a conta FOI "
+            "cancelada; a reserva morre sozinha em 2 h)",
+            venda.get("id"), ligacao_id, type(e).__name__, e)
 
 
 # --- Entregar a conta travada ao GESTOR ----------------------------------------
@@ -2570,6 +2672,9 @@ async def dividir_conta(
     _garante_aberta(mae)
     _garante_do_balcao(mae)
     _garante_que_nao_e_ja_uma_parte(mae)
+    # Fase 1: uma conta com uma recompensa L'Açaí aplicada não se reparte —
+    # cada parte levaria a marca e emitiria a 0,00 €. Ver lá o porquê.
+    _garante_que_nao_tem_voucher(mae)
     await _garante_sem_emissao(db, venda_id)
     # A conta que nasce daqui herda o `sessao_id` da mãe (`_nova_parte`): sem
     # esta guarda, dividir uma conta numa sessão FECHADA fazia nascer partes
@@ -2864,6 +2969,9 @@ async def separar_conta(
     _garante_aberta(mae)
     _garante_do_balcao(mae)
     _garante_que_nao_e_ja_uma_parte(mae)
+    # Fase 1: uma conta com uma recompensa L'Açaí aplicada não se reparte —
+    # cada parte levaria a marca e emitiria a 0,00 €. Ver lá o porquê.
+    _garante_que_nao_tem_voucher(mae)
     await _garante_sem_emissao(db, venda_id)
     # A mesma guarda (e a mesma razão) do `dividir_conta`: as partes herdam o
     # `sessao_id` da mãe, e um turno fechado não pode ganhar contas novas.
@@ -3081,6 +3189,9 @@ async def separar_uma_parte(
     _garante_aberta(mae)
     _garante_do_balcao(mae)
     _garante_que_nao_e_ja_uma_parte(mae)
+    # Fase 1: uma conta com uma recompensa L'Açaí aplicada não se reparte —
+    # cada parte levaria a marca e emitiria a 0,00 €. Ver lá o porquê.
+    _garante_que_nao_tem_voucher(mae)
     await _garante_sem_emissao(db, venda_id)
     await _garante_sessao_desta_venda_aberta(db, mae)
 

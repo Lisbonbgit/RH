@@ -320,6 +320,156 @@ export const recadoDeCodigoQrErrado = (texto) => {
 };
 
 
+// --- O voucher L'Açaí ao balcão ----------------------------------------------
+//
+// **A recompensa passa a valer também na caixa, lida pelo MESMO QR que já dá
+// pontos.** Quem decide o desconto é a APP e não o POS: a elegibilidade é uma
+// regra de dinheiro e fica num sítio só (desenho de 2026-09-22, decisão 2).
+// Este lado pede, o servidor do POS monta as linhas da conta, pergunta à app e
+// escreve o que ela responder no `desconto_eur` da linha alvo.
+//
+// **REGRA DE OURO DA INTEGRAÇÃO, escrita e inegociável: nada disto pode
+// impedir uma fatura de sair.** App em baixo, tecto de espera esgotado ou
+// resposta estranha = venda normal, sem desconto. Por isso esta chamada tem
+// tecto PRÓPRIO e quem a faz engole a falha — nunca a transforma num EMITIR
+// bloqueado.
+//
+// 8 s, e não os 15 s do resto: o servidor do POS fala com a app com um tecto de
+// 4 s (contrato (2) do desenho), por isso uma resposta que demore o dobro disso
+// é o servidor pendurado e não a app lenta. E isto corre no caminho do EMITIR,
+// onde cada segundo é a fila à frente da operadora.
+export const TIMEOUT_DO_VOUCHER_MS = 8000;
+
+// `POST /pos/venda/{id}/voucher` → `{ voucher_id, valor, titulo, linha_id_alvo }`,
+// ou `{}` quando não há voucher nenhum a aplicar, ou `{ motivo: "..." }` nas
+// recusas de negócio (200, como as irmãs da porta dos pontos). Quando o
+// servidor devolver também a `venda` já com o desconto na linha, é ELA que o
+// ecrã mostra — o total nunca se soma no browser.
+//
+// **`ligacaoId` a `null` NÃO é um pedido vazio**: é o «Remover» do cartão dos
+// pontos, e quer dizer *liberta o que estiver reservado para esta conta e tira
+// o desconto da linha*. O botão desfaz as duas coisas ou nenhuma — tirar o
+// cliente e deixar o voucher preso até à meia-noite deixava-o sem desconto e
+// sem recompensa.
+export const pedirVoucherDaConta = (vendaId, ligacaoId) =>
+  api.post(`/pos/venda/${vendaId}/voucher`, { ligacao_id: ligacaoId || null },
+    { timeout: TIMEOUT_DO_VOUCHER_MS });
+
+// A ponte entre os dois catálogos falhou: a categoria desta linha não tem
+// correspondência na app. **Falha fechada, e em voz alta** — sem desconto,
+// nunca um desconto errado, mas nunca em silêncio: um voucher que não se
+// aplica sem ninguém perceber porquê é o pior desfecho de todos.
+export const MOTIVO_VOUCHER_SEM_CASAR = 'categoria_sem_correspondencia';
+
+// **O 200 que é um «não sei».** Quando a app não responde — rede em baixo,
+// tecto de espera esgotado, 5xx, um 200 sem a forma do contrato — a rota do POS
+// NÃO devolve erro: devolve 200 com todas as chaves do voucher a `null` e
+// `app_indisponivel: true`, e deixa a conta exactamente como ela estava. É a
+// regra de ouro da integração — nada disto pode impedir uma fatura de sair.
+//
+// Sem esta pergunta, o ecrã lia aquelas chaves a `null` como «este cliente não
+// tem recompensa nenhuma» e fazia as DUAS coisas erradas de uma vez: apagava do
+// cartão a linha «Açaí Médio grátis» com o desconto ainda gravado na conta (o
+// total em baixo continuava descontado, e ninguém sabia porquê), e recusava o
+// EMITIR com «A recompensa desta conta mudou» — uma frase FALSA, porque não
+// mudou nada: a app é que não respondeu.
+//
+// É a MESMA falha do `catch` de quem chama, e trata-se da mesma maneira: o ecrã
+// fica como estava e a venda segue.
+export const aAppNaoRespondeu = (dados) => !!(dados && dados.app_indisponivel);
+
+export const MSG_VOUCHER_SEM_CASAR =
+  'Tem um voucher que não consegui casar com esta conta — a venda segue sem '
+  + 'desconto. Avise o gestor.';
+
+export const MSG_VOUCHER_SEM_PRODUTO =
+  'Tem uma recompensa por usar, mas não há nada nesta conta que sirva — '
+  + 'acrescente o produto antes de emitir.';
+
+// **O que o cartão da caixa diz sobre o voucher**, a partir da resposta crua —
+// ou `null` quando não há nada a dizer e o cartão fica como sempre foi.
+//
+// Vive aqui, e não dentro de um `{… && (` do JSX, pela regra do módulo: uma
+// decisão escrita no meio de um `<p>` não é executável por teste nenhum, e
+// troca-se sem ninguém dar por isso. Os ecrãs do POS desenham-se sem servidor
+// nenhum, e já foram defeitos a produção exactamente assim.
+//
+// São TRÊS coisas para dizer, e a diferença entre elas é o que a funcionária
+// faz a seguir:
+//
+//  · `aplicado`   — o desconto entrou. Só falta cobrar o que está em baixo.
+//  · `sem_produto`— o cliente TEM recompensa e nada nesta conta serve. É este
+//                   estado que transforma um voucher perdido numa venda: ela
+//                   lê, diz ao cliente, e ainda vai a tempo de acrescentar o
+//                   produto.
+//  · `sem_casar`  — a ponte das categorias não casou. Não é do cliente nem da
+//                   conta: é uma categoria por preencher no backoffice.
+//
+// `{}` (sem `voucher_id` e sem `motivo`) é o caso mudo — o cliente não tem
+// recompensa nenhuma por usar, e não há frase que valha a pena ocupar o cartão.
+//
+// **E é por isso que o `app_indisponivel` tem de ser perguntado ANTES desta
+// função** (ver `aAppNaoRespondeu`): a app em baixo chega cá com a mesma cara do
+// caso mudo, e esta função respondia «não há recompensa» a um «não sei» —
+// apagando do cartão um desconto que continua gravado na conta.
+export const estadoDoVoucher = (dados) => {
+  const d = dados || {};
+  const titulo = String(d.titulo || '').trim();
+  if (d.voucher_id) {
+    return {
+      tipo: 'aplicado',
+      voucher_id: d.voucher_id,
+      valor: Number(d.valor) || 0,
+      linha_id_alvo: d.linha_id_alvo || null,
+      texto: `${titulo || 'Recompensa L\'Açaí'} (− ${eurosPos(Number(d.valor) || 0)})`,
+    };
+  }
+  if (d.motivo === MOTIVO_VOUCHER_SEM_CASAR) {
+    return { tipo: 'sem_casar', texto: MSG_VOUCHER_SEM_CASAR };
+  }
+  if (d.motivo) {
+    return {
+      tipo: 'sem_produto',
+      texto: titulo
+        ? `${titulo}: não há nada nesta conta que sirva — acrescente o produto antes de emitir.`
+        : MSG_VOUCHER_SEM_PRODUTO,
+    };
+  }
+  return null;
+};
+
+// **A conta tem mesmo um desconto de voucher gravado?** — a pergunta que abre
+// (e fecha) o travão do total a zero.
+//
+// Lê-se a MARCA que o servidor pôs na linha (`voucher_id`), e não o valor que
+// a app devolveu ao ecrã: é a mesma pergunta que o `fiscal.py::finalizar` faz
+// do outro lado, e os dois têm de concordar. Sem a marca, um desconto manual
+// de 100 % — que não pede PIN a ninguém — emitia uma Fatura Simplificada a
+// 0,00 € sem ninguém ter trocado pontos nenhuns.
+//
+// **A marca E o desconto, palavra por palavra como o
+// `fiscal.py::_tem_linha_de_voucher`** — e não só a marca, como esta linha
+// perguntava. A diferença não é teórica: `PUT /pos/venda/{id}/linhas/{linha_id}`
+// aceita `desconto_eur` e não conhece o `voucher_id`, por isso a operadora pode
+// limpar o desconto pela mão dela e deixar a MARCA ÓRFÃ na linha. Com um
+// desconto global de 100 % por cima, o ecrã dizia «não há nada a cobrar», deixava
+// emitir e mandava a lista de pagamentos VAZIA — e o servidor respondia 422 a
+// falar de recompensas sobre um desconto que ela deu de cabeça. Um beco sem
+// saída com o cliente à frente, e pior do que um botão cinzento: o ecrã tinha
+// acabado de lhe garantir que estava tudo bem.
+//
+// **Uma pergunta só, e a mesma nos dois travões que ela abre** — o do total a
+// zero e o de não repartir. Uma segunda, mais larga («há alguma marca, tenha ela
+// desconto ou não»), foi escrita e apagada: travava o Dividir de uma conta com
+// marca órfã PARA SEMPRE, porque a marca só sai pela rota do voucher e depois de
+// o cliente sair do cartão já não há por onde a chamar. E não fechava dinheiro
+// nenhum — uma marca órfã que volte a ganhar um desconto à mão abre o travão do
+// zero com ou sem repartição, e isso é do `fiscal.py::_tem_linha_de_voucher`,
+// não deste lado.
+export const contaComVoucher = (venda) =>
+  (venda?.linhas || []).some((li) => !!li.voucher_id && !!li.desconto_eur);
+
+
 // --- Dispositivo -------------------------------------------------------------
 
 export const getDeviceToken = () => ler(CHAVE_DISPOSITIVO);

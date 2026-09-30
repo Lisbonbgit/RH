@@ -106,6 +106,17 @@ _MSG_TOTAL_NAO_POSITIVO = (
     "O total da venda tem de ser positivo para emitir uma fatura — "
     "confirme os descontos aplicados."
 )
+# **O travão da conta a zero.** Uma conta a 0,00 € emite-se — a Fatura
+# Simplificada sai à mesma, zero euros e zero pontos — mas SÓ quando o zero
+# veio de uma recompensa L'Açaí, ou seja, quando a conta tem uma linha com
+# `voucher_id` (marca posta pelo SERVIDOR, em `pontos_app.voucher_ao_balcao`, e
+# nunca aceite do corpo de um pedido do browser). Aberto a toda a gente, isto
+# deixava emitir a zero também com um desconto manual de 100 % — e esses não
+# pedem PIN a ninguém.
+_MSG_TOTAL_ZERO_SEM_VOUCHER = (
+    "Uma conta a 0,00 € só se emite com uma recompensa L'Açaí aplicada — "
+    "confirme os descontos desta conta."
+)
 _MSG_TIPO_PAGAMENTO_INEXISTENTE = "Tipo de pagamento não encontrado ou inactivo."
 _MSG_TIPO_PAGAMENTO_SEM_VENDUS = (
     "Este tipo de pagamento não tem um método do Vendus associado — "
@@ -1949,7 +1960,17 @@ class LigacaoDePontos(BaseModel):
 
 
 class PedidoFinalizarVenda(BaseModel):
-    pagamentos: List[PagamentoEntrada] = Field(min_length=1)
+    # **Pode vir VAZIO, e deixou de ser `min_length=1` por causa da conta a
+    # zero.** Uma conta oferecida por uma recompensa L'Açaí soma 0,00 € e não
+    # se paga com nada: o `PagamentoEntrada.valor` continua `gt=0` (um
+    # pagamento de 0,00 € não existe), por isso a única forma de finalizar uma
+    # conta a zero é **não mandar pagamento nenhum**.
+    #
+    # Não se perde protecção nenhuma: quem segura isto é a rota, onde a soma
+    # dos pagamentos tem de bater com o total — uma conta com valor e a lista
+    # vazia continua a ser recusada, agora com a frase que diz quanto falta em
+    # vez de um erro de validação sem número nenhum.
+    pagamentos: List[PagamentoEntrada]
     # O cliente que mostrou a app na caixa, ou `None`. Opcional e nunca
     # obrigatório: o cartão dos pontos no ecrã não bloqueia o EMITIR.
     pontos_ligacao: Optional[LigacaoDePontos] = None
@@ -1983,6 +2004,31 @@ class PedidoFinalizarVenda(BaseModel):
                 % (digitos[:3], digitos[3:6], digitos[6:])
             )
         return digitos
+
+
+def _tem_linha_de_voucher(venda: Dict) -> bool:
+    """Esta conta tem alguma linha marcada com uma recompensa L'Açaí?
+
+    É a chave do travão da conta a zero. A marca (`voucher_id`) só é escrita
+    pelo SERVIDOR, em `pontos_app.voucher_ao_balcao`, depois de a app L'Açaí ter
+    escolhido o voucher e a linha — nunca pelo corpo de um pedido do browser
+    (nem `PedidoLinha` nem `PedidoEditarLinha` a conhecem, `venda.py`). É isso
+    que a separa de um desconto manual de 100 %, que qualquer pessoa ao balcão
+    pode dar e que continua a não poder emitir a zero.
+
+    **Exige a marca E o desconto, e não só a marca.** O `desconto_eur` de uma
+    linha marcada pode ser limpo por fora daqui — `PUT /pos/venda/{id}/linhas/
+    {linha_id}` aceita `desconto_eur` e não conhece o `voucher_id`, por isso
+    apagar o desconto pela mão da operadora deixava a MARCA para trás. Essa
+    marca órfã destrancava a conta a zero para um desconto manual de 100 %, que
+    é exactamente o que o travão existe para impedir. Um voucher a sério traz
+    sempre os dois (a rota recusa um `valor` que não seja positivo).
+
+    `.get` e `or []` porque uma venda sem linhas e outra com `linhas: []` valem
+    exactamente o mesmo aqui — e nenhuma delas pode cair num KeyError no meio
+    de uma emissão."""
+    return any(li.get("voucher_id") and li.get("desconto_eur")
+               for li in venda.get("linhas") or [])
 
 
 def _resposta_documento(documento: Dict) -> Dict:
@@ -2059,9 +2105,22 @@ async def finalizar(
         raise HTTPException(status_code=422, detail=_MSG_LINHAS_VAZIAS)
 
     totais = _totais(venda)
-    if totais["total"] <= 0:
+    # **`< 0` e já não `<= 0`** — o zero passou a ser um desfecho legítimo: um
+    # açaí oferecido por uma recompensa L'Açaí deixa a conta a 0,00 € e a
+    # Fatura Simplificada sai à mesma (está provado contra a conta real — a FS
+    # 06P2026/1081 da app saiu a 0,00 € com 100 % de desconto numa linha).
+    if totais["total"] < 0:
         raise HTTPException(status_code=422, detail=_MSG_TOTAL_NAO_POSITIVO)
+    # **O travão** (ver `_MSG_TOTAL_ZERO_SEM_VOUCHER`): o zero só passa quando
+    # veio de um voucher. Sem esta linha, o `< 0` acima abria a emissão a zero
+    # a qualquer desconto manual de 100 %.
+    if totais["total"] == 0 and not _tem_linha_de_voucher(venda):
+        raise HTTPException(status_code=422, detail=_MSG_TOTAL_ZERO_SEM_VOUCHER)
 
+    # A soma dos pagamentos continua a ter de bater com o total, e é ela que
+    # segura o resto: uma conta a 0,00 € finaliza-se SEM pagamento nenhum
+    # (soma de zero pagamentos é 0, e o total é 0), e uma conta com valor
+    # continua a não poder ser finalizada sem pagamentos.
     soma_pagamentos = round(sum(p.valor for p in dados.pagamentos), 2)
     if soma_pagamentos != totais["total"]:
         raise HTTPException(

@@ -30,7 +30,7 @@ import os
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -42,7 +42,16 @@ from .auth import gestor_atual
 from .db import COLECOES, obter_db
 from .pos_auth import operador_atual
 from .precos import CODIGO_NAO_SUJEITO
-from .venda import _garante_aberta, _obter_venda_da_loja
+from .venda import (
+    _aplicar_as_linhas,
+    _garante_aberta,
+    _garante_do_balcao,
+    _garante_sem_emissao,
+    _garante_sessao_desta_venda_aberta,
+    _linha_vendus,
+    _obter_venda_da_loja,
+    _venda_publica,
+)
 from .vendus.cliente import ClienteVendus, obter_conta
 
 logger = logging.getLogger(__name__)
@@ -372,6 +381,398 @@ async def preferencia_de_pontos(
     return {"fatura_por_email": gravado}
 
 
+# --- O voucher ao balcão ---------------------------------------------------------
+#
+# A peça exactamente INVERSA dos pontos. Os pontos mandam informação DEPOIS da
+# fatura (creditar); um desconto tem de ser decidido ANTES do EMITIR.
+#
+# A regra do dono: a recompensa fica na carteira e vale nos dois sítios — no
+# checkout da app e ao balcão. Quem chegar primeiro usa-a. **A app decide o
+# desconto**, porque é uma regra de dinheiro e vive num sítio só; o POS
+# aplica-o na linha e emite.
+#
+# E as duas regras acima de tudo o resto:
+#
+# 1. **Nada disto pode impedir uma fatura de sair.** App em baixo, tecto de
+#    espera esgotado ou resposta estranha = venda normal, sem desconto.
+# 2. **Falhar fechado e EM VOZ ALTA.** Uma categoria sem correspondência é
+#    *sem desconto*, nunca um desconto errado — mas grita no registo e volta ao
+#    cartão da caixa com o motivo. Um voucher que não se aplica sem ninguém
+#    perceber porquê é o pior desfecho de todos.
+
+
+class PedidoVoucher(BaseModel):
+    # **`None` é o «Remover» do cartão dos pontos, e não um pedido vazio.** O
+    # ecrã tira o cliente da fatura e chama esta rota com `ligacao_id: null`
+    # para o desconto sair da conta com ele (`lib/pos.js::pedirVoucherDaConta`).
+    #
+    # Com `min_length=1` isto era 422, e por aí saía dinheiro: o `catch` do ecrã
+    # engole o erro em silêncio, a marca e o desconto FICAM na linha, e a partir
+    # daí ou a funcionária cobra os 7,20 € e o EMITIR recusa (a soma dos
+    # pagamentos não bate com um total de 0,00 € — **a fatura não sai**, com o
+    # cliente à frente), ou emite a 0,00 € sem pagamento nenhum e sem ligação de
+    # pontos: o `/creditar` nunca corre, o voucher nunca é consumido e volta a
+    # `active`. Açaí de graça E recompensa devolvida.
+    #
+    # Sem `min_length` de propósito: um `""` normaliza-se para `None` na rota em
+    # vez de virar outro 422 no mesmo sítio.
+    ligacao_id: Optional[str] = Field(None, max_length=100)
+
+
+async def escolher_voucher(
+    ligacao_id: str, linhas: List[Dict], *, venda_id: str = ""
+) -> Optional[Dict]:
+    """Pergunta à app que recompensa desconta esta conta. **`None` quer dizer
+    «não sei»** — e é essa diferença que manda em tudo o resto.
+
+    O molde é o do `ler_qr_de_pontos`: os mesmos 4 s de tecto (`_chamar_app`,
+    `TIMEOUT_SEGUNDOS`) porque quem espera é a funcionária com o cliente à
+    frente, e o mesmo `except Exception` largo — um erro de dedo na PORTA do
+    `APP_LACAI_URL` (`8OO1` com letras) levanta `httpx.InvalidURL`, que herda
+    directamente de `Exception` e escaparia a um tuplo de `httpx.HTTPError`.
+
+    **Qualquer falha significa SEM DESCONTO, nunca um desconto errado**: rede em
+    baixo, tecto esgotado, 401 (chave trocada), 5xx, ou um 200 sem a forma do
+    contrato. Devolver `None` é dizer «não sei», e quem chama deixa a conta
+    exactamente como ela estava.
+
+    O `{}` da app (não há voucher para esta conta) e o `{"motivo": ...}` (recusa
+    de negócio, em 200 como as rotas irmãs) **são respostas e não falhas**:
+    voltam tal e qual, para o cartão da caixa poder dizer porquê."""
+    try:
+        resposta = await _chamar_app(
+            "voucher", {"ligacao_id": ligacao_id, "linhas": linhas})
+    except Exception as e:  # noqa: BLE001 — ver a docstring: qualquer falha é «sem desconto»
+        logger.warning(
+            "[faturacao] voucher ao balcão (venda %s, ligação %s): a app não "
+            "respondeu — %s: %s (a venda segue SEM desconto)",
+            venda_id, ligacao_id, type(e).__name__, e)
+        return None
+    corpo = _json_ou_nada(resposta) if resposta.status_code == 200 else None
+    if not isinstance(corpo, dict):
+        logger.error(
+            "[faturacao] voucher ao balcão (venda %s, ligação %s): resposta "
+            "inesperada da app (HTTP %s): %s (a venda segue SEM desconto)",
+            venda_id, ligacao_id, resposta.status_code, resposta.text[:200])
+        return None
+    return corpo
+
+
+async def _libertar_na_app(ligacao_id: str, venda_id: str) -> None:
+    """Diz à app que esta venda ficou SEM desconto, para ela libertar o voucher
+    que já tinha reservado.
+
+    **O desfecho que isto impede: o cliente paga tudo E perde a recompensa.**
+    Há saídas desta rota em que a app JÁ reservou o voucher e já armou o
+    `/creditar` (a ligação guarda o `voucher_id`) e a conta, aqui, não levou
+    desconto nenhum — a linha alvo desapareceu, o contrato veio partido, a
+    escrita perdeu a corrida. Sem este aviso a Fatura Simplificada sai ao preço
+    cheio com a ligação dos pontos preenchida, o `/creditar` consome o voucher, e
+    o cliente fica sem os dois. É a regra de ouro 3 ao contrário.
+
+    **É a MESMA rota do voucher com as `linhas` VAZIAS**, e não uma rota nova de
+    nenhum dos lados: é o contrato que a app já tem — nenhuma linha serve, logo a
+    reserva liberta-se e o `voucher_id` da ligação volta a `None`
+    (`routes_pos_integracao.voucher`).
+
+    **Nunca levanta e nunca muda a resposta ao ecrã.** `escolher_voucher` já
+    engole tudo o que corra mal, que é a regra de ouro 1: a app em baixo aqui não
+    pode virar um erro ao balcão. Falhado o aviso, a reserva morre sozinha do
+    lado da app ao fim de 15 minutos
+    (`services_vouchers.release_stale_reservations`) — o voucher volta ao
+    cliente, que é o lado seguro."""
+    await escolher_voucher(ligacao_id, [], venda_id=venda_id)
+
+
+async def _linhas_para_a_app(db, venda: Dict) -> List[Dict]:
+    """As linhas desta conta no formato do contrato:
+    `[{linha_id, categoria_vendus_ref, unit_price, qty}]`.
+
+    **A ponte entre os dois catálogos é a CATEGORIA, e só ela.** O campo
+    `vendus_ref` existe dos dois lados e guarda coisas DIFERENTES: aqui é o
+    `id` do artigo no Vendus (`precos.id_vendus_do_produto`), na app é a
+    `reference` do artigo. Não se casam — e casar por produto seria mau
+    negócio de qualquer forma (são centenas, mudam todas as semanas, e a
+    elegibilidade do voucher nem sequer trabalha a esse nível). As categorias
+    dos dois catálogos vieram do MESMO catálogo Vendus e guardam o id da
+    categoria de lá: é essa a única chave partilhada.
+
+    **O `linha_id` vai e a categoria não chega.** Duas linhas podem partilhar
+    categoria, e é UMA delas que leva o desconto — é a app que diz qual.
+
+    **O preço unitário sai de `_linha_vendus`**, nunca de uma conta feita aqui:
+    é o mesmo número que vai para a fatura, já com as personalizações somadas e
+    arredondado uma só vez. Uma segunda aritmética divergia no dia em que a
+    primeira mudasse, e a elegibilidade é exactamente `unit_price >= valor` do
+    voucher.
+
+    **Uma categoria sem `vendus_ref` viaja a `None` e GRITA no registo.** Não se
+    adivinha nada — quem decide é a app, que responde
+    `categoria_sem_correspondencia` —, mas o sintoma de uma categoria por
+    preencher é um voucher que não se aplica, e isso não pode ficar calado.
+
+    Duas leituras e não duas por linha: ao balcão, com o cliente à frente, cada
+    ida à base de dados conta contra os 4 s da chamada à app."""
+    linhas = venda.get("linhas") or []
+    if not linhas:
+        return []
+    produtos = {
+        p["id"]: p
+        for p in await db[COLECOES["produtos"]].find(
+            {"id": {"$in": [li.get("produto_id") for li in linhas]}},
+            {"_id": 0, "id": 1, "categoria_id": 1},
+        ).to_list(500)
+    }
+    categorias = {
+        c["id"]: c
+        # **A projecção é afirmada à mão no teste** (`test_voucher_ao_balcao.py::
+        # test_a_projeccao_das_categorias_PEDE_o_vendus_ref`), porque o duplo
+        # desta casa aceita-a e IGNORA-A: sem essa prova, apagar `vendus_ref`
+        # daqui deixava a suite inteira verde e, em produção, TODAS as categorias
+        # chegavam sem o campo — o desconto ao balcão deixava de existir para
+        # toda a gente. Guarda-se a selecção (e não se lê a categoria inteira)
+        # porque quem espera por estes 4 s é a funcionária com o cliente à frente.
+        for c in await db[COLECOES["categorias"]].find(
+            {"id": {"$in": [p.get("categoria_id") for p in produtos.values()]}},
+            {"_id": 0, "id": 1, "nome": 1, "vendus_ref": 1},
+        ).to_list(500)
+    }
+    saida = []
+    for li in linhas:
+        try:
+            preco_unitario = _linha_vendus(li)["gross_price"]
+        except HTTPException as e:
+            # Uma linha que nem sequer se consegue calcular (produto sem IVA,
+            # sem preço, override impossível) não pode levar desconto nenhum —
+            # e o 422 dela é problema do EMITIR, não deste cartão. Devolver
+            # lista vazia deixa a app sem por onde escolher e a venda segue
+            # normal, que é a regra de ouro desta integração.
+            logger.error(
+                "[faturacao] voucher ao balcão (venda %s): a linha %s não se "
+                "consegue calcular (%s) — a conta vai SEM desconto",
+                venda.get("id"), li.get("id"), e.detail)
+            return []
+        categoria = categorias.get(
+            (produtos.get(li.get("produto_id")) or {}).get("categoria_id")) or {}
+        referencia = categoria.get("vendus_ref")
+        if not referencia:
+            logger.error(
+                "[faturacao] voucher ao balcão (venda %s): a categoria %r do "
+                "produto %r não tem `vendus_ref` — nenhuma recompensa da app "
+                "consegue casar com esta linha até alguém o preencher no "
+                "catálogo", venda.get("id"),
+                categoria.get("nome") or categoria.get("id"),
+                li.get("produto_nome"))
+        saida.append({
+            "linha_id": li.get("id"),
+            "categoria_vendus_ref": str(referencia) if referencia else None,
+            "unit_price": preco_unitario,
+            "qty": li.get("quantidade") or 1,
+        })
+    return saida
+
+
+def _resposta_do_voucher(
+    venda: Dict, *, voucher_id: Optional[str] = None, valor: Optional[float] = None,
+    titulo: Optional[str] = None, linha_id_alvo: Optional[str] = None,
+    motivo: Optional[str] = None, app_indisponivel: bool = False,
+) -> Dict:
+    """As cinco chaves do contrato — **sempre presentes**, a `None` quando não
+    há — mais a conta como ela FICOU e o `app_indisponivel`.
+
+    Chaves sempre presentes é a regra da casa (ver `_venda_publica`): o ecrã não
+    pode ter de adivinhar se a ausência de `voucher_id` quer dizer «não há
+    voucher» ou «esta versão do servidor não sabe responder a isso».
+
+    **O que se devolve é o que ficou GRAVADO na conta**, nunca o que a app
+    disse — a mesma regra do `fatura_por_email` do `ler`. Um `voucher_id` que a
+    app escolheu mas que não chegou a entrar em linha nenhuma era o cartão a
+    prometer à funcionária um desconto que o total não tem.
+
+    **A conta vai junta, e é por ela que o total do ecrã fica certo.** O
+    desconto foi escrito aqui, do lado do servidor; sem a conta de volta o ecrã
+    mostrava o total de antes e a funcionária cobrava o que não é.
+
+    **`app_indisponivel` guarda a diferença entre «não sei» e «não há».**
+    `escolher_voucher` distingue as duas (`None` é a app em baixo, `{}` é não há
+    voucher) e sem este campo a rota deitava a diferença fora: as duas produziam
+    o mesmo corpo com as chaves a `None`. O caso: desconto aplicado, cartão a
+    dizer «Açaí Médio grátis», a app cai, a funcionária carrega em EMITIR, esta
+    rota responde 200 — e o ecrã apagava a recompensa do cartão e recusava a
+    emissão com «A recompensa desta conta mudou», que é FALSO: não mudou nada,
+    foi a app que não respondeu. Falhar fechado é a regra de ouro 2; falhar
+    fechado **em silêncio, a mentir**, é o contrário dela."""
+    return {
+        "voucher_id": voucher_id,
+        "valor": valor,
+        "titulo": titulo,
+        "linha_id_alvo": linha_id_alvo,
+        "motivo": motivo,
+        "app_indisponivel": app_indisponivel,
+        "venda": _venda_publica(venda),
+    }
+
+
+@router.post("/pos/venda/{venda_id}/voucher")
+async def voucher_ao_balcao(
+    venda_id: str, dados: PedidoVoucher, operador: Dict = Depends(operador_atual)
+) -> dict:
+    """A recompensa L'Açaí aplicada à conta do balcão, lida pelo MESMO QR que já
+    dá pontos.
+
+    Monta as linhas, pergunta à app qual é o desconto (4 s), escreve-o no
+    `desconto_eur` da linha que ela escolheu e marca essa linha com o
+    `voucher_id`. Daí para a frente é máquina que já existe: `_itens_vendus`
+    converte qualquer desconto na percentagem que reproduz o líquido ao cêntimo
+    (`fiscal._percentagem_que_reproduz`), pelo único campo cuja semântica já foi
+    confirmada contra o Vendus.
+
+    **A MARCA na linha é metade do ponto desta rota.** Sem ela, depois de
+    emitida ninguém distingue um desconto de voucher de um que a funcionária deu
+    de cabeça: o talão não pode dizer «Oferta L'Açaí», os relatórios não sabem
+    quanto custou a fidelidade ao balcão, e — o que decide — o travão da conta a
+    zero (`fiscal.finalizar`) não teria como saber que aquele 0,00 € é uma
+    oferta e não um desconto manual de 100 %.
+
+    **É chamada DUAS vezes**, ao ler o QR (para a funcionária ver antes de
+    cobrar) e ao EMITIR (a conta pode ter mudado pelo meio). A segunda com a
+    mesma ligação devolve a mesma reserva do lado da app; se as linhas mudaram e
+    o voucher deixou de servir, a app liberta-o e escolhe outro — por isso o que
+    ela responde AGORA é o que vale, e uma marca antiga limpa-se sempre antes de
+    escrever a nova.
+
+    **As MESMAS quatro guardas das rotas que escrevem linhas** (`venda.py`), e
+    não as duas do `ler`: isto ESCREVE na conta. Uma conta com reserva fiscal
+    está congelada e não pode ganhar um desconto a meio de virar Fatura
+    Simplificada, e uma sessão de caixa a fechar não pode ver o seu turno mudar
+    por baixo do Z. Correm ANTES de falar com a app, o mesmo molde do `ler`: uma
+    recusa depois da chamada deixava do outro lado uma reserva de voucher por
+    uma conta que nunca ia ser cobrada.
+
+    **A app em baixo deixa a conta EXACTAMENTE como estava** — nem limpa o que
+    já lá está. É a regra de ouro: nada daqui pode impedir uma fatura de sair, e
+    tirar um desconto já aplicado no instante do EMITIR mudava o total depois de
+    o dinheiro estar contado, e a soma dos pagamentos deixava de bater. Mas
+    **diz-se que foi «não sei»** (`app_indisponivel`): sem isso o ecrã lia esta
+    resposta como «a app diz que não há voucher» e acusava o cliente de uma
+    mudança que não houve.
+
+    **`ligacao_id` a `None` é o «Remover»**, não um pedido vazio: tira o desconto
+    e a marca da conta sem falar com a app. Ver `PedidoVoucher`."""
+    db = obter_db()
+    venda = await _obter_venda_da_loja(db, venda_id, operador["loja_id"])
+    _garante_aberta(venda)
+    _garante_do_balcao(venda)
+    await _garante_sem_emissao(db, venda_id)
+    await _garante_sessao_desta_venda_aberta(db, venda)
+
+    # **Sem ligação é o «Remover», e aí não há nada a perguntar a ninguém.** O
+    # que o ecrã pede é «tira o desconto e a marca desta conta» — e um `{}` é
+    # exactamente «não há voucher», que é a resposta que o caminho abaixo já sabe
+    # tratar (limpa a marca e o desconto das linhas). A reserva do lado da app
+    # fica sem quem a liberte daqui — não temos ligação nenhuma para a nomear —
+    # e morre sozinha em 15 minutos
+    # (`services_vouchers.release_stale_reservations`): o voucher volta ao
+    # cliente, que é o lado seguro.
+    ligacao_id = (dados.ligacao_id or "").strip() or None
+    corpo: Optional[Dict] = {}
+    if ligacao_id:
+        corpo = await escolher_voucher(
+            ligacao_id, await _linhas_para_a_app(db, venda), venda_id=venda_id)
+    if corpo is None:
+        # «Não sei», e o ecrã tem de o poder separar de «não há» — ver
+        # `_resposta_do_voucher`.
+        return _resposta_do_voucher(venda, app_indisponivel=True)
+
+    titulo = str(corpo.get("titulo") or "") or None
+    motivo = str(corpo.get("motivo") or "") or None
+    voucher_id = str(corpo.get("voucher_id") or "") or None
+    alvo_id = str(corpo.get("linha_id_alvo") or "") or None
+    valor = round(float(corpo.get("valor") or 0), 2)
+    if voucher_id and (not alvo_id or valor <= 0):
+        # Um voucher sem linha alvo ou sem valor é o contrato partido. Vale a
+        # regra de sempre: sem desconto, e a gritar — nunca um desconto errado.
+        logger.error(
+            "[faturacao] voucher ao balcão (venda %s): a app escolheu o voucher "
+            "%s mas mandou linha_id_alvo=%r e valor=%r — a conta vai SEM "
+            "desconto", venda_id, voucher_id, corpo.get("linha_id_alvo"),
+            corpo.get("valor"))
+        # E avisa-se a app: ela reservou este voucher e armou o `/creditar` com
+        # ele. Ver `_libertar_na_app` — sem isto o cliente pagava tudo e perdia a
+        # recompensa na mesma venda.
+        await _libertar_na_app(ligacao_id, venda_id)
+        voucher_id, motivo = None, motivo or "contrato_partido"
+
+    if not voucher_id and not any(
+            li.get("voucher_id") for li in venda.get("linhas") or []):
+        # Nada para escrever — o caso normal, a esmagadora maioria das contas.
+        # Escrever à mesma incrementava o `linhas_versao` e disputava a conta
+        # com o ecrã por nada (ver `_aplicar_as_linhas`).
+        return _resposta_do_voucher(venda, titulo=titulo, motivo=motivo)
+
+    def aplicar(conta):
+        linhas = list(conta.get("linhas") or [])
+        # **Limpar PRIMEIRO, sempre.** A rota corre duas vezes e a conta pode
+        # ter mudado pelo meio: uma marca antiga deixada para trás era um
+        # produto oferecido com um voucher que a app já libertou.
+        for li in linhas:
+            if li.get("voucher_id"):
+                li["voucher_id"] = None
+                # O desconto vai com a marca: foi esta rota que o pôs, e
+                # deixá-lo era uma oferta sem voucher nenhum por trás.
+                #
+                # ponytail: um desconto manual que já estivesse NESTA linha
+                # antes do voucher perde-se aqui, e a operadora volta a pô-lo.
+                # Guardar o valor anterior era um campo novo por um caso que ao
+                # balcão não acontece — a alternativa é gravá-lo se aparecer.
+                li["desconto_eur"] = None
+        alvo = (next((li for li in linhas if li.get("id") == alvo_id), None)
+                if voucher_id else None)
+        if alvo is not None:
+            candidata = dict(alvo, voucher_id=voucher_id, desconto_eur=valor)
+            # Valida a versão com desconto ANTES de gravar, como o
+            # `venda.editar_linha`: um desconto maior do que a linha inteira
+            # produziria uma linha NEGATIVA numa fatura real
+            # (`precos.linha_de_venda`). A elegibilidade da app impede-o
+            # (`unit_price >= valor`), e é por isso mesmo que se confirma aqui.
+            _linha_vendus(candidata)
+            alvo.update({"voucher_id": voucher_id, "desconto_eur": valor})
+        return linhas
+
+    try:
+        venda = await _aplicar_as_linhas(
+            db, venda_id, operador["loja_id"], aplicar, venda)
+    except HTTPException:
+        # A escrita não passou: a conta mudou por baixo quatro vezes seguidas
+        # (409), deixou de estar aberta, nasceu-lhe uma reserva fiscal, ou a
+        # linha com desconto não se consegue calcular (422 do `_linha_vendus`).
+        # O desconto NÃO entrou na conta e o voucher está reservado do lado da
+        # app — libertá-lo ANTES de subir é o que impede o cliente de pagar tudo
+        # e ficar sem a recompensa. Ver `_libertar_na_app`.
+        if voucher_id:
+            await _libertar_na_app(ligacao_id, venda_id)
+        raise
+    if voucher_id and not any(
+            li.get("voucher_id") == voucher_id for li in venda["linhas"]):
+        # A app escolheu uma linha que já não está na conta (foi removida entre
+        # a leitura e a escrita). Sem desconto, e a dizê-lo: a funcionária ainda
+        # vai a tempo de perceber porque é que o cartão mudou.
+        logger.error(
+            "[faturacao] voucher ao balcão (venda %s): a app escolheu a linha "
+            "%r e ela já não está na conta — a venda segue SEM desconto",
+            venda_id, alvo_id)
+        # A app reservou o voucher e armou o `/creditar` por uma linha que já não
+        # existe: sem o aviso, a FS saía ao preço cheio e o crédito consumia-o.
+        await _libertar_na_app(ligacao_id, venda_id)
+        return _resposta_do_voucher(
+            venda, titulo=titulo, motivo="linha_desapareceu")
+    if not voucher_id:
+        return _resposta_do_voucher(venda, titulo=titulo, motivo=motivo)
+    return _resposta_do_voucher(
+        venda, voucher_id=voucher_id, valor=valor, titulo=titulo,
+        linha_id_alvo=alvo_id, motivo=motivo)
+
+
 # --- A fila -------------------------------------------------------------------
 
 # **O «nunca» de `a_enviar_ate`, e não `None`.** No Mongo, `null` não casa com
@@ -395,8 +796,24 @@ _DESISTIR_AO_FIM_DE = timedelta(hours=24)
 # é a idempotência da app a dizer «esta fatura já saiu». Fora desta lista, um
 # `ja_enviado` caía no saco do 5xx: 13 tentativas espalhadas por 24 h de uma
 # fatura que o cliente já tinha na caixa de correio.
-_RESPOSTAS_FEITAS = ("creditado", "ja_creditado", "estornado", "ja_estornado",
-                     "enviado", "ja_enviado")
+#
+# **`sem_pontos` é o açaí OFERECIDO, e é um desfecho normal.** A app responde-o
+# em 200 quando a conta ficou a 0,00 € por causa de um voucher ao balcão: a
+# Fatura Simplificada saiu, o voucher foi consumido, e não há euros nenhuns para
+# converter em pontos (`routes_pos_integracao.creditar`). Fora desta lista não
+# era recusa nem sem efeito — caía no último `return _falhou` de `enviar` como
+# falha TÉCNICA: 13 chamadas inúteis à app espalhadas por 24 h e, no fim, estado
+# `falhado`. Era o painel do Faturação pintado de vermelho a cada oferta, que é
+# exactamente o que a app evitou ao deixar de lhe chamar `sem_valor`. Fecha em
+# `feito` com `pontos: 0`, e o detalhe do documento lê «0 pontos para a Ana»,
+# que é a verdade.
+#
+# Verificadas as três rotas que esta fila chama: `/creditar` responde
+# `creditado`, `ja_creditado`, `sem_pontos` ou `recusado`; `/estornar`,
+# `estornado`, `ja_estornado` ou `sem_efeito`; `/fatura-email`, `enviado` ou
+# `ja_enviado`. Não há mais nenhum desfecho normal fora desta lista.
+_RESPOSTAS_FEITAS = ("creditado", "ja_creditado", "sem_pontos",
+                     "estornado", "ja_estornado", "enviado", "ja_enviado")
 
 # As tentativas imediatas ainda a correr — ver `tentar_ja`.
 _EM_CURSO = set()
