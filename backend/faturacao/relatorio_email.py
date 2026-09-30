@@ -390,15 +390,25 @@ def html_do_relatorio(dados: Dict, url_do_painel: Optional[str] = None) -> str:
         'border-radius:10px;font-size:13px;">Não houve vendas registadas neste dia.</p>'
         % (AVISO_FUNDO, AVISO))
 
+    # **A medição do papel poupado, na única linha que cabe.** Não se acrescenta
+    # cartão nenhum: isto é um número para vigiar, não uma secção. Num dia
+    # fechado (zero e zero) não aparece — zero por email e zero em papel não é
+    # uma medição, é um dia sem vendas, e o email já o diz acima.
+    por_email = geral.get("faturas_por_email") or 0
+    em_papel = geral.get("faturas_em_papel") or 0
+    papelada = ('<p style="margin:10px 0 0;font-size:13px;color:%s;">'
+                '%d faturas por email, %d em papel</p>'
+                % (TEXTO_FRACO, por_email, em_papel)) if (por_email or em_papel) else ""
+
     heroi = _cartao(
         '<p style="margin:0;font-size:11px;color:%s;letter-spacing:.6px;'
         'text-transform:uppercase;font-weight:600;">Faturação do dia%s</p>'
         '<p style="margin:6px 0 0;font-size:38px;line-height:1.1;font-weight:700;'
         'color:%s;">%s</p>'
-        '<div style="margin-top:12px;">%s</div>%s%s'
+        '<div style="margin-top:12px;">%s</div>%s%s%s'
         '<div style="margin-top:18px;">%s</div>'
         % (TEXTO_FRACO, "" if dados.get("com_iva") else " (sem IVA)", TEXTO,
-           _euros(faturacao), marca, ontem, aviso_sem_vendas,
+           _euros(faturacao), marca, ontem, papelada, aviso_sem_vendas,
            _grafico(dados.get("serie") or [])),
         margem_topo=0)
 

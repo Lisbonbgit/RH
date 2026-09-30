@@ -15,6 +15,7 @@ Nenhum teste fala com a app a sério: o transporte do httpx é um
 `MockTransport`, e sem `APP_LACAI_URL` no ambiente nem sequer há endereço.
 """
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -30,6 +31,7 @@ from pydantic import ValidationError
 
 from faturacao import db as db_mod
 from faturacao import fiscal as fiscal_mod
+from faturacao import impressao as imp_mod
 from faturacao import nota_credito as nc_mod
 from faturacao import pontos_app
 from faturacao.db import COLECOES
@@ -116,9 +118,17 @@ def _ler(monkeypatch, db, codigo="LQABCDEFGHJKLMNPQRSTUVWX", venda_id="venda-1")
         pontos_app.PedidoLerQr(venda_id=venda_id, codigo=codigo), operador=_operador()))
 
 
-def test_ler_o_qr_devolve_a_ligacao_e_so_o_primeiro_nome(monkeypatch, app):
+def test_ler_o_qr_devolve_a_ligacao_o_primeiro_nome_e_o_SIM_NAO_do_email(monkeypatch, app):
+    """A resposta tem TRÊS chaves e não duas — e o `False` aqui não é um
+    pormenor: o corpo da app não trouxe `fatura_por_email` nenhum, e o que sai
+    é o que FICOU GRAVADO em `fat_pontos_qr` (nada), nunca o que a app disse.
+
+    Sem linha não se promete email: o cartão do Finalizar desenha-se pelo valor
+    que sai daqui, e um cartão a dizer «Fatura por email» por cima de um talão
+    a sair é o ecrã a mentir à funcionária."""
     app.responde(200, {"ligacao_id": "lig-1", "primeiro_nome": "Ana"})
-    assert _ler(monkeypatch, _db_do_ler()) == {"ligacao_id": "lig-1", "primeiro_nome": "Ana"}
+    assert _ler(monkeypatch, _db_do_ler()) == {
+        "ligacao_id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False}
 
 
 def test_ler_manda_a_loja_e_o_operador_do_TOKEN_com_a_chave_no_cabecalho(monkeypatch, app):
@@ -233,6 +243,72 @@ def test_uma_venda_que_ja_nao_esta_aberta_e_409_e_a_app_nem_e_chamada(monkeypatc
     assert app.pedidos == []
 
 
+# --- A preferência de fatura por email, gravada no SERVIDOR ---------------------
+#
+# A decisão de **não imprimir um documento fiscal** não pode vir do corpo de um
+# pedido do browser. A ligação já viaja no `dados_pagamento` do finalizar
+# (`fiscal.py:2136`) e isso chega para pontos; para SUPRIMIR papel não chega —
+# um campo forjado, ou um defeito no ecrã, fazia desaparecer o documento do
+# cliente. Daí `fat_pontos_qr`: é do servidor, caduca sozinha em 2 horas, e a
+# AUSÊNCIA dela é o lado seguro (sai papel, como sempre).
+
+
+def test_ler_o_qr_GRAVA_a_preferencia_de_fatura_por_email(monkeypatch, app):
+    app.responde(200, {"ligacao_id": "lig-1", "primeiro_nome": "Ana",
+                       "fatura_por_email": True})
+    db = _db_do_ler()
+
+    assert _ler(monkeypatch, db)["fatura_por_email"] is True
+
+    [linha] = db[COLECOES["pontos_qr"]]._documentos
+    assert (linha["ligacao_id"], linha["fatura_por_email"]) == ("lig-1", True)
+    assert isinstance(linha["criada_em"], datetime), (
+        "o TTL do Mongo só expira por um campo do tipo Date — sobre uma string "
+        "não apaga nada, e não dá erro nenhum a dizê-lo")
+
+
+def test_sem_preferencia_nao_fica_linha_nenhuma_na_coleccao(monkeypatch, app):
+    """Uma preferência desligada e uma linha que não existe querem dizer a mesma
+    coisa — sai papel. Gravar `False` era uma linha por leitura do QR para nada."""
+    app.responde(200, {"ligacao_id": "lig-1", "primeiro_nome": "Ana",
+                       "fatura_por_email": False})
+    db = _db_do_ler()
+
+    assert _ler(monkeypatch, db)["fatura_por_email"] is False
+    assert db[COLECOES["pontos_qr"]]._documentos == []
+
+
+def test_uma_escrita_FALHADA_devolve_falso_em_vez_de_prometer_email(monkeypatch, app):
+    """**O ecrã nunca pode prometer o que não ficou gravado.** Sem a linha sai
+    papel (`enfileirar_fatura_email`), e um cartão a dizer «Fatura por email»
+    por cima de um talão a sair é o ecrã a mentir à funcionária.
+
+    E não pode ser 500: a app já consumiu o código do QR quando chegamos aqui, e
+    um erro faria a funcionária pedir ao cliente um código novo que já não
+    serve para nada."""
+    app.responde(200, {"ligacao_id": "lig-1", "primeiro_nome": "Ana",
+                       "fatura_por_email": True})
+    db = _db_do_ler()
+
+    class _Rebenta:
+        async def insert_one(self, doc):
+            raise RuntimeError("Atlas em baixo")
+
+    db._coleccoes[COLECOES["pontos_qr"]] = _Rebenta()
+
+    assert _ler(monkeypatch, db)["fatura_por_email"] is False
+
+
+def test_a_coleccao_do_qr_apaga_se_sozinha_ao_fim_de_DUAS_HORAS():
+    """Uma conta pode ficar aberta muito depois da leitura — daí não ser um
+    minuto — mas a preferência é daquela ida ao balcão e não da conta. Duas
+    horas é o compromisso escrito no desenho."""
+    from faturacao.db import INDICES
+    ttl = [opcoes for (coleccao, chaves, opcoes) in INDICES
+           if coleccao == "fat_pontos_qr" and chaves == [("criada_em", 1)]]
+    assert ttl == [{"expireAfterSeconds": 7200}]
+
+
 def test_a_rota_de_ler_esta_montada_no_router_do_modulo():
     """A rota tem de existir no router que o `server.py` monta — é contra ele
     que o `test_caminhos_do_pos.py` confronta o `lib/pos.js`, e é por ele que o
@@ -242,6 +318,214 @@ def test_a_rota_de_ler_esta_montada_no_router_do_modulo():
                for r in router.routes)
 
 
+# --- A preferência do cartão (ligar/desligar, depois de o QR já estar lido) -----
+#
+# `POST /pos/pontos/preferencia` é o botão do cartão do Finalizar (plano C):
+# troca a preferência de fatura por email de uma ligação já lida. O contrato é
+# o mesmo `fat_pontos_qr` do `ler` — a app decide, o servidor grava, e a
+# resposta ao ecrã é sempre o que FICOU, nunca o que se pediu.
+
+
+class _ColeccaoDoQR(ColeccaoFalsa):
+    """`ColeccaoFalsa` não sabe apagar em lote — só esta rota o precisa, e só
+    por `ligacao_id`. Não há índice único sobre o campo (só o TTL de
+    `criada_em`), por isso é `delete_many` a sério e não `delete_one`: uma
+    leitura repetida de antes desta task pode ter deixado mais do que uma
+    linha para trás, e uma que ficasse era o mesmo defeito outra vez."""
+
+    async def delete_many(self, filtro):
+        alvo = filtro["ligacao_id"]
+        antes = len(self._documentos)
+        self._documentos[:] = [d for d in self._documentos if d.get("ligacao_id") != alvo]
+        return type("R", (), {"deleted_count": antes - len(self._documentos)})()
+
+
+def _db_da_preferencia(qr=None, vendas=None):
+    return DbFalsa({
+        COLECOES["vendas"]: ColeccaoFalsa([_venda_aberta()] if vendas is None else vendas),
+        COLECOES["lojas"]: ColeccaoFalsa([{"id": "loja-1", "nome": "Belém"}]),
+        COLECOES["pontos_qr"]: _ColeccaoDoQR([] if qr is None else qr),
+    })
+
+
+def _linha_do_qr(**over):
+    linha = {"ligacao_id": "lig-1", "fatura_por_email": True,
+             "criada_em": datetime.now(timezone.utc)}
+    linha.update(over)
+    return linha
+
+
+def _preferencia(monkeypatch, db, valor, venda_id="venda-1", ligacao_id="lig-1"):
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+    return _corre(pontos_app.preferencia_de_pontos(
+        pontos_app.PedidoPreferenciaPontos(
+            venda_id=venda_id, ligacao_id=ligacao_id, valor=valor),
+        operador=_operador()))
+
+
+def test_ligar_a_preferencia_grava_a_linha_do_qr_e_devolve_o_que_a_app_disse(monkeypatch, app):
+    app.responde(200, {"estado": "gravada", "fatura_por_email": True})
+    db = _db_da_preferencia()
+
+    assert _preferencia(monkeypatch, db, valor=True) == {"fatura_por_email": True}
+
+    [linha] = db[COLECOES["pontos_qr"]]._documentos
+    assert (linha["ligacao_id"], linha["fatura_por_email"]) == ("lig-1", True)
+
+
+def test_a_preferencia_manda_a_loja_e_o_operador_do_TOKEN_com_a_chave_no_cabecalho(monkeypatch, app):
+    """O gémeo de `test_ler_manda_a_loja_e_o_operador_do_TOKEN_com_a_chave_no_cabecalho`,
+    e existe pela razão que já matou o POS três vezes: **afirmar o caminho que o
+    código escreve nunca apanha um prefixo errado**. Nenhum outro teste desta
+    rota olha para o pedido que saiu — um `/pos-integracao/preferencias` com «s»
+    deixava-os todos verdes e, ao balcão, o botão do cartão respondia 503 para
+    sempre. O teste do router, aqui em baixo, prende a rota que ENTRA; este
+    prende a chamada que SAI.
+
+    O corpo é o contrato do desenho (`2026-09-17-fatura-por-email-design.md:211`)
+    e os quatro campos contam: sem o `valor` o «Voltar ao papel» não viaja para
+    a app e ela grava sempre a mesma coisa; sem a loja e o operador não fica
+    prova nenhuma de quem ligou a preferência, e essa auditoria é a única prova
+    de que o cliente aceitou receber a fatura desmaterializada."""
+    app.responde(200, {"estado": "gravada", "fatura_por_email": False})
+    _preferencia(monkeypatch, _db_da_preferencia(qr=[_linha_do_qr()]), valor=False)
+
+    pedido = app.pedidos[0]
+    assert pedido.method == "POST"
+    assert str(pedido.url) == "http://olacai-api:8001/api/pos-integracao/preferencia"
+    assert pedido.headers["X-Service-Key"] == "chave-de-teste"
+    assert "chave-de-teste" not in str(pedido.url)
+    assert app.corpo() == {
+        "ligacao_id": "lig-1", "valor": False,
+        "loja_nome": "Belém", "operador_nome": "Rafaela",
+    }
+
+
+def test_quem_decide_e_a_APP_e_nao_o_valor_que_se_pediu(monkeypatch, app):
+    """**A app é quem decide**, e é preciso um caso em que ela DISCORDE para
+    isso ficar preso: nos outros testes desta rota o valor que se pede e o que a
+    app responde são o mesmo, por isso devolver o `valor` do pedido em vez do
+    corpo da app passava por todos.
+
+    Pedir «Enviar por email» e a app dizer que não (uma conta sem endereço
+    confirmado, o consentimento retirado do lado dela) tem de acabar em papel: a
+    resposta ao ecrã é `False` e a linha do `fat_pontos_qr` vai-se abaixo — é ela
+    que manda saltar o talão (`enfileirar_fatura_email`), e deixá-la viva era o
+    cliente sem papel e sem email."""
+    app.responde(200, {"estado": "gravada", "fatura_por_email": False})
+    db = _db_da_preferencia(qr=[_linha_do_qr()])
+
+    assert _preferencia(monkeypatch, db, valor=True) == {"fatura_por_email": False}
+    assert db[COLECOES["pontos_qr"]]._documentos == []
+
+
+def test_desligar_a_preferencia_APAGA_a_linha_do_qr(monkeypatch, app):
+    """É este teste que impede o talão de continuar suprimido depois de o
+    cliente pedir papel: sem o apagamento, a linha antiga (`fatura_por_email:
+    True`) ficava viva e `enfileirar_fatura_email` continuava a saltar o
+    papel."""
+    app.responde(200, {"estado": "gravada", "fatura_por_email": False})
+    db = _db_da_preferencia(qr=[_linha_do_qr()])
+
+    assert _preferencia(monkeypatch, db, valor=False) == {"fatura_por_email": False}
+    assert db[COLECOES["pontos_qr"]]._documentos == []
+
+
+def test_ligar_duas_vezes_nao_deixa_duas_linhas(monkeypatch, app):
+    app.responde(200, {"estado": "gravada", "fatura_por_email": True})
+    db = _db_da_preferencia()
+
+    _preferencia(monkeypatch, db, valor=True)
+    _preferencia(monkeypatch, db, valor=True)
+
+    assert len(db[COLECOES["pontos_qr"]]._documentos) == 1
+
+
+def test_a_venda_de_outra_loja_nao_deixa_mexer_na_preferencia(monkeypatch, app):
+    db = _db_da_preferencia(vendas=[_venda_aberta(loja_id="loja-2")])
+    with pytest.raises(HTTPException) as e:
+        _preferencia(monkeypatch, db, valor=True)
+    assert (e.value.status_code, e.value.detail) == (404, "Venda não encontrada.")
+    assert app.pedidos == []
+
+
+def test_a_venda_ja_emitida_nao_deixa_mexer_na_preferencia(monkeypatch, app):
+    db = _db_da_preferencia(vendas=[_venda_aberta(estado="emitida")])
+    with pytest.raises(HTTPException) as e:
+        _preferencia(monkeypatch, db, valor=True)
+    assert e.value.status_code == 409
+    assert app.pedidos == []
+
+
+def test_uma_recusa_da_app_vira_uma_frase_em_portugues(monkeypatch, app):
+    app.responde(200, {"estado": "recusado", "motivo": "ligacao_ja_usada"})
+    db = _db_da_preferencia()
+
+    with pytest.raises(HTTPException) as e:
+        _preferencia(monkeypatch, db, valor=True)
+    assert 400 <= e.value.status_code < 500
+    assert "ligacao_ja_usada" not in e.value.detail
+    assert e.value.detail  # uma frase que diga à funcionária o que fazer
+
+
+def test_um_motivo_NAO_ESCALAR_na_recusa_nao_vira_um_500(monkeypatch, app):
+    """A procura do motivo no mapa das recusas corre FORA do `try` que apanha a
+    app em baixo: um `motivo` que venha em LISTA levantava `TypeError:
+    unhashable type` e subia cru — «Internal Server Error» ao balcão, que é a
+    frase que este módulo inteiro existe para não mostrar. É uma recusa como as
+    outras: 409 e a frase que diz à funcionária o que fazer a seguir."""
+    app.responde(200, {"estado": "recusado", "motivo": ["ligacao_ja_usada"]})
+
+    with pytest.raises(HTTPException) as e:
+        _preferencia(monkeypatch, _db_da_preferencia(), valor=True)
+    assert e.value.status_code == 409
+    assert e.value.detail == (
+        "Não foi possível gravar a preferência agora — peça ao cliente para "
+        "mostrar o QR outra vez.")
+
+
+def test_a_app_em_baixo_devolve_503_e_nao_toca_no_qr(monkeypatch, app):
+    app.rebenta(httpx.ReadTimeout("a app não respondeu"))
+    linha_antiga = _linha_do_qr()
+    db = _db_da_preferencia(qr=[dict(linha_antiga)])
+
+    with pytest.raises(HTTPException) as e:
+        _preferencia(monkeypatch, db, valor=False)
+    assert (e.value.status_code, e.value.detail) == (503, _MSG_APP)
+    assert db[COLECOES["pontos_qr"]]._documentos == [linha_antiga]
+
+
+def test_um_apagamento_FALHADO_diz_a_verdade_em_vez_de_um_500(monkeypatch, app):
+    """O gémeo de `test_uma_escrita_FALHADA_devolve_falso_em_vez_de_prometer_email`,
+    do outro lado do botão.
+
+    **É o pior desfecho possível desta rota, e não pode ser um 500.** Se o
+    apagamento falhar, a linha do `fat_pontos_qr` SOBREVIVE — e é ela que manda
+    saltar o papel (`enfileirar_fatura_email`). Uma excepção a subir daqui era a
+    funcionária a carregar em «Voltar ao papel», a ver «Internal Server Error», e
+    o talão do cliente suprimido na mesma. A resposta tem de dizer o que ficou
+    mesmo lá (`True`, ainda vai por email), para ela voltar a tentar."""
+    app.responde(200, {"estado": "gravada", "fatura_por_email": False})
+
+    class _Rebenta(_ColeccaoDoQR):
+        async def delete_many(self, filtro):
+            raise RuntimeError("Atlas em baixo")
+
+    db = _db_da_preferencia()
+    db._coleccoes[COLECOES["pontos_qr"]] = _Rebenta([_linha_do_qr()])
+
+    assert _preferencia(monkeypatch, db, valor=False) == {"fatura_por_email": True}
+
+
+def test_a_rota_da_preferencia_esta_montada_no_router_do_modulo():
+    """O gémeo de `test_a_rota_de_ler_esta_montada_no_router_do_modulo`, e pela
+    mesma razão: os testes acima chamam a FUNÇÃO, não a rota, por isso um
+    caminho errado no decorador (`/pos/pontos/preferencias`, ou o decorador em
+    falta) deixava-os todos verdes. O `test_caminhos_do_pos.py` só morde quando
+    o `lib/pos.js` da frente C estiver commitado; este morde já."""
+    from faturacao import router
+    assert any(r.path == "/api/faturacao/pos/pontos/preferencia"
+               and "POST" in r.methods for r in router.routes)
 
 
 # --- A fila e o envio ---------------------------------------------------------
@@ -266,6 +550,23 @@ def _casa(doc, filtro):
     return True
 
 
+def _escrever_set(doc, campos):
+    """O `$set` do Mongo, **caminhos com ponto incluídos**: `payload.forcar`
+    escreve DENTRO do payload e deixa o resto dele onde estava.
+
+    Escrito à letra (`doc["payload.forcar"] = True`, que é o que um
+    `dict.update` faz), o duplo guardava uma chave de nome esquisito ao lado do
+    payload: o `enviar` lia `linha["payload"].get("forcar")` a `None`, não
+    mandava `forcar` nenhum à app, e o teste do reenvio forçado ficava verde
+    sobre um botão que continuava a responder `ja_enviado` sem mandar email."""
+    for campo, valor in campos.items():
+        alvo = doc
+        partes = campo.split(".")
+        for parte in partes[:-1]:
+            alvo = alvo.setdefault(parte, {})
+        alvo[partes[-1]] = valor
+
+
 class _Fila(ColeccaoFalsa):
     """`fat_pontos_app`: o duplo de `test_fiscal` — com o único de `chave` LIDO
     de `db.INDICES`, para o teste cair se o índice desaparecer — mais a reserva
@@ -280,7 +581,7 @@ class _Fila(ColeccaoFalsa):
         await asyncio.sleep(0)
         for doc in self._documentos:
             if _casa(doc, filtro):
-                doc.update(atualizacao["$set"])
+                _escrever_set(doc, atualizacao["$set"])
                 return deepcopy(doc)
         return None
 
@@ -343,6 +644,193 @@ def test_a_mesma_chave_so_entra_uma_vez_na_fila(monkeypatch):
 
     assert len(fila.linhas()) == 1
     assert enviados == [fila.linhas()[0]["id"]], "a segunda passagem não pode mandar nada"
+
+
+# --- O tipo novo: a fatura por email --------------------------------------------
+
+_PDF = b"%PDF-1.3\nfingido\n%%EOF"
+
+
+def _fatura_email(**over):
+    linha = pontos_app._linha_nova(
+        "fatura_email", "fatura_email:doc-1",
+        {"ligacao_id": "lig-1", "documento_id": "doc-1",
+         "vendus_document_id": 368200354, "numero": "FS 05P2026/1824",
+         "modo": "normal"},
+        AGORA, documento_id="doc-1", venda_id="venda-1", loja_id="loja-1",
+        primeiro_nome="Ana")
+    linha.update(over)
+    return linha
+
+
+class _VendusDoPdf:
+    """O cliente do Vendus a fingir, com o registo do que lhe foi pedido — é
+    pelo `modo` que este duplo guarda que se prova a armadilha do 404."""
+
+    pedidos = []
+
+    def __init__(self, chave):
+        self.chave = chave
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def pdf_do_documento(self, documento_id, modo):
+        _VendusDoPdf.pedidos.append((documento_id, modo))
+        return _PDF
+
+
+@pytest.fixture
+def vendus(monkeypatch):
+    _VendusDoPdf.pedidos = []
+    monkeypatch.setattr(pontos_app, "ClienteVendus", _VendusDoPdf)
+    monkeypatch.setattr(
+        pontos_app, "obter_conta",
+        lambda *a, **kw: type("Conta", (), {"chave": "chave-teste"})())
+    return _VendusDoPdf
+
+
+def test_um_tipo_NOVO_nao_pode_ir_parar_a_estornar(monkeypatch, app, vendus):
+    """O ternário que lá estava (`"creditar" if tipo == "credito" else
+    "estornar"`) mandava qualquer tipo novo para `/estornar` — a app recebia um
+    corpo que não conhece, respondia 422, e a linha fechava `recusado` sem
+    ninguém perceber que o email nunca tinha sido tentado."""
+    db, _ = _db_da_fila(_fatura_email())
+    app.responde(200, {"estado": "enviado"})
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    assert str(app.pedidos[0].url) == \
+        "http://olacai-api:8001/api/pos-integracao/fatura-email"
+
+
+def test_um_tipo_DESCONHECIDO_fecha_a_linha_em_vez_de_MATAR_o_cron(monkeypatch, app):
+    """**Um `KeyError` aqui era a pior avaria deste módulo.** `enviar` é chamado
+    por `cron_pontos_app` sem `try` nenhum: a excepção subia DEPOIS de a reserva
+    estar feita, a rota do cron respondia 500, e a volta morria — os pontos e os
+    emails de TODAS as lojas parados, em silêncio, de minuto a minuto. É a mesma
+    avaria que o comentário de `pontos_app.py:337-344` existe para impedir.
+
+    Fecha-se a linha `sem_efeito`: larga a reserva, não repete, fica escrita."""
+    db, fila = _db_da_fila(_fatura_email(tipo="marciano", chave="marciano:doc-9"))
+
+    assert _corre(pontos_app.enviar(db, agora=AGORA)) is not None
+
+    gravada = fila.linhas()[0]
+    assert (gravada["estado"], gravada["motivo"]) == ("sem_efeito", "tipo_desconhecido")
+    assert gravada["a_enviar_ate"] == pontos_app._NUNCA, "a reserva tem de ser largada"
+    assert app.pedidos == [], "um tipo que não se conhece não se manda a lado nenhum"
+
+
+def test_a_volta_do_cron_SOBREVIVE_a_uma_linha_de_tipo_desconhecido(monkeypatch, app):
+    """A prova pela porta a sério: com a linha estragada em primeiro lugar, a
+    volta tem de continuar e enviar a boa que vem a seguir."""
+    monkeypatch.setenv("CRON_KEY", "k")
+    db, fila = _db_da_fila(
+        _fatura_email(tipo="marciano", chave="marciano:doc-9"), _credito())
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+    app.responde(200, {"estado": "creditado", "pontos": 17})
+
+    assert _corre(pontos_app.cron_pontos_app(key="k"))["enviadas"] == 2
+    assert [l["estado"] for l in fila.linhas()] == ["sem_efeito", "feito"]
+
+
+@pytest.mark.parametrize("resposta", ["enviado", "ja_enviado"])
+def test_enviado_e_ja_enviado_fecham_a_linha_como_FEITA(monkeypatch, app, vendus, resposta):
+    """`ja_enviado` é a idempotência da app a responder: a fila repetiu, o email
+    já tinha saído. Fora de `_RESPOSTAS_FEITAS`, isto caía no saco do 5xx e eram
+    13 tentativas por 24 h de uma fatura já entregue."""
+    db, fila = _db_da_fila(_fatura_email())
+    app.responde(200, {"estado": resposta})
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    gravada = fila.linhas()[0]
+    assert gravada["estado"] == "feito"
+    assert gravada["a_enviar_ate"] == pontos_app._NUNCA, "a reserva tem de ser largada"
+
+
+def test_o_PDF_vai_no_corpo_e_NUNCA_fica_gravado_na_fila(monkeypatch, app, vendus):
+    """A fila não tem TTL e fica para sempre. 92 KB por fatura para sempre não —
+    daí o payload guardar só o id do documento e o PDF ser ido buscar a cada
+    tentativa."""
+    db, fila = _db_da_fila(_fatura_email())
+    app.responde(200, {"estado": "enviado"})
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    corpo = app.corpo()
+    assert corpo == {
+        "ligacao_id": "lig-1", "documento_id": "doc-1",
+        "numero": "FS 05P2026/1824",
+        "pdf_base64": base64.b64encode(_PDF).decode(),
+    }
+    assert "pdf_base64" not in fila.linhas()[0]["payload"]
+    assert "vendus_document_id" not in corpo, "o id do Vendus é nosso, não da app"
+
+
+def test_o_MODO_DO_DOCUMENTO_e_o_que_vai_buscar_o_PDF(monkeypatch, app, vendus):
+    """Um documento emitido em `tests` pedido com `mode=normal` responde 404 — o
+    Vendus guarda os dois mundos separados (medido ao vivo na conta real, ver
+    `ClienteVendus.pdf_do_documento`). O modo tem de sair do PAYLOAD da linha e
+    nunca do modo em que a loja está hoje, que muda com um botão."""
+    db, _ = _db_da_fila(_fatura_email(payload=dict(
+        _fatura_email()["payload"], modo="tests")))
+    app.responde(200, {"estado": "enviado"})
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    assert vendus.pedidos == [(368200354, "tests")]
+
+
+def test_SEM_PDF_a_app_nem_e_chamada_e_a_fila_REPETE(monkeypatch, app, vendus):
+    """Mandar a app enviar um email sem anexo era entregar ao cliente uma fatura
+    que não é fatura nenhuma. Sem PDF é falha TÉCNICA: conta a tentativa, afasta
+    a seguinte, e a volta do cron de 1 em 1 minuto tenta outra vez."""
+    monkeypatch.setattr(_VendusDoPdf, "pdf_do_documento",
+                        lambda self, documento_id, modo: b"")
+    db, fila = _db_da_fila(_fatura_email())
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    gravada = fila.linhas()[0]
+    assert (gravada["estado"], gravada["tentativas"]) == ("pendente", 1)
+    assert gravada["proxima_tentativa_em"] > _iso(AGORA)
+    assert app.pedidos == [], "a app não pode ser chamada sem o anexo"
+
+
+def test_o_VENDUS_a_REBENTAR_tambem_e_falha_tecnica_e_nao_um_500(monkeypatch, app, vendus):
+    """A ida buscar o PDF é rede: um timeout ou uma chave trocada levantam. Fora
+    de um `try`, isso subia para o cron e matava a volta de todas as lojas."""
+    def _rebenta(self, documento_id, modo):
+        raise RuntimeError("Vendus em baixo")
+
+    monkeypatch.setattr(_VendusDoPdf, "pdf_do_documento", _rebenta)
+    db, fila = _db_da_fila(_fatura_email())
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    gravada = fila.linhas()[0]
+    assert (gravada["estado"], gravada["tentativas"]) == ("pendente", 1)
+    assert "Vendus em baixo" in gravada["ultimo_erro"]
+
+
+def test_o_ENVIO_tem_25_s_e_quem_esta_ao_BALCAO_continua_com_4(monkeypatch, app, vendus):
+    """Os 4 s são para a funcionária com o cliente à frente: uma app em baixo
+    diz-se depressa e a fatura segue sem pontos. O envio do email leva o PDF em
+    base64 (~120 KB de texto) e corre em segundo plano, onde ninguém espera —
+    com 4 s cortava-se a meio e a fila repetia para sempre um envio que ia bem."""
+    db, _ = _db_da_fila(_fatura_email(), _credito())
+    app.responde(200, {"estado": "enviado"})
+    _corre(pontos_app.enviar(db, agora=AGORA))
+    app.responde(200, {"estado": "creditado", "pontos": 17})
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    assert app.pedidos[0].extensions["timeout"]["read"] == 25.0
+    assert app.pedidos[1].extensions["timeout"]["read"] == 4.0
 
 
 @pytest.mark.parametrize("resposta", ["creditado", "ja_creditado"])
@@ -1161,3 +1649,175 @@ def test_o_script_do_cron_e_executavel_e_diz_como_se_instala_de_minuto_a_minuto(
         "falta o bit de execução: git update-index --chmod=+x faturacao-pontos-cron.sh")
     assert re.search(r"^#\s+\* \* \* \* \*\s+/root/RH/faturacao-pontos-cron\.sh",
                      texto, re.MULTILINE)
+
+
+# --- Reenviar a fatura por email -------------------------------------------------
+#
+# **Para QUALQUER documento, não só para os falhados.** O caso frequente é «não
+# me chegou» com a linha em `feito` — a caixa cheia, o relay da Apple com o
+# reencaminhamento desligado, o email na pasta do spam. Um botão que só
+# funcionasse sobre linhas falhadas não servia para o caso que existe.
+
+
+def _linha_reposta(fila):
+    return fila.linhas()[0]
+
+
+def test_reenviar_repoe_os_SETE_campos_e_manda_ja(monkeypatch):
+    """**Repor só o estado é um botão que dá uma tentativa e volta logo a
+    `falhado`.** Com `tentativas: 13` e `primeira_falha_tecnica_em` de ontem, a
+    primeira falha a seguir ao toque passava dos 24 h e desistia na hora; com
+    `proxima_tentativa_em` no futuro, a linha ficava pendente meia hora sem
+    ninguém perceber porquê; e com `a_enviar_ate` de uma reserva presa, o
+    `find_one_and_update` de `enviar` nunca mais lhe pegava.
+
+    E o `ultimo_erro`/`motivo` da falha anterior TÊM de sair com os outros: o
+    detalhe do documento mostra os dois (`_CAMPOS_PARA_O_ECRA`), e uma linha
+    acabada de repor a pendente a dizer «0 tentativas — último erro: HTTP 503»
+    é o ecrã a mentir ao gestor sobre o estado de agora."""
+    enviados = []
+    monkeypatch.setattr(pontos_app, "tentar_ja", lambda db, linha_id: enviados.append(linha_id))
+    db, fila = _db_da_fila(_fatura_email(
+        estado="falhado", tentativas=13,
+        primeira_falha_tecnica_em=_iso(AGORA - timedelta(hours=30)),
+        proxima_tentativa_em=_iso(AGORA + timedelta(minutes=30)),
+        a_enviar_ate=_iso(AGORA + timedelta(hours=3)),
+        ultimo_erro="HTTP 503: em baixo", motivo="contrato_recusado"))
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+
+    antes = _iso(datetime.now(timezone.utc))
+    resposta = _corre(pontos_app.reenviar_fatura_por_email("doc-1", _={}))
+
+    linha = _linha_reposta(fila)
+    assert linha["estado"] == "pendente"
+    assert linha["tentativas"] == 0
+    assert linha["primeira_falha_tecnica_em"] is None
+    assert antes <= linha["proxima_tentativa_em"] <= _iso(datetime.now(timezone.utc)), (
+        "a janela é do relógio REAL e não do AGORA do fixture: o AGORA está no "
+        "passado, e sem o limite de baixo esta afirmação passava sobre a hora "
+        "que a última falha marcou — o campo ficava por prender")
+    assert linha["a_enviar_ate"] == pontos_app._NUNCA
+    assert linha["ultimo_erro"] is None
+    assert linha["motivo"] is None
+    assert enviados == [linha["id"]], "a tentativa imediata é DEPOIS da escrita"
+    assert resposta["reenviado"] is True
+
+
+def test_reenviar_serve_uma_linha_ja_FEITA(monkeypatch):
+    """«Não me chegou» é o caso frequente, e a linha dele está em `feito`."""
+    monkeypatch.setattr(pontos_app, "tentar_ja", lambda db, linha_id: None)
+    db, fila = _db_da_fila(_fatura_email(estado="feito"))
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+
+    _corre(pontos_app.reenviar_fatura_por_email("doc-1", _={}))
+
+    assert _linha_reposta(fila)["estado"] == "pendente"
+
+
+def test_o_reenvio_leva_FORCAR_a_app_e_o_resto_do_payload_fica(monkeypatch, app, vendus):
+    """**Sem isto o botão não reenvia nada, e é o caso para que foi feito.**
+
+    A chave de idempotência da app é o `documento_id` e não tem validade: a
+    tentativa que se segue à reposição manda o MESMO corpo de antes, a app
+    responde `ja_enviado` **sem mandar email nenhum**, e como `ja_enviado` está
+    em `_RESPOSTAS_FEITAS` a linha fecha outra vez em `feito`. O gestor lia
+    «Enviada» por cima de nada: o cliente que ligou a dizer que não recebeu
+    continuava sem receber.
+
+    O `forcar` fica no PAYLOAD e não só no corpo desta tentativa — se esta
+    falhar, as repetições da fila têm de o levar também."""
+    db, fila = _db_da_fila(_fatura_email(estado="feito"))
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+    app.responde(200, {"estado": "enviado"})
+
+    _corre(pontos_app.reenviar_fatura_por_email("doc-1", _={}))
+    # O `tentar_ja` da rota corre em segundo plano; aqui faz-se a MESMA
+    # tentativa pela porta da fila, que é a que o cron repete.
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    assert _linha_reposta(fila)["payload"]["forcar"] is True
+    assert _linha_reposta(fila)["payload"]["vendus_document_id"] == 368200354, (
+        "o caminho com ponto tem de escrever DENTRO do payload — um $set à "
+        "letra substituía o payload inteiro e o PDF deixava de se ir buscar")
+    assert app.corpo()["forcar"] is True, app.corpo()
+
+
+def test_o_reenvio_devolve_a_linha_ao_ALARME_do_balcao(monkeypatch):
+    """**A linha renascia INVISÍVEL.** O «Já vi» do balcão carimba `visto_em`,
+    e o predicado do «por enviar» exige-o a `None` — é o mesmo predicado para o
+    alarme, para o «Já vi» e para o filtro do separador Faturação. Reposta a
+    `pendente` com o carimbo de ontem, a linha saía do alarme para sempre: se o
+    reenvio voltasse a falhar, o alarme dizia zero, o botão dizia (0) e a lista
+    dizia «Nenhuma fatura desta loja está à espera» — com o cliente sem email e
+    sem papel."""
+    monkeypatch.setattr(pontos_app, "tentar_ja", lambda db, linha_id: None)
+    db, fila = _db_da_fila(_fatura_email(
+        estado="falhado", visto_em=_iso(AGORA - timedelta(hours=3))))
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+    monkeypatch.setattr(imp_mod, "obter_db", lambda: db)
+    assert _corre(imp_mod.estado_da_impressao(
+        operador=_operador()))["emails_falhados"] == 0, (
+        "carimbada pelo «Já vi», a linha está fora do alarme — é o ponto de "
+        "partida deste defeito")
+
+    _corre(pontos_app.reenviar_fatura_por_email("doc-1", _={}))
+
+    assert _linha_reposta(fila)["visto_em"] is None
+    # E se o reenvio vier a falhar, acende como qualquer outra.
+    fila.linhas()[0]["estado"] = "falhado"
+    assert _corre(imp_mod.estado_da_impressao(
+        operador=_operador()))["emails_falhados"] == 1
+
+
+def test_um_pendente_JA_VISTO_que_acaba_por_FALHAR_volta_a_acender(monkeypatch, app, vendus):
+    """A outra ponta do mesmo campo. O «Já vi» carimba o que o alarme contou —
+    e o alarme conta os `pendente` com mais de meia hora, que ainda estão a ser
+    tentados. Um deles que acabe mesmo em beco sem saída é uma falha NOVA: o
+    toque de hoje de manhã calou um envio a caminho, não esta."""
+    db, fila = _db_da_fila(_fatura_email(
+        estado="pendente", tentativas=13, visto_em=_iso(AGORA - timedelta(hours=3)),
+        primeira_falha_tecnica_em=_iso(AGORA - timedelta(hours=30))))
+    app.responde(503, {"detail": "em baixo"})
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    gravada = fila.linhas()[0]
+    assert gravada["estado"] == "falhado", "as 24 h passaram — é um beco sem saída"
+    assert gravada["visto_em"] is None
+
+
+def test_uma_falha_que_AINDA_REPETE_nao_reacende_o_que_ja_foi_visto(monkeypatch, app, vendus):
+    """O contrário, e é o que impede o aviso que se aprende a ignorar: uma
+    tentativa falhada que a fila vai repetir continua a ser o encalhe que a
+    pessoa deu por visto. Só o beco sem saída é notícia nova."""
+    db, fila = _db_da_fila(_fatura_email(
+        estado="pendente", visto_em=_iso(AGORA - timedelta(hours=3))))
+    app.responde(503, {"detail": "em baixo"})
+
+    _corre(pontos_app.enviar(db, agora=AGORA))
+
+    gravada = fila.linhas()[0]
+    assert (gravada["estado"], gravada["tentativas"]) == ("pendente", 1)
+    assert gravada["visto_em"] == _iso(AGORA - timedelta(hours=3))
+
+
+def test_reenviar_uma_fatura_que_nunca_teve_email_e_404(monkeypatch):
+    """Não se inventa um envio: sem QR lido não há para onde mandar, e o que
+    esta fatura tem é o botão de reimprimir na loja."""
+    monkeypatch.setattr(pontos_app, "tentar_ja", lambda db, linha_id: None)
+    db, _ = _db_da_fila(_credito())
+    monkeypatch.setattr(pontos_app, "obter_db", lambda: db)
+
+    with pytest.raises(HTTPException) as e:
+        _corre(pontos_app.reenviar_fatura_por_email("doc-1", _={}))
+
+    assert e.value.status_code == 404
+
+
+def test_a_rota_de_reenviar_esta_montada_no_router_e_e_ESTE_o_endereco():
+    """O endereço afirmado é o MONTADO, com o prefixo do módulo — afirmar o
+    caminho que o código escreve nunca apanha um prefixo errado, e é isso que já
+    partiu o POS três vezes."""
+    from faturacao import router
+    caminhos = {(metodo, r.path) for r in router.routes for metodo in r.methods}
+    assert ("POST", "/api/faturacao/documentos/{documento_id}/reenviar-email") in caminhos

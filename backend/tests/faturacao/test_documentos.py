@@ -13,11 +13,13 @@ refrigerante a 23 %) — e os descontos são de 0,29 €, que é um número que 
 se reparte bem por duas linhas e por isso apanha quem o reparta mal.
 """
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
 
 from faturacao import documentos as doc_mod
+from faturacao import pontos_app as pontos_app_mod
 from faturacao import venda as venda_mod
 from faturacao.db import COLECOES
 from faturacao.documentos import (
@@ -142,7 +144,7 @@ def _grupo_toppings(**over):
 
 
 def _db(registo, documentos=None, vendas=None, produtos=None, grupos=None,
-        caixas=None, sessoes=None, com_indice_do_posto=False):
+        caixas=None, sessoes=None, com_indice_do_posto=False, pontos_app=None):
     return DbFalsa({
         COLECOES["documentos"]: ColeccaoFalsa(registo, documentos),
         COLECOES["vendas"]: ColeccaoFalsa(
@@ -154,6 +156,10 @@ def _db(registo, documentos=None, vendas=None, produtos=None, grupos=None,
         COLECOES["sessoes_caixa"]: ColeccaoFalsa(
             registo, [_sessao()] if sessoes is None else sessoes),
         COLECOES["refs_fiscais"]: ColeccaoFalsa(registo, []),
+        # A fila de `fatura_email` (`fat_pontos_app`) — o `fatura_email_por_enviar`
+        # da lista lê-a pelo MESMO predicado que o alarme da loja conta
+        # (`pontos_app.filtro_das_faturas_por_enviar`).
+        COLECOES["pontos_app"]: ColeccaoFalsa(registo, pontos_app),
     })
 
 
@@ -189,6 +195,139 @@ def test_a_lista_traz_o_que_a_operadora_precisa_para_encontrar_a_fatura(monkeypa
     assert linha["pagamentos"] == [{"nome": "Multibanco", "valor": 11.64}]
     assert linha["modo"] == "normal"
     assert linha["tem_venda"] is True
+
+
+def test_a_lista_marca_QUAL_documento_esta_por_enviar_por_email(monkeypatch):
+    """O sinal vem do MESMO predicado que o alarme da loja conta
+    (`pontos_app.filtro_das_faturas_por_enviar`) — nunca decidido aqui de
+    novo, senão o botão do separador Faturação e o alarme contavam coisas
+    diferentes."""
+    encalhada = _documento(id="doc-encalhada", numero="FS 05P2026/1900",
+                          venda_id="venda-1", ext_ref="e-encalhada")
+    db = _db(
+        [], documentos=[_documento(), encalhada], vendas=[_venda_emitida()],
+        pontos_app=[{
+            "chave": "fatura_email:doc-encalhada", "tipo": "fatura_email",
+            "loja_id": "loja-1", "estado": "falhado",
+            "criado_em": "2026-08-21T21:41:00+00:00",
+        }],
+    )
+    monkeypatch.setattr(doc_mod, "obter_db", lambda: db)
+
+    documentos = {d["numero"]: d for d in _corre(
+        listar_documentos(operador=_operador()))["documentos"]}
+    assert documentos["FS 05P2026/1900"]["fatura_email_por_enviar"] is True
+    # A OUTRA fatura, sem linha nenhuma na fila, não é «por enviar»: o sinal é
+    # por documento, não um alarme da loja inteira a acender tudo.
+    assert documentos["FS 05P2026/1824"]["fatura_email_por_enviar"] is False
+
+
+def test_sem_fila_nenhuma_nada_e_por_enviar(monkeypatch):
+    """Sem `fat_pontos_app`, `fatura_email_por_enviar` é sempre `False` — e
+    não a ausência da chave, que o ecrã tinha de tratar como "versão antiga
+    da API" (regra de `_venda_publica`)."""
+    db = _db([], documentos=[_documento()], vendas=[_venda_emitida()])
+    monkeypatch.setattr(doc_mod, "obter_db", lambda: db)
+
+    (linha,) = _corre(listar_documentos(operador=_operador()))["documentos"]
+    assert linha["fatura_email_por_enviar"] is False
+
+
+# A JANELA do «por enviar» — a outra metade do predicado.
+#
+# Os dois testes de cima casam pelo PRIMEIRO ramo do `$or`
+# (`estado: "falhado"`, um beco sem saída) e pela fila vazia: nenhum deles
+# chega a olhar para o `criado_em`, e a janela — que é a razão de ser deste
+# sinal — ficava sem teste nenhum. São os MESMOS dois casos que o
+# `test_impressao.py` prova para o alarme do balcão, e este lado tem de os
+# provar para poder dizer que conta a mesma coisa.
+_T0 = datetime(2026, 8, 22, 19, 0, 0, tzinfo=timezone.utc)
+
+
+def _pendente_de_ha(minutos):
+    """Uma linha `fatura_email` ainda `pendente`, nascida há tantos minutos."""
+    return {
+        "chave": "fatura_email:doc-1", "tipo": "fatura_email",
+        "loja_id": "loja-1", "estado": "pendente",
+        "criado_em": (_T0 - timedelta(minutes=minutos)).isoformat(),
+    }
+
+
+def _com_o_relogio_parado(monkeypatch, db):
+    """`documentos._agora` devolve `_T0` — e nada mais do módulo sabe que
+    horas são. Sem este selo a janela não se podia afirmar: o teste teria de
+    esperar 31 minutos reais."""
+    monkeypatch.setattr(doc_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(doc_mod, "_agora", lambda: _T0)
+
+
+def test_um_pendente_ENCALHADO_esta_por_enviar(monkeypatch):
+    """Meia hora `pendente` já não é «a caminho»: com a chave da app por
+    configurar, a linha reagenda-se de minuto a minuto para sempre — não sai
+    email, e (decisão do dono) não saiu papel. É a fatura para a qual a
+    operadora precisa deste filtro, e é a que o alarme do balcão conta."""
+    db = _db([], documentos=[_documento()], vendas=[_venda_emitida()],
+             pontos_app=[_pendente_de_ha(
+                 pontos_app_mod.MINUTOS_ATE_O_PENDENTE_ACENDER + 1)])
+    _com_o_relogio_parado(monkeypatch, db)
+
+    (linha,) = _corre(listar_documentos(operador=_operador()))["documentos"]
+    assert linha["fatura_email_por_enviar"] is True
+
+
+def test_um_pendente_ACABADO_DE_NASCER_nao_esta_por_enviar(monkeypatch):
+    """O minuto normal entre o EMITIR e o cron não é nada: um contador que
+    acende em TODAS as faturas por email do dia ensina-se a ignorar, e o
+    alarme ao lado estaria calado — as duas contagens a divergir é exactamente
+    o que o predicado partilhado existe para impedir."""
+    db = _db([], documentos=[_documento()], vendas=[_venda_emitida()],
+             pontos_app=[_pendente_de_ha(1)])
+    _com_o_relogio_parado(monkeypatch, db)
+
+    (linha,) = _corre(listar_documentos(operador=_operador()))["documentos"]
+    assert linha["fatura_email_por_enviar"] is False
+
+
+def test_uma_fatura_POR_ENVIAR_mais_antiga_do_que_o_TECTO_entra_na_lista(monkeypatch):
+    """**O alarme e o botão «Por enviar» contavam conjuntos diferentes.** O
+    predicado é o mesmo, mas o alarme do balcão conta todas as linhas da loja —
+    sem limite de tempo, sobre uma colecção sem TTL — e o botão deduzia-se da
+    página de `_LIMITE_LISTA` documentos. Passados 200 documentos (um dia numa
+    loja movimentada), o alarme acendia e a lista respondia «Nenhuma fatura
+    desta loja está à espera de ir por email»: a operadora sem por onde dar o
+    papel a um cliente que ficou sem email E sem talão.
+
+    Aqui a fatura por enviar é a MAIS ANTIGA de 201, e o que se afirma é que os
+    dois números batem certo — o do alarme, contado pela rota real do balcão, e
+    o que a lista marca."""
+    from faturacao import impressao as imp_mod
+    antiga = _documento(id="doc-antiga", numero="FS 05P2026/1799",
+                        venda_id="venda-antiga", ext_ref="e-antiga",
+                        emitido_em="2026-08-20T10:00:00+00:00")
+    recentes = [
+        _documento(id="doc-%03d" % i, numero="FS 05P2026/%d" % (2000 + i),
+                   venda_id="venda-%03d" % i, ext_ref="e-%03d" % i,
+                   emitido_em="2026-08-21T%02d:%02d:00+00:00" % (i // 60, i % 60))
+        for i in range(doc_mod._LIMITE_LISTA)
+    ]
+    db = _db([], documentos=recentes + [antiga], vendas=[],
+             pontos_app=[{
+                 "chave": "fatura_email:doc-antiga", "tipo": "fatura_email",
+                 "loja_id": "loja-1", "estado": "falhado",
+                 "criado_em": "2026-08-20T10:00:00+00:00",
+             }])
+    monkeypatch.setattr(doc_mod, "obter_db", lambda: db)
+    monkeypatch.setattr(imp_mod, "obter_db", lambda: db)
+
+    resposta = _corre(listar_documentos(operador=_operador()))
+
+    por_enviar = [d for d in resposta["documentos"] if d["fatura_email_por_enviar"]]
+    assert [d["numero"] for d in por_enviar] == ["FS 05P2026/1799"], (
+        "a fatura por enviar caiu para fora do tecto da página")
+    alarme = _corre(imp_mod.estado_da_impressao(operador=_operador()))
+    assert len(por_enviar) == alarme["emails_falhados"], (
+        "o alarme do balcão e o botão «Por enviar» têm de contar o MESMO "
+        "conjunto, não só usar o mesmo predicado")
 
 
 def test_a_lista_vem_da_mais_recente_para_a_mais_antiga(monkeypatch):

@@ -1296,3 +1296,160 @@ def test_uma_RECOLHA_sem_fuso_nao_derruba_o_ECRA(monkeypatch):
     rebentar por cima dela."""
     db = _db(dispositivos=[_dispositivo(ultima_recolha_em="2026-08-22T19:00:00")])
     assert _estado(db, monkeypatch)["ha_programa"] is False
+
+
+# --- 12. Os envios por email SEM SAÍDA ---------------------------------------
+#
+# Uma fatura que ia por email e não foi **não tem papel a compensá-la** — ao
+# contrário de tudo o resto desta fila, onde o talão está sempre a um toque de
+# distância no separador Faturação. O POS já pergunta por este estado de 20 em
+# 20 segundos: é o caminho mais barato para a falha chegar a uma pessoa no
+# mesmo dia, e não se faz lista nova nenhuma por causa disso.
+
+
+def _linha_de_email(**over):
+    linha = {"id": "fe-1", "chave": "fatura_email:doc-1", "tipo": "fatura_email",
+             "loja_id": "loja-1", "estado": "falhado"}
+    linha.update(over)
+    return linha
+
+
+def _com_emails(db, *linhas):
+    db._coleccoes[COLECOES["pontos_app"]] = ColeccaoFalsa([], list(linhas))
+    return db
+
+
+@pytest.mark.parametrize("estado", ["falhado", "recusado", "sem_efeito"])
+def test_um_envio_sem_saida_acende_o_alarme_da_loja(monkeypatch, estado):
+    """Os três são becos sem saída: nenhum volta a ser tentado sozinho, e em
+    nenhum deles saiu papel."""
+    db = _com_emails(_db(), _linha_de_email(estado=estado))
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+
+    assert _corre(estado_da_impressao(operador=_operador()))["emails_falhados"] == 1
+
+
+@pytest.mark.parametrize("estado", ["pendente", "feito"])
+def test_um_envio_a_caminho_ou_feito_nao_acende_nada(monkeypatch, estado):
+    """Um `pendente` ainda vai ser tentado (a fila corre de minuto a minuto) e
+    um `feito` já saiu. Acusar qualquer um deles era um aviso que se aprende a
+    ignorar."""
+    db = _com_emails(_db(), _linha_de_email(estado=estado))
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+
+    assert _corre(estado_da_impressao(operador=_operador()))["emails_falhados"] == 0
+
+
+def test_o_alarme_e_da_LOJA_e_nao_das_outras(monkeypatch):
+    """Cinco lojas partilham a colecção; a operadora de Belém não pode ver o
+    envio falhado de Oeiras — e ainda menos carregar em «Já vi» por ele."""
+    db = _com_emails(_db(),
+                     _linha_de_email(estado="falhado"),
+                     _linha_de_email(id="fe-2", chave="fatura_email:doc-2",
+                                     loja_id="loja-2", estado="falhado"))
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+
+    assert _corre(estado_da_impressao(operador=_operador()))["emails_falhados"] == 1
+
+
+def test_uma_linha_de_PONTOS_falhada_nao_conta_como_email_por_enviar(monkeypatch):
+    """A mesma colecção guarda os créditos e os estornos. Um crédito falhado é
+    chato — o cliente ficou sem pontos — mas a fatura dele SAIU em papel, e o
+    aviso que este número acende diz outra coisa."""
+    db = _com_emails(_db(), _linha_de_email(
+        id="c-1", chave="credito:doc-1", tipo="credito", estado="falhado"))
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+
+    assert _corre(estado_da_impressao(operador=_operador()))["emails_falhados"] == 0
+
+
+def test_uma_loja_SEM_envios_nenhuns_continua_a_responder_zero(monkeypatch):
+    """A colecção pode nem existir — o duplo cria-a vazia, como o Mongo."""
+    db = _db()
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+
+    assert _corre(estado_da_impressao(operador=_operador()))["emails_falhados"] == 0
+
+
+# --- 13. O `pendente` ENCALHADO, e o «Já vi» --------------------------------
+#
+# Duas coisas que faltavam ao número de cima, e ambas o transformavam no aviso
+# que se aprende a ignorar — uma por dizer de menos, a outra por dizer de mais
+# para sempre:
+#
+# 1. **O encalhe é silencioso.** Um `pendente` não é sempre «a caminho»: com a
+#    chave da app por configurar, o `except IntegracaoNaoConfigurada` de
+#    `pontos_app.enviar` reagenda a linha de minuto a minuto para SEMPRE — sem
+#    gastar tentativa e sem arrancar o relógio das 24 h. Não sai email, não sai
+#    papel (a decisão do dono é não imprimir quando o email foi enfileirado), e
+#    o alarme dizia ZERO. Por isso o predicado tem uma JANELA
+#    (`pontos_app.MINUTOS_ATE_O_PENDENTE_ACENDER`).
+# 2. **O aviso não se desligava.** `fat_pontos_app` não tem TTL e um `recusado`
+#    é terminal a sério — o «Reenviar» do backoffice devolve-o ao mesmo estado.
+#    Um único documento recusado em Belém punha a frase vermelha no balcão para
+#    sempre. Agora o «Já vi» que já existia para os papéis carimba estas linhas
+#    também, e pelo MESMO predicado que as contou.
+
+
+def test_um_pendente_ENCALHADO_acende_o_alarme(monkeypatch):
+    """Meia hora `pendente` já não é «a caminho»: o cron corre de minuto a
+    minuto e a maior espera técnica é de 30 min."""
+    _relogio(monkeypatch, _T0)
+    db = _com_emails(_db(), _linha_de_email(
+        estado="pendente", criado_em=(_T0 - timedelta(minutes=31)).isoformat()))
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+
+    assert _corre(estado_da_impressao(operador=_operador()))["emails_falhados"] == 1
+
+
+def test_um_pendente_ACABADO_DE_NASCER_continua_a_nao_acender_nada(monkeypatch):
+    """O caminho normal — emitir, o cron pegar, `feito` — passa inteiro dentro
+    da janela. Um alarme que acende em todas as faturas por email do dia é o
+    mesmo que alarme nenhum."""
+    _relogio(monkeypatch, _T0)
+    db = _com_emails(_db(), _linha_de_email(
+        estado="pendente", criado_em=(_T0 - timedelta(minutes=1)).isoformat()))
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+
+    assert _corre(estado_da_impressao(operador=_operador()))["emails_falhados"] == 0
+
+
+def test_o_JA_VI_do_balcao_tambem_desliga_o_alarme_dos_emails(monkeypatch):
+    """Sem isto era o único aviso deste ecrã sem maneira nenhuma de sair de
+    lá: a colecção não tem TTL e um `recusado` não muda por se repetir."""
+    db = _com_emails(_db(), _linha_de_email(estado="recusado"))
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+    assert _corre(estado_da_impressao(operador=_operador()))["emails_falhados"] == 1
+
+    assert _corre(marcar_falhados_vistos(operador=_operador()))["vistos"] == 1
+
+    assert _corre(estado_da_impressao(operador=_operador()))["emails_falhados"] == 0
+
+
+def test_o_JA_VI_nao_carimba_um_envio_que_ainda_esta_a_caminho(monkeypatch):
+    """O toque responde ao NÚMERO que estava no ecrã. Um envio que ainda vai a
+    caminho não estava nesse número — e se falhar depois tem de acender, senão
+    o «Já vi» de hoje de manhã calava a falha da tarde."""
+    _relogio(monkeypatch, _T0)
+    db = _com_emails(_db(), _linha_de_email(
+        estado="pendente", criado_em=(_T0 - timedelta(minutes=1)).isoformat()))
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+    _corre(marcar_falhados_vistos(operador=_operador()))
+
+    db._coleccoes[COLECOES["pontos_app"]]._documentos[0]["estado"] = "falhado"
+    assert _corre(estado_da_impressao(operador=_operador()))["emails_falhados"] == 1
+
+
+def test_o_JA_VI_e_da_LOJA_e_nao_das_outras(monkeypatch):
+    """O carimbo tem o mesmo filtro que a contagem — incluindo a loja. Sem
+    isso, Belém desligava o aviso de Oeiras sem nunca o ter visto."""
+    db = _com_emails(_db(),
+                     _linha_de_email(estado="falhado"),
+                     _linha_de_email(id="fe-2", chave="fatura_email:doc-2",
+                                     loja_id="loja-2", estado="falhado"))
+    monkeypatch.setattr(imp, "obter_db", lambda: db)
+    _corre(marcar_falhados_vistos(operador=_operador()))
+
+    de_oeiras = db._coleccoes[COLECOES["pontos_app"]]._documentos[1]
+    assert de_oeiras["loja_id"] == "loja-2"
+    assert de_oeiras.get("visto_em") is None

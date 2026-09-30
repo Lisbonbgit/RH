@@ -273,6 +273,18 @@ export const getDocumentoPdf = (id) => api.get(
 export const reimprimirDocumento = (id) => api.post(
   `${API_URL}/faturacao/documentos/${id}/reimprimir`);
 
+// **Reenviar a fatura por email** — para QUALQUER documento que tenha linha de
+// email, e não só para os falhados: o caso frequente é «não me chegou» com a
+// linha em `feito` (o Resend aceitar não quer dizer que a caixa do cliente
+// recebeu, e não há recetor de devoluções em lado nenhum). Quem repõe a linha
+// da fila — estado, tentativas, relógios — é o servidor; daqui vai só o id.
+//
+// O caminho é o das rotas do GESTOR (`${API_URL}/faturacao/...`), ao lado do
+// `reimprimir` aqui em cima. O `/pos/` que a especificação escreve é gralha:
+// nenhuma rota de gestão vive lá.
+export const reenviarEmailDocumento = (id) => api.post(
+  `${API_URL}/faturacao/documentos/${id}/reenviar-email`);
+
 // Subcategorias — as gavetas dentro de cada categoria (Venda ao Público →
 // Açaís, Salgados). São só nossas: o Vendus não as tem e a importação não lhes
 // toca. Servem para arrumar a grelha do POS.

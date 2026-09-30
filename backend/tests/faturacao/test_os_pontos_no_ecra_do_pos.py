@@ -138,7 +138,8 @@ def janela(tmp_path_factory):
 def test_o_codigo_do_leitor_vai_ao_servidor_com_a_conta_e_liga_o_cliente(janela):
     """Os espaços que o leitor ou a mão deixem à volta não viajam."""
     assert janela["lido"]["corpos"] == [{"venda_id": "v-1", "codigo": _CODIGO}]
-    assert janela["lido"]["ligadas"] == [{"id": "lig-1", "primeiro_nome": "Ana"}]
+    assert janela["lido"]["ligadas"] == [
+        {"id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False}]
 
 
 def test_um_Enter_sem_codigo_nao_pergunta_nada(janela):
@@ -335,7 +336,8 @@ def test_ler_o_QR_mostra_so_o_primeiro_nome_e_o_Remover(lido):
 
 
 def test_a_ligacao_fica_guardada_com_a_conta_e_sobrevive_a_voltar_a_conta(lido):
-    assert lido["guardada"] == {"id": "lig-1", "primeiro_nome": "Ana"}
+    assert lido["guardada"] == {
+        "id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False}
     assert "Pontos para: Ana ✓" in lido["depoisDeVoltar"], lido["depoisDeVoltar"][:600]
 
 
@@ -447,7 +449,8 @@ def test_a_pessoa_SEGUINTE_da_conta_dividida_nao_herda_o_cliente_da_anterior(par
     assert parte_seguinte["guardadaNaPessoa2"] is None
     # E desenhar a pessoa 2 não escreveu na gaveta: o cliente da pessoa 1
     # continua lá. A gaveta muda-se no GESTO (ler ou remover), nunca ao montar.
-    assert parte_seguinte["guardadaNaPessoa1"] == {"id": "lig-1", "primeiro_nome": "Ana"}
+    assert parte_seguinte["guardadaNaPessoa1"] == {
+        "id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False}
 
 
 def test_o_EMITIR_da_pessoa_SEGUINTE_vai_sem_pontos(parte_seguinte):
@@ -581,7 +584,12 @@ def test_o_QR_lido_NA_PERGUNTA_chega_ao_ecra_de_pagamento_e_ao_EMITIR(pergunta_l
     assert "Quer atribuir os pontos?" not in ecra, (
         "A janela não fechou depois de ler o QR: %s" % ecra[:600])
     assert "Pontos para: Ana ✓" in ecra, ecra[:600]
-    assert pergunta_lida["guardada"] == {"id": "lig-1", "primeiro_nome": "Ana"}
+    # O `fatura_por_email` viaja na mesma gaveta desde que a fatura pode ir por
+    # email: o cartão do Finalizar lê-o daqui. A leitura pela PERGUNTA tem de o
+    # guardar como a leitura pelo cartão — se ficasse de fora, quem lesse o QR
+    # por esta porta perdia a escolha do cliente sem ninguém dar por isso.
+    assert pergunta_lida["guardada"] == {
+        "id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False}
     assert len(pergunta_lida["corpos"]) == 1, pergunta_lida["corpos"]
     assert pergunta_lida["corpos"][0]["pontos_ligacao"] == {
         "id": "lig-1", "primeiro_nome": "Ana"}

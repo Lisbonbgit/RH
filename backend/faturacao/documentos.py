@@ -36,6 +36,12 @@ que turno comprou.
   cliente que volta. A resposta traz `ha_mais`, e o ecrã DIZ que está a
   mostrar as N mais recentes: uma lista truncada que não se assume é uma
   lista que mente sobre o que não encontrou.
+  **Com uma excepção, e é o que impede a mentira ao contrário:** as faturas
+  que estão POR ENVIAR por email entram na página mesmo que sejam mais
+  antigas do que o tecto. O alarme do balcão conta-as sobre a loja inteira
+  (`impressao.estado_da_impressao`); deixadas de fora, o aviso acendia e a
+  lista respondia «Nenhuma fatura desta loja está à espera de ir por email» —
+  e é a única fatura desta casa em que não há papel nenhum a compensar.
 
 ## O dinheiro é do servidor, e vem de quem já o somou
 
@@ -72,7 +78,7 @@ import logging
 import math
 import os
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -86,7 +92,7 @@ from .mapa_imposto import (
 )
 from .auth import gestor_atual
 from .periodos import janela_de_datas
-from .pontos_app import pontos_app_do_documento
+from .pontos_app import filtro_das_faturas_por_enviar, pontos_app_do_documento
 from .pos_auth import operador_atual
 from .vendus.cliente import ClienteVendus, VendusErro, obter_conta
 
@@ -126,6 +132,16 @@ def _centimos(valor) -> int:
     `mapa_imposto._centimos`, e pela mesma razão: o dinheiro compara-se em
     inteiros."""
     return int(round(float(valor or 0) * 100))
+
+
+def _agora() -> datetime:
+    """O relógio do módulo num sítio só — o mesmo selo de `impressao._agora`,
+    e pela mesma razão: a JANELA do «por enviar»
+    (`pontos_app.MINUTOS_ATE_O_PENDENTE_ACENDER`) só se prende por teste se
+    houver onde pôr a hora à mão. Lido em linha, `datetime.now()` fazia com
+    que a metade do predicado que decide se um `pendente` já encalhou nunca
+    pudesse ser afirmada: um teste teria de esperar 31 minutos reais."""
+    return datetime.now(timezone.utc)
 
 
 # --- As linhas que vêm da API do Vendus (as faturas da app) -------------------
@@ -272,9 +288,10 @@ def _pagamentos_publicos(venda: Optional[Dict]) -> List[Dict]:
     ]
 
 
-def _documento_na_lista(documento: Dict, venda: Optional[Dict]) -> Dict:
+def _documento_na_lista(documento: Dict, venda: Optional[Dict],
+                        por_enviar: Optional[bool]) -> Dict:
     artigos, mais = _resumo_dos_artigos(venda)
-    return {
+    linha = {
         "id": documento.get("id"),
         # A referência que está impressa no talão que o cliente traz na mão.
         "numero": documento.get("numero"),
@@ -296,6 +313,50 @@ def _documento_na_lista(documento: Dict, venda: Optional[Dict]) -> Dict:
         # chave em falta quer dizer "não" ou "versão antiga da API".
         "tem_venda": venda is not None,
     }
+    # Decidido pelo MESMO predicado que o alarme da loja conta
+    # (`pontos_app.filtro_das_faturas_por_enviar`) — nunca de novo aqui, senão
+    # o filtro «Por enviar» do separador Faturação e o alarme contavam coisas
+    # diferentes.
+    #
+    # **`None` quer dizer «esta rota não sabe», e então a chave NÃO SAI** — e o
+    # argumento não tem valor por omissão de propósito, para que nenhum
+    # chamador novo caia no `False` por distracção. Um `False` caladinho era
+    # pior do que a ausência: a lista do backoffice jurava, em TODOS os
+    # documentos, que nenhum estava por enviar — um terceiro contador a dizer
+    # outra coisa que o alarme e o botão —, e com a chave presente o ecrã não
+    # tinha como distinguir «não está por enviar» de «esta rota não calculou».
+    # Ausente, a regra do `_venda_publica` faz o resto: quem não a receber sabe
+    # que não recebeu resposta nenhuma.
+    if por_enviar is not None:
+        linha["fatura_email_por_enviar"] = por_enviar
+    return linha
+
+
+async def _ids_por_enviar(db, loja_id: str) -> set:
+    """Os ids dos documentos DESTA LOJA com uma linha `fatura_email` por enviar
+    — pelo MESMO predicado que o alarme do balcão conta
+    (`pontos_app.filtro_das_faturas_por_enviar`). Uma segunda decisão aqui era
+    a divergência que essa função existe para não deixar existir: o botão do
+    separador Faturação e o alarme têm de contar a mesma coisa.
+
+    **A pergunta é sobre a LOJA e não sobre a página, e é essa a correcção.**
+    Restrita às chaves desta página de `_LIMITE_LISTA` documentos, o predicado
+    era o mesmo mas o CONJUNTO não: o alarme conta todas as linhas da loja, sem
+    limite de tempo, sobre uma colecção que não tem TTL. Passados 200
+    documentos — um dia numa loja movimentada — o alarme acendia e a lista
+    dizia «Nenhuma fatura desta loja está à espera de ir por email», com o
+    cliente daquela fatura sem email e sem papel. Quem a puxa para a página é a
+    `listar_documentos`, aqui em baixo.
+
+    O tecto é o da lista, e por isso são no máximo `_LIMITE_LISTA` ids: são
+    FALHAS, e o normal é zero. Uma loja com mais de 200 por enviar tem o
+    pipeline do email em baixo há dias, e aí quem fala é o alarme do balcão —
+    que continua a contar todas, porque conta por `count_documents`."""
+    linhas = await db[COLECOES["pontos_app"]].find(
+        filtro_das_faturas_por_enviar(loja_id, _agora()),
+        {"_id": 0, "chave": 1},
+    ).to_list(_LIMITE_LISTA)
+    return {l["chave"].split(":", 1)[1] for l in linhas if l.get("chave")}
 
 
 @router.get("/pos/documentos")
@@ -323,12 +384,32 @@ async def listar_documentos(operador: Dict = Depends(operador_atual)) -> dict:
     ha_mais = len(documentos) > _LIMITE_LISTA
     documentos = documentos[:_LIMITE_LISTA]
 
+    # **As que estão POR ENVIAR entram na página venham de onde vierem.** O
+    # botão «Por enviar» do separador conta as linhas que trazem
+    # `fatura_email_por_enviar`, e o alarme do balcão conta a loja inteira: se
+    # uma fatura por enviar ficasse de fora deste tecto, o alarme acendia e a
+    # lista dizia que não havia nada — a operadora sem por onde dar o papel a
+    # um cliente que ficou sem email E sem talão. São sempre um punhado (são
+    # falhas, e o normal é nenhuma), e por serem mais antigas do que a página
+    # entram no fim, que é onde a ordem por data as põe.
+    por_enviar_ids = await _ids_por_enviar(db, operador["loja_id"])
+    em_falta = sorted(por_enviar_ids - {d.get("id") for d in documentos})
+    if em_falta:
+        documentos += await (
+            db[COLECOES["documentos"]]
+            .find({"loja_id": operador["loja_id"], "id": {"$in": em_falta}})
+            .sort("emitido_em", -1)
+            .to_list(len(em_falta))
+        )
+
     vendas = await _vendas_por_id(
         db, [d["venda_id"] for d in documentos if d.get("venda_id")]
     )
     return {
         "documentos": [
-            _documento_na_lista(d, vendas.get(d.get("venda_id"))) for d in documentos
+            _documento_na_lista(
+                d, vendas.get(d.get("venda_id")), d.get("id") in por_enviar_ids)
+            for d in documentos
         ],
         # O tecto vai na resposta para o ecrã poder dizer o número em vez de
         # uma vaga "as mais recentes" — duas cópias do mesmo limite, uma de
@@ -823,7 +904,16 @@ async def documentos_do_backoffice(
         # uma coluna) e o NIF do cliente, que está na venda e é por onde o
         # gestor procura a fatura de uma empresa.
         "documentos": [
-            dict(_documento_na_lista(d, vendas.get(d.get("venda_id"))),
+            # `por_enviar=None`: **esta lista não responde a essa pergunta.** O
+            # predicado é por LOJA e por janela, e aqui cada linha pode ser de
+            # uma loja diferente — calculá-lo daria uma terceira contagem para
+            # manter de pé, e não há hoje ecrã nenhum a lê-la (o «por enviar»
+            # vive no separador Faturação do POS, e o estado do envio de UMA
+            # fatura está no detalhe, em `fatura_email`). Quando o backoffice
+            # precisar do sinal, calcula-se por loja e passa-se aqui — é para
+            # isso que o argumento não tem valor por omissão.
+            dict(_documento_na_lista(d, vendas.get(d.get("venda_id")),
+                                     por_enviar=None),
                  loja_id=d.get("loja_id"),
                  cliente_nif=(d.get("cliente_nif")
                               or (vendas.get(d.get("venda_id")) or {}).get("cliente_nif")))
@@ -843,15 +933,20 @@ async def documento_do_backoffice(
     """A MESMA fatura que o POS mostra — mesmo montador, sem o âmbito da loja
     (o gestor vê todas).
 
-    Mais a linha **«Pontos L'Açaí»** (`pontos_app`), que só o gestor vê: numa
-    fatura o crédito, numa nota de crédito o estorno dela, `None` quando o
-    cliente não mostrou a app. O balcão não precisa dela e o POS não a lê."""
+    Mais as duas linhas da fila da app, que só o gestor vê: **«Pontos L'Açaí»**
+    (`pontos_app` — numa fatura o crédito, numa nota de crédito o estorno dela)
+    e **o envio da fatura por email** (`fatura_email`). `None` cada uma quando
+    não existe. O balcão não precisa delas e o POS não as lê."""
     db = obter_db()
     documento = await db[COLECOES["documentos"]].find_one({"id": documento_id})
     if not documento:
         raise HTTPException(status_code=404, detail="Documento não encontrado")
     resposta = await _detalhe_do_documento(db, documento, com_contexto=True)
-    resposta["pontos_app"] = await pontos_app_do_documento(db, documento)
+    linhas_da_app = await pontos_app_do_documento(db, documento)
+    # Duas chaves e não um objecto aninhado: `pontos_app` fica com a forma
+    # EXACTA de hoje, que é a que o `FatDocumentos.js` já lê.
+    resposta["pontos_app"] = linhas_da_app["pontos"]
+    resposta["fatura_email"] = linhas_da_app["fatura_email"]
     return resposta
 
 
