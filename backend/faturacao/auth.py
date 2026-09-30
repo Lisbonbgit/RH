@@ -49,9 +49,13 @@ async def utilizador_atual(
     sido apagada ou despromovida entretanto (a mesma regra do server.py)."""
     utilizador = descodificar_token(credenciais.credentials)
     doc = await obter_db().users.find_one(
-        {"id": utilizador.get("user_id")}, {"_id": 0, "role": 1, "email": 1, "employee_id": 1}
+        {"id": utilizador.get("user_id")},
+        {"_id": 0, "role": 1, "email": 1, "employee_id": 1, "password_mudada_em": 1},
     )
-    if not doc:
+    # Mesma regra do server.py (sessao_anterior_a_password): a troca de
+    # password termina as sessões emitidas antes dela.
+    mudou = (doc or {}).get("password_mudada_em")
+    if not doc or (mudou and (utilizador.get("iat") or 0) < mudou):
         raise HTTPException(status_code=401, detail="Sessão terminada")
     utilizador.update(role=doc.get("role"), email=doc.get("email"), employee_id=doc.get("employee_id"))
     return utilizador

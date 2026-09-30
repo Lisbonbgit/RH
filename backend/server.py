@@ -147,9 +147,22 @@ def create_token(user_id: str, email: str, role: str, employee_id: str = None, m
         "role": role,
         "employee_id": employee_id,
         "must_change_password": must_change_password,
+        "iat": _agora_s(),
         "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS)
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def _agora_s() -> int:
+    """Segundos desde a época. O `iat` do token e o `password_mudada_em` da
+    conta usam a mesma unidade: um token emitido ANTES da última troca de
+    password deixa de valer (a troca é o gesto de quem quer expulsar alguém)."""
+    return int(datetime.now(timezone.utc).timestamp())
+
+
+def sessao_anterior_a_password(payload: dict, user: dict) -> bool:
+    mudou = user.get("password_mudada_em")
+    return bool(mudou) and (payload.get("iat") or 0) < mudou
 
 # ==================== PASSWORD RESET UTILITIES ====================
 
@@ -934,9 +947,10 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     # Sem isto, um gestor apagado ou despromovido mandava durante 24 h (provado
     # a 2026-09-30: um gerente apagado ainda criou um colaborador).
     user = await db.users.find_one(
-        {"id": payload.get("user_id")}, {"_id": 0, "role": 1, "email": 1, "employee_id": 1}
+        {"id": payload.get("user_id")},
+        {"_id": 0, "role": 1, "email": 1, "employee_id": 1, "password_mudada_em": 1},
     )
-    if not user:
+    if not user or sessao_anterior_a_password(payload, user):
         raise HTTPException(status_code=401, detail="Sessão terminada")
     payload.update(role=user.get("role"), email=user.get("email"), employee_id=user.get("employee_id"))
     return payload
@@ -1010,11 +1024,15 @@ async def login(credentials: UserLogin, request: Request):
     if limite.bloqueado(por_conta, LOGIN_FALHAS_POR_CONTA, LOGIN_JANELA_S) or \
             limite.bloqueado(por_ip, LOGIN_FALHAS_POR_IP, LOGIN_JANELA_S):
         raise HTTPException(status_code=429, detail=limite.MENSAGEM)
+    # Conta-se JÁ, antes do primeiro await: verificar agora e contar depois do
+    # bcrypt deixava 60 pedidos em paralelo passarem todos pelo "ainda há vaga".
+    limite.falhou(por_conta, LOGIN_JANELA_S)
+    limite.falhou(por_ip, LOGIN_JANELA_S)
     user = await db.users.find_one({"email": credentials.email}, {"_id": 0})
     if not user or not verify_password(credentials.password, user["password"]):
-        limite.falhou(por_conta, LOGIN_JANELA_S)
-        limite.falhou(por_ip, LOGIN_JANELA_S)
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
+    limite.perdoa(por_conta)
+    limite.perdoa(por_ip)
     
     must_change_password = user.get("must_change_password", False)
     
@@ -1067,7 +1085,8 @@ async def change_password(request: ChangePasswordRequest, current_user: dict = D
     new_password_hash = hash_password(request.new_password)
     await db.users.update_one(
         {"id": current_user["user_id"]},
-        {"$set": {"password": new_password_hash, "must_change_password": False}}
+        {"$set": {"password": new_password_hash, "must_change_password": False,
+                  "password_mudada_em": _agora_s()}}
     )
     
     # Generate new token with must_change_password = False
@@ -1160,6 +1179,11 @@ async def forgot_password(request: ForgotPasswordRequest):
     pedido_em = user.get("reset_pedido_em")
     if pedido_em and agora - datetime.fromisoformat(pedido_em) < RESET_ESPERA_NOVO_CODIGO:
         return success_message
+    # Tentativas esgotadas: um código novo ia dar 429 na mesma. Não se manda.
+    desde = user.get("reset_tentativas_desde")
+    if (user.get("reset_tentativas") or 0) >= RESET_MAX_TENTATIVAS and desde \
+            and agora - datetime.fromisoformat(desde) < RESET_JANELA:
+        return success_message
 
     reset_code = generate_reset_code()
     await db.users.update_one(
@@ -1197,7 +1221,8 @@ async def reset_password(request: ResetPasswordCodeRequest):
         {
             "$set": {
                 "password": hash_password(request.new_password),
-                "must_change_password": False
+                "must_change_password": False,
+                "password_mudada_em": _agora_s(),
             },
             "$unset": {
                 "reset_password_token": "",
@@ -1344,6 +1369,7 @@ async def update_admin(admin_id: str, payload: AdminUpdate, current_user: dict =
             raise HTTPException(status_code=400, detail=message)
         updates["password"] = hash_password(payload.new_password)
         updates["must_change_password"] = True  # troca obrigatória no próximo login
+        updates["password_mudada_em"] = _agora_s()
 
     if updates:
         await db.users.update_one({"id": admin_id}, {"$set": updates})
@@ -1789,7 +1815,8 @@ async def reset_employee_password(employee_id: str, request: AdminResetPasswordR
     new_password_hash = hash_password(request.new_password)
     await db.users.update_one(
         {"id": employee["user_id"]},
-        {"$set": {"password": new_password_hash, "must_change_password": True}}
+        {"$set": {"password": new_password_hash, "must_change_password": True,
+                  "password_mudada_em": _agora_s()}}
     )
     
     # Create notification
@@ -3405,7 +3432,11 @@ async def fin_update_company(company_id: str, payload: FinCompanyCreate, current
     name = (payload.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Indica o nome da empresa.")
-    await _fin_nif_livre(payload.nif, company_id)
+    # Só quando o NIF MUDA: a produção pode já ter repetidos (o código antigo
+    # deixava), e o ecrã manda sempre o NIF atual — renomear dava 409.
+    atual = await db.fin_companies.find_one({"id": company_id}, {"_id": 0, "nif": 1}) or {}
+    if _fin_norm_nif(payload.nif) != atual.get("nif"):
+        await _fin_nif_livre(payload.nif, company_id)
     campos = {"name": name, "nif": _fin_norm_nif(payload.nif)}
     # `exclude_unset`: as categorias so se escrevem quando vem MESMO no pedido.
     # Sem isto, guardar o nome da empresa apagava a lista que ela montou.

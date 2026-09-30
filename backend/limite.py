@@ -49,3 +49,10 @@ def falhou(chave, janela_s: int, agora: Optional[float] = None) -> None:
         # ponytail: poda grosseira quando engorda; filas vazias já não travam nada.
         for k in [k for k, q in _falhas.items() if not q or agora - q[-1] >= janela_s]:
             _falhas.pop(k, None)
+
+
+def perdoa(chave) -> None:
+    """Devolve a vaga reservada por um pedido que afinal acertou."""
+    fila = _falhas.get(chave)
+    if fila:
+        fila.pop()
