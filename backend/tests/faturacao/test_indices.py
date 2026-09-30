@@ -280,17 +280,37 @@ def test_a_pergunta_do_programa_da_loja_tem_indice_e_traz_a_ORDEM():
             [("loja_id", 1), ("estado", 1), ("criado_em", 1)], {}) in INDICES
 
 
-def test_a_fila_de_impressao_apaga_se_sozinha_e_e_a_UNICA_que_o_faz():
-    """O TTL. Esta colecção guarda os BYTES de cada talão de cinco lojas; sem
-    ele crescia para sempre. Nada de fiscal se perde — o documento e o talão
-    certificado ficam em `fat_documentos`.
+def test_o_alarme_dos_EMAILS_por_enviar_tem_indice_na_fila_dos_pontos():
+    """`impressao.estado_da_impressao` corre de 20 em 20 segundos, em cinco
+    lojas, o dia inteiro — e `fat_pontos_app` **fica para sempre** (`db.py:88`),
+    ao contrário da fila do papel, que tem TTL de sete dias.
 
-    E é a única: um TTL em `fat_documentos`, `fat_vendas` ou
-    `fat_refs_fiscais` apagava registo fiscal, e a reserva de uma venda
-    emitida é o que sustenta a idempotência da emissão para sempre."""
+    Os dois índices que já lá estavam respondem a outras perguntas: `chave` é a
+    unicidade, e `(estado, proxima_tentativa_em)` é a do cron. O filtro deste
+    alarme é `{loja_id, tipo, estado}` e sem índice próprio era um varrimento
+    completo de uma colecção que só cresce — a mesma razão, escrita com todas as
+    letras, que pôs o índice de `fat_trabalhos_impressao` aqui em cima."""
+    assert ("fat_pontos_app",
+            [("loja_id", 1), ("tipo", 1), ("estado", 1)], {}) in INDICES
+
+
+def test_so_o_PAPEL_e_a_PREFERENCIA_DO_QR_se_apagam_sozinhos():
+    """Os TTL. A fila de impressão guarda os BYTES de cada talão de cinco lojas
+    e `fat_pontos_qr` guarda uma escolha que só vale naquela ida ao balcão; sem
+    eles, as duas cresciam para sempre. Nada de fiscal se perde — o documento e
+    o talão certificado ficam em `fat_documentos`, e o registo do envio fica em
+    `fat_pontos_app`, que NÃO tem TTL nenhum.
+
+    E são estas duas e mais nenhuma: um TTL em `fat_documentos`, `fat_vendas`,
+    `fat_pontos_app` ou `fat_refs_fiscais` apagava registo fiscal, e a reserva
+    de uma venda emitida é o que sustenta a idempotência da emissão para
+    sempre."""
     com_ttl = [
         (coleccao, chaves)
         for (coleccao, chaves, opcoes) in INDICES
         if "expireAfterSeconds" in opcoes
     ]
-    assert com_ttl == [("fat_trabalhos_impressao", [("apagar_depois_de", 1)])]
+    assert com_ttl == [
+        ("fat_trabalhos_impressao", [("apagar_depois_de", 1)]),
+        ("fat_pontos_qr", [("criada_em", 1)]),
+    ]

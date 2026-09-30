@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import {
   ArrowLeft, Pencil, X, ChevronDown, Loader2, AlertTriangle, CheckCircle2,
-  ShieldAlert, Ban, User, Receipt, Printer, CreditCard, Coins, Divide, Scissors, Users,
-  Minus, Plus, Gift, QrCode,
+  ShieldAlert, Ban, User, Receipt, Printer, Mail, CreditCard, Coins, Divide, Scissors, Users,
+  Minus, Plus, Gift, QrCode, Ticket,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,7 +16,9 @@ import {
   contaTravada, duvidaPorApurar, detalhesErroPos, eurosPos as euros,
   temMaisDe2CasasDecimaisPos, avisoDoDocumento, previsaoDoDividir,
   guardarNifDaConta, lerNifDaConta, nifValidoPT,
-  guardarPontosDaConta, lerPontosDaConta,
+  guardarPontosDaConta, lerPontosDaConta, guardarPreferenciaDeFaturaPorEmail,
+  aFaturaVaiPorEmail, pedirVoucherDaConta, estadoDoVoucher, contaComVoucher,
+  aAppNaoRespondeu,
 } from '@/lib/pos';
 
 // O ecrã de finalizar (Plano 2C, Task 4): três cartões — Total, Cliente e
@@ -45,6 +47,16 @@ import {
 // que o servidor faz (fiscal.py::finalizar compara `round(sum(...), 2)` com o
 // total), por isso o crivo do ecrã e o do servidor dão sempre a mesma resposta.
 const centimos = (valor) => Math.round((Number(valor) || 0) * 100);
+
+// **O voucher desta conta, reduzido ao que faz o ecrã mudar.** Serve uma
+// pergunta só: entre a leitura do QR e o toque em EMITIR, o que a app respondeu
+// é o MESMO? Compara-se isto e não os objectos, porque a resposta chega sempre
+// num objecto novo e `!==` dizia "mudou" em todas as vendas.
+//
+// Fora do componente e sem React nenhum dentro, pela regra do ficheiro: uma
+// comparação escrita dentro de um `if` não se corre em teste nenhum.
+const marcaDoVoucher = (v) =>
+  (v ? `${v.tipo}|${v.voucher_id || ''}|${centimos(v.valor)}|${v.linha_id_alvo || ''}` : '');
 
 // Só dígitos e uma única separação decimal — a mesma ideia do PosCampoValor,
 // mas para a percentagem, que não leva símbolo de euro nem calculadora.
@@ -570,17 +582,87 @@ function CartaoCliente({ nifTexto, onNifTexto, desativado }) {
 // parada por uma coisa que não é fiscal.
 //
 // Só o PRIMEIRO nome, cortado pela app: o ecrã da caixa está à vista da loja.
-function CartaoPontos({ ligacao, onLer, onRemover, desativado }) {
+//
+// **E para onde vai a fatura** — email ou papel —, que é a única coisa que
+// muda entre as duas frases. **O ENDEREÇO NUNCA APARECE**: só o sim/não. Um
+// ecrã de caixa com o email de um cliente por cima é uma porta de enumeração,
+// e o POS não precisa dele para nada (o servidor nem sequer o manda).
+//
+// **O que este cartão diz pode ser mentira, e isso está decidido.** A
+// preferência vem da gaveta do `sessionStorage`; quem decide mesmo se o papel
+// sai é o servidor, pelo `fat_pontos_qr` que ele gravou ao ler o QR. Uma
+// gaveta adulterada faz o cartão mentir à operadora — não faz desaparecer o
+// documento do cliente.
+//
+// **É o único sítio onde a pergunta se faz deste lado**, e é por não haver cá
+// resposta nenhuma do servidor: antes do EMITIR ainda não há documento. Depois
+// do EMITIR quem responde é o servidor (ver `DocumentoEmitido`).
+//
+// **E, desde 2026-09-22, o VOUCHER.** A recompensa deixou de valer só nos
+// pedidos da app: o mesmo QR que dá pontos também traz o desconto ao balcão.
+// São três frases novas debaixo do nome, e as três dizem à funcionária o que
+// fazer a seguir (ver `lib/pos.js::estadoDoVoucher`, onde a decisão vive e
+// onde um teste a corre):
+//
+//  · o desconto ENTROU — não há nada a fazer, o total em baixo já está certo;
+//  · o cliente TEM recompensa e nada nesta conta serve — ela lê, diz ao
+//    cliente, e **ainda vai a tempo de acrescentar o produto**. É esta frase
+//    que transforma um voucher perdido numa venda;
+//  · a ponte das categorias não casou — sem desconto, mas NUNCA em silêncio.
+//
+// A frase fica debaixo da de sempre e não por cima dela: a linha de cima diz
+// quem é o cliente e por onde vai a fatura, e essas duas continuam a ser
+// verdade haja ou não haja voucher.
+function CartaoPontos({
+  ligacao, voucher, onLer, onRemover, onPreferencia, aMudarPreferencia, desativado,
+}) {
+  const porEmail = aFaturaVaiPorEmail({ ligacao });
   return (
     <Cartao titulo="Pontos L'Açaí" icone={Gift}>
       {ligacao ? (
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="font-heading font-bold text-2xl min-w-0 break-words">
-            {`Pontos para: ${ligacao.primeiro_nome} ✓`}
-          </p>
-          <Button type="button" variant="outline" className="h-12" onClick={onRemover} disabled={desativado}>
-            Remover
-          </Button>
+        // O `data-testid` existe para os guardas poderem ler ESTE cartão e não
+        // o ecrã inteiro: a prova de que o endereço não aparece tem de ser
+        // sobre o sítio onde ele apareceria.
+        <div
+          className="flex flex-wrap items-center justify-between gap-3"
+          data-testid="cartao-pontos"
+        >
+          <div className="min-w-0 flex-1">
+            <p className="font-heading font-bold text-2xl min-w-0 break-words">
+              {`Pontos para: ${ligacao.primeiro_nome} ✓ · ${
+                porEmail ? 'Fatura por email ✉' : 'Fatura em papel'}`}
+            </p>
+            {voucher && (
+              <p
+                className={`mt-1.5 text-base font-medium flex items-start gap-1.5 break-words ${
+                  voucher.tipo === 'aplicado' ? 'text-success' : 'text-warning'
+                }`}
+              >
+                {voucher.tipo === 'aplicado'
+                  ? <Ticket className="h-5 w-5 shrink-0 mt-0.5" />
+                  : <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5" />}
+                <span className="min-w-0">{voucher.texto}</span>
+              </p>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {/* Ao lado do «Remover» que já lá estava, e não por cima dele: são
+                duas coisas diferentes — tirar o cliente da fatura, e escolher
+                por onde ele a recebe. */}
+            <Button
+              type="button"
+              variant="outline"
+              className="h-12"
+              onClick={() => onPreferencia(!porEmail)}
+              disabled={desativado || aMudarPreferencia}
+            >
+              {aMudarPreferencia && <Loader2 className="h-5 w-5 mr-2 animate-spin" />}
+              {porEmail ? 'Voltar ao papel' : 'Enviar por email'}
+            </Button>
+            <Button type="button" variant="outline" className="h-12" onClick={onRemover} disabled={desativado}>
+              Remover
+            </Button>
+          </div>
         </div>
       ) : (
         <Button
@@ -820,7 +902,7 @@ function AvisoErro({ erro }) {
 // 17,35 € paga com 20 €, ela lia "Troco € 2,65", carregava em EMITIR e o 2,65
 // desaparecia. Ficava a tirar o troco de memória, com fila à frente — que é
 // onde os enganos acontecem, e a diferença só aparece no fecho de caixa.
-function DocumentoEmitido({ documento, troco, recuperado, onVoltar, rotuloVoltar }) {
+function DocumentoEmitido({ documento, troco, recuperado, onVoltar, rotuloVoltar, porEmail }) {
   // **O carimbo DESTA fatura**, e não o modo do instante em que a página foi
   // carregada: um turno que começou em `tests` e a que o gestor mudou o
   // servidor a meio tem documentos dos dois tipos à frente, e o que vale para
@@ -946,15 +1028,29 @@ function DocumentoEmitido({ documento, troco, recuperado, onVoltar, rotuloVoltar
             <p className="mt-5 font-heading font-bold text-4xl tabular-nums">{euros(documento?.total)}</p>
           </section>
 
-          {/* O talão sai sozinho quando o agente de impressão existir (Plano
+          {/* Para onde vai o documento do cliente. Duas frases, e a diferença
+              entre elas é se alguém tem de esperar ali de pé.
+
+              **Não diz «enviada»**: no instante do EMITIR o envio ainda não
+              aconteceu — o `tentar_ja` agenda em segundo plano e volta logo
+              (`pontos_app.py`). O que se promete é a INTENÇÃO, que é o que
+              este lado sabe; se falhar, aparece no alarme da loja e no
+              relatório da noite, não aqui.
+
+              O talão sai sozinho quando o agente de impressão existir (Plano
               3). Enquanto não existir, isto é uma frase e não um botão: um
               botão "Imprimir" que não imprime nada fazia a operadora carregar
               três vezes e dar o cliente por servido sem talão nenhum. */}
           <section className="rounded-2xl border bg-card p-4 text-sm text-muted-foreground flex items-start gap-2">
-            <Printer className="h-4 w-4 shrink-0 mt-0.5" />
+            {porEmail
+              ? <Mail className="h-4 w-4 shrink-0 mt-0.5" />
+              : <Printer className="h-4 w-4 shrink-0 mt-0.5" />}
             <span>
-              O talão passa a sair sozinho assim que o agente de impressão da loja existir — ainda
-              não existe. Por agora, o documento fica no Vendus e pode ser reimpresso a partir de lá.
+              {porEmail
+                ? 'Fatura vai por email — não é preciso esperar pelo papel.'
+                : 'O talão passa a sair sozinho assim que o agente de impressão da loja '
+                  + 'existir — ainda não existe. Por agora, o documento fica no Vendus e '
+                  + 'pode ser reimpresso a partir de lá.'}
             </span>
           </section>
 
@@ -1017,7 +1113,11 @@ export default function PosFinalizar({
   // ainda tem gente por pagar apagava a primeira do ecrã, com o dinheiro dela
   // por receber. A frase vem de cima já escrita, do mesmo sítio que faz o
   // `abrirReparticao` recusar — este ecrã não a redescobre nem a reescreve.
-  impedeRepartir = null,
+  // Renomeado à entrada porque este ecrã ACRESCENTA uma razão sua (ver
+  // `impedeRepartir`, mais abaixo) — e o que desliga os botões e o que
+  // aparece por cima deles tem de continuar a ser o MESMO nome, senão volta a
+  // haver duas frases para o mesmo dinheiro por receber.
+  impedeRepartir: impedeRepartirDeCima = null,
 }) {
   // [{ tipo_pagamento_id, valor: string, auto: boolean }] — `valor` é sempre
   // STRING, pelo mesmo motivo do PosCampoValor: um campo controlado que a
@@ -1038,8 +1138,152 @@ export default function PosFinalizar({
   const [ligacao, setLigacao] = useState(() => lerPontosDaConta(venda?.id));
   const [aLerQr, setALerQr] = useState(false);
   const mudarLigacao = (nova) => {
+    // O espelho escreve-se JÁ, e não à espera do render: o «Remover» dispara
+    // um pedido logo a seguir, e esse pedido precisa de saber que o cliente
+    // saiu para não escrever a resposta por cima de um cartão vazio.
+    ligacaoAgora.current = nova;
     setLigacao(nova);
     guardarPontosDaConta(venda?.id, nova);
+  };
+  const [aMudarPreferencia, setAMudarPreferencia] = useState(false);
+  // **Quem está no cartão AGORA**, e não quem lá estava no instante do toque.
+  // A resposta da preferência pode chegar com o cliente já fora da fatura: o
+  // «Remover» fica vivo enquanto o pedido voa (e tem de ficar — tirar o
+  // cliente é da operadora e a fila é dela), e trocar de parte da conta troca
+  // a ligação por baixo. Escrita às cegas a seguir ao `await`, a resposta
+  // RESSUSCITAVA o cliente removido: no cartão, na gaveta, e daí no
+  // `pontos_ligacao` do EMITIR. Mesmo molde do `lerAgora` do `PosLerQr`.
+  const ligacaoAgora = useRef(ligacao);
+  ligacaoAgora.current = ligacao;
+  // **Primeiro o servidor, e depois o que ELE devolveu.** A preferência é um
+  // consentimento do cliente: quem a grava (e a audita, e avisa o telemóvel
+  // dele) é a app, através do servidor. Escrever no ecrã antes da resposta era
+  // deixar o cartão a prometer email com a app a ter recusado a mudança — e
+  // quem vier a seguir lê a promessa, não a mensagem que já passou.
+  //
+  // E escreve-se `dados.fatura_por_email`, nunca o `valor` que se pediu: um
+  // 200 pode trazer outro valor (o cliente desligou a preferência no telemóvel
+  // entretanto), e nesse caso quem tem razão é a app.
+  const mudarPreferencia = async (valor) => {
+    if (!ligacao || aMudarPreferencia) return;
+    setAMudarPreferencia(true);
+    try {
+      const dados = await guardarPreferenciaDeFaturaPorEmail(venda?.id, ligacao.id, valor);
+      // O cartão já não é deste cliente: esta resposta é de uma pergunta que
+      // ficou sem dono. Cala-se — escrevê-la era pôr de volta quem saiu.
+      if (ligacaoAgora.current?.id !== ligacao.id) return;
+      mudarLigacao({ ...ligacao, fatura_por_email: !!(dados && dados.fatura_por_email) });
+    } catch (error) {
+      toast.error(detalhesErroPos(
+        error, 'Não foi possível mudar isto agora — a fatura sai em papel.').mensagem);
+    } finally {
+      setAMudarPreferencia(false);
+    }
+  };
+
+  // --- O voucher L'Açaí ------------------------------------------------------
+  //
+  // O que o cartão diz sobre a recompensa (`lib/pos.js::estadoDoVoucher`), ou
+  // `null` quando não há nada a dizer.
+  const [voucher, setVoucher] = useState(null);
+  // **A venda que a rota do voucher devolveu, e o prop que ela substitui.**
+  //
+  // O total NUNCA se soma neste ecrã (ver `CartaoTotal`): quem o calcula é o
+  // servidor, e isto é a resposta DELE à mesma conta, já com o `desconto_eur`
+  // na linha alvo. O que se guarda ao lado é a IDENTIDADE do prop no instante
+  // da chamada: qualquer escrita nesta conta passa pelo `aplicarVenda` do
+  // PosVenda, que põe lá um objecto NOVO vindo do servidor — e nesse instante
+  // esta cópia caduca sozinha, sem ninguém se lembrar de a apagar. Sem isso,
+  // acrescentar um produto deixava o total preso no que ele era antes.
+  const [vendaDoVoucher, setVendaDoVoucher] = useState(null);
+  const vendaViva = vendaDoVoucher && vendaDoVoucher.base === venda
+    ? vendaDoVoucher.venda
+    : venda;
+  // **Quem é a conta AGORA**, pelo molde do `ligacaoAgora` aqui em cima e pela
+  // mesma razão: a resposta do voucher pode chegar com a operadora já a cobrar
+  // outra pessoa da conta repartida.
+  const vendaAgora = useRef(venda);
+  vendaAgora.current = venda;
+  const [aPedirVoucher, setAPedirVoucher] = useState(false);
+
+  // **A pergunta à app, pela rota do POS.** Devolve `{ ok, estado }` — `ok` é
+  // se houve RESPOSTA, e não se havia voucher.
+  //
+  // **Engole tudo o que corra mal, e é aqui que a regra de ouro da integração
+  // vive**: app em baixo, tecto de espera esgotado, 500, resposta estranha —
+  // tudo dá o mesmo desfecho, que é o desfecho seguro: o ecrã fica como
+  // estava e a venda segue. Uma falha NÃO apaga o que o servidor já tinha
+  // dito: se o desconto já entrou na linha, apagá-lo do ecrã punha o total a
+  // subir com o desconto na conta do servidor, e a soma dos pagamentos deixava
+  // de bater certo por causa de um pedido que falhou.
+  const pedirOVoucher = async (lig) => {
+    const base = venda;
+    if (!base?.id) return { ok: false, estado: voucher };
+    try {
+      const { data } = await pedirVoucherDaConta(base.id, lig ? lig.id : null);
+      // **O 200 que é um «não sei» vale o mesmo que o `catch` aqui em baixo**
+      // (ver `lib/pos.js::aAppNaoRespondeu`). Sem esta linha, as chaves a
+      // `null` da app em baixo liam-se como «este cliente não tem recompensa»:
+      // o cartão perdia a linha «Açaí Médio grátis» com o desconto ainda
+      // gravado na conta, e o EMITIR era recusado com «A recompensa desta conta
+      // mudou» — uma frase falsa sobre uma conta que não mudou nada.
+      if (aAppNaoRespondeu(data)) return { ok: false, estado: voucher };
+      const estado = estadoDoVoucher(data);
+      const nova = data && data.venda && data.venda.id === base.id ? data.venda : null;
+      // A conta já não é esta, ou o cliente saiu da fatura: esta resposta
+      // ficou sem dono e escrevê-la era pôr o desconto de uma conta à frente
+      // de outra.
+      if (vendaAgora.current === base && ligacaoAgora.current === lig) {
+        setVoucher(estado);
+        setVendaDoVoucher(nova ? { base, venda: nova } : null);
+      }
+      return { ok: true, estado };
+    } catch (error) {
+      return { ok: false, estado: voucher };
+    }
+  };
+
+  // **Uma pergunta por cliente e por conta, assim que a ligação nasce.** É
+  // isto que põe o desconto no ecrã ANTES de cobrar — e que dá à funcionária a
+  // frase «tem uma recompensa e não há nada nesta conta que sirva» enquanto o
+  // cliente ainda está à frente dela para acrescentar o produto.
+  useEffect(() => {
+    if (!venda?.id) return;
+    // Sem cliente não há frase de recompensa a mostrar no cartão. **Mas a
+    // CONTA não se toca aqui** (ver `removerOCliente`): o desconto está gravado
+    // do lado do servidor e só sai de lá quando ele o disser.
+    if (!ligacao) { setVoucher(null); return; }
+    pedirOVoucher(ligacao);
+  }, [venda?.id, ligacao?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // **O «Remover» desfaz as DUAS coisas**: tira o cliente da fatura E liberta o
+  // voucher. Tirar uma e deixar a outra era o pior dos dois mundos — o cliente
+  // ficava sem desconto e com a recompensa presa até à meia-noite.
+  //
+  // O CARTÃO limpa-se PRIMEIRO e não espera pela resposta: tirar o cliente é da
+  // operadora e a fila é dela (a mesma regra do botão da preferência). Se o
+  // pedido falhar, a reserva liberta-se sozinha do lado da app
+  // (`release_stale_reservations`); o que não pode é prender-lhe a mão.
+  //
+  // **A CONTA é outra coisa, e é aqui que estava o defeito do dinheiro.**
+  // Atirar fora o `vendaDoVoucher` neste instante fazia o ecrã voltar ao prop
+  // da venda, que NUNCA viu o desconto (ele nasceu na resposta desta rota) —
+  // e nesse instante, antes de o servidor ter libertado coisa nenhuma:
+  //
+  //  · o `haLinhaDeVoucher` passava a falso e o botão **Dividir destrancava**,
+  //    com a marca ainda gravada nas linhas. Dividir copiava-a para cada parte,
+  //    e cada parte emitia uma Fatura Simplificada real a 0,00 €;
+  //  · e se o pedido falhasse (app em baixo), o ecrã ficava a mostrar o total
+  //    inteiro sobre uma conta que o servidor tem descontada — o EMITIR mandava
+  //    pagamentos que não somam o total e levava 422 com o cliente à frente.
+  //
+  // Por isso a conta fica como está e é a RESPOSTA que a substitui: ela volta
+  // sem desconto nenhum, o total sobe, e o Dividir destranca-se então. Quem
+  // manda na conta é sempre o servidor.
+  const removerOCliente = () => {
+    mudarLigacao(null);
+    setVoucher(null);
+    pedirOVoucher(null);
   };
 
   // Trocar de conta (cobrar outra parte de uma conta repartida) recomeça do
@@ -1061,8 +1305,15 @@ export default function PosFinalizar({
   // emitido o poder repetir (ver DocumentoEmitido).
   const [trocoEntregue, setTrocoEntregue] = useState(null);
 
-  const total = Number(venda?.totais?.total) || 0;
+  // `vendaViva` e não `venda`: com um voucher aplicado, quem tem o total certo
+  // é a resposta da rota do voucher (o mesmo servidor, a mesma conta, já com o
+  // desconto na linha). Sem voucher nenhum é exactamente o prop de sempre.
+  const total = Number(vendaViva?.totais?.total) || 0;
   const totalCentimos = centimos(total);
+  // **A marca que o SERVIDOR pôs na linha**, e não o valor que a app devolveu:
+  // é ela que abre o travão do total a zero, e é a mesma pergunta que o
+  // servidor faz do outro lado (ver `lib/pos.js::contaComVoucher`).
+  const haLinhaDeVoucher = contaComVoucher(vendaViva);
 
   const tipos = useMemo(
     () => [...tiposPagamento].sort((a, b) => (a.ordem || 0) - (b.ordem || 0)),
@@ -1154,7 +1405,17 @@ export default function PosFinalizar({
   const duvida = duvidaPorApurar(erroEmissao);
   const travada = contaTravada(venda);
   const congelada = duvida || travada;
-  const temLinhas = (venda?.linhas || []).length > 0;
+  const temLinhas = (vendaViva?.linhas || []).length > 0;
+  // **A conta que ficou a 0,00 € por causa de uma recompensa** — um açaí
+  // oferecido é o caso NORMAL disto, não um erro.
+  //
+  // A zero não se manda pagamento nenhum: o servidor recusa `valor: 0`
+  // (`fiscal.py::PagamentoEntrada`) e a soma de zero pagamentos é 0, que bate
+  // certo com o total. Sem esta distinção o ecrã ficava preso no último passo —
+  // ou a pedir «escolha como o cliente vai pagar» numa conta que não tem nada
+  // a pagar, ou, se ela tocasse em Dinheiro por hábito, a pedir-lhe o valor de
+  // um pagamento de 0,00 € que o servidor nunca aceitaria.
+  const contaAZeroPeloVoucher = totalCentimos === 0 && temLinhas && haLinhaDeVoucher;
 
   const nomeDoTipo = (id) => tipoPorId.get(id)?.nome || 'este pagamento';
 
@@ -1175,7 +1436,26 @@ export default function PosFinalizar({
   // servidor recusa nem recusar o que ele aceitaria.
   const motivoBloqueio = (() => {
     if (!temLinhas) return { texto: 'A conta não tem nenhum produto — não há nada para faturar.' };
-    if (total <= 0) return { texto: 'O total tem de ser positivo para emitir — reveja o desconto aplicado à conta.' };
+    // **A conta pode ficar a 0,00 €, e a Fatura Simplificada sai à mesma** —
+    // zero euros, zero pontos (desenho de 2026-09-22, decisão 3; a FS
+    // 06P2026/1081 da app já saiu assim, com 100 % de desconto numa linha).
+    //
+    // **Mas só com uma linha marcada com `voucher_id`.** Abrir o zero a toda a
+    // gente deixava emitir a 0,00 € com um desconto manual de 100 %, e esses
+    // não pedem PIN a ninguém. O servidor tem o MESMO travão
+    // (`fiscal.py::finalizar`) e os dois têm de concordar: um crivo mais largo
+    // aqui era o ecrã a convidar ao que o servidor recusa com 422, com o
+    // cliente à frente.
+    //
+    // Em CÊNTIMOS INTEIROS, como todo o dinheiro deste ficheiro: um total de
+    // 0,00 € que chegue como 0.0000001 não pode ficar de fora do travão nem
+    // preso nele.
+    if (totalCentimos < 0) {
+      return { texto: 'O total não pode ser negativo — reveja o desconto aplicado à conta.' };
+    }
+    if (totalCentimos === 0 && !haLinhaDeVoucher) {
+      return { texto: 'O total tem de ser positivo para emitir — reveja o desconto aplicado à conta.' };
+    }
     // Duas razões diferentes, e a ordem importa: com quatro dígitos escritos
     // ninguém pode levar "este NIF não existe" — ainda não acabou de o
     // escrever. A pergunta "este número existe?" só faz sentido ao nono.
@@ -1189,6 +1469,11 @@ export default function PosFinalizar({
         texto: `${nifPorExtenso(digitosNif)} não é um NIF válido: confirme o número com o cliente no cartão Cliente, ou toque em Consumidor Final.`,
       };
     }
+    // Daqui para baixo é tudo sobre dinheiro, e a 0,00 € não há dinheiro
+    // nenhum a repartir. O NIF fica ACIMA desta saída de propósito: uma fatura
+    // a zero leva contribuinte como qualquer outra, e um NIF a meio continua a
+    // ser um NIF a meio.
+    if (contaAZeroPeloVoucher) return null;
     if (pagamentos.length === 0) return { texto: 'Escolha como o cliente vai pagar.' };
 
     // A FORMA dos valores é crivada ANTES de qualquer conta sobre a soma: com
@@ -1267,7 +1552,35 @@ export default function PosFinalizar({
     return null;
   })();
 
-  const podeEmitir = !aEmitir && !congelada && !motivoBloqueio;
+  // `aPedirVoucher` entra aqui pela mesma razão do `aEmitir`: a segunda
+  // pergunta ao voucher corre ANTES de o pai saber que há uma emissão a
+  // caminho, e nesse intervalo o botão continuaria vivo. Dois toques seguidos
+  // pediam DUAS emissões da mesma venda — a defesa de baixo (a reserva atómica
+  // por `ext_ref`) existe para o caso de tudo o resto falhar, não para ser
+  // gasta todos os dias.
+  const podeEmitir = !aEmitir && !aPedirVoucher && !congelada && !motivoBloqueio;
+
+  // **Uma conta com voucher aplicado não se divide** (desenho de 2026-09-22,
+  // "Fora de âmbito"): a ligação vive no `sessionStorage` presa ao id DESTA
+  // conta e já hoje não passa para as partes. Repartida, o desconto ficava na
+  // conta-mãe que ninguém vai cobrar e o voucher preso até à meia-noite —
+  // cliente sem desconto e sem recompensa. Fase 2 resolve-o; a Fase 1 diz que
+  // não, e diz porquê.
+  //
+  // Junta-se à razão que vem de cima em vez de a substituir: as duas são
+  // verdade ao mesmo tempo, e a de cima (há partes por cobrar) é a mais antiga.
+  //
+  // **A frase diz onde está o trinco, e não só o gesto.** «Retire o cliente»
+  // sozinho mandava-a para um botão que responde 422: o «Remover» limpa o
+  // cartão num instante, mas quem tira a marca da linha é o servidor, e até ele
+  // responder a conta continua a não se poder repartir. Agora o que ela lê é a
+  // coisa que consegue VER acontecer — o total a subir.
+  const impedeRepartir = impedeRepartirDeCima
+    || (haLinhaDeVoucher
+      ? 'Esta conta tem uma recompensa L\'Açaí aplicada e não se pode repartir. '
+        + 'Toque em «Remover» no cartão Pontos L\'Açaí: estes botões só '
+        + 'destrancam quando o desconto sair do total.'
+      : null);
 
   // O troco só faz sentido sobre o que é pago EM DINHEIRO: numa venda de 20 €
   // paga com 10 € em Multibanco e 10 € em dinheiro, quem entrega uma nota de
@@ -1279,10 +1592,43 @@ export default function PosFinalizar({
   const mostrarTroco = pagamentos.some((p) => tipoPorId.get(p.tipo_pagamento_id)?.da_troco);
   const trocoCentimos = centimos(recebido) - devidoEmDinheiroCentimos;
 
-  const unidades = (venda?.linhas || []).reduce((soma, li) => soma + (Number(li.quantidade) || 0), 0);
+  const unidades = (vendaViva?.linhas || []).reduce((soma, li) => soma + (Number(li.quantidade) || 0), 0);
 
-  const emitir = () => {
+  const emitir = async () => {
     if (!podeEmitir) return;
+
+    // **A SEGUNDA pergunta do voucher, e a razão de ela existir: a conta pode
+    // ter mudado.** Entre a leitura do QR e este toque a operadora acrescentou
+    // produtos, tirou outros, deu um desconto — e o açaí que servia o voucher
+    // pode já lá não estar. A app volta a escolher (e liberta o que deixou de
+    // servir); este ecrã só quer saber se o que está escrito nele continua a
+    // ser verdade.
+    //
+    // **A regra de ouro vale aqui como em todo o lado**: `ok: false` — app em
+    // baixo, tecto de espera esgotado, resposta estranha — não prende o EMITIR.
+    // Emite-se com o que está no ecrã, que é a última coisa que o servidor
+    // disse sobre esta conta.
+    //
+    // Quando a resposta CHEGA e vem diferente, não se emite: o cartão e o total
+    // acabaram de mudar debaixo dos olhos dela, e os pagamentos escritos à mão
+    // já não batem com o total novo. Ela lê o que mudou e carrega outra vez.
+    // Emitir aqui às cegas dava um 422 do servidor ("os pagamentos não somam o
+    // total") com um painel vermelho e nenhuma explicação do que aconteceu.
+    if (ligacao || voucher) {
+      setAPedirVoucher(true);
+      let resposta;
+      try {
+        resposta = await pedirOVoucher(ligacao);
+      } finally {
+        setAPedirVoucher(false);
+      }
+      if (resposta.ok && marcaDoVoucher(resposta.estado) !== marcaDoVoucher(voucher)) {
+        toast.warning('A recompensa desta conta mudou — confirme o cartão dos pontos e o '
+          + 'total antes de emitir.');
+        return;
+      }
+    }
+
     // Retrato do recebido e do troco ANTES de a resposta chegar: é o número
     // que ela tem de tirar da gaveta a seguir, e o ecrã do documento emitido
     // substitui este por inteiro. São TRÊS estados, e nenhum deles é uma conta
@@ -1319,7 +1665,10 @@ export default function PosFinalizar({
     // como valor do pagamento, a fatura saía com um total maior do que a venda
     // — e ficava na AT um documento errado, corrigível só com nota de crédito.
     onEmitir({
-      pagamentos: pagamentos.map((p) => ({
+      // A zero vai a lista VAZIA, mesmo que ela tenha tocado num tipo por
+      // hábito: `valor: 0` é 422 do lado do servidor, e a soma de zero
+      // pagamentos é o total.
+      pagamentos: contaAZeroPeloVoucher ? [] : pagamentos.map((p) => ({
         tipo_pagamento_id: p.tipo_pagamento_id,
         valor: Number(p.valor),
       })),
@@ -1339,6 +1688,24 @@ export default function PosFinalizar({
         recuperado={documentoRecuperado}
         onVoltar={onVoltar}
         rotuloVoltar={parte ? 'Voltar às partes' : null}
+        // **A resposta do SERVIDOR, e não uma segunda conta aqui.** Ele já
+        // decidiu nesta mesma chamada — é o booleano de
+        // `pontos_app.enfileirar_fatura_email`, que `fiscal.py::finalizar`
+        // devolve em `documento.fatura_por_email` — e são CINCO condições, das
+        // quais este lado só vê três: a linha do `fat_pontos_qr` (que é quem
+        // manda, e caduca ao fim de 2 h) e a escrita na fila nunca chegam cá.
+        // Decidido no browser, bastava a linha do QR ter caducado para o ecrã
+        // escrever «não é preciso esperar pelo papel» por cima de um talão que
+        // saiu mesmo na impressora: ninguém o entrega, o cliente vai-se embora
+        // sem nada, e não fica registo nenhum.
+        //
+        // Ausente (servidor antigo, ou o documento recuperado pelo
+        // `PosVenda::apurarAEmissao`, que o relê por outra rota) vale `false` —
+        // a frase do papel, que é a única que nunca deixa alguém sem
+        // documento. **O NIF continua a não entrar aqui** (decisão do dono,
+        // 2026-09-17): o seletor do cliente é o único que manda, e agora nem
+        // sequer há onde o meter.
+        porEmail={!!documento?.fatura_por_email}
       />
     );
   }
@@ -1394,9 +1761,13 @@ export default function PosFinalizar({
 
           <AvisoErro erro={erroEmissao} />
 
-          <CartaoTotal venda={venda} desativado={aEmitir || congelada} onAplicarDesconto={onAplicarDesconto} />
+          <CartaoTotal venda={vendaViva} desativado={aEmitir || congelada} onAplicarDesconto={onAplicarDesconto} />
 
-          {total <= 0 && temLinhas && (
+          {/* A MESMA regra do `motivoBloqueio` — e a mesma razão de ser a
+              mesma: uma conta a 0,00 € com um voucher aplicado é um desfecho
+              NORMAL (um açaí oferecido), e pintá-la de vermelho aqui ensinava a
+              operadora a ignorar o aviso nos dias em que ele é a sério. */}
+          {(totalCentimos < 0 || (totalCentimos === 0 && !haLinhaDeVoucher)) && temLinhas && (
             <p className="text-sm text-destructive px-1">
               O total tem de ser positivo para emitir uma fatura — reveja o desconto aplicado.
             </p>
@@ -1411,9 +1782,12 @@ export default function PosFinalizar({
 
           <CartaoPontos
             ligacao={ligacao}
+            voucher={voucher}
             onLer={() => setALerQr(true)}
-            onRemover={() => mudarLigacao(null)}
-            desativado={aEmitir || congelada}
+            onRemover={removerOCliente}
+            onPreferencia={mudarPreferencia}
+            aMudarPreferencia={aMudarPreferencia}
+            desativado={aEmitir || aPedirVoucher || congelada}
           />
           {/* Montada só enquanto está aberta: desmontar é o que desliga a
               câmara (ver PosLerQr). */}
@@ -1426,6 +1800,17 @@ export default function PosFinalizar({
           )}
 
           <Cartao titulo="Pagamento" icone={CreditCard}>
+            {/* **A zero diz-se porquê, e não se fica só com o botão aceso.** A
+                operadora está habituada a que o EMITIR só acorde depois de
+                escolher como se paga; numa conta oferecida isso nunca
+                acontece, e sem esta frase ela fica a tocar nos tipos de
+                pagamento à procura do passo que falta. */}
+            {contaAZeroPeloVoucher && (
+              <p className="mt-2 text-sm">
+                Esta conta fica a € 0,00 com a recompensa L&apos;Açaí — não há nada a cobrar,
+                e a Fatura Simplificada sai à mesma.
+              </p>
+            )}
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 mt-2">
               {tipos.map((t) => (
                 <BotaoTipo
@@ -1598,7 +1983,7 @@ export default function PosFinalizar({
                     esse cêntimo é uma promessa que a fatura desmente à frente
                     do cliente. */}
                 <span className="text-sm text-muted-foreground tabular-nums">
-                  {euros((previsaoDoDividir(venda, pessoas)[0]?.totalCentimos || 0) / 100)} por pessoa
+                  {euros((previsaoDoDividir(vendaViva, pessoas)[0]?.totalCentimos || 0) / 100)} por pessoa
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-2.5 mt-3">
@@ -1652,7 +2037,7 @@ export default function PosFinalizar({
                 <p className="flex justify-between gap-3">
                   <span className="text-muted-foreground">Conta</span>
                   <span className="font-medium text-right">
-                    {(venda?.linhas || []).length} Produtos / {unidades} Uni.
+                    {(vendaViva?.linhas || []).length} Produtos / {unidades} Uni.
                   </span>
                 </p>
                 <Separator />
@@ -1762,7 +2147,18 @@ export default function PosFinalizar({
                     a emissão falhou, para saber o que aconteceu àquela venda.
                     O botão dizia "A emitir…" durante as duas — até 105
                     segundos, e nos últimos 15 não estava a emitir nada. */}
-                {aEmitir ? (
+                {/* E, antes das duas, uma terceira espera com nome próprio: a
+                    pergunta do voucher à app (no máximo 8 s,
+                    `lib/pos.js::TIMEOUT_DO_VOUCHER_MS`). Dizer "A emitir…"
+                    enquanto ainda não foi pedida emissão nenhuma era a mesma
+                    mentira, num sítio pior — se ela falhar, a venda segue e
+                    nada foi emitido. */}
+                {aPedirVoucher ? (
+                  <>
+                    <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                    A confirmar a recompensa…
+                  </>
+                ) : aEmitir ? (
                   <>
                     <Loader2 className="h-5 w-5 animate-spin mr-2" />
                     {aConfirmar ? 'A confirmar no servidor…' : 'A emitir…'}

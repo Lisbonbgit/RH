@@ -140,8 +140,19 @@ async def _juntar_dados(db, dia: str) -> Dict:
             {"sessao_id": sessao["id"]}, {"_id": 0}).to_list(500)
         turnos.append({"sessao": sessao, "movimentos": movimentos,
                        "vendas": vendas, "notas_credito": notas})
+
+    # As linhas de envio por email criadas neste dia, contadas pelo `inicio_do_
+    # dia` que a leitura das sessões já calculou — o dia de LISBOA, em UTC, como
+    # tudo o resto deste módulo. **`count_documents` e não `find`**: é um número
+    # e não uma lista, e sem tecto nenhum para truncar em silêncio.
+    faturas_por_email = await db[COLECOES["pontos_app"]].count_documents({
+        "tipo": "fatura_email",
+        "criado_em": {"$gte": inicio_do_dia.isoformat()},
+    })
+
     return {"documentos": documentos, "lojas": lojas, "turnos": turnos,
-            "loja_da_app": definicao_da_app.get("loja_id")}
+            "loja_da_app": definicao_da_app.get("loja_id"),
+            "faturas_por_email": faturas_por_email}
 
 
 async def _enviar(html: str, para: List[str], assunto: str) -> Dict:
@@ -193,7 +204,11 @@ async def _produzir_e_enviar(para: List[str], url_do_painel: Optional[str]) -> D
     dados = montar_relatorio(
         dia=dia, ate=ate, lojas=partes["lojas"],
         documentos=partes["documentos"], turnos=partes["turnos"],
-        loja_da_app=partes["loja_da_app"])
+        loja_da_app=partes["loja_da_app"],
+        # `.get` e não `[...]`: há testes que substituem `_juntar_dados` por um
+        # duplo com as chaves de antes desta linha existir, e o relatório da
+        # noite não pode deixar de sair por causa de uma chave que falta.
+        faturas_por_email=partes.get("faturas_por_email") or 0)
     html = html_do_relatorio(dados, url_do_painel=url_do_painel)
     envio = await _enviar(html, para, _assunto(dados))
     return {

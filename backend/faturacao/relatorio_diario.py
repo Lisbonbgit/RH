@@ -241,6 +241,7 @@ def montar_relatorio(
     com_iva: bool = True,
     grupos_de_variante: Optional[List[str]] = None,
     loja_da_app: Optional[str] = None,
+    faturas_por_email: int = 0,
 ) -> Dict:
     """Os números do dia, prontos a desenhar.
 
@@ -259,6 +260,10 @@ def montar_relatorio(
 
     Vem por parâmetro e não de uma leitura ao Mongo porque este módulo não lê
     base de dados nenhuma; é a `relatorio_rota` que sabe onde está a definição.
+
+    `faturas_por_email` são as linhas de envio que a fila da app criou neste
+    dia. Vem por parâmetro pela mesma razão que a loja da app: este módulo não
+    lê base de dados nenhuma.
     """
     campo = _campo_valor(com_iva)
     dias = sorted({_dia_do_documento(d) for d in documentos if _dia_do_documento(d)})
@@ -318,6 +323,35 @@ def montar_relatorio(
         })
     linhas_de_loja.sort(key=lambda l: (-l["faturacao"], l["nome"]))
 
+    # **«X faturas por email, Y em papel».** A medição que transforma a promessa
+    # num número — o tecto desta funcionalidade é a adopção do QR na caixa, e é
+    # este o número a vigiar, não o código que a faz.
+    #
+    # As notas de crédito ficam de fora: saem sempre em papel (a devolução é o
+    # momento em que o cliente está chateado), e contá-las aqui fazia o número
+    # em papel subir sem nada ter mudado no talão da compra.
+    #
+    # **A loja da app fica de fora pela mesma razão que as notas de crédito.**
+    # Esta linha é sobre o TALÃO DO BALCÃO: as Faturas Simplificadas que a
+    # sincronização do Vendus grava na loja da app nunca passaram por uma
+    # impressora e nunca podem mudar de balde — não há QR para ler numa
+    # encomenda paga por Stripe. Contá-las punha um chão permanente no «em
+    # papel» que não tem nada que ver com a adopção do QR, que é o número que
+    # esta linha existe para vigiar. É a mesma invariante que este módulo já
+    # aplica à caixa: a loja da app não entra nos números do balcão.
+    #
+    # O `loja_da_app and` não é decorativo — ver o comentário da `caixa`: sem
+    # ele, uma loja gravada sem `id` casava com o `None` de quem não configurou
+    # a sincronização.
+    #
+    # O `min` não é decoração: a fila conta-se pelo dia UTC e os documentos pelo
+    # dia de LISBOA, e na fronteira podem discordar. Duas linhas do mesmo email a
+    # dizerem «4 por email, -1 em papel» era o relatório a acusar-se a si
+    # próprio, e quem o lê deixava de acreditar no resto.
+    faturas_de_hoje = [d for d in docs_de_hoje if d.get("tipo") != "NC"
+                       and not (loja_da_app and d.get("loja_id") == loja_da_app)]
+    por_email = min(faturas_por_email, len(faturas_de_hoje))
+
     return {
         "dia": dia,
         "ate": ate,
@@ -329,6 +363,8 @@ def montar_relatorio(
             "dia_de_ontem": dia_de_ontem,
             "variacao": _variacao(faturacao, faturacao_ontem),
             "documentos": len(docs_de_hoje),
+            "faturas_por_email": por_email,
+            "faturas_em_papel": len(faturas_de_hoje) - por_email,
             "caixa": _caixa_das_sessoes(turnos),
             "pagamentos": _junta_pagamentos([l["pagamentos"] for l in linhas_de_loja]),
         },

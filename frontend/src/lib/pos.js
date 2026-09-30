@@ -236,7 +236,25 @@ export const guardarPontosDaConta = (vendaId, ligacao) => {
   if (!vendaId) return;
   guardarNaSessao(CHAVE_PONTOS_DA_CONTA, JSON.stringify({
     vendaId,
-    ligacao: ligacao ? { id: ligacao.id, primeiro_nome: ligacao.primeiro_nome } : null,
+    // **Campo a campo, e nunca `{ ...ligacao }`.** São estes três e mais
+    // nenhum: o endereço de email do cliente não entra aqui, nem hoje (o
+    // servidor não o manda) nem no dia em que alguém o acrescentar do outro
+    // lado — o `sessionStorage` do POS é lido por tudo o que corra naquela aba.
+    //
+    // O `fatura_por_email` é a preferência DAQUELA leitura e serve SÓ para
+    // desenhar o cartão. Quem decide se o papel sai é o servidor, pelo
+    // `fat_pontos_qr` que ele gravou ao ler o QR: adulterar esta gaveta faz o
+    // cartão mentir à operadora, não faz desaparecer o documento do cliente.
+    //
+    // **Está SEMPRE presente, mesmo a `false`.** Uma forma que mudasse com a
+    // resposta do servidor punha o ecrã a ter de distinguir «não vai por
+    // email» de «esta gaveta é de uma versão antiga» — e essa é a distinção
+    // que ninguém faz bem às três da tarde.
+    ligacao: ligacao ? {
+      id: ligacao.id,
+      primeiro_nome: ligacao.primeiro_nome,
+      fatura_por_email: !!ligacao.fatura_por_email,
+    } : null,
   }));
 };
 
@@ -255,11 +273,24 @@ export const lerPontosDaConta = (vendaId) => {
 export const MSG_PONTOS_SEM_RESPOSTA =
   'Não foi possível falar com a app agora. A fatura pode seguir sem pontos.';
 
-// `POST /pos/pontos/ler` → `{ ligacao_id, primeiro_nome }`. 404 é QR recusado
-// e 503 é a app em baixo; as frases vêm no `detail`. A conta vai no pedido
-// para o servidor confirmar que está aberta e é desta loja.
+// `POST /pos/pontos/ler` → `{ ligacao_id, primeiro_nome, fatura_por_email }`.
+// 404 é QR recusado e 503 é a app em baixo; as frases vêm no `detail`. A conta
+// vai no pedido para o servidor confirmar que está aberta e é desta loja.
+//
+// O `fatura_por_email` é o sim/não da preferência daquele cliente — **e é só
+// isso que vem**: o endereço nunca sai da app, nem mascarado.
 export const lerQrDePontos = async (vendaId, codigo) =>
   (await api.post('/pos/pontos/ler', { venda_id: vendaId, codigo })).data;
+
+// `POST /pos/pontos/preferencia` → `{ fatura_por_email }`. **O que conta é o
+// que o servidor devolve, e não o que se pediu:** quem grava a preferência é a
+// app (é dela o consentimento do cliente, e é ela que o audita), e uma recusa
+// — a ligação já usada, o QR lido há muito — não pode ficar no cartão como se
+// tivesse passado. A conta vai no pedido pela razão do `ler`: o servidor
+// confirma que está aberta e é desta loja.
+export const guardarPreferenciaDeFaturaPorEmail = async (vendaId, ligacaoId, valor) =>
+  (await api.post('/pos/pontos/preferencia',
+    { venda_id: vendaId, ligacao_id: ligacaoId, valor })).data;
 
 
 // **O que está no campo é mesmo um QR?** Responde-se aqui e não no servidor,
@@ -287,6 +318,156 @@ export const recadoDeCodigoQrErrado = (texto) => {
   return 'Isto não é o código do QR. O cliente abre a app L\'Açaí, toca em «Mostrar QR '
     + 'na caixa» e mostra-o ao leitor — o código começa por «LQ» e dura 45 segundos.';
 };
+
+
+// --- O voucher L'Açaí ao balcão ----------------------------------------------
+//
+// **A recompensa passa a valer também na caixa, lida pelo MESMO QR que já dá
+// pontos.** Quem decide o desconto é a APP e não o POS: a elegibilidade é uma
+// regra de dinheiro e fica num sítio só (desenho de 2026-09-22, decisão 2).
+// Este lado pede, o servidor do POS monta as linhas da conta, pergunta à app e
+// escreve o que ela responder no `desconto_eur` da linha alvo.
+//
+// **REGRA DE OURO DA INTEGRAÇÃO, escrita e inegociável: nada disto pode
+// impedir uma fatura de sair.** App em baixo, tecto de espera esgotado ou
+// resposta estranha = venda normal, sem desconto. Por isso esta chamada tem
+// tecto PRÓPRIO e quem a faz engole a falha — nunca a transforma num EMITIR
+// bloqueado.
+//
+// 8 s, e não os 15 s do resto: o servidor do POS fala com a app com um tecto de
+// 4 s (contrato (2) do desenho), por isso uma resposta que demore o dobro disso
+// é o servidor pendurado e não a app lenta. E isto corre no caminho do EMITIR,
+// onde cada segundo é a fila à frente da operadora.
+export const TIMEOUT_DO_VOUCHER_MS = 8000;
+
+// `POST /pos/venda/{id}/voucher` → `{ voucher_id, valor, titulo, linha_id_alvo }`,
+// ou `{}` quando não há voucher nenhum a aplicar, ou `{ motivo: "..." }` nas
+// recusas de negócio (200, como as irmãs da porta dos pontos). Quando o
+// servidor devolver também a `venda` já com o desconto na linha, é ELA que o
+// ecrã mostra — o total nunca se soma no browser.
+//
+// **`ligacaoId` a `null` NÃO é um pedido vazio**: é o «Remover» do cartão dos
+// pontos, e quer dizer *liberta o que estiver reservado para esta conta e tira
+// o desconto da linha*. O botão desfaz as duas coisas ou nenhuma — tirar o
+// cliente e deixar o voucher preso até à meia-noite deixava-o sem desconto e
+// sem recompensa.
+export const pedirVoucherDaConta = (vendaId, ligacaoId) =>
+  api.post(`/pos/venda/${vendaId}/voucher`, { ligacao_id: ligacaoId || null },
+    { timeout: TIMEOUT_DO_VOUCHER_MS });
+
+// A ponte entre os dois catálogos falhou: a categoria desta linha não tem
+// correspondência na app. **Falha fechada, e em voz alta** — sem desconto,
+// nunca um desconto errado, mas nunca em silêncio: um voucher que não se
+// aplica sem ninguém perceber porquê é o pior desfecho de todos.
+export const MOTIVO_VOUCHER_SEM_CASAR = 'categoria_sem_correspondencia';
+
+// **O 200 que é um «não sei».** Quando a app não responde — rede em baixo,
+// tecto de espera esgotado, 5xx, um 200 sem a forma do contrato — a rota do POS
+// NÃO devolve erro: devolve 200 com todas as chaves do voucher a `null` e
+// `app_indisponivel: true`, e deixa a conta exactamente como ela estava. É a
+// regra de ouro da integração — nada disto pode impedir uma fatura de sair.
+//
+// Sem esta pergunta, o ecrã lia aquelas chaves a `null` como «este cliente não
+// tem recompensa nenhuma» e fazia as DUAS coisas erradas de uma vez: apagava do
+// cartão a linha «Açaí Médio grátis» com o desconto ainda gravado na conta (o
+// total em baixo continuava descontado, e ninguém sabia porquê), e recusava o
+// EMITIR com «A recompensa desta conta mudou» — uma frase FALSA, porque não
+// mudou nada: a app é que não respondeu.
+//
+// É a MESMA falha do `catch` de quem chama, e trata-se da mesma maneira: o ecrã
+// fica como estava e a venda segue.
+export const aAppNaoRespondeu = (dados) => !!(dados && dados.app_indisponivel);
+
+export const MSG_VOUCHER_SEM_CASAR =
+  'Tem um voucher que não consegui casar com esta conta — a venda segue sem '
+  + 'desconto. Avise o gestor.';
+
+export const MSG_VOUCHER_SEM_PRODUTO =
+  'Tem uma recompensa por usar, mas não há nada nesta conta que sirva — '
+  + 'acrescente o produto antes de emitir.';
+
+// **O que o cartão da caixa diz sobre o voucher**, a partir da resposta crua —
+// ou `null` quando não há nada a dizer e o cartão fica como sempre foi.
+//
+// Vive aqui, e não dentro de um `{… && (` do JSX, pela regra do módulo: uma
+// decisão escrita no meio de um `<p>` não é executável por teste nenhum, e
+// troca-se sem ninguém dar por isso. Os ecrãs do POS desenham-se sem servidor
+// nenhum, e já foram defeitos a produção exactamente assim.
+//
+// São TRÊS coisas para dizer, e a diferença entre elas é o que a funcionária
+// faz a seguir:
+//
+//  · `aplicado`   — o desconto entrou. Só falta cobrar o que está em baixo.
+//  · `sem_produto`— o cliente TEM recompensa e nada nesta conta serve. É este
+//                   estado que transforma um voucher perdido numa venda: ela
+//                   lê, diz ao cliente, e ainda vai a tempo de acrescentar o
+//                   produto.
+//  · `sem_casar`  — a ponte das categorias não casou. Não é do cliente nem da
+//                   conta: é uma categoria por preencher no backoffice.
+//
+// `{}` (sem `voucher_id` e sem `motivo`) é o caso mudo — o cliente não tem
+// recompensa nenhuma por usar, e não há frase que valha a pena ocupar o cartão.
+//
+// **E é por isso que o `app_indisponivel` tem de ser perguntado ANTES desta
+// função** (ver `aAppNaoRespondeu`): a app em baixo chega cá com a mesma cara do
+// caso mudo, e esta função respondia «não há recompensa» a um «não sei» —
+// apagando do cartão um desconto que continua gravado na conta.
+export const estadoDoVoucher = (dados) => {
+  const d = dados || {};
+  const titulo = String(d.titulo || '').trim();
+  if (d.voucher_id) {
+    return {
+      tipo: 'aplicado',
+      voucher_id: d.voucher_id,
+      valor: Number(d.valor) || 0,
+      linha_id_alvo: d.linha_id_alvo || null,
+      texto: `${titulo || 'Recompensa L\'Açaí'} (− ${eurosPos(Number(d.valor) || 0)})`,
+    };
+  }
+  if (d.motivo === MOTIVO_VOUCHER_SEM_CASAR) {
+    return { tipo: 'sem_casar', texto: MSG_VOUCHER_SEM_CASAR };
+  }
+  if (d.motivo) {
+    return {
+      tipo: 'sem_produto',
+      texto: titulo
+        ? `${titulo}: não há nada nesta conta que sirva — acrescente o produto antes de emitir.`
+        : MSG_VOUCHER_SEM_PRODUTO,
+    };
+  }
+  return null;
+};
+
+// **A conta tem mesmo um desconto de voucher gravado?** — a pergunta que abre
+// (e fecha) o travão do total a zero.
+//
+// Lê-se a MARCA que o servidor pôs na linha (`voucher_id`), e não o valor que
+// a app devolveu ao ecrã: é a mesma pergunta que o `fiscal.py::finalizar` faz
+// do outro lado, e os dois têm de concordar. Sem a marca, um desconto manual
+// de 100 % — que não pede PIN a ninguém — emitia uma Fatura Simplificada a
+// 0,00 € sem ninguém ter trocado pontos nenhuns.
+//
+// **A marca E o desconto, palavra por palavra como o
+// `fiscal.py::_tem_linha_de_voucher`** — e não só a marca, como esta linha
+// perguntava. A diferença não é teórica: `PUT /pos/venda/{id}/linhas/{linha_id}`
+// aceita `desconto_eur` e não conhece o `voucher_id`, por isso a operadora pode
+// limpar o desconto pela mão dela e deixar a MARCA ÓRFÃ na linha. Com um
+// desconto global de 100 % por cima, o ecrã dizia «não há nada a cobrar», deixava
+// emitir e mandava a lista de pagamentos VAZIA — e o servidor respondia 422 a
+// falar de recompensas sobre um desconto que ela deu de cabeça. Um beco sem
+// saída com o cliente à frente, e pior do que um botão cinzento: o ecrã tinha
+// acabado de lhe garantir que estava tudo bem.
+//
+// **Uma pergunta só, e a mesma nos dois travões que ela abre** — o do total a
+// zero e o de não repartir. Uma segunda, mais larga («há alguma marca, tenha ela
+// desconto ou não»), foi escrita e apagada: travava o Dividir de uma conta com
+// marca órfã PARA SEMPRE, porque a marca só sai pela rota do voucher e depois de
+// o cliente sair do cartão já não há por onde a chamar. E não fechava dinheiro
+// nenhum — uma marca órfã que volte a ganhar um desconto à mão abre o travão do
+// zero com ou sem repartição, e isso é do `fiscal.py::_tem_linha_de_voucher`,
+// não deste lado.
+export const contaComVoucher = (venda) =>
+  (venda?.linhas || []).some((li) => !!li.voucher_id && !!li.desconto_eur);
 
 
 // --- Dispositivo -------------------------------------------------------------
@@ -1403,6 +1584,36 @@ export const avisoDoDocumento = (documento) => {
   };
 };
 
+// **A fatura desta conta vai por email?** — a pergunta do cartão dos pontos,
+// ANTES do EMITIR, que é o único sítio onde não há resposta do servidor
+// nenhuma para ler.
+//
+// Depois do EMITIR **não se refaz esta conta**: o servidor manda a decisão que
+// tomou em `documento.fatura_por_email` (`fiscal.py::finalizar`), e é essa que
+// o ecrã do documento emitido usa. São CINCO condições
+// (`backend/faturacao/pontos_app.py::enfileirar_fatura_email`) e este lado só
+// vê três — a linha do `fat_pontos_qr`, que é quem manda e pode ter caducado
+// pelo TTL de 2 h, e a escrita na fila ficam de fora. Refeita aqui, a frase
+// «não é preciso esperar pelo papel» aparecia por cima de um talão que saiu
+// mesmo na impressora, e o cliente ia-se embora sem nada.
+//
+// **O que este cartão diz pode ser mentira, e isso está decidido**: a
+// preferência vem da gaveta do `sessionStorage`; quem decide se o papel sai é
+// o servidor, pelo `fat_pontos_qr` que ele próprio gravou ao ler o QR. Uma
+// gaveta adulterada faz o cartão mentir à operadora — não faz desaparecer o
+// documento do cliente, e a frase do ecrã do documento já não vem daqui.
+//
+// **O NIF não decide nada, e isso está decidido** (o dono, 2026-09-17): o
+// seletor do cliente é o único que manda. Com a preferência ligada a fatura vai
+// por email haja ou não haja NIF — o NIF vai escrito nela como sempre foi — e
+// segue para o email da conta de quem mostrou o QR. Por isso esta função **não
+// recebe NIF nenhum**: um parâmetro que ninguém lê é um convite a voltar a
+// lê-lo.
+//
+// Vive aqui e não dentro do JSX pela regra do módulo: uma condição escrita no
+// meio de um `<span>` não se corre em teste nenhum.
+export const aFaturaVaiPorEmail = ({ ligacao }) => !!(ligacao && ligacao.fatura_por_email);
+
 // A MESMA pergunta, no backoffice — e a única diferença deliberada.
 //
 // **No POS, `normal` é silêncio; aqui, `normal` responde.** É uma saída
@@ -1637,15 +1848,40 @@ export const razaoDeNaoImprimirPedido = ({ venda, estado, aImprimir } = {}) =>
 // segredo entre o servidor e o log.
 export const avisoDaFilaDeImpressao = (estado) => {
   if (!estado) return null;
+  // **As faturas por email vêm PRIMEIRO, e a ordem não é indiferente.** Em
+  // tudo o resto desta fila o papel está a um toque no separador Faturação:
+  // falhou, reimprime-se. Uma fatura que ia por email e não foi é o único caso
+  // em que o cliente fica sem documento nenhum — e a decisão do dono é que,
+  // enfileirado o email, o talão NÃO sai. Dizer «2 papéis à espera» por cima
+  // disto era responder ao problema pequeno.
+  //
+  // **Mas primeiro não é em vez de: as duas frases SOMAM-SE.** Houve uma
+  // versão em que o email fazia `return` aqui e cortava a função a meio, e
+  // então, com um email falhado ao mesmo tempo que um papel perdido, a frase
+  // dos PAPÉIS — que só existe aqui, em todo o POS — nunca chegava ao ecrã.
+  // E o botão «Já vi os avisos» carimba as duas colecções no mesmo toque: o
+  // aviso do papel que não saiu era dispensado sem nunca ter sido lido, que é
+  // o mesmo que não o ter. A precedência continua a existir, mas só sobre o
+  // `por_sair` — o que está À ESPERA cala-se enquanto houver coisa perdida.
+  const frases = [];
+  const emails = Number(estado.emails_falhados || 0);
+  if (emails > 0) {
+    frases.push(emails === 1
+      ? 'Uma fatura não seguiu por email. Imprima-a pelo separador Faturação e '
+        + 'entregue o papel ao cliente.'
+      : `${emails} faturas não seguiram por email. Imprima-as pelo separador `
+        + 'Faturação e entregue o papel aos clientes.');
+  }
   const falhados = Number(estado.falhados || 0);
   if (falhados > 0) {
-    return falhados === 1
+    frases.push(falhados === 1
       ? 'Um papel não chegou a sair na impressora. Reimprima-o pelo separador '
         + 'Faturação depois de ver o papel e a ligação da impressora.'
       : `${falhados} papéis não chegaram a sair na impressora. Reimprima-os `
         + 'pelo separador Faturação depois de ver o papel e a ligação da '
-        + 'impressora.';
+        + 'impressora.');
   }
+  if (frases.length) return frases.join(' ');
   const porSair = Number(estado.por_sair || 0);
   if (porSair > 0) {
     return porSair === 1
@@ -1665,7 +1901,13 @@ export const avisoDaFilaDeImpressao = (estado) => {
 // ecrã. A operadora reimprimia o papel pelo separador Faturação, resolvia o
 // assunto, e continuava a ver a mesma frase a semana inteira — que é a
 // maneira de ensinar uma loja a não olhar para os avisos.
-export const haFalhadosPorVer = (estado) => Number(estado?.falhados || 0) > 0;
+//
+// **E conta também as faturas por email**, senão o aviso novo nascia ainda
+// pior: `fat_pontos_app` não tem TTL nenhum, um `recusado` é terminal a sério
+// (o «Reenviar» do backoffice devolve-o ao mesmo estado), e sem este botão a
+// frase vermelha ficava no balcão para SEMPRE por causa de um documento.
+export const haFalhadosPorVer = (estado) =>
+  Number(estado?.falhados || 0) > 0 || Number(estado?.emails_falhados || 0) > 0;
 
 // --- A NOTA DE CRÉDITO -------------------------------------------------------
 //

@@ -122,6 +122,9 @@ from . import escpos
 from .db import COLECOES, obter_db
 from .auth import gestor_atual
 from .pos_auth import dispositivo_atual, operador_atual
+# O predicado do «por enviar» vem da fila que o escreve e não é reescrito aqui:
+# o alarme, o «Já vi» e a lista do POS têm de contar a MESMA coisa.
+from .pontos_app import filtro_das_faturas_por_enviar
 from .talao import pedido_da_cozinha, relatorio_z
 
 logger = logging.getLogger(__name__)
@@ -748,6 +751,9 @@ async def estado_da_impressao(operador: Dict = Depends(operador_atual)) -> dict:
     que parece funcionar.** Sem esta pergunta, o «Imprimir» ficava bonito, o
     trabalho entrava na fila, caducava trinta minutos depois e ninguém sabia
     de nada — a operadora dava o cliente por servido e o papel nunca existiu.
+
+    E a mesma pergunta para as faturas que iam por email: **essas não têm papel
+    a compensá-las**, e é por aqui que a loja fica a saber no mesmo dia.
     """
     db = obter_db()
     loja_id = operador["loja_id"]
@@ -769,10 +775,26 @@ async def estado_da_impressao(operador: Dict = Depends(operador_atual)) -> dict:
         if t.get("estado") in (PENDENTE, RESERVADO)
         and (_quando(t.get("validade_ate")) or agora) >= agora
     )
+    # **As faturas que iam por email e não foram.** O único caso desta loja em
+    # que falta um documento ao cliente e **não há papel a compensá-lo**: em
+    # tudo o resto desta fila, o talão está a um toque de distância no separador
+    # Faturação. O que conta como «por enviar» — os becos sem saída e o
+    # `pendente` encalhado há mais de meia hora — está escrito numa função só,
+    # ao pé da fila que o escreve (`pontos_app.filtro_das_faturas_por_enviar`),
+    # porque este número, o «Já vi» aqui em baixo e o filtro do separador
+    # Faturação têm de contar a MESMA coisa.
+    #
+    # Contado no servidor e não na lista, porque o POS já pergunta por este
+    # estado de 20 em 20 segundos: é o caminho mais barato para a falha chegar a
+    # uma pessoa no mesmo dia, sem ecrã novo nenhum. O índice que o serve está
+    # declarado em `db.INDICES` — esta colecção não tem TTL e só cresce.
+    emails_falhados = await db[COLECOES["pontos_app"]].count_documents(
+        filtro_das_faturas_por_enviar(loja_id, agora))
     return {
         "ha_programa": ultima_recolha is not None,
         "ultima_recolha_em": ultima_recolha,
         "por_sair": por_sair,
+        "emails_falhados": emails_falhados,
         # Os FALHADOS só contam enquanto ninguém os deu por vistos. Sem isto o
         # aviso ficava no ecrã SETE DIAS — até o TTL do Mongo apagar o
         # trabalho — sem forma nenhuma de o tirar de lá: a operadora
@@ -803,13 +825,30 @@ async def marcar_falhados_vistos(operador: Dict = Depends(operador_atual)) -> di
     toques para desligar um aviso são dois toques a mais ao balcão.
 
     Condicionada a `visto_em: None` para não reescrever o instante de quem já
-    tinha sido visto — um segundo toque não mexe no que o primeiro marcou."""
+    tinha sido visto — um segundo toque não mexe no que o primeiro marcou.
+
+    **E desliga também o aviso das faturas que iam por email.** Sem isto, esse
+    era um aviso que não se podia desligar de maneira nenhuma: `fat_pontos_app`
+    não tem TTL, uma linha `recusado` é terminal a sério (o «Reenviar» do
+    backoffice devolve-a ao mesmo estado), e um único documento recusado punha
+    a frase vermelha no balcão **para sempre** — que é a definição do aviso que
+    se aprende a ignorar, escrita aqui em cima.
+
+    Carimba EXACTAMENTE o que o alarme contou, pelo mesmo predicado: alargar o
+    filtro era calar uma linha ainda a caminho, que só falha depois de o toque
+    ter passado."""
     db = obter_db()
+    agora = _agora()
+    carimbo = _iso(agora)
     resultado = await db[COLECOES["trabalhos_impressao"]].update_many(
         {"loja_id": operador["loja_id"], "estado": FALHADO, "visto_em": None},
-        {"$set": {"visto_em": _iso(_agora())}},
+        {"$set": {"visto_em": carimbo}},
     )
-    return {"vistos": resultado.matched_count}
+    emails = await db[COLECOES["pontos_app"]].update_many(
+        filtro_das_faturas_por_enviar(operador["loja_id"], agora),
+        {"$set": {"visto_em": carimbo}},
+    )
+    return {"vistos": resultado.matched_count + emails.matched_count}
 
 
 class PedidoPaginaDeTeste(BaseModel):

@@ -14,7 +14,10 @@ import json
 
 from .test_a_faixa_do_modo_no_ecra import _montar_no_node
 
-_ANA = {"id": "lig-1", "primeiro_nome": "Ana"}
+# Os TRÊS campos da gaveta. O `fatura_por_email` entrou a 2026-09-17 com a
+# fatura por email e está sempre presente, mesmo a `False` — ver
+# `lib/pos.js::guardarPontosDaConta`.
+_ANA = {"id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False}
 _CODIGO = "LQ7K2MN8P3QRSTUV4WXYZ9AB"
 
 
