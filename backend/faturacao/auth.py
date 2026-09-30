@@ -11,6 +11,8 @@ import jwt
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from faturacao.db import obter_db
+
 # Os mesmos papéis do server.py (MANAGER_ROLES). Ver server.py:62.
 PERFIS_GESTAO = ["admin", "gerente", "contabilista"]
 
@@ -43,7 +45,16 @@ def exigir_gestao(utilizador: Dict) -> Dict:
 async def utilizador_atual(
     credenciais: HTTPAuthorizationCredentials = Depends(_seguranca),
 ) -> Dict:
-    return descodificar_token(credenciais.credentials)
+    """O papel vem da BASE, não do token: o token vale 24 h e a pessoa pode ter
+    sido apagada ou despromovida entretanto (a mesma regra do server.py)."""
+    utilizador = descodificar_token(credenciais.credentials)
+    doc = await obter_db().users.find_one(
+        {"id": utilizador.get("user_id")}, {"_id": 0, "role": 1, "email": 1, "employee_id": 1}
+    )
+    if not doc:
+        raise HTTPException(status_code=401, detail="Sessão terminada")
+    utilizador.update(role=doc.get("role"), email=doc.get("email"), employee_id=doc.get("employee_id"))
+    return utilizador
 
 
 async def gestor_atual(utilizador: Dict = Depends(utilizador_atual)) -> Dict:

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import FileResponse, JSONResponse
 from dotenv import load_dotenv
@@ -16,6 +16,7 @@ import bcrypt
 import shutil
 import re
 import secrets
+import limite
 import hashlib
 import asyncio
 import json
@@ -63,6 +64,12 @@ MASTER_ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD_HASH')
 # Perfis com acesso de gestão (acesso operacional completo). Todos podem fazer
 # tudo; apenas o admin master (por email) cria/gere outros gestores.
 MANAGER_ROLES = ["admin", "gerente", "contabilista"]
+
+# Login: falhas por (conta, IP) e por IP, numa janela de 15 min. Por conta-E-IP
+# para um estranho não conseguir trancar o dono fora da própria conta.
+LOGIN_FALHAS_POR_CONTA = 10
+LOGIN_FALHAS_POR_IP = 30
+LOGIN_JANELA_S = 15 * 60
 
 # Password Reset Configuration
 RESET_TOKEN_EXPIRATION_HOURS = 1
@@ -919,11 +926,20 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     """Get current user from JWT token"""
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expirado")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Token inválido")
+    # O token diz quem a pessoa ERA quando entrou; a base diz quem ela É agora.
+    # Sem isto, um gestor apagado ou despromovido mandava durante 24 h (provado
+    # a 2026-09-30: um gerente apagado ainda criou um colaborador).
+    user = await db.users.find_one(
+        {"id": payload.get("user_id")}, {"_id": 0, "role": 1, "email": 1, "employee_id": 1}
+    )
+    if not user:
+        raise HTTPException(status_code=401, detail="Sessão terminada")
+    payload.update(role=user.get("role"), email=user.get("email"), employee_id=user.get("employee_id"))
+    return payload
 
 async def admin_required(current_user: dict = Depends(get_current_user)):
     """Acesso operacional completo: admin OU gestor (gerente).
@@ -986,10 +1002,18 @@ async def ensure_master_admin_exists():
 # ==================== AUTH ROUTES ====================
 
 @api_router.post("/auth/login")
-async def login(credentials: UserLogin):
+async def login(credentials: UserLogin, request: Request):
     """Authenticate user and return JWT token"""
+    ip = limite.ip_do_cliente(request)
+    por_conta = ("login", credentials.email.lower(), ip)
+    por_ip = ("login-ip", ip)
+    if limite.bloqueado(por_conta, LOGIN_FALHAS_POR_CONTA, LOGIN_JANELA_S) or \
+            limite.bloqueado(por_ip, LOGIN_FALHAS_POR_IP, LOGIN_JANELA_S):
+        raise HTTPException(status_code=429, detail=limite.MENSAGEM)
     user = await db.users.find_one({"email": credentials.email}, {"_id": 0})
     if not user or not verify_password(credentials.password, user["password"]):
+        limite.falhou(por_conta, LOGIN_JANELA_S)
+        limite.falhou(por_ip, LOGIN_JANELA_S)
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
     
     must_change_password = user.get("must_change_password", False)
@@ -1062,6 +1086,62 @@ async def change_password(request: ChangePasswordRequest, current_user: dict = D
 
 # ==================== PASSWORD RESET ENDPOINTS ====================
 
+# ---- Travões da recuperação de password ----
+# O código tem 6 dígitos (um milhão de hipóteses) e vale 1 h. Sem teto, dava para
+# os percorrer todos em ~11 min e entrar em QUALQUER conta, a do master incluída
+# (provado a 2026-09-30: 500 códigos errados em 0,3 s e o certo entrava a seguir).
+# O teto é por CONTA e vive na base (não em memória: há 2 workers), numa janela de
+# 24 h que NÃO recomeça quando se pede código novo — senão bastava pedir outro.
+RESET_MAX_TENTATIVAS = 10
+RESET_JANELA = timedelta(hours=24)
+RESET_ESPERA_NOVO_CODIGO = timedelta(seconds=60)
+_MSG_RESET_ESGOTADO = "Demasiadas tentativas. Tente amanhã ou peça ajuda a um gestor."
+
+
+async def _utilizador_por_email(normalized_email: str) -> Optional[dict]:
+    user = await db.users.find_one(
+        {"email": {"$regex": f"^{re.escape(normalized_email)}$", "$options": "i"}}, {"_id": 0}
+    )
+    return user or await db.users.find_one({"email": normalized_email}, {"_id": 0})
+
+
+async def _codigo_de_reset_certo(normalized_email: str, code: str) -> Optional[dict]:
+    """Gasta UMA tentativa da conta e diz se o código bate (devolve o utilizador)
+    ou não (None). Esgotadas as tentativas → 429, mesmo com o código certo."""
+    user = await _utilizador_por_email(normalized_email)
+    if not user or not user.get("reset_password_token"):
+        return None
+    agora = datetime.now(timezone.utc)
+    # A janela acabou? Recomeça a contar do zero.
+    await db.users.update_one(
+        {"id": user["id"], "reset_tentativas_desde": {"$lt": (agora - RESET_JANELA).isoformat()}},
+        {"$set": {"reset_tentativas": 0, "reset_tentativas_desde": agora.isoformat()}},
+    )
+    # Reserva atómica: 20 pedidos em paralelo não passam todos pelo mesmo "ainda há".
+    gasto = await db.users.find_one_and_update(
+        {"id": user["id"], "reset_tentativas": {"$not": {"$gte": RESET_MAX_TENTATIVAS}}},
+        {"$inc": {"reset_tentativas": 1}, "$min": {"reset_tentativas_desde": agora.isoformat()}},
+    )
+    if gasto is None:
+        raise HTTPException(status_code=429, detail=_MSG_RESET_ESGOTADO)
+    if not secrets.compare_digest(user["reset_password_token"], hash_reset_token(code)):
+        return None
+    return user
+
+
+async def _codigo_expirou(user: dict) -> bool:
+    expires_at = user.get("reset_password_expires")
+    if not expires_at:
+        return False
+    if datetime.now(timezone.utc) <= datetime.fromisoformat(expires_at.replace('Z', '+00:00')):
+        return False
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$unset": {"reset_password_token": "", "reset_password_expires": ""}}
+    )
+    return True
+
+
 @api_router.post("/auth/forgot-password")
 async def forgot_password(request: ForgotPasswordRequest):
     """
@@ -1071,72 +1151,27 @@ async def forgot_password(request: ForgotPasswordRequest):
     success_message = {
         "message": "Se o email existir no sistema, receberá um código de 6 dígitos para redefinir a palavra-passe."
     }
-
-    normalized_email = request.email.lower().strip()
-
-    logger.info("=== FORGOT PASSWORD DEBUG ===")
-    logger.info(f"Email RECEBIDO (raw): '{request.email}'")
-    logger.info(f"Email NORMALIZADO: '{normalized_email}'")
-
-    user = await db.users.find_one(
-        {"email": {"$regex": f"^{re.escape(normalized_email)}$", "$options": "i"}},
-        {"_id": 0}
-    )
-
+    user = await _utilizador_por_email(request.email.lower().strip())
     if not user:
-        user = await db.users.find_one({"email": normalized_email}, {"_id": 0})
-
-    all_users = await db.users.find({}, {"_id": 0, "email": 1, "id": 1}).to_list(100)
-    logger.info(f"Total de usuários no banco: {len(all_users)}")
-    for u in all_users:
-        match = u.get('email', '').lower().strip() == normalized_email
-        logger.info(f"  - '{u.get('email')}' | ID: {u.get('id')[:8]}... | MATCH: {match}")
-
-    if not user:
-        logger.warning(f"Usuário NÃO ENCONTRADO para email: '{normalized_email}'")
-        logger.info("=== END FORGOT PASSWORD DEBUG ===")
         return success_message
 
-    logger.info(f"Usuário ENCONTRADO: {user.get('email')} | ID: {user.get('id')}")
-    logger.info(f"Nome: {user.get('name')}")
+    # Um código por minuto, no máximo: responde igual, só não gera outro.
+    agora = datetime.now(timezone.utc)
+    pedido_em = user.get("reset_pedido_em")
+    if pedido_em and agora - datetime.fromisoformat(pedido_em) < RESET_ESPERA_NOVO_CODIGO:
+        return success_message
 
     reset_code = generate_reset_code()
-    code_hash = hash_reset_token(reset_code)
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=RESET_TOKEN_EXPIRATION_HOURS)
-
-    logger.info("Código de redefinição gerado e preparado para envio.")
-
-    update_result = await db.users.update_one(
+    await db.users.update_one(
         {"id": user["id"]},
-        {
-            "$set": {
-                "reset_password_token": code_hash,
-                "reset_password_expires": expires_at.isoformat()
-            }
-        }
+        {"$set": {
+            "reset_password_token": hash_reset_token(reset_code),
+            "reset_password_expires": (agora + timedelta(hours=RESET_TOKEN_EXPIRATION_HOURS)).isoformat(),
+            "reset_pedido_em": agora.isoformat(),
+        }}
     )
-
-    logger.info(f"Update result: matched={update_result.matched_count}, modified={update_result.modified_count}")
-
-    saved_user = await db.users.find_one({"id": user["id"]}, {"_id": 0, "email": 1, "reset_password_token": 1})
-    logger.info("Verificação após salvar:")
-    logger.info(f"  Email do usuário salvo: {saved_user.get('email')}")
-    logger.info(f"  Token HASH no banco: {saved_user.get('reset_password_token')}")
-    logger.info(f"  Hashes IGUAIS: {saved_user.get('reset_password_token') == code_hash}")
-
-    email_sent = await send_password_reset_email(
-        email=user["email"],
-        user_name=user["name"],
-        reset_code=reset_code
-    )
-
-    if email_sent:
-        logger.info(f"Email ENVIADO com sucesso para: {user['email']}")
-    else:
-        logger.warning(f"FALHA ao enviar email para: {user['email']}")
-
-    logger.info("=== END FORGOT PASSWORD DEBUG ===")
-
+    if not await send_password_reset_email(email=user["email"], user_name=user["name"], reset_code=reset_code):
+        logger.warning("Falha ao enviar o email de recuperação ao utilizador %s", user["id"])
     return success_message
 
 @api_router.post("/auth/reset-password")
@@ -1145,69 +1180,34 @@ async def reset_password(request: ResetPasswordCodeRequest):
     Reset password using the code received via email.
     Code must be valid and not expired.
     """
-    logger.info("=== RESET PASSWORD DEBUG ===")
-
-    normalized_email = request.email.lower().strip()
-    code = request.code.strip()
-
-    logger.info(f"Email NORMALIZADO: '{normalized_email}'")
-    logger.info(f"Código RECEBIDO LENGTH: {len(code)}")
-
-    code_hash = hash_reset_token(code)
-
-    user = await db.users.find_one(
-        {"email": {"$regex": f"^{re.escape(normalized_email)}$", "$options": "i"}, "reset_password_token": code_hash},
-        {"_id": 0}
-    )
-
+    user = await _codigo_de_reset_certo(request.email.lower().strip(), request.code.strip())
     if not user:
-        user = await db.users.find_one(
-            {"email": normalized_email, "reset_password_token": code_hash},
-            {"_id": 0}
-        )
-
-    if not user:
-        logger.warning("Código NÃO encontrado para o email informado!")
-        logger.info("=== END RESET PASSWORD DEBUG ===")
         raise HTTPException(
             status_code=400,
             detail="Código inválido ou expirado. Por favor, solicite um novo código."
         )
-
-    expires_at = user.get("reset_password_expires")
-    if expires_at:
-        expires_datetime = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-        if datetime.now(timezone.utc) > expires_datetime:
-            await db.users.update_one(
-                {"id": user["id"]},
-                {"$unset": {"reset_password_token": "", "reset_password_expires": ""}}
-            )
-            logger.warning("Código EXPIRADO!")
-            logger.info("=== END RESET PASSWORD DEBUG ===")
-            raise HTTPException(
-                status_code=400,
-                detail="Código expirado. Por favor, solicite um novo código."
-            )
-
-    new_password_hash = hash_password(request.new_password)
+    if await _codigo_expirou(user):
+        raise HTTPException(
+            status_code=400,
+            detail="Código expirado. Por favor, solicite um novo código."
+        )
 
     await db.users.update_one(
         {"id": user["id"]},
         {
             "$set": {
-                "password": new_password_hash,
+                "password": hash_password(request.new_password),
                 "must_change_password": False
             },
             "$unset": {
                 "reset_password_token": "",
-                "reset_password_expires": ""
+                "reset_password_expires": "",
+                "reset_tentativas": "",
+                "reset_tentativas_desde": "",
             }
         }
     )
-
-    logger.info(f"Password successfully reset for user {user['email']}")
-    logger.info("=== END RESET PASSWORD DEBUG ===")
-
+    logger.info("Password redefinida para o utilizador %s", user["id"])
     return {
         "message": "Palavra-passe redefinida com sucesso. Pode agora fazer login com a nova palavra-passe."
     }
@@ -1217,45 +1217,11 @@ async def verify_reset_code(request: VerifyResetCodeRequest):
     """
     Verify if a password reset code is valid (for frontend validation before showing form).
     """
-    logger.info("=== VERIFY CODE DEBUG ===")
-
-    normalized_email = request.email.lower().strip()
-    code = request.code.strip()
-
-    logger.info(f"Email NORMALIZADO: '{normalized_email}'")
-    logger.info(f"Código RECEBIDO LENGTH: {len(code)}")
-
-    code_hash = hash_reset_token(code)
-
-    user = await db.users.find_one(
-        {"email": {"$regex": f"^{re.escape(normalized_email)}$", "$options": "i"}, "reset_password_token": code_hash},
-        {"_id": 0}
-    )
-
+    user = await _codigo_de_reset_certo(request.email.lower().strip(), request.code.strip())
     if not user:
-        user = await db.users.find_one(
-            {"email": normalized_email, "reset_password_token": code_hash},
-            {"_id": 0}
-        )
-
-    if not user:
-        logger.warning("Código NÃO encontrado para o email informado!")
-        logger.info("=== END VERIFY CODE DEBUG ===")
         raise HTTPException(status_code=400, detail="Código inválido")
-
-    expires_at = user.get("reset_password_expires")
-    if expires_at:
-        expires_datetime = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-        if datetime.now(timezone.utc) > expires_datetime:
-            await db.users.update_one(
-                {"id": user["id"]},
-                {"$unset": {"reset_password_token": "", "reset_password_expires": ""}}
-            )
-            logger.warning("Código EXPIRADO!")
-            logger.info("=== END VERIFY CODE DEBUG ===")
-            raise HTTPException(status_code=400, detail="Código expirado")
-
-    logger.info("=== END VERIFY CODE DEBUG ===")
+    if await _codigo_expirou(user):
+        raise HTTPException(status_code=400, detail="Código expirado")
     return {"valid": True, "email": user["email"]}
 
 # ==================== ADMIN/MANAGER CREATION ====================
@@ -3222,6 +3188,19 @@ def _fin_norm_nif(v):
     return digits or None
 
 
+async def _fin_nif_livre(nif, company_id: Optional[str] = None) -> None:
+    """Um NIF, uma empresa. O Vendus e a ingestão escolhem a empresa por
+    `find_one({"nif": ...})`: com duas, qual recebe as vendas é sorte."""
+    n = _fin_norm_nif(nif)
+    if not n:
+        return
+    outra = await db.fin_companies.find_one(
+        {"nif": n, "id": {"$ne": company_id}}, {"_id": 0, "id": 1}
+    )
+    if outra:
+        raise HTTPException(status_code=409, detail="Já existe uma empresa com este NIF.")
+
+
 # ---------- Modelos Pydantic ----------
 
 # Categorias do Financeiro. Uma lista SO, partilhada pelas faturas (DRE) e
@@ -3384,10 +3363,16 @@ async def fin_get_companies(current_user: dict = Depends(get_current_user)):
 @api_router.post("/fin/companies", response_model=FinCompanyResponse)
 async def fin_create_company(payload: FinCompanyCreate, current_user: dict = Depends(get_current_user)):
     """Cria empresa, torna o criador 'owner' e herda a equipa global do dono."""
+    # Só a gestão. Aberto a qualquer login, um colaborador criava uma empresa,
+    # ficava 'owner' e, por ser "editor algures", mexia nas regras de
+    # fornecedor de TODAS as empresas (provado a 2026-09-30).
+    if current_user.get("role") not in MANAGER_ROLES:
+        raise HTTPException(status_code=403, detail="Apenas a gestão pode criar empresas no Financeiro.")
     uid = current_user["user_id"]
     name = (payload.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Indica o nome da empresa.")
+    await _fin_nif_livre(payload.nif)
     company_id = str(uuid.uuid4())
     doc = {
         "id": company_id,
@@ -3420,6 +3405,7 @@ async def fin_update_company(company_id: str, payload: FinCompanyCreate, current
     name = (payload.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Indica o nome da empresa.")
+    await _fin_nif_livre(payload.nif, company_id)
     campos = {"name": name, "nif": _fin_norm_nif(payload.nif)}
     # `exclude_unset`: as categorias so se escrevem quando vem MESMO no pedido.
     # Sem isto, guardar o nome da empresa apagava a lista que ela montou.
@@ -9144,7 +9130,12 @@ async def fin_sales_sync(payload: FinSalesSyncRequest, current_user: dict = Depe
 # por empresa (só sincroniza o que o utilizador pode editar).
 
 async def _fin_user_is_editor_somewhere(current_user: dict) -> bool:
-    """True se o utilizador é owner/partner de pelo menos uma empresa fin."""
+    """True se o utilizador é owner/partner de pelo menos uma empresa fin.
+    Isto abre recursos GLOBAIS (regras de fornecedor, sincronizações), por isso
+    exige também papel de gestão: um colaborador dono de uma empresa criada
+    antes da correção de 2026-09-30 não passa."""
+    if current_user.get("role") not in MANAGER_ROLES:
+        return False
     m = await db.fin_company_members.find_one(
         {"user_id": current_user["user_id"], "role": {"$in": ["owner", "partner"]}},
         {"_id": 0, "company_id": 1},
