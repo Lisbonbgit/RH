@@ -2,9 +2,9 @@
 servidor monta a sério, julgado pela classe pydantic REAL da app L'Açaí.
 
 **Porque este ficheiro existe.** O voucher ao balcão foi construído com as DUAS
-suites verdes por cima de um contrato partido: o POS mandava
-`categoria_vendus_ref: None` e a porta da app recusava-o com 422; o «Remover» do
-cartão dos pontos mandava `ligacao_id: null` e a porta do POS recusava-o com 422.
+suites verdes por cima de um contrato partido: o POS mandava a ref do produto a
+`None` e a porta da app recusava-o com 422; o «Remover» do cartão dos pontos
+mandava `ligacao_id: null` e a porta do POS recusava-o com 422.
 Ninguém deu por nenhum dos dois porque **cada lado se provou contra um BONECO do
 outro** — o teste do POS finge a resposta da app (um `httpx.MockTransport`) e o
 teste da app alimenta à mão um corpo que o POS nunca envia. As duas suites
@@ -67,6 +67,12 @@ _PYTHON_DA_APP = os.path.join(_APP, ".venv", "bin", "python")
 # `model_validate` e não `Classe(**corpo)`: é exactamente o que o FastAPI faz ao
 # corpo JSON de um pedido, e é a diferença que conta — em pydantic 2 um `None`
 # EXPLÍCITO não cai no default de um campo, e era esse o defeito.
+#
+# **E validar deixou de bastar.** Um campo RENOMEADO de um lado só (a ponte
+# passou de `categoria_vendus_ref` para `produto_vendus_ref`) passa a porta em
+# SILÊNCIO: pydantic ignora o que não conhece, a validação diz «aceito», e o
+# valor nunca chega ao outro lado — nenhum desconto, nenhum 422, nenhuma linha de
+# registo. Por isso o guião também devolve os campos que o modelo NÃO declara.
 _GUIAO = r"""
 import json, os, sys
 
@@ -83,28 +89,49 @@ os.environ.setdefault("JWT_SECRET", "contrato-de-teste")
 sys.path.insert(0, sys.argv[1])
 import routes_pos_integracao as porta
 
+# Os campos do corpo que o modelo NAO declara — aceites em silencio por
+# pydantic e PERDIDOS pelo caminho. E assim, e so assim, que um campo
+# renomeado de um lado so se ve: a porta abre-se e o valor nunca chega.
+def ignorados(classe, corpo, raiz=""):
+    campos = getattr(classe, "model_fields", {})
+    fora = []
+    for chave, valor in (corpo or {}).items():
+        if chave not in campos:
+            fora.append("ignorado: " + raiz + chave)
+            continue
+        anotacao = campos[chave].annotation
+        for sub in (valor if isinstance(valor, list) else [valor]):
+            if isinstance(sub, dict):
+                for arg in getattr(anotacao, "__args__", None) or (anotacao,):
+                    if hasattr(arg, "model_fields"):
+                        fora += ignorados(arg, sub, raiz + chave + ".")
+    return fora
+
 saida = []
 for classe, corpo in json.load(sys.stdin):
     try:
         getattr(porta, classe).model_validate(corpo)
-        saida.append(None)
     except Exception as erro:  # noqa: BLE001 — o que interessa é O QUE recusou
         detalhe = getattr(erro, "errors", None)
         saida.append([".".join(str(p) for p in e["loc"]) for e in detalhe()]
                      if detalhe else ["%s: %s" % (type(erro).__name__, erro)])
+    else:
+        saida.append(ignorados(getattr(porta, classe), corpo) or None)
 print("CONTRATO:" + json.dumps(saida))
 """
 
 
 def _a_porta_da_app(*pares):
-    """`("VoucherReq", corpo)` → `[None]` se a app o aceita, ou os campos que ela
-    recusa. É a classe pydantic REAL da app, no venv dela."""
+    """`("VoucherReq", corpo)` → `[None]` se a app o aceita INTEIRO, ou os campos
+    que ela recusa (e os que ela ignora em silêncio, `ignorado: <campo>` — um
+    campo renomeado só de um lado não dá 422 nenhum). É a classe pydantic REAL da
+    app, no venv dela."""
     if not os.path.isdir(_APP) or not os.path.exists(_PYTHON_DA_APP):
         pytest.skip(
             "A PROVA DE FRONTEIRA NÃO CORREU: o repo da app L'Açaí não está em %s "
             "(ou falta-lhe o venv). O corpo que o POS monta ficou SEM ser julgado "
-            "pela porta da app — é exactamente assim que `categoria_vendus_ref: "
-            "None` foi para produção com as duas suites verdes." % _APP)
+            "pela porta da app — é exactamente assim que a ref do produto a `None` "
+            "foi para produção com as duas suites verdes." % _APP)
     # O corpo vai em JSON de propósito: se ele não for serializável, não cabe na
     # rede e a prova tem de cair aqui e não em produção.
     corrida = subprocess.run(
@@ -155,19 +182,21 @@ def app(monkeypatch):
 
 # --- O cenário ------------------------------------------------------------------
 
-# O id da categoria no Vendus: a única chave partilhada pelos dois catálogos.
-_REF_ACAIS = "1289461"
+# Os ids do PRODUTO no Vendus, medidos no catálogo do POS (2026-10-01): a chave
+# partilhada pelos dois catálogos desde que a ponte desceu da categoria ao
+# produto. O açaí e o Smoothie partilham a subcategoria «Açaís» e são a razão da
+# descida — por categoria, um voucher de Açaí Small de 7,20 € oferecia um
+# Smoothie de 7,90 €.
+_REF_ACAI = "145268982"
+_REF_SMOOTHIE = "188237858"
 
-# Uma conta de balcão com o caso do DIA 1 lá dentro: um açaí cuja categoria já
-# tem a ponte preenchida e um doce cuja categoria não tem nada — que no dia 1 são
-# todas, porque o enchimento é manual.
+# Uma conta de balcão com o caso a `None` lá dentro: os dois produtos reais, com
+# a ponte preenchida, e um terceiro sem `vendus_ref` nenhum — um produto criado à
+# mão no backoffice, que a importação do Vendus nunca tocou.
 _PRODUTOS = [
-    {"id": "prod-1", "nome": "Açaí Regular", "categoria_id": "cat-acais"},
-    {"id": "prod-2", "nome": "Brownie", "categoria_id": "cat-doces"},
-]
-_CATEGORIAS = [
-    {"id": "cat-acais", "nome": "Açaís", "vendus_ref": _REF_ACAIS},
-    {"id": "cat-doces", "nome": "Doces", "vendus_ref": None},
+    {"id": "prod-1", "nome": "Açaí", "vendus_ref": _REF_ACAI},
+    {"id": "prod-2", "nome": "Smoothie", "vendus_ref": _REF_SMOOTHIE},
+    {"id": "prod-3", "nome": "Brownie", "vendus_ref": None},
 ]
 
 
@@ -175,9 +204,11 @@ def _db(vendas=None, **mais):
     coleccoes = {
         COLECOES["vendas"]: ColeccaoFalsa(vendas if vendas is not None else [
             _venda(linhas=[_linha(id="linha-1"),
-                           _linha(id="linha-2", produto_id="prod-2")])]),
+                           _linha(id="linha-2", produto_id="prod-2",
+                                  produto_nome="Smoothie", produto_preco=7.9),
+                           _linha(id="linha-3", produto_id="prod-3",
+                                  produto_nome="Brownie")])]),
         COLECOES["produtos"]: ColeccaoFalsa(list(_PRODUTOS)),
-        COLECOES["categorias"]: ColeccaoFalsa([dict(c) for c in _CATEGORIAS]),
         COLECOES["sessoes_caixa"]: ColeccaoFalsa([
             {"id": "sessao-1", "loja_id": "loja-1", "caixa_id": "caixa-1",
              "estado": "aberta"}]),
@@ -196,11 +227,11 @@ def _pedir_o_voucher(monkeypatch, db, ligacao_id="lig-1"):
 # --- O corpo do /voucher --------------------------------------------------------
 
 
-def test_o_corpo_do_VOUCHER_com_uma_categoria_SEM_PONTE_passa_a_porta_da_app(
+def test_o_corpo_do_VOUCHER_com_um_produto_SEM_PONTE_passa_a_porta_da_app(
         monkeypatch, app):
-    """**O desencontro que foi para produção.** A linha cuja categoria não tem
-    `vendus_ref` viaja com `categoria_vendus_ref: None` — de propósito, e no dia
-    1 são todas —, e em pydantic 2 um `None` explícito NÃO cai no default de um
+    """**O desencontro que foi para produção, agora ao nível do PRODUTO.** A linha
+    cujo produto não tem `vendus_ref` viaja com `produto_vendus_ref: None` — de
+    propósito —, e em pydantic 2 um `None` explícito NÃO cai no default de um
     `str`: a porta da app recusava a LISTA INTEIRA com 422.
 
     E o pior não era o 422: `escolher_voucher` lê qualquer resposta que não tenha
@@ -209,23 +240,40 @@ def test_o_corpo_do_VOUCHER_com_uma_categoria_SEM_PONTE_passa_a_porta_da_app(
     na perfeição não levar desconto, e ninguém ao balcão tinha como saber porquê
     — que é o pior desfecho de todos (regra de ouro 2).
 
-    Prova-se também a forma `""`: a mesma coisa do ponto de vista da app
-    (categoria sem ponte) e a que o POS passaria a mandar se algum dia deixasse
-    de distinguir vazio de ausente. As duas terem de servir é o que dispensa uma
-    das pontas de subir primeiro."""
+    **E é aqui que um desencontro de NOMES entre os dois repos aparece.** A ponte
+    desceu da categoria ao produto e o campo mudou de nome; se um dos lados ficar
+    atrás, pydantic ignora o campo que não conhece **sem 422 nenhum** — a porta
+    abre-se, a ref nunca chega e o desconto deixa de existir em silêncio. O
+    `ignorado: <campo>` do guião é o que o apanha.
+
+    Prova-se também a forma `""`: a mesma coisa do ponto de vista da app (produto
+    sem ponte) e a que o POS passaria a mandar se algum dia deixasse de distinguir
+    vazio de ausente. As duas terem de servir é o que dispensa uma das pontas de
+    subir primeiro."""
     _pedir_o_voucher(monkeypatch, _db())
     corpo = app.corpos()[0]
 
-    # A guarda anti-vacuidade: sem a linha a `None` no corpo, o resto deste teste
-    # valida um corpo que não tem o caso do dia 1 e fica verde por nada.
-    refs = [li["categoria_vendus_ref"] for li in corpo["linhas"]]
-    assert refs == [_REF_ACAIS, None], (
-        "o caso do dia 1 desapareceu do corpo (%r) — sem a linha cuja categoria "
-        "não tem `vendus_ref` este teste não prova nada" % (refs,))
+    # A guarda anti-vacuidade: sem a linha a `None` no corpo — e sem os dois
+    # produtos reais que partilham a subcategoria —, o resto deste teste valida um
+    # corpo que não tem o caso que importa e fica verde por nada.
+    refs = [li["produto_vendus_ref"] for li in corpo["linhas"]]
+    assert refs == [_REF_ACAI, _REF_SMOOTHIE, None], (
+        "o cenário desapareceu do corpo (%r) — sem a linha cujo produto não tem "
+        "`vendus_ref` este teste não prova nada" % (refs,))
 
     com_vazio = json.loads(json.dumps(corpo))
-    com_vazio["linhas"][1]["categoria_vendus_ref"] = ""
-    assert _a_porta_da_app(("VoucherReq", corpo), ("VoucherReq", com_vazio)) == [None, None]
+    com_vazio["linhas"][2]["produto_vendus_ref"] = ""
+    # E o nome VELHO da ponte, para a prova do desencontro não ser vácua: a app
+    # já não o conhece, pydantic ignora-o SEM 422 nenhum e a ref nunca chegaria.
+    # Se esta linha deixar de apanhar nada, é o `ignorado:` do guião que morreu —
+    # e com ele a única prova de que os dois repos chamam o campo pelo mesmo nome.
+    com_o_nome_velho = json.loads(json.dumps(corpo))
+    for li in com_o_nome_velho["linhas"]:
+        li["categoria_vendus_ref"] = li.pop("produto_vendus_ref")
+    assert _a_porta_da_app(
+        ("VoucherReq", corpo), ("VoucherReq", com_vazio),
+        ("VoucherReq", com_o_nome_velho),
+    ) == [None, None, ["ignorado: linhas.categoria_vendus_ref"] * 3]
 
 
 def test_o_corpo_do_AVISO_DE_LIBERTACAO_passa_a_porta_da_app(monkeypatch, app):

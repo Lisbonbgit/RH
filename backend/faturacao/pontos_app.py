@@ -395,7 +395,7 @@ async def preferencia_de_pontos(
 #
 # 1. **Nada disto pode impedir uma fatura de sair.** App em baixo, tecto de
 #    espera esgotado ou resposta estranha = venda normal, sem desconto.
-# 2. **Falhar fechado e EM VOZ ALTA.** Uma categoria sem correspondência é
+# 2. **Falhar fechado e EM VOZ ALTA.** Um produto sem correspondência é
 #    *sem desconto*, nunca um desconto errado — mas grita no registo e volta ao
 #    cartão da caixa com o motivo. Um voucher que não se aplica sem ninguém
 #    perceber porquê é o pior desfecho de todos.
@@ -486,55 +486,58 @@ async def _libertar_na_app(ligacao_id: str, venda_id: str) -> None:
 
 async def _linhas_para_a_app(db, venda: Dict) -> List[Dict]:
     """As linhas desta conta no formato do contrato:
-    `[{linha_id, categoria_vendus_ref, unit_price, qty}]`.
+    `[{linha_id, produto_vendus_ref, unit_price, qty}]`.
 
-    **A ponte entre os dois catálogos é a CATEGORIA, e só ela.** O campo
-    `vendus_ref` existe dos dois lados e guarda coisas DIFERENTES: aqui é o
-    `id` do artigo no Vendus (`precos.id_vendus_do_produto`), na app é a
-    `reference` do artigo. Não se casam — e casar por produto seria mau
-    negócio de qualquer forma (são centenas, mudam todas as semanas, e a
-    elegibilidade do voucher nem sequer trabalha a esse nível). As categorias
-    dos dois catálogos vieram do MESMO catálogo Vendus e guardam o id da
-    categoria de lá: é essa a única chave partilhada.
+    **A ponte entre os dois catálogos é o PRODUTO.** É o `vendus_ref` do produto
+    desta casa — o `id` do artigo no Vendus (`precos.id_vendus_do_produto`) —, e
+    a app guarda a lista desses ids na categoria dela
+    (`db.categories.produtos_pos`). Ao balcão existe UM produto que é açaí
+    («Açaí», `145268982`, preço base 0,00 € porque o tamanho e os toppings são
+    personalizações); o «Smoothie» vive na MESMA subcategoria e não é recompensa
+    nenhuma.
 
-    **O `linha_id` vai e a categoria não chega.** Duas linhas podem partilhar
-    categoria, e é UMA delas que leva o desconto — é a app que diz qual.
+    **Pela CATEGORIA não dava, e foi medido.** As categorias do POS são baldes de
+    contabilidade — «Venda ao Público» e «Vendas Aplicações», duas —, e a família
+    do produto vive na SUBcategoria, que não tem id do Vendus nenhum (é NOSSA). E
+    a subcategoria ainda é grossa demais: «Açaís» tem o açaí E o Smoothie (7,90
+    €), e um voucher de Açaí Small (7,20 €) oferecia um Smoothie. O desenho
+    recusou o nível do produto por os supor «centenas, a mudar todas as semanas»:
+    são 33, e um açaí de balcão.
+
+    **O `linha_id` vai e o produto não chega.** Duas linhas podem ser do mesmo
+    produto, e é UMA delas que leva o desconto — é a app que diz qual.
 
     **O preço unitário sai de `_linha_vendus`**, nunca de uma conta feita aqui:
     é o mesmo número que vai para a fatura, já com as personalizações somadas e
     arredondado uma só vez. Uma segunda aritmética divergia no dia em que a
     primeira mudasse, e a elegibilidade é exactamente `unit_price >= valor` do
-    voucher.
+    voucher — é ela que faz sozinha a correspondência de TAMANHOS (as quatro
+    recompensas trocáveis são Açaí Mini 5,85 / Small 7,20 / Regular 8,99 /
+    Supreme 14,10: um voucher de Supreme não pega num açaí de 7,20).
 
-    **Uma categoria sem `vendus_ref` viaja a `None` e GRITA no registo.** Não se
-    adivinha nada — quem decide é a app, que responde
-    `categoria_sem_correspondencia` —, mas o sintoma de uma categoria por
+    **Um produto sem `vendus_ref` viaja a `None` e GRITA no registo.** Hoje os 33
+    têm-no preenchido, mas um produto criado à mão no backoffice não tem — e não
+    se adivinha nada: quem decide é a app. O sintoma de um `vendus_ref` por
     preencher é um voucher que não se aplica, e isso não pode ficar calado.
 
-    Duas leituras e não duas por linha: ao balcão, com o cliente à frente, cada
-    ida à base de dados conta contra os 4 s da chamada à app."""
+    **Uma leitura, e não uma por linha:** ao balcão, com o cliente à frente, cada
+    ida à base de dados conta contra os 4 s da chamada à app. A ida às
+    `categorias` desapareceu com a ponte — já não serve aqui para nada."""
     linhas = venda.get("linhas") or []
     if not linhas:
         return []
     produtos = {
         p["id"]: p
+        # **A projecção é afirmada à mão no teste** (`test_voucher_ao_balcao.py::
+        # test_a_projeccao_dos_produtos_PEDE_o_vendus_ref`), porque o duplo desta
+        # casa aceita-a e IGNORA-A: sem essa prova, apagar `vendus_ref` daqui
+        # deixava a suite inteira verde e, em produção, TODOS os produtos
+        # chegavam sem o campo — o desconto ao balcão deixava de existir para
+        # toda a gente. Guarda-se a selecção (e não se lê o produto inteiro)
+        # porque quem espera por estes 4 s é a funcionária com o cliente à frente.
         for p in await db[COLECOES["produtos"]].find(
             {"id": {"$in": [li.get("produto_id") for li in linhas]}},
-            {"_id": 0, "id": 1, "categoria_id": 1},
-        ).to_list(500)
-    }
-    categorias = {
-        c["id"]: c
-        # **A projecção é afirmada à mão no teste** (`test_voucher_ao_balcao.py::
-        # test_a_projeccao_das_categorias_PEDE_o_vendus_ref`), porque o duplo
-        # desta casa aceita-a e IGNORA-A: sem essa prova, apagar `vendus_ref`
-        # daqui deixava a suite inteira verde e, em produção, TODAS as categorias
-        # chegavam sem o campo — o desconto ao balcão deixava de existir para
-        # toda a gente. Guarda-se a selecção (e não se lê a categoria inteira)
-        # porque quem espera por estes 4 s é a funcionária com o cliente à frente.
-        for c in await db[COLECOES["categorias"]].find(
-            {"id": {"$in": [p.get("categoria_id") for p in produtos.values()]}},
-            {"_id": 0, "id": 1, "nome": 1, "vendus_ref": 1},
+            {"_id": 0, "id": 1, "vendus_ref": 1},
         ).to_list(500)
     }
     saida = []
@@ -552,20 +555,16 @@ async def _linhas_para_a_app(db, venda: Dict) -> List[Dict]:
                 "consegue calcular (%s) — a conta vai SEM desconto",
                 venda.get("id"), li.get("id"), e.detail)
             return []
-        categoria = categorias.get(
-            (produtos.get(li.get("produto_id")) or {}).get("categoria_id")) or {}
-        referencia = categoria.get("vendus_ref")
+        referencia = (produtos.get(li.get("produto_id")) or {}).get("vendus_ref")
         if not referencia:
             logger.error(
-                "[faturacao] voucher ao balcão (venda %s): a categoria %r do "
-                "produto %r não tem `vendus_ref` — nenhuma recompensa da app "
-                "consegue casar com esta linha até alguém o preencher no "
-                "catálogo", venda.get("id"),
-                categoria.get("nome") or categoria.get("id"),
-                li.get("produto_nome"))
+                "[faturacao] voucher ao balcão (venda %s): o produto %r (%s) não "
+                "tem `vendus_ref` — nenhuma recompensa da app consegue casar com "
+                "esta linha até alguém o preencher no catálogo", venda.get("id"),
+                li.get("produto_nome"), li.get("produto_id"))
         saida.append({
             "linha_id": li.get("id"),
-            "categoria_vendus_ref": str(referencia) if referencia else None,
+            "produto_vendus_ref": str(referencia) if referencia else None,
             "unit_price": preco_unitario,
             "qty": li.get("quantidade") or 1,
         })
