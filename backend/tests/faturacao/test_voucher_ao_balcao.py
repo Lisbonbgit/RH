@@ -9,11 +9,11 @@ O que este ficheiro prende, por ordem de gravidade:
 1. **Nada disto pode impedir uma fatura de sair** — app em baixo, tecto de
    espera esgotado ou resposta estranha = venda normal, sem desconto e sem a
    conta mudar um cêntimo;
-2. **falhar fechado e em voz alta** — uma categoria sem `vendus_ref` é *sem
+2. **falhar fechado e em voz alta** — um produto sem `vendus_ref` é *sem
    desconto*, nunca um desconto errado, e grita no registo;
-3. **a ponte entre os dois catálogos**, vista do lado do POS: a categoria e não
-   o produto (o `vendus_ref` tem o mesmo nome e coisas diferentes nos dois
-   repositórios);
+3. **a ponte entre os dois catálogos**, vista do lado do POS: o PRODUTO e não a
+   categoria (as do POS são dois baldes de contabilidade, e a subcategoria
+   «Açaís» tem o açaí E o Smoothie);
 4. **a marca na linha** (`voucher_id`) e o desconto no `desconto_eur` da linha
    que a app escolheu — nunca noutra;
 5. **o travão da conta a zero**: 0,00 € emite-se COM linha de voucher e
@@ -57,27 +57,34 @@ from tests.faturacao.test_os_pontos_da_app import (
 
 # --- O cenário ------------------------------------------------------------------
 
-# A categoria «Açaís» dos dois lados: no POS ela guarda o id da categoria no
-# Vendus (`catalogo.CategoriaEntrada.vendus_ref`, posto pela importação), e é
-# esse id — e só esse — que a app conhece. Ver "A ponte entre os dois catálogos"
-# no desenho.
-_REF_ACAIS = "1289461"
+# Os ids do Vendus MEDIDOS no catálogo do POS (2026-10-01), e é o do PRODUTO: o
+# `vendus_ref` de cada produto desta casa guarda o `id` do artigo no Vendus, e a
+# app guarda a lista desses ids na categoria dela (`categories.produtos_pos`).
+#
+# **Os dois juntos são o cenário que a ponte por CATEGORIA não sabia separar.**
+# Ao balcão existe UM produto que é açaí (preço base 0,00 € — o tamanho e os
+# toppings são personalizações); o Smoothie de 7,90 € vive na MESMA subcategoria
+# «Açaís», e a subcategoria nem id do Vendus tem (é NOSSA). Ligar por aí dava um
+# Smoothie de graça a quem tivesse um voucher de Açaí Small de 7,20 €.
+_REF_ACAI = "145268982"
+_REF_SMOOTHIE = "188237858"
 
 
-def _db_do_voucher(vendas=None, produtos=None, categorias=None, sessoes=None, refs=None):
+def _db_do_voucher(vendas=None, produtos=None, sessoes=None, refs=None):
     if vendas is None:
         vendas = [_venda(linhas=[_linha()])]
     if produtos is None:
-        produtos = [{"id": "prod-1", "nome": "Açaí Regular", "categoria_id": "cat-acais"}]
-    if categorias is None:
-        categorias = [{"id": "cat-acais", "nome": "Açaís", "vendus_ref": _REF_ACAIS}]
+        produtos = [{"id": "prod-1", "nome": "Açaí", "vendus_ref": _REF_ACAI},
+                    {"id": "prod-2", "nome": "Smoothie", "vendus_ref": _REF_SMOOTHIE}]
     if sessoes is None:
         sessoes = [{"id": "sessao-1", "loja_id": "loja-1", "caixa_id": "caixa-1",
                     "estado": "aberta"}]
+    # As `categorias` não entram: desde que a ponte é o produto, este caminho não
+    # as lê — é uma ida à base de dados a menos por venda, com a funcionária à
+    # espera dentro dos 4 s.
     return DbFalsa({
         COLECOES["vendas"]: ColeccaoFalsa(vendas),
         COLECOES["produtos"]: ColeccaoFalsa(produtos),
-        COLECOES["categorias"]: ColeccaoFalsa(categorias),
         COLECOES["sessoes_caixa"]: ColeccaoFalsa(sessoes),
         COLECOES["refs_fiscais"]: ColeccaoFalsa(
             refs, indices_unicos=_unicos_de("fat_refs_fiscais")),
@@ -97,22 +104,26 @@ def _linhas_gravadas(db, venda_id="venda-1"):
 # --- A ponte entre os dois catálogos, vista daqui --------------------------------
 
 
-def test_cada_linha_viaja_com_o_vendus_ref_da_CATEGORIA_o_preco_e_a_quantidade(
+def test_cada_linha_viaja_com_o_vendus_ref_do_PRODUTO_o_preco_e_a_quantidade(
         monkeypatch, app):
-    """O contrato do corpo, campo a campo.
+    """O contrato do corpo, campo a campo, com os ids REAIS do catálogo.
 
-    **A ponte é a categoria e não o produto**, e não é gosto: o `vendus_ref` de
-    um PRODUTO guarda coisas diferentes nos dois lados (aqui o `id` do artigo no
-    Vendus, na app a `reference` dele) e nunca casaria. As categorias vieram as
-    duas do mesmo catálogo Vendus.
+    **A ponte é o produto e não a categoria**, e não é gosto: as categorias do
+    POS são dois baldes de contabilidade («Venda ao Público», «Vendas
+    Aplicações») e são elas que têm o id do Vendus; a família do produto vive na
+    SUBcategoria, que não tem id nenhum. E a subcategoria ainda é grossa demais —
+    **«Açaís» tem o açaí E o Smoothie**, e é isto que este teste prende: os dois
+    viajam com ids DIFERENTES, e a app desconta só no primeiro.
 
-    O `linha_id` vai porque duas linhas podem partilhar categoria e é uma delas
+    O `linha_id` vai porque duas linhas podem ser do mesmo produto e é uma delas
     que leva o desconto; o preço unitário é o da fatura (`_linha_vendus`), já
     com as personalizações somadas."""
-    app.responde(200, {})
+    app.responde(200, {"voucher_id": "vch-1", "valor": 7.2,
+                       "titulo": "Açaí Small grátis", "linha_id_alvo": "linha-1"})
     db = _db_do_voucher(vendas=[_venda(linhas=[
-        _linha(id="linha-1", quantidade=2),
-        _linha(id="linha-2", opcoes=[{"nome": "Nutella", "preco": 1.0}]),
+        _linha(id="linha-1", quantidade=2, opcoes=[{"nome": "Nutella", "preco": 1.0}]),
+        _linha(id="linha-2", produto_id="prod-2", produto_nome="Smoothie",
+               produto_preco=7.9),
     ])])
     _pedir(monkeypatch, db)
 
@@ -124,40 +135,58 @@ def test_cada_linha_viaja_com_o_vendus_ref_da_CATEGORIA_o_preco_e_a_quantidade(
     assert app.corpo() == {
         "ligacao_id": "lig-1",
         "linhas": [
-            {"linha_id": "linha-1", "categoria_vendus_ref": _REF_ACAIS,
-             "unit_price": 8.99, "qty": 2},
-            {"linha_id": "linha-2", "categoria_vendus_ref": _REF_ACAIS,
-             "unit_price": 9.99, "qty": 1},
+            {"linha_id": "linha-1", "produto_vendus_ref": _REF_ACAI,
+             "unit_price": 9.99, "qty": 2},
+            {"linha_id": "linha-2", "produto_vendus_ref": _REF_SMOOTHIE,
+             "unit_price": 7.9, "qty": 1},
         ],
     }
+    # E o desconto cai no AÇAÍ, nunca no Smoothie: a elegibilidade é da app
+    # (mesma categoria lá E `unit_price >= valor`) e a linha também.
+    linhas = _linhas_gravadas(db)
+    assert (linhas[0]["desconto_eur"], linhas[0]["voucher_id"]) == (7.2, "vch-1")
+    assert (linhas[1].get("desconto_eur"), linhas[1].get("voucher_id")) == (None, None)
 
 
-def test_uma_categoria_SEM_vendus_ref_viaja_a_None_e_GRITA_no_registo(
+def test_um_produto_SEM_vendus_ref_viaja_a_None_e_GRITA_no_registo(
         monkeypatch, app, caplog):
-    """**Falha fechada e em voz alta.** Não se adivinha a correspondência — quem
-    decide é a app, que responde `categoria_sem_correspondencia` — mas o sintoma
-    de uma categoria por preencher é um voucher que não se aplica, e um voucher
-    que não se aplica sem ninguém perceber porquê é o pior desfecho de todos."""
+    """**Falha fechada e em voz alta, e sem partir a lista inteira.** Os 33
+    produtos do catálogo têm o `vendus_ref` preenchido (medido), mas um criado à
+    mão no backoffice não tem. Não se adivinha a correspondência — quem decide é
+    a app — mas o sintoma de um `vendus_ref` por preencher é um voucher que não se
+    aplica, e um voucher que não se aplica sem ninguém perceber porquê é o pior
+    desfecho de todos.
+
+    O `motivo` é a palavra da APP (o POS só a devolve ao cartão da caixa), e o
+    açaí da linha ao lado viaja intacto: uma linha sem ponte não cala a conta."""
     app.responde(200, {"motivo": "categoria_sem_correspondencia"})
-    db = _db_do_voucher(categorias=[{"id": "cat-acais", "nome": "Açaís", "vendus_ref": None}])
+    db = _db_do_voucher(
+        produtos=[{"id": "prod-1", "nome": "Açaí", "vendus_ref": _REF_ACAI},
+                  {"id": "prod-2", "nome": "Água", "vendus_ref": None}],
+        vendas=[_venda(linhas=[
+            _linha(id="linha-1", produto_id="prod-2", produto_nome="Água 0,5L"),
+            _linha(id="linha-2"),
+        ])])
     with caplog.at_level(logging.ERROR):
         resposta = _pedir(monkeypatch, db)
 
-    assert app.corpo()["linhas"][0]["categoria_vendus_ref"] is None
-    assert "Açaís" in caplog.text and "vendus_ref" in caplog.text
+    linhas = app.corpo()["linhas"]
+    assert [li["produto_vendus_ref"] for li in linhas] == [None, _REF_ACAI]
+    assert "Água 0,5L" in caplog.text and "vendus_ref" in caplog.text
     # E o motivo volta ao cartão da caixa, para a funcionária poder dizer ao
     # cliente porque é que o desconto não entrou.
     assert resposta["motivo"] == "categoria_sem_correspondencia"
     assert resposta["voucher_id"] is None
 
 
-def test_uma_categoria_que_o_catalogo_NAO_conhece_viaja_a_None(monkeypatch, app):
-    """O produto aponta para uma categoria apagada (ou a linha é de um produto
-    que já não existe). Mesmo desfecho: `None`, e a app é que decide."""
+def test_um_produto_que_o_catalogo_NAO_conhece_viaja_a_None(monkeypatch, app):
+    """A linha é de um produto que já não existe no catálogo (apagado depois de
+    entrar na conta). Mesmo desfecho: `None`, e a app é que decide."""
     app.responde(200, {})
-    db = _db_do_voucher(produtos=[{"id": "prod-1", "categoria_id": "cat-que-foi-apagada"}])
+    db = _db_do_voucher(produtos=[{"id": "prod-que-foi-apagado",
+                                   "vendus_ref": _REF_ACAI}])
     _pedir(monkeypatch, db)
-    assert app.corpo()["linhas"][0]["categoria_vendus_ref"] is None
+    assert app.corpo()["linhas"][0]["produto_vendus_ref"] is None
 
 
 # --- A marca na linha e o desconto ----------------------------------------------
@@ -488,8 +517,8 @@ def test_a_rota_do_voucher_esta_montada_no_router_e_e_ESTE_o_endereco():
 class _ColeccaoQueGuardaAProjeccao(ColeccaoFalsa):
     """O duplo da casa **aceita e IGNORA** a projecção do `find`
     (`ColeccaoFalsa.find`) — e é isso que deixa apagar `'vendus_ref': 1` da
-    projecção das categorias com as provas todas verdes. Em produção o efeito é
-    o oposto de pequeno: TODAS as categorias chegam sem o campo e o desconto ao
+    projecção dos produtos com as provas todas verdes. Em produção o efeito é
+    o oposto de pequeno: TODOS os produtos chegam sem o campo e o desconto ao
     balcão deixa de existir para toda a gente. Guardar o que foi PEDIDO é a
     única forma de o afirmar."""
 
@@ -502,26 +531,36 @@ class _ColeccaoQueGuardaAProjeccao(ColeccaoFalsa):
         return super().find(filtro, projecao)
 
 
-def test_a_projeccao_das_categorias_PEDE_o_vendus_ref(monkeypatch, app):
+def test_a_projeccao_dos_produtos_PEDE_o_vendus_ref(monkeypatch, app):
     """**Achado 5 — suite verde, funcionalidade morta.** O `vendus_ref` é lido por
     PROJECÇÃO e nenhuma prova o afirmava: apagá-lo da selecção de campos deixava
-    as 25 provas verdes e matava a ponte entre os dois catálogos em produção.
+    as provas todas verdes e matava a ponte entre os dois catálogos em produção.
 
     Afirma-se a projecção à mão (a alternativa era tirar a selecção de campos e
-    ler a categoria inteira — mais dados na ida à base de dados que corre com a
+    ler o produto inteiro — mais dados na ida à base de dados que corre com a
     funcionária à espera) e, a seguir, que a ponte chegou mesmo à app: a
     projecção sozinha é um detalhe de implementação, o que importa é o campo no
-    corpo."""
+    corpo.
+
+    **E é UMA leitura, não duas.** Desde que a ponte é o produto, as `categorias`
+    não servem aqui para nada — e quem espera por estes 4 s é a funcionária com o
+    cliente à frente. Uma ida à base de dados que volte sem ninguém a precisar
+    dela não aparece em nenhuma outra prova: por isso afirma-se também que a
+    colecção das categorias NÃO foi tocada."""
     app.responde(200, {})
+    produtos = _ColeccaoQueGuardaAProjeccao(
+        [{"id": "prod-1", "nome": "Açaí", "vendus_ref": _REF_ACAI}])
     categorias = _ColeccaoQueGuardaAProjeccao(
-        [{"id": "cat-acais", "nome": "Açaís", "vendus_ref": _REF_ACAIS}])
+        [{"id": "cat-1", "nome": "Venda ao Público", "vendus_ref": "1289461"}])
     db = _db_do_voucher()
+    db._coleccoes[COLECOES["produtos"]] = produtos
     db._coleccoes[COLECOES["categorias"]] = categorias
 
     _pedir(monkeypatch, db)
 
-    assert categorias.projeccoes == [{"_id": 0, "id": 1, "nome": 1, "vendus_ref": 1}]
-    assert app.corpo()["linhas"][0]["categoria_vendus_ref"] == _REF_ACAIS
+    assert produtos.projeccoes == [{"_id": 0, "id": 1, "vendus_ref": 1}]
+    assert categorias.projeccoes == [], "a ida às categorias não serve a ninguém"
+    assert app.corpo()["linhas"][0]["produto_vendus_ref"] == _REF_ACAI
 
 
 # --- O «Remover» ----------------------------------------------------------------
