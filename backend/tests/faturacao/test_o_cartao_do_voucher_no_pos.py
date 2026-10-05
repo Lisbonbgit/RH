@@ -259,6 +259,58 @@ def test_o_ecra_pergunta_pelo_voucher_ao_LIGAR_e_outra_vez_no_EMITIR(aplicado):
         {"ligacao_id": "lig-1"}, {"ligacao_id": "lig-1"}], aplicado["doVoucher"]
 
 
+@pytest.fixture(scope="module")
+def aplicado_com_a_rede_a_serio(tmp_path_factory):
+    """O mesmo desconto aplicado, mas com a resposta a chegar **depois** de o
+    ecrã assentar — que é o que a rede faz sempre.
+
+    O servidor fabricado responde no mesmo instante, e foi por isso que a
+    fixture `aplicado` ficou verde por cima de um ecrã que, em produção, DEITAVA
+    A RESPOSTA FORA (Alfragide, 2026-10-05: a app reservou o Açaí Small, o
+    servidor do POS gravou os 7,20 € de desconto na linha, e o ecrã continuou a
+    mostrar o total inteiro e um cartão sem recompensa nenhuma). A primeira
+    pergunta segura-se aqui até o ecrã ter acabado de montar, e só então se
+    solta; a do EMITIR responde logo."""
+    resposta = json.dumps(_VOUCHER_APLICADO, ensure_ascii=False)
+    return _montar(_CONTA, "\n".join([
+        "(() => {",
+        "  let perguntas = 0;",
+        "  return () => {",
+        "    perguntas += 1;",
+        "    if (perguntas > 1) return { data: %s };" % resposta,
+        "    return new Promise((r) => { global.soltarOVoucher = () => r({ data: %s }); });"
+        % resposta,
+        "  };",
+        "})()",
+    ]), "\n".join([
+        "if (typeof global.soltarOVoucher !== 'function') {",
+        "  throw new Error('o ecrã não perguntou pelo voucher ao montar');",
+        "}",
+        "await act(async () => {});",
+        "await act(async () => { global.soltarOVoucher(); });",
+        "await act(async () => {});",
+        "const noCartao = cartao();",
+        "const ecra = textoVisivel(alvo);",
+        _COM_DINHEIRO,
+        "process.stdout.write(JSON.stringify({ noCartao, ecra, emitirVivo, corpos, doVoucher }));",
+    ]), tmp_path_factory, "voucher-rede-a-serio")
+
+
+def test_a_resposta_que_chega_DEPOIS_de_o_ecra_montar_nao_se_deita_fora(
+        aplicado_com_a_rede_a_serio):
+    """**O cliente da gaveta lê-se duas vezes ao montar** (o estado inicial e o
+    efeito que recomeça a conta), e cada leitura é um `JSON.parse` — um objecto
+    NOVO com o mesmo `id`. Comparar a ligação por identidade dava «outro
+    cliente» à resposta da primeira pergunta, e o desconto que o servidor já
+    tinha gravado nunca chegava ao cartão nem ao total."""
+    r = aplicado_com_a_rede_a_serio
+    assert _APLICADO in r["noCartao"], r["noCartao"]
+    assert "Total € 3,80" in r["ecra"], r["ecra"][:600]
+    assert r["emitirVivo"] is True
+    assert r["corpos"] == [{**r["corpos"][0], "pagamentos": [
+        {"tipo_pagamento_id": "tp-1", "valor": 3.8}]}], r["corpos"]
+
+
 def test_com_recompensa_e_nada_que_sirva_o_cartao_MANDA_acrescentar_o_produto(sem_produto):
     assert _SEM_PRODUTO in sem_produto["noCartao"], sem_produto["noCartao"]
     # E a venda segue na mesma: isto é um recado, não um travão.

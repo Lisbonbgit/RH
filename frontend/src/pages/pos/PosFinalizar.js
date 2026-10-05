@@ -1233,7 +1233,15 @@ export default function PosFinalizar({
       // A conta já não é esta, ou o cliente saiu da fatura: esta resposta
       // ficou sem dono e escrevê-la era pôr o desconto de uma conta à frente
       // de outra.
-      if (vendaAgora.current === base && ligacaoAgora.current === lig) {
+      //
+      // **O cliente compara-se pelo `id`, nunca pelo objecto** — como no
+      // `mudarPreferencia`. Ao montar, a gaveta lê-se DUAS vezes (o estado
+      // inicial e o efeito do `venda?.id`), e cada leitura é um `JSON.parse`:
+      // o mesmo cliente num objecto novo. Por identidade, a resposta da
+      // primeira pergunta dava-se por «de outro cliente» e ia fora — em
+      // produção (Alfragide, 2026-10-05) o desconto ficou gravado na linha e o
+      // ecrã mostrou o total inteiro, sem uma palavra sobre a recompensa.
+      if (vendaAgora.current === base && ligacaoAgora.current?.id === lig?.id) {
         setVoucher(estado);
         setVendaDoVoucher(nova ? { base, venda: nova } : null);
       }
