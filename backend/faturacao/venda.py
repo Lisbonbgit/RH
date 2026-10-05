@@ -2066,11 +2066,13 @@ async def _devolver_o_voucher_ao_cliente(venda: Dict) -> None:
     Por isso: primeiro a conta morre, só depois se devolve o voucher.
 
     **A ligação é a única chave que nomeia a reserva do lado da app** (o
-    `reserved_by` é `pos:{ligacao_id}`). Ela vive no `sessionStorage` do ecrã, e
-    o servidor só a grava na venda no EMITIR (`fiscal.finalizar_venda`,
-    `pontos_ligacao`) — numa conta cancelada não chega a haver EMITIR. Enquanto
-    `pontos_app.voucher_ao_balcao` não gravar essa ligação ao aplicar o desconto,
-    não há nada aqui para nomear, e isso **grita no registo** em vez de passar
+    `reserved_by` é `pos:{ligacao_id}`). O `pontos_ligacao` da venda só nasce no
+    EMITIR (`fiscal.finalizar_venda`) — numa conta cancelada nunca chega a haver
+    —, por isso quem a guarda é a LINHA: `pontos_app.voucher_ao_balcao` grava o
+    `voucher_ligacao_id` ao lado da marca, no mesmo instante em que aplica o
+    desconto. Foi medido em produção (Alfragide, 2026-10-05): sem isto, duas
+    contas canceladas deixaram duas recompensas presas. Uma linha marcada SEM
+    ligação (gravada antes desta correção) **grita no registo** em vez de passar
     em silêncio (regra de ouro 2): um voucher preso sem ninguém perceber porquê é
     o pior desfecho de todos.
 
@@ -2084,7 +2086,9 @@ async def _devolver_o_voucher_ao_cliente(venda: Dict) -> None:
         # o `pontos_app` nem se gasta um pedido de rede com quem espera ao
         # balcão.
         return
-    ligacao_id = ((venda.get("pontos_ligacao") or {}).get("id") or "").strip()
+    ligacao_id = (next((li.get("voucher_ligacao_id") for li in venda.get("linhas") or []
+                        if li.get("voucher_id") and li.get("voucher_ligacao_id")), None)
+                  or (venda.get("pontos_ligacao") or {}).get("id") or "").strip()
     if not ligacao_id:
         logger.error(
             "[faturacao] a venda %s foi cancelada com uma recompensa L'Açaí "

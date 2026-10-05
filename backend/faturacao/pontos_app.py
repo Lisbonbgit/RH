@@ -725,6 +725,7 @@ async def voucher_ao_balcao(
                 # Guardar o valor anterior era um campo novo por um caso que ao
                 # balcão não acontece — a alternativa é gravá-lo se aparecer.
                 li["desconto_eur"] = None
+                li["voucher_ligacao_id"] = None
         alvo = (next((li for li in linhas if li.get("id") == alvo_id), None)
                 if voucher_id else None)
         if alvo is not None:
@@ -735,7 +736,12 @@ async def voucher_ao_balcao(
             # (`precos.linha_de_venda`). A elegibilidade da app impede-o
             # (`unit_price >= valor`), e é por isso mesmo que se confirma aqui.
             _linha_vendus(candidata)
-            alvo.update({"voucher_id": voucher_id, "desconto_eur": valor})
+            # A LIGAÇÃO vai com a marca: é a única chave que nomeia a reserva do
+            # lado da app (`pos:{ligação}`), e o `pontos_ligacao` da venda só
+            # nasce no EMITIR. Sem ela aqui, cancelar a conta não tinha como
+            # devolver o voucher (`venda._devolver_o_voucher_ao_cliente`).
+            alvo.update({"voucher_id": voucher_id, "desconto_eur": valor,
+                         "voucher_ligacao_id": ligacao_id})
         return linhas
 
     try:
