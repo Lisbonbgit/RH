@@ -20,7 +20,8 @@ import pytest
 from .test_a_faixa_do_modo_no_ecra import _montar_no_node
 from .test_as_fotos_no_ecra import _COMPONENTES
 from .test_o_dividir_e_o_separar_no_ecra import (
-    _ACAI, _COOKIE, _L_ACAI, _L_COOKIE, _arranque, _conta, _correr, _linha)
+    _ACAI, _CATALOGO, _COOKIE, _L_ACAI, _L_COOKIE, _arranque, _conta, _correr,
+    _linha, _produto)
 
 _CODIGO = "LQ7K2MN8P3QRSTUV4WXYZ9AB"
 _MSG_QR_INVALIDO = "QR inválido ou expirado — peça ao cliente para abrir o QR outra vez."
@@ -904,3 +905,152 @@ def test_a_pergunta_nao_ressuscita_no_cliente_SEGUINTE(pergunta_pegajosa):
     assert "Quer atribuir os pontos?" not in r["noClienteSeguinte"], (
         "A pergunta ressuscitou na conta do cliente seguinte: %s"
         % r["noClienteSeguinte"][:600])
+
+
+# --- As vendas das Aplicações não perguntam --------------------------------------
+#
+# **Uma encomenda da Uber Eats, da Glovo ou da Bolt chega sem cliente ao
+# balcão.** A operadora só faz a fatura do pedido: não há QR nenhum para
+# mostrar, e a pergunta era um «Não» a carregar em todas. Reconhecem-se pelos
+# artigos — os da categoria «Vendas Aplicações» só se vendem nessas encomendas.
+
+_CAT_APPS = {"id": "cat-apps", "nome": "Vendas Aplicações", "ordem": 1, "ativa": True}
+_UBER = dict(_produto("p-uber", "Açaí Regular", 10.99), categoria_id="cat-apps")
+_L_UBER = _linha("l9", "p-uber", "Açaí Regular", 10.99)
+_CATALOGO_COM_APPS = dict(
+    _CATALOGO,
+    categorias=_CATALOGO["categorias"] + [_CAT_APPS],
+    produtos=_CATALOGO["produtos"] + [_UBER],
+)
+
+
+def _finalizar_com_apps(linhas, nome, tmp_path_factory):
+    return _correr("\n".join([
+        _na_pergunta("\n".join([
+            "RESPOSTAS_POS['/pos/catalogo'] = () => ({ data: %s });"
+            % json.dumps(_CATALOGO_COM_APPS, ensure_ascii=False),
+            "RESPOSTAS_POS['/pos/venda/aberta'] = () => ({ data: %s });"
+            % json.dumps(_conta("v-1", linhas), ensure_ascii=False),
+        ])),
+        "const depoisDoFinalizar = textoVisivel(alvo);",
+        "const temCampoDoLeitor = !!alvo.querySelector('#qr-dos-pontos');",
+        "const emitirAntes = !!botao('EMITIR DOCUMENTO');",
+        "process.stdout.write(JSON.stringify({",
+        "  depoisDoFinalizar, temCampoDoLeitor, emitirAntes }));",
+    ]), tmp_path_factory, nome)
+
+
+@pytest.fixture(scope="module")
+def das_aplicacoes(tmp_path_factory):
+    return _finalizar_com_apps([_L_UBER], "pontos-aplicacoes", tmp_path_factory)
+
+
+@pytest.fixture(scope="module")
+def do_balcao_com_apps_no_catalogo(tmp_path_factory):
+    return _finalizar_com_apps(
+        [_L_COOKIE, _L_ACAI], "pontos-balcao-com-apps", tmp_path_factory)
+
+
+def test_a_venda_das_Aplicacoes_vai_do_FINALIZAR_direita_ao_pagamento(das_aplicacoes):
+    ecra = das_aplicacoes["depoisDoFinalizar"]
+    assert "Quer atribuir os pontos?" not in ecra, ecra[:600]
+    assert das_aplicacoes["temCampoDoLeitor"] is False, ecra[:600]
+    assert "EMITIR DOCUMENTO" in ecra, ecra[:600]
+    # O cartão continua lá: é a saída para o caso raro, e não custa nada.
+    assert "Ler QR do cliente" in ecra, ecra[:600]
+
+
+def test_a_venda_do_balcao_continua_a_perguntar_com_as_Aplicacoes_no_catalogo(
+        do_balcao_com_apps_no_catalogo):
+    """O guarda do de cima: a regra decide pelos ARTIGOS DA CONTA, não por a
+    categoria existir. Sem isto, «nunca perguntar» passava no teste acima."""
+    ecra = do_balcao_com_apps_no_catalogo["depoisDoFinalizar"]
+    assert "Quer atribuir os pontos?" in ecra, ecra[:600]
+    assert do_balcao_com_apps_no_catalogo["emitirAntes"] is False
+
+
+
+@pytest.fixture(scope="module")
+def uber_do_zero(tmp_path_factory):
+    """O caminho de todos os dias: a conta começa VAZIA e a operadora toca no
+    artigo das Aplicações. A conta nasce sem linhas e a linha chega depois
+    (com um atraso de rede), com o MESMO id de conta — é isto que prova que o
+    FINALIZAR lê as linhas de agora e não as do momento em que a conta nasceu
+    (as dependências do `finalizarPelaConta`)."""
+    return _correr("\n".join([
+        _COMPONENTES,
+        "SUBSTITUIDOS.delete(path.join(POS, 'PosVenda.js'));",
+        "const lib = carregar(path.join(RAIZ, 'lib', 'pos.js'));",
+        "lib.guardarDispositivo({ device_token: 'dt', loja_id: 'l1', loja_nome: 'Loja' });",
+        "lib.guardarOperador('ot', { id: 'o1', nome: 'Ana' });",
+        "const PosVenda = carregar(path.join(POS, 'PosVenda.js')).default;",
+        "RESPOSTAS_POS['/pos/catalogo'] = () => ({ data: %s });"
+        % json.dumps(_CATALOGO_COM_APPS, ensure_ascii=False),
+        "RESPOSTAS_POS['/pos/tipos-pagamento'] = () => ({ data: [",
+        "  { id: 'tp-1', nome: 'Dinheiro', da_troco: true, pronto: true } ] });",
+        "RESPOSTAS_POS['/pos/venda/repartidas'] = () => ({ data: { grupos: [] } });",
+        "RESPOSTAS_POS['/pos/modo-de-emissao'] = () => ({ data: { modo: 'normal' } });",
+        "RESPOSTAS_POS['/pos/impressao/estado'] = () => ({ data:"
+        " { ha_programa: true, por_sair: 0, falhados: 0 } });",
+        "RESPOSTAS_POS['/pos/venda/aberta'] = () => ({ data: null });",
+        "RESPOSTAS_POS['POST /pos/venda'] = () => ({ data: %s });"
+        % json.dumps(_conta("v-1", []), ensure_ascii=False),
+        "RESPOSTAS_POS['POST /pos/venda/v-1/linhas'] = () => new Promise(",
+        "  (r) => setTimeout(() => r({ data: %s }), 30));"
+        % json.dumps(_conta("v-1", [_L_UBER]), ensure_ascii=False),
+        "const alvo = document.getElementById('raiz');",
+        "const raiz = createRoot(alvo);",
+        "await act(async () => { raiz.render(React.createElement(PosVenda, {",
+        "  operador: { id: 'o1', nome: 'Ana' }, caixa: { id: 'c1', nome: 'Balcão' },",
+        "  sessao: { id: 's1', fundo: 50 }, lojaNome: 'Loja',",
+        "  onSair: () => {}, onCaixaFechada: () => {}, modo: 'normal' })); });",
+        "await act(async () => {});",
+        "await act(async () => {});",
+        "const cartao = [...alvo.querySelectorAll('button')].find(",
+        "  (b) => (b.textContent || '').includes('10,99'));",
+        "if (!cartao) throw new Error('sem o cartão do artigo das Aplicações: '",
+        "  + textoVisivel(alvo).slice(0, 400));",
+        "await act(async () => { cartao.click(); });",
+        "await act(async () => { await new Promise((r) => setTimeout(r, 80)); });",
+        "await act(async () => {});",
+        "const finalizar = [...alvo.querySelectorAll('button')].find(",
+        "  (b) => (b.textContent || '').includes('FINALIZAR') && !b.disabled);",
+        "if (!finalizar) throw new Error('FINALIZAR morto: ' + textoVisivel(alvo).slice(0, 400));",
+        "await act(async () => { finalizar.click(); });",
+        "await act(async () => {});",
+        "process.stdout.write(JSON.stringify({ depoisDoFinalizar: textoVisivel(alvo) }));",
+    ]), tmp_path_factory, "pontos-uber-do-zero")
+
+
+def test_a_encomenda_das_Aplicacoes_feita_do_zero_tambem_nao_pergunta(uber_do_zero):
+    ecra = uber_do_zero["depoisDoFinalizar"]
+    assert "Quer atribuir os pontos?" not in ecra, ecra[:600]
+    assert "EMITIR DOCUMENTO" in ecra, ecra[:600]
+
+def _e_das_aplicacoes(linhas, catalogo, tmp_path):
+    return _montar_no_node("\n".join([
+        "const lib = carregar(path.join(RAIZ, 'lib', 'pos.js'));",
+        "process.stdout.write(JSON.stringify({ r: lib.eContaDasAplicacoes(%s, %s) }));"
+        % (json.dumps(linhas, ensure_ascii=False), json.dumps(catalogo, ensure_ascii=False)),
+    ]), tmp_path, "e-das-aplicacoes.js")["r"]
+
+
+@pytest.mark.parametrize("nome", [
+    "Vendas Aplicações", "VENDAS APLICAÇÕES", "Vendas Aplicacoes", "Aplicação"])
+def test_a_categoria_reconhece_se_com_e_sem_acentos(nome, tmp_path):
+    catalogo = dict(_CATALOGO_COM_APPS, categorias=[dict(_CAT_APPS, nome=nome)])
+    assert _e_das_aplicacoes([_L_UBER], catalogo, tmp_path) is True
+
+
+@pytest.mark.parametrize("linhas, esperado", [
+    ([_L_COOKIE, _L_UBER], True),      # basta um artigo das Aplicações
+    ([_L_COOKIE, _L_ACAI], False),
+    ([], False),
+    ([_linha("lx", "p-apagado", "Fantasma", 1.0)], False),  # fora do catálogo
+])
+def test_decide_pelos_artigos_da_conta(linhas, esperado, tmp_path):
+    assert _e_das_aplicacoes(linhas, _CATALOGO_COM_APPS, tmp_path) is esperado
+
+
+def test_sem_catalogo_nao_e_das_aplicacoes(tmp_path):
+    assert _e_das_aplicacoes([_L_UBER], None, tmp_path) is False

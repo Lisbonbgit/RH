@@ -319,6 +319,24 @@ export const recadoDeCodigoQrErrado = (texto) => {
     + 'na caixa» e mostra-o ao leitor — o código começa por «LQ» e dura 45 segundos.';
 };
 
+// **As vendas das Aplicações não perguntam pelos pontos.** Uma encomenda da
+// Uber Eats, da Glovo ou da Bolt chega sem cliente ao balcão: a operadora só
+// faz a fatura do pedido, não há QR para mostrar (e a app recusaria os pontos
+// na mesma, pelo meio de pagamento). Reconhecem-se pelos artigos: os da
+// categoria «Vendas Aplicações» só se vendem nessas encomendas — basta UM.
+//
+// ponytail: casa pelo NOME da categoria (o do Vendus). Renomeada sem
+// «aplicaç», a pergunta volta — o comportamento de antes, nunca menos pontos.
+// Passar a um campo na categoria se isso alguma vez acontecer.
+export const eContaDasAplicacoes = (linhas, catalogo) => {
+  const dasAplicacoes = new Set((catalogo?.categorias || [])
+    .filter((c) => /aplica[cç]/i.test(c.nome || ''))
+    .map((c) => c.id));
+  if (!dasAplicacoes.size) return false;
+  const categoriaDe = new Map((catalogo?.produtos || []).map((p) => [p.id, p.categoria_id]));
+  return (linhas || []).some((l) => dasAplicacoes.has(categoriaDe.get(l.produto_id)));
+};
+
 
 // --- O voucher L'Açaí ao balcão ----------------------------------------------
 //
