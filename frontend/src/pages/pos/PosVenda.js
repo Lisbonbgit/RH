@@ -33,7 +33,7 @@ import {
   contaDeOutraCaixa, imprimirPedidoPos,
   razaoDeNaoImprimirPedido as razaoDeNaoImprimirPedidoLib,
   urlDaFotoPos,
-  guardarPontosDaConta, lerPontosDaConta,
+  guardarPontosDaConta, lerPontosDaConta, eContaDasAplicacoes,
   eurosPos as euros,
 } from '@/lib/pos';
 
@@ -2118,16 +2118,18 @@ export default function PosVenda({ caixa, onOperadorInvalido, contasCopiadas }) 
   // nada: a app só credita UMA fatura por ligação), nem a quem já disse que
   // não. Sem conta também não: o botão está morto sem linhas, e uma janela que
   // pede o QR de nada não tem onde guardar a resposta (`guardarPontosDaConta`
-  // recusa sem id).
+  // recusa sem id). E nas encomendas das Aplicações (Uber, Glovo, Bolt) não
+  // há cliente ao balcão para mostrar QR nenhum (`eContaDasAplicacoes`).
   const finalizarPelaConta = useCallback(() => {
     const id = venda?.id;
-    if (id && jaPerguntou.current !== id && !lerPontosDaConta(id)) {
+    if (id && jaPerguntou.current !== id && !lerPontosDaConta(id)
+        && !eContaDasAplicacoes(venda?.linhas, catalogo)) {
       jaPerguntou.current = id;
       setPontosPara(id);
       return;
     }
     irParaOPagamento();
-  }, [venda?.id, irParaOPagamento]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [venda?.id, venda?.linhas, catalogo, irParaOPagamento]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // **A conta que se parte esquece o cliente que lhe foi lido.** A ligação
   // fica presa ao id da CONTA, e repartir cria contas novas: a leitura da
