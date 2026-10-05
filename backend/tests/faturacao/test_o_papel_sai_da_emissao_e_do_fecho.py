@@ -18,6 +18,7 @@ import base64
 import pytest
 
 from faturacao import db as db_mod
+from faturacao import escpos
 from faturacao import impressao as imp
 from faturacao import pontos_app as pa
 from faturacao.db import COLECOES
@@ -210,7 +211,9 @@ def test_1_SEM_LIGACAO_sai_papel_e_nao_ha_linha_de_email_nenhuma(monkeypatch, en
     resultado = _finalizar(db, monkeypatch, cliente=_VendusNormal)
 
     assert resultado["estado"] == "emitida"
-    assert len(_fila(db)) == 1
+    # Só o talão: o impulso da gaveta já vem dentro dele, e um segundo abria-a
+    # duas vezes.
+    assert [t["tipo"] for t in _fila(db)] == [imp.TALAO]
     assert _emails(db) == []
     assert resultado["documento"]["fatura_por_email"] is False
 
@@ -224,7 +227,14 @@ def test_2_COM_A_PREFERENCIA_LIGADA_nao_sai_papel_e_fica_a_linha_do_email(monkey
                            pontos_ligacao=_LIGACAO)
 
     assert resultado["estado"] == "emitida"
-    assert _fila(db) == [], "com a fatura a ir por email, o talão não se imprime"
+    # **Sem talão, mas a gaveta abre na mesma.** O impulso da gaveta vinha
+    # DENTRO do talão do Vendus; sem papel ficava fechada — e é lá que se
+    # guarda o talão do Multibanco e de onde sai o troco.
+    [gaveta] = _fila(db)
+    assert gaveta["tipo"] == imp.GAVETA, "com a fatura a ir por email, o talão não se imprime"
+    assert gaveta["impressora"] == imp.CAIXA
+    assert gaveta["loja_id"] == "loja-1"
+    assert base64.b64decode(gaveta["bytes_b64"]) == escpos.abrir_gaveta()
     # **A decisão vai na resposta, porque é ela que o ecrã lê.** Refeita no
     # browser, a frase «não é preciso esperar pelo papel» aparecia por cima de
     # um talão que saiu mesmo — e nenhum dos casos abaixo se distinguia deste
@@ -262,7 +272,8 @@ def test_2b_a_MESMA_emissao_a_passar_duas_vezes_manda_UM_email_e_nao_traz_papel(
     _finalizar(db, monkeypatch, cliente=_VendusNormal, pontos_ligacao=_LIGACAO)
 
     assert len(_emails(db)) == 1
-    assert _fila(db) == [], "a segunda passagem não pode fazer sair papel"
+    assert [t["tipo"] for t in _fila(db)] == [imp.GAVETA], (
+        "a segunda passagem não pode fazer sair papel nem abrir a gaveta outra vez")
 
 
 def test_3_com_a_FILA_DO_EMAIL_a_rebentar_o_PAPEL_SAI_a_mesma(monkeypatch, envios):
@@ -345,7 +356,8 @@ def test_com_NIF_ESCRITO_a_fatura_vai_A_MESMA_por_email(monkeypatch, envios):
     _finalizar(db, monkeypatch, cliente=_VendusNormal,
                pontos_ligacao=_LIGACAO, nif="219363935")
 
-    assert _fila(db) == [], "com a preferência ligada, o NIF não faz sair papel"
+    assert [t["tipo"] for t in _fila(db)] == [imp.GAVETA], (
+        "com a preferência ligada, o NIF não faz sair papel")
     documento = db._coleccoes[COLECOES["documentos"]]._documentos[0]
     assert documento["cliente_nif"] == "219363935", (
         "o NIF vai escrito na fatura como sempre foi")
