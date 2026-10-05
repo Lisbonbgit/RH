@@ -709,3 +709,54 @@ def test_o_SEM_PONTOS_de_um_acai_oferecido_fecha_a_linha_em_FEITO(monkeypatch, a
     # E não se volta a bater à porta da app por uma oferta já resolvida.
     assert _corre(pontos_app.enviar(db, agora=AGORA + timedelta(days=1))) is None
     assert len(app.pedidos) == 1
+
+
+# --- Cancelar a conta devolve o voucher, com a ligação que a PRÓPRIA rota gravou --
+
+
+def test_CANCELAR_depois_de_ler_o_QR_devolve_o_voucher_ao_cliente(monkeypatch, app):
+    """**Medido em produção (Alfragide, 2026-10-05): duas contas canceladas, e as
+    duas recompensas ficaram presas.** A reserva do lado da app é `pos:{ligação}`
+    e a ligação é a ÚNICA chave que a nomeia; o cancelamento só a ia buscar ao
+    `pontos_ligacao`, que o servidor só grava no EMITIR — e numa conta cancelada
+    não chega a haver EMITIR. O cliente ficava ~2 h sem o voucher na carteira.
+
+    Este teste atravessa as duas metades de verdade: a rota do voucher aplica o
+    desconto (e grava a ligação NA LINHA), e o cancelamento lê-a de lá. Os testes
+    do `test_voucher_na_venda.py` punham `pontos_ligacao` na conta à mão — o
+    estado que na vida real nunca existe antes do EMITIR — e por isso estavam
+    verdes por cima do defeito."""
+    from faturacao import venda as venda_mod
+
+    app.responde(200, {"voucher_id": "vch-1", "valor": 7.2,
+                       "titulo": "Açaí Small", "linha_id_alvo": "linha-1"})
+    db = _db_do_voucher()
+    _pedir(monkeypatch, db, ligacao_id="lig-1")
+    conta = _corre(db[COLECOES["vendas"]].find_one({"id": "venda-1"}))
+    assert not conta.get("pontos_ligacao"), "o caso real: antes do EMITIR não há"
+    assert conta["linhas"][0]["voucher_id"] == "vch-1"
+
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    resultado = _corre(venda_mod.cancelar_venda("venda-1", operador=_operador()))
+
+    assert resultado["estado"] == "cancelada"
+    assert len(app.pedidos) == 2
+    # As linhas VAZIAS são o contrato da libertação do lado da app.
+    assert _corpos(app)[1] == {"ligacao_id": "lig-1", "linhas": []}
+
+
+def test_a_ligacao_sai_da_linha_com_a_marca(monkeypatch, app):
+    """Quando a app deixa de dar o voucher (a conta mudou, ou o «Remover»), a
+    marca sai da linha — e a ligação vai com ela. Ficar para trás era o
+    cancelamento a pedir à app que libertasse uma reserva que já não é desta
+    conta."""
+    app.responde(200, {})
+    db = _db_do_voucher(vendas=[_venda(linhas=[
+        _linha(id="linha-1", desconto_eur=7.2, voucher_id="vch-1",
+               voucher_ligacao_id="lig-1")])])
+
+    _pedir(monkeypatch, db, ligacao_id="lig-1")
+
+    linha = _linhas_gravadas(db)[0]
+    assert (linha["voucher_id"], linha["desconto_eur"], linha.get("voucher_ligacao_id")) \
+        == (None, None, None)
