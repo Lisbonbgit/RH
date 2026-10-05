@@ -124,9 +124,18 @@ def _cenario(conta, voucher_js, extra=""):
 
 # O cartão SOZINHO, e não o ecrã todo: as frases do voucher têm de estar onde a
 # funcionária está a olhar quando lê o nome do cliente.
+#
+# E o AVISO do desconto, que é uma janela por cima do ecrã: o banco desenha o
+# `Dialog` só enquanto está aberto, e é isso que separa «apareceu» de «está
+# no ficheiro».
 _CARTAO = "\n".join([
     "const cartao = () => {",
     "  const el = alvo.querySelector('[data-testid=\"cartao-pontos\"]');",
+    "  return el ? textoVisivel(el) : null;",
+    "};",
+    "const aviso = () => {",
+    "  const el = [...alvo.querySelectorAll('[data-dialogo=\"aberto\"]')]",
+    "    .find((d) => textoVisivel(d).includes('Recompensa aplicada'));",
     "  return el ? textoVisivel(el) : null;",
     "};",
 ])
@@ -166,9 +175,11 @@ def sem_voucher(tmp_path_factory):
     muda (`{}`) é o caso mais comum de todos."""
     return _montar(_CONTA, "() => ({ data: {} })", "\n".join([
         "const noCartao = cartao();",
+        "const avisoAberto = aviso();",
         "const ecra = textoVisivel(alvo);",
         _COM_DINHEIRO,
-        "process.stdout.write(JSON.stringify({ noCartao, ecra, emitirVivo, corpos, doVoucher }));",
+        "process.stdout.write(JSON.stringify({ noCartao, ecra, emitirVivo, corpos, doVoucher,",
+        "  avisoAberto }));",
     ]), tmp_path_factory, "voucher-sem")
 
 
@@ -195,9 +206,11 @@ def sem_produto(tmp_path_factory):
     return _montar(_CONTA, "() => ({ data: { motivo: 'sem_linha_elegivel', titulo: %s } })"
                    % json.dumps(_TITULO), "\n".join([
                        "const noCartao = cartao();",
+                       "const avisoAberto = aviso();",
                        "const ecra = textoVisivel(alvo);",
                        _COM_DINHEIRO,
-                       "process.stdout.write(JSON.stringify({ noCartao, ecra, emitirVivo, corpos }));",
+                       "process.stdout.write(JSON.stringify({ noCartao, ecra, emitirVivo, corpos,",
+                       "  avisoAberto }));",
                    ]), tmp_path_factory, "voucher-sem-produto")
 
 
@@ -257,6 +270,100 @@ def test_o_ecra_pergunta_pelo_voucher_ao_LIGAR_e_outra_vez_no_EMITIR(aplicado):
     estar."""
     assert aplicado["doVoucher"] == [
         {"ligacao_id": "lig-1"}, {"ligacao_id": "lig-1"}], aplicado["doVoucher"]
+
+
+@pytest.fixture(scope="module")
+def aplicado_com_a_rede_a_serio(tmp_path_factory):
+    """O mesmo desconto aplicado, mas com a resposta a chegar **depois** de o
+    ecrã assentar — que é o que a rede faz sempre.
+
+    O servidor fabricado responde no mesmo instante, e foi por isso que a
+    fixture `aplicado` ficou verde por cima de um ecrã que, em produção, DEITAVA
+    A RESPOSTA FORA (Alfragide, 2026-10-05: a app reservou o Açaí Small, o
+    servidor do POS gravou os 7,20 € de desconto na linha, e o ecrã continuou a
+    mostrar o total inteiro e um cartão sem recompensa nenhuma). A primeira
+    pergunta segura-se aqui até o ecrã ter acabado de montar, e só então se
+    solta; a do EMITIR responde logo."""
+    resposta = json.dumps(_VOUCHER_APLICADO, ensure_ascii=False)
+    return _montar(_CONTA, "\n".join([
+        "(() => {",
+        "  let perguntas = 0;",
+        "  return () => {",
+        "    perguntas += 1;",
+        "    if (perguntas > 1) return { data: %s };" % resposta,
+        "    return new Promise((r) => { global.soltarOVoucher = () => r({ data: %s }); });"
+        % resposta,
+        "  };",
+        "})()",
+    ]), "\n".join([
+        "if (typeof global.soltarOVoucher !== 'function') {",
+        "  throw new Error('o ecrã não perguntou pelo voucher ao montar');",
+        "}",
+        "await act(async () => {});",
+        "const avisoAntes = aviso();",
+        "await act(async () => { global.soltarOVoucher(); });",
+        "await act(async () => {});",
+        "const noCartao = cartao();",
+        "const avisoDepois = aviso();",
+        "await carregar_em('Entendi');",
+        "const avisoFechado = aviso();",
+        "const ecra = textoVisivel(alvo);",
+        # O EMITIR pergunta outra vez, devolve a MESMA recompensa, e emite —
+        # medido ANTES de a resposta da emissão trocar o ecrã pelo documento.
+        "const finalizar = RESPOSTAS_POS['POST /pos/venda/v-1/finalizar'];",
+        "let avisoNoEmitir = 'por medir';",
+        "RESPOSTAS_POS['POST /pos/venda/v-1/finalizar'] = () => {",
+        "  avisoNoEmitir = aviso();",
+        "  return finalizar();",
+        "};",
+        _COM_DINHEIRO,
+        "process.stdout.write(JSON.stringify({ noCartao, ecra, emitirVivo, corpos, doVoucher,",
+        "  avisoAntes, avisoDepois, avisoFechado, avisoNoEmitir }));",
+    ]), tmp_path_factory, "voucher-rede-a-serio")
+
+
+def test_a_resposta_que_chega_DEPOIS_de_o_ecra_montar_nao_se_deita_fora(
+        aplicado_com_a_rede_a_serio):
+    """**O cliente da gaveta lê-se duas vezes ao montar** (o estado inicial e o
+    efeito que recomeça a conta), e cada leitura é um `JSON.parse` — um objecto
+    NOVO com o mesmo `id`. Comparar a ligação por identidade dava «outro
+    cliente» à resposta da primeira pergunta, e o desconto que o servidor já
+    tinha gravado nunca chegava ao cartão nem ao total."""
+    r = aplicado_com_a_rede_a_serio
+    assert _APLICADO in r["noCartao"], r["noCartao"]
+    assert "Total € 3,80" in r["ecra"], r["ecra"][:600]
+    assert r["emitirVivo"] is True
+    assert r["corpos"] == [{**r["corpos"][0], "pagamentos": [
+        {"tipo_pagamento_id": "tp-1", "valor": 3.8}]}], r["corpos"]
+
+
+def test_com_desconto_aplicado_ABRE_o_aviso_com_o_total_a_cobrar(aplicado_com_a_rede_a_serio):
+    """**Pedido do dono (2026-10-05): a funcionária cobra «no automático».** O
+    total do Finalizar desce sem barulho nenhum quando a recompensa entra — e
+    quem já tem o valor de cabeça cobra o de antes. O aviso põe por cima do
+    ecrã QUAL recompensa entrou e QUANTO há a cobrar agora.
+
+    Só abre quando a resposta CHEGA: antes dela não há desconto nenhum para
+    anunciar. E fecha-se com um toque."""
+    r = aplicado_com_a_rede_a_serio
+    assert r["avisoAntes"] is None, r["avisoAntes"]
+    assert r["avisoDepois"] is not None, r["ecra"][:600]
+    assert _APLICADO in r["avisoDepois"], r["avisoDepois"]
+    assert "Total a cobrar € 3,80" in r["avisoDepois"], r["avisoDepois"]
+    assert r["avisoFechado"] is None, r["avisoFechado"]
+    # A segunda pergunta, no EMITIR, devolve a mesma recompensa: não há nada de
+    # novo a anunciar, e um aviso a reabrir em cada EMITIR era um aviso que ela
+    # aprende a fechar sem ler.
+    assert r["avisoNoEmitir"] is None, r["avisoNoEmitir"]
+
+
+def test_sem_desconto_NAO_ha_aviso_nenhum(sem_voucher, sem_produto):
+    """Sem recompensa, ou com recompensa e nada nesta conta que sirva: o total
+    não mudou, e uma janela por cima do ecrã em todas as vendas com QR era um
+    aviso que se aprende a fechar sem ler. O «não há nada que sirva» fica no
+    cartão, onde já estava."""
+    assert sem_voucher["avisoAberto"] is None, sem_voucher["avisoAberto"]
+    assert sem_produto["avisoAberto"] is None, sem_produto["avisoAberto"]
 
 
 def test_com_recompensa_e_nada_que_sirva_o_cartao_MANDA_acrescentar_o_produto(sem_produto):

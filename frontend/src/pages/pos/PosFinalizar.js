@@ -10,6 +10,9 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible';
+import {
+  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
 import PosCampoValor, { TecladoNumerico, comVirgula } from './PosCampoValor';
 import PosLerQr from './PosLerQr';
 import {
@@ -1205,6 +1208,12 @@ export default function PosFinalizar({
   const vendaAgora = useRef(venda);
   vendaAgora.current = venda;
   const [aPedirVoucher, setAPedirVoucher] = useState(false);
+  // **O aviso do desconto, por cima do ecrã** (pedido do dono, 2026-10-05).
+  // O total desce sem barulho nenhum quando a recompensa entra, e quem cobra
+  // «no automático» cobra o de antes. Abre só quando ENTRA um desconto novo —
+  // nunca sem voucher, nunca no «não há nada que sirva» (o total não mudou), e
+  // não se repete na segunda pergunta do EMITIR com a mesma recompensa.
+  const [avisoDoVoucher, setAvisoDoVoucher] = useState(null);
 
   // **A pergunta à app, pela rota do POS.** Devolve `{ ok, estado }` — `ok` é
   // se houve RESPOSTA, e não se havia voucher.
@@ -1233,9 +1242,20 @@ export default function PosFinalizar({
       // A conta já não é esta, ou o cliente saiu da fatura: esta resposta
       // ficou sem dono e escrevê-la era pôr o desconto de uma conta à frente
       // de outra.
-      if (vendaAgora.current === base && ligacaoAgora.current === lig) {
+      //
+      // **O cliente compara-se pelo `id`, nunca pelo objecto** — como no
+      // `mudarPreferencia`. Ao montar, a gaveta lê-se DUAS vezes (o estado
+      // inicial e o efeito do `venda?.id`), e cada leitura é um `JSON.parse`:
+      // o mesmo cliente num objecto novo. Por identidade, a resposta da
+      // primeira pergunta dava-se por «de outro cliente» e ia fora — em
+      // produção (Alfragide, 2026-10-05) o desconto ficou gravado na linha e o
+      // ecrã mostrou o total inteiro, sem uma palavra sobre a recompensa.
+      if (vendaAgora.current === base && ligacaoAgora.current?.id === lig?.id) {
         setVoucher(estado);
         setVendaDoVoucher(nova ? { base, venda: nova } : null);
+        if (estado?.tipo === 'aplicado' && marcaDoVoucher(estado) !== marcaDoVoucher(voucher)) {
+          setAvisoDoVoucher(estado);
+        }
       }
       return { ok: true, estado };
     } catch (error) {
@@ -1798,6 +1818,21 @@ export default function PosFinalizar({
               onFechar={() => setALerQr(false)}
             />
           )}
+          {/* O total vem do mesmo `vendaViva` do ecrã: as três escritas da
+              resposta (cartão, conta, aviso) chegam no mesmo render. */}
+          <Dialog open={!!avisoDoVoucher} onOpenChange={(aberta) => { if (!aberta) setAvisoDoVoucher(null); }}>
+            <DialogContent className="max-w-md" onInteractOutside={(e) => e.preventDefault()}>
+              <DialogHeader>
+                <DialogTitle>Recompensa aplicada</DialogTitle>
+                <DialogDescription>{avisoDoVoucher?.texto}</DialogDescription>
+              </DialogHeader>
+              <p className="text-sm text-muted-foreground">Total a cobrar</p>
+              <p className="font-heading font-bold text-5xl tabular-nums">{euros(total)}</p>
+              <Button className="h-12 w-full mt-2" onClick={() => setAvisoDoVoucher(null)}>
+                Entendi
+              </Button>
+            </DialogContent>
+          </Dialog>
 
           <Cartao titulo="Pagamento" icone={CreditCard}>
             {/* **A zero diz-se porquê, e não se fica só com o botão aceso.** A
