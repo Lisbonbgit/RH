@@ -416,6 +416,26 @@ async def enfileirar_venda_emitida(db, venda: Dict, documento: Dict) -> None:
     )
 
 
+async def enfileirar_gaveta_da_venda(db, venda: Dict, documento: Dict) -> None:
+    """A fatura foi por email e o talão não sai: **a gaveta abre na mesma.**
+
+    O impulso da gaveta vem DENTRO do talão do Vendus. Sem papel, a gaveta
+    ficava fechada — e é lá que se guarda o talão do Multibanco e de onde sai
+    o troco. Este é o mesmo impulso do botão «Abrir Gaveta», com a chave do
+    DOCUMENTO: uma retoma da mesma emissão não a abre duas vezes.
+
+    Nunca levanta nada — passa por `enfileirar`, que engole tudo."""
+    await enfileirar(
+        db,
+        loja_id=venda["loja_id"],
+        dispositivo_id=venda.get("dispositivo_id"),
+        impressora=CAIXA,
+        tipo=GAVETA,
+        dados=escpos.abrir_gaveta(),
+        chave="gaveta:%s" % documento.get("id"),
+    )
+
+
 async def enfileirar_nota_emitida(
     db, nota: Dict, documento: Dict, dispositivo_id: Optional[str] = None
 ) -> None:

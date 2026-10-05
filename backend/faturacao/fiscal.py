@@ -2359,7 +2359,7 @@ async def finalizar(
     # cliente sem nada — ver o `fatura_por_email` da resposta, no fim.
     fatura_por_email = False
     try:
-        from .impressao import enfileirar_venda_emitida
+        from .impressao import enfileirar_gaveta_da_venda, enfileirar_venda_emitida
         from .pontos_app import enfileirar_fatura_email
         # **As duas decisões são UMA.** O papel só se salta quando a linha do
         # email foi MESMO criada — `enfileirar_fatura_email` devolve `True` só
@@ -2377,7 +2377,10 @@ async def finalizar(
         # aqui, e só a venda gravada tem a ligação que valeu.
         fatura_por_email = await enfileirar_fatura_email(
             db, venda_actualizada or venda, documento)
-        if not fatura_por_email:
+        if fatura_por_email:
+            # O impulso da gaveta vinha dentro do talão: sem papel, vai sozinho.
+            await enfileirar_gaveta_da_venda(db, venda_actualizada or venda, documento)
+        else:
             await enfileirar_venda_emitida(db, venda_actualizada or venda, documento)
     except Exception as e:  # noqa: BLE001 — perde-se o papel, nunca o registo
         logger.error(
