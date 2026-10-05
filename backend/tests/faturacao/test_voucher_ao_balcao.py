@@ -588,9 +588,10 @@ def test_o_REMOVER_manda_a_ligacao_a_NULO_e_tira_a_marca_e_o_desconto(monkeypatc
     assert (linhas[0]["voucher_id"], linhas[0]["desconto_eur"]) == (None, None)
     # E o total volta com a conta, senão o ecrã continuava a mostrar o desconto.
     assert resposta["venda"]["totais"]["total"] == 8.99
-    # Sem ligação não há a quem perguntar: a reserva do lado da app não se
-    # consegue nomear daqui e morre sozinha em 15 minutos
-    # (`services_vouchers.release_stale_reservations`).
+    # Uma linha marcada SEM `voucher_ligacao_id` (gravada antes de 2026-10-05)
+    # não tem a quem nomear: a reserva morre sozinha quando a ligação sair da
+    # janela das 2 h. Com a ligação gravada, ver
+    # `test_o_REMOVER_devolve_o_voucher_DEPOIS_de_tirar_o_desconto`.
     assert app.pedidos == []
 
 
@@ -760,3 +761,82 @@ def test_a_ligacao_sai_da_linha_com_a_marca(monkeypatch, app):
     linha = _linhas_gravadas(db)[0]
     assert (linha["voucher_id"], linha["desconto_eur"], linha.get("voucher_ligacao_id")) \
         == (None, None, None)
+
+
+# --- «Remover» e reler o QR também devolvem o voucher ------------------------------
+
+
+def _conta_marcada_por(ligacao):
+    """A conta com a recompensa aplicada pela leitura `ligacao` — a marca, o
+    desconto e a ligação na linha, como a própria rota os grava."""
+    return _db_do_voucher(vendas=[_venda(linhas=[
+        _linha(id="linha-1", desconto_eur=7.2, voucher_id="vch-1",
+               voucher_ligacao_id=ligacao)])])
+
+
+def test_o_REMOVER_devolve_o_voucher_DEPOIS_de_tirar_o_desconto(monkeypatch, app):
+    """O «Remover» tirava a marca e o desconto da conta e deixava a reserva da
+    app presa ~2 h: o cliente saía da fatura sem desconto E sem a recompensa na
+    carteira. A ligação está gravada na linha; é por ela que se liberta.
+
+    **Depois** de a conta ficar sem desconto, e não antes: libertar primeiro e a
+    escrita falhar deixava a conta COM desconto e o voucher outra vez na
+    carteira — o açaí oferecido E a recompensa devolvida."""
+    db = _conta_marcada_por("lig-1")
+    marcas_quando_a_app_ouve = []
+    transporte = pontos_app._transporte
+
+    def espia(pedido):
+        # Lido do duplo SEM `_corre`: o pedido já corre dentro do ciclo.
+        conta = db._coleccoes[COLECOES["vendas"]]._documentos[0]
+        marcas_quando_a_app_ouve.append(conta["linhas"][0]["voucher_id"])
+        return transporte.handler(pedido)
+
+    monkeypatch.setattr(pontos_app, "_transporte", httpx.MockTransport(espia))
+    app.responde(200, {})
+
+    _pedir(monkeypatch, db, ligacao_id=None)
+
+    linha = _linhas_gravadas(db)[0]
+    assert (linha["voucher_id"], linha["desconto_eur"], linha["voucher_ligacao_id"]) \
+        == (None, None, None)
+    assert _corpos(app) == [{"ligacao_id": "lig-1", "linhas": []}]
+    assert marcas_quando_a_app_ouve == [None]
+
+
+def test_RELER_o_QR_liberta_a_leitura_anterior_ANTES_de_perguntar(monkeypatch, app):
+    """Medido em produção (Alfragide, 2026-10-05 12:00:47): a segunda leitura do
+    QR na mesma conta cria uma ligação NOVA. A app procurava um voucher activo
+    para ela, não encontrava nenhum — estava reservado pela PRIMEIRA — e
+    respondia `{}`; a conta perdia o desconto e a reserva ficava órfã ~2 h.
+
+    A leitura anterior liberta-se antes de perguntar com a nova, e é a nova que
+    fica gravada na linha."""
+    db = _conta_marcada_por("lig-1")
+    app.responde(200, {"voucher_id": "vch-1", "valor": 7.2,
+                       "titulo": "Açaí Small", "linha_id_alvo": "linha-1"})
+
+    resposta = _pedir(monkeypatch, db, ligacao_id="lig-2")
+
+    corpos = _corpos(app)
+    assert corpos[0] == {"ligacao_id": "lig-1", "linhas": []}
+    assert corpos[1]["ligacao_id"] == "lig-2" and corpos[1]["linhas"], corpos
+    assert len(corpos) == 2
+    assert resposta["voucher_id"] == "vch-1"
+    linha = _linhas_gravadas(db)[0]
+    assert (linha["voucher_id"], linha["voucher_ligacao_id"]) == ("vch-1", "lig-2")
+
+
+def test_a_pergunta_do_EMITIR_com_a_MESMA_ligacao_nao_liberta_nada(monkeypatch, app):
+    """A contraprova das duas de cima: a rota corre outra vez no EMITIR, com a
+    ligação de sempre. Libertar aí era soltar o voucher que a conta está prestes
+    a usar — a app voltava a reservá-lo logo a seguir, mas no intervalo ele
+    estava na carteira e podia ser gasto num pedido da app."""
+    db = _conta_marcada_por("lig-1")
+    app.responde(200, {"voucher_id": "vch-1", "valor": 7.2,
+                       "titulo": "Açaí Small", "linha_id_alvo": "linha-1"})
+
+    _pedir(monkeypatch, db, ligacao_id="lig-1")
+
+    corpos = _corpos(app)
+    assert len(corpos) == 1 and corpos[0]["ligacao_id"] == "lig-1" and corpos[0]["linhas"]
