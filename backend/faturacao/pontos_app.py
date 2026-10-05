@@ -669,11 +669,25 @@ async def voucher_ao_balcao(
     # que o ecrã pede é «tira o desconto e a marca desta conta» — e um `{}` é
     # exactamente «não há voucher», que é a resposta que o caminho abaixo já sabe
     # tratar (limpa a marca e o desconto das linhas). A reserva do lado da app
-    # fica sem quem a liberte daqui — não temos ligação nenhuma para a nomear —
-    # e morre sozinha em 15 minutos
-    # (`services_vouchers.release_stale_reservations`): o voucher volta ao
-    # cliente, que é o lado seguro.
+    # liberta-se DEPOIS dessa escrita, pela ligação que a linha guardou (ver o
+    # fim desta rota).
     ligacao_id = (dados.ligacao_id or "").strip() or None
+    # **A leitura que reservou a recompensa que esta conta JÁ tem** — gravada na
+    # linha por esta rota, ao lado da marca (`aplicar`). Linhas marcadas antes
+    # de 2026-10-05 não a têm: aí não há nada a nomear, e a reserva morre
+    # sozinha quando a ligação sair da janela das 2 h.
+    antiga = next((li.get("voucher_ligacao_id") for li in venda.get("linhas") or []
+                   if li.get("voucher_id") and li.get("voucher_ligacao_id")), None)
+    if antiga and ligacao_id and antiga != ligacao_id:
+        # **Reler o QR na mesma conta** (medido em Alfragide, 2026-10-05): a
+        # leitura nova é outra ligação, e a app não lhe dava o voucher — estava
+        # reservado pela anterior. Liberta-se a anterior ANTES de perguntar.
+        #
+        # ponytail: se a app responder a esta libertação e cair logo a seguir
+        # (a pergunta nova dá «não sei»), a conta fica com a marca antiga e o
+        # voucher na carteira; a pergunta do EMITIR repara-o. Só fica torto se a
+        # app continuar em baixo no EMITIR — o mesmo risco de toda a integração.
+        await _libertar_na_app(antiga, venda_id)
     corpo: Optional[Dict] = {}
     if ligacao_id:
         corpo = await escolher_voucher(
@@ -757,6 +771,11 @@ async def voucher_ao_balcao(
         if voucher_id:
             await _libertar_na_app(ligacao_id, venda_id)
         raise
+    if antiga and not ligacao_id:
+        # O «Remover», com o desconto JÁ fora da conta: só agora se devolve o
+        # voucher. Ao contrário, uma escrita falhada deixava a conta descontada
+        # E a recompensa outra vez na carteira.
+        await _libertar_na_app(antiga, venda_id)
     if voucher_id and not any(
             li.get("voucher_id") == voucher_id for li in venda["linhas"]):
         # A app escolheu uma linha que já não está na conta (foi removida entre
