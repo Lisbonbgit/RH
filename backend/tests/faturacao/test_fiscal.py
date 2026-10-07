@@ -4093,7 +4093,9 @@ def test_juntar_linha_dentro_da_janela_de_validacao_nao_deixa_sair_fatura(monkey
             PedidoJuntarLinha(produto_id="prod-1", quantidade=1),
             operador=_operador(operador_id="op-ana", nome="Ana"),
         )
-        juntadas.append(len(resposta["linhas"]))
+        # Quantidade total e não linhas: o mesmo produto simples soma à linha
+        # que já lá está («2×») — e é essa mudança que a corrida tem de apanhar.
+        juntadas.append(sum(li["quantidade"] for li in resposta["linhas"]))
 
     db = DbFalsa({
         COLECOES["vendas"]: ColeccaoFalsa([_venda(linhas=[_linha()])]),
@@ -4136,7 +4138,7 @@ def test_juntar_linha_dentro_da_janela_de_validacao_nao_deixa_sair_fatura(monkey
     assert cliente.chamadas_criar == [], (
         "saiu uma Fatura Simplificada REAL com os itens do retrato velho"
     )
-    assert len(_vendas_de(db)[0]["linhas"]) == 2
+    assert sum(li["quantidade"] for li in _vendas_de(db)[0]["linhas"]) == 2
     assert _vendas_de(db)[0]["estado"] == "aberta"
     assert _refs_de(db) == [], "a reserva abortada ficou a trancar a conta"
 

@@ -1018,10 +1018,7 @@ async def talao_do_documento(
 ) -> dict:
     """Os bytes ESC/POS do talão certificado desta fatura, em base64.
 
-    **É o caminho do servidor até ao ponto em que os bytes estão prontos** — o
-    agente de impressão da loja ainda não existe, e quando existir liga-se
-    aqui sem se mexer nisto. O botão do ecrã fica desligado até lá, com o mesmo
-    «Brevemente» dos outros botões de impressão do POS.
+    **É o caminho do servidor até ao ponto em que os bytes estão prontos.**
 
     Reimprimir NÃO volta ao Vendus, de propósito: o talão certificado é o que
     saiu no papel da primeira vez, e uma segunda ida ao Vendus podia trazer

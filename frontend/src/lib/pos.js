@@ -319,6 +319,21 @@ export const recadoDeCodigoQrErrado = (texto) => {
     + 'na caixa» e mostra-o ao leitor — o código começa por «LQ» e dura 45 segundos.';
 };
 
+// **O que o «Documento emitido» diz sobre o papel.** «Na fila» e nunca
+// «impresso» — a impressora não se vê daqui (a mesma frase da segunda via). E
+// só promete o que existe: uma fatura confirmada sem a resposta da emissão vem
+// SEM talão (`tem_talao: false`), e aí nem a fila nem Documentos têm papel.
+// Recuperada depois de uma dúvida, não se sabe se o papel chegou a sair.
+export const fraseDoPapel = ({ porEmail, temTalao, recuperado }) => {
+  if (porEmail) return 'Fatura vai por email — não é preciso esperar pelo papel.';
+  if (temTalao === false) {
+    return 'Esta fatura veio sem talão para imprimir. Se o cliente quiser papel, o gestor '
+      + 'tira o PDF no backoffice, em Documentos.';
+  }
+  if (recuperado) return 'Se o talão não saiu, reimprime-se em Documentos.';
+  return 'Talão na fila da impressora do balcão. Se não sair, reimprime-se em Documentos.';
+};
+
 // **As vendas das Aplicações não perguntam pelos pontos.** Uma encomenda da
 // Uber Eats, da Glovo ou da Bolt chega sem cliente ao balcão: a operadora só
 // faz a fatura do pedido, não há QR para mostrar (e a app recusaria os pontos

@@ -2041,6 +2041,10 @@ def _resposta_documento(documento: Dict) -> Dict:
         # O ecrã tem de poder avisar se saiu em modo 'tests' (sem valor
         # fiscal) — ver a docstring de VendusModoInvalido em vendus/emissao.py.
         "modo": documento.get("modo"),
+        # Uma fatura confirmada sem a resposta da emissão (timeout do Vendus,
+        # `procurar_por_referencia_externa`) vem SEM talão: nada vai para a fila
+        # e Documentos não a reimprime. O ecrã não pode dizer «na fila».
+        "tem_talao": bool(documento.get("talao_escpos")),
     }
 
 
