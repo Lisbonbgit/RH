@@ -406,7 +406,13 @@ export default function PosDialogoProduto({
     // "limpar", é "deixar como estava" — e um desconto tirado no ecrã ficava
     // na linha na mesma.
     onGravar({
-      quantidade: qtdNumero,
+      // **Excepto a quantidade, numa linha que já existe e em que ela não
+      // mexeu.** Ao contrário do desconto, a quantidade não se «limpa»:
+      // ausente é «deixar como está». Mandada sempre, um toque no mesmo
+      // produto ainda a caminho do servidor (que soma à linha, «2×») era
+      // reposto pelo número com que esta janela abriu — e a fatura saía com
+      // menos uma unidade do que a operadora picou.
+      ...(linha && qtdNumero === Number(arranque.quantidade) ? {} : { quantidade: qtdNumero }),
       opcoes,
       // Ao lado das opções e no MESMO pedido: o servidor lê-o com
       // `exclude_unset`, por isso mandar uma sem a outra deixava metade da

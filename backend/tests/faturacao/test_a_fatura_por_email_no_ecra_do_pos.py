@@ -325,7 +325,10 @@ def test_uma_resposta_TARDIA_nao_ressuscita_o_cliente_ja_removido(tardia):
 # e o servidor a dizer papel, que é o caso que este lado não tinha como saber.
 
 _FRASE_EMAIL = "Fatura vai por email — não é preciso esperar pelo papel."
-_FRASE_PAPEL = "assim que o agente de impressão da loja existir"
+_FRASE_PAPEL = "Talão na fila da impressora do balcão. Se não sair, reimprime-se em Documentos."
+# A frase de antes do programa de impressão existir — ficou meses no ecrã de
+# todas as vendas em papel depois de ele já imprimir (foto do dono, 05/10).
+_FRASE_VELHA = "agente de impressão"
 
 _LIDO_COM_EMAIL = "\n".join([
     "RESPOSTAS_POS['POST /pos/pontos/ler'] = () => ({ data: {",
@@ -465,6 +468,7 @@ def test_o_NIF_NAO_muda_a_frase_porque_quem_manda_e_o_seletor(emitida_com_nif):
 
 def test_em_modo_de_TESTES_o_ecra_continua_a_falar_de_PAPEL(emitida_em_testes):
     assert _FRASE_PAPEL in emitida_em_testes["emitido"], emitida_em_testes["emitido"][:800]
+    assert _FRASE_VELHA not in emitida_em_testes["emitido"], emitida_em_testes["emitido"][:800]
     assert "por email" not in emitida_em_testes["emitido"], emitida_em_testes["emitido"][:800]
     # E a faixa do modo continua lá: o documento de testes não vale nada.
     assert "SEM VALOR FISCAL" in emitida_em_testes["emitido"], \
@@ -495,3 +499,54 @@ def test_quando_o_SERVIDOR_diz_papel_o_ecra_diz_papel(emitida_com_o_servidor_a_d
     ecra = emitida_com_o_servidor_a_dizer_PAPEL["emitido"]
     assert _FRASE_PAPEL in ecra, ecra[:800]
     assert _FRASE_EMAIL not in ecra, ecra[:800]
+
+
+def test_o_ecra_do_pagamento_nao_diz_que_o_email_e_a_segunda_via_nao_existem():
+    """A irmã da frase do papel, no painel dos detalhes do MESMO ecrã: dizia
+    «Enviar o talão por email e a segunda via ainda não existem» — e o seletor
+    do email está nesse ecrã, e a segunda via em Documentos."""
+    from pathlib import Path
+    fonte = (Path(__file__).resolve().parents[3]
+             / "frontend" / "src" / "pages" / "pos" / "PosFinalizar.js").read_text(encoding="utf-8")
+    assert "ainda não existem neste ecrã" not in fonte
+    assert "agente de impressão" not in fonte
+
+
+
+# --- A fatura que veio SEM talão ---------------------------------------------------
+#
+# Achado da revisão (05/10): com o POST ao Vendus em timeout, a fatura é
+# confirmada por `procurar_por_referencia_externa`, que não pede `output=escpos`
+# — fica gravada sem talão, nada entra na fila e Documentos não a reimprime. A
+# frase «Talão na fila» mentia duas vezes.
+
+@pytest.fixture(scope="module")
+def emitida_sem_talao(tmp_path_factory):
+    return _emitiu(_finalizar_responde(fatura_por_email=False, tem_talao=False),
+                   tmp_path_factory, "emitida-sem-talao")
+
+
+def test_a_fatura_SEM_TALAO_nao_diz_que_esta_na_fila(emitida_sem_talao):
+    ecra = emitida_sem_talao["emitido"]
+    assert "na fila" not in ecra, ecra[:800]
+    assert "veio sem talão" in ecra, ecra[:800]
+
+
+def _frase(tmp_path, **estado):
+    return _montar_no_node("\n".join([
+        "const lib = carregar(path.join(RAIZ, 'lib', 'pos.js'));",
+        "process.stdout.write(JSON.stringify({ f: lib.fraseDoPapel(%s) }));"
+        % json.dumps(estado),
+    ]), tmp_path, "frase-do-papel.js")["f"]
+
+
+@pytest.mark.parametrize("estado, pedaco", [
+    ({"porEmail": True, "temTalao": True}, "por email"),
+    ({"porEmail": False, "temTalao": True}, "Talão na fila"),
+    ({"porEmail": False}, "Talão na fila"),          # servidor antigo, sem a chave
+    ({"porEmail": False, "temTalao": False}, "veio sem talão"),
+    ({"porEmail": False, "temTalao": False, "recuperado": True}, "veio sem talão"),
+    ({"porEmail": False, "temTalao": True, "recuperado": True}, "Se o talão não saiu"),
+])
+def test_a_frase_do_papel_caso_a_caso(estado, pedaco, tmp_path):
+    assert pedaco in _frase(tmp_path, **estado)

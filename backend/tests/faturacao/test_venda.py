@@ -736,6 +736,70 @@ def test_juntar_duas_linhas_acumula(monkeypatch):
     assert resultado["totais"]["subtotal"] == round(8.99 + 2.5, 2)
 
 
+
+# --- O mesmo produto tocado outra vez soma à linha ------------------------------
+#
+# Pedido do dono: «quando aperto no mesmo produto, em vez de duplicar, ele
+# adiciona um novo». Duas águas são «2× Água», não duas linhas.
+
+_UMA_ESCOLHA = [{"nome": "Nutella", "preco": 0.95}]
+
+
+def _agua(**over):
+    return _produto(**dict({"id": "agua", "nome": "Água", "preco": 1.0, "tax_id": "RED"}, **over))
+
+
+def _tocar(db, produto_id="agua", **dados):
+    dados.setdefault("quantidade", 1)
+    return _corre(juntar_linha(
+        "venda-1", PedidoJuntarLinha(produto_id=produto_id, **dados), operador=_operador()))
+
+
+def _db_da_agua(monkeypatch, **over):
+    db = _db([], caixas=[_caixa()], vendas=[_venda()], produtos=[_agua(**over)])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    return db
+
+
+def test_tocar_outra_vez_no_mesmo_produto_soma_a_quantidade_da_linha(monkeypatch):
+    db = _db_da_agua(monkeypatch)
+    primeira = _tocar(db)
+    segunda = _tocar(db)
+    [linha] = segunda["linhas"]
+    assert linha["quantidade"] == 2
+    assert linha["id"] == primeira["linhas"][0]["id"], "é a MESMA linha, não uma nova"
+    assert segunda["totais"]["total"] == 2.0
+    assert _tocar(db)["linhas"][0]["quantidade"] == 3
+
+
+def test_a_linha_com_desconto_nao_recebe_a_unidade_nova(monkeypatch):
+    """Com desconto (ou voucher), a linha já não é «a mesma»: somar-lhe uma
+    unidade esticava o desconto a um artigo que não o tinha."""
+    db = _db_da_agua(monkeypatch)
+    linha_id = _tocar(db)["linhas"][0]["id"]
+    _corre(editar_linha("venda-1", linha_id, PedidoEditarLinha(desconto_eur=0.5),
+                        operador=_operador()))
+    assert [l["quantidade"] for l in _tocar(db)["linhas"]] == [1, 1]
+
+
+def test_com_personalizacoes_cada_toque_continua_a_ser_uma_linha(monkeypatch):
+    """Um açaí com toppings é um copo: cada um tem a sua linha."""
+    db = _db_da_agua(monkeypatch)
+    opcoes = [{"nome": "Limão", "preco": 0.0}]
+    _tocar(db, opcoes=opcoes)
+    assert len(_tocar(db, opcoes=opcoes)["linhas"]) == 2
+
+
+def test_se_o_preco_mudou_entre_os_toques_fica_outra_linha(monkeypatch):
+    """O retrato da linha é o preço do momento: somar 2× a 1,00 € quando a
+    segunda unidade já custa 1,20 € cobrava-a ao preço antigo."""
+    db = _db_da_agua(monkeypatch)
+    _tocar(db)
+    db._coleccoes[COLECOES["produtos"]]._documentos[0]["preco"] = 1.2
+    resultado = _tocar(db)
+    assert [l["produto_preco"] for l in resultado["linhas"]] == [1.0, 1.2]
+
+
 def test_juntar_linha_com_personalizacoes_soma_ao_preco(monkeypatch):
     registo = []
     db = _db(registo, caixas=[_caixa()], vendas=[_venda()], produtos=[_produto()])
@@ -2185,8 +2249,10 @@ def test_a_reserva_de_outra_venda_nao_congela_esta_conta(monkeypatch):
     monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
     op = _operador()
 
+    # Com uma escolha, para ser OUTRA linha: o mesmo produto simples somava à
+    # que já lá está (ver `_linha_simples`), e aqui prova-se a escrita.
     assert len(_corre(juntar_linha(
-        "venda-1", PedidoJuntarLinha(produto_id="prod-1"), operador=op
+        "venda-1", PedidoJuntarLinha(produto_id="prod-1", opcoes=_UMA_ESCOLHA), operador=op
     ))["linhas"]) == 2
     assert _corre(editar_linha(
         "venda-1", "linha-1", PedidoEditarLinha(quantidade=3), operador=op
@@ -2398,7 +2464,7 @@ def test_as_quatro_rotas_continuam_a_escrever_quando_a_venda_esta_mesmo_aberta(m
     monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
     guardada = db._coleccoes[COLECOES["vendas"]]._documentos[0]
 
-    _corre(juntar_linha("venda-1", PedidoJuntarLinha(produto_id="prod-1"),
+    _corre(juntar_linha("venda-1", PedidoJuntarLinha(produto_id="prod-1", opcoes=_UMA_ESCOLHA),
                         operador=_operador()))
     assert len(guardada["linhas"]) == 2
 
@@ -2941,11 +3007,12 @@ def test_venda_emitida_a_meio_de_uma_alteracao_e_409_e_nao_uma_repeticao(monkeyp
     assert "já foi emitida" in excinfo.value.detail
 
 
-def test_dois_toques_no_mesmo_produto_ficam_as_duas_linhas(monkeypatch):
+def test_dois_toques_no_mesmo_produto_contam_os_dois(monkeypatch):
     """O que a operadora pediu foram DOIS açaís, e é isso que tem de ficar na
     conta. Antes desta correcção, dois toques que se cruzassem gravavam cada
     um a sua lista de uma linha e ficava UMA — o cliente levava dois e pagava
-    um."""
+    um. Hoje somam na mesma linha («2×»), e a promessa é a mesma: os dois
+    contam."""
     registo = []
     db, vendas = _db_de_duas_maos(registo, [])
     monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
@@ -2958,7 +3025,8 @@ def test_dois_toques_no_mesmo_produto_ficam_as_duas_linhas(monkeypatch):
     _corre(juntar_linha("venda-1", PedidoJuntarLinha(produto_id="prod-1"),
                         operador=_operador()))
 
-    assert _linhas_guardadas(db) == ["Açaí Regular", "Açaí Regular"]
+    guardadas = db._coleccoes[COLECOES["vendas"]]._documentos[0]["linhas"]
+    assert [(li["produto_nome"], li["quantidade"]) for li in guardadas] == [("Açaí Regular", 2)]
 
 
 # --- A guarda que a REPETIÇÃO refaz, e o tecto das tentativas ------------------
@@ -3136,9 +3204,10 @@ def test_quatro_toques_ao_mesmo_tempo_entram_todos_na_conta(monkeypatch):
 
     assert [s for s in saidas if isinstance(s, Exception)] == []
     guardadas = db._coleccoes[COLECOES["vendas"]]._documentos[0]
-    assert len(guardadas["linhas"]) == 4
+    # Somam na mesma linha (o mesmo produto simples): o que se prova é que
+    # nenhum dos quatro se perdeu.
+    assert sum(li["quantidade"] for li in guardadas["linhas"]) == 4
     assert guardadas["linhas_versao"] == 4, "quatro escritas, quatro versões"
-    assert len({li["id"] for li in guardadas["linhas"]}) == 4, "nenhuma linha a dobrar"
 
 
 def test_o_quinto_toque_ao_mesmo_tempo_leva_409_e_nunca_se_perde_em_silencio(monkeypatch):
@@ -3163,7 +3232,7 @@ def test_o_quinto_toque_ao_mesmo_tempo_leva_409_e_nunca_se_perde_em_silencio(mon
     assert recusados[0].status_code == 409
     assert "ao mesmo tempo" in recusados[0].detail
     guardadas = db._coleccoes[COLECOES["vendas"]]._documentos[0]
-    assert len(guardadas["linhas"]) == 4, (
+    assert sum(li["quantidade"] for li in guardadas["linhas"]) == 4, (
         "os quatro que passaram ficam gravados; o que foi recusado não escreveu nada"
     )
     assert len(saidas) - len(recusados) == 4, "os outros quatro receberam 201"
@@ -4379,3 +4448,14 @@ def test_reabrir_o_dialogo_NAO_perde_o_artigo_do_Vendus_do_tamanho(monkeypatch):
     ))
     opcoes = resultado["linhas"][0]["opcoes"]
     assert next(o for o in opcoes if o["id"] == "o-mini")["vendus_ref"] == "171258472"
+
+
+def test_uma_linha_partida_de_conta_dividida_nao_recebe_a_unidade_nova(monkeypatch):
+    """As partes de uma conta dividida têm quantidades como 0.33337: somar-lhes
+    um toque dava 1.33337 de um artigo, que ninguém pediu."""
+    db = _db([], caixas=[_caixa()], produtos=[_agua()],
+             vendas=[_venda(linhas=[dict(_linha(quantidade=0.33337), produto_id="agua",
+                                         produto_nome="Água", produto_preco=1.0,
+                                         produto_tax_id="RED")])])
+    monkeypatch.setattr(venda_mod, "obter_db", lambda: db)
+    assert [l["quantidade"] for l in _tocar(db)["linhas"]] == [0.33337, 1]

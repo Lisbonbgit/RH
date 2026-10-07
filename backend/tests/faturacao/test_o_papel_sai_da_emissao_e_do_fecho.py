@@ -553,3 +553,17 @@ def test_o_FECHO_continua_feito_quando_a_fila_de_impressao_rebenta(monkeypatch):
     z = _fechar(db, monkeypatch)
     assert z["estado"] == "fechada"
     assert z["esperado"] == 50.0
+
+
+@pytest.mark.parametrize("talao, esperado", [
+    (b"\x1b@talao", True), ("G0B0YWxhbw==", True), (b"", False), (None, False)])
+def test_a_resposta_diz_ao_ecra_se_a_fatura_TROUXE_TALAO(talao, esperado):
+    """Uma fatura confirmada sem a resposta da emissão vem sem talão: o ecrã
+    não pode dizer «Talão na fila» (ver `lib/pos.js::fraseDoPapel`)."""
+    from faturacao.fiscal import _resposta_documento
+    assert _resposta_documento({"id": "d-1", "talao_escpos": talao})["tem_talao"] is esperado
+
+
+def test_a_emissao_normal_responde_que_TEM_talao(monkeypatch):
+    resultado = _finalizar(_db_de_venda(), monkeypatch)
+    assert resultado["documento"]["tem_talao"] is True

@@ -561,7 +561,7 @@ def test_a_caixa_da_conta_desactivada_nao_deixa_o_dinheiro_sem_caminho(monkeypat
     depois = _corre(juntar_linha(
         "v-balcao", PedidoJuntarLinha(produto_id="prod-1", quantidade=1),
         operador=_op()))
-    assert len(depois["linhas"]) == 2
+    assert sum(li["quantidade"] for li in depois["linhas"]) == 2
 
 
 # --- Uma função, não duas -------------------------------------------------------

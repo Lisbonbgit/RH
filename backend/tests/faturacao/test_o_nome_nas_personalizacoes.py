@@ -152,4 +152,24 @@ def test_as_OPCOES_continuam_a_viajar_no_mesmo_gravar(ecra):
     apagava o Amendoim da conta."""
     gravado = ecra["gravados"][-1]
     assert [o["id"] for o in gravado["opcoes"]] == ["o-am"], gravado["opcoes"]
-    assert gravado["quantidade"] == 1
+    # A quantidade em que ninguém mexeu NÃO viaja: ausente é «deixar como
+    # está», e mandada repunha o número com que a janela abriu por cima de um
+    # toque no mesmo produto que entretanto somou à linha («2×»).
+    assert "quantidade" not in gravado, gravado
+
+
+@pytest.fixture(scope="module")
+def quantidade_mudada(tmp_path_factory):
+    return _monta([
+        "const mais = Array.from(alvo.querySelectorAll('button'))",
+        "  .find((b) => b.querySelector('[data-icone=\"Plus\"]'));",
+        "if (!mais) throw new Error('sem botão + na quantidade: ' + texto().slice(0, 300));",
+        "await carregar_em(mais);",
+        "await carregar_em(botaoDe('Gravar'));",
+    ], tmp_path_factory.mktemp("dialogo-qtd"), "dialogo-qtd.js")
+
+
+def test_a_quantidade_que_ela_MUDOU_viaja_no_gravar(quantidade_mudada):
+    """O outro lado da regra de cima: com o «+» carregado, o número segue."""
+    assert quantidade_mudada["gravados"], "O Gravar não chamou o servidor."
+    assert quantidade_mudada["gravados"][-1]["quantidade"] == 2

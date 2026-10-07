@@ -20,7 +20,7 @@ import {
   temMaisDe2CasasDecimaisPos, avisoDoDocumento, previsaoDoDividir,
   guardarNifDaConta, lerNifDaConta, nifValidoPT,
   guardarPontosDaConta, lerPontosDaConta, guardarPreferenciaDeFaturaPorEmail,
-  aFaturaVaiPorEmail, pedirVoucherDaConta, estadoDoVoucher, contaComVoucher,
+  aFaturaVaiPorEmail, pedirVoucherDaConta, estadoDoVoucher, contaComVoucher, fraseDoPapel,
   aAppNaoRespondeu,
 } from '@/lib/pos';
 
@@ -1040,21 +1040,15 @@ function DocumentoEmitido({ documento, troco, recuperado, onVoltar, rotuloVoltar
               este lado sabe; se falhar, aparece no alarme da loja e no
               relatório da noite, não aqui.
 
-              O talão sai sozinho quando o agente de impressão existir (Plano
-              3). Enquanto não existir, isto é uma frase e não um botão: um
-              botão "Imprimir" que não imprime nada fazia a operadora carregar
-              três vezes e dar o cliente por servido sem talão nenhum. */}
+              O papel diz «na fila», nunca «impresso» — é uma afirmação sobre
+              uma impressora que este ecrã não vê (a mesma frase da segunda via,
+              em PosFaturacao). Se o programa da loja falhar, o aviso da fila
+              di-lo na volta seguinte. */}
           <section className="rounded-2xl border bg-card p-4 text-sm text-muted-foreground flex items-start gap-2">
             {porEmail
               ? <Mail className="h-4 w-4 shrink-0 mt-0.5" />
               : <Printer className="h-4 w-4 shrink-0 mt-0.5" />}
-            <span>
-              {porEmail
-                ? 'Fatura vai por email — não é preciso esperar pelo papel.'
-                : 'O talão passa a sair sozinho assim que o agente de impressão da loja '
-                  + 'existir — ainda não existe. Por agora, o documento fica no Vendus e '
-                  + 'pode ser reimpresso a partir de lá.'}
-            </span>
+            <span>{fraseDoPapel({ porEmail, temTalao: documento?.tem_talao, recuperado })}</span>
           </section>
 
           {documento?.vendus_document_id && (
@@ -2077,8 +2071,8 @@ export default function PosFinalizar({
                 </p>
                 <Separator />
                 <p className="text-muted-foreground leading-snug">
-                  Enviar o talão por email e a segunda via ainda não existem neste ecrã. Depois de
-                  emitido, o documento fica sempre acessível no Vendus.
+                  Depois de emitido, o documento fica em Documentos — é lá que se reimprime a
+                  segunda via.
                 </p>
               </div>
             </CollapsibleContent>

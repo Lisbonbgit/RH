@@ -1701,6 +1701,22 @@ async def _carimbar_sai_na_fatura(
     return carimbadas
 
 
+_RETRATO = ("produto_id", "produto_nome", "produto_preco", "produto_tax_id",
+            "produto_vendus_ref", "deposito_unitario")
+
+
+def _linha_simples(linha: Dict) -> bool:
+    """Sem escolhas, sem texto, sem preço/IVA à mão, sem desconto nem voucher,
+    e em unidades inteiras (as partes de uma conta dividida têm 0.3337)."""
+    quantidade = linha.get("quantidade")
+    return (
+        not linha.get("opcoes") and not linha.get("respostas_texto")
+        and all(linha.get(c) is None for c in (
+            "preco_override", "tax_override", "desconto_pct", "desconto_eur", "voucher_id"))
+        and isinstance(quantidade, (int, float)) and float(quantidade).is_integer()
+    )
+
+
 @router.post("/pos/venda/{venda_id}/linhas", status_code=201)
 async def juntar_linha(
     venda_id: str, dados: PedidoJuntarLinha, operador: Dict = Depends(operador_atual)
@@ -1769,12 +1785,22 @@ async def juntar_linha(
 
     # A linha (com o `id` dela) constrói-se UMA vez, fora do ciclo: uma
     # repetição por conta alterada volta a juntá-la à conta relida, nunca cria
-    # uma linha nova. E se dois toques no mesmo produto se cruzarem, ficam as
-    # DUAS linhas — que é o que a operadora pediu, e o que já acontecia quando
-    # os pedidos chegavam em fila; antes desta correcção uma delas era
-    # silenciosamente apagada pela outra.
+    # uma linha nova. Dois toques no mesmo produto que se cruzem contam os
+    # dois — antes desta correcção um deles era silenciosamente apagado pelo
+    # outro.
+    #
+    # **O mesmo produto tocado outra vez soma à linha que já lá está** (pedido
+    # do dono: duas águas são «2× Água», não duas linhas). Só entre linhas
+    # SIMPLES e com o mesmo retrato: um açaí com toppings é um copo, e uma
+    # linha com desconto, voucher ou a outro preço não é «a mesma».
     def juntar(conta):
-        return list(conta.get("linhas") or []) + [linha]
+        linhas = list(conta.get("linhas") or [])
+        if _linha_simples(linha):
+            for i, outra in enumerate(linhas):
+                if _linha_simples(outra) and all(outra.get(c) == linha[c] for c in _RETRATO):
+                    linhas[i] = {**outra, "quantidade": outra["quantidade"] + linha["quantidade"]}
+                    return linhas
+        return linhas + [linha]
 
     return _venda_publica(
         await _aplicar_as_linhas(db, venda_id, operador["loja_id"], juntar, venda)
