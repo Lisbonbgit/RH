@@ -33,7 +33,8 @@ Uma rota nova falha o teste (1) até ser classificada aqui. Cada tarefa que
 cria rotas classifica-as nesta tabela no passo "teste primeiro" (correções do
 plano, linha "T2.9–T2.15 vs T2.16"). Acrescentar em consciência, nunca só
 para o teste passar: uma rota em ROTAS_PUBLICAS ou ROTAS_DE_CRON fica aberta
-a quem não tem sessão.
+a quem não tem sessão. A tabela confere-se ainda com a §4 do plano, escrita
+como regra por recurso (`_perfis_pela_regra_da_api`, T2.16).
 
 A lógica está em `_classificar(router, …)` e é provada primeiro contra
 routers descartáveis (correções do plano, linha "T1.8"): um teste que passa à
@@ -581,6 +582,35 @@ def test_os_perfis_da_tabela_sao_os_da_f1_e_f2():
     assert fora == {}
     assert SO_ADMIN.perfis_crm == PERFIS_ADMIN
     assert ESCRITORIO.perfis_crm == PERFIS_ESCRITORIO
+
+
+def _perfis_pela_regra_da_api(metodo, caminho):
+    """A coluna "Família / perfis" da §4 do plano (API da F1–F2), escrita como
+    uma regra por recurso e não como lista: membros e definições, só o admin;
+    as regiões, o escritório lê e só o admin escreve; lojas, `/config` e
+    morada, o escritório. `None` para um recurso que a regra não conhece."""
+    recurso = caminho[len(PREFIXO):].split("/")[1]
+    if recurso in ("membros", "definicoes"):
+        return PERFIS_ADMIN
+    if recurso == "regioes":
+        return PERFIS_ESCRITORIO if metodo == "GET" else PERFIS_ADMIN
+    if recurso in ("lojas", "config", "morada"):
+        return PERFIS_ESCRITORIO
+    return None
+
+
+def test_a_tabela_segue_a_regra_da_api_do_plano():
+    """Revisão final da tabela contra a §4 do plano (T2.16; correções, linha
+    "T2.9–T2.15 vs T2.16"). Os testes (1) e (5) comparam o router com a
+    tabela: se o código e a tabela mudassem juntos (abrir o `POST /regioes`
+    ao escritório nos dois sítios), só esta regra, escrita de outra forma,
+    dava pela diferença. Um recurso novo (F3+: rotas, encomendas; F4: o
+    motorista) acrescenta aqui a sua regra, com os perfis do plano dessa
+    fase."""
+    sem_regra = sorted(par for par in PERFIS_POR_ROTA if _perfis_pela_regra_da_api(*par) is None)
+    assert sem_regra == [], "Recurso sem regra: acrescentá-la em _perfis_pela_regra_da_api"
+    fora_da_regra = sorted(par for par, perfis in PERFIS_POR_ROTA.items() if perfis != _perfis_pela_regra_da_api(*par))
+    assert fora_da_regra == []
 
 
 def test_o_router_do_crm_nao_tem_nada_a_apontar():
