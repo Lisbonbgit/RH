@@ -3,7 +3,8 @@
 Porta de src/Dominio/Lojas/Janelas.php do CRM autónomo (dossiê §5.6). Sem
 janelas, a loja recebe a qualquer hora do dia de trabalho. Na API as janelas
 são as quatro horas planas de `CAMPOS`; na base ficam em lista (`janelas:
-[{inicio, fim}]`, plano §1 "Janelas"; a conversão chega na T2.6).
+[{inicio, fim}]`, plano §1 "Janelas"; a conversão é a
+`validador_loja.janelas_para_lista` / `campos_de_janelas`, T2.6).
 """
 import re
 
