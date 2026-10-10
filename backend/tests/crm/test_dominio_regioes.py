@@ -367,12 +367,13 @@ def test_na_alteracao_o_nome_nulo_conta_como_enviado():
     "nome, aparado",
     [
         ("﻿Lisboa", "Lisboa"),
+        ("\u180eLisboa\u180e", "Lisboa"),
         ("Lisboa\n", "Lisboa"),
         (" Porto ", "Porto"),
         ("\t Vila  Real \r\n", "Vila  Real"),
         ("Setúbal", "Setúbal"),
     ],
-    ids=["U+FEFF", "mudança de linha no fim", "separadores de linha e parágrafo", "espaços do meio ficam", "acento fica"],
+    ids=["U+FEFF", "U+180E", "mudança de linha no fim", "separadores de linha e parágrafo", "espaços do meio ficam", "acento fica"],
 )
 def test_o_nome_perde_os_espacos_unicode_das_pontas(validar, nome, aparado):
     campos, erros = validar({"nome": nome, "ordem": 1})

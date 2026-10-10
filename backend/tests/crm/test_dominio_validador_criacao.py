@@ -195,6 +195,7 @@ CASOS_NOME = [
     ("nome só com um espaço ideográfico", {"nome": "　"}, {"nome": "Indique o nome."}),
     ("nome só com um espaço em m", {"nome": " "}, {"nome": "Indique o nome."}),
     ("nome só com espaços misturados", {"nome": "\t  ﻿"}, {"nome": "Indique o nome."}),
+    ("nome só com o separador de vogais mongol (U+180E)", {"nome": "\u180e"}, {"nome": "Indique o nome."}),
 ]
 
 CASOS_FASE = [

@@ -33,6 +33,7 @@ import jwt
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 import crm
@@ -136,7 +137,7 @@ def _escritas(base):
         c
         for coleccao in (base.crm_regioes, base.crm_lojas)
         for c in coleccao.registo
-        if c[0] in ("insert_one", "update_one", "delete_one", "delete_many")
+        if c[0] in ("insert_one", "update_one", "find_one_and_update", "delete_one", "delete_many")
     ]
 
 
@@ -529,8 +530,9 @@ def test_criar_com_o_corpo_vazio_da_422_no_nome(sessao):
         ("Lisboa", "lisboa", " LISBOA "),
         ("Setúbal", "setubal", "Setubal"),
         ("Setubal", "setubal", "SETÚBAL"),
+        ("Lisboa", "lisboa", "\u180eLisboa\u180e"),
     ],
-    ids=["igual", "com maiúsculas e espaços", "sem o acento", "com o acento à parte (NFD)"],
+    ids=["igual", "com maiúsculas e espaços", "sem o acento", "com o acento à parte (NFD)", "com U+180E nas pontas"],
 )
 def test_criar_com_um_nome_que_ja_existe_da_409(sessao, existente, chave, novo):
     """`criarComUmNomeQueJaExisteDa409` (`nomesRepetidos`)."""
@@ -641,9 +643,10 @@ def test_o_patch_muda_o_nome(sessao):
     assert r.json() == {"id": LISBOA, "nome": "Grande Lisboa", "ordem": 1}
     assert list(r.json()) == ["id", "nome", "ordem"]
     assert cliente.base.crm_regioes.sem_id() == [_regiao(LISBOA, "Grande Lisboa", 1, "grande lisboa")]
-    assert cliente.base.crm_regioes.chamadas("update_one") == [
-        ("update_one", {"id": LISBOA}, {"$set": {"nome": "Grande Lisboa", "nome_chave": "grande lisboa"}}, False)
-    ]
+    assert cliente.base.crm_regioes.chamadas("find_one_and_update") == [(
+        "find_one_and_update", {"id": LISBOA}, {"$set": {"nome": "Grande Lisboa", "nome_chave": "grande lisboa"}},
+        PROJECAO_REGIAO, False, ReturnDocument.AFTER,
+    )]
 
 
 def test_o_patch_muda_a_ordem_e_a_lista_segue_a_nova(sessao):
@@ -654,7 +657,9 @@ def test_o_patch_muda_a_ordem_e_a_lista_segue_a_nova(sessao):
     ]))
     r = cliente.patch(_url(PORTO), json={"ordem": 0})
     assert (r.status_code, r.json()) == (200, {"id": PORTO, "nome": "Porto", "ordem": 0})
-    assert cliente.base.crm_regioes.chamadas("update_one") == [("update_one", {"id": PORTO}, {"$set": {"ordem": 0}}, False)]
+    assert cliente.base.crm_regioes.chamadas("find_one_and_update") == [
+        ("find_one_and_update", {"id": PORTO}, {"$set": {"ordem": 0}}, PROJECAO_REGIAO, False, ReturnDocument.AFTER)
+    ]
     assert cliente.base.crm_regioes.chamadas("find_one") == [("find_one", {"id": PORTO}, PROJECAO_REGIAO)]
     assert [regiao["id"] for regiao in cliente.get(REGIOES_URL).json()] == [PORTO, LISBOA]
 
@@ -667,11 +672,13 @@ def test_o_patch_muda_o_nome_e_a_ordem_juntos_e_so_esses(sessao):
     })
     assert (r.status_code, r.json()) == (200, {"id": LISBOA, "nome": "Lisboa e Vale do Tejo", "ordem": 7})
     assert cliente.base.crm_regioes.sem_id() == [_regiao(LISBOA, "Lisboa e Vale do Tejo", 7, "lisboa e vale do tejo")]
-    assert cliente.base.crm_regioes.chamadas("update_one") == [(
-        "update_one",
+    assert cliente.base.crm_regioes.chamadas("find_one_and_update") == [(
+        "find_one_and_update",
         {"id": LISBOA},
         {"$set": {"nome": "Lisboa e Vale do Tejo", "nome_chave": "lisboa e vale do tejo", "ordem": 7}},
+        PROJECAO_REGIAO,
         False,
+        ReturnDocument.AFTER,
     )]
 
 
@@ -828,7 +835,7 @@ def test_o_patch_quando_o_update_da_chave_repetida_sem_outra_regiao_com_o_nome_e
     """Correções, linha "T2.9": 409 só quando vem de outra região."""
     regioes = ColeccaoFalsa(
         [_regiao(LISBOA, "Lisboa", 1, "lisboa")],
-        falhar={"update_one": DuplicateKeyError("E11000 nome_chave_1", 11000)},
+        falhar={"find_one_and_update": DuplicateKeyError("E11000 nome_chave_1", 11000)},
     )
     base = BaseFalsa({"crm_membros": list(MEMBROS), "crm_regioes": regioes})
     r = sessao(ADMIN_MASTER, base, levantar=False).patch(_url(LISBOA), json={"nome": "Grande Lisboa"})
@@ -853,8 +860,60 @@ def test_dois_admins_a_dar_o_mesmo_nome_a_duas_regioes_ao_mesmo_tempo(direto):
     assert base.crm_regioes.sem_id() == [_regiao(LISBOA, "Centro", 1, "centro"), _regiao(PORTO, "Porto", 2, "porto")]
     # As duas verificações correram antes das escritas.
     assert [c[0] for c in base.crm_regioes.registo] == [
-        "find_one", "find_one", "find_one", "find_one", "update_one", "update_one", "find_one",
+        "find_one", "find_one", "find_one", "find_one", "find_one_and_update", "find_one_and_update", "find_one",
     ]
+
+
+class _OutroAdminMudaONomeDepoisDeLer(ColeccaoFalsa):
+    """Outro admin muda o nome do Porto para "Norte" logo a seguir à leitura
+    da região por este pedido (o `antes`), e antes da escrita dele."""
+
+    async def find_one(self, filtro=None, projecao=None, *, projection=None):
+        doc = await super().find_one(filtro, projecao, projection=projection)
+        if (filtro or {}).get("id") == PORTO and not getattr(self, "_ja_mudou", False):
+            self._ja_mudou = True
+            porto = next(d for d in self.docs if d["id"] == PORTO)
+            porto.update(nome="Norte", nome_chave="norte")
+        return doc
+
+
+def test_o_patch_responde_com_a_regiao_como_ficou_gravada(sessao):
+    """Revisão da F2: o autónomo bloqueava a linha (`bloquear`) e respondia com
+    o que gravou. Sem bloqueio, responder com o `antes` lido mais o pedido
+    devolvia o nome velho que outro admin já tinha mudado; a resposta tem de
+    ser igual ao `GET` seguinte."""
+    regioes = _OutroAdminMudaONomeDepoisDeLer(
+        [_regiao(LISBOA, "Lisboa", 1, "lisboa"), _regiao(PORTO, "Porto", 2, "porto")],
+        unicos=("id", "nome_chave"),
+    )
+    cliente = sessao(ADMIN_MASTER, BaseFalsa({"crm_membros": list(MEMBROS), "crm_regioes": regioes}))
+    r = cliente.patch(_url(PORTO), json={"ordem": 0})
+    assert (r.status_code, r.json()) == (200, {"id": PORTO, "nome": "Norte", "ordem": 0})
+    assert r.json() == next(g for g in cliente.get(REGIOES_URL).json() if g["id"] == PORTO)
+    assert regioes.sem_id()[1] == _regiao(PORTO, "Norte", 0, "norte")
+
+
+def test_dois_admins_a_mudar_campos_diferentes_da_mesma_regiao_ao_mesmo_tempo(direto):
+    """Revisão da F2: os dois leem a região antes de qualquer escrita; um muda
+    a ordem e o outro o nome. Na base ficam as duas mudanças, e cada resposta
+    é a região como ficou logo a seguir à sua escrita: a do último a gravar é
+    igual ao `GET` seguinte (antes, trazia a ordem velha)."""
+    base = _base([_regiao(LISBOA, "Lisboa", 1, "lisboa"), _regiao(PORTO, "Porto", 2, "porto")])
+    admin, ana = direto(base)
+
+    async def _ao_mesmo_tempo():
+        return await asyncio.gather(
+            rotas_regioes.alterar_regiao(PORTO, admin, {"ordem": 0}),
+            rotas_regioes.alterar_regiao(PORTO, ana, {"nome": "Norte"}),
+        )
+
+    da_ordem, do_nome = correr(_ao_mesmo_tempo())
+    assert base.crm_regioes.sem_id()[1] == _regiao(PORTO, "Norte", 0, "norte")
+    # A ordem grava primeiro (o pedido do nome ainda procura repetidos).
+    assert da_ordem == {"id": PORTO, "nome": "Porto", "ordem": 0}
+    assert do_nome == {"id": PORTO, "nome": "Norte", "ordem": 0}
+    lista = correr(rotas_regioes.listar_regioes(admin))
+    assert do_nome == next(g for g in lista if g["id"] == PORTO)
 
 
 class _ApagadaDepoisDeLer(ColeccaoFalsa):
@@ -875,7 +934,7 @@ def test_o_patch_de_uma_regiao_apagada_entretanto_da_404_e_nao_a_ressuscita(sess
     r = sessao(ADMIN_MASTER, base).patch(_url(LISBOA), json=corpo)
     assert (r.status_code, r.json()) == (404, NAO_ENCONTRADA)
     assert regioes.docs == []
-    assert all(c[3] is False for c in regioes.chamadas("update_one")), "nunca com upsert"
+    assert all(c[4] is False for c in regioes.chamadas("find_one_and_update")), "nunca com upsert"
 
 
 @pytest.mark.parametrize("bruto", [b"[]", b"null", b"{partido"], ids=["lista", "null", "partido"])

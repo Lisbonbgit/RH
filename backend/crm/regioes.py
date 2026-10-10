@@ -15,8 +15,12 @@ omissão) estão em `dominio/regioes.py` (T2.7): aqui só se lê, grava e respon
   único `regiao_id` que uma loja aceita (`validador_loja`, T2.5).
 - `PATCH /regioes/{regiao_id}` `{nome?, ordem?}` (admin) → 200 `{id, nome,
   ordem}`; só se escreve o que veio, e a `nome_chave` só se recalcula quando
-  vem o nome. Sem nenhum dos dois devolve a região tal como está, sem
-  escrever (um `$set` vazio o Mongo recusa).
+  vem o nome. Responde com a região como ficou logo a seguir à escrita
+  (`find_one_and_update` com `ReturnDocument.AFTER`, numa só operação), e não
+  com o que se leu antes mais o pedido: sem o bloqueio da linha do autónomo,
+  outro admin pode ter mudado o outro campo entretanto (revisão da F2). Sem
+  nenhum dos dois devolve a região tal como está, sem escrever (um `$set`
+  vazio o Mongo recusa).
 - `DELETE /regioes/{regiao_id}` (admin) → `{apagada: true}`; com lojas → 409
   `regiao_com_lojas` (muda-se-lhe o nome em vez de a apagar).
 
@@ -36,8 +40,8 @@ faz o papel da collation unicode_ci do MariaDB):
   há mesmo OUTRA região com esse nome; senão não se disfarça e sobe (500).
 
 Sem transações (o autónomo bloqueava a linha da região): uma região apagada
-entre a leitura e a escrita dá 404 (o `update_one` nunca tem upsert, por isso
-não a ressuscita). Corrida residual aceite (plano §9; dossiê §3): uma loja
+entre a leitura e a escrita dá 404 (o `find_one_and_update` nunca tem upsert,
+por isso não a ressuscita). Corrida residual aceite (plano §9; dossiê §3): uma loja
 gravada nesta região entre a contagem das lojas e o `delete_one` fica com um
 `regiao_id` que já não existe.
 """
@@ -45,6 +49,7 @@ import uuid
 from typing import Dict, List
 
 from fastapi import APIRouter, Depends
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from . import db as bd
@@ -151,21 +156,29 @@ async def alterar_regiao(
     if "ordem" in campos:
         alteracoes["ordem"] = campos["ordem"]
 
-    if alteracoes:
-        try:
-            resultado = await regioes.update_one({"id": regiao_id}, {"$set": alteracoes})
-        except DuplicateKeyError:
-            # A corrida: outra região ficou com este nome depois da
-            # verificação. A própria nunca colide consigo mesma.
-            if "nome_chave" in alteracoes and await _ha_outra_com_a_chave(
-                regioes, alteracoes["nome_chave"], regiao_id
-            ):
-                raise _repetida() from None
-            raise
-        if resultado.matched_count == 0:
-            # Apagada por outro admin entre a leitura e a escrita.
-            raise _nao_encontrada()
-    return _regiao_api({**antes, **campos})
+    if not alteracoes:
+        return _regiao_api(antes)
+    try:
+        # Grava e lê numa só operação: a resposta é a região como ficou, com o
+        # que outro admin tenha mudado noutro campo desde o `antes`.
+        depois = await regioes.find_one_and_update(
+            {"id": regiao_id},
+            {"$set": alteracoes},
+            projection=PROJECAO_REGIAO,
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        # A corrida: outra região ficou com este nome depois da
+        # verificação. A própria nunca colide consigo mesma.
+        if "nome_chave" in alteracoes and await _ha_outra_com_a_chave(
+            regioes, alteracoes["nome_chave"], regiao_id
+        ):
+            raise _repetida() from None
+        raise
+    if depois is None:
+        # Apagada por outro admin entre a leitura e a escrita.
+        raise _nao_encontrada()
+    return _regiao_api(depois)
 
 
 @router.delete("/regioes/{regiao_id}")

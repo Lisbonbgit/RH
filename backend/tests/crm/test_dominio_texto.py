@@ -30,6 +30,8 @@ from crm.dominio.texto import aparar, chave_comparacao
         ("﻿Loja", "Loja"),
         ("Loja ", "Loja"),
         ("\t  　﻿", ""),
+        ("\u180eLoja\u180e", "Loja"),
+        ("\u180e", ""),
         ("", ""),
         ("  Café do  Zé ", "Café do  Zé"),
         (" Óbidos é ", "Óbidos é"),
@@ -43,6 +45,8 @@ from crm.dominio.texto import aparar, chave_comparacao
         "espaço sem largura do BOM (U+FEFF)",
         "separador de linha (U+2028)",
         "só espaços",
+        "separador de vogais mongol (U+180E), que o PHP tira",
+        "só o U+180E",
         "vazio",
         "os espaços do meio ficam",
         "acentos nas pontas ficam",
@@ -74,6 +78,28 @@ def test_aparar_tira_todos_os_separadores_unicode_como_o_php():
     assert len(separadores) >= 17
     for s in separadores:
         assert aparar(f"{s}{s}Loja{s}") == "Loja", f"U+{ord(s):04X}"
+
+
+# Os caracteres que o Texto::aparar do PHP 8.4.26 tira das pontas (o \s do
+# PCRE2 com /u, o \p{Z} e o U+FEFF), conferidos com o PHP em todos os pontos de
+# código (revisão da F2). O U+180E (separador de vogais mongol) deixou de ser
+# espaço no Unicode 6.3 e o \s do Python não o apanha, mas o do PCRE2 apanha.
+PONTAS_DO_PHP = frozenset(map(chr, [
+    0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0x85, 0xA0, 0x1680, 0x180E,
+    *range(0x2000, 0x200B), 0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF,
+]))
+# A única diferença assumida (T1.3): os separadores de controlo U+001C–U+001F,
+# que o \s do Python tira e o PHP não.
+SO_O_PYTHON_TIRA = frozenset(map(chr, range(0x1C, 0x20)))
+
+
+def test_os_caracteres_aparados_sao_os_do_php_mais_os_separadores_de_controlo():
+    aparados = {
+        chr(i)
+        for i in range(sys.maxunicode + 1)
+        if not 0xD800 <= i <= 0xDFFF and aparar(f"{chr(i)}L{chr(i)}") == "L"
+    }
+    assert sorted(f"U+{ord(c):04X}" for c in aparados ^ (PONTAS_DO_PHP | SO_O_PYTHON_TIRA)) == []
 
 
 def test_aparar_nao_toca_nos_caracteres_invisiveis_que_nao_sao_espacos():

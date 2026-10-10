@@ -14,10 +14,13 @@ import re
 import unicodedata
 
 # O \s do Python, em texto, já apanha todos os separadores Unicode (Zs, Zl,
-# Zp — o \p{Z} do PHP), mas NÃO o U+FEFF; daí a classe [\s﻿]. \Z e não
-# `$`, que também aceita antes de um "\n" final. (Apanha ainda U+001C–U+001F,
-# separadores de controlo que o PHP não tira: nas pontas, tanto faz.)
-_PONTAS = re.compile(r"^[\s﻿]+|[\s﻿]+\Z")
+# Zp — o \p{Z} do PHP), mas NÃO o U+FEFF nem o U+180E (separador de vogais
+# mongol: deixou de ser espaço no Unicode 6.3, mas o \s do PCRE2 do PHP ainda
+# o tira — conferido no PHP 8.4.26 em todos os pontos de código, revisão da
+# F2); daí a classe [\s\u180e\ufeff]. \Z e não `$`, que também aceita antes de
+# um "\n" final. (Apanha ainda U+001C–U+001F, separadores de controlo que o
+# PHP não tira: a única diferença assumida, e nas pontas tanto faz.)
+_PONTAS = re.compile(r"^[\s\u180e\ufeff]+|[\s\u180e\ufeff]+\Z")
 
 
 def aparar(texto: str) -> str:

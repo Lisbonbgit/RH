@@ -66,7 +66,7 @@ from crm.lojas import (
     listar_lojas,
 )
 from crm.membros import MENSAGEM_JA_MEMBRO, adicionar_membro
-from crm.regioes import MENSAGEM_REPETIDA, criar_regiao, listar_regioes
+from crm.regioes import MENSAGEM_REPETIDA, alterar_regiao, criar_regiao, listar_regioes
 
 from .duplos import correr
 from .formatos import instantes_fora_do_formato
@@ -681,6 +681,35 @@ def test_duas_regioes_com_o_mesmo_nome_ao_mesmo_tempo_so_uma_fica(no_mongo, monk
     assert len(criadas) == 1 and len(recusadas) == 1
     assert (recusadas[0].status_code, recusadas[0].detail) == (409, _erro("regiao_repetida", MENSAGEM_REPETIDA))
     assert [(g["id"], g["nome_chave"]) for g in guardadas] == [(criadas[0]["id"], "setubal")]
+
+
+def test_dois_patch_a_campos_diferentes_da_mesma_regiao_respondem_com_o_que_ficou_gravado(no_mongo, monkeypatch):
+    """Revisão da F2: os dois pedidos leem a região antes de qualquer escrita
+    (a barreira); um muda a ordem e o outro o nome. Ficam as duas mudanças, e
+    o último a gravar responde com a região igual ao `GET` seguinte (antes,
+    cada um respondia com o que leu mais o que pediu, e nenhum a trazia)."""
+    porto = _id(2)
+
+    async def ensaio(base):
+        await base[COLECOES["regioes"]].insert_one({"id": porto, "nome": "Porto", "nome_chave": "porto", "ordem": 2})
+        _em_corrida(monkeypatch, base, "regioes")
+        respostas = await asyncio.gather(
+            alterar_regiao(porto, ANA_MEMBRO, {"ordem": 0}),
+            alterar_regiao(porto, ANA_MEMBRO, {"nome": "Norte"}),
+            return_exceptions=True,
+        )
+        monkeypatch.setattr(bd, "obter_db", lambda: base)
+        return respostas, await listar_regioes(RUI_MEMBRO), await base[COLECOES["regioes"]].find({}, {"_id": 0}).to_list(10)
+
+    respostas, lista, guardadas = no_mongo(ensaio)
+
+    gravadas, recusadas = _separar(respostas)
+    assert recusadas == []
+    assert guardadas == [{"id": porto, "nome": "Norte", "nome_chave": "norte", "ordem": 0}]
+    assert lista == [{"id": porto, "nome": "Norte", "ordem": 0}]
+    da_ordem, do_nome = gravadas
+    assert da_ordem["ordem"] == 0 and do_nome["nome"] == "Norte", "cada uma traz a sua mudança"
+    assert lista[0] in (da_ordem, do_nome), "a do último a gravar é igual ao GET seguinte"
 
 
 def test_a_mesma_conta_adicionada_duas_vezes_ao_mesmo_tempo_fica_uma_vez(no_mongo, monkeypatch):

@@ -5,9 +5,10 @@ Uso (a partir de backend/):
     .venv/bin/python seed_crm_local.py --env-file .env.local [--repor]
 
 - Lê o ficheiro de ambiente com dotenv_values (não mexe no os.environ deste processo).
-- Guarda: recusa tudo o que não seja um MongoDB local (mongodb:// com todos os anfitriões
-  em 127.0.0.1, localhost ou ::1) e uma base cujo nome acabe em _local. A guarda corre
-  ANTES de se criar qualquer cliente Mongo.
+- Guarda: recusa tudo o que não seja um MongoDB local (mongodb:// com uma só máquina, em
+  127.0.0.1, localhost ou ::1) e uma base cujo nome acabe em _local. A guarda corre
+  ANTES de se criar qualquer cliente Mongo, e o cliente liga-se só a essa máquina
+  (directConnection: não segue para os outros membros de um conjunto de réplicas).
 - Contas (T0.7): 4 contas "(demo)" @example.com e 3 membros do CRM. O que já existe fica
   como está; sem --repor as palavras-passe nunca mudam.
 - Regiões e lojas (T2.18): as 4 regiões e as 24 lojas "(demo)" do src/Cli/DadosDemo.php do
@@ -56,6 +57,11 @@ PREFIXO_URI = "mongodb://"
 ANFITRIOES_LOCAIS = frozenset({"127.0.0.1", "localhost", "::1"})
 SUFIXO_BASE = "_local"
 ESPERA_MONGO_MS = 3000
+# Só a máquina do URI (revisão da F2): sem directConnection, o PyMongo 4 descobre o conjunto
+# de réplicas a partir do nó local e manda as escritas para o primário que ele anunciar,
+# mesmo noutra máquina. Estas opções ganham às do URI (um `?directConnection=false` ou um
+# `?replicaSet=…` não as desfazem). O ensaio da T2.17 liga-se da mesma maneira.
+OPCOES_CLIENTE = {"directConnection": True, "serverSelectionTimeoutMS": ESPERA_MONGO_MS}
 FICHEIRO_CREDENCIAIS = Path.home() / ".config" / "lisbonb-crm-local" / "credenciais.txt"
 
 MENSAGEM_RECUSA = (
@@ -178,10 +184,12 @@ _LOJAS_DEMO = (
 # ---------------------------------------------------------------- guarda
 
 def uri_e_local(uri) -> bool:
-    """Verdadeiro só para mongodb:// com TODOS os anfitriões locais.
+    """Verdadeiro só para mongodb:// com UMA máquina, e local.
 
     Recusa-se o que não começa por mongodb:// antes de interpretar o URI (um mongodb+srv://
-    faria uma consulta DNS). Qualquer erro ao interpretar conta como não local.
+    faria uma consulta DNS). Qualquer erro ao interpretar conta como não local. Mais de uma
+    máquina, mesmo todas locais, recusa-se: o cliente liga-se com directConnection
+    (OPCOES_CLIENTE), que só aceita uma (revisão da F2).
     """
     if not isinstance(uri, str) or not uri.startswith(PREFIXO_URI):
         return False
@@ -189,7 +197,7 @@ def uri_e_local(uri) -> bool:
         nos = uri_parser.parse_uri(uri)["nodelist"]
     except Exception:
         return False
-    return bool(nos) and all(
+    return len(nos) == 1 and all(
         isinstance(anfitriao, str) and anfitriao.lower() in ANFITRIOES_LOCAIS
         for anfitriao, _porta in nos
     )
@@ -486,7 +494,7 @@ def main(argv=None) -> int:
         raise SystemExit(f"Recusado: o ficheiro de ambiente não existe: {caminho_env}")
     uri, nome = verificar_ambiente(dotenv_values(caminho_env))
 
-    cliente = MongoClient(uri, serverSelectionTimeoutMS=ESPERA_MONGO_MS)
+    cliente = MongoClient(uri, **OPCOES_CLIENTE)
     try:
         db = cliente[nome]
         agora = datetime.now(timezone.utc)

@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 
 import bcrypt
 import pytest
+from pymongo import MongoClient
 from pymongo.errors import AutoReconnect, BulkWriteError, ServerSelectionTimeoutError, WriteError
 
 import seed_crm_local
@@ -178,6 +179,7 @@ def test_uri_local_e_aceite(uri):
     "mongodb://127.0.0.1.evil.com",
     "mongodb://127.0.0.1@evil.com",           # o anfitrião é o que vem depois do último @
     "mongodb://127.0.0.1,atlas.mongodb.net",  # todos os anfitriões têm de ser locais
+    "mongodb://127.0.0.1:27017,localhost:27018",  # uma só máquina (revisão da F2: directConnection)
     "mongodb://evil.com/?h=127.0.0.1",
     "",
     None,
@@ -281,6 +283,7 @@ def _ficheiro_env(tmp_path, uri, nome):
     ("mongodb+srv://cluster0.abcd.mongodb.net", "lisbonb_crm_local"),
     ("mongodb://u:p@cluster0.abcd.mongodb.net", "lisbonb_crm_local"),
     ("mongodb://127.0.0.1:27017", "lisbonb"),
+    ("mongodb://127.0.0.1:27017,localhost:27018", "lisbonb_crm_local"),
 ])
 def test_cli_recusa_antes_de_criar_o_cliente_mongo(tmp_path, monkeypatch, uri, nome):
     criados = []
@@ -293,6 +296,28 @@ def test_cli_recusa_antes_de_criar_o_cliente_mongo(tmp_path, monkeypatch, uri, n
     assert erro.value.code == MENSAGEM_RECUSA
     assert criados == []
     assert not (tmp_path / "cfg").exists()
+
+
+@pytest.mark.parametrize("uri", [
+    "mongodb://127.0.0.1:27017",
+    "mongodb://127.0.0.1:27017/?directConnection=false",
+    "mongodb://localhost/?replicaSet=rs0",
+], ids=["sem opções", "directConnection=false no URI", "replicaSet no URI"])
+def test_o_cliente_do_seed_fala_so_com_a_maquina_do_uri(uri):
+    """Revisão da F2: sem `directConnection=True`, o PyMongo 4 descobre o
+    conjunto de réplicas a partir do nó local e manda as escritas para o
+    primário que ele anunciar, mesmo noutra máquina. Com as opções do seed, a
+    topologia é sempre `Single` (só a máquina do URI), também quando o URI
+    pede o contrário: as opções do MongoClient ganham às do URI. Não liga a
+    nada (`connect=False`)."""
+    sem_as_opcoes = MongoClient(uri, connect=False)
+    com_as_opcoes = MongoClient(uri, connect=False, **seed_crm_local.OPCOES_CLIENTE)
+    try:
+        assert sem_as_opcoes.topology_description.topology_type_name != "Single"
+        assert com_as_opcoes.topology_description.topology_type_name == "Single"
+    finally:
+        sem_as_opcoes.close()
+        com_as_opcoes.close()
 
 
 def test_cli_recusa_se_o_ficheiro_de_ambiente_nao_existe(tmp_path, monkeypatch):
@@ -322,7 +347,7 @@ def test_cli_le_o_ficheiro_sem_mexer_no_ambiente_do_processo(tmp_path, monkeypat
 
     assert saida == 0
     assert "MONGO_URL" not in os.environ and "DB_NAME" not in os.environ
-    assert criados == [("mongodb://127.0.0.1:27017", {"serverSelectionTimeoutMS": 3000})]
+    assert criados == [("mongodb://127.0.0.1:27017", {"directConnection": True, "serverSelectionTimeoutMS": 3000})]
     assert cliente.clientes[0].nomes == ["lisbonb_crm_local"]
     assert cliente.clientes[0].fechado is True
     assert base["users"].count_documents({}) == 4

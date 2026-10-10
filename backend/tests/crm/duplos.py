@@ -31,6 +31,7 @@ import asyncio
 from copy import deepcopy
 
 from bson import ObjectId
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
 # As operações que o duplo conhece — e as únicas chaves aceites em `falhar`.
@@ -39,6 +40,7 @@ OPERACOES = (
     "find",
     "insert_one",
     "update_one",
+    "find_one_and_update",
     "delete_one",
     "delete_many",
     "count_documents",
@@ -271,6 +273,8 @@ class ColeccaoFalsa:
     - `registo`: as chamadas por ordem, em cópia, como tuplos
       `("find_one", filtro, projecao)`, `("find", filtro, projecao)`,
       `("insert_one", doc)`, `("update_one", filtro, atualizacao, upsert)`,
+      `("find_one_and_update", filtro, atualizacao, projecao, upsert,
+      return_document)`,
       `("delete_one", filtro)`, `("delete_many", filtro)`,
       `("count_documents", filtro)`, `("create_index", chaves, opcoes)`.
       `chamadas(op)` filtra por operação.
@@ -361,13 +365,7 @@ class ColeccaoFalsa:
         self._registar("update_one", filtro, atualizacao, upsert)
         await asyncio.sleep(0)
         self._talvez_falhar("update_one")
-        if not isinstance(atualizacao, dict) or not atualizacao:
-            raise ValueError("update cannot be empty")
-        if not all(k.startswith("$") for k in atualizacao):
-            raise ValueError("update only works with $ operators")
-        for operador in atualizacao:
-            if operador not in _OPERADORES_DE_ATUALIZACAO:
-                raise NotImplementedError("operador %s não suportado pelo duplo" % operador)
+        _validar_atualizacao(atualizacao)
         alvo = next((d for d in self.docs if corresponde(d, filtro)), None)
         if alvo is None:
             if not upsert:
@@ -391,6 +389,29 @@ class ColeccaoFalsa:
         posicao = next(i for i, d in enumerate(self.docs) if d is alvo)
         self.docs[posicao] = novo
         return ResultadoUpdate(1, 1)
+
+    async def find_one_and_update(
+        self, filtro, atualizacao, projection=None, *, upsert=False, return_document=ReturnDocument.BEFORE
+    ):
+        """Como o do Motor: atualiza o primeiro que coincide e devolve-o (antes
+        ou depois, com a projeção), ou None se nenhum coincidir. Sem upsert
+        (não está modelado: rebenta em vez de mentir)."""
+        self._registar("find_one_and_update", filtro, atualizacao, projection, upsert, return_document)
+        await asyncio.sleep(0)
+        self._talvez_falhar("find_one_and_update")
+        if upsert:
+            raise NotImplementedError("find_one_and_update com upsert não suportado pelo duplo")
+        _validar_atualizacao(atualizacao)
+        alvo = next((d for d in self.docs if corresponde(d, filtro)), None)
+        if alvo is None:
+            return None
+        novo = deepcopy(alvo)
+        _aplicar(novo, atualizacao.get("$set", {}))
+        if novo != alvo:
+            self._verificar_unicos(novo, ignorar=alvo)
+            posicao = next(i for i, d in enumerate(self.docs) if d is alvo)
+            self.docs[posicao] = novo
+        return _projetar(novo if return_document == ReturnDocument.AFTER else alvo, projection)
 
     async def delete_one(self, filtro):
         self._registar("delete_one", filtro)
@@ -424,6 +445,17 @@ class ColeccaoFalsa:
         if isinstance(chaves, str):
             chaves = [(chaves, 1)]
         return opcoes.get("name") or "_".join("%s_%s" % (c, d) for c, d in chaves)
+
+
+def _validar_atualizacao(atualizacao):
+    """O que o PyMongo recusa (vazia, sem operadores) e o que o duplo não conhece."""
+    if not isinstance(atualizacao, dict) or not atualizacao:
+        raise ValueError("update cannot be empty")
+    if not all(k.startswith("$") for k in atualizacao):
+        raise ValueError("update only works with $ operators")
+    for operador in atualizacao:
+        if operador not in _OPERADORES_DE_ATUALIZACAO:
+            raise NotImplementedError("operador %s não suportado pelo duplo" % operador)
 
 
 def _aplicar(doc, campos):

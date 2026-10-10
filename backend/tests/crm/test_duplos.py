@@ -9,6 +9,7 @@ import copy
 from pathlib import Path
 
 import pytest
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from .duplos import BaseFalsa, ColeccaoFalsa, correr, unicos_declarados
@@ -405,6 +406,70 @@ def test_update_one_com_operador_nao_suportado_rebenta():
         correr(col.update_one({"id": "a"}, {"$inc": {"n": 1}}))
 
 
+# --- find_one_and_update ------------------------------------------------------------
+
+
+def test_find_one_and_update_devolve_o_documento_depois_com_a_projecao():
+    col = ColeccaoFalsa([{"id": "r1", "nome": "Porto", "nome_chave": "porto", "ordem": 2}])
+    depois = correr(col.find_one_and_update(
+        {"id": "r1"}, {"$set": {"ordem": 0}}, projection={"_id": 0, "id": 1, "nome": 1, "ordem": 1},
+        return_document=ReturnDocument.AFTER,
+    ))
+    assert depois == {"id": "r1", "nome": "Porto", "ordem": 0}
+    assert col.sem_id() == [{"id": "r1", "nome": "Porto", "nome_chave": "porto", "ordem": 0}]
+    assert col.chamadas("find_one_and_update") == [(
+        "find_one_and_update", {"id": "r1"}, {"$set": {"ordem": 0}},
+        {"_id": 0, "id": 1, "nome": 1, "ordem": 1}, False, ReturnDocument.AFTER,
+    )]
+
+
+def test_find_one_and_update_por_omissao_devolve_o_documento_antes_como_o_pymongo():
+    col = ColeccaoFalsa([{"id": "r1", "ordem": 2}])
+    antes = correr(col.find_one_and_update({"id": "r1"}, {"$set": {"ordem": 0}}, projection={"_id": 0}))
+    assert antes == {"id": "r1", "ordem": 2}
+    assert col.sem_id() == [{"id": "r1", "ordem": 0}]
+
+
+def test_find_one_and_update_sem_documento_devolve_none_e_nao_cria():
+    col = ColeccaoFalsa([{"id": "r1", "ordem": 2}])
+    assert correr(col.find_one_and_update(
+        {"id": "nada"}, {"$set": {"ordem": 0}}, return_document=ReturnDocument.AFTER
+    )) is None
+    assert col.sem_id() == [{"id": "r1", "ordem": 2}]
+
+
+def test_find_one_and_update_que_repete_um_unico_de_outro_documento_e_recusado():
+    col = ColeccaoFalsa([{"id": "a", "nome_chave": "lisboa"}, {"id": "b", "nome_chave": "porto"}], unicos=("id", "nome_chave"))
+    with pytest.raises(DuplicateKeyError):
+        correr(col.find_one_and_update({"id": "b"}, {"$set": {"nome_chave": "lisboa"}}))
+    assert col.sem_id() == [{"id": "a", "nome_chave": "lisboa"}, {"id": "b", "nome_chave": "porto"}]
+
+
+def test_find_one_and_update_devolve_copia():
+    col = ColeccaoFalsa([{"id": "a", "janelas": [{"inicio": "10:00"}]}])
+    depois = correr(col.find_one_and_update({"id": "a"}, {"$set": {"x": 1}}, return_document=ReturnDocument.AFTER))
+    depois["janelas"][0]["inicio"] = "mudado"
+    assert col.docs[0]["janelas"][0]["inicio"] == "10:00"
+
+
+@pytest.mark.parametrize("atualizacao, erro", [
+    ({"ordem": 0}, ValueError),
+    ({}, ValueError),
+    ({"$inc": {"ordem": 1}}, NotImplementedError),
+], ids=["sem operadores", "vazia", "operador não suportado"])
+def test_find_one_and_update_recusa_o_que_o_pymongo_recusa_ou_o_duplo_nao_conhece(atualizacao, erro):
+    col = ColeccaoFalsa([{"id": "a", "ordem": 2}])
+    with pytest.raises(erro):
+        correr(col.find_one_and_update({"id": "a"}, atualizacao))
+    assert col.sem_id() == [{"id": "a", "ordem": 2}]
+
+
+def test_find_one_and_update_com_upsert_nao_esta_modelado():
+    col = ColeccaoFalsa()
+    with pytest.raises(NotImplementedError):
+        correr(col.find_one_and_update({"id": "a"}, {"$set": {"ordem": 0}}, upsert=True))
+
+
 # --- delete / count / create_index ------------------------------------------------
 
 
@@ -459,7 +524,7 @@ def test_insert_one_regista_o_documento_como_foi_passado_sem_id_mongo():
     assert col.chamadas("insert_one") == [("insert_one", {"id": "l1"})]
 
 
-@pytest.mark.parametrize("operacao", ["insert_one", "find_one", "update_one", "delete_one", "delete_many", "count_documents", "create_index", "find"])
+@pytest.mark.parametrize("operacao", ["insert_one", "find_one", "update_one", "find_one_and_update", "delete_one", "delete_many", "count_documents", "create_index", "find"])
 def test_falhas_injetaveis(operacao):
     erro = RuntimeError("Mongo em baixo (simulado)")
     col = ColeccaoFalsa([{"id": "a"}], falhar={operacao: erro})
@@ -467,6 +532,7 @@ def test_falhas_injetaveis(operacao):
         "insert_one": lambda: col.insert_one({"id": "b"}),
         "find_one": lambda: col.find_one({"id": "a"}),
         "update_one": lambda: col.update_one({"id": "a"}, {"$set": {"x": 1}}),
+        "find_one_and_update": lambda: col.find_one_and_update({"id": "a"}, {"$set": {"x": 1}}),
         "delete_one": lambda: col.delete_one({"id": "a"}),
         "delete_many": lambda: col.delete_many({}),
         "count_documents": lambda: col.count_documents({}),
