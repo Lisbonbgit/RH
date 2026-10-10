@@ -58,6 +58,7 @@ MENSAGEM_LOCALIZACAO_INCOMPLETA = "A localização tem de vir completa (lat, lng
 
 # Um uuid4 em minúsculas, como o `str(uuid.uuid4())`: a versão 4 e a variante
 # 8, 9, a ou b. `[0-9a-f]` e `fullmatch`, nunca `\d` nem `$` (plano §10).
+# Igual a PADRAO_UUID4 em frontend/src/lib/crm/ids.js (ids.test.js, T2.21): manter numa só linha.
 _UUID4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 
 

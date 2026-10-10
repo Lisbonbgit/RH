@@ -12,10 +12,12 @@ from faturacao.auth import PERFIS_GESTAO
 
 from .texto import aparar
 
-# Os perfis do CRM, por esta ordem (é a ordem em que aparecem nos ecrãs):
+# Os perfis do CRM (os ecrãs mostram-nos pela ordem de frontend/src/lib/crm/perfis.js,
+# o mais comum primeiro, como no autónomo):
 # - admin: tudo, incluindo membros, regiões e definições;
 # - utilizador: lojas e mapa (F2), planear rotas e encomendas (F3, F5);
 # - motorista: rota do dia e o terreno (F4); na F1–F2 não entra no /crm.
+# Lido pelo perfis.test.js do frontend (T2.21): manter numa só linha.
 PERFIS = ("admin", "utilizador", "motorista")
 
 MENSAGEM_PERFIL = "Escolha um perfil: admin, utilizador ou motorista."
