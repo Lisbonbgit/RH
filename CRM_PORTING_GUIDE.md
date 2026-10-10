@@ -135,6 +135,14 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
     - um `loc` fora do mundo é recusado (`WriteError`): o `loc` tem de ser sempre um Point válido;
     - o `$geoWithin` de 60 m usa o `loc_2dsphere`, o filtro por região usa o `regiao_id_1` e a linha do tempo (`loja_id` + ordenação por `ocorrida_em`) usa o `loja_id_1_ocorrida_em_1`;
     - a atualização condicional com carimbos só grava com a versão certa.
+  - **Ensaio versionado (T2.17, `backend/tests/crm/test_mongo_local.py`):** repete estas conferências e as das T2.9–T2.13 como testes, contra o MongoDB 8 local. Como correr: §12.7. O que prova:
+    - o `criar_indices` verdadeiro, duas vezes, sem nenhum erro registado, deixa em cada coleção exatamente os índices de `INDICES`; `crm_definicoes` fica só com `_id_` e `chave_1`;
+    - o `filtro_candidatos` pelo `loc_2dsphere`: o círculo de 60 m traz as lojas a 30 m e a 55 m, e não as de 65 m e 80 m; a regra exata deixa só a de 30 m (`distancia_m` 30); o `$ne` da edição tira só a própria, nos dois sentidos; um `loc` fora do mundo é recusado (`WriteError`);
+    - a atualização condicional com a versão velha dá `matched_count 0` e não muda nada; o carimbo seguinte é `$gt` o anterior também como texto; o filtro usa o `id_1`;
+    - `DuplicateKeyError` com `nome_chave`, `user_id`, `id` (membros, regiões, lojas, interações) e `client_uuid` de texto repetidos; as interações sem `client_uuid` ou com null não colidem (índice parcial);
+    - o histórico do DELETE e a linha do tempo vão pelo `loja_id_1_ocorrida_em_1`, e a ordem por `ocorrida_em` é a do tempo;
+    - dois upserts seguidos das definições (latitude e longitude) sem `DuplicateKeyError` (correções do plano, linha "T1.2 / T2.8"); o `PATCH /definicoes` grava uma linha por chave e o seguinte substitui; 20 `PATCH` ao mesmo tempo sobre a coleção vazia não dão erro e deixam uma linha por chave (o Mongo refaz o upsert que perde a corrida pelo `chave_1`);
+    - as corridas com o Motor nas rotas (`PATCH` e `DELETE /lojas`, `POST /regioes` e `POST /membros`): uma **barreira** segura as duas primeiras leituras até ambos os pedidos terem lido, para a corrida acontecer sempre. Uma alteração grava e a outra dá 409 `conflito`, com uma só interação; um apaga e o outro dá 404; a segunda região ou o segundo membro dá 409, travado só pelo índice único.
 - `lat`/`lng` e `loc` escrevem-se sempre juntos (`formatar.documento_localizacao(lat, lng)` → `{lat, lng, loc}`, as coordenadas em `float`; T2.10). Na API as janelas são planas (`janela1_inicio`, `janela1_fim`, `janela2_inicio`, `janela2_fim`); na base ficam em lista (0 a 2, por ordem).
 - **Contas do portal (`users`, já existe):** o CRM lê `id`, `email`, `name` e `role`. A projeção **nunca** pede `password`.
 - **Sem transações:** a ordem das escritas é definida e testada. Exemplos: atualizar a loja e depois registar a `mudanca_fase`; se o registo falhar, fica uma linha `[crm]` no log e a loja não é desfeita. Apagar a loja e só depois as `mudanca_fase` dela (T2.12, §5.12); se estas falharem, ficam órfãs e uma linha `[crm]` no log. Corridas residuais aceites, como apagar uma região enquanto se cria uma loja nela.
@@ -967,7 +975,10 @@ cd "$RAIZ/frontend" && BUILD_PATH="$LOGS/build" CI=false ./node_modules/.bin/cra
 
 - `-p no:cacheprovider` evita `backend/.pytest_cache`, que não está no `.gitignore`.
 - O fixture `mongo_real` de `tests/test_seguranca_login.py` arranca um `mongod` temporário próprio (127.0.0.1, porta aleatória) e não toca no serviço da porta 27017. Sem `/opt/homebrew/bin` no `PATH`, esses 7 testes saltam e o `skipped` sobe para 10.
-- O ensaio da T2.17 só corre com `CRM_MONGO_TESTE_URL=mongodb://127.0.0.1:27017` e na base `lisbonb_crm_teste`.
+- **Ensaio no MongoDB local (T2.17):** `cd "$RAIZ/backend" && CRM_MONGO_TESTE_URL=mongodb://127.0.0.1:27017 .venv/bin/python -m pytest -q -p no:cacheprovider tests/crm/test_mongo_local.py` (primeiro plano, cerca de 5 s; o serviço `brew` do MongoDB tem de estar a correr).
+  - Sem a variável, os 23 testes do Mongo saltam com a razão "ensaio no MongoDB local: só corre com CRM_MONGO_TESTE_URL=…"; os 17 sem Mongo (a guarda e as distâncias dos pontos) correm sempre. Por isso a bateria `tests/crm` e a suite completa têm **23 saltados a mais** sem a variável (com ela, voltam aos de antes).
+  - A guarda falha sem ligar (e sem mostrar a URI) se a variável não for um `mongodb://` com uma só máquina local (`seed_crm_local.uri_e_local`) ou se trouxer outra base que não a `lisbonb_crm_teste`. Cada teste apaga só essa base, no início e no fim.
+  - A variável é só da shell: nunca entra no `.env.example` nem no `.env.local` (`test_variaveis_ambiente.py` falha se entrar no `.env.example`).
 - O build de verificação não depende do ambiente local: lê o `.env.production`, e o *bundle* fica a apontar para `https://rh.lisbonb.com`. Só serve para compilar, nunca se publica.
 
 ### 12.8 Registos e ficheiros locais
@@ -1007,12 +1018,18 @@ Registado a 2026-10-10 no ramo `crm-purple-house` @ `2e0dbac`, antes de qualquer
 **Regra para T1.2, T1.9, T1.15 e T2.32:** `failed` = 0, `skipped` ≤ 3 (não pode aumentar) e `passed` = 3552 +
 testes novos do CRM. O Jest tem de continuar com as 6 suites antigas verdes.
 
+**Desde a T2.17:** sem `CRM_MONGO_TESTE_URL`, os 23 testes do ensaio no MongoDB local (`tests/crm/test_mongo_local.py`)
+saltam de propósito, todos com a razão "ensaio no MongoDB local: só corre com CRM_MONGO_TESTE_URL=…". A regra passa
+a ser `skipped` ≤ 3 + 23 sem a variável, confirmando com `-rs` que os saltados a mais são todos do ensaio (com a
+variável, `skipped` ≤ 3).
+
 | Momento | Commit | Backend (passed / failed / skipped) | Jest `src/lib` |
 |---|---|---|---|
 | Partida (T0.6) | `2e0dbac` | 3552 / 0 / 3 | 114 / 0 |
 | Depois da T0.7 (+50 de `tests/crm/test_seed_local.py`) | `38f40c4` | 3602 / 0 / 3 | — |
 | Fecho da F1 (T1.15) | `902b4e8` | 4071 / 0 / 3 (3552 + 519 de `tests/crm`) | 354 / 0 (9 suites: as 6 antigas com 114 + 240 do CRM) |
 | Revisão da F0/F1 (+22: `test_cron_key.py` e um meta-teste do cron; Jest +35) | ver `git log` ("CRM: corrige revisão da F0/F1") | 4093 / 0 / 3 (3552 + 541 de `tests/crm`) | 389 / 0 (9 suites: 114 + 275 do CRM) |
+| Depois da T2.17 (sem `CRM_MONGO_TESTE_URL`; `pytest-tudo-T2_17.log`) | ver `git log` ("CRM: ensaio do comportamento real do Mongo…") | 6380 / 0 / 26 (3 de sempre + 23 do ensaio) | — |
 | Fecho da F2 (T2.32) | — | *a preencher* | *a preencher* |
 
 **Fecho da F1 (T1.15, 2026-10-10)** — tudo verificado no Mac, nada saiu dele:
