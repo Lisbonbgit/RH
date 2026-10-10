@@ -85,6 +85,7 @@ datas (vão nas notas) e seguimento GPS contínuo (**nunca**).
 
 - **Arredondar:** o `round()` do PHP é meio-para-longe-do-zero; o do Python arredonda para o par (50,5 → 50 aceitaria um GPS a 51 m). Usar `dominio.numeros.arredondar` (`Decimal(repr(x)).quantize(…, ROUND_HALF_UP)`), que devolve sempre `float`, como o PHP (quem precisa de um `int` converte, como o `(int) round(…)`). Na T2.1 foi conferido com o `round()` do PHP 8.4.26 em 57 999 valores (coordenadas, metros e floats de todas as grandezas, às 0, 2 e 6 casas): todos iguais, exceto um à volta de 4,4×10¹³ com 2 casas, em que o PHP perde precisão (fora de qualquer valor do CRM).
 - **Tipos JSON:** `True` é `int` em Python e o `json` aceita `NaN` e `1e400`. Usar `e_inteiro_json`/`e_numero_json` (`type(x) is int`, `math.isfinite`); `bool` nunca conta como número. O Python lê inteiros de qualquer tamanho e o PHP lia como `float` os que passam dos 64 bits: estes não são `e_inteiro_json` (o MongoDB também só guarda 8 bytes) e só são `e_numero_json` se couberem num float (maiores, o PHP lia INF).
+- **Graus para radianos:** o `deg2rad()` do PHP faz `(graus / 180) * M_PI` e o `math.radians()` do Python multiplica por `pi / 180`, o que muda a última casa binária (nas antípodas, até 0,19 m). `geo.py` usa `_radianos` com a ordem do PHP: na T2.2, 60 000 pares deram a mesma distância ao bit que o `Distancia::metros` do PHP 8.4.26. O `math.sin`/`math.asin` do Python rebentam com `ValueError` onde o PHP dava NAN (inf, ou acima de 1); a distância recebe só coordenadas finitas já validadas.
 - **Texto:** `str.strip()` não tira U+FEFF; `\d` aceita algarismos árabes e `$` aceita `\n` final. Usar `aparar` com `[\s﻿]` e `\Z`, `[0-9]` e `re.fullmatch` em todas as regras.
 - **Equivalências:** `mb_strlen` → `len`; `strlen` → `len(s.encode("utf-8"))`; `in_array(…, true)` → `isinstance(x, str) and x in ORDEM`; `sprintf('%.6F')` → `f"{x:.6f}"` depois de `arredondar` (com `-0.0` o PHP escreve `0.000000` e o Python `-0.000000`: só acontece fora de Portugal, mas ter em conta na T2.7); `rawurlencode` → `urllib.parse.quote(chave, safe="")`; `http_build_query(…, RFC3986)` → `urlencode(…, quote_via=quote)`.
 - **Corrotinas nos testes:** **proibido `asyncio.run`** em `tests/crm`, porque deixa o ciclo de eventos a `None` e parte dezenas de testes antigos que usam `get_event_loop()`. Usar `correr(coro)` de `tests/crm/duplos.py` (um ciclo novo, sem `set_event_loop`). `grep -rn "asyncio.run(" backend/tests/crm` tem de dar vazio.
@@ -252,11 +253,13 @@ janela2_fim, dias_fechada`. Os campos que o servidor decide (`id`, `criado_por`,
 
 ### 5.3 Portugal continental
 - Aceita-se `36.8 ≤ lat ≤ 42.2` e `−9.6 ≤ lng ≤ −6.1`, com os limites incluídos. Recusa-se `36.799999`, `42.200001`, a Madeira, os Açores, Madrid, `0` e o sinal trocado.
+- Em `crm/dominio/geo.py`: `contem_latitude`, `contem_longitude` e `MENSAGEM_PORTUGAL`. Quem chama valida o número e arredonda às 6 casas antes de perguntar (36.7999996 → 36.8 está dentro; 42.2000005 → 42.200001 está fora). O que não for número JSON (bool, texto, `None`, nan, inf) nunca está em Portugal, em vez de rebentar com `TypeError`.
 - A mensagem é exatamente "Fora de Portugal". A pesquisa de morada filtra também `country_code` ≠ `pt` e pontos fora do continente.
 
 ### 5.4 GPS ("Estou nesta loja")
 - Só se pede a posição **quando a pessoa toca** em "Estou nesta loja": na criação, na ficha e, na F4, no terreno. Opções: `{enableHighAccuracy: true, timeout: 15000, maximumAge: 0}`. **Nunca há seguimento contínuo** e guarda-se só o ponto da loja (Código do Trabalho, RGPD, CNPD).
 - A precisão é aceitável se for **≤ 50 m depois de arredondar** meio-para-longe-do-zero: 50, 12, 0 e 50.4 passam; 51, **50.5**, 80, −1, `None`, `"10"`, `True`, inf e nan não. Aceite, a origem fica `gps` e `precisao_m` é inteiro; nas outras origens, `precisao_m` é `None`.
+- Em `geo.py`: `precisao_aceitavel`, `LIMITE_PRECISAO_M = 50` e `MENSAGEM_GPS`. `False` também não passa (em Python seria um GPS de 0 m); `-0.0` passa, como no PHP. O valor guardado é `int(arredondar(precisao_m))`.
 - Acima de 50 m aparece "Localização imprecisa — ajuste o pino", com o círculo da precisão. O Confirmar fica desativado até a pessoa arrastar o pino, e a origem passa a `pin_manual`.
 - Regras do seletor (portadas de `seletor-localizacao.test.js`):
   - uma posição GPS que chegue depois de o pino mudar é ignorada;
@@ -266,7 +269,7 @@ janela2_fim, dias_fechada`. Os campos que o servidor decide (`id`, `criado_por`,
 - No telemóvel, adicionar uma loja exige rede (botão desativado com "sem rede").
 
 ### 5.5 Duplicados a menos de 50 m
-- Distância **haversine** com `R = 6 371 000 m`. Por exemplo, Praça do Comércio (38.707500, −9.136400) ↔ Rossio (38.713900, −9.139100) ≈ 750 m.
+- Distância **haversine** com `R = 6 371 000 m`. Por exemplo, Praça do Comércio (38.707500, −9.136400) ↔ Rossio (38.713900, −9.139100) ≈ 750 m (749,216 m). Em `geo.py`: `distancia_metros`, `RAIO_TERRA_M` e `METROS_POR_GRAU` (`RAIO_TERRA_M * pi / 180`, ≈ 111 194,93 m).
 - **Duplicado** se a distância exata for **< 50 m** (tolerância 1e-6): 50 m exatos não são.
 - `distancia_m` é a distância arredondada, mas **nunca ≥ 50**: 49,6 dá 49, 30,6 dá 31 e 0,4 dá 0. As lojas vêm ordenadas por distância e depois por `id`.
 - **Pré-filtro no Mongo:** `{"loc": {"$geoWithin": {"$centerSphere": [[lng, lat], 60 / 6371000]}}}` (60 m, índice `2dsphere`). Na edição junta-se `"id": {"$ne": <própria>}`. A regra exata dos 50 m é aplicada em Python.
