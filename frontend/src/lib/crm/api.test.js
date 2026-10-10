@@ -341,6 +341,52 @@ describe('criarClienteCrm — chamadas da F1 com pedir falso', () => {
   });
 });
 
+describe('o URL do backend vem de REACT_APP_BACKEND_URL', () => {
+  // No Jest a variável não existe (o CRA não carrega o `.env.local` com
+  // NODE_ENV=test): comparar o URL_BASE_CRM com a mesma expressão dava
+  // 'undefined/api/crm' dos dois lados, e um nome de variável errado no
+  // api.js passava (revisão da F0/F1, F2). Aqui fixa-se o valor ANTES de
+  // carregar o módulo, num registo de módulos à parte.
+  const ORIGINAL = process.env.REACT_APP_BACKEND_URL;
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.REACT_APP_BACKEND_URL;
+    else process.env.REACT_APP_BACKEND_URL = ORIGINAL;
+  });
+
+  const carregarCom = (valor) => {
+    process.env.REACT_APP_BACKEND_URL = valor;
+    let modulo;
+    jest.isolateModules(() => {
+      modulo = require('./api');
+    });
+    return modulo;
+  };
+
+  test('absoluto (app nativa, ambiente local): <backend>/api/crm', () => {
+    const { URL_BASE_CRM: url, criarInstanciaCrm: criar, instanciaCrm: instancia } = carregarCom('https://backend.exemplo');
+    expect(url).toBe('https://backend.exemplo/api/crm');
+    expect(criar().defaults.baseURL).toBe('https://backend.exemplo/api/crm');
+    expect(instancia.defaults.baseURL).toBe('https://backend.exemplo/api/crm');
+  });
+
+  test('vazio (o build do Docker, no mesmo domínio): /api/crm relativo', () => {
+    const { URL_BASE_CRM: url, instanciaCrm: instancia } = carregarCom('');
+    expect(url).toBe('/api/crm');
+    expect(instancia.defaults.baseURL).toBe('/api/crm');
+  });
+
+  test('o pedido do /eu sai para <backend>/api/crm/eu', async () => {
+    const { obterEu: obter, instanciaCrm: instancia } = carregarCom('https://backend.exemplo');
+    const adaptador = jest.fn(async (config) => ({
+      data: { membro: false, perfil: null, admin_master: false }, status: 200, statusText: 'OK', headers: {}, config, request: {},
+    }));
+    instancia.defaults.adapter = adaptador;
+    await obter();
+    expect(axios.getUri(adaptador.mock.calls[0][0])).toBe('https://backend.exemplo/api/crm/eu');
+  });
+});
+
 describe('a instância axios do CRM', () => {
   // Um adaptador falso: responde sem rede e guarda o pedido que o axios montou.
   const adaptadorQueResponde = (data) => jest.fn(async (config) => ({
@@ -349,7 +395,9 @@ describe('a instância axios do CRM', () => {
   const autorizacaoDe = (config) => AxiosHeaders.from(config.headers).get('Authorization');
 
   test('aponta para /api/crm do backend do portal, com tecto de 30 s', () => {
-    expect(URL_BASE_CRM).toBe(`${process.env.REACT_APP_BACKEND_URL}/api/crm`);
+    // O valor do URL prova-se em «o URL do backend vem de REACT_APP_BACKEND_URL»
+    // (abaixo): aqui só se garante que as instâncias usam o URL_BASE_CRM.
+    expect(URL_BASE_CRM).toMatch(/\/api\/crm$/);
     expect(TIMEOUT_CRM_MS).toBe(30000);
     const instancia = criarInstanciaCrm();
     expect(instancia.defaults.baseURL).toBe(URL_BASE_CRM);

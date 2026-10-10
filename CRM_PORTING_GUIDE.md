@@ -157,7 +157,7 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
 |---|---|---|
 | Pública | `GET /api/crm/saude` (não toca na base) | Nenhuma |
 | Qualquer sessão válida | `GET /api/crm/eu` (devolve `membro: false`, nunca 403) | `utilizador_atual` |
-| Tarefas agendadas (F5) | `/api/crm/cron/*` | `CRON_KEY` comparada com `compare_digest`, fechada se a variável faltar; sem sessão |
+| Tarefas agendadas (F5) | `/api/crm/cron/*` | `crm.auth.exigir_cron_key`: `CRON_KEY` no parâmetro `key`, comparada com `compare_digest` (bytes UTF-8), fechada se a variável faltar ou estiver vazia; sem sessão |
 | Membro com perfil | Todas as outras | `membro_crm_atual` + exatamente uma `exigir_perfil(...)` com `perfis_crm` igual a `PERFIS_POR_ROTA` |
 
 - Na F1 e na F2 há dois perfis de rota: `SO_ADMIN = exigir_perfil("admin")` e `ESCRITORIO = exigir_perfil("admin", "utilizador")`.
@@ -170,6 +170,7 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
     - a mesma rota declarada duas vezes, ou a mesma rota em duas famílias.
   - Cada método conta como uma rota (`GET` e `POST /membros` classificam-se à parte). Na F1–F2, os perfis da tabela são só `{"admin"}` e `{"admin","utilizador"}`.
 - **Cada tarefa que cria rotas** classifica-as em `PERFIS_POR_ROTA` no passo "teste primeiro".
+- **Cron (revisão da F0/F1, AC-1):** "sem sessão" não chega. O teste exige a própria função `crm.auth.exigir_cron_key` em cada rota de `ROTAS_DE_CRON`, por identidade e não pelo nome, e aponta o corpo lido antes dela. A guarda já existe, com testes próprios em `test_cron_key.py`: chave certa, errada, vazia ou em falta, variável em falta ou vazia, lida a cada pedido, chave fora do ASCII → 403 e nunca 500, e `compare_digest` com bytes. Na F5 basta `Depends(exigir_cron_key)` e a classificação.
 - **Montagem (T1.9, `tests/crm/test_montagem.py`):** o `server.py` inclui o `crm.router` a seguir às Plataformas e chama `crm.arrancar()` a seguir a `faturacao.arrancar()`. As rotas `/api/crm/*` da app do portal têm de ser exatamente as do `crm.router`, com a mesma função, por isso uma rota do CRM escrita direto no `server.py` não escapa ao teste de proteção.
 - **IDOR:** cada pedido verifica a loja, a região ou a rota pelo `id`. Na F4, o motorista só escreve em paragens das suas rotas.
 
@@ -178,6 +179,10 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
   - Com a base em baixo, o `/eu` responde 500 e nunca `membro: false`: um "não" guardava-se para o token inteiro, enquanto uma falha volta a ser perguntada no pedido seguinte (teste `test_eu.py`).
   - A cache (`criarCacheEu`, T1.11) guarda só o token atual: o mesmo token dá um só pedido, também com vários componentes ao mesmo tempo; outro token dá um pedido novo, e a resposta atrasada do antigo não fica; sem token, `EU_NINGUEM` sem pedido (e esquece a resposta anterior).
   - Uma falha, incluindo um 200 sem a forma do `/eu` (o `index.html` de um proxy), dá `EU_NINGUEM` e não se guarda. O próximo componente que montar fica "a carregar" (a guarda espera, não recambia) e volta a perguntar; quando a resposta chega, todos os componentes montados a recebem.
+  - **Uma falha não é um "não"** (revisão da F0/F1). O estado de `useEstadoCrm()` é `{carregando, eu, falhou, tentarDeNovo}`.
+    - Depois de uma falha, os menus escondem o CRM.
+    - A guarda (`decisaoGuardaCrm` / `decisaoSoAdminCrm` em `acesso.js`) não recambia: mostra "Não foi possível confirmar o acesso ao CRM. Verifique a ligação e tente de novo." com os botões "Tentar de novo" (volta a perguntar) e "Voltar ao portal".
+    - Na app nativa, ou sem `nativo: false` explícito, recambia como antes.
   - `normalizarEu` segue o backend: um perfil fora da lista não é membro (`EU_NINGUEM`); `admin_master` só com `true` e num admin.
 - Nas apps nativas (`Capacitor.isNativePlatform()`), o CRM fica escondido na v1. `podeAbrirAreaCrm` só abre com `nativo: false` explícito: sem a opção, fica escondido.
 - As regras de caminho (`lib/crm/acesso.js`) seguem o React Router, que não distingue maiúsculas e aceita barras no fim: `/admin/CRM/mapa/` é do CRM e abre em ecrã cheio. Uma regra `visivel` que rebenta esconde a secção sem deitar abaixo o menu da gestão.
@@ -453,7 +458,7 @@ motorista (`/motorista…` ou equivalente), interações e linha do tempo (`/loj
 - `/rota` (F4) é uma rota de topo, como `/bolso` e `/faturacao/pos`.
 - Páginas com `React.lazy` + `Suspense` (o Leaflet não entra no ficheiro principal); `pages/crm/rotasCrm.js` declara as rotas filhas.
   - **Rotas (T1.12):** `filhosCrm()` (index → `mapa`, `mapa`, `lojas/nova`, `lojas/:lojaId`, `definicoes` dentro de `SoAdminCrm`, e `*` → mapa da mesma casa) e `rotasCrmNoAdmin()` são funções que devolvem `<Route>`, porque o `<Routes>` só aceita `<Route>` e fragmentos. Um caminho do CRM que não existe abre o mapa, como no autónomo.
-  - **Guardas (`components/crm/GuardaCrm.js`):** `GuardaCrm` espera enquanto `carregando` (indicador, nunca recambia), manda para `/` quem não pode abrir a área (não membro, motorista, app nativa) e desenha os `children` ou o `<Outlet/>`. O `CrmLayout` embrulha-se nela, para nem a barra do CRM aparecer a quem não entra; no `/admin`, é o elemento da rota `crm`. `SoAdminCrm` manda os não-admin para `${baseCrm}/mapa`.
+  - **Guardas (`components/crm/GuardaCrm.js`):** `GuardaCrm` espera enquanto `carregando` (indicador, nunca recambia), manda para `/` quem não pode abrir a área (não membro, motorista, app nativa) e desenha os `children` ou o `<Outlet/>`. Com o `/eu` sem resposta mostra `FalhaAcessoCrm` ("Tentar de novo" / "Voltar ao portal") em vez de recambiar; a decisão é `decisaoGuardaCrm` (revisão da F0/F1). O `CrmLayout` embrulha-se nela, para nem a barra do CRM aparecer a quem não entra; no `/admin`, é o elemento da rota `crm`. `SoAdminCrm` (`decisaoSoAdminCrm`) manda os não-admin para `${baseCrm}/mapa` e, com falha, mostra o mesmo aviso.
   - **Página que não carrega:** cada página tem um limite de erros com a `key` da rota. Se o *chunk* não chegar, aparece "Não foi possível abrir esta página do CRM. Verifique a ligação e recarregue." com "Recarregar", e o resto do portal continua de pé.
   - **Verificar componentes sem Jest versionado:** o Jest 27 do CRA não resolve o alias `@/`, o `react-router/dom` (campo `exports`) nem tem `TextEncoder` no jsdom. As verificações temporárias da T1.12 (`~/.cache/lisbonb-crm-local/t112-verificacao/`) mostram como contornar isto sem tocar no `package.json`. As da T1.13 (`t113-verificacao/`) montam o `AdminLayout` inteiro e trazem também o comando do ESLint do CRA (eslint 8 + `eslint-config-react-app`, com `exhaustive-deps` como erro). As da T1.14 (`t114-verificacao/`) montam o `EmployeeLayout`, com `@capacitor/app`, `lib/notifications` e `lib/geo` falsos.
   - **Secção CRM no `/admin` (T1.13):** `components/crm/seccaoCrm.js` fica no fim do array `sections` do `AdminLayout`. Os itens saem de `ITENS_MENU_CRM` na casa `/admin/crm`, e as Definições têm `crmAdmin`.
@@ -586,7 +591,7 @@ portal** (é do Marketing) e não se guarda nenhum dado da Google: todas as coor
 | `MONGO_URL`, `DB_NAME`, `JWT_SECRET` (já existem) | Os do portal; o CRM não cria ligações próprias (`crm.db.obter_db` → `faturacao.db.obter_db`) | — |
 
 - **Nunca:** valores reais no chat, no git, em registos ou neste dossiê. Sem chaves, o CRM funciona na mesma: mapa com mosaicos OSM e pesquisa de morada → 503 com a mensagem exata.
-- **Só em local:** `backend/.env.local`, `frontend/.env.local` (§12.3) e `CRM_MONGO_TESTE_URL` (variável de shell para o ensaio da T2.17, sempre `mongodb://127.0.0.1:27017` com a base `lisbonb_crm_teste`).
+- **Só em local:** `backend/.env.local`, `frontend/.env.development.local` (§12.3) e `CRM_MONGO_TESTE_URL` (variável de shell para o ensaio da T2.17, sempre `mongodb://127.0.0.1:27017` com a base `lisbonb_crm_teste`).
 - Não endurecer a `Referrer-Policy` (§8). Não usar `GOOGLE_PLACES_API_KEY` no CRM.
 - A chave dos mosaicos fica restrita a `https://lisbonb.com`. Quem entra por `rh.lisbonb.com` (sinónimo permanente no Caddyfile) recebe os mosaicos OSM, salvo decisão em contrário do dono (§14, ponto 4).
 
@@ -706,14 +711,18 @@ cd "/Users/brucesilva/pasta sem título/RH/backend" && umask 077 && test ! -e .e
 | Ficheiro | Nomes (valores sempre `<…>`) |
 |---|---|
 | `backend/.env.local` | `MONGO_URL=<…>` (local), `DB_NAME=<…>` (acaba em `_local`), `JWT_SECRET=<…>` (64 car.), `ADMIN_EMAIL=<…>`, `ADMIN_PASSWORD=<…>` (16 car.), `CORS_ORIGINS=<…>`, `FRONTEND_URL=<…>`, `CRM_GEOAPIFY_CHAVE_SERVIDOR=` (vazia), `CRM_GEOAPIFY_CHAVE_MOSAICOS=` (vazia) |
-| `frontend/.env.local` | `REACT_APP_BACKEND_URL=<…>` (`http://127.0.0.1:8001`), `BROWSER=none`, `PORT=3000`, `HOST=127.0.0.1` |
+| `frontend/.env.development.local` | `REACT_APP_BACKEND_URL=<…>` (`http://127.0.0.1:8001`), `BROWSER=none`, `PORT=3000`, `HOST=127.0.0.1` |
 
 - **Porquê `@example.com`:** o `EmailStr` do login recusa domínios reservados como `.test` e `.local`.
 - **Porquê `HOST=127.0.0.1`:** o dev server do CRA escuta em `0.0.0.0` por omissão e o plugin visual-edits do craco expõe `POST /edit-file` (em local responde 401).
 - O `server.py` só carrega `backend/.env`, que **não existe** em local; o único ficheiro de configuração é `--env-file .env.local`.
-- O CRA carrega `.env.local` em desenvolvimento, mas não com `NODE_ENV=test`, por isso o Jest não é afetado.
+- **Porquê `.env.development.local` e não `.env.local`** (revisão da F0/F1, F3): o CRA lê o `.env.local` no `start` e também no `build` (produção), por cima do `.env.production` versionado. Um `yarn build` fora do Docker nesta cópia, como o `frontend/scripts/build-app-release.sh`, saía com `http://127.0.0.1:8001`.
+  - O `.env.development.local` só é lido pelo `start`. O `build` fica com o `.env.production` e o Jest (`NODE_ENV=test`) não lê nenhum dos dois.
+  - O Docker não é afetado: o `frontend/.dockerignore` exclui `.env.*`.
+  - Verificado com `react-scripts/config/env.js` em cada `NODE_ENV` (`rev-f3-verde.log`).
+  - Numa cópia antiga do ambiente: `mv frontend/.env.local frontend/.env.development.local`.
 - **Verificar só nomes:**
-  - `git -C "/Users/brucesilva/pasta sem título/RH" check-ignore backend/.env.local frontend/.env.local` mostra os dois (`.gitignore:87 .env.*` e `frontend/.gitignore:16 .env.local`);
+  - `git -C "/Users/brucesilva/pasta sem título/RH" check-ignore backend/.env.local frontend/.env.development.local` mostra os dois (`.gitignore:87 .env.*` e `frontend/.gitignore:17 .env.development.local`);
   - `grep -c "mongodb+srv" backend/.env.local` dá `0`;
   - `sed -E 's/=.*/=<…>/' backend/.env.local` lista os nomes.
 
@@ -754,7 +763,7 @@ As contas de demonstração **não têm ficha de colaborador** (`employee_id: No
 lsof -nP -tiTCP:8001 -sTCP:LISTEN; lsof -nP -tiTCP:3000 -sTCP:LISTEN
 # Backend (SEGUNDO PLANO)
 cd "/Users/brucesilva/pasta sem título/RH/backend" && .venv/bin/uvicorn server:app --host 127.0.0.1 --port 8001 --env-file .env.local > "$HOME/.cache/lisbonb-crm-local/backend.log" 2>&1
-# Frontend (SEGUNDO PLANO; HOST/PORT/BROWSER vêm do frontend/.env.local)
+# Frontend (SEGUNDO PLANO; HOST/PORT/BROWSER vêm do frontend/.env.development.local)
 cd "/Users/brucesilva/pasta sem título/RH/frontend" && BROWSER=none PORT=3000 ./node_modules/.bin/craco start > "$HOME/.cache/lisbonb-crm-local/frontend.log" 2>&1
 # Verificar (esperas limitadas)
 curl -s --max-time 3 http://127.0.0.1:8001/api/health          # {"status":"healthy",…}
@@ -787,6 +796,7 @@ cd "$RAIZ/frontend" && BUILD_PATH="$LOGS/build" CI=false ./node_modules/.bin/cra
 - `-p no:cacheprovider` evita `backend/.pytest_cache`, que não está no `.gitignore`.
 - O fixture `mongo_real` de `tests/test_seguranca_login.py` arranca um `mongod` temporário próprio (127.0.0.1, porta aleatória) e não toca no serviço da porta 27017. Sem `/opt/homebrew/bin` no `PATH`, esses 7 testes saltam e o `skipped` sobe para 10.
 - O ensaio da T2.17 só corre com `CRM_MONGO_TESTE_URL=mongodb://127.0.0.1:27017` e na base `lisbonb_crm_teste`.
+- O build de verificação não depende do ambiente local: lê o `.env.production`, e o *bundle* fica a apontar para `https://rh.lisbonb.com`. Só serve para compilar, nunca se publica.
 
 ### 12.8 Registos e ficheiros locais
 
@@ -796,6 +806,8 @@ cd "$RAIZ/frontend" && BUILD_PATH="$LOGS/build" CI=false ./node_modules/.bin/cra
 | `~/.cache/lisbonb-crm-local/estado-partida-T06.txt` | Estado de partida estruturado (§13) |
 | `~/.cache/lisbonb-crm-local/arranque-T08.txt`, `t08_login.py`, `t08-*.png` | Registo do arranque, script de login e capturas |
 | `~/.cache/lisbonb-crm-local/build/` | Build de verificação (a partir da F1) |
+| `~/.cache/lisbonb-crm-local/rev-*.log`, `rev-f1-verificacao/`, `t07-*.log`, `t11-*.log` | Revisão da F0/F1: vermelho, verde e mutações de cada achado; verificação temporária dos componentes; prova do vermelho da T0.7 e da T1.1, reconstruída |
+| `frontend/.env.development.local` | Ambiente do `craco start` local (§12.3; era `frontend/.env.local`) |
 | `~/.config/lisbonb-crm-local/credenciais.txt` | Palavras-passe das contas de demonstração (modo 600; não mostrar) |
 | `/Users/brucesilva/cleide/.claude/launch.json` | Entradas do `preview_start` |
 
@@ -828,6 +840,7 @@ testes novos do CRM. O Jest tem de continuar com as 6 suites antigas verdes.
 | Partida (T0.6) | `2e0dbac` | 3552 / 0 / 3 | 114 / 0 |
 | Depois da T0.7 (+50 de `tests/crm/test_seed_local.py`) | `38f40c4` | 3602 / 0 / 3 | — |
 | Fecho da F1 (T1.15) | `902b4e8` | 4071 / 0 / 3 (3552 + 519 de `tests/crm`) | 354 / 0 (9 suites: as 6 antigas com 114 + 240 do CRM) |
+| Revisão da F0/F1 (+22: `test_cron_key.py` e um meta-teste do cron; Jest +35) | ver `git log` ("CRM: corrige revisão da F0/F1") | 4093 / 0 / 3 (3552 + 541 de `tests/crm`) | 389 / 0 (9 suites: 114 + 275 do CRM) |
 | Fecho da F2 (T2.32) | — | *a preencher* | *a preencher* |
 
 **Fecho da F1 (T1.15, 2026-10-10)** — tudo verificado no Mac, nada saiu dele:

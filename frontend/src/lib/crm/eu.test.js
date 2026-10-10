@@ -12,12 +12,15 @@
  *   - uma falha → `EU_NINGUEM` (o CRM fica escondido) e o pedido seguinte volta
  *     a tentar: um "não" de uma falha não se guarda para a sessão inteira (é
  *     por isso que o backend responde 500 e nunca `membro: false` quando a
- *     base falha — `test_eu.py`).
+ *     base falha — `test_eu.py`);
+ *   - e o estado que um componente mostra diz `falhou: true` depois de uma
+ *     falha, para a guarda não a confundir com um "não é membro" (revisão da
+ *     F0/F1: a guarda recambiava um membro com a rede em baixo).
  *
  * Os `jest.fn` nascem DENTRO de cada teste (o Jest do CRA usa `resetMocks`).
  */
 import {
-  EU_NINGUEM, PERFIS_CRM, ESTADO_A_CARREGAR, normalizarEu, criarCacheEu, estadoEu,
+  EU_NINGUEM, PERFIS_CRM, ESTADO_A_CARREGAR, ESTADO_FALHOU, normalizarEu, criarCacheEu, estadoEu,
 } from './eu';
 
 const ADMIN_MASTER = { membro: true, perfil: 'admin', admin_master: true };
@@ -50,9 +53,14 @@ describe('constantes', () => {
     expect(Object.isFrozen(PERFIS_CRM)).toBe(true);
   });
 
-  test('ESTADO_A_CARREGAR: a carregar e, entretanto, ninguém', () => {
-    expect(ESTADO_A_CARREGAR).toEqual({ carregando: true, eu: EU_NINGUEM });
+  test('ESTADO_A_CARREGAR: a carregar e, entretanto, ninguém (ainda não falhou)', () => {
+    expect(ESTADO_A_CARREGAR).toEqual({ carregando: true, eu: EU_NINGUEM, falhou: false });
     expect(Object.isFrozen(ESTADO_A_CARREGAR)).toBe(true);
+  });
+
+  test('ESTADO_FALHOU: já não carrega, ninguém (CRM escondido) e falhou', () => {
+    expect(ESTADO_FALHOU).toEqual({ carregando: false, eu: EU_NINGUEM, falhou: true });
+    expect(Object.isFrozen(ESTADO_FALHOU)).toBe(true);
   });
 });
 
@@ -379,19 +387,23 @@ describe('criarCacheEu(obter) — memorizado e avisos', () => {
 });
 
 describe('estadoEu(memorizado, jaRespondeu)', () => {
-  test('com resposta guardada → não carrega e mostra-a', () => {
+  test('com resposta guardada → não carrega, mostra-a e não falhou', () => {
     const eu = normalizarEu(UTILIZADOR);
-    expect(estadoEu(eu, false)).toEqual({ carregando: false, eu });
+    expect(estadoEu(eu, false)).toEqual({ carregando: false, eu, falhou: false });
+    expect(estadoEu(eu, true)).toEqual({ carregando: false, eu, falhou: false });
     expect(estadoEu(eu, true).eu).toBe(eu);
-    expect(estadoEu(EU_NINGUEM, false)).toEqual({ carregando: false, eu: EU_NINGUEM });
+    // Um "não é membro" de verdade (resposta do servidor) não é uma falha.
+    expect(estadoEu(EU_NINGUEM, false)).toEqual({ carregando: false, eu: EU_NINGUEM, falhou: false });
+    expect(estadoEu(EU_NINGUEM, true)).toEqual({ carregando: false, eu: EU_NINGUEM, falhou: false });
   });
 
   test('sem resposta e sem pedido terminado → a carregar (a guarda espera, não recambia)', () => {
     expect(estadoEu(undefined, false)).toBe(ESTADO_A_CARREGAR);
   });
 
-  test('sem resposta mas o pedido já terminou (falhou) → CRM escondido', () => {
-    expect(estadoEu(undefined, true)).toEqual({ carregando: false, eu: EU_NINGUEM });
-    expect(Object.isFrozen(estadoEu(undefined, true))).toBe(true);
+  test('sem resposta mas o pedido já terminou → falhou: CRM escondido, mas dito (a guarda não recambia)', () => {
+    expect(estadoEu(undefined, true)).toBe(ESTADO_FALHOU);
+    expect(estadoEu(undefined, true).falhou).toBe(true);
+    expect(estadoEu(undefined, true).eu).toBe(EU_NINGUEM);
   });
 });

@@ -3,17 +3,19 @@
 // rotas, com o `eu` de `useEstadoCrm()` (`GET /api/crm/eu`, uma vez por token).
 //
 // **A interface só esconde; é o servidor que protege** (`crm/auth.py`). Quem
-// não pode entrar e escreve o endereço à mão volta ao início do portal.
+// não pode entrar e escreve o endereço à mão volta ao início do portal. Se o
+// `/eu` não responder, ninguém é recambiado: aparece o aviso com "Tentar de
+// novo" (`decisaoGuardaCrm`; revisão da F0/F1).
 import React from 'react';
-import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import { Link, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { Capacitor } from '@capacitor/core';
+import { Button } from '../ui/button';
 import { useEstadoCrm } from '../../hooks/useEstadoCrm';
-import { baseCrm, eAdminCrm, podeAbrirAreaCrm } from '../../lib/crm/acesso';
+import { MENSAGEM_ACESSO_FALHOU, baseCrm, decisaoGuardaCrm, decisaoSoAdminCrm } from '../../lib/crm/acesso';
 
 /**
  * Enquanto se pergunta ao servidor quem é a pessoa no CRM (ou se carrega uma
- * página). Ocupa o sítio da página e nunca recambia: uma falha de rede não
- * pode mandar um membro para fora do CRM.
+ * página). Ocupa o sítio da página e nunca recambia.
  */
 export function IndicadorCrm({ texto = 'A carregar o CRM…' }) {
   return (
@@ -25,18 +27,44 @@ export function IndicadorCrm({ texto = 'A carregar o CRM…' }) {
 }
 
 /**
+ * O `/eu` não respondeu (rede em baixo, backend a reiniciar): não se sabe se a
+ * pessoa é membro. Fica onde está, com "Tentar de novo" (volta a perguntar) e
+ * "Voltar ao portal" (em `/crm/*` não há outro menu à volta).
+ */
+export function FalhaAcessoCrm({ tentarDeNovo }) {
+  return (
+    <div role="alert" className="flex min-h-[40vh] flex-col items-center justify-center gap-4 p-8 text-center">
+      <p className="max-w-md text-muted-foreground">{MENSAGEM_ACESSO_FALHOU}</p>
+      <div className="flex flex-wrap justify-center gap-2">
+        <Button type="button" onClick={tentarDeNovo}>
+          Tentar de novo
+        </Button>
+        <Button asChild variant="outline">
+          <Link to="/">Voltar ao portal</Link>
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * A guarda da área do CRM: membro `admin` ou `utilizador`, no browser (nas
  * apps nativas o CRM fica escondido na v1). Com `children` desenha-os (é o
  * que o `CrmLayout` usa, para nem a barra do CRM aparecer a quem não entra);
  * sem eles, é o elemento de uma rota e desenha as filhas (`<Outlet/>`).
  */
 export function GuardaCrm({ children }) {
-  const { carregando, eu } = useEstadoCrm();
-  if (carregando) return <IndicadorCrm />;
-  if (!podeAbrirAreaCrm(eu, { nativo: Capacitor.isNativePlatform() })) {
-    return <Navigate to="/" replace />;
+  const estado = useEstadoCrm();
+  switch (decisaoGuardaCrm(estado, { nativo: Capacitor.isNativePlatform() })) {
+    case 'esperar':
+      return <IndicadorCrm />;
+    case 'entrar':
+      return children ?? <Outlet />;
+    case 'falhou':
+      return <FalhaAcessoCrm tentarDeNovo={estado.tentarDeNovo} />;
+    default:
+      return <Navigate to="/" replace />;
   }
-  return children ?? <Outlet />;
 }
 
 /**
@@ -45,11 +73,18 @@ export function GuardaCrm({ children }) {
  * `GuardaCrm`, que já decidiu se a pessoa entra no CRM.
  */
 export function SoAdminCrm({ children }) {
-  const { carregando, eu } = useEstadoCrm();
+  const estado = useEstadoCrm();
   const { pathname } = useLocation();
-  if (carregando) return <IndicadorCrm />;
-  if (!eAdminCrm(eu)) return <Navigate to={`${baseCrm(pathname)}/mapa`} replace />;
-  return children ?? <Outlet />;
+  switch (decisaoSoAdminCrm(estado)) {
+    case 'esperar':
+      return <IndicadorCrm />;
+    case 'entrar':
+      return children ?? <Outlet />;
+    case 'falhou':
+      return <FalhaAcessoCrm tentarDeNovo={estado.tentarDeNovo} />;
+    default:
+      return <Navigate to={`${baseCrm(pathname)}/mapa`} replace />;
+  }
 }
 
 export default GuardaCrm;

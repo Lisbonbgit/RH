@@ -16,11 +16,15 @@ palavra-passe. Aqui só se acrescenta "é membro do CRM, e com que perfil?"
 Os 403 do CRM têm a forma `{"codigo", "mensagem"}` (crm/erros.py); os 401/403
 herdados da sessão continuam em texto. A base lê-se sempre por `bd.obter_db()`
 (os testes trocam-na num só sítio).
+
+As tarefas agendadas (`/api/crm/cron/*`, F5) não têm sessão: a guarda delas é
+`exigir_cron_key`, também aqui, para todas as guardas do CRM viverem juntas.
 """
 import os
-from typing import Dict
+import secrets
+from typing import Dict, Optional
 
-from fastapi import Depends
+from fastapi import Depends, Query
 
 from faturacao.auth import utilizador_atual
 
@@ -124,3 +128,23 @@ def exigir_perfil(*perfis: str):
 # da F2: as permissões do terreno chegam na F4 (não antecipar).
 SO_ADMIN = exigir_perfil("admin")
 ESCRITORIO = exigir_perfil("admin", "utilizador")
+
+
+async def exigir_cron_key(key: Optional[str] = Query(None)) -> None:
+    """A guarda das tarefas agendadas do CRM (`/api/crm/cron/*`, F5): sem
+    sessão, com a `CRON_KEY` no parâmetro `key`, como as tarefas do portal
+    (`/api/faturacao/cron/relatorio-diario?key=…`). Recusa → 403
+    `sem_permissao`.
+
+    - A variável lê-se do ambiente a cada pedido; sem ela, ou vazia, ninguém
+      entra (nem com `key=` vazio).
+    - `compare_digest` e não `==`: uma comparação que pára no primeiro
+      carácter diferente diz, pelo tempo que demora, quantos estavam certos.
+      Sobre bytes UTF-8, porque com `str` um carácter fora do ASCII dava
+      `TypeError` (500) em vez de 403.
+    - O teste de proteção das rotas exige ESTA função em cada rota de
+      `ROTAS_DE_CRON` (revisão da F0/F1, AC-1): estar "sem sessão" não chega.
+    """
+    chave = os.environ.get("CRON_KEY")
+    if not chave or not isinstance(key, str) or not secrets.compare_digest(key.encode("utf-8"), chave.encode("utf-8")):
+        raise erro(403, "sem_permissao", MENSAGEM_SEM_PERMISSAO)

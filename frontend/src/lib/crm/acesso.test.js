@@ -11,8 +11,9 @@
  * nunca deitam abaixo o menu do resto do portal.
  */
 import {
-  BASE_CRM, BASE_CRM_ADMIN, PERFIS_ESCRITORIO, ITENS_MENU_CRM,
+  BASE_CRM, BASE_CRM_ADMIN, PERFIS_ESCRITORIO, ITENS_MENU_CRM, MENSAGEM_ACESSO_FALHOU,
   podeAbrirAreaCrm, eAdminCrm, seccaoVisivel, rotaDoCrmNoAdmin, baseCrm, ecraCheioDoCrm, itensMenuCrm,
+  decisaoGuardaCrm, decisaoSoAdminCrm,
 } from './acesso';
 
 // As respostas do `GET /api/crm/eu`, tal como o backend as manda.
@@ -99,6 +100,103 @@ describe('podeAbrirAreaCrm(eu, {nativo})', () => {
     ['nativo 0', { nativo: 0 }],
   ])('%s → não entra', (_nome, opcoes) => {
     expect(podeAbrirAreaCrm(ADMIN, opcoes)).toBe(false);
+  });
+});
+
+// O estado de `useEstadoCrm()` (`estadoEu` do `eu.js`): a carregar, com
+// resposta, ou falhou (o pedido terminou sem resposta — rede em baixo, 502 de
+// um reinício, um 200 que não é do `/eu`).
+const A_CARREGAR = { carregando: true, eu: NAO_MEMBRO, falhou: false };
+const FALHOU = { carregando: false, eu: NAO_MEMBRO, falhou: true };
+const respondeu = (eu) => ({ carregando: false, eu, falhou: false });
+
+// Estados que nunca deviam chegar à guarda (o hook dá sempre a forma certa).
+const ESTADOS_ESTRAGADOS = [
+  ['nulo', null],
+  ['indefinido', undefined],
+  ['texto', 'entrar'],
+  ['lista', [respondeu(ADMIN)]],
+  ['objeto vazio', {}],
+  ['falhou em texto', { carregando: false, eu: NAO_MEMBRO, falhou: 'true' }],
+];
+
+describe('decisaoGuardaCrm(estado, {nativo}) — a guarda da área do CRM', () => {
+  test('a mensagem de quando não se consegue confirmar o acesso', () => {
+    expect(MENSAGEM_ACESSO_FALHOU).toBe('Não foi possível confirmar o acesso ao CRM. Verifique a ligação e tente de novo.');
+  });
+
+  test('a carregar → espera (nunca recambia a meio de um pedido)', () => {
+    expect(decisaoGuardaCrm(A_CARREGAR, NO_BROWSER)).toBe('esperar');
+    expect(decisaoGuardaCrm({ ...A_CARREGAR, eu: ADMIN }, NO_BROWSER)).toBe('esperar');
+    expect(decisaoGuardaCrm(A_CARREGAR, NA_APP)).toBe('esperar');
+  });
+
+  test.each([
+    ['admin master', ADMIN_MASTER],
+    ['admin', ADMIN],
+    ['utilizador', UTILIZADOR],
+  ])('membro %s no browser → entra', (_nome, eu) => {
+    expect(decisaoGuardaCrm(respondeu(eu), NO_BROWSER)).toBe('entrar');
+  });
+
+  test.each([
+    ['não membro', NAO_MEMBRO],
+    ['motorista', MOTORISTA],
+  ])('%s (resposta do servidor) → recambia para o início', (_nome, eu) => {
+    expect(decisaoGuardaCrm(respondeu(eu), NO_BROWSER)).toBe('recambiar');
+  });
+
+  // Revisão da F0/F1: com o `/eu` sem resposta (4G fraco, reinício do
+  // backend), a guarda recambiava um membro para fora do CRM. Uma falha não
+  // é um "não": mostra o aviso com "Tentar de novo".
+  test('o pedido falhou, no browser → mostra a falha, NUNCA recambia', () => {
+    expect(decisaoGuardaCrm(FALHOU, NO_BROWSER)).toBe('falhou');
+  });
+
+  test.each([
+    ['na app nativa', NA_APP],
+    ['sem opções', undefined],
+    ['nativo em texto', { nativo: 'false' }],
+  ])('o pedido falhou %s → recambia (o CRM fica escondido)', (_nome, opcoes) => {
+    expect(decisaoGuardaCrm(FALHOU, opcoes)).toBe('recambiar');
+  });
+
+  test('na app nativa nunca entra, nem o admin', () => {
+    expect(decisaoGuardaCrm(respondeu(ADMIN), NA_APP)).toBe('recambiar');
+  });
+
+  test.each(ESTADOS_ESTRAGADOS)('estado %s → recambia (fecha na dúvida)', (_nome, estado) => {
+    expect(decisaoGuardaCrm(estado, NO_BROWSER)).toBe('recambiar');
+  });
+});
+
+describe('decisaoSoAdminCrm(estado) — as Definições', () => {
+  test('a carregar → espera', () => {
+    expect(decisaoSoAdminCrm(A_CARREGAR)).toBe('esperar');
+    expect(decisaoSoAdminCrm({ ...A_CARREGAR, eu: ADMIN })).toBe('esperar');
+  });
+
+  test.each([
+    ['admin master', ADMIN_MASTER],
+    ['admin', ADMIN],
+  ])('%s → entra', (_nome, eu) => {
+    expect(decisaoSoAdminCrm(respondeu(eu))).toBe('entrar');
+  });
+
+  test.each([
+    ['utilizador', UTILIZADOR],
+    ['motorista', MOTORISTA],
+    ['não membro', NAO_MEMBRO],
+  ])('%s → recambia para o mapa', (_nome, eu) => {
+    expect(decisaoSoAdminCrm(respondeu(eu))).toBe('recambiar');
+  });
+
+  test('o pedido falhou → mostra a falha, nunca recambia', () => {
+    expect(decisaoSoAdminCrm(FALHOU)).toBe('falhou');
+  });
+
+  test.each(ESTADOS_ESTRAGADOS)('estado %s → recambia para o mapa', (_nome, estado) => {
+    expect(decisaoSoAdminCrm(estado)).toBe('recambiar');
   });
 });
 

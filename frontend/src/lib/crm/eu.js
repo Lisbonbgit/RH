@@ -8,7 +8,9 @@
 // (`EU_NINGUEM`), mas a falha não se guarda: o pedido seguinte volta a tentar.
 // Um "não é membro" de verdade (resposta do servidor) guarda-se para o token,
 // como um "sim". É por isso que o backend responde 500, e nunca
-// `membro: false`, quando a base falha (`test_eu.py`).
+// `membro: false`, quando a base falha (`test_eu.py`). E o estado que os
+// componentes recebem diz `falhou: true`, para a guarda das rotas mostrar
+// "Tentar de novo" em vez de recambiar um membro (`decisaoGuardaCrm`).
 
 // = `crm/dominio/membros.py::PERFIS`, pela mesma ordem.
 export const PERFIS_CRM = Object.freeze(['admin', 'utilizador', 'motorista']);
@@ -17,8 +19,8 @@ export const PERFIS_CRM = Object.freeze(['admin', 'utilizador', 'motorista']);
 // enquanto se espera, ou depois de uma falha.
 export const EU_NINGUEM = Object.freeze({ membro: false, perfil: null, admin_master: false });
 
-export const ESTADO_A_CARREGAR = Object.freeze({ carregando: true, eu: EU_NINGUEM });
-const ESTADO_SEM_CRM = Object.freeze({ carregando: false, eu: EU_NINGUEM });
+export const ESTADO_A_CARREGAR = Object.freeze({ carregando: true, eu: EU_NINGUEM, falhou: false });
+export const ESTADO_FALHOU = Object.freeze({ carregando: false, eu: EU_NINGUEM, falhou: true });
 
 const tokenValido = (token) => typeof token === 'string' && token !== '';
 
@@ -125,15 +127,16 @@ export function criarCacheEu(obter) {
 }
 
 /**
- * O `{carregando, eu}` que um componente mostra, a partir do que a cache tem
- * guardado e de o pedido deste componente já ter terminado:
- *   - resposta guardada → mostra-a;
+ * O `{carregando, eu, falhou}` que um componente mostra, a partir do que a
+ * cache tem guardado e de o pedido deste componente já ter terminado:
+ *   - resposta guardada → mostra-a (também um "não é membro": não é falha);
  *   - sem resposta e o pedido ainda a correr → a carregar (a guarda espera em
  *     vez de recambiar — também depois de uma falha de outro componente, em
  *     que o pedido deste é a nova tentativa);
- *   - sem resposta e o pedido já terminou → falhou: CRM escondido.
+ *   - sem resposta e o pedido já terminou → falhou: CRM escondido nos menus,
+ *     e a guarda mostra o aviso com "Tentar de novo" (nunca recambia).
  */
 export function estadoEu(memorizado, jaRespondeu) {
-  if (memorizado !== undefined) return { carregando: false, eu: memorizado };
-  return jaRespondeu ? ESTADO_SEM_CRM : ESTADO_A_CARREGAR;
+  if (memorizado !== undefined) return { carregando: false, eu: memorizado, falhou: false };
+  return jaRespondeu ? ESTADO_FALHOU : ESTADO_A_CARREGAR;
 }

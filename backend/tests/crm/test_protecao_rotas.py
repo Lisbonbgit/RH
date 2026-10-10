@@ -13,10 +13,13 @@ Quatro famílias; cada rota está em exatamente uma:
   `utilizador_atual` e NUNCA de `membro_crm_atual`: quem não é membro recebe
   `membro: false`, nunca 403.
 - TAREFAS AGENDADAS (`ROTAS_DE_CRON`, vazia até à F5): `/api/crm/cron/*`, sem
-  sessão. A guarda é a `CRON_KEY` comparada com `secrets.compare_digest` e
-  fechada quando a variável falta, no código da rota e com testes próprios
-  (molde tests/faturacao/test_relatorio_rota.py). Qualquer caminho
-  `/api/crm/cron/` tem de estar nesta lista, e só esses.
+  sessão. A guarda é a dependência `crm.auth.exigir_cron_key` (a `CRON_KEY`
+  comparada com `secrets.compare_digest` e fechada quando a variável falta,
+  com testes próprios em test_cron_key.py), exigida AQUI em cada rota desta
+  lista — pela própria função, não por um nome ou atributo: "sem sessão" não
+  chega, porque uma rota de cron sem a chave ficava aberta a toda a gente
+  (revisão da F0/F1, AC-1). Qualquer caminho `/api/crm/cron/` tem de estar
+  nesta lista, e só esses.
 - MEMBRO COM PERFIL (`PERFIS_POR_ROTA`): todas as outras. Dependem de
   `membro_crm_atual` através de exatamente UMA guarda `exigir_perfil(...)`,
   com `perfis_crm` igual ao da tabela.
@@ -43,7 +46,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 import crm
-from crm.auth import ESCRITORIO, SO_ADMIN, exigir_perfil, membro_crm_atual
+from crm.auth import ESCRITORIO, SO_ADMIN, exigir_cron_key, exigir_perfil, membro_crm_atual
 from crm.pedidos import corpo_json
 from faturacao.auth import utilizador_atual
 
@@ -52,9 +55,10 @@ PREFIXO_CRON = "/api/crm/cron/"
 
 ROTAS_PUBLICAS = {("GET", "/api/crm/saude")}
 ROTAS_DE_SESSAO = {("GET", "/api/crm/eu")}
-# F5: as tarefas agendadas (`/api/crm/cron/*`), com `CRON_KEY` +
-# `secrets.compare_digest` e fechadas sem a variável. Vazia, mas o teste (4)
-# já obriga qualquer caminho `/api/crm/cron/` a estar aqui.
+# F5: as tarefas agendadas (`/api/crm/cron/*`), cada uma com a guarda
+# `crm.auth.exigir_cron_key` (`CRON_KEY` + `secrets.compare_digest`, fechada
+# sem a variável). Vazia, mas o teste (4) já obriga qualquer caminho
+# `/api/crm/cron/` a estar aqui, e com essa guarda.
 ROTAS_DE_CRON = set()
 
 # Os perfis de rota da F1–F2 (plano §1). Escritos à mão de propósito, e não
@@ -82,6 +86,7 @@ CORPO_ANTES_DA_GUARDA = "lê o corpo (corpo_json) antes da guarda: sem sessão e
 CORPO_POR_MODELO = "corpo declarado por modelo, que o FastAPI lê antes da sessão: usar corpo_json"
 CRON_FORA_DA_LISTA = "caminho /api/crm/cron/ fora de ROTAS_DE_CRON"
 CRON_SEM_O_CAMINHO = "em ROTAS_DE_CRON sem ser um caminho /api/crm/cron/"
+SEM_CRON_KEY = "não exige a CRON_KEY (crm.auth.exigir_cron_key): ficava aberta a toda a gente"
 REPETIDA = "declarada mais de uma vez no router: só a primeira responde"
 
 
@@ -159,6 +164,10 @@ def _motivos(familia, rota, perfis):
     if familia in ("publica", "cron"):
         if utilizador_atual in chamadas or membro_crm_atual in chamadas or guardas:
             motivos.append(USA_SESSAO)
+        if familia == "cron":
+            if exigir_cron_key not in chamadas:
+                motivos.append(SEM_CRON_KEY)
+            protecao = exigir_cron_key
     elif familia == "sessao":
         if utilizador_atual not in chamadas:
             motivos.append(SEM_UTILIZADOR_ATUAL)
@@ -340,7 +349,7 @@ def test_meta_corpo_declarado_por_modelo():
 
 
 def test_meta_publica_ou_de_cron_com_sessao():
-    router = _router(("GET", "/publica", [utilizador_atual]), ("POST", "/cron/tarefa", [SO_ADMIN]))
+    router = _router(("GET", "/publica", [utilizador_atual]), ("POST", "/cron/tarefa", [exigir_cron_key, SO_ADMIN]))
     resultado = _classificar_com(
         router, publicas={("GET", "/api/crm/publica")}, cron={("POST", "/api/crm/cron/tarefa")}
     )
@@ -372,7 +381,7 @@ def test_meta_caminhos_de_cron_so_em_rotas_de_cron():
     router = _router(
         ("GET", "/cron/publica", []),
         ("POST", "/cron/admin", [SO_ADMIN]),
-        ("GET", "/tarefa", []),
+        ("GET", "/tarefa", [exigir_cron_key]),
     )
     resultado = _classificar_com(
         router,
@@ -386,6 +395,46 @@ def test_meta_caminhos_de_cron_so_em_rotas_de_cron():
         _errada("GET", "/cron/publica", CRON_FORA_DA_LISTA)
         + _errada("GET", "/tarefa", CRON_SEM_O_CAMINHO)
         + _errada("POST", "/cron/admin", CRON_FORA_DA_LISTA),
+    )
+
+
+def test_meta_cron_sem_a_cron_key_ou_com_o_corpo_antes_dela():
+    """Revisão da F0/F1, AC-1: estar "sem sessão" é o que a família pede, mas
+    não chega — sem a guarda da `CRON_KEY` a rota fica pública. Uma função
+    com o mesmo nome (ou que só verifica a chave "à mão" no corpo da rota)
+    não conta: tem de ser `crm.auth.exigir_cron_key`."""
+
+    async def exigir_cron_key_falsa(key: str = ""):
+        return None
+
+    exigir_cron_key_falsa.__name__ = exigir_cron_key_falsa.__qualname__ = "exigir_cron_key"
+
+    async def com_a_chave_como_parametro(_: None = Depends(exigir_cron_key), corpo: Dict = Depends(corpo_json)):
+        return {}
+
+    router = _router(
+        ("POST", "/cron/sem-chave", []),
+        ("POST", "/cron/falsa", [exigir_cron_key_falsa]),
+        ("POST", "/cron/corpo-antes", [corpo_json, exigir_cron_key]),
+        ("POST", "/cron/certa", [exigir_cron_key]),
+        ("POST", "/cron/certa-com-corpo", [], com_a_chave_como_parametro),
+    )
+    cron = {
+        ("POST", "/api/crm/cron/sem-chave"),
+        ("POST", "/api/crm/cron/falsa"),
+        ("POST", "/api/crm/cron/corpo-antes"),
+        ("POST", "/api/crm/cron/certa"),
+        ("POST", "/api/crm/cron/certa-com-corpo"),
+    }
+    resultado = _classificar_com(router, cron=cron)
+    assert resultado == Classificacao(
+        [],
+        [],
+        sorted(
+            _errada("POST", "/cron/sem-chave", SEM_CRON_KEY)
+            + _errada("POST", "/cron/falsa", SEM_CRON_KEY)
+            + _errada("POST", "/cron/corpo-antes", CORPO_ANTES_DA_GUARDA)
+        ),
     )
 
 
@@ -435,7 +484,7 @@ def test_meta_router_bem_classificado_nao_tem_queixas():
     router = _router(
         ("GET", "/publica", []),
         ("GET", "/sessao", [utilizador_atual]),
-        ("POST", "/cron/tarefa", []),
+        ("POST", "/cron/tarefa", [exigir_cron_key]),
         ("GET", "/escritorio", [ESCRITORIO]),
         ("POST", "/escrita", [], escrita),
     )
@@ -486,7 +535,7 @@ def test_3_as_de_sessao_dependem_de_utilizador_atual_e_nunca_de_membro_crm_atual
     assert _erradas(ROTAS_DE_SESSAO) == []
 
 
-def test_4_caminhos_de_cron_so_em_rotas_de_cron_e_sem_sessao():
+def test_4_caminhos_de_cron_so_em_rotas_de_cron_sem_sessao_e_com_a_cron_key():
     do_router = {par for par, _ in _pares(crm.router) if par[1].startswith(PREFIXO_CRON)}
     assert do_router <= ROTAS_DE_CRON
     assert all(caminho.startswith(PREFIXO_CRON) for _, caminho in ROTAS_DE_CRON)

@@ -49,6 +49,43 @@ export function eAdminCrm(eu) {
   return perfilDeMembro(eu) === 'admin';
 }
 
+// O aviso da guarda quando o `GET /api/crm/eu` não respondeu.
+export const MENSAGEM_ACESSO_FALHOU =
+  'Não foi possível confirmar o acesso ao CRM. Verifique a ligação e tente de novo.';
+
+/**
+ * O que a guarda da área do CRM (`GuardaCrm`) faz com o estado de
+ * `useEstadoCrm()` (`{carregando, eu, falhou}`): `'esperar'` (indicador),
+ * `'entrar'`, `'falhou'` (aviso com "Tentar de novo") ou `'recambiar'` (para
+ * o início do portal).
+ *
+ * **Uma falha não é um "não"** (desenho §4: se o `/eu` falhar, o CRM fica
+ * escondido; só quem não é membro é recambiado): com o pedido sem resposta, um
+ * membro no browser fica onde está, com o aviso, em vez de ser deitado fora do
+ * CRM (revisão da F0/F1). Na app nativa o CRM está sempre escondido, por isso
+ * aí — ou sem dizer onde corre — recambia.
+ */
+export function decisaoGuardaCrm(estado, opcoes) {
+  if (!eObjetoSimples(estado)) return 'recambiar';
+  if (estado.carregando === true) return 'esperar';
+  if (podeAbrirAreaCrm(estado.eu, opcoes)) return 'entrar';
+  if (estado.falhou === true && eObjetoSimples(opcoes) && opcoes.nativo === false) return 'falhou';
+  return 'recambiar';
+}
+
+/**
+ * O mesmo para as páginas só do admin do CRM (`SoAdminCrm`, as Definições):
+ * `'recambiar'` aqui é voltar ao mapa da mesma casa. Fica sempre dentro da
+ * `GuardaCrm`, que já tratou da app nativa.
+ */
+export function decisaoSoAdminCrm(estado) {
+  if (!eObjetoSimples(estado)) return 'recambiar';
+  if (estado.carregando === true) return 'esperar';
+  if (eAdminCrm(estado.eu)) return 'entrar';
+  if (estado.falhou === true) return 'falhou';
+  return 'recambiar';
+}
+
 /**
  * Se uma secção do menu de gestão aparece. As secções que já existem não têm
  * `visivel` e aparecem sempre; com uma função, só o resultado `=== true`
