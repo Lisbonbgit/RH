@@ -166,6 +166,7 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
 
 **No frontend:**
 - O estado de membro vem de `GET /api/crm/eu`, pedido **uma vez por token** (`lib/crm/eu.js` + `hooks/useEstadoCrm.js`); se falhar, o CRM fica escondido.
+  - Com a base em baixo, o `/eu` responde 500 e nunca `membro: false`: um "não" guardava-se para o token inteiro, enquanto uma falha volta a ser perguntada no pedido seguinte (teste `test_eu.py`).
 - Nas apps nativas (`Capacitor.isNativePlatform()`), o CRM fica escondido na v1.
 - Quem não é membro e escreve o endereço à mão volta ao início (`/rota` mostra "Sem acesso").
 - A interface só esconde; **é o servidor que protege**.

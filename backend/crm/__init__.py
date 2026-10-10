@@ -31,6 +31,13 @@ async def saude():
     return {"estado": "ok", "modulo": "crm"}
 
 
+# As rotas de cada área vivem no seu módulo (molde de faturacao/__init__.py) e
+# entram aqui. Cada rota nova é classificada no teste de proteção (T1.8).
+from .eu import router as _eu  # noqa: E402
+
+router.include_router(_eu)
+
+
 async def arrancar():
     """Chamado pelo server.py no arranque (T1.9). Nunca levanta.
 
