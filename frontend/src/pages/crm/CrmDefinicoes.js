@@ -1,28 +1,28 @@
 // Definições do CRM, só para o admin do CRM (`SoAdminCrm` em `rotasCrm.js`;
-// a API recusa os outros com 403). Três separadores (plano T2.29), cada um
-// com os seus pedidos, que carregam e falham sozinhos, como as três secções
-// do ecrã "Definições" do CRM autónomo:
+// a API recusa os outros com 403). Três separadores, cada um com os seus
+// pedidos, que carregam e falham sozinhos, como as três secções do ecrã
+// "Definições" do CRM autónomo:
 //  - Membros (`DefinicoesMembros.js`, T2.29): quem entra no CRM e com que
 //    perfil;
-//  - Regiões e Fábrica: chegam na T2.30 (até lá, "Brevemente").
+//  - Regiões (`DefinicoesRegioes.js`, T2.30): adicionar, mudar o nome,
+//    subir/descer e apagar;
+//  - Fábrica (`DefinicoesFabrica.js`, T2.30): a morada e o ponto no mapa. É a
+//    única com o mapa (o Leaflet), por isso carrega-se à parte, só quando se
+//    abre o separador.
 // Só o separador aberto existe na página: voltar a um separador pede outra
 // vez o que ele mostra.
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { Factory, Map as IconeMapa, Settings, Users } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
+import { IndicadorCrm } from '../../components/crm/GuardaCrm';
+import { TEXTO_A_CARREGAR_FABRICA } from '../../lib/crm/fabrica';
 import DefinicoesMembros from './DefinicoesMembros';
+import DefinicoesRegioes from './DefinicoesRegioes';
+
+const DefinicoesFabrica = lazy(() => import('./DefinicoesFabrica'));
 
 const CLASSE_SEPARADOR = 'min-h-11 gap-2 px-3 sm:px-4';
-
-function Brevemente({ texto }) {
-  return (
-    <div className="rounded-2xl border bg-card p-8 text-center">
-      <p className="font-heading text-lg font-semibold">Brevemente</p>
-      <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">{texto}</p>
-    </div>
-  );
-}
 
 export default function CrmDefinicoes() {
   return (
@@ -47,10 +47,12 @@ export default function CrmDefinicoes() {
           <DefinicoesMembros />
         </TabsContent>
         <TabsContent value="regioes" className="mt-0">
-          <Brevemente texto="As regiões do mapa: adicionar, mudar o nome, ordenar e apagar." />
+          <DefinicoesRegioes />
         </TabsContent>
         <TabsContent value="fabrica" className="mt-0">
-          <Brevemente texto="A morada e o ponto da fábrica no mapa." />
+          <Suspense fallback={<IndicadorCrm texto={TEXTO_A_CARREGAR_FABRICA} />}>
+            <DefinicoesFabrica />
+          </Suspense>
         </TabsContent>
       </Tabs>
     </div>
