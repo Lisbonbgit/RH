@@ -95,7 +95,7 @@ datas (vão nas notas) e seguimento GPS contínuo (**nunca**).
 - **Duplo do Mongo:** `BaseFalsa.__getattr__` levanta `AttributeError` para nomes começados por `_`, como o Motor.
 - **FastAPI:** parâmetros de query do CRM declarados como `Optional[str] = None` e validados no domínio, senão sai o 422 do Pydantic (lista, em inglês). A dependência de perfil vem **antes** de `corpo_json`: um pedido sem sessão e com JSON inválido dá 403/401, nunca 400.
 - **Jest (CRA 5):** `resetMocks: true` apaga as implementações dos `jest.fn` criados ao nível do módulo, por isso criá-los dentro de cada teste ou em `beforeEach`. Imports relativos (o Jest não conhece o alias `@/`). `import.meta` não funciona. `assert.equal` → `toBe`, `deepEqual` → `toEqual`, `throws` → `toThrow`, `mock.timers` → `jest.useFakeTimers()`. Para formas exatas usar `toEqual`, nunca `toMatchObject`: neste, `campos: {}` aceita qualquer valor, até `null` ou uma lista (T1.10).
-- **Leaflet:** `import * as L from 'leaflet'` (o build ESM não tem export por omissão). `leaflet.css` importado depois do `index.css`. O mapa é destruído no cleanup do `useEffect`, porque o `StrictMode` monta duas vezes.
+- **Leaflet:** `import * as L from 'leaflet'` (o build ESM não tem export por omissão; o webpack usa o UMD do `main`, e assim funciona nos dois casos). `leaflet.css` importado depois do `index.css`. O mapa é destruído no cleanup do `useEffect`, porque o `StrictMode` monta duas vezes.
 - **Ícones:** importar `Map as IconeMapa` do lucide; um `Map` importado tapa o `Map` do JavaScript.
 
 ---
@@ -754,6 +754,8 @@ portal** (é do Marketing) e não se guarda nenhum dado da Google: todas as coor
 (pino confirmado, GPS no local ou geocoder que permite guardar).
 
 **Leaflet 1.9.4** do npm (`yarn add leaflet@1.9.4 --exact`), sem `markercluster`, com o `leaflet.css` do pacote.
+Adicionado na T2.19 (commit isolado, só `package.json` +1 e `yarn.lock` +5). O pacote só declara
+`"main": "dist/leaflet-src.js"` (UMD, sem `module` nem `exports`); `import * as L from 'leaflet'` funciona.
 
 ---
 
@@ -847,7 +849,7 @@ Atlas nem ao VPS. **A porta 8080 é a pré-visualização do CRM autónomo do do
 | Python do backend | 3.11.17 (`brew install python@3.11`), venv em `backend/.venv` (ignorado); `/usr/bin/python3` do sistema é 3.9 e não serve |
 | Pacotes do backend | `fastapi 0.110.1`, `pydantic 2.12.5`, `httpx 0.28.1`, `motor 3.3.1`, `pymongo 4.5.0`, `pytest 8.4.2` (de `backend/requirements.txt`) |
 | Node | 24.17.0 local (o Docker usa 20); `corepack 0.35.0`; **yarn 1.22.22** por `corepack yarn …`, sem `corepack enable` |
-| Frontend | `node_modules` reinstalado com `yarn install --frozen-lockfile`, sem `--ignore-engines`; `yarn.lock`, `package.json` e `package-lock.json` intactos; `@craco/craco 7.1.0`, `react-scripts 5.0.1` |
+| Frontend | `node_modules` reinstalado com `yarn install --frozen-lockfile`, sem `--ignore-engines`; `yarn.lock`, `package.json` e `package-lock.json` intactos; `@craco/craco 7.1.0`, `react-scripts 5.0.1`. Na T2.19, `yarn add leaflet@1.9.4 --exact` (também sem `--ignore-engines`) mexeu só no `package.json` e no `yarn.lock`; o `package-lock.json` continua intacto (desatualizado, não se toca) |
 | MongoDB | `mongodb-community@8.0` 8.0.32 (tap `mongodb/brew`), serviço `brew services`, `bindIp: 127.0.0.1, ::1`, porta 27017; sem `mongosh` |
 
 **Notas de instalação:**
