@@ -108,8 +108,14 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
 
 **Tempo:**
 - Todos os instantes `*_em` e `fase_desde` (exceto `atualizado_em`) têm **largura fixa** `AAAA-MM-DDTHH:MM:SSZ`, escritos só por `relogio.instante()`.
-- `atualizado_em` tem **sempre 6 casas** (`2026-10-10T09:00:00.123456Z`) e é estritamente crescente (`relogio.proximo_carimbo`).
-- Nunca `.isoformat()` no pacote `crm`, porque dá `+00:00` e parte a ordenação por texto e o `$max`.
+- `atualizado_em` tem **sempre 6 casas** (`2026-10-10T09:00:00.123456Z`) e é estritamente crescente (`relogio.proximo_carimbo`). Vale também para as definições (o autónomo gravava ali um `DATETIME` sem casas).
+- **Carimbos (T2.8, `crm/relogio.py`):**
+  - `carimbo(momento=None)` → o `atualizado_em` de um documento novo (o `Formatar::instanteMicro`). Uma `datetime` sem fuso → `ValueError`, como no `instante`.
+  - `ler_carimbo(valor)` → o próprio texto, se for um carimbo exato (6 casas, `Z`, só algarismos ASCII, nada antes nem depois) com uma data e uma hora que existam; senão `None` (o `Formatar::lerInstanteMicro`, com os casos do `FormatarTest.php`). O texto vai direto para o filtro `{"id", "atualizado_em": versao}` e nunca é um operador do Mongo.
+  - `proximo_carimbo(agora, anterior)` → `max(agora, anterior + 1 µs)` (o `GREATEST(?, atualizado_em + INTERVAL 1 MICROSECOND)` do `LojasRepositorio::atualizar`): muda sempre e é sempre maior, também com o relógio atrasado. Um `anterior` que não é carimbo → `ValueError`; depois de `9999-12-31T23:59:59.999999Z` → `OverflowError`.
+  - Conferido com o `Formatar` do PHP 8.4.26 em 156 048 casos (`t2.8-conferencia-php.log`): 90 048 leituras (32 591 válidas) e 33 000 formatações de cada tipo, sem diferenças, exceto duas assumidas. O ano `0000`, que o PHP aceita e a `datetime` do Python não representa, dá aqui `None`; nunca sai do `carimbo()`. Um NUL no texto fazia o `createFromFormat` do PHP lançar `ValueError` (um 500); aqui dá `None` (um 422).
+- Nunca `.isoformat()` no pacote `crm`, porque dá `+00:00` e parte a ordenação por texto e o `$max`. Garantido por `tests/crm/test_instantes_gravados.py`, que varre o AST de todos os módulos: nunca `isoformat`; fora do `relogio.py`, também nem `strftime` nem leituras do relógio (`now`, `utcnow`, `today`, `fromtimestamp`, `utcfromtimestamp`, `time.time`, `time.time_ns`).
+- **Verificador para os testes das escritas:** `tests/crm/formatos.instantes_fora_do_formato(documento)` aponta os `*_em`/`*_desde` que não são `AAAA-MM-DDTHH:MM:SSZ` (ou null) e o `atualizado_em` que não é carimbo, também em subdocumentos e listas. Hoje aplica-se ao membro do `POST /membros`. A T2.10 aplica-o ao `documento_loja` e à loja gravada, a T2.11 à interação `mudanca_fase` e ao `$set` do PATCH, e a T2.13 às definições.
 - Datas e horas de Lisboa como texto (`AAAA-MM-DD`, `HH:MM`); "hoje" em `Europe/Lisbon`.
 
 | Coleção (fase) | Documento | Índices (`crm/db.py::INDICES`) |
@@ -122,7 +128,13 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
 | `crm_rotas` (F3) | `{id, data (única), estado, versao, …, paragens: [...]}` | a definir na F3 |
 | `crm_produtos`, `crm_encomendas` (F5) | encomendas com as linhas dentro do documento | a definir na F5 |
 
-- **`COLECOES` cresce por tarefa:** a T1.2 só tem `{"membros": "crm_membros"}` e cada tarefa da F2 acrescenta a sua coleção e os seus índices. `crm_definicoes` não tem `id`: um índice único em `id` faria o segundo upsert dar E11000 em produção. O teste dos índices verifica isto de forma explícita.
+- **`COLECOES` cresce por tarefa:** a T1.2 só tinha `{"membros": "crm_membros"}`; a T2.8 juntou as quatro da F2 com os índices da tabela. `test_indices.py` fixa a lista **exata** de cada coleção, porque um índice a mais também é um erro (`regiao_id` único deixava uma loja por região; `client_uuid` único sem ser parcial, ou `sparse`, que indexa o null, fazia colidir todas as interações da F2). `crm_definicoes` não tem `id`: um índice único em `id` faria o segundo upsert dar E11000 em produção. O teste dos índices verifica isto de forma explícita.
+  - **Conferido no MongoDB 8.0.32 local (T2.8, `t2.8-conferencia-mongo.log`, base `lisbonb_crm_teste` apagada no fim):**
+    - o `criar_indices` verdadeiro, corrido duas vezes, não regista erros e cria exatamente os índices declarados;
+    - `nome_chave` repetido e `client_uuid` de texto repetido dão `DuplicateKeyError`; interações sem `client_uuid` ou com null não colidem; dois upserts seguidos das definições também não;
+    - um `loc` fora do mundo é recusado (`WriteError`): o `loc` tem de ser sempre um Point válido;
+    - o `$geoWithin` de 60 m usa o `loc_2dsphere`, o filtro por região usa o `regiao_id_1` e a linha do tempo (`loja_id` + ordenação por `ocorrida_em`) usa o `loja_id_1_ocorrida_em_1`;
+    - a atualização condicional com carimbos só grava com a versão certa.
 - `lat`/`lng` e `loc` escrevem-se sempre juntos (`formatar.documento_localizacao`). Na API as janelas são planas (`janela1_inicio`, `janela1_fim`, `janela2_inicio`, `janela2_fim`); na base ficam em lista (0 a 2, por ordem).
 - **Contas do portal (`users`, já existe):** o CRM lê `id`, `email`, `name` e `role`. A projeção **nunca** pede `password`.
 - **Sem transações:** a ordem das escritas é definida e testada. Exemplo: atualizar a loja e depois registar a `mudanca_fase`; se o registo falhar, fica uma linha `[crm]` no log e a loja não é desfeita. Corridas residuais aceites, como apagar uma região enquanto se cria uma loja nela.
@@ -381,6 +393,7 @@ janela2_fim, dias_fechada`. Os campos que o servidor decide (`id`, `criado_por`,
 
 ### 5.10 Edições simultâneas (bloqueio otimista)
 - `update_one({"id": id, "atualizado_em": versao}, {"$set": …})`. Se `matched_count == 0`, relê-se: inexistente → 404; existente → 409 `conflito` "Alterado por outra pessoa — recarregar". Só se enviam os campos alterados.
+- A versão é `relogio.ler_carimbo(corpo.get("atualizado_em"))`: `None` dá 422 em `atualizado_em` com "Indique o atualizado_em que recebeu com a loja." (`LojasControlador::alterar`), junto com os erros dos campos. A versão nova é `relogio.proximo_carimbo(relogio.agora(), versao)`, calculada só depois de a versão lida ser igual à guardada (§3, carimbos).
 - **Ordem das verificações no PATCH de uma loja** (como `LojasControlador::alterar`):
   1. 422 dos campos, junto com o do `atualizado_em`;
   2. ler a loja (404);
