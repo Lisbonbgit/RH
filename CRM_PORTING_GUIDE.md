@@ -176,7 +176,11 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
 **No frontend:**
 - O estado de membro vem de `GET /api/crm/eu`, pedido **uma vez por token** (`lib/crm/eu.js` + `hooks/useEstadoCrm.js`); se falhar, o CRM fica escondido.
   - Com a base em baixo, o `/eu` responde 500 e nunca `membro: false`: um "não" guardava-se para o token inteiro, enquanto uma falha volta a ser perguntada no pedido seguinte (teste `test_eu.py`).
-- Nas apps nativas (`Capacitor.isNativePlatform()`), o CRM fica escondido na v1.
+  - A cache (`criarCacheEu`, T1.11) guarda só o token atual: o mesmo token dá um só pedido, também com vários componentes ao mesmo tempo; outro token dá um pedido novo, e a resposta atrasada do antigo não fica; sem token, `EU_NINGUEM` sem pedido (e esquece a resposta anterior).
+  - Uma falha, incluindo um 200 sem a forma do `/eu` (o `index.html` de um proxy), dá `EU_NINGUEM` e não se guarda. O próximo componente que montar fica "a carregar" (a guarda espera, não recambia) e volta a perguntar; quando a resposta chega, todos os componentes montados a recebem.
+  - `normalizarEu` segue o backend: um perfil fora da lista não é membro (`EU_NINGUEM`); `admin_master` só com `true` e num admin.
+- Nas apps nativas (`Capacitor.isNativePlatform()`), o CRM fica escondido na v1. `podeAbrirAreaCrm` só abre com `nativo: false` explícito: sem a opção, fica escondido.
+- As regras de caminho (`lib/crm/acesso.js`) seguem o React Router, que não distingue maiúsculas e aceita barras no fim: `/admin/CRM/mapa/` é do CRM e abre em ecrã cheio. Uma regra `visivel` que rebenta esconde a secção sem deitar abaixo o menu da gestão.
 - Quem não é membro e escreve o endereço à mão volta ao início (`/rota` mostra "Sem acesso").
 - A interface só esconde; **é o servidor que protege**.
 
