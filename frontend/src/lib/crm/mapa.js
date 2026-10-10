@@ -4,7 +4,8 @@
 // `import * as L from 'leaflet'` e o `document`; os testes passam os falsos de
 // `testes/`.
 //
-//  - Zoom do 6 ao 19. A atribuição fica sempre visível no canto, sem o prefixo
+//  - Zoom do 6 ao 19, com os botões "Aproximar"/"Afastar" (o autónomo ficava com
+//    os textos ingleses do Leaflet). A atribuição fica sempre visível no canto, sem o prefixo
 //    do Leaflet (o Leaflet é creditado na licença e na política de privacidade).
 //  - Os mosaicos vêm do GET /api/crm/config. Se falharem (mosaicos.js), o mapa
 //    muda sozinho para os alternativos (OpenStreetMap) e para a atribuição do
@@ -48,6 +49,9 @@ const MARGEM_ENQUADRAR = [40, 40];
 const TECLAS_ESCOLHER = new Set(['Enter', ' ']);
 
 export const MENSAGEM_SEM_MAPA = 'Não foi possível carregar o mapa — recarregue a página.';
+// Os nomes dos botões de zoom (title e aria-label; revisão da F2).
+export const TITULO_APROXIMAR = 'Aproximar';
+export const TITULO_AFASTAR = 'Afastar';
 
 // A configuração do GET /api/crm/config serve para criar o mapa (pode faltar,
 // se o pedido falhou).
@@ -71,7 +75,11 @@ function tituloPino(loja) {
 //  - aoEscolherLoja(loja, marcador): tocaram no pino da loja; aoTocarNoMapa({lat, lng}): tocaram no mapa, fora
 //    dos pinos, nesse ponto (os toques num pino não chegam ao mapa: no Leaflet, os marcadores não os deixam subir).
 export function criarMapa({ L, documento, elemento, configuracao, aoEscolherLoja, aoTocarNoMapa }) {
-  const mapa = L.map(elemento, { minZoom: ZOOM_MINIMO, maxZoom: ZOOM_MAXIMO, attributionControl: false });
+  const mapa = L.map(elemento, {
+    minZoom: ZOOM_MINIMO, maxZoom: ZOOM_MAXIMO, zoomControl: false, attributionControl: false,
+  });
+  // Os botões de zoom com o title e o aria-label em pt-PT (os do Leaflet dizem "Zoom in"/"Zoom out").
+  L.control.zoom({ zoomInTitle: TITULO_APROXIMAR, zoomOutTitle: TITULO_AFASTAR }).addTo(mapa);
   L.control.attribution({ prefix: false }).addTo(mapa);
   if (typeof aoTocarNoMapa === 'function') {
     mapa.on('click', (evento) => {

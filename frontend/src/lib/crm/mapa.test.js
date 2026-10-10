@@ -86,6 +86,14 @@ test('atribuição com prefix:false (sem a ligação do Leaflet, creditado na li
   expect(leaflet.attributionControl.options.prefix).toBe(false);
 });
 
+test('botões de zoom em pt-PT: o controlo do Leaflet sai e entra um com "Aproximar" e "Afastar"', () => {
+  // Revisão da F2 ("F2-PT-1"): o zoomControl por omissão do Leaflet tem "Zoom in"/"Zoom out" no title e no
+  // aria-label (o CRM autónomo tinha a mesma falha).
+  const { leaflet } = preparar();
+  expect(leaflet.options.zoomControl).toBe(false);
+  expect(leaflet.controloZoom.options).toEqual({ zoomInTitle: 'Aproximar', zoomOutTitle: 'Afastar' });
+});
+
 test('mosaicos Geoapify: uma camada com a URL da configuração, até ao zoom 19, e a atribuição exata da Geoapify', () => {
   const { leaflet, mapa } = preparar(COM_GEOAPIFY);
   expect(leaflet.mosaicos.length).toBe(1);
@@ -487,6 +495,18 @@ describe('sobre o Leaflet 1.9.4 verdadeiro (jsdom)', () => {
     expect(ligacoes).toHaveLength(1);
     expect(ligacoes[0].getAttribute('href')).toBe(ATRIBUICOES.osm.partes[0].url);
     expect(atribuicao.textContent).not.toMatch(/Leaflet/);
+  });
+
+  test('um só controlo de zoom, com "Aproximar" e "Afastar" no title e no aria-label (nada em inglês)', () => {
+    abrir();
+    expect(elemento.querySelectorAll('.leaflet-control-zoom')).toHaveLength(1);
+    const mais = elemento.querySelector('.leaflet-control-zoom-in');
+    const menos = elemento.querySelector('.leaflet-control-zoom-out');
+    expect(mais.getAttribute('title')).toBe('Aproximar');
+    expect(mais.getAttribute('aria-label')).toBe('Aproximar');
+    expect(menos.getAttribute('title')).toBe('Afastar');
+    expect(menos.getAttribute('aria-label')).toBe('Afastar');
+    expect(elemento.querySelector('[title^="Zoom"], [aria-label^="Zoom"]')).toBeNull();
   });
 
   test('Enter no pino escolhe a loja; tocar no mapa dá um ponto', () => {

@@ -1102,4 +1102,10 @@ describe('sobre o Leaflet 1.9.4 verdadeiro (jsdom)', () => {
     const atribuicao = elemento.querySelector('.leaflet-control-attribution');
     expect(atribuicao.textContent).toBe(ATRIBUICOES.geoapify.texto);
   });
+
+  test('os botões de zoom do seletor (Nova loja, Corrigir localização, Fábrica) estão em pt-PT', () => {
+    expect(elemento.querySelectorAll('.leaflet-control-zoom')).toHaveLength(1);
+    expect(elemento.querySelector('.leaflet-control-zoom-in').getAttribute('aria-label')).toBe('Aproximar');
+    expect(elemento.querySelector('.leaflet-control-zoom-out').getAttribute('aria-label')).toBe('Afastar');
+  });
 });

@@ -401,6 +401,22 @@ test('as regiões falham: o erro junto ao campo, a região da loja fica, e pedem
   expect(pedidos(m, 'listarRegioes')).toHaveLength(2); // com as regiões carregadas não volta a pedir
 });
 
+test('as regiões falham antes de a loja chegar: o erro continua junto à região depois de a loja chegar', async () => {
+  // Revisão da F2 ("ficha-erro-regioes-apagado"): um 500 não traz o 'online', por isso este erro é o único aviso.
+  const m = montar();
+  await falhar(m, 'listarRegioes', new ErroCrm({ codigo: 'erro_interno', mensagem: MENSAGEM_ERRO_INESPERADO, estado: 500 }));
+  expect(m.vista().erros).toEqual({ regiao_id: MENSAGEM_ERRO_INESPERADO });
+  await responder(m, 'obterLoja', copia());
+  expect(m.vista().estado).toBe('ficha');
+  expect(m.vista().erros).toEqual({ regiao_id: MENSAGEM_ERRO_INESPERADO });
+  expect(m.vista().valorRegiao).toBe(PORTO);
+  // Quando as regiões chegarem (a rede volta), o erro sai.
+  m.mudarRede(false);
+  m.mudarRede(true);
+  await responder(m, 'listarRegioes', REGIOES);
+  expect(m.vista().erros).toEqual({});
+});
+
 test('uma resposta das regiões que não é uma lista conta como nenhuma região (e não se volta a pedir)', async () => {
   const m = montar();
   await responder(m, 'obterLoja', copia());

@@ -298,7 +298,11 @@ export function criarFicha({
     conflito = false;
     erroRecarregar = null;
     fecharCorrecao();
+    // A falha das regiões (se ainda não chegaram) fica junto ao campo: preencher apaga os erros, e um erro do
+    // servidor não traz o 'online' que as volta a pedir (no autónomo, preencher não mexia nos erros).
+    const erroRegioes = regioes === null ? formulario.erros.regiao_id : undefined;
     formulario = preencherComLoja(loja, { ficha: true });
+    if (erroRegioes) formulario = comErro(formulario, 'regiao_id', erroRegioes);
     atualizar();
   }
 

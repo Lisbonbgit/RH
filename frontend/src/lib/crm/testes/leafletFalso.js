@@ -205,6 +205,18 @@ class GrupoFalso extends CamadaFalsa {
   }
 }
 
+// O controlo de zoom: guarda as opções (os títulos dos botões) em `mapa.controloZoom` (só para os testes).
+class ZoomFalso {
+  constructor(opcoes = {}) {
+    this.options = opcoes;
+  }
+
+  addTo(mapa) {
+    mapa.controloZoom = this;
+    return this;
+  }
+}
+
 class AtribuicaoFalsa {
   constructor(opcoes = {}) {
     this.options = opcoes;
@@ -334,7 +346,7 @@ export function leafletFalso() {
       registo.mapas.push(mapa);
       return mapa;
     },
-    control: { attribution: (opcoes) => new AtribuicaoFalsa(opcoes) },
+    control: { attribution: (opcoes) => new AtribuicaoFalsa(opcoes), zoom: (opcoes) => new ZoomFalso(opcoes) },
     tileLayer: (url, opcoes) => new MosaicosFalsos(url, opcoes),
     layerGroup: () => new GrupoFalso(),
     marker: (latlng, opcoes) => new MarcadorFalso(latlng, opcoes),
