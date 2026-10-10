@@ -108,14 +108,14 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
 
 **Tempo:**
 - Todos os instantes `*_em` e `fase_desde` (exceto `atualizado_em`) têm **largura fixa** `AAAA-MM-DDTHH:MM:SSZ`, escritos só por `relogio.instante()`.
-- `atualizado_em` tem **sempre 6 casas** (`2026-10-10T09:00:00.123456Z`) e é estritamente crescente (`relogio.proximo_carimbo`). Vale também para as definições (o autónomo gravava ali um `DATETIME` sem casas).
+- `atualizado_em` tem **sempre 6 casas** (`2026-10-10T09:00:00.123456Z`) e é estritamente crescente (`relogio.proximo_carimbo`). As 6 casas valem também para as definições (o autónomo gravava ali um `DATETIME` sem casas), mas lá é só `relogio.carimbo(agora)`: as definições não têm bloqueio otimista e o carimbo só diz quando mudou (T2.13, §5.9).
 - **Carimbos (T2.8, `crm/relogio.py`):**
   - `carimbo(momento=None)` → o `atualizado_em` de um documento novo (o `Formatar::instanteMicro`). Uma `datetime` sem fuso → `ValueError`, como no `instante`.
   - `ler_carimbo(valor)` → o próprio texto, se for um carimbo exato (6 casas, `Z`, só algarismos ASCII, nada antes nem depois) com uma data e uma hora que existam; senão `None` (o `Formatar::lerInstanteMicro`, com os casos do `FormatarTest.php`). O texto vai direto para o filtro `{"id", "atualizado_em": versao}` e nunca é um operador do Mongo.
   - `proximo_carimbo(agora, anterior)` → `max(agora, anterior + 1 µs)` (o `GREATEST(?, atualizado_em + INTERVAL 1 MICROSECOND)` do `LojasRepositorio::atualizar`): muda sempre e é sempre maior, também com o relógio atrasado. Um `anterior` que não é carimbo → `ValueError`; depois de `9999-12-31T23:59:59.999999Z` → `OverflowError`.
   - Conferido com o `Formatar` do PHP 8.4.26 em 156 048 casos (`t2.8-conferencia-php.log`): 90 048 leituras (32 591 válidas) e 33 000 formatações de cada tipo, sem diferenças, exceto duas assumidas. O ano `0000`, que o PHP aceita e a `datetime` do Python não representa, dá aqui `None`; nunca sai do `carimbo()`. Um NUL no texto fazia o `createFromFormat` do PHP lançar `ValueError` (um 500); aqui dá `None` (um 422).
 - Nunca `.isoformat()` no pacote `crm`, porque dá `+00:00` e parte a ordenação por texto e o `$max`. Garantido por `tests/crm/test_instantes_gravados.py`, que varre o AST de todos os módulos: nunca `isoformat`; fora do `relogio.py`, também nem `strftime` nem leituras do relógio (`now`, `utcnow`, `today`, `fromtimestamp`, `utcfromtimestamp`, `time.time`, `time.time_ns`).
-- **Verificador para os testes das escritas:** `tests/crm/formatos.instantes_fora_do_formato(documento)` aponta os `*_em`/`*_desde` que não são `AAAA-MM-DDTHH:MM:SSZ` (ou null) e o `atualizado_em` que não é carimbo, também em subdocumentos e listas. Aplica-se ao membro do `POST /membros` e, desde a T2.10, ao `documento_loja` e à loja gravada pelo `POST /lojas` (também no MongoDB 8 local). Desde a T2.11, também à interação `mudanca_fase` e ao `$set` do `PATCH /lojas/{id}` (no duplo e no MongoDB 8 local); a T2.13 aplica-o às definições.
+- **Verificador para os testes das escritas:** `tests/crm/formatos.instantes_fora_do_formato(documento)` aponta os `*_em`/`*_desde` que não são `AAAA-MM-DDTHH:MM:SSZ` (ou null) e o `atualizado_em` que não é carimbo, também em subdocumentos e listas. Aplica-se ao membro do `POST /membros` e, desde a T2.10, ao `documento_loja` e à loja gravada pelo `POST /lojas` (também no MongoDB 8 local). Desde a T2.11, também à interação `mudanca_fase` e ao `$set` do `PATCH /lojas/{id}` (no duplo e no MongoDB 8 local). Desde a T2.13, também às definições gravadas pelo `PATCH /definicoes`.
 - Datas e horas de Lisboa como texto (`AAAA-MM-DD`, `HH:MM`); "hoje" em `Europe/Lisbon`.
 
 | Coleção (fase) | Documento | Índices (`crm/db.py::INDICES`) |
@@ -400,8 +400,25 @@ janela2_fim, dias_fechada`. Os campos que o servidor decide (`id`, `criado_por`,
     - O par conta a chave, mesmo com null: `{"fabrica_lat": None}` dá o erro do número na latitude e "Indique também a longitude.". Chaves parecidas (`"Fabrica_lat"`, `"fabrica_lat "`) são desconhecidas e não fazem o par.
     - Com erros, os valores ficam como no PHP (`""` ou o texto arredondado), mas não se gravam.
   - **Diferença assumida:** o PHP convertia a chave `"0"` num inteiro; se fosse o único erro, o `campos` saía como lista JSON (`["Esta definição não existe."]`). Aqui sai sempre um objeto (`{"0": …}`).
-  - **Para a T2.13:** ler `guardadas = {d["chave"]: d["valor"] …}` (projeção `{"_id": 0, "chave": 1, "valor": 1}`); sem erros, gravar cada par de `valores` com `update_one({"chave": c}, {"$set": {"valor": v, "atualizado_em": …, "atualizado_por": …}}, upsert=True)`; responder com `combinar` relido. O centro do mapa (`/config`) é `[fabrica_lat, fabrica_lng]` do `combinar`.
+  - **Usado pela T2.13** (rotas abaixo): `guardadas = {d["chave"]: d["valor"] …}` com a projeção `{"_id": 0, "chave": 1, "valor": 1}`; sem erros, cada par de `valores` grava-se com `update_one({"chave": c}, {"$set": {"valor": v, "atualizado_em": …, "atualizado_por": …}}, upsert=True)`; a resposta é o `combinar` relido. O centro do mapa (`/config`) é `[fabrica_lat, fabrica_lng]` do `combinar`.
   - Conferido com o PHP 8.4.26: 20 071 pedidos de alteração (16 448 com erros, 3623 sem) e 20 051 conjuntos guardados para o `combinar`, com as entradas das tabelas dos testes, comparando valores, tipos (os `float` ao bit) e a ordem das chaves, sem diferenças. As únicas diferenças são as da T1.3 (U+001C–U+001F nas pontas da morada; 73 casos).
+- **Rotas (T2.13, `crm/definicoes.py`, porta do `DefinicoesControlador` e do `DefinicoesRepositorio`; testes em `test_definicoes.py` com todos os casos do `DefinicoesTest.php`):**
+  - **`GET /definicoes`** e **`PATCH /definicoes`**, só para o admin do CRM (admin master e membros admin). O utilizador e o motorista recebem 403 `sem_permissao`, sem se ler a coleção.
+  - **Ordem do PATCH:** a guarda → o corpo (400 `json_invalido`) → `dominio.definicoes.alteracao` (422 com os erros, sem tocar na base nem no relógio) → uma escrita por chave → reler e responder com o `combinar`. Um PATCH vazio (`{}` ou sem corpo) não escreve nada e devolve as definições em vigor (200).
+  - **O que se grava:** `{chave, valor (texto), atualizado_em, atualizado_por}`, com `update_one({"chave": c}, {"$set": {"valor", "atualizado_em", "atualizado_por"}}, upsert=True)`. Uma linha por chave (índice único em `chave`; nunca `id`). O `atualizado_em` é `relogio.carimbo(agora)`, com um só `relogio.agora()` por pedido, por isso as chaves do mesmo pedido ficam com a mesma hora (o `$quando` do repositório). O `atualizado_por` é o `user_id` da conta do portal. Gravar o mesmo valor outra vez dá 200 e muda a hora.
+  - **Sem transações (o autónomo gravava tudo numa):** as chaves gravam-se pela ordem dos `PADROES` (morada, lat, lng).
+    - Uma falha a meio dá 500 e deixa gravadas as anteriores. Repetir o mesmo pedido acerta, porque os upserts são idempotentes. Testado no duplo.
+    - **Diferença assumida:** dois admins a mudar o ponto ao mesmo tempo podem deixar a latitude de um e a longitude do outro. Cada coordenada foi vista contra Portugal continental (a caixa é por coordenada), por isso o ponto fica sempre lá dentro. Testado no duplo com duas corrotinas. Um admin só, que é o caso real, nunca o vê.
+  - **Leitura única, `em_vigor(base)`:** `find({}, {"_id": 0, "chave": 1, "valor": 1})` e o `combinar`. Partilhada com o `GET /config`. Uma linha estragada à mão (sem `chave` de texto, ou com um `valor` null, bool, lista ou objeto) ignora-se, com uma linha `[crm]` no registo só com a contagem ("definições guardadas ignoradas por estarem estragadas: N"). Sem isto, o `combinar` dava `TypeError` (500), e todo o escritório ficava sem mapa por causa de uma linha. Um número escrito à mão continua a ler-se como número (T2.7). Fica de fora um texto como "1e400", que o `combinar` lê como infinito e o JSON recusa (500); só pode lá estar escrito à mão.
+  - **Conferido no MongoDB 8.0.32 local** (não versionado, `t2.13-conferencia-mongo.log`; base `lisbonb_crm_teste`, apagada no início e no fim), com as funções das rotas e o Motor: 14 verificações, todas OK. Entre elas:
+    - os índices verdadeiros (`_id_` e `chave_1` único);
+    - os documentos gravados, com o carimbo de 6 casas, igual nas três chaves;
+    - um segundo PATCH substitui, com uma linha por chave;
+    - 20 PATCH ao mesmo tempo sobre a coleção vazia não dão `DuplicateKeyError` (o Mongo repete sozinho o upsert que colide no índice único) e deixam uma linha por chave;
+    - o upsert pela chave usa o `chave_1`;
+    - uma linha estragada é ignorada;
+    - o `/config` com e sem chave.
+  - **Diferença assumida:** sem o `Cache-Control: no-store, private` do autónomo (a mesma da T2.9, §5.8).
 - **Ecrã:** só muda o ponto se mudar nas 6 casas, com lat e lng juntas (`corpoFabrica`, `estadoGuardarFabrica`, `textoPonto`). O seletor da fábrica não tem GPS.
 - **Futuras (F3–F5, original §5):**
 
@@ -555,8 +572,8 @@ janela2_fim, dias_fechada`. Os campos que o servidor decide (`id`, `criado_por`,
 | `GET /lojas/{loja_id}` | admin, utilizador | Loja completa (404 "Loja não encontrada.") |
 | `PATCH /lojas/{loja_id}` | admin, utilizador | Campos alterados + `atualizado_em` (obrigatório) + `confirmar_duplicado?` → 200 loja completa com o `atualizado_em` novo (422 dos campos e do `atualizado_em` → 404 → 409 `conflito` → 422 das janelas → 422 `regiao_id` → 409 `duplicado`, só se mudar de sítio → atualização condicional: 404/409; §5.10) |
 | `DELETE /lojas/{loja_id}` | admin, utilizador | `{apagada: true}` (404 → 409 `loja_com_historico` se houver interações além de `mudanca_fase` → `delete_one` (404 na corrida) → `delete_many` só das `mudanca_fase`; §5.12) |
-| `GET`, `PATCH /definicoes` | admin | `{fabrica_morada, fabrica_lat, fabrica_lng}` |
-| `GET /config` | admin, utilizador | `{mosaicos: {url, atribuicao: geoapify\|osm}, alternativa: {url}, centro: {lat, lng}}` |
+| `GET`, `PATCH /definicoes` | admin | `{fabrica_morada, fabrica_lat, fabrica_lng}`, com as coordenadas como números. O PATCH leva só as chaves que mudam (lat e lng juntas) e responde com as definições relidas (400 → 422 dos campos, incl. "Esta definição não existe.", sem gravar nada → upsert por `chave`; §5.9) |
+| `GET /config` | admin, utilizador | `{mosaicos: {url, atribuicao: geoapify\|osm}, alternativa: {url}, centro: {lat, lng}}`. O centro é o ponto da fábrica das definições em vigor; a chave dos mosaicos é lida a cada pedido (§8). O motorista não a recebe na F2 (403) |
 | `GET /morada/pesquisa?texto=&lat=&lng=` | admin, utilizador | Até 5 `{rotulo, morada, codigo_postal, localidade, lat, lng}` |
 | `GET /morada/inversa?lat=&lng=` | admin, utilizador | Uma sugestão ou `null` |
 
@@ -656,7 +673,9 @@ O interceptor lê o token do axios global a cada pedido e, sem token, **tira** o
 
 - **Mosaicos** (vai para o browser só por `GET /api/crm/config`, para membros):
   - o modelo é `https://maps.geoapify.com/v1/tile/osm-bright/{z}/{x}/{y}.png?apiKey=<chave codificada>`;
-  - a chave é lida a cada pedido;
+  - a chave é lida a cada pedido (`crm/config_mapa.py`, `chave_mosaicos()`; T2.13), e só a chave vazia ou a variável em falta contam como "sem chave" (como o `$chave === ''` do autónomo; uma chave só com espaços vai codificada e a Geoapify recusa-a, e o mapa muda sozinho para a alternativa);
+  - codifica-se como o `rawurlencode` do PHP: `urllib.parse.quote(…, safe="")` sobre os bytes (`surrogateescape`), por isso só `A-Za-z0-9-_.~` ficam e a barra também se codifica. Um modelo que já tenha `?` recebe a chave com `&` (caso do `ConfigMapaTest` mantido na função pura `config_mapa`);
+  - a rota é só para membros do escritório (admin e utilizador), nunca pública, e a chave nunca se escreve nos registos (teste com chave canária e `caplog`);
   - no painel da Geoapify fica **restrita por Referer** a `https://lisbonb.com`.
   - Sem chave, `url` é a alternativa `https://tile.openstreetmap.org/{z}/{x}/{y}.png` com `atribuicao: "osm"`. É o normal em local.
   - O `rh.lisbonb.com` é sinónimo **permanente** no Caddyfile (as apps instaladas trazem esse endereço). Com a restrição planeada, quem entra por `rh.lisbonb.com` fica sempre nos mosaicos OSM (decisão do dono, §14).

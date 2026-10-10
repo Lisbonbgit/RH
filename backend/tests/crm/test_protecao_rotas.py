@@ -90,6 +90,12 @@ PERFIS_POR_ROTA = {
     ("PATCH", "/api/crm/lojas/{loja_id}"): PERFIS_ESCRITORIO,
     # Apagar uma loja (T2.12): o escritório, só os enganos (sem histórico).
     ("DELETE", "/api/crm/lojas/{loja_id}"): PERFIS_ESCRITORIO,
+    # Definições da fábrica (T2.13): só o admin as vê e as muda.
+    ("GET", "/api/crm/definicoes"): PERFIS_ADMIN,
+    ("PATCH", "/api/crm/definicoes"): PERFIS_ADMIN,
+    # Configuração do mapa (T2.13): todo o escritório abre o mapa; leva a
+    # chave dos mosaicos, por isso nunca é pública.
+    ("GET", "/api/crm/config"): PERFIS_ESCRITORIO,
 }
 
 # Os motivos de `_classificar` (os meta-testes comparam-nos tal e qual).
