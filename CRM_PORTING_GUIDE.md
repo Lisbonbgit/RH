@@ -87,6 +87,7 @@ datas (vão nas notas) e seguimento GPS contínuo (**nunca**).
 - **Tipos JSON:** `True` é `int` em Python e o `json` aceita `NaN` e `1e400`. Usar `e_inteiro_json`/`e_numero_json` (`type(x) is int`, `math.isfinite`); `bool` nunca conta como número. O Python lê inteiros de qualquer tamanho e o PHP lia como `float` os que passam dos 64 bits: estes não são `e_inteiro_json` (o MongoDB também só guarda 8 bytes) e só são `e_numero_json` se couberem num float (maiores, o PHP lia INF).
 - **Graus para radianos:** o `deg2rad()` do PHP faz `(graus / 180) * M_PI` e o `math.radians()` do Python multiplica por `pi / 180`, o que muda a última casa binária (nas antípodas, até 0,19 m). `geo.py` usa `_radianos` com a ordem do PHP: na T2.2, 60 000 pares deram a mesma distância ao bit que o `Distancia::metros` do PHP 8.4.26. O `math.sin`/`math.asin` do Python rebentam com `ValueError` onde o PHP dava NAN (inf, ou acima de 1); a distância recebe só coordenadas finitas já validadas.
 - **Texto:** `str.strip()` não tira U+FEFF; `\d` aceita algarismos árabes e `$` aceita `\n` final. Usar `aparar` com `[\s﻿]` e `\Z`, `[0-9]` e `re.fullmatch` em todas as regras.
+  - **Surrogates sozinhos:** o `json.loads` aceita um `"\ud800"` sozinho, que o `json_decode` do PHP recusava ("Single unpaired UTF-16 surrogate", conferido no PHP 8.4.26), e o `corpo_json` ainda não o recusa. Esse texto rebenta com `UnicodeEncodeError` no `str.encode("utf-8")` e no BSON do Mongo, o que dá 500 numa escrita. Na T2.4, `campos_loja.notas` conta os bytes com `surrogatepass` para não rebentar. **Por fazer:** o `corpo_json` deve recusar estes textos com 400 `json_invalido`, como o PHP; o melhor momento é antes da T2.10, a primeira rota que grava textos livres.
 - **Equivalências:** `mb_strlen` → `len`; `strlen` → `len(s.encode("utf-8"))`; `in_array(…, true)` → `isinstance(x, str) and x in ORDEM`; `sprintf('%.6F')` → `f"{x:.6f}"` depois de `arredondar` (com `-0.0` o PHP escreve `0.000000` e o Python `-0.000000`: só acontece fora de Portugal, mas ter em conta na T2.7); `rawurlencode` → `urllib.parse.quote(chave, safe="")`; `http_build_query(…, RFC3986)` → `urlencode(…, quote_via=quote)`.
 - **Corrotinas nos testes:** **proibido `asyncio.run`** em `tests/crm`, porque deixa o ciclo de eventos a `None` e parte dezenas de testes antigos que usam `get_event_loop()`. Usar `correr(coro)` de `tests/crm/duplos.py` (um ciclo novo, sem `set_event_loop`). `grep -rn "asyncio.run(" backend/tests/crm` tem de dar vazio.
 - **`tests/crm/conftest.py`:** faz `setdefault` de `POS_JWT_SECRET`, `JWT_SECRET`, `MONGO_URL` e `DB_NAME` com os valores de teste já usados no repositório, porque `tests/crm` é recolhida antes de `tests/faturacao`. Nos testes, importar os auxiliares de forma relativa (`from .duplos import BaseFalsa`).
@@ -250,6 +251,16 @@ janela2_fim, dias_fechada`. Os campos que o servidor decide (`id`, `criado_por`,
   - A localização vem completa: `lat`, `lng` e `origem_coords` obrigatórios e `precisao_m` opcional. Se faltar alguma, "A localização tem de vir completa (lat, lng e origem_coords)." aparece nas chaves em falta.
   - Uma hora sozinha não se compara.
 - **Nome e telefone são sempre escritos pela pessoa** (nunca copiados de serviços de terceiros). A Geoapify só sugere morada, código postal e localidade, e só preenche campos vazios.
+- **Em `crm/dominio/campos_loja.py` (T2.4, porta do `CamposLoja.php`).** Cada função devolve `(valor normalizado, erro)`. Vazio (`""` ou só espaços, também os Unicode) ou `None` fica `None`.
+  - `texto(valor, rotulo, maximo)` conta caracteres (`len`): 255 "é" cabem na morada. A mensagem é "{rótulo} tem no máximo {máximo} caracteres.". Os rótulos e tamanhos (`TEXTOS` do `ValidadorLoja`) ficam no `validador_loja` (T2.5).
+  - `notas` conta bytes UTF-8 (até 65 535).
+  - `codigo_postal` usa `[0-9]{4}-[0-9]{3}` com `fullmatch`. O que não for texto dá a mensagem do formato, e não "Tem de ser texto.".
+  - `telefone`:
+    - primeiro junta os espaços seguidos (só o U+0020) e depois tira o espaço a seguir ao `+`, por esta ordem: `"+  351"` fica `"+351"`;
+    - conta os algarismos ASCII e valida com `\+?[0-9]+( [0-9]+)*`;
+    - o que não for texto dá a mensagem do telefone.
+  - `dias_fechada` devolve uma lista nova pela ordem de `DIAS` (o `ValidadorLoja::DIAS` do PHP passou para aqui). Os desconhecidos são verificados antes dos repetidos.
+  - Conferido com o `CamposLoja` do PHP 8.4.26 em 116 106 entradas aleatórias, mais todas as entradas das tabelas dos testes: tudo igual.
 
 ### 5.3 Portugal continental
 - Aceita-se `36.8 ≤ lat ≤ 42.2` e `−9.6 ≤ lng ≤ −6.1`, com os limites incluídos. Recusa-se `36.799999`, `42.200001`, a Madeira, os Açores, Madrid, `0` e o sinal trocado.
@@ -288,10 +299,20 @@ janela2_fim, dias_fechada`. Os campos que o servidor decide (`id`, `criado_por`,
   - "Preencha primeiro a janela 1."
   - "A janela 2 tem de começar depois do fim da janela 1."
 - As janelas só se comparam quando as 4 horas são válidas. No PATCH, as horas guardadas só se verificam se o pedido mexer numa hora.
+- **Em `crm/dominio/janelas.py` (T2.4, porta do `Janelas.php`):**
+  - `CAMPOS` são as 4 horas, por ordem, e `MENSAGEM_FORMATO` é a mensagem do formato.
+  - `hora(valor)` devolve `(hora, erro)`. Só `""` e `None` contam como "sem hora". A hora não se apara: `" 10:00"` é um erro.
+  - `erros(loja)` devolve `{campo: erro}`, vazio se tudo estiver bem.
+    - As chaves em falta contam como `None`.
+    - Os erros vêm pela ordem em que o PHP os junta. O `+=` do PHP não substitui um erro que já existe, por isso usa-se `setdefault`: uma janela 2 só com o fim dá "Indique também o início.", e não "Preencha primeiro a janela 1.".
+    - As horas têm de vir validadas. Uma que não seja texto nem `None` levanta `TypeError`, como o `?string` do PHP em modo estrito.
+    - Compara-se o texto, porque "HH:MM" tem largura fixa.
+  - Conferido com o `Janelas` do PHP 8.4.26 em 90 026 entradas: todas as 10 000 combinações "NN:NN", 20 000 horas aleatórias e 60 000 lojas com horas e chaves em falta. Tudo igual, incluindo os `TypeError`.
 
 ### 5.7 Dias fechada
 - Lista de `seg, ter, qua, qui, sex, sab, dom`, guardada pela ordem da semana; `None` dá `[]`.
 - Mensagens: "Os dias têm de ser seg, ter, qua, qui, sex, sab ou dom." e "Há dias repetidos.".
+- **Diferença assumida (T2.4):** só uma lista JSON conta (`array_is_list` → `isinstance(x, list)`, plano §10). O `json_decode` associativo do PHP transformava `{}` em `[]` e `{"0": "sab"}` em `["sab"]`, e o autónomo aceitava-os. Aqui qualquer objeto é sempre a mensagem dos dias. O browser envia sempre uma lista.
 - Na F3, uma paragem numa loja fechada nesse dia fica com o aviso "Fechada neste dia" e não entra no cálculo até o escritório decidir.
 
 ### 5.8 Regiões
