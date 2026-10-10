@@ -95,6 +95,7 @@ datas (vão nas notas) e seguimento GPS contínuo (**nunca**).
 - **Duplo do Mongo:** `BaseFalsa.__getattr__` levanta `AttributeError` para nomes começados por `_`, como o Motor.
 - **FastAPI:** parâmetros de query do CRM declarados como `Optional[str] = None` e validados no domínio, senão sai o 422 do Pydantic (lista, em inglês). A dependência de perfil vem **antes** de `corpo_json`: um pedido sem sessão e com JSON inválido dá 403/401, nunca 400.
 - **Jest (CRA 5):** `resetMocks: true` apaga as implementações dos `jest.fn` criados ao nível do módulo, por isso criá-los dentro de cada teste ou em `beforeEach`. Imports relativos (o Jest não conhece o alias `@/`). `import.meta` não funciona. `assert.equal` → `toBe`, `deepEqual` → `toEqual`, `throws` → `toThrow`, `mock.timers` → `jest.useFakeTimers()`. Para formas exatas usar `toEqual`, nunca `toMatchObject`: neste, `campos: {}` aceita qualquer valor, até `null` ou uma lista (T1.10).
+- **ESLint do CRA:** `no-script-url` avisa de qualquer texto `'javascript:'` e `no-control-regex` avisa de um `\u0000` num regex. No `dom.js` os dois aparecem só para recusar, com `eslint-disable-next-line` justificado (T2.20). Nos testes, um `/* eslint-disable no-script-url -- … */` no topo.
 - **Leaflet:** `import * as L from 'leaflet'` (o build ESM não tem export por omissão; o webpack usa o UMD do `main`, e assim funciona nos dois casos). `leaflet.css` importado depois do `index.css`. O mapa é destruído no cleanup do `useEffect`, porque o `StrictMode` monta duas vezes.
 - **Ícones:** importar `Map as IconeMapa` do lucide; um `Map` importado tapa o `Map` do JavaScript.
 
@@ -250,7 +251,10 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
   | Entregue | `cliente` |
   | Não interessado | `perdida` (exceto `cliente`) |
 
-- **Consistência:** `ORDEM` está numa só linha em `crm/dominio/fases.py` e em `lib/crm/fases.js`. `backend/tests/crm/test_consistencia_frontend.py` compara-as, junto com `LIMITE_PRECISAO_M = 50` e a mensagem do GPS.
+- **Consistência:** `ORDEM` está numa só linha em `crm/dominio/fases.py` e em `lib/crm/fases.js`. Os dois lados vigiam-se:
+  - `backend/tests/crm/test_consistencia_frontend.py` (T2.20) lê o `fases.js` como texto e compara a `ORDEM` e as chaves de `FASES`, cada uma com rótulo e cor `#rrggbb`. Na T2.22 junta `LIMITE_PRECISAO_M = 50` e a mensagem do GPS, do `gps.js`;
+  - o último teste do `fases.test.js` lê o `fases.py`.
+  - Os dois falham, e não saltam, se o ficheiro do outro lado faltar. Nunca se copia a lista para dentro de um teste.
 
 ### 5.2 Campos de uma loja
 Os campos aceites, pela ordem dos erros, são: `nome, fase, regiao_id, morada, codigo_postal, localidade, lat, lng,
@@ -658,9 +662,9 @@ motorista (`/motorista…` ou equivalente), interações e linha do tempo (`/loj
 |---|---|
 | `api.js` | Cliente HTTP (molde `lib/faturacao.js`) com erros normalizados |
 | `acesso.js`, `eu.js` | Visibilidade e cache do `/eu` por token |
-| `fases.js`, `atribuicoes.js` | Cores e textos exatos |
+| `fases.js`, `atribuicoes.js` | Cores e textos exatos (T2.20). O `html` das atribuições é só para o controlo do Leaflet (`mapa.js`); nos ecrãs React usam-se as `partes` (texto + `url`) |
 | `mosaicos.js` | Troca para a alternativa depois de pelo menos 3 erros, se forem mais do que os sucessos (uma só vez) |
-| `dom.js` | Recusa `on*`, `srcdoc` e `javascript:`; `hrefTelefone` só com 9 dígitos ou mais |
+| `dom.js` | `el(documento, tag, …)` recebe o documento por parâmetro e põe os dados só como texto. Serve para o DOM montado à mão para o Leaflet; o React já escapa. Recusa `on*`, `srcdoc` e `javascript:`/`vbscript:`. `hrefTelefone` dá `tel:` só com dígitos e o `+` inicial, e `null` com menos de 9 dígitos (T2.20) |
 | `filtros.js` | Região `'todas' \| 'sem' \| uuid` |
 | `diferencas.js`, `perfis.js`, `rede.js` | Diferenças da ficha, nomes dos perfis, estado da rede |
 | `gps.js`, `localizacao.js`, `morada.js` | Morada com espera de 300 ms e mínimo de 3 caracteres; uma resposta antiga não substitui a nova |
