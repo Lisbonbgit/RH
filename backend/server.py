@@ -9690,6 +9690,10 @@ app.include_router(faturacao_router)
 from plataformas import router as plataformas_router
 app.include_router(plataformas_router)
 
+# CRM Purple House: mapa das lojas da equipa comercial, só para membros (pacote crm/).
+from crm import router as crm_router
+app.include_router(crm_router)
+
 # Include the router in the main app
 app.include_router(api_router)
 
@@ -9720,6 +9724,9 @@ async def startup_event():
 
     from faturacao import arrancar as faturacao_arrancar
     await faturacao_arrancar()
+
+    from crm import arrancar as crm_arrancar
+    await crm_arrancar()
 
     # Índices do Financeiro. Não havia UM ÚNICO `create_index` no backend, e
     # todas as leituras do painel varrem `fin_sales` pelos mesmos campos:

@@ -170,6 +170,7 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
     - a mesma rota declarada duas vezes, ou a mesma rota em duas famílias.
   - Cada método conta como uma rota (`GET` e `POST /membros` classificam-se à parte). Na F1–F2, os perfis da tabela são só `{"admin"}` e `{"admin","utilizador"}`.
 - **Cada tarefa que cria rotas** classifica-as em `PERFIS_POR_ROTA` no passo "teste primeiro".
+- **Montagem (T1.9, `tests/crm/test_montagem.py`):** o `server.py` inclui o `crm.router` a seguir às Plataformas e chama `crm.arrancar()` a seguir a `faturacao.arrancar()`. As rotas `/api/crm/*` da app do portal têm de ser exatamente as do `crm.router`, com a mesma função, por isso uma rota do CRM escrita direto no `server.py` não escapa ao teste de proteção.
 - **IDOR:** cada pedido verifica a loja, a região ou a rota pelo `id`. Na F4, o motorista só escreve em paragens das suas rotas.
 
 **No frontend:**
@@ -739,6 +740,7 @@ kill -TERM $(lsof -nP -tiTCP:8001 -sTCP:LISTEN) $(lsof -nP -tiTCP:3000 -sTCP:LIS
 
 - **`preview_start`** lê o `.claude/launch.json` da pasta de trabalho principal da sessão. Nas sessões do dono é `/Users/brucesilva/cleide/.claude/launch.json`, **fora do repositório**, com as entradas `portal-backend-local` e `portal-frontend-local`. Cada uma é `/bin/bash -c "cd '<caminho absoluto>' && exec …"`, testadas a arrancar e a parar com `preview_stop`. Noutra pasta de trabalho, usar os comandos acima em segundo plano.
 - No primeiro arranque, o registo do backend mostra "Master admin created: …". O arranque só cria o admin master, inicia a Faturação (`faturacao.arrancar()`) e cria índices na base local.
+  - A partir da T1.9 também chama `crm.arrancar()`, que cria os índices `crm_*` com um limite de 10 s. Uma falha fica no registo com `[crm]` e não impede o portal de subir.
 - Sem `RESEND_API_KEY` nem `GOOGLE_PLACES_API_KEY`: não saem emails nem pedidos à Google.
 - Pedidos externos do browser em local: só GET a `cdn.jsdelivr.net` (xlsx e jszip do `index.html`), `fonts.googleapis.com` e `fonts.gstatic.com`.
 - Avisos `react-hooks/exhaustive-deps` do ESLint no `frontend.log` são anteriores ao CRM.
