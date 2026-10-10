@@ -3,7 +3,8 @@
 Porta de src/Dominio/Geo/{Portugal,Distancia,PrecisaoGps}.php, com todos os
 casos de tests/Unit/Dominio/{PortugalTest,DistanciaTest,PrecisaoGpsTest}.php
 do CRM autónomo (mesmos nomes nos `ids`). Os duplicados a menos de 50 m
-(Duplicados.php) juntam-se a este módulo na T2.3.
+(Duplicados.php) estão no mesmo módulo, com os testes em
+test_dominio_duplicados.py.
 
 Armadilhas do Python (plano §9; dossiê §2.1 e §5.3–5.5):
 
