@@ -455,7 +455,12 @@ motorista (`/motorista…` ou equivalente), interações e linha do tempo (`/loj
   - **Rotas (T1.12):** `filhosCrm()` (index → `mapa`, `mapa`, `lojas/nova`, `lojas/:lojaId`, `definicoes` dentro de `SoAdminCrm`, e `*` → mapa da mesma casa) e `rotasCrmNoAdmin()` são funções que devolvem `<Route>`, porque o `<Routes>` só aceita `<Route>` e fragmentos. Um caminho do CRM que não existe abre o mapa, como no autónomo.
   - **Guardas (`components/crm/GuardaCrm.js`):** `GuardaCrm` espera enquanto `carregando` (indicador, nunca recambia), manda para `/` quem não pode abrir a área (não membro, motorista, app nativa) e desenha os `children` ou o `<Outlet/>`. O `CrmLayout` embrulha-se nela, para nem a barra do CRM aparecer a quem não entra; no `/admin`, é o elemento da rota `crm`. `SoAdminCrm` manda os não-admin para `${baseCrm}/mapa`.
   - **Página que não carrega:** cada página tem um limite de erros com a `key` da rota. Se o *chunk* não chegar, aparece "Não foi possível abrir esta página do CRM. Verifique a ligação e recarregue." com "Recarregar", e o resto do portal continua de pé.
-  - **Verificar componentes sem Jest versionado:** o Jest 27 do CRA não resolve o alias `@/`, o `react-router/dom` (campo `exports`) nem tem `TextEncoder` no jsdom. As verificações temporárias da T1.12 (`~/.cache/lisbonb-crm-local/t112-verificacao/`) mostram como contornar isto sem tocar no `package.json`.
+  - **Verificar componentes sem Jest versionado:** o Jest 27 do CRA não resolve o alias `@/`, o `react-router/dom` (campo `exports`) nem tem `TextEncoder` no jsdom. As verificações temporárias da T1.12 (`~/.cache/lisbonb-crm-local/t112-verificacao/`) mostram como contornar isto sem tocar no `package.json`. As da T1.13 (`t113-verificacao/`) montam o `AdminLayout` inteiro e trazem também o comando do ESLint do CRA (eslint 8 + `eslint-config-react-app`, com `exhaustive-deps` como erro).
+  - **Secção CRM no `/admin` (T1.13):** `components/crm/seccaoCrm.js` fica no fim do array `sections` do `AdminLayout`. Os itens saem de `ITENS_MENU_CRM` na casa `/admin/crm`, e as Definições têm `crmAdmin`.
+    - O match do RH (o apanha-tudo do `/admin`) exclui `/admin/crm` com `rotaDoCrmNoAdmin`, a mesma regra do `match` da secção. Sem isto, o RH acendia no CRM.
+    - A grelha filtra por `seccaoVisivel(s, { podeVerCrm })`, com `podeVerCrm = podeAbrirAreaCrm(eu, { nativo: Capacitor.isNativePlatform() })`. Uma secção escondida também não mostra itens, mesmo que o endereço seja dela: quem não é membro e escreve `/admin/crm/…` não vê ligações do CRM enquanto a guarda decide.
+    - Na secção `crm` não há seletor de empresa, e o `fetchCompanies` não pede nada (põe `companies = []`), para as empresas do RH não passarem às páginas do CRM pelo `Outlet`.
+    - O `<main>` decide a área cheia pela rota (`ecraCheioDoCrm`), com as mesmas classes do `CrmLayout`: as mesmas páginas abrem igual nas duas casas.
 
 **Ficheiros partilhados (mínimo):**
 
@@ -759,6 +764,7 @@ kill -TERM $(lsof -nP -tiTCP:8001 -sTCP:LISTEN) $(lsof -nP -tiTCP:3000 -sTCP:LIS
 - No primeiro arranque, o registo do backend mostra "Master admin created: …". O arranque só cria o admin master, inicia a Faturação (`faturacao.arrancar()`) e cria índices na base local.
   - A partir da T1.9 também chama `crm.arrancar()`, que cria os índices `crm_*` com um limite de 10 s. Uma falha fica no registo com `[crm]` e não impede o portal de subir.
 - Sem `RESEND_API_KEY` nem `GOOGLE_PLACES_API_KEY`: não saem emails nem pedidos à Google.
+- Sem `ESTOQUE_SERVICE_KEY`: em `/admin/estoque/*`, os pedidos a `/api/estoque/*` dão 503 (erro na consola do browser). O backend recusa antes de qualquer pedido ao serviço de Estoque. É esperado e não é do CRM.
 - Pedidos externos do browser em local: só GET a `cdn.jsdelivr.net` (xlsx e jszip do `index.html`), `fonts.googleapis.com` e `fonts.gstatic.com`.
 - Avisos `react-hooks/exhaustive-deps` do ESLint no `frontend.log` são anteriores ao CRM.
 - O login no browser foi verificado com Playwright sem janela (`/usr/bin/python3`, Playwright 1.60, Chromium em cache). O script `~/.cache/lisbonb-crm-local/t08_login.py` lê os valores dos ficheiros e nunca os imprime. Para as verificações da F1, alargar a sua lista `contas`.
