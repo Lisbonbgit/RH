@@ -113,8 +113,10 @@ export function erroCrm(e) {
 
 // --- O cliente HTTP -----------------------------------------------------------
 
-// 30 s: tudo o que o CRM faz na F1 só fala com o Mongo (o mesmo tecto do
-// backoffice no `lib/faturacao.js`). Sem `timeout`, o axios espera para sempre.
+// 30 s: o mesmo tecto do backoffice no `lib/faturacao.js`. Quase tudo o que o
+// CRM faz só fala com o Mongo; a morada (F2) passa pela Geoapify no servidor,
+// que desiste aos 5 s (`servicos/geoapify.py`) e responde 503. Sem `timeout`,
+// o axios espera para sempre.
 export const TIMEOUT_CRM_MS = 30000;
 export const URL_BASE_CRM = `${process.env.REACT_APP_BACKEND_URL}/api/crm`;
 
@@ -140,12 +142,39 @@ export function criarInstanciaCrm() {
 
 export const instanciaCrm = criarInstanciaCrm();
 
-const caminhoMembro = (membroId) => `/membros/${encodeURIComponent(String(membroId))}`;
+// Um id vai num só pedaço do caminho, codificado (`/` → `%2F`). Os pedaços «.»
+// e «..» o browser resolve antes de enviar (`/lojas/..` → a raiz do CRM,
+// `/lojas/.` → a lista), e codificar os pontos não chega (o URL do browser lê
+// `%2e` como ponto); vazio dava `/lojas/`, que o FastAPI manda para a lista.
+// Esses nunca saem: os ids vêm do servidor ou da rota, por isso é um engano
+// no código (`erro_interno`, como os outros).
+const PEDACOS_PROIBIDOS = new Set(['', '.', '..']);
+
+function caminhoComId(recurso, id) {
+  const pedaco = String(id);
+  if (PEDACOS_PROIBIDOS.has(pedaco)) {
+    throw new ErroCrm({ codigo: 'erro_interno', mensagem: MENSAGEM_ERRO_INESPERADO, estado: 0 });
+  }
+  return `${recurso}/${encodeURIComponent(pedaco)}`;
+}
+
+// Os parâmetros da query sem os `null`/`undefined` (nunca o texto "null"); o
+// zero fica. É o `comParametros` do CRM autónomo.
+function semNulos(parametros) {
+  const limpos = {};
+  for (const [nome, valor] of Object.entries(parametros)) {
+    if (valor !== null && valor !== undefined) limpos[nome] = valor;
+  }
+  return limpos;
+}
 
 /**
  * As chamadas do CRM sobre um `pedir(config)` que devolve a resposta do axios
  * (`{data}`). Cada função devolve só os `data`; um erro sai como `ErroCrm`.
  * Os testes passam um `pedir` falso; por omissão é a instância do CRM.
+ *
+ * As funções com id são `async`: um id recusado pelo `caminhoComId` rejeita a
+ * promessa, como qualquer outro erro, em vez de lançar fora dela.
  */
 export function criarClienteCrm({ pedir = (config) => instanciaCrm.request(config) } = {}) {
   async function chamar(config) {
@@ -167,9 +196,58 @@ export function criarClienteCrm({ pedir = (config) => instanciaCrm.request(confi
     // Só o `user_id` e o `perfil` vão no corpo: o resto é estado do ecrã.
     adicionarMembro: ({ user_id, perfil }) =>
       chamar({ method: 'POST', url: '/membros', data: { user_id, perfil } }),
-    mudarPerfilMembro: (membroId, perfil) =>
-      chamar({ method: 'PATCH', url: caminhoMembro(membroId), data: { perfil } }),
-    retirarMembro: (membroId) => chamar({ method: 'DELETE', url: caminhoMembro(membroId) }),
+    mudarPerfilMembro: async (membroId, perfil) =>
+      chamar({ method: 'PATCH', url: caminhoComId('/membros', membroId), data: { perfil } }),
+    retirarMembro: async (membroId) => chamar({ method: 'DELETE', url: caminhoComId('/membros', membroId) }),
+
+    // --- F2 -------------------------------------------------------------------
+    // Os corpos vão tal como o ecrã os montou, nas regras puras (corpoLojaNova,
+    // corpoFabrica, camposAlterados + `atualizado_em`); o servidor valida-os.
+
+    // Regiões: `[{id, nome, ordem}]` por ordem. Criar `{nome, ordem?}` → a
+    // região; alterar `{nome?, ordem?}` → a região; apagar → `{apagada: true}`
+    // (409 `regiao_com_lojas`). Só o listar é para o escritório; o resto, admin.
+    listarRegioes: () => chamar({ method: 'GET', url: '/regioes' }),
+    criarRegiao: (corpo) => chamar({ method: 'POST', url: '/regioes', data: corpo }),
+    alterarRegiao: async (regiaoId, corpo) =>
+      chamar({ method: 'PATCH', url: caminhoComId('/regioes', regiaoId), data: corpo }),
+    apagarRegiao: async (regiaoId) => chamar({ method: 'DELETE', url: caminhoComId('/regioes', regiaoId) }),
+
+    // Lojas: a lista é o resumo `[{id, nome, fase, regiao_id, lat, lng,
+    // telefone}]`; obter, criar e alterar devolvem a loja completa (com o
+    // `atualizado_em` novo). Um 409 `duplicado` traz `extra.lojas` (`[{id,
+    // nome, distancia_m}]`) e reenvia-se com `confirmar_duplicado: true`; o 409
+    // `conflito` só traz código e mensagem. Apagar → `{apagada: true}` (409
+    // `loja_com_historico`).
+    listarLojas: () => chamar({ method: 'GET', url: '/lojas' }),
+    obterLoja: async (lojaId) => chamar({ method: 'GET', url: caminhoComId('/lojas', lojaId) }),
+    criarLoja: (corpo) => chamar({ method: 'POST', url: '/lojas', data: corpo }),
+    alterarLoja: async (lojaId, corpo) =>
+      chamar({ method: 'PATCH', url: caminhoComId('/lojas', lojaId), data: corpo }),
+    apagarLoja: async (lojaId) => chamar({ method: 'DELETE', url: caminhoComId('/lojas', lojaId) }),
+
+    // Só admin: `{fabrica_morada, fabrica_lat, fabrica_lng}` (números); o PATCH
+    // devolve os valores em vigor, e o 422 traz `campos` por chave.
+    obterDefinicoes: () => chamar({ method: 'GET', url: '/definicoes' }),
+    alterarDefinicoes: (corpo) => chamar({ method: 'PATCH', url: '/definicoes', data: corpo }),
+
+    // `{mosaicos: {url, atribuicao}, alternativa: {url}, centro: {lat, lng}}`.
+    obterConfigMapa: () => chamar({ method: 'GET', url: '/config' }),
+
+    // Morada (Geoapify pelo servidor). A pesquisa → até 5 `{rotulo, morada,
+    // codigo_postal, localidade, lat, lng}`; o ponto (`pontoDeBias`) só ordena
+    // as sugestões. No seletor: `api: (texto, extra) => pesquisarMorada({
+    // texto, ...(extra ?? {}) })`. A inversa → a sugestão ou `null` (422 fora
+    // de Portugal continental). Sem chave ou com a Geoapify em baixo, 503
+    // `morada_indisponivel`; sem rede, `sem_rede` (como todas).
+    pesquisarMorada: (pedido) => chamar({
+      method: 'GET',
+      url: '/morada/pesquisa',
+      params: semNulos({ texto: pedido?.texto, lat: pedido?.lat, lng: pedido?.lng }),
+    }),
+    moradaInversa: (ponto) => chamar({
+      method: 'GET', url: '/morada/inversa', params: semNulos({ lat: ponto?.lat, lng: ponto?.lng }),
+    }),
   };
 }
 
@@ -177,4 +255,7 @@ export const clienteCrm = criarClienteCrm();
 
 export const {
   obterEu, listarMembros, listarCandidatos, adicionarMembro, mudarPerfilMembro, retirarMembro,
+  listarRegioes, criarRegiao, alterarRegiao, apagarRegiao,
+  listarLojas, obterLoja, criarLoja, alterarLoja, apagarLoja,
+  obterDefinicoes, alterarDefinicoes, obterConfigMapa, pesquisarMorada, moradaInversa,
 } = clienteCrm;

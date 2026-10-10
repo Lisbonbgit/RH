@@ -95,6 +95,7 @@ datas (vão nas notas) e seguimento GPS contínuo (**nunca**).
 - **Duplo do Mongo:** `BaseFalsa.__getattr__` levanta `AttributeError` para nomes começados por `_`, como o Motor.
 - **FastAPI:** parâmetros de query do CRM declarados como `Optional[str] = None` e validados no domínio, senão sai o 422 do Pydantic (lista, em inglês). A dependência de perfil vem **antes** de `corpo_json`: um pedido sem sessão e com JSON inválido dá 403/401, nunca 400.
 - **Jest (CRA 5):** `resetMocks: true` apaga as implementações dos `jest.fn` criados ao nível do módulo, por isso criá-los dentro de cada teste ou em `beforeEach`. Imports relativos (o Jest não conhece o alias `@/`). `import.meta` não funciona. `assert.equal` → `toBe`, `deepEqual` → `toEqual`, `throws` → `toThrow`, `mock.timers` → `jest.useFakeTimers()`. Para formas exatas usar `toEqual`, nunca `toMatchObject`: neste, `campos: {}` aceita qualquer valor, até `null` ou uma lista (T1.10).
+- **`toEqual`, `toStrictEqual` e o `mock.calls` (T2.24):** o `toEqual` ignora as chaves com `undefined`, por isso `{texto: 'rua', lat: undefined}` passa por `{texto: 'rua'}`. Para provar que uma chave não existe, usar `toStrictEqual`. Mas o `mock.calls` de um `jest.fn` nasce noutro «realm»: um `.map` sobre ele dá um `Array` de outro construtor, e o `toStrictEqual` falha com "serializes to the same string". Montar a lista no próprio teste: `Array.from(fn.mock.calls, ([c]) => …)`.
 - **Temporizadores falsos (T2.22):** o `mock.timers.enable({ apis: ['setTimeout'] })` do `node:test` passa a `jest.useFakeTimers()` no `beforeEach` (com `jest.useRealTimers()` no `afterEach`) e o `mock.timers.tick(n)` a `jest.advanceTimersByTime(n)`. As promessas continuam nativas, por isso o `await Promise.resolve()` (o `esvaziar()` dos testes da morada) deixa correr as respostas como no autónomo.
 - **APIs recentes sem polyfill (T2.22):** o CRA transpila a sintaxe, mas não junta polyfills. O `Object.hasOwn` do `gps.js` do autónomo passou a `Object.prototype.hasOwnProperty.call` (o mesmo resultado), porque falta nos Safari anteriores ao 15.4: aí o erro rebentava dentro da resposta do browser e a promessa do `obterPosicao` nunca acabava ("A obter a localização…" para sempre). O mesmo cuidado com `Array.prototype.at`, `structuredClone` e afins no código de produção (nos testes não importa: correm no Node).
 - **Ids (T2.21):** onde o autónomo pedia um inteiro positivo (`Number.isSafeInteger(id) && id > 0`, ou `/^[1-9]\d*$/` num texto), o portal pede um uuid4 em texto: `eUuid` de `lib/crm/ids.js`. O `PADRAO_UUID4` é o `_UUID4` do `validador_loja.py`, e o `ids.test.js` lê esse ficheiro. Minúsculas, tal e qual, sem `Number()`: o `regiao_id` da loja compara-se com `===`. Sem a flag `m`, o `$` do JavaScript não aceita um `\n` final, ao contrário do `$` do Python.
@@ -667,7 +668,7 @@ motorista (`/motorista…` ou equivalente), interações e linha do tempo (`/loj
 
 | Módulo | O que faz |
 |---|---|
-| `api.js` | Cliente HTTP (molde `lib/faturacao.js`) com erros normalizados |
+| `api.js` | Cliente HTTP (molde `lib/faturacao.js`) com erros normalizados (T1.10) e as chamadas da F1 (`/eu`, membros) e da F2 (regiões, lojas, definições, `/config`, morada; T2.24). Ver "Chamadas" abaixo |
 | `acesso.js`, `eu.js` | Visibilidade e cache do `/eu` por token |
 | `fases.js`, `atribuicoes.js` | Cores e textos exatos (T2.20). O `html` das atribuições é só para o controlo do Leaflet (`mapa.js`); nos ecrãs React usam-se as `partes` (texto + `url`) |
 | `mosaicos.js` | Troca para a alternativa depois de pelo menos 3 erros, se forem mais do que os sucessos (uma só vez) |
@@ -695,6 +696,18 @@ Mensagens de rede: `'Sem rede — verifique a ligação e tente novamente.'` e `
 
 O interceptor lê o token do axios global a cada pedido e, sem token, **tira** o `Authorization`: o `axios.create` copia os
 `defaults` ao nascer e mandaria o token de uma sessão já terminada.
+
+**Chamadas (`lib/crm/api.js`, T1.10 e T2.24).** Cada função devolve só os `data` da resposta; os erros saem como `ErroCrm`. Em `criarClienteCrm({pedir})` (os testes passam um `pedir` falso) e já ligadas à instância do CRM como exportações do módulo:
+- F1: `obterEu`, `listarMembros`, `listarCandidatos`, `adicionarMembro({user_id, perfil})` (só essas duas chaves), `mudarPerfilMembro(id, perfil)`, `retirarMembro(id)`;
+- regiões: `listarRegioes()` (GET), `criarRegiao(corpo)` (POST), `alterarRegiao(id, corpo)` (PATCH), `apagarRegiao(id)` (DELETE);
+- lojas: `listarLojas()`, `obterLoja(id)`, `criarLoja(corpo)`, `alterarLoja(id, corpo)`, `apagarLoja(id)`. O 409 `duplicado` traz `extra.lojas` (`[{id, nome, distancia_m}]`) e reenvia-se com `confirmar_duplicado: true` no corpo; o 409 `conflito` só traz código e mensagem;
+- `obterDefinicoes()`, `alterarDefinicoes(corpo)` (PATCH) e `obterConfigMapa()` (`GET /config`);
+- morada: `pesquisarMorada({texto, lat, lng})` e `moradaInversa({lat, lng})`, com os valores em query. No seletor, `criarPesquisaMorada({ api: (texto, extra) => pesquisarMorada({ texto, ...(extra ?? {}) }), … })`, com o `extra` do `pontoDeBias(centro)`; a inversa recebe o `pontoDeBias(ponto)` (6 casas: o servidor recusa números com expoente). A rede em baixo continua `sem_rede` no estado de erro da pesquisa.
+
+Regras fixadas pelos testes:
+- **Corpos tal e qual.** Os corpos vão como o ecrã os montou nas regras puras (`corpoLojaNova`, `corpoFabrica`, `camposAlterados` + `atualizado_em`); o servidor valida e ignora as chaves que não conhece (regiões).
+- **Query sem nulos.** `null` e `undefined` não saem (nunca o texto "null"), e o zero fica (`lat: 0` é um número). Só `texto`, `lat` e `lng` (pesquisa) ou `lat` e `lng` (inversa) saem. Sem ponto, a inversa vai sem parâmetros e o servidor responde 422. O axios codifica a query como formulário (espaço → `+`), e o Starlette lê-a igual: acentos, vírgulas, `&`, `#` e `+` chegam tal como foram escritos.
+- **Ids num só pedaço do caminho.** O id vai com `encodeURIComponent` (`a/b` → `a%2Fb`). Um id `''`, `'.'` ou `'..'` **nunca sai**: rejeita com `erro_interno` e a mensagem genérica, sem pedido. O URL do browser resolve esses pedaços antes de enviar (`/lojas/..` → `/api/crm/`, `/lojas/.` → a lista; `%2e%2e` também conta como `..`), e `/lojas/` vazio leva à lista pelo redirecionamento do FastAPI. As funções com id são `async`, por isso a recusa rejeita a promessa e não lança fora dela.
 **Mapa sem juntas:** `.crm-mapa img.leaflet-tile { mix-blend-mode: plus-lighter; }`, a etiqueta com cores fixas
 (legível no tema escuro) e o contentor com altura explícita.
 
