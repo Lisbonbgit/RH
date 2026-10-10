@@ -102,14 +102,23 @@ export function guardarUltimaRegiao(storage, regiaoId) {
 //    (`primeiro` para o foco), o da localização (para o seletor) e, no alerta, a mensagem do servidor com os
 //    dos campos que o formulário não tem;
 //  - {tipo: 'erro', alerta}: o resto (também um duplicado sem a lista), com a mensagem do erro.
-export function respostaAoErro(erro, { ficha = false } = {}) {
+// Sem o seletor à vista (`comSeletor: false`: a ficha sem a correção aberta), o erro da localização vai no
+// alerta, a seguir à mensagem do servidor, e `localizacao` fica null (o `mostrarValidacao` do autónomo).
+export function respostaAoErro(erro, { ficha = false, comSeletor = true } = {}) {
   const duplicada = erro?.codigo === 'duplicado' ? lojaDuplicada(erro.extra?.lojas) : null;
   if (duplicada) return { tipo: 'duplicado', loja: duplicada };
   if (erro?.codigo !== 'validacao') return { tipo: 'erro', alerta: textoDoErro(erro) };
   const { porCampo, primeiro, restantes } = separarErros(erro.campos, { ficha });
   const localizacao = CAMPOS_LOCALIZACAO.map((campo) => restantes[campo]).find((texto) => typeof texto === 'string') ?? null;
   const outros = Object.entries(restantes).filter(([campo]) => !CAMPOS_LOCALIZACAO.includes(campo)).map(([, texto]) => texto);
-  return { tipo: 'validacao', alerta: [textoDoErro(erro), ...outros].join(' '), erros: porCampo, primeiro, localizacao };
+  const semMapa = !comSeletor && localizacao !== null ? [localizacao] : [];
+  return {
+    tipo: 'validacao',
+    alerta: [textoDoErro(erro), ...semMapa, ...outros].join(' '),
+    erros: porCampo,
+    primeiro,
+    localizacao: comSeletor ? localizacao : null,
+  };
 }
 
 // Depois de gravar: o mapa da mesma casa centrado na loja nova (`?loja=<id>`), com o aviso no `state`.

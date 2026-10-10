@@ -163,6 +163,25 @@ test('respostaAoErro: o 422 separa os erros dos campos, o da localização e os 
   expect(respostaAoErro(precisao).localizacao).toBe('Localização imprecisa — ajuste o pino');
 });
 
+test('respostaAoErro sem o seletor à vista (a ficha sem a correção aberta): o erro da localização vai no alerta', () => {
+  const erro = new ErroCrm({
+    codigo: 'validacao',
+    mensagem: 'Verifique os campos assinalados.',
+    estado: 422,
+    campos: { lat: 'Fora de Portugal', notas: 'Notas a mais.', visita: 'Campo desconhecido.' },
+  });
+  // Como o `mostrarValidacao` do autónomo: a mensagem do servidor, a da localização e as dos outros campos.
+  expect(respostaAoErro(erro, { ficha: true, comSeletor: false })).toEqual({
+    tipo: 'validacao',
+    alerta: 'Verifique os campos assinalados. Fora de Portugal Campo desconhecido.',
+    erros: { notas: 'Notas a mais.' },
+    primeiro: 'notas',
+    localizacao: null,
+  });
+  expect(respostaAoErro(erro, { ficha: true }).localizacao).toBe('Fora de Portugal'); // por omissão, com o seletor
+  expect(respostaAoErro(erro, { ficha: true, comSeletor: true }).alerta).toBe('Verifique os campos assinalados. Campo desconhecido.');
+});
+
 test('respostaAoErro: o resto mostra a mensagem do erro (ou a de erro inesperado)', () => {
   expect(respostaAoErro(new ErroCrm({ codigo: 'sem_rede', mensagem: MENSAGEM_SEM_REDE }))).toEqual({ tipo: 'erro', alerta: MENSAGEM_SEM_REDE });
   expect(respostaAoErro(new ErroCrm({ codigo: 'erro_interno', mensagem: '', estado: 500 }))).toEqual({ tipo: 'erro', alerta: MENSAGEM_ERRO_INESPERADO });

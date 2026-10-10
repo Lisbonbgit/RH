@@ -17,7 +17,10 @@
 //    mapa — recarregue a página.". Tem de ser o mesmo objeto entre desenhos:
 //    um objeto novo cria outro mapa (e o pino perde-se);
 //  - `inicial` ({lat, lng, origem, precisao_m?}: a localização que a loja já
-//    tem, ou o ponto da fábrica), `comGps` e `textos` leem-se ao criar;
+//    tem, ou o ponto da fábrica), `comGps`, `textos` e `focarAoIniciar` leem-se
+//    ao criar. Com `focarAoIniciar` (a ficha, ao abrir "Corrigir localização":
+//    o botão em que se tocou desaparece), o foco vai para "Confirmar
+//    localização" assim que o mapa existe;
 //  - o GPS só se pede ao tocar em "Estou nesta loja" (`navigator.geolocation`,
 //    nunca ao montar), e o botão fica com `aria-disabled` enquanto espera (o
 //    foco não se perde);
@@ -66,7 +69,8 @@ const vistaInicial = ({ textos, comGps }) => criarSeletor({
 }).vista;
 
 const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
-  configuracao, inicial = null, comGps = false, textos, aoMudar, aoEscolherMorada, aoSugerirMorada,
+  configuracao, inicial = null, comGps = false, textos, focarAoIniciar = false, aoMudar, aoEscolherMorada,
+  aoSugerirMorada,
 }, ref) {
   const id = useId();
   const idTitulo = `${id}-titulo`;
@@ -84,14 +88,18 @@ const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
   // O que se lê ao criar o seletor e as funções mais recentes do ecrã (o seletor cria-se uma vez).
   const opcoes = useRef({});
   useLayoutEffect(() => {
-    opcoes.current = { inicial, comGps, textos, aoMudar, aoEscolherMorada, aoSugerirMorada };
+    opcoes.current = {
+      inicial, comGps, textos, focarAoIniciar, aoMudar, aoEscolherMorada, aoSugerirMorada,
+    };
   });
 
   useEffect(() => {
     if (configuracao === undefined) return undefined; // a configuração ainda não chegou
     const elemento = area.current;
     let ativo = true;
-    const { inicial: ponto, comGps: gps, textos: proprios } = opcoes.current;
+    const {
+      inicial: ponto, comGps: gps, textos: proprios, focarAoIniciar: focar,
+    } = opcoes.current;
     const criado = criarSeletor({
       L,
       documento: document,
@@ -111,8 +119,9 @@ const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
         setPedidosDeFoco((n) => n + 1);
       },
     });
-    criado.iniciar(elemento, { inicial: ponto ?? undefined });
+    const comMapa = criado.iniciar(elemento, { inicial: ponto ?? undefined });
     setVista(criado.vista);
+    if (comMapa && focar) criado.focar();
     setSeletor(criado);
 
     const observador = typeof ResizeObserver === 'function' ? new ResizeObserver(() => criado.redimensionar()) : null;
