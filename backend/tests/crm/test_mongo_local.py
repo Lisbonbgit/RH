@@ -7,8 +7,11 @@ servidor verdadeiro. Este ensaio repete, versionado, o que as conferências
 locais da T2.8 à T2.13 mostraram à mão: o `criar_indices` verdadeiro, o
 pré-filtro dos 50 m pelo índice `2dsphere`, a atualização condicional, os
 índices únicos (também o parcial do `client_uuid`), os upserts das
-definições (correções do plano, linha "T1.2 (test_indices) / T2.8") e as
-corridas com o Motor nas rotas que dependem dos índices.
+definições (correções do plano, linha "T1.2 (test_indices) / T2.8"), as
+corridas com o Motor nas rotas que dependem dos índices e, desde a T2.18, o
+seed das lojas de demonstração (`seed_crm_local.aplicar_lojas`, com o
+pymongo síncrono, na mesma base de teste): índices, rotas a ler o que gravou
+e a reposição quando o Mongo recusa uma escrita.
 
 Só corre com `CRM_MONGO_TESTE_URL` (variável de shell, nunca no
 `.env.example`):
@@ -41,7 +44,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import uri_parser
+from pymongo import MongoClient, uri_parser
 from pymongo.errors import DuplicateKeyError, WriteError
 
 import crm.db as bd
@@ -51,6 +54,7 @@ from crm.db import COLECOES, INDICES
 from crm.definicoes import alterar_definicoes
 from crm.dominio.geo import distancia_metros, encontrar_duplicados, filtro_candidatos
 from crm.formatar import documento_localizacao
+from crm.dominio.texto import chave_comparacao
 from crm.lojas import (
     MENSAGEM_CONFLITO,
     MENSAGEM_NAO_ENCONTRADA,
@@ -58,9 +62,11 @@ from crm.lojas import (
     alterar_loja,
     apagar_loja,
     criar_loja,
+    ler_loja,
+    listar_lojas,
 )
 from crm.membros import MENSAGEM_JA_MEMBRO, adicionar_membro
-from crm.regioes import MENSAGEM_REPETIDA, criar_regiao
+from crm.regioes import MENSAGEM_REPETIDA, criar_regiao, listar_regioes
 
 from .duplos import correr
 from .formatos import instantes_fora_do_formato
@@ -791,3 +797,124 @@ def test_muitos_patch_das_definicoes_ao_mesmo_tempo_deixam_uma_linha_por_chave(n
     valores = {g["chave"]: float(g["valor"]) for g in guardadas}
     assert valores["fabrica_lat"] in {p["fabrica_lat"] for p in pedidos}
     assert valores["fabrica_lng"] in {p["fabrica_lng"] for p in pedidos}
+
+
+# --- O seed das regiões e lojas de demonstração (T2.18) ---------------------------------------------
+
+AGORA_DO_SEED = datetime(2026, 10, 10, 9, 0, 0, 123456, tzinfo=timezone.utc)
+CRIADAS = "Criadas: 4 regiões e 24 lojas de demonstração."
+SEED_NADA_MUDOU = (
+    "Erro: os dados de demonstração não foram criados (nada mudou): BulkWriteError: Document failed validation"
+)
+# Um validador do Mongo que só recusa as lojas de demonstração (faz o papel do
+# gatilho "falha simulada" do SeedDemoTest do autónomo): a loja verdadeira, ao
+# ser reposta, passa.
+SO_RECUSA_AS_DE_DEMONSTRACAO = {"nome": {"$not": {"$regex": r" \(demo\)$"}}}
+
+
+def _seed_na_base(uri):
+    """O seed usa o pymongo (síncrono): um cliente à parte, na mesma base de teste."""
+    return MongoClient(
+        uri, directConnection=True, serverSelectionTimeoutMS=ESPERA_MS, connectTimeoutMS=ESPERA_MS
+    )
+
+
+async def _tudo(base, *coleccoes):
+    """Tudo o que está nas coleções, com o `_id`, por ordem de gravação."""
+    return {c: await base[c].find({}).sort("_id", 1).to_list(1000) for c in coleccoes}
+
+
+def test_o_seed_grava_as_lojas_de_demonstracao_e_as_rotas_leem_nas(no_mongo):
+    """Na base verdadeira, com os índices do `criar_indices`: as 24 lojas passam
+    o `2dsphere` (nenhuma a menos de 210 m de outra pelo pré-filtro), as 4
+    regiões têm `nome_chave` (o índice único trava "lisboa"), as rotas leem
+    tudo; a segunda vez sem --repor recusa, e com --repor não colide."""
+    lojas_c, regioes_c = COLECOES["lojas"], COLECOES["regioes"]
+
+    async def ensaio(base):
+        cliente = _seed_na_base(no_mongo.uri)
+        try:
+            sincrona = cliente[BASE_TESTE]
+            linhas = seed_crm_local.aplicar_lojas(sincrona, AGORA_DO_SEED)
+            with pytest.raises(SystemExit) as recusa:
+                seed_crm_local.aplicar_lojas(sincrona, AGORA_DO_SEED)
+            resumos = await listar_lojas(RUI_MEMBRO)
+            completas = [await ler_loja(resumo["id"], RUI_MEMBRO) for resumo in resumos]
+            regioes = await listar_regioes(RUI_MEMBRO)
+            vizinhas = [
+                await base[lojas_c]
+                .find(filtro_candidatos(r["lat"], r["lng"], r["id"], raio=200), PROJECAO_CANDIDATO)
+                .to_list(30)
+                for r in resumos
+            ]
+            with pytest.raises(HTTPException) as repetida:
+                await criar_regiao(ANA_MEMBRO, {"nome": "lisboa"})
+            linhas_repor = seed_crm_local.aplicar_lojas(sincrona, AGORA_DO_SEED, repor=True)
+            contagens = (await base[lojas_c].count_documents({}), await base[regioes_c].count_documents({}))
+        finally:
+            cliente.close()
+        return linhas, recusa.value.code, resumos, completas, regioes, vizinhas, repetida.value, linhas_repor, contagens
+
+    linhas, recusa, resumos, completas, regioes, vizinhas, repetida, linhas_repor, contagens = no_mongo(ensaio)
+
+    assert linhas == [CRIADAS]
+    assert recusa.startswith("Recusado: a base de dados já tem 24 lojas e 4 regiões.")
+    assert len(resumos) == 24
+    assert [r["nome"] for r in resumos] == sorted((r["nome"] for r in resumos), key=chave_comparacao)
+    assert all(r["nome"].endswith(" (demo)") for r in resumos)
+    assert [(r["nome"], r["ordem"]) for r in regioes] == [("Lisboa", 1), ("Porto", 2), ("Setúbal", 3), ("Algarve", 4)]
+    assert sum(1 for c in completas if c["regiao_id"] is None) == 2
+    assert {c["regiao_id"] for c in completas} - {None} == {r["id"] for r in regioes}
+    assert all(c["criado_por"] == "seed-local" and c["criado_em"] == c["fase_desde"] for c in completas)
+    assert len({c["fase_desde"] for c in completas}) > 5
+    assert instantes_fora_do_formato(completas) == []
+    assert vizinhas == [[]] * 24
+    assert (repetida.status_code, repetida.detail) == (409, _erro("regiao_repetida", MENSAGEM_REPETIDA))
+    assert linhas_repor == ["Apagadas: 24 lojas e 4 regiões.", CRIADAS]
+    assert contagens == (24, 4)
+
+
+def test_se_o_mongo_recusar_uma_loja_do_seed_nada_muda(no_mongo):
+    async def ensaio(base):
+        await base.command("collMod", COLECOES["lojas"], validator=SO_RECUSA_AS_DE_DEMONSTRACAO)
+        cliente = _seed_na_base(no_mongo.uri)
+        try:
+            with pytest.raises(SystemExit) as erro:
+                seed_crm_local.aplicar_lojas(cliente[BASE_TESTE], AGORA_DO_SEED)
+        finally:
+            cliente.close()
+        return erro.value.code, await _tudo(base, COLECOES["lojas"], COLECOES["regioes"])
+
+    erro, depois = no_mongo(ensaio)
+
+    assert erro == SEED_NADA_MUDOU
+    assert depois == {COLECOES["lojas"]: [], COLECOES["regioes"]: []}, "As regiões também voltam atrás."
+
+
+def test_se_o_repor_do_seed_falhar_no_mongo_fica_tudo_como_estava(no_mongo):
+    """Com uma loja, uma região e uma interação verdadeiras: o --repor apaga-as,
+    grava as regiões, o Mongo recusa a primeira loja de demonstração e o seed
+    repõe tudo como estava (os mesmos documentos, com o mesmo `_id`)."""
+    coleccoes = (COLECOES["lojas"], COLECOES["regioes"], COLECOES["interacoes"])
+
+    async def ensaio(base):
+        await base[COLECOES["regioes"]].insert_one({"id": _id(9), "nome": "Minho", "nome_chave": "minho", "ordem": 0})
+        await base[COLECOES["lojas"]].insert_one({**_loja(1, LAT), "regiao_id": _id(9)})
+        await base[COLECOES["interacoes"]].insert_one(
+            {"id": _id(2), "loja_id": _id(1), "tipo": MUDANCA_FASE, "ocorrida_em": "2026-10-10T09:00:00Z"}
+        )
+        antes = await _tudo(base, *coleccoes)
+        await base.command("collMod", COLECOES["lojas"], validator=SO_RECUSA_AS_DE_DEMONSTRACAO)
+        cliente = _seed_na_base(no_mongo.uri)
+        try:
+            with pytest.raises(SystemExit) as erro:
+                seed_crm_local.aplicar_lojas(cliente[BASE_TESTE], AGORA_DO_SEED, repor=True)
+        finally:
+            cliente.close()
+        return erro.value.code, antes, await _tudo(base, *coleccoes)
+
+    erro, antes, depois = no_mongo(ensaio)
+
+    assert erro == SEED_NADA_MUDOU
+    assert [len(antes[c]) for c in coleccoes] == [1, 1, 1]
+    assert depois == antes

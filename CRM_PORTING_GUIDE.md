@@ -143,9 +143,10 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
     - o histórico do DELETE e a linha do tempo vão pelo `loja_id_1_ocorrida_em_1`, e a ordem por `ocorrida_em` é a do tempo;
     - dois upserts seguidos das definições (latitude e longitude) sem `DuplicateKeyError` (correções do plano, linha "T1.2 / T2.8"); o `PATCH /definicoes` grava uma linha por chave e o seguinte substitui; 20 `PATCH` ao mesmo tempo sobre a coleção vazia não dão erro e deixam uma linha por chave (o Mongo refaz o upsert que perde a corrida pelo `chave_1`);
     - as corridas com o Motor nas rotas (`PATCH` e `DELETE /lojas`, `POST /regioes` e `POST /membros`): uma **barreira** segura as duas primeiras leituras até ambos os pedidos terem lido, para a corrida acontecer sempre. Uma alteração grava e a outra dá 409 `conflito`, com uma só interação; um apaga e o outro dá 404; a segunda região ou o segundo membro dá 409, travado só pelo índice único.
+    - **o seed das lojas de demonstração (T2.18):** as 24 lojas e as 4 regiões gravam-se com os índices verdadeiros e as rotas leem-nas (`GET /lojas`, `GET /lojas/{id}`, `GET /regioes`); pelo `loc_2dsphere`, nenhuma loja tem outra a menos de 210 m; o `nome_chave` das regiões trava um `POST /regioes` "lisboa" (409); a segunda vez sem `--repor` recusa e com `--repor` não colide. Com um validador do Mongo que recusa as lojas de demonstração (o papel do gatilho "falha simulada" do autónomo), o seed numa base vazia deixa-a vazia e o `--repor` deixa as três coleções exatamente como estavam, com os mesmos `_id`.
 - `lat`/`lng` e `loc` escrevem-se sempre juntos (`formatar.documento_localizacao(lat, lng)` → `{lat, lng, loc}`, as coordenadas em `float`; T2.10). Na API as janelas são planas (`janela1_inicio`, `janela1_fim`, `janela2_inicio`, `janela2_fim`); na base ficam em lista (0 a 2, por ordem).
 - **Contas do portal (`users`, já existe):** o CRM lê `id`, `email`, `name` e `role`. A projeção **nunca** pede `password`.
-- **Sem transações:** a ordem das escritas é definida e testada. Exemplos: atualizar a loja e depois registar a `mudanca_fase`; se o registo falhar, fica uma linha `[crm]` no log e a loja não é desfeita. Apagar a loja e só depois as `mudanca_fase` dela (T2.12, §5.12); se estas falharem, ficam órfãs e uma linha `[crm]` no log. Corridas residuais aceites, como apagar uma região enquanto se cria uma loja nela.
+- **Sem transações:** a ordem das escritas é definida e testada. Exemplos: atualizar a loja e depois registar a `mudanca_fase`; se o registo falhar, fica uma linha `[crm]` no log e a loja não é desfeita. Apagar a loja e só depois as `mudanca_fase` dela (T2.12, §5.12); se estas falharem, ficam órfãs e uma linha `[crm]` no log. Corridas residuais aceites, como apagar uma região enquanto se cria uma loja nela. O seed local (T2.18, §12.4) faz o papel da transação do autónomo com uma cópia: constrói e valida tudo antes da primeira escrita e, se uma escrita falhar, repõe nas coleções que mexeu a cópia do que tinham.
 - **Migração de dados:** nenhuma. Os dados reais entram diretamente em produção a partir da F2; os de demonstração só existem em local.
 
 | Desenho original (MariaDB, §5) | No portal |
@@ -918,10 +919,20 @@ cd "/Users/brucesilva/pasta sem título/RH/backend" && .venv/bin/python seed_crm
   - depois usa `pymongo.uri_parser.parse_uri` dentro de `try` e exige que todos os anfitriões sejam `127.0.0.1`, `localhost` ou `::1`;
   - `bd_e_local` exige um nome terminado em `_local`.
   - Se falhar: "Recusado: o seed só corre num MongoDB local (mongodb://127.0.0.1) e numa base *_local." e `saida=1`. Um ficheiro de ambiente em falta também dá "Recusado…", e o MongoDB parado dá uma mensagem própria.
-- **Cria:** as 4 contas de demonstração em `users` (bcrypt, `must_change_password: False`) e 3 linhas em `crm_membros` (`criado_por: "seed-local"`). Na T2.18 juntam-se as regiões e as lojas.
-- **Credenciais:** as palavras-passe geradas vão para `~/.config/lisbonb-crm-local/credenciais.txt` (modo 600, pasta 700), uma linha `email<TAB>palavra-passe` por conta. O ecrã só mostra o caminho e uma contagem. **Não se mostra o conteúdo.**
-- **`--repor`:** gera palavras-passe novas para as 4 contas e acerta `password_mudada_em`, o que termina as sessões abertas antes. As contagens não mudam.
-- **Contagens esperadas:** `users` = 5 (4 de demonstração + o admin master criado no primeiro arranque do backend) e `crm_membros` = 3.
+- **Cria (T0.7):** as 4 contas de demonstração em `users` (bcrypt, `must_change_password: False`) e 3 linhas em `crm_membros` (`criado_por: "seed-local"`). As contas que já existem ficam como estão.
+- **Cria (T2.18):** as 4 regiões e as 24 lojas do `src/Cli/DadosDemo.php` do autónomo, com "(demo)" no nome.
+  - **Regiões:** Lisboa, Porto, Setúbal e Algarve, ordem 1–4, com a forma do `POST /regioes`: `{id: str(uuid4()), nome, nome_chave, ordem}`.
+  - **Lojas:** as 5 fases (7 potencial, 6 cliente, 5 contactada, 4 amostra, 2 perdida), 2 sem região (Coimbra e Évora), todas a mais de 200 m umas das outras (o par mais perto, em Faro, está a 447 m), 11 com telefone `+351 000 000 0NN` (em Portugal nenhum número começa por 0: "Ligar" não liga a ninguém), 2 com GPS (12 m e 25 m).
+  - Cada loja passa pelo `validador_loja.criacao` e é construída pelo `formatar.documento_loja(dados, "seed-local", agora)`, a forma que o `POST /lojas` grava. Depois, `fase_desde` = `criado_em` = agora menos os dias na fase de cada uma (1 a 200 dias, contados em UTC), para os alertas da F5 terem fases de idades diferentes (correções do plano, linha "T2.18"); `atualizado_em` é o carimbo de agora.
+  - Mensagens (as do autónomo): "Criadas: 4 regiões e 24 lojas de demonstração." e, com `--repor`, antes disso "Apagadas: N lojas e M regiões.".
+- **Recusa:** se a base já tiver lojas ou regiões (que podem ser verdadeiras: o seed não as distingue), sai com "Recusado: a base de dados já tem N lojas e M regiões. Use --repor para apagar todas as lojas e regiões e criar os dados de demonstração de novo." e `saida=1`, **antes de qualquer escrita, também das contas**. Por isso, depois do primeiro seed, correr outra vez sem `--repor` recusa sem mudar nada.
+- **Credenciais:** as palavras-passe geradas vão para `~/.config/lisbonb-crm-local/credenciais.txt` (modo 600, pasta 700), uma linha `email<TAB>palavra-passe` por conta, logo a seguir às contas (uma falha nas lojas não as perde). O ecrã só mostra o caminho e uma contagem. **Não se mostra o conteúdo.**
+- **`--repor`:** gera palavras-passe novas para as 4 contas e acerta `password_mudada_em`, o que termina as sessões abertas antes; e apaga **todas** as lojas, interações e regiões do CRM (só essas três coleções, e só na base `*_local` que a guarda aceita) para as criar de novo, com ids novos. Membros, definições, contas e as outras coleções do portal não se tocam.
+- **Sem transações (o MongoDB local não as tem):** tudo é construído e validado antes da primeira escrita. Ordem das escritas: com `--repor`, apagar lojas, interações e regiões; depois gravar as regiões e as lojas (`insert_many`). Se uma escrita falhar, as coleções que o seed mexeu voltam à cópia do que tinham e sai com "Erro: os dados de demonstração não foram criados (nada mudou): <tipo>: <mensagem>"; se nem a reposição der, diz que a base pode ter ficado a meio e manda correr de novo com `--repor`.
+- **Diferenças para o autónomo:** `criado_por` é `"seed-local"` (o autónomo deixava null; aqui é a marca das escritas do seed, como nos membros); o seed também cria as contas (o autónomo não criava utilizadores); as opções são as do `argparse` da T0.7 (`-h`/`--help`), por isso não há `--ajuda` nem a mensagem "use só uma opção de cada vez".
+- **Contagens esperadas:** `users` = 5 (4 de demonstração + o admin master criado no primeiro arranque do backend), `crm_membros` = 3, `crm_regioes` = 4, `crm_lojas` = 24 e `crm_interacoes` = 0. O `GET /api/crm/lojas` com o admin local devolve 24.
+- **Conferido com o PHP 8.4.26 (T2.18, `t2.18-conferencia-php.log`, não versionado):** as 24 lojas do `DadosDemo::lojas()` (campos, tipos e ordem das chaves) e os inícios de fase do `modify("-N days")`, com o relógio de 2026-10-10 e mais 4 instantes (mudança da hora, 29 de fevereiro, passagem de ano): 0 diferenças.
+- **Verificado na base local (T2.18, `t2.18-ponta-a-ponta.log`):** o seed criou as 4 regiões e as 24 lojas na `lisbonb_crm_local`, que **ficam lá** para as verificações no browser (T2.25–T2.32); a segunda corrida sem `--repor` recusou sem escrever nada; com o backend local, `GET /api/crm/lojas` devolve 24 ao admin local e ao `escritorio.demo`, e um `POST /lojas` a 11 m da Mercearia da Baixa dá 409 `duplicado`.
 
 ### 12.5 Contas locais
 
@@ -976,7 +987,7 @@ cd "$RAIZ/frontend" && BUILD_PATH="$LOGS/build" CI=false ./node_modules/.bin/cra
 - `-p no:cacheprovider` evita `backend/.pytest_cache`, que não está no `.gitignore`.
 - O fixture `mongo_real` de `tests/test_seguranca_login.py` arranca um `mongod` temporário próprio (127.0.0.1, porta aleatória) e não toca no serviço da porta 27017. Sem `/opt/homebrew/bin` no `PATH`, esses 7 testes saltam e o `skipped` sobe para 10.
 - **Ensaio no MongoDB local (T2.17):** `cd "$RAIZ/backend" && CRM_MONGO_TESTE_URL=mongodb://127.0.0.1:27017 .venv/bin/python -m pytest -q -p no:cacheprovider tests/crm/test_mongo_local.py` (primeiro plano, cerca de 5 s; o serviço `brew` do MongoDB tem de estar a correr).
-  - Sem a variável, os 23 testes do Mongo saltam com a razão "ensaio no MongoDB local: só corre com CRM_MONGO_TESTE_URL=…"; os 17 sem Mongo (a guarda e as distâncias dos pontos) correm sempre. Por isso a bateria `tests/crm` e a suite completa têm **23 saltados a mais** sem a variável (com ela, voltam aos de antes).
+  - Sem a variável, os 26 testes do Mongo (23 da T2.17 e 3 do seed das lojas, T2.18) saltam com a razão "ensaio no MongoDB local: só corre com CRM_MONGO_TESTE_URL=…"; os 17 sem Mongo (a guarda e as distâncias dos pontos) correm sempre. Por isso a bateria `tests/crm` e a suite completa têm **26 saltados a mais** sem a variável (com ela, voltam aos de antes). Com a variável: 43 passed.
   - A guarda falha sem ligar (e sem mostrar a URI) se a variável não for um `mongodb://` com uma só máquina local (`seed_crm_local.uri_e_local`) ou se trouxer outra base que não a `lisbonb_crm_teste`. Cada teste apaga só essa base, no início e no fim.
   - A variável é só da shell: nunca entra no `.env.example` nem no `.env.local` (`test_variaveis_ambiente.py` falha se entrar no `.env.example`).
 - O build de verificação não depende do ambiente local: lê o `.env.production`, e o *bundle* fica a apontar para `https://rh.lisbonb.com`. Só serve para compilar, nunca se publica.
@@ -985,7 +996,7 @@ cd "$RAIZ/frontend" && BUILD_PATH="$LOGS/build" CI=false ./node_modules/.bin/cra
 
 | Caminho | Conteúdo |
 |---|---|
-| `~/.cache/lisbonb-crm-local/*.log` | Instalações (`brew-*.log`, `pip.log`, `yarn-install.log`), suites (`pytest-tudo*.log`, `jest-partida.log`), servidores (`backend.log`, `frontend.log`), seed (`seed-t07*.log`) |
+| `~/.cache/lisbonb-crm-local/*.log` | Instalações (`brew-*.log`, `pip.log`, `yarn-install.log`), suites (`pytest-tudo*.log`, `jest-partida.log`), servidores (`backend.log`, `frontend.log`), seed (`seed-t07*.log`, `t2.18-seed*.log`) |
 | `~/.cache/lisbonb-crm-local/estado-partida-T06.txt` | Estado de partida estruturado (§13) |
 | `~/.cache/lisbonb-crm-local/arranque-T08.txt`, `t08_login.py`, `t08-*.png` | Registo do arranque, script de login e capturas |
 | `~/.cache/lisbonb-crm-local/build/` | Build de verificação (a partir da F1) |
@@ -1018,10 +1029,10 @@ Registado a 2026-10-10 no ramo `crm-purple-house` @ `2e0dbac`, antes de qualquer
 **Regra para T1.2, T1.9, T1.15 e T2.32:** `failed` = 0, `skipped` ≤ 3 (não pode aumentar) e `passed` = 3552 +
 testes novos do CRM. O Jest tem de continuar com as 6 suites antigas verdes.
 
-**Desde a T2.17:** sem `CRM_MONGO_TESTE_URL`, os 23 testes do ensaio no MongoDB local (`tests/crm/test_mongo_local.py`)
-saltam de propósito, todos com a razão "ensaio no MongoDB local: só corre com CRM_MONGO_TESTE_URL=…". A regra passa
-a ser `skipped` ≤ 3 + 23 sem a variável, confirmando com `-rs` que os saltados a mais são todos do ensaio (com a
-variável, `skipped` ≤ 3).
+**Desde a T2.17:** sem `CRM_MONGO_TESTE_URL`, os testes do ensaio no MongoDB local (`tests/crm/test_mongo_local.py`)
+saltam de propósito, todos com a razão "ensaio no MongoDB local: só corre com CRM_MONGO_TESTE_URL=…": 23 na T2.17,
+26 desde a T2.18 (os 3 do seed das lojas). A regra passa a ser `skipped` ≤ 3 + 26 sem a variável, confirmando com
+`-rs` que os saltados a mais são todos do ensaio (com a variável, `skipped` ≤ 3).
 
 | Momento | Commit | Backend (passed / failed / skipped) | Jest `src/lib` |
 |---|---|---|---|
@@ -1030,6 +1041,7 @@ variável, `skipped` ≤ 3).
 | Fecho da F1 (T1.15) | `902b4e8` | 4071 / 0 / 3 (3552 + 519 de `tests/crm`) | 354 / 0 (9 suites: as 6 antigas com 114 + 240 do CRM) |
 | Revisão da F0/F1 (+22: `test_cron_key.py` e um meta-teste do cron; Jest +35) | ver `git log` ("CRM: corrige revisão da F0/F1") | 4093 / 0 / 3 (3552 + 541 de `tests/crm`) | 389 / 0 (9 suites: 114 + 275 do CRM) |
 | Depois da T2.17 (sem `CRM_MONGO_TESTE_URL`; `pytest-tudo-T2_17.log`) | ver `git log` ("CRM: ensaio do comportamento real do Mongo…") | 6380 / 0 / 26 (3 de sempre + 23 do ensaio) | — |
+| Depois da T2.18 (sem `CRM_MONGO_TESTE_URL`; `pytest-tudo-T2_18.log`) | ver `git log` ("CRM: dados de demonstração das regiões e lojas…") | 6420 / 0 / 29 (3 de sempre + 26 do ensaio, confirmados com `-rs`) | — |
 | Fecho da F2 (T2.32) | — | *a preencher* | *a preencher* |
 
 **Fecho da F1 (T1.15, 2026-10-10)** — tudo verificado no Mac, nada saiu dele:
