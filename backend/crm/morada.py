@@ -51,6 +51,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Iguais às MENSAGEM_MORADA_* de frontend/src/lib/crm/morada.js (test_consistencia_frontend.py, T2.22).
 PESQUISA_INDISPONIVEL = "Pesquisa de morada indisponível — coloque o pino no mapa ou use 'Estou nesta loja'"
 INVERSA_INDISPONIVEL = "Morada sugerida indisponível — escreva a morada à mão."
 
