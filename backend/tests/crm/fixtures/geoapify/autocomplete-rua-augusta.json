@@ -1,0 +1,93 @@
+{
+  "_origem": "manual — regravar",
+  "results": [
+    {
+      "datasource": {
+        "sourcename": "openstreetmap",
+        "attribution": "© OpenStreetMap contributors",
+        "license": "Open Database License",
+        "url": "https://www.openstreetmap.org/copyright"
+      },
+      "country": "Portugal",
+      "country_code": "pt",
+      "state": "Lisboa",
+      "county": "Lisboa",
+      "city": "Lisboa",
+      "postcode": "1100-053",
+      "suburb": "Santa Maria Maior",
+      "street": "Rua Augusta",
+      "lon": -9.1377,
+      "lat": 38.7104,
+      "result_type": "street",
+      "formatted": "Rua Augusta, 1100-053 Lisboa, Portugal",
+      "address_line1": "Rua Augusta",
+      "address_line2": "1100-053 Lisboa, Portugal",
+      "rank": {
+        "importance": 0.41,
+        "confidence": 1,
+        "match_type": "full_match"
+      }
+    },
+    {
+      "datasource": {
+        "sourcename": "openstreetmap",
+        "attribution": "© OpenStreetMap contributors",
+        "license": "Open Database License",
+        "url": "https://www.openstreetmap.org/copyright"
+      },
+      "country": "Portugal",
+      "country_code": "pt",
+      "state": "Lisboa",
+      "county": "Lisboa",
+      "city": "Lisboa",
+      "postcode": "1100-048",
+      "suburb": "Santa Maria Maior",
+      "street": "Rua Augusta",
+      "housenumber": "24",
+      "lon": -9.13712,
+      "lat": 38.70921,
+      "result_type": "building",
+      "formatted": "Rua Augusta 24, 1100-048 Lisboa, Portugal",
+      "address_line1": "Rua Augusta 24",
+      "address_line2": "1100-048 Lisboa, Portugal",
+      "rank": {
+        "importance": 0.21,
+        "confidence": 0.9,
+        "match_type": "match_by_street"
+      }
+    },
+    {
+      "datasource": {
+        "sourcename": "openstreetmap",
+        "attribution": "© OpenStreetMap contributors",
+        "license": "Open Database License",
+        "url": "https://www.openstreetmap.org/copyright"
+      },
+      "country": "Portugal",
+      "country_code": "pt",
+      "state": "Lisboa",
+      "county": "Cascais",
+      "city": "Cascais",
+      "postcode": "2750",
+      "street": "Rua Augusta",
+      "lon": -9.4215,
+      "lat": 38.6979,
+      "result_type": "street",
+      "formatted": "Rua Augusta, 2750 Cascais, Portugal",
+      "address_line1": "Rua Augusta",
+      "address_line2": "2750 Cascais, Portugal",
+      "rank": {
+        "importance": 0.18,
+        "confidence": 1,
+        "match_type": "full_match"
+      }
+    }
+  ],
+  "query": {
+    "text": "Rua Augusta",
+    "parsed": {
+      "street": "rua augusta",
+      "expected_type": "street"
+    }
+  }
+}
