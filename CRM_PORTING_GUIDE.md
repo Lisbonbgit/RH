@@ -91,7 +91,7 @@ datas (vão nas notas) e seguimento GPS contínuo (**nunca**).
 - **`tests/crm/conftest.py`:** faz `setdefault` de `POS_JWT_SECRET`, `JWT_SECRET`, `MONGO_URL` e `DB_NAME` com os valores de teste já usados no repositório, porque `tests/crm` é recolhida antes de `tests/faturacao`. Nos testes, importar os auxiliares de forma relativa (`from .duplos import BaseFalsa`).
 - **Duplo do Mongo:** `BaseFalsa.__getattr__` levanta `AttributeError` para nomes começados por `_`, como o Motor.
 - **FastAPI:** parâmetros de query do CRM declarados como `Optional[str] = None` e validados no domínio, senão sai o 422 do Pydantic (lista, em inglês). A dependência de perfil vem **antes** de `corpo_json`: um pedido sem sessão e com JSON inválido dá 403/401, nunca 400.
-- **Jest (CRA 5):** `resetMocks: true` apaga as implementações dos `jest.fn` criados ao nível do módulo, por isso criá-los dentro de cada teste ou em `beforeEach`. Imports relativos (o Jest não conhece o alias `@/`). `import.meta` não funciona. `assert.equal` → `toBe`, `deepEqual` → `toEqual`, `throws` → `toThrow`, `mock.timers` → `jest.useFakeTimers()`.
+- **Jest (CRA 5):** `resetMocks: true` apaga as implementações dos `jest.fn` criados ao nível do módulo, por isso criá-los dentro de cada teste ou em `beforeEach`. Imports relativos (o Jest não conhece o alias `@/`). `import.meta` não funciona. `assert.equal` → `toBe`, `deepEqual` → `toEqual`, `throws` → `toThrow`, `mock.timers` → `jest.useFakeTimers()`. Para formas exatas usar `toEqual`, nunca `toMatchObject`: neste, `campos: {}` aceita qualquer valor, até `null` ou uma lista (T1.10).
 - **Leaflet:** `import * as L from 'leaflet'` (o build ESM não tem export por omissão). `leaflet.css` importado depois do `index.css`. O mapa é destruído no cleanup do `useEffect`, porque o `StrictMode` monta duas vezes.
 - **Ícones:** importar `Map as IconeMapa` do lucide; um `Map` importado tapa o `Map` do JavaScript.
 
@@ -488,6 +488,15 @@ motorista (`/motorista…` ou equivalente), interações e linha do tempo (`/loj
 | `seguranca.test.js`, `css.test.js` | Varrimento de HTML perigoso (§0 regra 9) e cores do `crm.css` |
 
 Mensagens de rede: `'Sem rede — verifique a ligação e tente novamente.'` e `'Erro inesperado — tente novamente.'`.
+
+**Erros no frontend (`lib/crm/api.js`, T1.10).** Todo o erro do cliente sai como `ErroCrm {codigo, mensagem, campos, extra, estado}`:
+- `detail` objeto do CRM → tal como vem (`campos` só se for objeto simples; `extra` = as outras chaves, ex.: `lojas`);
+- sessão: 401 em texto → `nao_autenticado` com o texto; `"Not authenticated"` e `"Invalid authentication credentials"` (403 do `HTTPBearer`) → `nao_autenticado` com `'Sessão terminada'`, nunca o inglês; outro 403 em texto → `sem_permissao`;
+- 422 em lista (Pydantic) → `validacao` com `'Verifique os campos assinalados.'` e um campo por chave;
+- sem resposta → `sem_rede` (estado 0); um erro que não veio do axios → `erro_interno`, nunca `sem_rede`; o resto → `erro_interno` com a mensagem genérica.
+
+O interceptor lê o token do axios global a cada pedido e, sem token, **tira** o `Authorization`: o `axios.create` copia os
+`defaults` ao nascer e mandaria o token de uma sessão já terminada.
 **Mapa sem juntas:** `.crm-mapa img.leaflet-tile { mix-blend-mode: plus-lighter; }`, a etiqueta com cores fixas
 (legível no tema escuro) e o contentor com altura explícita.
 
