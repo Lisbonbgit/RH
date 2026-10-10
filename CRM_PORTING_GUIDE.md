@@ -144,6 +144,8 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
   - `utilizador`: lojas, mapa, planear rotas e encomendas.
   - `motorista`: rota do dia e, no terreno, "Estou nesta loja" (loja nova) e corrigir a localização (F4). **Na F1 e na F2 o motorista não entra no `/crm` nem usa rotas da F2**; não antecipar as permissões da F4.
 - **Admin master:** a conta cujo email (lido da base) é igual a `ADMIN_EMAIL`. Por omissão é `geral@olacai.com`, em paridade com `server.py:61`. É sempre `admin` do CRM, não tem linha em `crm_membros` e não se pode adicionar como membro (409 `admin_master`), por isso não há regra do "último admin".
+  - O email compara-se tal e qual, como no `server.py` (`user["email"] == MASTER_ADMIN_EMAIL`), e um email vazio nunca conta. O teste `test_auth.py` lê o `server.py` como texto e falha se o valor por omissão se separar de `crm.auth.ADMIN_EMAIL_POR_OMISSAO`.
+  - Para o admin master, `crm_membros` nem se lê. Para os outros, uma linha com um perfil fora dos três, ou uma sessão sem `user_id` de texto, conta como não-membro (fechado por omissão). Lê-se a cada pedido: retirar um membro corta-lhe o acesso no pedido seguinte.
 - **Tipo de conta:** os papéis de `PERFIS_GESTAO` (`admin`, `gerente`, `contabilista`) contam como `gestor` e `colaborador` como `colaborador`.
 - **Só um admin do CRM** adiciona, muda ou retira membros, escolhendo de `GET /membros/candidatos` (contas que ainda não são membros nem são o admin master).
 
