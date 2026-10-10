@@ -77,6 +77,11 @@ test('os mosaicos do mapa não mostram juntas brancas entre si (Chrome em ecrãs
   const mosaico = regra('.crm-mapa img.leaflet-tile');
   expect(mosaico).not.toBeNull();
   expect(mosaico).toMatch(/mix-blend-mode:\s*plus-lighter;/);
+  // Sem isolar o contentor dos mosaicos, a mistura soma também o fundo cinzento do mapa (#ddd)
+  // e as juntas ficam brancas em vez de desaparecerem (visto no portal a 2026-10-11).
+  const contentor = regra('.crm-mapa .leaflet-tile-container');
+  expect(contentor).not.toBeNull();
+  expect(contentor).toMatch(/isolation:\s*isolate;/);
 });
 
 test('a etiqueta da loja mostra o nome inteiro (sem reticências): os nomes compridos passam a outra linha', () => {

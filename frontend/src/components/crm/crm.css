@@ -29,7 +29,12 @@
   font-family: inherit;
 }
 
-/* Sem juntas brancas entre os mosaicos (defeito do Chromium com escalas fracionárias). */
+/* Sem juntas brancas entre os mosaicos (defeito do Chromium com escalas fracionárias): os bordos
+   semitransparentes somam-se. O contentor fica isolado para a soma não incluir o fundo cinzento do mapa. */
+.crm-mapa .leaflet-tile-container {
+  isolation: isolate;
+}
+
 .crm-mapa img.leaflet-tile {
   mix-blend-mode: plus-lighter;
 }
