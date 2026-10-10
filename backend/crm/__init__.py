@@ -38,6 +38,7 @@ from .definicoes import router as _definicoes  # noqa: E402
 from .eu import router as _eu  # noqa: E402
 from .lojas import router as _lojas  # noqa: E402
 from .membros import router as _membros  # noqa: E402
+from .morada import router as _morada  # noqa: E402
 from .regioes import router as _regioes  # noqa: E402
 
 router.include_router(_eu)
@@ -46,6 +47,7 @@ router.include_router(_regioes)
 router.include_router(_lojas)
 router.include_router(_definicoes)
 router.include_router(_config_mapa)
+router.include_router(_morada)
 
 
 async def arrancar():

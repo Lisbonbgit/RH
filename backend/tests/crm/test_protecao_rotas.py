@@ -96,6 +96,11 @@ PERFIS_POR_ROTA = {
     # Configuração do mapa (T2.13): todo o escritório abre o mapa; leva a
     # chave dos mosaicos, por isso nunca é pública.
     ("GET", "/api/crm/config"): PERFIS_ESCRITORIO,
+    # Pesquisa de morada e morada sugerida (T2.15): o escritório, ao criar e
+    # corrigir lojas; gastam créditos da chave do servidor, por isso nunca
+    # são públicas (o motorista só ganha rotas na F4).
+    ("GET", "/api/crm/morada/pesquisa"): PERFIS_ESCRITORIO,
+    ("GET", "/api/crm/morada/inversa"): PERFIS_ESCRITORIO,
 }
 
 # Os motivos de `_classificar` (os meta-testes comparam-nos tal e qual).

@@ -1,9 +1,10 @@
 """Os pedidos à Geoapify e as respostas no formato da API do CRM.
 
-Porta de src/Servicos/Geoapify.php do CRM autónomo (plano T2.14; dossiê §8).
-Funções puras, sem rede: o cliente assíncrono e as rotas `/morada` são da
-T2.15, que dá a estas funções o URL base (`CRM_GEOAPIFY_URL`), a chave do
-servidor (`CRM_GEOAPIFY_CHAVE_SERVIDOR`) e o JSON que a Geoapify devolver.
+Porta de src/Servicos/Geoapify.php do CRM autónomo (plano T2.14; dossiê §8):
+os URLs e a normalização são funções puras, sem rede. No fim do ficheiro está
+o cliente assíncrono (T2.15, porta do ClienteHttpCurl), que as rotas
+`/morada` (crm/morada.py) usam com o URL base (`CRM_GEOAPIFY_URL`) e a chave
+do servidor (`CRM_GEOAPIFY_CHAVE_SERVIDOR`), lidos a cada pedido.
 
 - Pesquisa (autocomplete): só Portugal, em português, até 5 resultados, em
   `format=json`; com um ponto, os mais perto dele vêm primeiro
@@ -44,10 +45,34 @@ Fidelidade ao PHP (conferida no PHP 8.4.26; dossiê §8):
 - um `results` que seja um objeto JSON percorre-se pelos valores (o
   `json_decode(…, true)` do PHP fazia dele um array); uma resposta que não
   seja um objeto não tem resultados.
+
+O cliente (T2.15) — a chave do servidor nunca vai para os registos:
+
+- GET com `Accept: application/json`, sem seguir redireções, com 3 s para
+  ligar, 5 s por leitura e 5 s para o pedido inteiro (o `CURLOPT_TIMEOUT_MS`
+  do autónomo era o total; os tempos do httpx são por fase).
+- Estado fora de 2xx, falha da rede, tempo esgotado, um URL base mal escrito
+  ou uma resposta que o `json_decode` do PHP recusaria → `FalhaServicoExterno`,
+  cujo `motivo` diz só o código HTTP ou o tipo da exceção. Apanha-se
+  `Exception` e não só `httpx.HTTPError`: o `httpx.InvalidURL` (porta com
+  letras no `CRM_GEOAPIFY_URL`) não herda dela, e as mensagens do httpx
+  trazem o URL com a chave. A falha lança-se fora do `except`, sem arrastar
+  a exceção do httpx como causa nem contexto.
+- O httpx regista em INFO cada pedido com o URL inteiro: os registos `httpx`
+  e `httpcore` ficam em WARNING à importação e outra vez antes de cada
+  pedido (em todo o processo do portal; plano §1, "Geoapify").
+- Os testes trocam `_transporte` por um `httpx.MockTransport` (molde de
+  faturacao/pontos_app.py); `None` é o transporte normal do httpx.
 """
+import asyncio
+import json
+import logging
+import os
 import re
 from typing import Dict, List, Optional, Sequence, Tuple
 from urllib.parse import quote
+
+import httpx
 
 from crm.dominio.geo import contem_latitude, contem_longitude
 from crm.dominio.numeros import arredondar
@@ -200,12 +225,154 @@ def _coordenada(valor) -> str:
     return ("%.6f" % (arredondar(valor, 6) + 0.0)).rstrip("0").rstrip(".")
 
 
+def trim_do_php(texto: str) -> str:
+    """O `trim()` do PHP sem segundo argumento: só tira `" \\t\\n\\r\\0\\x0B"`
+    das pontas (nem os espaços Unicode nem o U+FEFF, ao contrário do
+    `texto.aparar`)."""
+    return texto.strip(_TRIM_DO_PHP)
+
+
 def _texto(valor) -> Optional[str]:
     """Um texto sem espaços nas pontas (os do `trim()` do PHP); o que não for
     texto, ou ficar vazio, é `None`."""
     if not isinstance(valor, str):
         return None
 
-    texto = valor.strip(_TRIM_DO_PHP)
+    texto = trim_do_php(valor)
 
     return texto if texto != "" else None
+
+
+# --- O cliente (T2.15) -------------------------------------------------------------------
+
+VARIAVEL_CHAVE_SERVIDOR = "CRM_GEOAPIFY_CHAVE_SERVIDOR"
+VARIAVEL_URL = "CRM_GEOAPIFY_URL"
+URL_POR_OMISSAO = "https://api.geoapify.com"
+
+# 3 s para ligar e 5 s para cada leitura (o TEMPO_LIGACAO_MS e o TEMPO_LIMITE_MS
+# do ClienteHttpCurl) e 5 s para o pedido inteiro, como o CURLOPT_TIMEOUT_MS.
+TEMPO_LIMITE = httpx.Timeout(5.0, connect=3.0)
+TEMPO_TOTAL_SEGUNDOS = 5.0
+
+CABECALHOS = {"Accept": "application/json"}
+
+# Os níveis de listas e objetos que o `json_decode($corpo, true, 512)` do PHP
+# 8.4 aceita: 511 (com 512 dá "Maximum stack depth exceeded").
+PROFUNDIDADE_MAXIMA = 511
+
+# Os registos que escreveriam o URL do pedido, com a chave.
+REGISTOS_SILENCIADOS = ("httpx", "httpcore")
+
+# Os testes trocam isto por um `httpx.MockTransport`; `None` é o transporte
+# normal do httpx.
+_transporte = None
+
+
+class FalhaServicoExterno(Exception):
+    """A Geoapify não deu uma resposta que sirva (a `FalhaServicoExterno` do
+    autónomo). O `motivo` é para os registos e nunca traz o URL nem a chave:
+    só o código HTTP ou o tipo da exceção."""
+
+    def __init__(self, motivo: str):
+        super().__init__(motivo)
+        self.motivo = motivo
+
+
+def chave_servidor() -> str:
+    """A chave do servidor, lida do ambiente a cada chamada ("" sem ela). Só
+    a chave vazia conta como "sem chave" (o `$chave === ''` do autónomo)."""
+    return os.environ.get(VARIAVEL_CHAVE_SERVIDOR, "")
+
+
+def url_base() -> str:
+    """O `CRM_GEOAPIFY_URL`, lido a cada chamada; sem ele, ou vazio, a
+    Geoapify (`URL_POR_OMISSAO`)."""
+    return os.environ.get(VARIAVEL_URL) or URL_POR_OMISSAO
+
+
+def silenciar_registos() -> None:
+    """Põe os registos `httpx` e `httpcore` em WARNING, se estiverem abaixo
+    (um nível mais alto, posto por outro módulo, fica)."""
+    for nome in REGISTOS_SILENCIADOS:
+        registo = logging.getLogger(nome)
+
+        if registo.level < logging.WARNING:
+            registo.setLevel(logging.WARNING)
+
+
+silenciar_registos()
+
+
+def ler_json(corpo: bytes):
+    """O corpo lido como o `json_decode($corpo, true, 512, JSON_THROW_ON_ERROR)`
+    + `is_array` do ClienteHttpCurl: um objeto ou uma lista JSON em UTF-8.
+    O resto dá `ValueError` — também o que o `json` do Python aceitava e o
+    PHP não: NaN e infinitos escritos por extenso, UTF-16, mais de 511
+    níveis (ou o RecursionError de muitos mais) e surrogates sozinhos (que,
+    deixados passar, partiam a resposta da rota com 500)."""
+    try:
+        dados = json.loads(corpo.decode("utf-8"), parse_constant=_recusar_constante)
+    except RecursionError:
+        raise ValueError("JSON com demasiados níveis.") from None
+
+    if not isinstance(dados, (dict, list)):
+        raise ValueError("O JSON não é um objeto nem uma lista.")
+
+    _conferir(dados)
+
+    return dados
+
+
+def _recusar_constante(nome: str):
+    raise ValueError(f"{nome} não é JSON.")
+
+
+def _conferir(dados) -> None:
+    """Os níveis (até `PROFUNDIDADE_MAXIMA`) e os textos (UTF-8 válido, sem
+    surrogates sozinhos), sem recursão."""
+    pendentes = [(dados, 1)]
+
+    while pendentes:
+        valor, nivel = pendentes.pop()
+
+        if isinstance(valor, (dict, list)):
+            if nivel > PROFUNDIDADE_MAXIMA:
+                raise ValueError("JSON com demasiados níveis.")
+
+            if isinstance(valor, dict):
+                for chave in valor:
+                    chave.encode("utf-8")
+
+            filhos = valor.values() if isinstance(valor, dict) else valor
+            pendentes.extend((filho, nivel + 1) for filho in filhos)
+        elif isinstance(valor, str):
+            # Um surrogate sozinho (`"\ud800"`) dá UnicodeEncodeError, um ValueError.
+            valor.encode("utf-8")
+
+
+async def obter_json(url: str):
+    """GET ao `url` (com a chave); devolve o JSON (objeto ou lista).
+
+    Lança `FalhaServicoExterno` com estado fora de 2xx, sem resposta a tempo,
+    com qualquer exceção do pedido, ou com um corpo que não é JSON. Nunca
+    regista nada: quem chama regista o `motivo`."""
+    silenciar_registos()
+    motivo = None
+    resposta = None
+
+    try:
+        async with httpx.AsyncClient(timeout=TEMPO_LIMITE, transport=_transporte, follow_redirects=False) as cliente:
+            resposta = await asyncio.wait_for(cliente.get(url, headers=CABECALHOS), TEMPO_TOTAL_SEGUNDOS)
+    except Exception as exc:  # noqa: BLE001 — ver a docstring do módulo (InvalidURL, a chave na mensagem)
+        motivo = f"sem resposta ({type(exc).__name__})"
+
+    if motivo is None and not 200 <= resposta.status_code <= 299:
+        motivo = f"estado HTTP {resposta.status_code}"
+
+    if motivo is None:
+        try:
+            return ler_json(resposta.content)
+        except ValueError as exc:
+            motivo = f"resposta que não é JSON ({type(exc).__name__})"
+
+    raise FalhaServicoExterno(motivo)
