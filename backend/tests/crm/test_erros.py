@@ -226,6 +226,96 @@ def test_bytes_que_nao_sao_utf8_dao_400():
     assert r.json() == {"detail": JSON_INVALIDO}
 
 
+# Surrogates sozinhos (dossiê §2.1; por fazer desde a T2.4, corrigido antes da
+# primeira rota que grava textos livres, a T2.10). O json.loads aceita um
+# surrogate escrito em escape ("\\ud800"), que o json_decode do PHP recusa
+# ("Single unpaired UTF-16 surrogate in unicode escape", conferido no PHP
+# 8.4.26 caso a caso, t2.10-conferencia-php.log). Esse texto rebenta com
+# UnicodeEncodeError no BSON do Mongo e no encode("utf-8"): sem isto, um 500
+# ao gravar. Os escapes escrevem-se com `_u` para o ficheiro ficar só com
+# texto ASCII nos corpos (e nenhuma ferramenta os transformar em caracteres).
+
+
+def _u(hexa):
+    """O escape JSON "\\uXXXX" (barra, u e os 4 algarismos), em texto."""
+    return "\\" + "u" + hexa
+
+
+def _json(texto):
+    return texto.encode("ascii")
+
+
+SURROGATES_SOZINHOS = [
+    ("alto sozinho", '{"nome": "%s"}' % _u("d800")),
+    ("baixo sozinho", '{"nome": "%s"}' % _u("dc00")),
+    ("maiusculas no escape", '{"nome": "%s"}' % _u("D800")),
+    ("no meio do texto", '{"nome": "Caf%se"}' % _u("d800")),
+    ("par pela ordem trocada", '{"nome": "%s%s"}' % (_u("dc00"), _u("d800"))),
+    ("dois altos", '{"nome": "%s%s"}' % (_u("d800"), _u("d800"))),
+    ("alto seguido de outra letra em escape", '{"nome": "%s%s"}' % (_u("d800"), _u("0041"))),
+    ("metade de um emoji", '{"nome": "%s"}' % _u("d83d")),
+    ("numa chave", '{"%s": 1}' % _u("d800")),
+    ("fundo numa lista", '{"dias_fechada": ["sab", {"x": ["%s"]}]}' % _u("dfff")),
+    ("fundo num objeto", '{"a": 1, "b": [1, 2, {"c": {"d": "ok", "e": "%s"}}]}' % _u("dbff")),
+    ("numa lista dentro de listas", '{"a": [["x", [1, "%s"]]]}' % _u("dc00")),
+    # Uma chave repetida: o dict do Python fica com o último valor (como o PHP),
+    # mas o json_decode recusa o corpo inteiro ao ler o primeiro. Encontrado na
+    # conferência com o PHP (t2.10-conferencia-php.log).
+    ("num valor tapado por uma chave repetida", '{"nome": "%s", "nome": "ok"}' % _u("d800")),
+    ("numa lista tapada por uma chave repetida", '{"dias": ["%s"], "dias": []}' % _u("dc00")),
+    ("num objeto de dentro tapado", '{"a": {"b": "%s", "b": 1}}' % _u("dfff")),
+    ("num objeto tapado por inteiro", '{"a": {"b": "%s"}, "a": 1}' % _u("d800")),
+]
+
+
+@pytest.mark.parametrize(
+    "corpo", [_json(c) for _, c in SURROGATES_SOZINHOS], ids=[nome for nome, _ in SURROGATES_SOZINHOS]
+)
+def test_um_surrogate_sozinho_da_400_como_no_php(corpo):
+    r = _cliente_eco().post("/eco", content=corpo, headers=JSON)
+    assert r.status_code == 400
+    assert r.json() == {"detail": JSON_INVALIDO}
+
+
+def test_um_par_de_surrogates_em_escape_e_um_so_caracter_e_passa():
+    # O par certo (alto e depois baixo) é um carácter fora do plano básico: o
+    # json.loads junta-o, como o json_decode do PHP.
+    corpo = '{"nome": "A%sa%s %s%s"}' % (_u("00e7"), _u("00ed"), _u("d83d"), _u("de00"))
+    r = _cliente_eco().post("/eco", content=_json(corpo), headers=JSON)
+    assert r.status_code == 200
+    assert r.json() == {"recebido": {"nome": "A" + chr(0xE7) + "a" + chr(0xED) + " " + chr(0x1F600)}}
+
+
+def test_uma_barra_escrita_antes_de_ud800_e_texto_e_passa():
+    # Duas barras no JSON são uma barra no texto, seguida de "ud800": não é um escape.
+    corpo = '{"nome": "' + "\\\\" + 'ud800"}'
+    r = _cliente_eco().post("/eco", content=_json(corpo), headers=JSON)
+    assert r.status_code == 200
+    assert r.json() == {"recebido": {"nome": "\\" + "ud800"}}
+
+
+def test_uma_chave_repetida_sem_surrogates_fica_com_o_ultimo_valor():
+    # Como o json_decode associativo do PHP: o último ganha.
+    r = _cliente_eco().post("/eco", content=b'{"nome": "a", "nome": "b", "x": {"y": 1, "y": 2}}', headers=JSON)
+    assert r.status_code == 200
+    assert r.json() == {"recebido": {"nome": "b", "x": {"y": 2}}}
+
+
+def test_um_surrogate_em_bytes_utf8_da_400():
+    # Os bytes ED A0 80 seriam o U+D800 em UTF-8, que não é UTF-8 válido.
+    r = _cliente_eco().post("/eco", content=b'{"nome": "\xed\xa0\x80"}', headers=JSON)
+    assert r.status_code == 400
+    assert r.json() == {"detail": JSON_INVALIDO}
+
+
+def test_um_corpo_grande_e_fundo_sem_surrogates_passa():
+    # A procura dos surrogates não é recursiva: um objeto fundo (mas que o
+    # json.loads ainda lê) não rebenta com RecursionError.
+    fundo = b'{"a": ' + b"[" * 500 + b'"ok"' + b"]" * 500 + b"}"
+    r = _cliente_eco().post("/eco", content=fundo, headers=JSON)
+    assert r.status_code == 200
+
+
 def test_json_com_bom_no_inicio_da_400_como_no_php():
     r = _cliente_eco().post("/eco", content=b"\xef\xbb\xbf{}", headers=JSON)
     assert r.status_code == 400

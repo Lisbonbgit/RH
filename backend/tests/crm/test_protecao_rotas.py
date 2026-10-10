@@ -80,6 +80,11 @@ PERFIS_POR_ROTA = {
     ("POST", "/api/crm/regioes"): PERFIS_ADMIN,
     ("PATCH", "/api/crm/regioes/{regiao_id}"): PERFIS_ADMIN,
     ("DELETE", "/api/crm/regioes/{regiao_id}"): PERFIS_ADMIN,
+    # Lojas (T2.10): o escritório lista-as, lê-as e cria-as (desenho §3.3;
+    # o motorista só ganha o POST na F4).
+    ("GET", "/api/crm/lojas"): PERFIS_ESCRITORIO,
+    ("POST", "/api/crm/lojas"): PERFIS_ESCRITORIO,
+    ("GET", "/api/crm/lojas/{loja_id}"): PERFIS_ESCRITORIO,
 }
 
 # Os motivos de `_classificar` (os meta-testes comparam-nos tal e qual).
