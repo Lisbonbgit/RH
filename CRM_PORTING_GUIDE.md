@@ -452,6 +452,10 @@ motorista (`/motorista…` ou equivalente), interações e linha do tempo (`/loj
 - `/admin/crm/*` usa as **mesmas páginas** dentro do `AdminLayout`.
 - `/rota` (F4) é uma rota de topo, como `/bolso` e `/faturacao/pos`.
 - Páginas com `React.lazy` + `Suspense` (o Leaflet não entra no ficheiro principal); `pages/crm/rotasCrm.js` declara as rotas filhas.
+  - **Rotas (T1.12):** `filhosCrm()` (index → `mapa`, `mapa`, `lojas/nova`, `lojas/:lojaId`, `definicoes` dentro de `SoAdminCrm`, e `*` → mapa da mesma casa) e `rotasCrmNoAdmin()` são funções que devolvem `<Route>`, porque o `<Routes>` só aceita `<Route>` e fragmentos. Um caminho do CRM que não existe abre o mapa, como no autónomo.
+  - **Guardas (`components/crm/GuardaCrm.js`):** `GuardaCrm` espera enquanto `carregando` (indicador, nunca recambia), manda para `/` quem não pode abrir a área (não membro, motorista, app nativa) e desenha os `children` ou o `<Outlet/>`. O `CrmLayout` embrulha-se nela, para nem a barra do CRM aparecer a quem não entra; no `/admin`, é o elemento da rota `crm`. `SoAdminCrm` manda os não-admin para `${baseCrm}/mapa`.
+  - **Página que não carrega:** cada página tem um limite de erros com a `key` da rota. Se o *chunk* não chegar, aparece "Não foi possível abrir esta página do CRM. Verifique a ligação e recarregue." com "Recarregar", e o resto do portal continua de pé.
+  - **Verificar componentes sem Jest versionado:** o Jest 27 do CRA não resolve o alias `@/`, o `react-router/dom` (campo `exports`) nem tem `TextEncoder` no jsdom. As verificações temporárias da T1.12 (`~/.cache/lisbonb-crm-local/t112-verificacao/`) mostram como contornar isto sem tocar no `package.json`.
 
 **Ficheiros partilhados (mínimo):**
 

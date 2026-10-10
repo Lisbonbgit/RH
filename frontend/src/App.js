@@ -89,6 +89,8 @@ import EmployeeDocuments from './pages/employee/EmployeeDocuments';
 // Layout
 import AdminLayout from './components/layouts/AdminLayout';
 import EmployeeLayout from './components/layouts/EmployeeLayout';
+import CrmLayout from './components/layouts/CrmLayout';
+import { filhosCrm, rotasCrmNoAdmin } from './pages/crm/rotasCrm';
 import MarketingCampaigns from './pages/admin/marketing/MarketingCampaigns';
 import MarketingCalendar from './pages/admin/marketing/MarketingCalendar';
 import MarketingReviews from './pages/admin/marketing/MarketingReviews';
@@ -206,6 +208,8 @@ function AppRoutes() {
           <BolsoApp />
         </ProtectedRoute>
       } />
+      {/* CRM Purple House: área própria só para membros (guarda no CrmLayout; rotas em pages/crm/rotasCrm.js). */}
+      <Route path="/crm" element={<ProtectedRoute><CrmLayout /></ProtectedRoute>}>{filhosCrm()}</Route>
       <Route path="/alterar-senha" element={
         <ChangePasswordRoute>
           <ChangePasswordPage />
@@ -324,6 +328,9 @@ function AppRoutes() {
         <Route path="marketing/calendario" element={<MarketingCalendar />} />
         <Route path="marketing/avaliacoes" element={<MarketingReviews />} />
         <Route path="marketing/relatorios" element={<MarketingReports />} />
+
+        {/* ===== CRM ===== (as mesmas páginas da área /crm, com a GuardaCrm) */}
+        {rotasCrmNoAdmin()}
       </Route>
       
       {/* Employee Routes */}
