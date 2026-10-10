@@ -79,3 +79,57 @@ def test_um_papel_desconhecido_conta_como_colaborador_como_no_portal():
 @pytest.mark.parametrize("papel", [1, True, ["gerente"], {"role": "admin"}], ids=["numero", "verdadeiro", "lista", "objeto"])
 def test_um_papel_que_nao_e_texto_nao_tem_tipo(papel):
     assert tipo_conta(papel) is None
+
+
+# --- O corpo do POST /membros (T1.7) ---------------------------------------------
+
+ESCOLHER_CONTA = "Escolha uma conta do portal."
+
+
+def test_as_mensagens_da_conta_sao_as_do_contrato():
+    assert membros.MENSAGEM_ESCOLHER_CONTA == ESCOLHER_CONTA
+    assert membros.MENSAGEM_CONTA_INEXISTENTE == "A conta não existe."
+
+
+@pytest.mark.parametrize("user_id", ["u-bea", "0b6f2c1e-9a4d-4f7e-8c3b-2d1a5e6f7a8b", " u-bea "], ids=["id", "uuid", "com espacos"])
+def test_uma_conta_escolhida_nao_tem_erro_de_formato(user_id):
+    # Um id não se apara nem se normaliza: " u-bea " passa no formato e é a
+    # procura na base que diz "A conta não existe." (o id é o que é).
+    assert membros.erro_conta(user_id) is None
+
+
+@pytest.mark.parametrize(
+    "user_id",
+    ["", "   ", " ﻿", None, 7, True, ["u-bea"], {"id": "u-bea"}],
+    ids=["vazio", "so espacos", "espacos unicode", "null", "numero", "verdadeiro", "lista", "objeto"],
+)
+def test_sem_conta_escolhida_da_a_mensagem(user_id):
+    assert membros.erro_conta(user_id) == ESCOLHER_CONTA
+
+
+@pytest.mark.parametrize(
+    "corpo, campos",
+    [
+        ({"user_id": "u-bea", "perfil": "utilizador"}, {}),
+        ({}, {"user_id": ESCOLHER_CONTA, "perfil": MENSAGEM}),
+        ({"user_id": "", "perfil": "admin"}, {"user_id": ESCOLHER_CONTA}),
+        ({"user_id": "u-bea", "perfil": "chefe"}, {"perfil": MENSAGEM}),
+        ({"user_id": "u-bea"}, {"perfil": MENSAGEM}),
+        ({"perfil": "Admin", "user_id": 7}, {"user_id": ESCOLHER_CONTA, "perfil": MENSAGEM}),
+        ({"user_id": "u-bea", "perfil": "motorista", "id": "m-forjado", "criado_por": "x"}, {}),
+    ],
+    ids=[
+        "valido",
+        "corpo vazio",
+        "conta vazia",
+        "perfil desconhecido",
+        "perfil em falta",
+        "os dois errados (ordem do formulario)",
+        "chaves a mais ignoram-se",
+    ],
+)
+def test_erros_do_membro_novo(corpo, campos):
+    erros = membros.erros_membro_novo(corpo)
+    assert erros == campos
+    # A ordem é a do formulário (conta, depois perfil), seja qual for a do corpo.
+    assert list(erros) == [c for c in ("user_id", "perfil") if c in campos]

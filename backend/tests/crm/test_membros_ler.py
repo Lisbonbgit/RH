@@ -85,7 +85,11 @@ def _base(membros=MEMBROS, users=USERS):
 
 
 def _rota(caminho):
-    achadas = [r for r in crm.router.routes if getattr(r, "path", None) == caminho]
+    """A rota GET de `caminho` (`/membros` também tem o POST, T1.7)."""
+    achadas = [
+        r for r in crm.router.routes
+        if getattr(r, "path", None) == caminho and "GET" in getattr(r, "methods", ())
+    ]
     assert achadas, f"{caminho} não está no router do CRM"
     assert len(achadas) == 1
     return achadas[0]
