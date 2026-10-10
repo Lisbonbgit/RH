@@ -46,12 +46,15 @@ def email_admin_master() -> str:
     return os.environ.get("ADMIN_EMAIL", ADMIN_EMAIL_POR_OMISSAO)
 
 
-def _e_admin_master(utilizador: Dict) -> bool:
-    """Compara tal e qual, como o server.py (`user["email"] == MASTER_ADMIN_EMAIL`):
+def e_admin_master(conta: Dict) -> bool:
+    """`conta` (a sessão, ou uma conta de `users`) é o admin master?
+
+    Compara tal e qual, como o server.py (`user["email"] == MASTER_ADMIN_EMAIL`):
     o CRM não dá admin a quem o portal não reconhece como admin master. Um
     email vazio nunca conta (um ADMIN_EMAIL vazio por engano não faz de uma
-    conta sem email o admin master)."""
-    email = utilizador.get("email")
+    conta sem email o admin master). É a regra única: as listas de membros e
+    de candidatos (crm/membros.py) também a usam."""
+    email = conta.get("email")
     return isinstance(email, str) and email != "" and email == email_admin_master()
 
 
@@ -65,7 +68,7 @@ async def estado_crm(utilizador: Dict) -> Dict:
       sem `user_id` de texto → `{False, None, False}`. Sem `user_id` nem se
       pergunta: `{"user_id": None}` no Mongo apanhava linhas sem `user_id`.
     """
-    if _e_admin_master(utilizador):
+    if e_admin_master(utilizador):
         return {"membro": True, "perfil": "admin", "admin_master": True}
     user_id = utilizador.get("user_id")
     if not isinstance(user_id, str) or user_id == "":

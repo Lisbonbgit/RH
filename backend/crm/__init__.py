@@ -34,8 +34,10 @@ async def saude():
 # As rotas de cada área vivem no seu módulo (molde de faturacao/__init__.py) e
 # entram aqui. Cada rota nova é classificada no teste de proteção (T1.8).
 from .eu import router as _eu  # noqa: E402
+from .membros import router as _membros  # noqa: E402
 
 router.include_router(_eu)
+router.include_router(_membros)
 
 
 async def arrancar():

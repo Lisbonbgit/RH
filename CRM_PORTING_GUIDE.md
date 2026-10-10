@@ -148,6 +148,7 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
   - Para o admin master, `crm_membros` nem se lê. Para os outros, uma linha com um perfil fora dos três, ou uma sessão sem `user_id` de texto, conta como não-membro (fechado por omissão). Lê-se a cada pedido: retirar um membro corta-lhe o acesso no pedido seguinte.
 - **Tipo de conta:** os papéis de `PERFIS_GESTAO` (`admin`, `gerente`, `contabilista`) contam como `gestor` e `colaborador` como `colaborador`.
 - **Só um admin do CRM** adiciona, muda ou retira membros, escolhendo de `GET /membros/candidatos` (contas que ainda não são membros nem são o admin master).
+  - **Listas (T1.6, `crm/membros.py`):** das contas do portal pede-se só `{"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1}`, nunca a `password`. Ordem por nome sem acentos nem maiúsculas e, a seguir, pelo `id` (como o `ORDER BY nome, id` do autónomo). Em `/membros`, o admin master vem sempre primeiro (`id: null`; sem conta → `conta_existe: false`), uma linha antiga dele em `crm_membros` não o repete, os membros com a conta apagada vão para o fim (nome, email e tipo de conta a `null`) e um perfil desconhecido sai como `null`. Nos candidatos, qualquer linha de `crm_membros` exclui a conta (o índice único de `user_id` recusava outra).
 
 **Famílias de rotas** (teste `tests/crm/test_protecao_rotas.py` com listas explícitas):
 
