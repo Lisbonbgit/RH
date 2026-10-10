@@ -358,6 +358,20 @@ janela2_fim, dias_fechada`. Os campos que o servidor decide (`id`, `criado_por`,
   - **Para a T2.9:** `campos, erros = regioes.criacao(corpo)` → 422 com `erros`; senão gravar `{"id": str(uuid4()), **campos, "nome_chave": nome_chave(campos["nome"])}`. No PATCH, `nome_chave` só se recalcula quando `"nome"` vem nos campos.
   - Conferido com o PHP 8.4.26 (`RegrasRegioes` e `RegioesControlador::validar` por reflexão): 20 017 nomes, 20 026 ordens e 40 090 corpos (criação e alteração), com as entradas das tabelas dos testes, sem diferenças. As únicas diferenças são as já assumidas na T1.3 (U+001C–U+001F nas pontas: o Python também os apara; 125 casos).
 - **Apagar só sem lojas.** Com lojas: 409 `regiao_com_lojas` "Esta região tem lojas — mude-lhe o nome em vez de a apagar.". As lojas sem região aparecem como "Sem região" nos filtros.
+- **Rotas (T2.9, `crm/regioes.py`, porta do `RegioesControlador` e do `RegioesRepositorio`; testes em `test_regioes.py` com todos os casos do `RegioesTest.php`):**
+  - **Ordem das verificações** (a do autónomo): o corpo (422, sem ler a base) → a região existe (404; lá era o `bloquear`) → o nome é de outra região (409) ou a região tem lojas (409) → a escrita. Uma região que não existe dá 404 mesmo com o nome de outra ou com lojas que ainda a apontem.
+  - **O que se grava:** `{id: str(uuid.uuid4()), nome, nome_chave, ordem}`. A `nome_chave` vem sempre do nome; a do corpo ignora-se, tal como `id`, `_id` e chaves parecidas. O `$set` do PATCH leva só o que veio (`{"ordem": 0}` não toca no nome), e a `nome_chave` só se recalcula quando vem o nome. Um PATCH sem `nome` nem `ordem` (`{}` ou só chaves desconhecidas) devolve a região tal como está e não escreve, porque o Mongo recusa um `$set` vazio. O seed (T2.18) tem de gravar a mesma forma: sem `nome_chave`, a segunda região colide no índice único (dois null).
+  - **Nomes repetidos:** verificam-se antes de gravar (`find_one({"nome_chave": k})`; no PATCH com `"id": {"$ne": regiao_id}`), para valerem também sem o índice único (o CRM arranca sem índices se o Mongo falhar). Na corrida, o `DuplicateKeyError` do `insert_one`/`update_one` só dá 409 quando uma nova procura encontra **outra** região com a chave; senão sobe (500) em vez de se disfarçar de repetido (correções, linha "T2.9"). Provado no duplo com duas corrotinas ao mesmo tempo (criar e mudar o nome) e no MongoDB 8.0.32 local (abaixo).
+  - **Sem transações:** uma região apagada entre a leitura e a escrita dá 404 (o `update_one` nunca tem upsert, por isso não a ressuscita). Apagar faz: existe (404) → `count_documents({"regiao_id": id})` em `crm_lojas`, pelo índice `regiao_id_1` (409) → `delete_one` (`deleted_count 0` → 404). **Corrida residual aceite:** uma loja gravada nessa região entre a contagem e o `delete_one` fica com um `regiao_id` que já não existe. As lojas (T2.10/T2.11) verificam a região ao gravar, e os filtros do mapa (T2.25) têm de tolerar um `regiao_id` órfão.
+  - **`GET`:** projeção `{"_id": 0, "id": 1, "nome": 1, "ordem": 1}` (nunca a `nome_chave`), ordenado em Python por `(ordem, chave_comparacao(nome), id)`. O desempate pelo `id` (texto) só se vê sem o índice único. O motorista não lista regiões na F2 (403 `sem_permissao`).
+  - **Conferido no MongoDB 8.0.32 local** (não versionado, `t2.9-conferencia-mongo.log`; base `lisbonb_crm_teste`, apagada no início e no fim), com as funções das rotas e o Motor: 19 verificações, todas OK. Entre elas:
+    - os índices verdadeiros;
+    - o `DuplicateKeyError` verdadeiro do insert e do update (`keyPattern {"nome_chave": 1}`) tratado como 409 sem mudar nada;
+    - duas criações e dois nomes iguais ao mesmo tempo (uma grava);
+    - corrigir o próprio nome e o PATCH vazio;
+    - a lista;
+    - a contagem das lojas pelo `regiao_id_1` e a procura de repetidos pelo `nome_chave_1`.
+  - **Diferença assumida:** o autónomo mandava `Cache-Control: no-store, private` em todas as respostas da API (`Resposta.php`; o `RegioesTest` verificava-o na lista). O portal não manda esse cabeçalho em nenhuma rota da API, e o CRM segue o portal por agora (as respostas não têm `Last-Modified`, por isso o browser não as reaproveita). Fica para decidir na revisão da F2 se o CRM o acrescenta a todas as suas respostas (sucesso e erro) num só sítio do pacote, sem tocar no `server.py`.
 - **Ecrã:**
   - "Adicionar" envia `{nome, ordem: proximaOrdem(lista)}`.
   - "Subir"/"Descer" troca com a vizinha, **renumera a lista toda 0..n−1** (`reordenarRegioes`) e envia só as que mudaram, um pedido de cada vez; se falhar, volta a pedir a lista.
@@ -496,8 +510,8 @@ janela2_fim, dias_fechada`. Os campos que o servidor decide (`id`, `criado_por`,
 | `POST /membros` | admin | `{user_id, perfil}` → 201 (422: "Escolha uma conta do portal.", "A conta não existe.", "Escolha um perfil: admin, utilizador ou motorista.") |
 | `PATCH /membros/{membro_id}` | admin | `{perfil}` → 200 |
 | `DELETE /membros/{membro_id}` | admin | `{retirado: true}` |
-| `GET /regioes` | admin, utilizador | `[{id, nome, ordem}]` |
-| `POST`, `PATCH`, `DELETE /regioes…` | admin | 201 `{id, nome, ordem}` / 200 / `{apagada: true}` |
+| `GET /regioes` | admin, utilizador | `[{id, nome, ordem}]` por ordem, nome (sem maiúsculas nem acentos) e `id` |
+| `POST`, `PATCH`, `DELETE /regioes…` | admin | 201 `{id, nome, ordem}` / 200 `{id, nome, ordem}` / `{apagada: true}` (422 → 404 → 409 `regiao_repetida`/`regiao_com_lojas`; §5.8) |
 | `GET /lojas` | admin, utilizador | `[{id, nome, fase, regiao_id, lat, lng, telefone}]` por nome |
 | `POST /lojas` | admin, utilizador | 201 loja completa |
 | `GET /lojas/{loja_id}` | admin, utilizador | Loja completa |

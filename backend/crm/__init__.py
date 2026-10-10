@@ -35,9 +35,11 @@ async def saude():
 # entram aqui. Cada rota nova é classificada no teste de proteção (T1.8).
 from .eu import router as _eu  # noqa: E402
 from .membros import router as _membros  # noqa: E402
+from .regioes import router as _regioes  # noqa: E402
 
 router.include_router(_eu)
 router.include_router(_membros)
+router.include_router(_regioes)
 
 
 async def arrancar():

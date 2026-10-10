@@ -74,6 +74,12 @@ PERFIS_POR_ROTA = {
     ("POST", "/api/crm/membros"): PERFIS_ADMIN,
     ("PATCH", "/api/crm/membros/{membro_id}"): PERFIS_ADMIN,
     ("DELETE", "/api/crm/membros/{membro_id}"): PERFIS_ADMIN,
+    # Regiões (T2.9): o escritório lê-as (filtros do mapa, região da loja);
+    # só o admin as cria, lhes muda o nome e a ordem e as apaga.
+    ("GET", "/api/crm/regioes"): PERFIS_ESCRITORIO,
+    ("POST", "/api/crm/regioes"): PERFIS_ADMIN,
+    ("PATCH", "/api/crm/regioes/{regiao_id}"): PERFIS_ADMIN,
+    ("DELETE", "/api/crm/regioes/{regiao_id}"): PERFIS_ADMIN,
 }
 
 # Os motivos de `_classificar` (os meta-testes comparam-nos tal e qual).
