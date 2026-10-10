@@ -88,6 +88,8 @@ PERFIS_POR_ROTA = {
     # Editar uma loja (T2.11): o escritório (a fase num toque, a ficha); as
     # correções do terreno (motorista) chegam na F4.
     ("PATCH", "/api/crm/lojas/{loja_id}"): PERFIS_ESCRITORIO,
+    # Apagar uma loja (T2.12): o escritório, só os enganos (sem histórico).
+    ("DELETE", "/api/crm/lojas/{loja_id}"): PERFIS_ESCRITORIO,
 }
 
 # Os motivos de `_classificar` (os meta-testes comparam-nos tal e qual).

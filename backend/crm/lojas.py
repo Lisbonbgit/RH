@@ -1,12 +1,12 @@
-"""`/api/crm/lojas` — as lojas do mapa: listar, ler, criar (T2.10) e editar (T2.11).
+"""`/api/crm/lojas` — as lojas do mapa: listar, ler, criar (T2.10), editar
+(T2.11) e apagar os enganos (T2.12).
 
-Plano T2.10 e T2.11; dossiê §5.2, §5.5, §5.10, §5.11 e §6. Porta de
-src/Http/Controladores/LojasControlador.php (`listar`, `ver`, `criar`,
-`alterar`) e do LojasRepositorio.php do CRM autónomo. As regras do corpo estão
-em `dominio/validador_loja.py` (T2.5, T2.6), os duplicados em `dominio/geo.py`
-(T2.3), as janelas em `dominio/janelas.py` (T2.4) e a forma do documento e da
-resposta em `formatar.py`: aqui só se lê, grava e responde. Apagar (T2.12)
-junta-se a este módulo.
+Plano T2.10, T2.11 e T2.12; dossiê §5.2, §5.5, §5.10, §5.11, §5.12 e §6. Porta
+de src/Http/Controladores/LojasControlador.php (`listar`, `ver`, `criar`,
+`alterar`, `apagar`) e do LojasRepositorio.php do CRM autónomo. As regras do
+corpo estão em `dominio/validador_loja.py` (T2.5, T2.6), os duplicados em
+`dominio/geo.py` (T2.3), as janelas em `dominio/janelas.py` (T2.4) e a forma
+do documento e da resposta em `formatar.py`: aqui só se lê, grava e responde.
 
 Só o escritório (admin e utilizador do CRM): o motorista ganha o POST na F4
 (plano §1, "Perfis por rota").
@@ -59,6 +59,21 @@ plano, linha "T2.11"):
 Sem transações (plano §1): a loja grava-se primeiro e a interação
 `mudanca_fase` depois. Se a interação falhar, a loja não se desfaz: fica uma
 linha `[crm]` no registo (sem dados pessoais) e responde-se 200 na mesma.
+
+`DELETE /lojas/{loja_id}` (sem corpo) → `{apagada: true}`. Só os enganos: uma
+loja com histórico (interações que não sejam `mudanca_fase`) dá 409
+`loja_com_historico`, e usa-se a fase perdida. Ordem, a do
+`LojasControlador::apagar` sem transações (o autónomo bloqueava a linha e as
+interações iam com ela pelo `ON DELETE CASCADE`):
+
+1. ler a loja (404) — interações órfãs de um id que não existe nem se olham;
+2. há histórico? (`_pode_apagar`; 409, e nada se escreve);
+3. `delete_one` da loja; `deleted_count 0` (apagada por outra pessoa entre a
+   leitura e esta escrita) → 404;
+4. só depois, `delete_many` das `mudanca_fase` dela — e só dessas: uma visita
+   que chegue numa corrida entre 2 e 3 fica, órfã, e nunca se apaga histórico
+   verdadeiro. Se o `delete_many` falhar, a loja já foi: responde-se 200 na
+   mesma e fica uma linha `[crm]` no registo (sem dados pessoais).
 """
 import logging
 import uuid
@@ -103,6 +118,7 @@ MENSAGEM_NAO_ENCONTRADA = "Loja não encontrada."
 MENSAGEM_REGIAO_NAO_EXISTE = "A região não existe."
 MENSAGEM_SEM_VERSAO = "Indique o atualizado_em que recebeu com a loja."
 MENSAGEM_CONFLITO = "Alterado por outra pessoa — recarregar"
+MENSAGEM_COM_HISTORICO = "Esta loja tem histórico — mude a fase para perdida em vez de a apagar."
 
 # O tipo da interação que cada mudança de fase grava. As outras (visita,
 # chamada, amostra, entrega, nota; F4/F5) são o histórico real da loja.
@@ -200,6 +216,25 @@ async def alterar_loja(loja_id: str, membro: Dict = Depends(ESCRITORIO), corpo: 
     # A loja como ficou gravada: a que se leu, com a versão do pedido, mais o
     # `$set` que a atualização condicional aplicou (sem reler a base).
     return loja_api({**antes, **novos})
+
+
+@router.delete("/lojas/{loja_id}")
+async def apagar_loja(loja_id: str, membro: Dict = Depends(ESCRITORIO)) -> Dict:
+    """→ `{apagada: true}`, ou 409 `loja_com_historico` (ordem e corridas no
+    docstring do módulo). Não lê o corpo."""
+    base = bd.obter_db()
+    lojas = base[bd.COLECOES["lojas"]]
+    if await lojas.find_one({"id": loja_id}, PROJECAO_ID) is None:
+        raise nao_encontrado(MENSAGEM_NAO_ENCONTRADA)
+    if not await _pode_apagar(base, loja_id):
+        raise erro(409, "loja_com_historico", MENSAGEM_COM_HISTORICO)
+    resultado = await lojas.delete_one({"id": loja_id})
+    if resultado.deleted_count == 0:
+        # Apagada por outra pessoa entre a leitura e esta escrita: quem a
+        # apagou é que leva as mudanças de fase.
+        raise nao_encontrado(MENSAGEM_NAO_ENCONTRADA)
+    await _apagar_mudancas_de_fase(base, loja_id)
+    return {"apagada": True}
 
 
 def _conflito():
@@ -326,5 +361,42 @@ async def _registar_mudanca_de_fase(base, loja_id: str, antiga: str, nova: str, 
             "[crm] loja %s: a mudança de fase %s ficou gravada, mas não entrou no histórico (%s)",
             loja_id,
             resultado,
+            type(e).__name__,
+        )
+
+
+async def _pode_apagar(base, loja_id: str) -> bool:
+    """Se a loja se pode apagar: só os enganos, sem histórico (o `podeApagar`
+    do autónomo, `SELECT 1 … WHERE loja_id = ? AND tipo <> 'mudanca_fase'
+    LIMIT 1`, aqui pelo índice `(loja_id, ocorrida_em)`). As mudanças de fase
+    não contam (vão com a loja); qualquer outra interação conta — visita,
+    chamada, amostra, entrega, nota, e também uma sem `tipo` (o `$ne` do Mongo
+    apanha-a): na dúvida, não se apaga histórico. Com histórico, usa-se a
+    fase perdida (spec §5).
+
+    F5: bloquear se houver encomendas ou paragens (plano §7, "Ganchos"; o
+    "Etapa 2: recusar também…" do autónomo).
+    """
+    historico = {"loja_id": loja_id, "tipo": {"$ne": MUDANCA_FASE}}
+    return await base[bd.COLECOES["interacoes"]].find_one(historico, PROJECAO_ID) is None
+
+
+async def _apagar_mudancas_de_fase(base, loja_id: str) -> None:
+    """Leva as `mudanca_fase` da loja já apagada (o `ON DELETE CASCADE` do
+    autónomo), e SÓ essas: uma interação de outro tipo que chegue numa corrida
+    entre o `_pode_apagar` e o `delete_one` fica, órfã — nunca se apaga
+    histórico verdadeiro (corrida residual aceite, dossiê §5.12).
+
+    Sem transações: se falhar, a loja já foi e não volta. As mudanças de fase
+    ficam órfãs (nenhum ecrã as mostra: a linha do tempo é por loja), e fica
+    uma linha `[crm]` no registo só com o id da loja e o tipo da exceção —
+    nunca a mensagem dela, nem quem apagou.
+    """
+    try:
+        await base[bd.COLECOES["interacoes"]].delete_many({"loja_id": loja_id, "tipo": MUDANCA_FASE})
+    except Exception as e:  # noqa: BLE001 — a loja já está apagada (ver docstring)
+        logger.error(
+            "[crm] loja %s: apagada, mas as mudanças de fase ficaram no histórico (%s)",
+            loja_id,
             type(e).__name__,
         )

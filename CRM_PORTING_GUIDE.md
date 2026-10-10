@@ -137,7 +137,7 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
     - a atualização condicional com carimbos só grava com a versão certa.
 - `lat`/`lng` e `loc` escrevem-se sempre juntos (`formatar.documento_localizacao(lat, lng)` → `{lat, lng, loc}`, as coordenadas em `float`; T2.10). Na API as janelas são planas (`janela1_inicio`, `janela1_fim`, `janela2_inicio`, `janela2_fim`); na base ficam em lista (0 a 2, por ordem).
 - **Contas do portal (`users`, já existe):** o CRM lê `id`, `email`, `name` e `role`. A projeção **nunca** pede `password`.
-- **Sem transações:** a ordem das escritas é definida e testada. Exemplo: atualizar a loja e depois registar a `mudanca_fase`; se o registo falhar, fica uma linha `[crm]` no log e a loja não é desfeita. Corridas residuais aceites, como apagar uma região enquanto se cria uma loja nela.
+- **Sem transações:** a ordem das escritas é definida e testada. Exemplos: atualizar a loja e depois registar a `mudanca_fase`; se o registo falhar, fica uma linha `[crm]` no log e a loja não é desfeita. Apagar a loja e só depois as `mudanca_fase` dela (T2.12, §5.12); se estas falharem, ficam órfãs e uma linha `[crm]` no log. Corridas residuais aceites, como apagar uma região enquanto se cria uma loja nela.
 - **Migração de dados:** nenhuma. Os dados reais entram diretamente em produção a partir da F2; os de demonstração só existem em local.
 
 | Desenho original (MariaDB, §5) | No portal |
@@ -466,6 +466,19 @@ janela2_fim, dias_fechada`. Os campos que o servidor decide (`id`, `criado_por`,
 - Uma loja **só se apaga** se não tiver interações além de `mudanca_fase`. Na F5 passam a contar também as encomendas e as paragens (gancho em `pode_apagar`). As `mudanca_fase` vão com ela (`delete_many({"loja_id", "tipo": "mudanca_fase"})`).
 - Se tiver histórico: 409 `loja_com_historico` "Esta loja tem histórico — mude a fase para perdida em vez de a apagar.".
 - Confirmação no ecrã: "Apagar esta loja? Use só para enganos — se a loja não está interessada, mude a fase para Perdida.".
+- **Rotas (T2.12, `crm/lojas.py::apagar_loja`; porta do `LojasControlador::apagar` e do `LojasRepositorio::podeApagar`/`apagar`; testes em `test_lojas_apagar.py`, com os casos de apagar do `LojasEditarTest.php` e os nomes de lá):**
+  - **Perfis:** `DELETE /lojas/{loja_id}` é do escritório (admin e utilizador do CRM; classificada em `PERFIS_POR_ROTA`). O motorista recebe 403 `sem_permissao` e quem não é membro 403 `sem_acesso_crm`, sem se ler a base. Não lê o corpo (a única dependência é a guarda): um corpo, mesmo JSON partido, ignora-se.
+  - **Ordem, sem transações** (o autónomo bloqueava a linha com `FOR UPDATE` e as interações iam com a loja pelo `ON DELETE CASCADE`):
+    1. ler a loja com `{"_id": 0, "id": 1}` (404 "Loja não encontrada."); interações órfãs de um id que não existe nem se olham;
+    2. `_pode_apagar`: `find_one({"loja_id", "tipo": {"$ne": "mudanca_fase"}}, {"_id": 0, "id": 1})` (o `SELECT 1 … LIMIT 1`), pelo índice `loja_id_1_ocorrida_em_1`. Qualquer interação que não seja exatamente `mudanca_fase` conta, também uma sem `tipo` ou com `tipo` null (o `$ne` do Mongo apanha-as; no autónomo o tipo era NOT NULL): na dúvida, não se apaga. Com histórico → 409 e nada se escreve;
+    3. `delete_one({"id"})`; `deleted_count 0` (apagada por outra pessoa entre a leitura e esta escrita) → 404, e quem a apagou é que leva as mudanças de fase;
+    4. só então `delete_many({"loja_id", "tipo": "mudanca_fase"})`, e só dessas.
+  - **Corridas residuais aceites:** uma interação de outro tipo que chegue entre o passo 2 e o 3 (F4/F5: uma visita registada no mesmo instante) fica órfã, e nunca se apaga histórico verdadeiro; uma mudança de fase de um PATCH que corra ao mesmo tempo também pode ficar órfã. A linha do tempo é por loja, por isso as órfãs não aparecem em ecrã nenhum. **F4/F5:** quem grava interações deve tolerar que a loja já não exista.
+  - **Falhas:** uma falha a ler o histórico ou no `delete_one` é um 500 e nada se apaga. Uma falha no `delete_many` não desfaz nada (a loja já foi): responde-se 200 na mesma (um 500 levava a pessoa a tentar de novo e a receber 404) e fica uma linha `[crm] loja <id>: apagada, mas as mudanças de fase ficaram no histórico (<tipo da exceção>)` no logger `crm.lojas`, sem dados pessoais nem traceback (testado com `RuntimeError`, `DuplicateKeyError` e `ServerSelectionTimeoutError` com dados pessoais na mensagem).
+  - **Resposta:** 200 `{"apagada": true}` (o booleano JSON).
+  - **Gancho:** a docstring do `_pode_apagar` tem "F5: bloquear se houver encomendas ou paragens" (plano §7); um teste confirma que lá está.
+  - **Conferido no MongoDB 8.0.32 local** (não versionado, `t2.12-conferencia-mongo.log`; base `lisbonb_crm_teste`, apagada no início e no fim), com o Motor, os índices verdadeiros e as lojas criadas e mudadas de fase pelas rotas: 17 verificações, todas OK. Entre elas: a procura do histórico e o `delete_many` pelo `loja_id_1_ocorrida_em_1` e o `delete_one` pelo `id_1`; 409 exato com uma visita e também com uma interação sem `tipo` ou com `tipo` null; a loja e as duas mudanças de fase dela apagadas, as interações das outras lojas intactas; GET e DELETE seguintes → 404; a corrida com o Motor (200 e 404, nada fica); um id `{"$ne": null}` no caminho → 404.
+  - **Diferença assumida:** o `Cache-Control: no-store, private` não se porta (como na T2.9, §5.8).
 
 ### 5.13 "O que aconteceu no terreno ganha" (F4)
 - As gravações do escritório **nunca apagam nem sobrepõem** um resultado registado pelo motorista. Se a paragem foi retirada entretanto, é reposta como `feita`; se a encomenda foi cancelada, fica entregue na mesma, com um aviso ao escritório.
@@ -541,7 +554,7 @@ janela2_fim, dias_fechada`. Os campos que o servidor decide (`id`, `criado_por`,
 | `POST /lojas` | admin, utilizador | 201 loja completa (422 dos campos → 422 `regiao_id` "A região não existe." → 409 `duplicado`, salvo `confirmar_duplicado: true`; §5.2) |
 | `GET /lojas/{loja_id}` | admin, utilizador | Loja completa (404 "Loja não encontrada.") |
 | `PATCH /lojas/{loja_id}` | admin, utilizador | Campos alterados + `atualizado_em` (obrigatório) + `confirmar_duplicado?` → 200 loja completa com o `atualizado_em` novo (422 dos campos e do `atualizado_em` → 404 → 409 `conflito` → 422 das janelas → 422 `regiao_id` → 409 `duplicado`, só se mudar de sítio → atualização condicional: 404/409; §5.10) |
-| `DELETE /lojas/{loja_id}` | admin, utilizador | `{apagada: true}` |
+| `DELETE /lojas/{loja_id}` | admin, utilizador | `{apagada: true}` (404 → 409 `loja_com_historico` se houver interações além de `mudanca_fase` → `delete_one` (404 na corrida) → `delete_many` só das `mudanca_fase`; §5.12) |
 | `GET`, `PATCH /definicoes` | admin | `{fabrica_morada, fabrica_lat, fabrica_lng}` |
 | `GET /config` | admin, utilizador | `{mosaicos: {url, atribuicao: geoapify\|osm}, alternativa: {url}, centro: {lat, lng}}` |
 | `GET /morada/pesquisa?texto=&lat=&lng=` | admin, utilizador | Até 5 `{rotulo, morada, codigo_postal, localidade, lat, lng}` |
