@@ -16,10 +16,15 @@
  * tema escuro do portal), não há regras soltas de `.etiqueta-loja` (pintavam
  * duas caixas: nota da T2.23) e as amostras de cor dos filtros e do cartão
  * usam as mesmas classes dos pinos.
+ *
+ * T2.26: o pino do seletor da localização (a gota do `.pino-seletor`, da cor
+ * do círculo da precisão, e roxo-escuro depois de confirmar) e a altura
+ * própria do mapa do seletor.
  */
 import fs from 'fs';
 import path from 'path';
 import { FASES, ORDEM } from './fases';
+import { ESTILO_CIRCULO } from './seletor';
 
 const CAMINHO = path.join(__dirname, '../../components/crm/crm.css');
 // Sem comentários: uma regra comentada não conta.
@@ -124,4 +129,45 @@ test('as amostras de cor (filtros e cartão) usam as classes dos pinos, com o me
   expect(amostra).not.toBeNull();
   expect(amostra).toMatch(/background:\s*var\(--cor-pino,\s*#cfcfcf\);/);
   expect(amostra).toMatch(/border:\s*2px solid var\(--contorno-pino,/);
+});
+
+// --- O seletor da localização (T2.26) --------------------------------------------------------------
+// Porta das regras do .pino-seletor do app.css do autónomo: o pino do seletor é um L.divIcon sem HTML
+// (seletor.js), e a gota desenha-se toda aqui.
+
+test('o pino do seletor é uma gota roxa (a cor do círculo da precisão) cuja ponta fica no sítio da loja', () => {
+  const area = regra('.pino-seletor');
+  expect(area).not.toBeNull();
+  expect(area).toMatch(/background:\s*transparent;/);
+  const gota = regra('.pino-seletor::before');
+  expect(gota).not.toBeNull();
+  expect(gota).toMatch(new RegExp(`background:\\s*${escapar(ESTILO_CIRCULO.color)};`));
+  expect(gota).toMatch(/border:\s*3px solid #fff;/);
+  expect(gota).toMatch(/border-radius:\s*50% 50% 50% 0;/);
+  expect(gota).toMatch(/transform:\s*rotate\(-45deg\);/);
+  expect(gota).toMatch(/width:\s*28px;/);
+  expect(gota).toMatch(/height:\s*28px;/);
+  const ponto = regra('.pino-seletor::after');
+  expect(ponto).not.toBeNull();
+  expect(ponto).toMatch(/background:\s*#fff;/);
+  expect(ponto).toMatch(/border-radius:\s*50%;/);
+  // As duas partes da gota são do CSS (o ícone não leva HTML).
+  for (const bloco of [gota, ponto]) {
+    expect(bloco).toMatch(/content:\s*"";/);
+    expect(bloco).toMatch(/position:\s*absolute;/);
+  }
+});
+
+test('confirmada a localização, a gota fica roxo-escuro', () => {
+  const confirmado = regra('.crm-seletor[data-estado="confirmado"] .pino-seletor::before');
+  expect(confirmado).not.toBeNull();
+  expect(confirmado).toMatch(/background:\s*#4f1f7d;/);
+});
+
+test('o mapa do seletor tem altura própria (o .crm-mapa é absoluto dentro dela)', () => {
+  const vista = regra('.crm-seletor__vista');
+  expect(vista).not.toBeNull();
+  expect(vista).toMatch(/position:\s*relative;/);
+  expect(vista).toMatch(/height:\s*clamp\(16rem,\s*50vh,\s*28rem\);/);
+  expect(vista).toMatch(/overflow:\s*hidden;/);
 });

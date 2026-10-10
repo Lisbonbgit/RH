@@ -1,5 +1,6 @@
 /*
- * O mapa das lojas do CRM (MapaLojas, FiltrosMapa, CartaoLoja e a página Mapa).
+ * O mapa das lojas do CRM (MapaLojas, FiltrosMapa, CartaoLoja e a página Mapa) e o seletor da
+ * localização (SeletorLocalizacao).
  * Porta das regras do mapa do public/assets/css/app.css do CRM autónomo, com as
  * classes do portal; o resto do aspeto é o do portal (Tailwind e shadcn).
  *
@@ -135,4 +136,49 @@
   border: 2px solid var(--contorno-pino, hsl(var(--foreground) / 0.2));
   border-radius: 50%;
   background: var(--cor-pino, #cfcfcf);
+}
+
+/* O seletor da localização (SeletorLocalizacao, T2.26): o mapa tem altura própria (o .crm-mapa, absoluto,
+   enche esta área). Porta das regras do .seletor-localizacao do app.css do autónomo. */
+.crm-seletor__vista {
+  position: relative;
+  height: clamp(16rem, 50vh, 28rem);
+  overflow: hidden;
+}
+
+/* O pino do seletor: uma gota roxa cuja ponta (iconAnchor [22, 38]) fica no sítio da loja. A área de toque
+   (o L.divIcon, sem HTML) tem 44 px, para se agarrar bem com o dedo. O roxo é o do círculo da precisão
+   (lib/crm/seletor.js). */
+.pino-seletor {
+  background: transparent;
+}
+
+.pino-seletor::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 8px;
+  width: 28px;
+  height: 28px;
+  border: 3px solid #fff;
+  border-radius: 50% 50% 50% 0;
+  background: #6b2fa3;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 40%);
+  transform: rotate(-45deg);
+}
+
+.pino-seletor::after {
+  content: "";
+  position: absolute;
+  top: 13px;
+  left: 17px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+/* Confirmada a localização, a gota escurece (o pino já não se arrasta). */
+.crm-seletor[data-estado="confirmado"] .pino-seletor::before {
+  background: #4f1f7d;
 }
