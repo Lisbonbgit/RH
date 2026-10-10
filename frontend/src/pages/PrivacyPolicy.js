@@ -7,7 +7,7 @@ export default function PrivacyPolicy() {
     <div className="min-h-screen bg-background text-foreground">
       <div className="max-w-3xl mx-auto px-5 py-10">
         <h1 className="text-2xl font-heading font-bold mb-1">Política de Privacidade — Lisbonb RH</h1>
-        <p className="text-sm text-muted-foreground mb-8">Última atualização: 29 de junho de 2026</p>
+        <p className="text-sm text-muted-foreground mb-8">Última atualização: 10 de outubro de 2026</p>
 
         <div className="space-y-6 text-sm leading-relaxed">
           <section>
@@ -47,7 +47,7 @@ export default function PrivacyPolicy() {
             <p>
               Os dados são tratados para a <strong>gestão da relação laboral</strong> (registo de assiduidade,
               gestão de ausências e documentação), no âmbito do contrato de trabalho e do cumprimento de
-              obrigações legais do empregador. A localização serve exclusivamente para validar o registo de ponto.
+              obrigações legais do empregador. No registo de ponto, a localização serve exclusivamente para validar o registo.
             </p>
           </section>
 
@@ -57,6 +57,9 @@ export default function PrivacyPolicy() {
               Os dados <strong>não são vendidos</strong> nem partilhados para fins publicitários. São acedidos
               apenas pelo Grupo Lisbonb e pelos prestadores estritamente necessários ao funcionamento do serviço
               (alojamento e base de dados), sujeitos a confidencialidade.
+              No CRM (secção 8), o mapa e a pesquisa de morada usam a Geoapify e o OpenStreetMap: o servidor só
+              envia à Geoapify o texto pesquisado e pontos do mapa, sem dados pessoais, e as imagens do mapa são
+              pedidas pelo próprio browser, que, como em qualquer site, lhes dá a conhecer o endereço IP.
             </p>
           </section>
 
@@ -87,8 +90,35 @@ export default function PrivacyPolicy() {
             </p>
           </section>
 
+          {/* CRM (T2.31): redação a rever pelo dono antes de publicar (texto legal). */}
           <section>
-            <h2 className="text-base font-semibold mb-2">8. Alterações</h2>
+            <h2 className="text-base font-semibold mb-2">8. CRM Purple House (equipa comercial)</h2>
+            <p className="mb-2">
+              Os membros da equipa comercial usam o CRM Purple House, no browser (não na app instalada), para
+              registar num mapa as lojas que são clientes ou potenciais clientes.
+            </p>
+            <ul className="list-disc pl-5 space-y-1">
+              <li>
+                <strong>Localização:</strong> a posição (GPS) só é pedida quando um membro toca em "Estou nesta
+                loja", e é lida uma única vez, nesse momento. Guarda-se só o ponto da loja, <strong>nunca</strong> a
+                posição da pessoa nem percursos, e <strong>não</strong> há seguimento contínuo. Na primeira vez, o
+                browser pede autorização; se a recusar, pode marcar a loja no mapa ou pela morada.
+              </li>
+              <li>
+                <strong>Dados guardados:</strong> os das lojas (nome, morada, telefone, pessoa de contacto, horário,
+                fase e notas), o perfil de cada membro no CRM e quem registou cada loja e cada mudança de fase.
+              </li>
+              <li>
+                <strong>Moradas e mapas:</strong> as moradas sugeridas vêm da Geoapify (dados OpenStreetMap), com a
+                indicação Powered by Geoapify. Mapas: Powered by Geoapify | © OpenMapTiles © OpenStreetMap contributors
+                (ou só © OpenStreetMap contributors, quando o mapa usa diretamente o OpenStreetMap), desenhados com
+                o Leaflet.
+              </li>
+            </ul>
+          </section>
+
+          <section>
+            <h2 className="text-base font-semibold mb-2">9. Alterações</h2>
             <p>
               Esta política pode ser atualizada. A data no topo indica a versão em vigor.
             </p>
