@@ -34,8 +34,10 @@
   mix-blend-mode: plus-lighter;
 }
 
-/* Botões de zoom com 44 px de área de toque. */
-.crm-mapa .leaflet-bar a {
+/* Botões de zoom com 44 px de área de toque. O Leaflet põe a classe leaflet-touch em todos os browsers com
+   PointerEvent, e o `.leaflet-touch .leaflet-bar a` do leaflet.css (30 px) vem depois deste ficheiro no build:
+   esta regra ganha pela especificidade (.crm-mapa.leaflet-container), não pela ordem (T2.32). */
+.crm-mapa.leaflet-container .leaflet-bar a {
   width: 44px;
   height: 44px;
   line-height: 44px;

@@ -171,3 +171,47 @@ test('o mapa do seletor tem altura própria (o .crm-mapa é absoluto dentro dela
   expect(vista).toMatch(/height:\s*clamp\(16rem,\s*50vh,\s*28rem\);/);
   expect(vista).toMatch(/overflow:\s*hidden;/);
 });
+
+// A especificidade [ids, classes/atributos/pseudo-classes, elementos] de um seletor simples (sem :is/:where).
+function especificidade(seletor) {
+  const semPseudoElementos = seletor.replace(/::?(before|after)\b/g, '');
+  const ids = (semPseudoElementos.match(/#[\w-]+/g) ?? []).length;
+  const classes = (semPseudoElementos.match(/\.[\w-]+|\[[^\]]*\]|:[\w-]+/g) ?? []).length;
+  const elementos = semPseudoElementos
+    .split(/[\s>+~]+/)
+    .map((parte) => parte.replace(/[.#[:].*$/, ''))
+    .filter((nome) => nome !== '' && nome !== '*').length;
+  return [ids, classes, elementos];
+}
+
+const ganha = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+
+test('os botões de zoom têm 44 px mesmo com o leaflet.css a seguir no build (ganham ao .leaflet-touch .leaflet-bar a)', () => {
+  // O Leaflet põe a classe leaflet-touch em todos os browsers com PointerEvent (o Chrome do computador também), e
+  // o leaflet.css dá 30 px a `.leaflet-touch .leaflet-bar a`. No build (e no `craco start`) o crm.css vem ANTES do
+  // leaflet.css (o cartão e o formulário importam-no primeiro): com a mesma especificidade, ganhava o do Leaflet
+  // (30 px, visto no browser na T2.32). A regra dos 44 px tem de ganhar pela especificidade, não pela ordem.
+  const leaflet = fs.readFileSync(require.resolve('leaflet/dist/leaflet.css'), 'utf8');
+  expect(leaflet).toMatch(/\.leaflet-touch \.leaflet-bar a \{\s*width: 30px;/);
+  const doLeaflet = especificidade('.leaflet-touch .leaflet-bar a');
+  const nossas = [...CSS.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+    .filter(([, , corpo]) => /(^|[\s;])width:\s*44px;/.test(corpo) && /(^|[\s;])height:\s*44px;/.test(corpo)
+      && /line-height:\s*44px;/.test(corpo))
+    .flatMap(([, seletores]) => seletores.split(',').map((s) => s.trim()))
+    .filter((s) => s.endsWith('.leaflet-bar a'));
+  expect(nossas.length).toBeGreaterThan(0);
+  for (const seletor of nossas) {
+    expect(seletor.startsWith('.crm-mapa')).toBe(true);
+    expect(ganha(especificidade(seletor), doLeaflet)).toBeGreaterThan(0);
+  }
+});
+
+test('a especificidade conta como o browser', () => {
+  expect(especificidade('.leaflet-touch .leaflet-bar a')).toEqual([0, 2, 1]);
+  expect(especificidade('.crm-mapa.leaflet-container .leaflet-bar a')).toEqual([0, 3, 1]);
+  expect(especificidade('.leaflet-tooltip.etiqueta-loja::before')).toEqual([0, 2, 0]);
+  expect(especificidade('.crm-seletor[data-estado="confirmado"] .pino-seletor::before')).toEqual([0, 3, 0]);
+  expect(especificidade('.crm-mapa img.leaflet-tile')).toEqual([0, 2, 1]);
+  expect(ganha([0, 3, 1], [0, 2, 1])).toBeGreaterThan(0);
+  expect(ganha([0, 2, 1], [0, 2, 1])).toBe(0);
+});
