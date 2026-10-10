@@ -827,8 +827,37 @@ testes novos do CRM. O Jest tem de continuar com as 6 suites antigas verdes.
 |---|---|---|---|
 | Partida (T0.6) | `2e0dbac` | 3552 / 0 / 3 | 114 / 0 |
 | Depois da T0.7 (+50 de `tests/crm/test_seed_local.py`) | `38f40c4` | 3602 / 0 / 3 | — |
-| Fecho da F1 (T1.15) | — | *a preencher* | *a preencher* |
+| Fecho da F1 (T1.15) | `902b4e8` | 4071 / 0 / 3 (3552 + 519 de `tests/crm`) | 354 / 0 (9 suites: as 6 antigas com 114 + 240 do CRM) |
 | Fecho da F2 (T2.32) | — | *a preencher* | *a preencher* |
+
+**Fecho da F1 (T1.15, 2026-10-10)** — tudo verificado no Mac, nada saiu dele:
+
+- `pytest tests/crm`: 519 passed em 7,8 s; `grep -rn "asyncio.run(" backend/tests/crm` vazio. Suite completa em 120 s
+  (`pytest-tudo-T1_15.log`): os mesmos 3 saltados e os mesmos 6 avisos da partida.
+- Build de verificação: saída 0, avisos iguais aos da T1.14 (nenhum em ficheiros do CRM), `main.3cf22bba.js` com
+  628,56 kB; as 4 páginas do CRM em *chunks* à parte (o `CrmLayout` fica no `main`, porque não é carregado à parte).
+- **Lista de aceitação F1** (`t115_aceitacao_f1.py`, registo `t115-aceitacao.log`; 66 verificações, todas OK;
+  só GET ao CRM, nenhuma escrita na base local):
+
+  | Conta | API (backend 8001) | Browser (frontend 3000) |
+  |---|---|---|
+  | sem sessão | `/saude` 200; `/eu`, `/membros`, `/membros/candidatos` 403 "Not authenticated"; token inválido 401 | — |
+  | admin local | `/eu` `{membro: true, perfil: admin, admin_master: true}`; `/membros` 200 (admin master 1.º com `id: null`, os 3 membros, sem `password`/`_id`); `/candidatos` = só o `gestor.demo` | "CRM" no fim da grelha; tocar abre `/admin/crm/mapa` "Brevemente"; o RH não acende; sem seletor de empresa e sem pedidos de empresas; Nova loja, Definições e Ficha; `/crm`, `/crm/lojas/nova`, `/crm/definicoes` no `CrmLayout` |
+  | `escritorio.demo` | `/eu` utilizador; `/membros` 403 `sem_permissao` | Secção sem Definições; `/admin/crm/definicoes` → `/admin/crm/mapa`; `/crm/definicoes` → `/crm/mapa` |
+  | `gestor.demo` | `/eu` `{membro: false}` (200, nunca 403); `/membros` 403 `sem_acesso_crm` | Grelha sem CRM; `/admin/crm/*` e `/crm/*` escritos à mão → `/admin`, nada do CRM |
+  | `colaborador.demo` | `/eu` utilizador; `/membros` 403 `sem_permissao` | Item "CRM" (`/crm/mapa`) na barra; o `CrmLayout` com Mapa e Nova loja; `/admin` e `/admin/crm/mapa` → `/colaborador` |
+  | `motorista.demo` | `/eu` motorista; `/membros` 403 `sem_permissao` | Barra de sempre, nada do CRM; `/crm/*` e `/admin/crm/mapa` → `/colaborador` |
+
+  - A conta apagada → 401 fica provada pelos testes de ponta a ponta do portal (`test_conta_apagada_da_401_*` em
+    `test_auth.py`, `test_eu.py` e `test_membros_ler.py`), para não criar nem apagar contas na base local.
+  - App nativa: 29 casos `nativ` verdes em `acesso.test.js`, e as três entradas (`GuardaCrm`, `AdminLayout`,
+    `EmployeeLayout`) passam `Capacitor.isNativePlatform()`.
+  - As verificações da T1.12–T1.14 (`t112_browser.py`, `t113_browser.py`, `t114_browser.py`) voltaram a correr sobre
+    o HEAD: 109 + 48 + 34 OK, sem falhas (registos `t115-regressao-t11*.log`).
+  - Consola e registo do backend: só os 400 conhecidos de `/api/me/profile` (§12.5), os 503 de `/api/estoque/overview`
+    (§12.6) e os 401/403 pedidos de propósito pela verificação da API.
+  - Fica por corrigir, sem impedir o fecho da F1 (o estilo da barra é do Matheus): a 320 px a barra do colaborador
+    membro do CRM passa a borda direita (medida e correção possível no §7, T1.14).
 
 ---
 
@@ -845,7 +874,7 @@ Os agentes **não fazem nem simulam** estes pontos; registam aqui e continuam.
 | 5 | Criar a conta openrouteservice (chave só no servidor) | Antes da F3 | Por fazer |
 | 6 | Avisar o Matheus antes da primeira publicação e das alterações aos ficheiros partilhados (`server.py`, `App.js`, `AdminLayout.js`, `EmployeeLayout.js`, `PrivacyPolicy.js`, `.env.example`, `package.json`, `yarn.lock`) | Antes de publicar a F1 | Por fazer |
 | 7 | Rever a redação da secção do CRM na política de privacidade (GPS só ao tocar; Geoapify e OpenStreetMap como prestadores do mapa e da pesquisa de morada) | T2.31, antes de publicar a F2 | Por rever |
-| 8 | Autorizar cada subida (push, junção ao `main`, `deploy.sh`) e aprovar cada fase no portal verdadeiro | Fim de cada fase | — |
+| 8 | Autorizar cada subida (push, junção ao `main`, `deploy.sh`) e aprovar cada fase no portal verdadeiro | Fim de cada fase | F1 verificada em local (T1.15, §13); a subida espera pelos pontos 1, 6 e 10 e pela autorização |
 | 9 | Escolher os membros iniciais: só o Bruce na F1; quem registar lojas na F2; escritório na F3; o motorista na F4 | Ao publicar cada fase | — |
 | 10 | Decidir se o repositório do portal (hoje **público**) passa a privado, depois de falar com o Matheus (desenho §9). O código do CRM ficaria público | Antes da primeira publicação do CRM | Por decidir |
 | 11 | Confirmar no telemóvel da carrinha que o link de 9 paragens abre a app Google Maps; se não abrir, o bloco passa a 4 | F4 | — |
