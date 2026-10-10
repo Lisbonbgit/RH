@@ -163,6 +163,12 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
 - Na F1 e na F2 há dois perfis de rota: `SO_ADMIN = exigir_perfil("admin")` e `ESCRITORIO = exigir_perfil("admin", "utilizador")`.
 - O conjunto de rotas do router tem de ser **exatamente** a união das listas: uma rota nova falha até ser classificada.
 - A lógica fica em `_classificar(router)`, com um meta-teste (rota sem guarda e rota com o perfil errado) que falha primeiro.
+  - Também aponta, em qualquer rota (T1.8):
+    - `corpo_json` lido antes da guarda: sem sessão e com JSON partido daria 400 em vez de 401/403;
+    - um corpo declarado por modelo Pydantic, que o FastAPI lê antes das dependências (usar sempre `corpo_json`);
+    - duas guardas de perfil, ou uma guarda que não assenta em `membro_crm_atual`;
+    - a mesma rota declarada duas vezes, ou a mesma rota em duas famílias.
+  - Cada método conta como uma rota (`GET` e `POST /membros` classificam-se à parte). Na F1–F2, os perfis da tabela são só `{"admin"}` e `{"admin","utilizador"}`.
 - **Cada tarefa que cria rotas** classifica-as em `PERFIS_POR_ROTA` no passo "teste primeiro".
 - **IDOR:** cada pedido verifica a loja, a região ou a rota pelo `id`. Na F4, o motorista só escreve em paragens das suas rotas.
 
