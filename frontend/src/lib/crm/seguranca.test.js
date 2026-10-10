@@ -307,6 +307,7 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
     'lib/crm/formularioLoja.js',
     'lib/crm/dialogo.js',
     'lib/crm/ficha.js',
+    'lib/crm/membros.js',
     'components/crm/GuardaCrm.js',
     'components/crm/seccaoCrm.js',
     'components/crm/MapaLojas.js',
@@ -319,6 +320,8 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
     'pages/crm/CrmMapa.js',
     'pages/crm/CrmLojaNova.js',
     'pages/crm/CrmLoja.js',
+    'pages/crm/CrmDefinicoes.js',
+    'pages/crm/DefinicoesMembros.js',
     'pages/crm/rotasCrm.js',
     ...FICHEIROS_SOLTOS,
   ]) {
@@ -336,6 +339,7 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
     'lib/crm/formularioLoja.test.js',
     'lib/crm/dialogo.test.js',
     'lib/crm/ficha.test.js',
+    'lib/crm/membros.test.js',
     'lib/crm/testes/domFalso.js',
     'lib/crm/testes/leafletFalso.js',
   ]) {
