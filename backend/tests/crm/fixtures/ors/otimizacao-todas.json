@@ -1,0 +1,36 @@
+{
+  "_origem": "manual — regravar",
+  "code": 0,
+  "summary": {
+    "cost": 2460,
+    "routes": 1,
+    "unassigned": 0,
+    "setup": 0,
+    "service": 2100,
+    "duration": 2460,
+    "waiting_time": 2280,
+    "priority": 102,
+    "violations": [],
+    "computing_times": {"loading": 18, "solving": 1, "routing": 0}
+  },
+  "unassigned": [],
+  "routes": [
+    {
+      "vehicle": 1,
+      "cost": 2460,
+      "setup": 0,
+      "service": 2100,
+      "duration": 2460,
+      "waiting_time": 2280,
+      "priority": 102,
+      "steps": [
+        {"type": "start", "location": [-9.1393, 38.7223], "setup": 0, "service": 0, "waiting_time": 0, "arrival": 28800, "duration": 0, "violations": []},
+        {"type": "job", "id": 2, "job": 2, "location": [-9.15, 38.7253], "setup": 0, "service": 600, "waiting_time": 0, "arrival": 29040, "duration": 240, "violations": []},
+        {"type": "job", "id": 1, "job": 1, "location": [-9.1364, 38.7075], "setup": 0, "service": 600, "waiting_time": 2280, "arrival": 30120, "duration": 720, "violations": []},
+        {"type": "job", "id": 3, "job": 3, "location": [-9.216, 38.6916], "setup": 0, "service": 900, "waiting_time": 0, "arrival": 33840, "duration": 1560, "violations": []},
+        {"type": "end", "location": [-9.1393, 38.7223], "setup": 0, "service": 0, "waiting_time": 0, "arrival": 35640, "duration": 2460, "violations": []}
+      ],
+      "violations": []
+    }
+  ]
+}
