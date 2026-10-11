@@ -795,8 +795,15 @@ def test_o_patch_das_definicoes_grava_uma_linha_por_chave_e_o_seguinte_substitui
 
     primeira, segunda, guardadas = no_mongo(ensaio)
 
-    assert primeira == {"fabrica_morada": "Rua das Flores 1, Porto", "fabrica_lat": 41.1496, "fabrica_lng": -8.611}
-    assert segunda == {"fabrica_morada": "Rua das Flores 1, Porto", "fabrica_lat": 37.16, "fabrica_lng": -8.12}
+    # As 6 chaves das rotas (F3, T3.5) vêm sempre, com os padrões e os minutos como inteiros.
+    rotas = {
+        "rota_hora_saida": "08:00", "rota_hora_regresso": "19:00", "servico_entrega_min": 10,
+        "servico_amostra_min": 10, "servico_acompanhamento_min": 15, "servico_angariacao_min": 15,
+    }
+    assert primeira == {
+        "fabrica_morada": "Rua das Flores 1, Porto", "fabrica_lat": 41.1496, "fabrica_lng": -8.611, **rotas,
+    }
+    assert segunda == {"fabrica_morada": "Rua das Flores 1, Porto", "fabrica_lat": 37.16, "fabrica_lng": -8.12, **rotas}
     assert [(g["chave"], g["valor"]) for g in guardadas] == [
         ("fabrica_lat", "37.160000"),
         ("fabrica_lng", "-8.120000"),

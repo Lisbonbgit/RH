@@ -1,4 +1,4 @@
-"""`/api/crm/definicoes` — as definições da fábrica (na F2, a morada e o ponto).
+"""`/api/crm/definicoes` — as definições da fábrica (a morada e o ponto) e das rotas (F3).
 
 Plano T2.13; dossiê §5.9 e §6. Porta de src/Http/Controladores/
 DefinicoesControlador.php e de src/Repositorios/DefinicoesRepositorio.php do
@@ -6,8 +6,10 @@ CRM autónomo. As regras do corpo e os padrões estão em
 `dominio/definicoes.py` (T2.7): aqui só se lê, grava e responde.
 
 - `GET /definicoes` (admin do CRM) → `{fabrica_morada, fabrica_lat,
-  fabrica_lng}`: os padrões com o que o admin alterou por cima, e as
-  coordenadas como números (`combinar`).
+  fabrica_lng, rota_hora_saida, rota_hora_regresso, servico_entrega_min,
+  servico_amostra_min, servico_acompanhamento_min, servico_angariacao_min}`:
+  os padrões com o que o admin alterou por cima, com as coordenadas e os
+  minutos como números (`combinar`; as chaves das rotas são da F3, T3.5).
 - `PATCH /definicoes` (admin) com só as chaves que mudam → 200 com as
   definições em vigor, relidas da base. Ordem: o corpo (400) → as regras
   (422, sem tocar na base nem no relógio) → uma escrita por chave → reler.
@@ -84,14 +86,14 @@ async def em_vigor(base) -> Dict:
 
 @router.get("/definicoes")
 async def ver_definicoes(admin: Dict = Depends(SO_ADMIN)) -> Dict:
-    """`{fabrica_morada, fabrica_lat, fabrica_lng}`, com as coordenadas como números."""
+    """As 9 definições em vigor (`combinar`), com as coordenadas e os minutos como números."""
     return await em_vigor(bd.obter_db())
 
 
 @router.patch("/definicoes")
 async def alterar_definicoes(admin: Dict = Depends(SO_ADMIN), corpo: Dict = Depends(corpo_json)) -> Dict:
-    """`{fabrica_morada?, fabrica_lat?, fabrica_lng?}` (a latitude e a
-    longitude juntas) → as definições em vigor depois de gravar. Uma chave
+    """Só as chaves que mudam, dos `PADROES` (a latitude e a longitude
+    juntas) → as definições em vigor depois de gravar. Uma chave
     desconhecida, ou um valor inválido, dá 422 e não se grava nada."""
     valores, erros = regras.alteracao(corpo)
     if erros:
