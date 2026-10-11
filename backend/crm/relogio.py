@@ -20,11 +20,20 @@ o Mongo compara-os como texto, e a largura fixa faz essa ordem igual à do
 tempo.
 
 Substituível: tudo o que precisa das horas chama `relogio.agora()` (ou
-`relogio.instante()`/`relogio.carimbo()`) através do módulo, e os testes
-param-no com `monkeypatch.setattr(relogio, "agora", lambda: <datetime UTC>)`.
+`relogio.instante()`/`relogio.carimbo()`/`relogio.hoje()`) através do
+módulo, e os testes param-no com
+`monkeypatch.setattr(relogio, "agora", lambda: <datetime UTC>)`.
+
+O "hoje" (F3: o dia de cada rota, o fecho simples e o limite de um ano) é o
+dia em Lisboa (`FUSO_LISBOA`), venha o processo com o fuso que vier. É uma
+`date`; o texto `AAAA-MM-DD` escreve-se e lê-se em `crm.dominio.datas`.
 """
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+# O fuso do negócio (o `tzdata` do requirements.txt garante-o em qualquer SO).
+FUSO_LISBOA = ZoneInfo("Europe/Lisbon")
 
 # O carimbo exato, só com algarismos ASCII ([0-9], nunca \d) e sem nada antes
 # nem depois (fullmatch: o `$` aceitava um "\n" final).
@@ -47,6 +56,16 @@ def _em_utc(momento: "datetime | None") -> datetime:
     if momento.tzinfo is None or momento.utcoffset() is None:
         raise ValueError("o relógio do CRM precisa de uma datetime com fuso")
     return momento.astimezone(timezone.utc)
+
+
+def hoje() -> date:
+    """O dia de hoje em Lisboa (`Europe/Lisbon`), pelo relógio substituível.
+
+    Às 23:00:00Z do verão já é o dia seguinte (WEST, UTC+1); no inverno o dia
+    é o de UTC (WET). Não depende do fuso do processo. Um `agora()` sem fuso é
+    recusado (ValueError).
+    """
+    return _em_utc(None).astimezone(FUSO_LISBOA).date()
 
 
 def instante(momento: "datetime | None" = None) -> str:

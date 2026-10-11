@@ -318,7 +318,7 @@ Servidores locais, `preview_start` e como parar: dossiê §12.6. A pré-visualiz
 
 ### Bloco F3.0 — Partida
 
-#### [ ] T3.0 Verificação de partida (15 min, sem commit)
+#### [x] T3.0 Verificação de partida (15 min, sem commit)
 - **Repositório:** `git -C "$RAIZ" status --porcelain` só mostra `?? HANDOFF/`; `branch --show-current` = `crm-purple-house`; `log --oneline -1` mostra `d195610` (ou o commit deste plano). `test ! -e "$RAIZ/backend/.env"`.
 - **Contagens de partida** para comparar no fecho:
   - `pytest tests/crm`: na F2 deu 2925 passed e 27 skipped;
@@ -328,10 +328,16 @@ Servidores locais, `preview_start` e como parar: dossiê §12.6. A pré-visualiz
   - `grep -c "^CRM_ORS" "$RAIZ/backend/.env.local"` → `0` (só a contagem);
   - `grep -rn "openrouteservice" "$RAIZ/backend/crm"` → só docstrings;
   - `lsof -ti tcp:8001`, `tcp:3000` e `tcp:8013`: registar, sem parar nada.
+- **Feito (2026-10-11, sem commit; registo em `$LOGS/t3.0-partida.txt`):**
+  - **Repositório:** `status --porcelain` só `?? HANDOFF/`; ramo `crm-purple-house`; topo `97a4f05` (o commit deste plano); `backend/.env` não existe.
+  - **Contagens de partida:** `pytest tests/crm` **2925 passed, 27 skipped** em 16 s (`t3.0-pytest-crm.log`), igual à F2. Jest `src/lib/crm` **29 suites, 1035 testes** (`t3.0-jest-crm.log`), igual. Suite completa do backend em segundo plano (`pytest-tudo-T3_0.log`, 153 s), porque a T3.14 compara com ela: **6477 passed, 0 failed, 30 skipped** (27 do `test_mongo_local.py` sem `CRM_MONGO_TESTE_URL` + os 3 de sempre do `test_o_contrato_com_a_app.py:130`), com os 6 avisos de sempre. É este o "skipped da T3.0" (30) e o "hoje 30/27" das correções T3.25/T3.43.
+  - **Ambiente:** `grep -c "^CRM_ORS" backend/.env.local` → 0; `openrouteservice` em `backend/crm` só na docstring de `crm/servicos/__init__.py:5`; `CRM_ORS` no `.env.example` → 0; `asyncio.run(` em `tests/crm` → 0.
+  - **Portas** (só registadas): 8001 a escutar pelo `Python` da pré-visualização do backend e 3000 pelo `node` do frontend (ambos deixados a correr); 8013 livre para o simulador da T3.13. O `lsof -ti` sem `-sTCP:LISTEN` também mostra o processo do Claude (ligações do painel do browser): não é um servidor e não se para.
+  - **Desvios:** nenhum. Esta nota e o `[x]` ficam por guardar até ao commit da T3.1, que os leva junto (a T3.0 não tem commit).
 
 ### Bloco F3a — Domínio puro (backend)
 
-#### [ ] T3.1 Relógio: "hoje" em Lisboa e datas `AAAA-MM-DD` (30 min)
+#### [x] T3.1 Relógio: "hoje" em Lisboa e datas `AAAA-MM-DD` (30 min)
 - **Ficheiros:** `backend/crm/relogio.py`, `backend/crm/dominio/datas.py`, `backend/tests/crm/test_relogio.py`, `backend/tests/crm/test_dominio_datas.py`.
 - **Teste primeiro.** Falha por `ImportError: cannot import name 'hoje' from 'crm.relogio'` e por `ModuleNotFoundError: crm.dominio.datas`.
   - `relogio.hoje()`, com `relogio.agora` parado:
@@ -353,6 +359,15 @@ Servidores locais, `preview_start` e como parar: dossiê §12.6. A pré-visualiz
 - **Mutações mínimas (5):** a data em UTC em vez de Lisboa; `\d`; `match` em vez de `fullmatch`; `weekday()` desfasado de 1; aceitar o ano 0.
 - **Verificar:** os 2 ficheiros, depois a bateria `tests/crm` (inclui o `test_instantes_gravados.py`).
 - **Commit:** `CRM: dia de hoje em Lisboa e datas das rotas`
+- **Feito (2026-10-11):** aplicada a correção "T3.1": os 10 casos de `hoje()` correm também com o fixture `fuso_de_toquio` já existente no `test_relogio.py` (fica lá; nenhum `monkeypatch.setenv("TZ", …)` em `tests/crm`). Vermelho por `ImportError: cannot import name 'FUSO_LISBOA' from 'crm.relogio'` (o primeiro nome do import; `hoje` falta pelo mesmo motivo) e `ModuleNotFoundError: No module named 'crm.dominio.datas'` (`t3.1-vermelho.log`). Verde com 96 testes novos: 25 no `test_relogio.py` e 71 no `test_dominio_datas.py` (`t3.1-verde.log`, 194 nos 2 ficheiros). Bateria `tests/crm`: **3021 passed, 27 skipped** (2925 + 96), 18 s, os 6 avisos de sempre (`t3.1-bateria-crm.log`).
+  - **Decisões fixadas pelos testes:**
+    - `hoje()` = `_em_utc(None).astimezone(FUSO_LISBOA).date()`: um `agora()` sem fuso dá `ValueError`, como no `instante()`; devolve `date` (nunca `datetime`). Casos extra: o último microssegundo do ano, a meia-noite do ano novo, 00:59:59Z a 29 de março (ainda WET), um `agora` com outro desvio, e uma propriedade independente do `ZoneInfo` (nov.–fev. = dia UTC; abr.–set. = dia de UTC + 1 h; 4000 instantes de 2000 a 2040).
+    - `ler_data` só aceita `str` (uma `date` do Python, bytes, `False`, `2026.10` e `{"$gt": ""}` → `None`); recusa também 1900-02-29, 31 de abril, dia 0/32, mês 0, sinais, 5 algarismos no ano, um instante, barras, semana ISO, NUL e espaço no fim. Aceita de `0001-01-01` a `9999-12-31`.
+    - `texto_data` por f-string com largura fixa (`0999-01-02`); ida e volta e "o texto ordena como as datas" em 3000 dias aleatórios (o `$gte`/`$lte` do `GET /rotas`).
+    - `dia_da_semana` = `campos_loja.DIAS[weekday()]`, com a semana inteira, a propriedade "+1 dia = dia seguinte de `DIAS`" e os domingos das mudanças de hora. `somar_dias` com 0, negativos, mudança de ano, 29 de fevereiro e 365 dias.
+    - Varrimento AST do `datas.py`: nem `fromisoformat` (no Python 3.11 aceita "20261012"), `strptime`, `strftime`, `isoformat`, `today` nem `now`.
+  - **Mutações (8):** as 5 mínimas (UTC em vez de Lisboa; `\d`; `match`; `weekday()` + 1; ano 0 aceite com `max(ano, 1)`) e 3 extra (o fuso do processo com `astimezone()`, apanhada só pelos casos de Tóquio; `date.fromisoformat`; `agora()` sem verificar o fuso). Todas apanhadas, ficheiros repostos conferidos com `cmp` (`t3.1-mutacoes.log`, script `t3.1-mutacoes.py`).
+  - **Desvios:** nenhum além da correção aplicada. O commit leva também o `[x]` e a nota "Feito" da T3.0.
 
 #### [ ] T3.2 Domínio: horas em segundos e janelas para o otimizador (40 min)
 - **Ficheiros:** `backend/crm/dominio/horas.py`, `backend/tests/crm/test_dominio_horas.py`.
