@@ -369,7 +369,7 @@ Servidores locais, `preview_start` e como parar: dossiê §12.6. A pré-visualiz
   - **Mutações (8):** as 5 mínimas (UTC em vez de Lisboa; `\d`; `match`; `weekday()` + 1; ano 0 aceite com `max(ano, 1)`) e 3 extra (o fuso do processo com `astimezone()`, apanhada só pelos casos de Tóquio; `date.fromisoformat`; `agora()` sem verificar o fuso). Todas apanhadas, ficheiros repostos conferidos com `cmp` (`t3.1-mutacoes.log`, script `t3.1-mutacoes.py`).
   - **Desvios:** nenhum além da correção aplicada. O commit leva também o `[x]` e a nota "Feito" da T3.0.
 
-#### [ ] T3.2 Domínio: horas em segundos e janelas para o otimizador (40 min)
+#### [x] T3.2 Domínio: horas em segundos e janelas para o otimizador (40 min)
 - **Ficheiros:** `backend/crm/dominio/horas.py`, `backend/tests/crm/test_dominio_horas.py`.
 - **Teste primeiro.** Falha por `ModuleNotFoundError: crm.dominio.horas`.
   - `segundos`: `"08:00"` → 28800, `"00:00"` → 0, `"23:59"` → 86340. `"02:30"` → 9000: uma hora que não existe a 2026-03-29 em Lisboa conta pelo texto do relógio. `"8:00"`, `""`, `None` e `"24:00"` → `ValueError` (validação por `janelas.hora`).
@@ -386,6 +386,16 @@ Servidores locais, `preview_start` e como parar: dossiê §12.6. A pré-visualiz
   - Varrimento AST: `horas.py` não importa `datetime` nem `zoneinfo` (as horas nunca passam por instantes).
 - **Mutações (5):** `h*60`; `>` em vez de `>=` no `b − s`; o `round` do Python (1770 → "00:30" passa a "00:30", mas 1830 → "00:30" em vez de "00:31"; o caso 1830 é obrigatório); o limite em 1440 minutos antes de arredondar; `[]` confundido com `None`.
 - **Commit:** `CRM: horas da rota em segundos desde a meia-noite local`
+- **Feito (2026-10-11, pelo agente da T3.6):** o agente da T3.2 falhou sem deixar ficheiros nem commit; a T3.6 precisa do `janelas_em_segundos` e do `janelas_vroom` (regra 1: cada tarefa assume as anteriores), por isso a T3.2 fez-se primeiro, com o seu próprio commit. Vermelho por `ModuleNotFoundError: No module named 'crm.dominio.horas'` (`t3.2-vermelho.log`). Verde com **135 testes** no `test_dominio_horas.py` (`t3.2-verde.log`). Bateria `tests/crm`: **4191 passed, 27 skipped** (4056 + 135), 17 s, os 6 avisos de sempre (`t3.2-bateria-crm.log`).
+  - **Decisões fixadas pelos testes:**
+    - `segundos` aceita exatamente o que o `janelas.hora` aceita (a propriedade corre as 1440 horas do dia e os casos estragados): `""`/`None` (que o `janelas.hora` deixa passar como "vazia") dão `ValueError`, como "8:00", "24:00", " 08:00", algarismos árabes/largos, números, bool, listas e bytes. Devolve `int`.
+    - `hora_de_segundos`: `int(arredondar(s / 60))` e só depois o limite (`≥ 1440` → `None`); 86 369 → "23:59", 86 370 → `None`; o meio minuto vai sempre para cima (todos os minutos pares + 30 s); ida e volta sem perda nas 1440 horas; propriedade com 3000 segundos ao acaso (semente fixa) contra a conta só com inteiros `(s + 30) // 60`. `None` também para negativos (−0,5, −29…), NaN, ±inf, bool, texto, `None` e listas (é `e_numero_json`): nunca rebenta, porque uma chegada depois da meia-noite é um caso normal.
+    - `minutos_de_segundos`: o mesmo arredondamento (150 s → 3; o `round` dava 2), sem limite superior; um negativo, NaN, inf, bool ou não-número é `ValueError` (uma espera negativa é um erro de programação).
+    - `janelas_em_segundos(lista)` valida pelo `validador_loja.campos_de_janelas` (só o que o `janelas_para_lista` grava: `None`, texto, janelas a meio, sobrepostas, fora de ordem, com chaves a mais ou 3 janelas → `ValueError`); `[]` → `None`; devolve `[(início_s, fim_s)]` numa lista nova e não muda a da base.
+    - `janelas_vroom(janelas_s, servico_s)`: o serviço é um inteiro ≥ 0 (vê-se antes do `None`: `True`, `600.0`, NaN e texto → `ValueError`); as janelas, pares de inteiros (tuplos ou listas; floats, bool, texto e outros tamanhos → `ValueError`); devolve listas novas `[[a, b − s]]` (`list`, não `tuple`), só com `b − s ≥ a`; `[]` fica `[]` (nunca `None`).
+    - Varrimento AST: o `horas.py` não importa `datetime`, `zoneinfo`, `time` nem `pytz`, e nunca chama o `round`.
+  - **Mutações (15):** as 5 mínimas (`h*60`; `>` no `b − s`; o `round` na hora, apanhado pelo 1830; o limite das 1440 antes de arredondar, apanhado pelo 86 370; `[]` → `[]` no `janelas_em_segundos`) e 10 extra (o `janelas_vroom` a trocar `[]` por `None`; o `round` nas esperas; negativos aceites na hora; bool aceite na hora; a janela do VROOM sem subtrair o serviço; janelas em tuplos; as janelas da base sem validação; bool no tempo de serviço; espera negativa aceite; hora vazia como meia-noite). Todas apanhadas à 1.ª, o ficheiro reposto conferido com `cmp` e `shasum` (`t3.2-mutacoes.log`, script `t3.2-mutacoes.py`, com `PYTHONDONTWRITEBYTECODE=1`).
+  - **Desvios:** feita fora da ordem (depois da T3.5), pela razão acima. Nenhum outro.
 
 #### [x] T3.3 Domínio: regras da rota — motivos, prioridades, secções, estado ao ler e caminhos de escrita (55 min)
 - **Ficheiros:** `backend/crm/dominio/rotas.py`, `backend/crm/dominio/ids.py`, `backend/tests/crm/test_dominio_rotas.py`.
