@@ -111,8 +111,8 @@ def pedido_otimizacao(paragens, inicio, fim, saida_s, limite_s) -> PedidoOtimiza
             raise ValueError(f"Hora do veículo inválida em segundos: {valor!r}")
     if saida_s >= limite_s:
         raise ValueError("A saída tem de ser antes do regresso limite.")
-    inicio_ = _ponto(inicio)
-    fim_ = _ponto(fim)
+    inicio_ = ponto_ors(inicio)
+    fim_ = ponto_ors(fim)
 
     jobs = []
     por_job = {}
@@ -132,7 +132,7 @@ def pedido_otimizacao(paragens, inicio, fim, saida_s, limite_s) -> PedidoOtimiza
         numero = len(jobs) + 1
         job = {
             "id": numero,
-            "location": _ponto((paragem.lat, paragem.lng)),
+            "location": ponto_ors((paragem.lat, paragem.lng)),
             "service": paragem.servico_s,
             "priority": rotas.prioridade(paragem.motivo),
         }
@@ -252,8 +252,11 @@ def _numero(valor, nome) -> float:
     return float(valor)
 
 
-def _ponto(par) -> list:
-    """`(lat, lng)` → `[lng, lat]` às 6 casas, meio-para-longe-do-zero."""
+def ponto_ors(par) -> list:
+    """`(lat, lng)` (tuplo ou lista de dois números do JSON) → `[lng, lat]`
+    às 6 casas, meio-para-longe-do-zero: a forma de cada ponto que vai ao
+    openrouteservice (aqui e no `directions.pedido_direcoes`). Outra coisa
+    (um `{lat, lng}`, texto, NaN, inf, bool) é `ValueError`."""
     if not isinstance(par, (tuple, list)) or len(par) != 2:
         raise ValueError("Um ponto é um par (lat, lng).")
     lat, lng = par

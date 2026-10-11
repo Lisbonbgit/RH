@@ -795,6 +795,7 @@ def test_cenarios_so_com_os_pontos_publicos_de_lisboa():
         "praca_do_comercio": {"lat": 38.7075, "lng": -9.1364},
         "marques_de_pombal": {"lat": 38.7253, "lng": -9.15},
         "torre_de_belem": {"lat": 38.6916, "lng": -9.216},
+        "rio_tejo": {"lat": 38.72, "lng": -9.035},  # o ponto fora da estrada do Directions (T3.7)
     }
     assert set(cenarios["otimizacao"]) == {"otimizacao-todas", "otimizacao-uma-nao-cabe"}
 

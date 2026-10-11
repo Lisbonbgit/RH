@@ -1,11 +1,12 @@
 {
   "_origem": "manual — cenários do gravador (T3.12); escritos à mão, nunca se regravam",
-  "_nota": "Só pontos públicos de Lisboa. O gravador (T3.12) e os testes montam cada pedido com vroom.paragem_calculo e vroom.pedido_otimizacao: a paragem i (1..n) é a i-ésima da lista, com o nome do ponto como id (nunca vai ao ORS). Horas em HH:MM, tempos de serviço em minutos, janelas como na base ([{inicio, fim}]).",
+  "_nota": "Só pontos públicos de Lisboa. O gravador (T3.12) e os testes montam cada pedido com vroom.paragem_calculo e vroom.pedido_otimizacao: a paragem i (1..n) é a i-ésima da lista, com o nome do ponto como id (nunca vai ao ORS). Horas em HH:MM, tempos de serviço em minutos, janelas como na base ([{inicio, fim}]). Os cenários do Directions (T3.7) dão os pontos pela ordem da rota, do início ao fim, e montam-se com directions.pedido_direcoes.",
   "pontos": {
     "fabrica": {"lat": 38.7223, "lng": -9.1393},
     "praca_do_comercio": {"lat": 38.7075, "lng": -9.1364},
     "marques_de_pombal": {"lat": 38.7253, "lng": -9.15},
-    "torre_de_belem": {"lat": 38.6916, "lng": -9.216}
+    "torre_de_belem": {"lat": 38.6916, "lng": -9.216},
+    "rio_tejo": {"lat": 38.72, "lng": -9.035}
   },
   "otimizacao": {
     "otimizacao-todas": {
@@ -31,6 +32,18 @@
         {"ponto": "marques_de_pombal", "motivo": "amostra", "tempo_servico_min": 10, "janelas": []},
         {"ponto": "torre_de_belem", "motivo": "acompanhamento", "tempo_servico_min": 15, "janelas": [{"inicio": "08:00", "fim": "08:20"}]}
       ]
+    }
+  },
+  "direcoes": {
+    "direcoes-tres-paragens": {
+      "_nota": "A ordem que o VROOM escolhe no cenário otimizacao-todas: fábrica → Marquês → Comércio → Belém → fábrica (5 pontos, 4 troços).",
+      "pontos": ["fabrica", "marques_de_pombal", "praca_do_comercio", "torre_de_belem", "fabrica"],
+      "evitar_portagens": false
+    },
+    "direcoes-erro-2010": {
+      "_nota": "O 3.º ponto (rio_tejo) fica no meio do Tejo, no Mar da Palha, a mais de 1,5 km de qualquer estrada, ponte ou cais: o ORS responde com o erro 2010 (não encontra a estrada a 350 m). O ORS conta as coordenadas a partir de 0, por isso a mensagem diz 'coordinate 2'.",
+      "pontos": ["fabrica", "marques_de_pombal", "rio_tejo", "fabrica"],
+      "evitar_portagens": false
     }
   }
 }
