@@ -6,6 +6,8 @@ import { syncShiftReminders, requestNotificationPermission } from '../../lib/not
 import { requestLocationPermission } from '../../lib/geo';
 import { Capacitor } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
+import { useEstadoCrm } from '../../hooks/useEstadoCrm';
+import { podeAbrirAreaCrm } from '../../lib/crm/acesso';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { ScrollArea } from '../ui/scroll-area';
@@ -26,6 +28,7 @@ import {
   Bell,
   LogOut,
   User,
+  MapPinned,
   ChevronDown
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -36,12 +39,16 @@ const navItems = [
   { path: '/colaborador/ausencias', label: 'Ausências', icon: Calendar },
   { path: '/colaborador/documentos', label: 'Documentos', icon: FileText },
 ];
+// CRM Purple House: só para membros de escritório do CRM, no browser (regras em lib/crm/acesso.js).
+const ITEM_CRM = { path: '/crm/mapa', label: 'CRM', icon: MapPinned };
 
 export default function EmployeeLayout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [notifications, setNotifications] = useState([]);
   const [photo, setPhoto] = useState(null);
+  const { eu } = useEstadoCrm();
+  const itens = podeAbrirAreaCrm(eu, { nativo: Capacitor.isNativePlatform() }) ? [...navItems, ITEM_CRM] : navItems;
 
   useEffect(() => {
     fetchNotifications();
@@ -196,7 +203,7 @@ export default function EmployeeLayout() {
       {/* Bottom Navigation */}
       <nav className="fixed bottom-0 left-0 right-0 border-t bg-card safe-area-inset-bottom">
         <div className="flex justify-around items-center h-16">
-          {navItems.map((item) => (
+          {itens.map((item) => (
             <NavLink
               key={item.path}
               to={item.path}

@@ -1,0 +1,36 @@
+{
+  "_origem": "manual — regravar",
+  "results": [
+    {
+      "datasource": {
+        "sourcename": "openstreetmap",
+        "attribution": "© OpenStreetMap contributors",
+        "license": "Open Database License",
+        "url": "https://www.openstreetmap.org/copyright"
+      },
+      "country": "Portugal",
+      "country_code": "pt",
+      "state": "Lisboa",
+      "county": "Lisboa",
+      "city": "Lisboa",
+      "postcode": "1100-148",
+      "suburb": "Santa Maria Maior",
+      "street": "Praça do Comércio",
+      "lon": -9.13648,
+      "lat": 38.70749,
+      "distance": 3.2,
+      "result_type": "street",
+      "formatted": "Praça do Comércio, 1100-148 Lisboa, Portugal",
+      "address_line1": "Praça do Comércio",
+      "address_line2": "1100-148 Lisboa, Portugal",
+      "rank": {
+        "importance": 0.52,
+        "popularity": 9.1
+      }
+    }
+  ],
+  "query": {
+    "lat": 38.7075,
+    "lon": -9.1364
+  }
+}

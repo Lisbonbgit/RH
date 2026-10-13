@@ -66,6 +66,10 @@ import {
   Bike
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { Capacitor } from '@capacitor/core';
+import { useEstadoCrm } from '../../hooks/useEstadoCrm';
+import { eAdminCrm, ecraCheioDoCrm, podeAbrirAreaCrm, rotaDoCrmNoAdmin, seccaoVisivel } from '../../lib/crm/acesso';
+import { seccaoCrm } from '../crm/seccaoCrm';
 
 // Universo "Gestão Lisbonb": secções de topo, cada uma com os seus módulos.
 const sections = [
@@ -86,7 +90,7 @@ const sections = [
     key: 'rh',
     label: 'RH',
     home: '/admin',
-    match: (p) => !p.startsWith('/admin/painel') && !p.startsWith('/admin/resumo') && !p.startsWith('/admin/financeiro') && !p.startsWith('/admin/marketing') && !p.startsWith('/admin/estoque') && !p.startsWith('/admin/faturacao'),
+    match: (p) => !p.startsWith('/admin/painel') && !p.startsWith('/admin/resumo') && !p.startsWith('/admin/financeiro') && !p.startsWith('/admin/marketing') && !p.startsWith('/admin/estoque') && !p.startsWith('/admin/faturacao') && !rotaDoCrmNoAdmin(p),
     items: [
       { path: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true },
       { path: '/admin/empresas', label: 'Empresas', icon: Building2 },
@@ -218,6 +222,7 @@ const sections = [
       { path: '/admin/marketing/relatorios', label: 'Relatórios', icon: BarChart3 },
     ],
   },
+  seccaoCrm, // CRM Purple House: só para membros (components/crm/seccaoCrm.js)
 ];
 
 // Estilo comum de uma linha de navegação — usado na lista corrida das secções
@@ -422,6 +427,8 @@ export default function AdminLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const isMasterAdmin = user?.is_master_admin === true;
+  const { eu } = useEstadoCrm();
+  const podeVerCrm = podeAbrirAreaCrm(eu, { nativo: Capacitor.isNativePlatform() });
 
   useEffect(() => {
     fetchNotifications();
@@ -461,6 +468,10 @@ export default function AdminLayout() {
   };
 
   const fetchCompanies = async () => {
+    if (activeSection.key === 'crm') { // o CRM não usa empresas: nem as pede
+      setCompanies([]);
+      return;
+    }
     try {
       const response = (activeSection.key === 'financeiro' || activeSection.key === 'estoque')
         ? await getFinCompanies()
@@ -510,7 +521,7 @@ export default function AdminLayout() {
           sidebar e os nomes ("Financeiro", "Marketing") sobrepõem-se. */}
       <div className="px-4 pt-4">
         <div className="grid grid-cols-2 gap-1 p-1 bg-muted rounded-xl">
-          {sections.map((s) => (
+          {sections.filter((s) => seccaoVisivel(s, { podeVerCrm })).map((s) => (
             <button
               key={s.key}
               type="button"
@@ -528,7 +539,8 @@ export default function AdminLayout() {
         </div>
       </div>
 
-      {/* Company Selector (todas as secções) */}
+      {/* Company Selector (todas as secções menos o CRM, que não usa empresas) */}
+      {activeSection.key !== 'crm' && (
       <div className="p-4">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -588,9 +600,12 @@ export default function AdminLayout() {
           </DropdownMenu>
         )}
       </div>
+      )}
 
       {(() => {
-        const visiveis = activeSection.items.filter(item => !item.masterOnly || isMasterAdmin);
+        const visiveis = seccaoVisivel(activeSection, { podeVerCrm })
+          ? activeSection.items.filter(item => (!item.masterOnly || isMasterAdmin) && (!item.crmAdmin || eAdminCrm(eu)))
+          : [];
         const fecharMobile = () => setMobileOpen(false);
 
         // Só a Faturação declara `rail` — carril + painel, como o Vendus. As
@@ -791,8 +806,8 @@ export default function AdminLayout() {
       </header>
 
       {/* Main Content */}
-      <main className="lg:ml-64 min-h-[calc(100vh-4rem)]">
-        <div className="p-4 md:p-6 lg:p-8">
+      <main className={`lg:ml-64 ${ecraCheioDoCrm(location.pathname) ? 'h-[calc(100vh-4rem)] overflow-hidden' : 'min-h-[calc(100vh-4rem)]'}`}>
+        <div className={ecraCheioDoCrm(location.pathname) ? 'h-full' : 'p-4 md:p-6 lg:p-8'}>
           <Outlet context={{ selectedCompany, selectedUnit, units, companies, refreshCompanies: fetchCompanies }} />
         </div>
       </main>
