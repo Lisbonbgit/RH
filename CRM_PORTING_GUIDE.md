@@ -7,7 +7,7 @@
 > comportamento**: não se copia tal e qual; portam-se as regras e os cenários de teste. Molde deste dossiê:
 > `/Users/brucesilva/pasta sem título/gestao-lisbonb-financeiro/PORTING_GUIDE.md`.
 
-- **Data:** 2026-10-10 · **Ramo:** `crm-purple-house` (só local; nada foi enviado ao GitHub, ao VPS nem ao Atlas)
+- **Data:** 2026-10-10 · **Ramo:** `crm-purple-house` (só local; nada foi enviado ao GitHub, ao VPS nem ao Atlas) · **Alterações do dono (2026-10-13):** no ramo local `crm-publicacao-1`, criado a partir de `d195610` (fim da F2); ver §13.
 - **Fontes, por ordem de prevalência:**
   1. Plano `docs/superpowers/plans/2026-10-10-crm-f0-f1-f2.md`, **incluindo a tabela "Correções obrigatórias"** no fim (prevalece sobre o texto das tarefas);
   2. Desenho aprovado `docs/superpowers/specs/2026-10-09-crm-purple-house-no-portal-design.md`;
@@ -1057,6 +1057,7 @@ kill -TERM $(lsof -nP -tiTCP:8001 -sTCP:LISTEN) $(lsof -nP -tiTCP:3000 -sTCP:LIS
 ```
 
 - **Fim da F2 (T2.32):** a pré-visualização local ficou a correr para o dono ver a F2: backend em `127.0.0.1:8001` (com o `.env.local` e a base `lisbonb_crm_local`, registo `t2.32-backend.log`) e frontend em `127.0.0.1:3000` (`craco start`, registo `t2.32-frontend.log`), os dois em segundo plano e só em `127.0.0.1`. Entra-se em `http://127.0.0.1:3000/login` com as contas do §12.5. Para parar: o `kill -TERM` acima (as duas portas) e o pai `node … craco start` (`pkill -TERM -f 'craco start'`). Uma tarefa que precise das portas livres para-os primeiro.
+- **Alterações do dono (2026-10-13, A4):** o backend foi reiniciado com o mesmo comando (o `uvicorn` não tem `--reload`, por isso não via o código novo da ficha), desligado da sessão (`nohup … &`), com registo em `a4-backend.log` e o pid em `a4-backend.pid`; o frontend `craco start` da T2.32 ficou o mesmo (recompila sozinho; registo `t2.32-frontend.log`). O seed voltou a correr com `--repor` (`a4-seed-repor.log`): regiões, lojas e interações de demonstração criadas de novo, já com Instagram e site, e **palavras-passe novas** para as 4 contas de demonstração em `credenciais.txt` (as sessões abertas antes terminaram; a do admin local continua a ser a do `.env.local`). O `a4_verificar.py` (lê as credenciais do `.env.local` sem as imprimir; só fala com `127.0.0.1:8001`) confirmou: login do admin 200, `GET /lojas` com 24 lojas (7/5/4/6/2 por fase) e os campos `instagram`/`site` na ficha das 2 lojas do seed que os têm e a `null` numa que não os tem (`a4-verificacao.log`).
 - **`preview_start`** lê o `.claude/launch.json` da pasta de trabalho principal da sessão. Nas sessões do dono é `/Users/brucesilva/cleide/.claude/launch.json`, **fora do repositório**, com as entradas `portal-backend-local` e `portal-frontend-local`. Cada uma é `/bin/bash -c "cd '<caminho absoluto>' && exec …"`, testadas a arrancar e a parar com `preview_stop`. Noutra pasta de trabalho, usar os comandos acima em segundo plano.
 - No primeiro arranque, o registo do backend mostra "Master admin created: …". O arranque só cria o admin master, inicia a Faturação (`faturacao.arrancar()`) e cria índices na base local.
   - A partir da T1.9 também chama `crm.arrancar()`, que cria os índices `crm_*` com um limite de 10 s. Uma falha fica no registo com `[crm]` e não impede o portal de subir.
@@ -1090,6 +1091,7 @@ cd "$RAIZ/frontend" && BUILD_PATH="$LOGS/build" CI=false ./node_modules/.bin/cra
 | Caminho | Conteúdo |
 |---|---|
 | `~/.cache/lisbonb-crm-local/*.log` | Instalações (`brew-*.log`, `pip.log`, `yarn-install.log`), suites (`pytest-tudo*.log`, `jest-partida.log`), servidores (`backend.log`, `frontend.log`), seed (`seed-t07*.log`, `t2.18-seed*.log`) |
+| `~/.cache/lisbonb-crm-local/a1-*.log`, `a2-*.log`, `a3-*.log`, `a4-*.log`, `a4-backend.pid`, `a4_verificar.py` | Alterações do dono de 2026-10-13 (§13): o vermelho e o verde de cada uma (A1 rótulos das fases, A2 contacto no cartão, A3 Instagram e site) e o fecho A4 (`a4-fecho-backend.log`, `a4-fecho-jest.log`, `a4-fecho-build.log`, `a4-fecho-eslint.log`, `a4-seed-repor.log`, `a4-verificacao.log`; o servidor em `a4-backend.log`) |
 | `~/.cache/lisbonb-crm-local/estado-partida-T06.txt` | Estado de partida estruturado (§13) |
 | `~/.cache/lisbonb-crm-local/arranque-T08.txt`, `t08_login.py`, `t08-*.png` | Registo do arranque, script de login e capturas |
 | `~/.cache/lisbonb-crm-local/build/` | Build de verificação (a partir da F1) |
@@ -1146,6 +1148,14 @@ saltam de propósito, todos com a razão "ensaio no MongoDB local: só corre com
 | Revisão do servidor da F2 (+24 e +1 do ensaio; sem `CRM_MONGO_TESTE_URL`; `pytest-tudo-revisao-F2.log`) | ver `git log` ("CRM: corrige revisão do servidor da F2") | 6444 / 0 / 30 (3 de sempre + 27 do ensaio, confirmados com `-rs`) | — |
 | Fecho da F2 (T2.32; sem `CRM_MONGO_TESTE_URL`; `pytest-tudo-T2_32.log`) | ver `git log` ("CRM: fecho da base (F2) verificado em local") | 6477 / 0 / 30 (3552 + 2925 de `tests/crm`; 3 de sempre + 27 do ensaio, confirmados com `-rs`) | 1143 / 0 (35 suites: as 6 antigas com 114 + 1029 do CRM) |
 | Revisão dos ecrãs da F2 (Jest +4: os botões de zoom em pt-PT e o erro das regiões na ficha; `revisao-f2-ecras-*.log`) | ver `git log` ("CRM: corrige revisão dos ecrãs da F2") | `tests/crm` 2925 / 0 / 27 (sem mudanças no backend) | 1149 / 0 (35 suites: 114 + 1035 do CRM; o commit da T2.32 já tinha +2 no `css.test.js` depois do registo acima) |
+| Alterações do dono (2026-10-13; ramo `crm-publicacao-1`, commits `4c46044`, `d0c891a`, `5cdcc07`; `a4-fecho-*.log`) | `5cdcc07` | `tests/crm` 3060 / 0 / 27 (2925 + 135 da A3; o `test_dominio_navegacao.py`, não versionado e de outra tarefa, ignorado) | 1162 / 0 (35 suites: 114 + 1048 do CRM; +7 da A2 e +6 da A3) |
+
+**Alterações do dono 2026-10-13** — três pedidos do Bruce depois de ver a F2 em local, no ramo `crm-publicacao-1` (criado de `d195610`), tudo só no Mac (sem `push`, `merge`, `deploy`, `ssh` nem Atlas; publicar no portal verdadeiro continua a ser o ponto 8 do §14):
+
+- **A1 `4c46044`** — as fases "Contactada" e "Amostra" passam a chamar-se no ecrã **"A aguardar amostra"** e **"Amostra recebida"**: só o `rotulo` em `lib/crm/fases.js` mudou (chaves, cores e ordem iguais; §5.1 e §4.1 do desenho original).
+- **A2 `d0c891a`** — o cartão da loja no mapa deixa de ter o botão Ligar e mostra **"Contacto: pessoa · telefone"** em texto (`contactoDaLoja` em `lib/crm/ecraMapa.js`; §7). O `hrefTelefone` fica em `dom.js`, sem uso.
+- **A3 `5cdcc07`** — a ficha ganha **Instagram** e **site** (normalizados pelo servidor em `campos_loja.py`: `@nome`/perfil → `https://www.instagram.com/<nome>/`, site → `https://…`; 20 campos; os documentos antigos leem-se com `null`, sem migração; §3, §5.2, §6, §7). A Nova loja não os pede. O seed dá Instagram a 2 lojas e site a 1.
+- **A4 (fecho)** — `pytest tests/crm`: 3060 passed, 0 failed, 27 skipped em 16,6 s (`a4-fecho-backend.log`). Jest completo: 35 suites e 1162 testes (`a4-fecho-jest.log`). Build de verificação: saída 0, avisos nos mesmos 16 ficheiros do portal da T2.32 e nenhum do CRM (`a4-fecho-build.log`). ESLint 8 com a configuração CRA da T2.32 nos 14 ficheiros JS alterados: limpo (`a4-fecho-eslint.log`; a variante com `jest` repete só os 2 avisos antigos do `css.test.js`). Backend reiniciado, seed `--repor` e verificação de ponta a ponta: §12.6. O `backend/tests/crm/test_dominio_navegacao.py` (não versionado; importa `crm.dominio.navegacao`, que não existe: um vermelho da F3 de outra tarefa) foi ignorado com `--ignore`; `HANDOFF/` não se tocou.
 
 **Fecho da F2 (T2.32, 2026-10-10)** — tudo verificado no Mac, nada saiu dele (nenhum `push`, `merge`, `deploy`, `ssh` nem Atlas; o ramo `crm-purple-house` não tem *upstream* nem ramo no `origin`):
 
