@@ -38,6 +38,7 @@ FORMATO_HORA = "A hora tem de estar no formato HH:MM."
 ORIGEM_INVALIDA = "A origem das coordenadas não é válida."
 INSTAGRAM = "O Instagram tem de ser um perfil válido (ex.: @purplehouse)."
 SITE = "O site tem de ser um endereço válido (ex.: https://exemplo.pt)."
+SITE_COMPRIDO = "O site tem no máximo 255 caracteres."
 
 # Um uuid4 como os que o portal grava (`str(uuid.uuid4())`): minúsculas, a
 # versão 4 no 13.º algarismo e a variante (8, 9, a ou b) no 17.º.
@@ -275,7 +276,8 @@ CASOS_OUTROS_CAMPOS = [
     ("site sem domínio de topo", {"site": "exemplo"}, {"site": SITE}),
     ("site com espaço", {"site": "exemplo .pt"}, {"site": SITE}),
     ("site ftp", {"site": "ftp://exemplo.pt"}, {"site": SITE}),
-    ("site com 256 caracteres", {"site": "https://exemplo.pt/" + "p" * 237}, {"site": SITE}),
+    ("site com 256 caracteres", {"site": "https://exemplo.pt/" + "p" * 237}, {"site": SITE_COMPRIDO}),
+    ("site com 256 caracteres depois do https://", {"site": "exemplo.pt/" + "p" * 237}, {"site": SITE_COMPRIDO}),
     ("site que não é texto", {"site": ["exemplo.pt"]}, {"site": SITE}),
     (
         "instagram e site errados vêm pela ordem dos campos",

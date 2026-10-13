@@ -77,7 +77,9 @@ JSON_INVALIDO = {"detail": {"codigo": "json_invalido", "mensagem": "O pedido nã
 SEM_PERMISSAO = {"detail": {"codigo": "sem_permissao", "mensagem": "Sem permissão para esta ação."}}
 SEM_ACESSO = {"detail": {"codigo": "sem_acesso_crm", "mensagem": "Sem acesso ao CRM."}}
 
-PROJECAO_RESUMO = {"_id": 0, "id": 1, "nome": 1, "fase": 1, "regiao_id": 1, "lat": 1, "lng": 1, "telefone": 1}
+PROJECAO_RESUMO = {
+    "_id": 0, "id": 1, "nome": 1, "fase": 1, "regiao_id": 1, "lat": 1, "lng": 1, "telefone": 1, "pessoa_contacto": 1,
+}
 PROJECAO_CANDIDATO = {"_id": 0, "id": 1, "nome": 1, "lat": 1, "lng": 1}
 PROJECAO_ID = {"_id": 0, "id": 1}
 
@@ -746,8 +748,9 @@ def test_a_lista_e_o_resumo_de_todas_as_lojas_por_nome(sessao):
     """`aListaEOResumoDeTodasAsLojasPorNome` (sem maiúsculas nem acentos, como
     a collation do MariaDB)."""
     cafe = _loja(1, "Café Central", 38.720000, fase="cliente", regiao_id=LISBOA,
-                 telefone="+351 912 345 678", notas="Não aparece no resumo.")
-    acai = _loja(2, "Açaí da Esquina", 38.730000, fase="perdida")
+                 telefone="+351 912 345 678", pessoa_contacto="D. Amélia", notas="Não aparece no resumo.",
+                 instagram="https://www.instagram.com/cafecentral/", site="https://cafecentral.pt")
+    acai = _loja(2, "Açaí da Esquina", 38.730000, fase="perdida", pessoa_contacto="Sr. Rui")
     bar = _loja(3, "bar do Rui", 38.740000)
     cliente = sessao(RUI_UTILIZADOR, _base(lojas=[cafe, acai, bar], regioes=[_regiao(LISBOA, "Lisboa")]))
 
@@ -756,13 +759,15 @@ def test_a_lista_e_o_resumo_de_todas_as_lojas_por_nome(sessao):
     assert r.status_code == 200
     assert r.json() == [
         {"id": acai["id"], "nome": "Açaí da Esquina", "fase": "perdida", "regiao_id": None, "lat": 38.73,
-         "lng": -9.1369, "telefone": None},
+         "lng": -9.1369, "telefone": None, "pessoa_contacto": "Sr. Rui"},
         {"id": bar["id"], "nome": "bar do Rui", "fase": "potencial", "regiao_id": None, "lat": 38.74,
-         "lng": -9.1369, "telefone": None},
+         "lng": -9.1369, "telefone": None, "pessoa_contacto": None},
         {"id": cafe["id"], "nome": "Café Central", "fase": "cliente", "regiao_id": LISBOA, "lat": 38.72,
-         "lng": -9.1369, "telefone": "+351 912 345 678"},
+         "lng": -9.1369, "telefone": "+351 912 345 678", "pessoa_contacto": "D. Amélia"},
     ]
-    assert [list(loja) for loja in r.json()] == [["id", "nome", "fase", "regiao_id", "lat", "lng", "telefone"]] * 3
+    assert [list(loja) for loja in r.json()] == [
+        ["id", "nome", "fase", "regiao_id", "lat", "lng", "telefone", "pessoa_contacto"],
+    ] * 3
 
 
 def test_a_lista_pede_so_os_campos_do_resumo(sessao):

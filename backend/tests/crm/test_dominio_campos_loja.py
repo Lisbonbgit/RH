@@ -34,6 +34,7 @@ MENSAGEM_DIAS = "Os dias têm de ser seg, ter, qua, qui, sex, sab ou dom."
 TEXTO = "Tem de ser texto."
 NOTAS = "As notas são demasiado compridas."
 SITE = "O site tem de ser um endereço válido (ex.: https://exemplo.pt)."
+SITE_COMPRIDO = "O site tem no máximo 255 caracteres."
 INSTAGRAM = "O Instagram tem de ser um perfil válido (ex.: @purplehouse)."
 
 # Os rótulos e tamanhos do ValidadorLoja::TEXTOS (a tabela fica na T2.5).
@@ -652,8 +653,6 @@ def test_site_normaliza(valor, guardado):
         "https://exemplo.123",
         "https://exem_plo.pt",
         "https://" + "a" * 64 + ".pt",
-        "https://exemplo.pt/" + "p" * (SITE_MAXIMO - len("https://exemplo.pt/") + 1),
-        "exemplo.pt/" + "p" * (SITE_MAXIMO - len("https://exemplo.pt/") + 1),
         "https://exemplo.pt/\x00",
         True,
         0,
@@ -685,8 +684,6 @@ def test_site_normaliza(valor, guardado):
         "domínio de topo só com algarismos",
         "sublinhado na máquina",
         "etiqueta com 64 caracteres",
-        "256 caracteres",
-        "256 caracteres depois do https://",
         "carácter de controlo",
         "verdadeiro",
         "zero",
@@ -699,6 +696,38 @@ def test_site_recusa(valor):
     assert site(valor) == (None, SITE)
 
 
+@pytest.mark.parametrize(
+    "valor",
+    [
+        "https://exemplo.pt/" + "p" * (SITE_MAXIMO - len("https://exemplo.pt/") + 1),
+        "exemplo.pt/" + "p" * (SITE_MAXIMO - len("https://exemplo.pt/") + 1),
+        "  https://exemplo.pt/" + "p" * (SITE_MAXIMO - len("https://exemplo.pt/") + 1) + "  ",
+        "HTTPS://EXEMPLO.PT/" + "p" * (SITE_MAXIMO - len("https://exemplo.pt/") + 1),
+        "exemplo.pt/" + "p" * 1000,
+    ],
+    ids=[
+        "256 caracteres",
+        "256 caracteres depois do https://",
+        "256 caracteres depois de aparar",
+        "256 caracteres com o esquema em maiúsculas",
+        "muito mais do que o limite",
+    ],
+)
+def test_site_comprido_diz_o_limite(valor):
+    """Revisão das alterações do dono (2026-10-13): um endereço válido mas
+    comprido de mais dizia só "tem de ser um endereço válido", e a pessoa não
+    percebia o que corrigir. Conta-se depois de normalizar: o campo da ficha
+    deixa escrever 255 e o `https://` que se junta a um domínio sem esquema
+    pode passar o limite."""
+    assert site(valor) == (None, SITE_COMPRIDO)
+
+
+def test_o_limite_do_site_so_se_aplica_a_um_endereco_valido():
+    """Um endereço inválido e comprido dá a mensagem do endereço, não a do limite."""
+    assert site("exemplo pt/" + "p" * 300) == (None, SITE)
+    assert site("ftp://exemplo.pt/" + "p" * 300) == (None, SITE)
+
+
 # --- instagram ---
 
 
@@ -708,6 +737,9 @@ def test_site_recusa(valor):
         ("@purplehouse", "https://www.instagram.com/purplehouse/"),
         ("purplehouse", "https://www.instagram.com/purplehouse/"),
         ("@purple.house_pt", "https://www.instagram.com/purple.house_pt/"),
+        ("a.b_c", "https://www.instagram.com/a.b_c/"),
+        ("a.b.c", "https://www.instagram.com/a.b.c/"),
+        ("_", "https://www.instagram.com/_/"),
         ("PurpleHouse", "https://www.instagram.com/PurpleHouse/"),
         ("  @purplehouse  ", "https://www.instagram.com/purplehouse/"),
         (" purplehouse﻿", "https://www.instagram.com/purplehouse/"),
@@ -733,6 +765,9 @@ def test_site_recusa(valor):
         "handle com @",
         "handle sem @",
         "handle com ponto e sublinhado",
+        "handle curto com ponto e sublinhado no meio",
+        "handle com dois pontos separados",
+        "handle só com um sublinhado",
         "maiúsculas ficam como escritas",
         "sem os espaços das pontas",
         "sem os espaços Unicode das pontas",
@@ -773,8 +808,16 @@ def test_instagram_normaliza(valor, guardado):
         "@purple\nhouse",
         "açaí",
         "@purplehouse!",
+        "@purplehouse.",
+        "purplehouse.",
+        ".",
+        "purple..house",
+        "@purple..house",
+        "a" * 29 + ".",
         "a" * 31,
         "@" + "a" * 31,
+        "https://www.instagram.com/purplehouse./",
+        "https://www.instagram.com/purple..house",
         "https://www.instagram.com/",
         "https://www.instagram.com",
         "instagram.com",
@@ -805,8 +848,16 @@ def test_instagram_normaliza(valor, guardado):
         "mudança de linha",
         "handle com acentos",
         "handle com ponto de exclamação",
+        "handle com @ a acabar em ponto (o ponto final da frase colado)",
+        "handle a acabar em ponto",
+        "handle só com um ponto",
+        "handle com dois pontos seguidos",
+        "handle com @ e dois pontos seguidos",
+        "handle com 30 caracteres a acabar em ponto",
         "handle com 31 caracteres",
         "handle com @ e 31 caracteres",
+        "URL com o perfil a acabar em ponto",
+        "URL com o perfil com dois pontos seguidos",
         "URL sem perfil",
         "URL sem perfil nem barra",
         "só o domínio",

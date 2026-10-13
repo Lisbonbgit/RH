@@ -40,6 +40,10 @@ _TELEFONE_FORMATO = re.compile(r"\+?[0-9]+( [0-9]+)*")
 SITE_MAXIMO = 255
 
 _SITE = "O site tem de ser um endereço válido (ex.: https://exemplo.pt)."
+# Um endereço válido mas comprido de mais diz o limite (como o `texto()`), e
+# não que "não é válido": o campo da ficha deixa escrever 255 e o `https://`
+# que se junta a um domínio sem esquema pode passá-lo.
+_SITE_COMPRIDO = f"O site tem no máximo {SITE_MAXIMO} caracteres."
 _INSTAGRAM = "O Instagram tem de ser um perfil válido (ex.: @purplehouse)."
 
 # Num endereço, um espaço (também os Unicode: o `\s` do Python em texto, mais
@@ -59,8 +63,11 @@ _ESQUEMAS_DO_SITE = ("http", "https")
 _ETIQUETA = r"[^\W_](?:(?:[^\W_]|-){0,61}[^\W_])?"
 _MAQUINA = re.compile(r"(?:" + _ETIQUETA + r"\.)+[^\W\d_]{2,63}")
 
-# O perfil do Instagram: letras ASCII, algarismos, ponto e sublinhado, 1 a 30.
-_INSTAGRAM_PERFIL = re.compile(r"[A-Za-z0-9._]{1,30}")
+# O perfil do Instagram: letras ASCII, algarismos, ponto e sublinhado, 1 a 30,
+# sem acabar em ponto nem ter dois pontos seguidos (o Instagram não os
+# permite; um "@perfil." colado ao ponto final de uma frase dava um endereço
+# que não existe).
+_INSTAGRAM_PERFIL = re.compile(r"(?!.*\.\.)[A-Za-z0-9._]{0,29}[A-Za-z0-9_]")
 _INSTAGRAM_DOMINIO = r"(?:https?://)?(?:www\.|m\.)?instagram\.com"
 # O endereço de um perfil: o domínio, uma barra, o perfil, uma barra opcional
 # e, de um link de partilha, a query e o fragmento, que se ignoram. Uma
@@ -130,9 +137,10 @@ def site(valor):
     Aparado; um domínio sem esquema ("exemplo.pt/loja") ganha `https://`; o
     esquema e a máquina ficam em minúsculas e o caminho, a query e o
     fragmento como vieram. Erro: espaços ou controlo, outro esquema, sem
-    máquina ou com uma que não é um domínio (`_MAQUINA`), utilizador/senha,
-    porto inválido, ou mais de `SITE_MAXIMO` depois de normalizar. O que não
-    for texto dá a mensagem do site.
+    máquina ou com uma que não é um domínio (`_MAQUINA`), utilizador/senha ou
+    porto inválido (a mensagem do site); um endereço válido com mais de
+    `SITE_MAXIMO` depois de normalizar diz o limite (`_SITE_COMPRIDO`). O que
+    não for texto dá a mensagem do site.
     """
     endereco, erro = _aparado(valor)
     if erro is not None:
@@ -156,7 +164,7 @@ def site(valor):
 
     normalizado = urlunsplit((partes.scheme, partes.netloc.lower(), partes.path, partes.query, partes.fragment))
     if len(normalizado) > SITE_MAXIMO:
-        return None, _SITE
+        return None, _SITE_COMPRIDO
     return normalizado, None
 
 
@@ -167,8 +175,9 @@ def instagram(valor):
     ou sem esquema, `www.` ou `m.`, barra final, query e fragmento de um link
     de partilha). O perfil (`_INSTAGRAM_PERFIL`) fica como foi escrito, com
     as maiúsculas. Erro: espaços ou controlo, só o domínio sem perfil, um
-    perfil fora das regras (hífen, acento, 31 caracteres, uma barra) ou outro
-    sítio. O que não for texto dá a mensagem do Instagram.
+    perfil fora das regras (hífen, acento, 31 caracteres, uma barra, a acabar
+    em ponto ou com dois pontos seguidos) ou outro sítio. O que não for texto
+    dá a mensagem do Instagram.
     """
     escrito, erro = _aparado(valor)
     if erro is not None:

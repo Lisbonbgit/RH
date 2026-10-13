@@ -305,7 +305,9 @@ def test_a_loja_da_api_e_uma_estrutura_nova():
 
 
 def test_o_resumo_do_mapa_tem_so_os_campos_do_pino():
-    """`oResumoDoMapaTemSoOsCamposDoPino`."""
+    """`oResumoDoMapaTemSoOsCamposDoPino`, mais a `pessoa_contacto` (revisão
+    das alterações do dono, 2026-10-13): a linha "Contacto: pessoa · telefone"
+    do cartão do mapa lê-a do resumo, que é a loja que o pino tem."""
     resumo = formatar.resumo_loja_api({
         "id": LOJA,
         "nome": "Café Central",
@@ -314,6 +316,7 @@ def test_o_resumo_do_mapa_tem_so_os_campos_do_pino():
         "lat": 38.7108,
         "lng": -9.1369,
         "telefone": "+351 912 345 678",
+        "pessoa_contacto": "D. Amélia",
     })
     esperado = {
         "id": LOJA,
@@ -323,6 +326,7 @@ def test_o_resumo_do_mapa_tem_so_os_campos_do_pino():
         "lat": 38.7108,
         "lng": -9.1369,
         "telefone": "+351 912 345 678",
+        "pessoa_contacto": "D. Amélia",
     }
     assert list(resumo.items()) == list(esperado.items())
 
@@ -330,14 +334,23 @@ def test_o_resumo_do_mapa_tem_so_os_campos_do_pino():
     resumo = formatar.resumo_loja_api({campo: minimo[campo] for campo in formatar.CAMPOS_RESUMO})
     assert list(resumo.items()) == list({
         "id": "00000000-0000-4000-8000-000000000001", "nome": "Bar", "fase": "potencial", "regiao_id": None,
-        "lat": 39.0, "lng": -8.0, "telefone": None,
+        "lat": 39.0, "lng": -8.0, "telefone": None, "pessoa_contacto": None,
     }.items())
     assert type(resumo["lat"]) is float and type(resumo["lng"]) is float
 
 
 def test_o_resumo_ignora_os_outros_campos_do_documento():
     resumo = formatar.resumo_loja_api(_doc_completo())
-    assert tuple(resumo) == ("id", "nome", "fase", "regiao_id", "lat", "lng", "telefone")
+    assert tuple(resumo) == ("id", "nome", "fase", "regiao_id", "lat", "lng", "telefone", "pessoa_contacto")
+    assert tuple(resumo) == formatar.CAMPOS_RESUMO
+
+
+def test_o_resumo_traz_o_que_a_linha_de_contacto_do_cartao_mostra():
+    """O `contactoDaLoja` de `frontend/src/lib/crm/ecraMapa.js` lê a pessoa e o
+    telefone da loja do pino, que vem do GET /lojas: têm de estar no resumo
+    (o `ecraMapa.test.js` lê a linha `CAMPOS_RESUMO = (…)` deste módulo)."""
+    assert {"pessoa_contacto", "telefone"} <= set(formatar.CAMPOS_RESUMO)
+    assert "instagram" not in formatar.CAMPOS_RESUMO and "site" not in formatar.CAMPOS_RESUMO
 
 
 # --- documento_localizacao: lat, lng e loc sempre juntos --------------------------------------

@@ -42,9 +42,11 @@ CAMPOS_API = (
     "criado_por", "criado_em", "atualizado_em",
 )
 
-# O resumo de cada loja no mapa (GET /lojas): o que o pino, os filtros e o
-# botão Ligar precisam.
-CAMPOS_RESUMO = ("id", "nome", "fase", "regiao_id", "lat", "lng", "telefone")
+# O resumo de cada loja no mapa (GET /lojas): o que o pino, os filtros e a
+# linha "Contacto: pessoa · telefone" do cartão precisam (a `pessoa_contacto`
+# entrou na revisão das alterações do dono, 2026-10-13: o cartão recebe a
+# loja da lista, não a ficha). O `ecraMapa.test.js` lê esta linha: fica numa só.
+CAMPOS_RESUMO = ("id", "nome", "fase", "regiao_id", "lat", "lng", "telefone", "pessoa_contacto")
 
 # Os temporizadores da F4/F5 (dossiê §5.11): já existem no documento, a null.
 _TEMPORIZADORES = (
@@ -183,4 +185,5 @@ def resumo_loja_api(doc: dict) -> dict:
         "lat": _coordenada(doc["lat"], -90.0, 90.0),
         "lng": _coordenada(doc["lng"], -180.0, 180.0),
         "telefone": doc["telefone"],
+        "pessoa_contacto": doc["pessoa_contacto"],
     }

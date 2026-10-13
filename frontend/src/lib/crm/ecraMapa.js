@@ -13,7 +13,10 @@
 //    aviso é um texto fixo: o nome da loja nunca entra nele;
 //  - a linha de contacto do cartão da loja (`components/crm/CartaoLoja.js`):
 //    a pessoa de contacto e o telefone em texto, tal como foram escritos. O
-//    botão Ligar do desenho original saiu em 2026-10-13, a pedido do Bruce.
+//    botão Ligar do desenho original saiu em 2026-10-13, a pedido do Bruce. A
+//    loja do cartão é a do resumo do `GET /lojas` (a que o pino tem), por isso
+//    o resumo traz os dois campos (`CAMPOS_RESUMO` em `backend/crm/formatar.py`;
+//    o `ecraMapa.test.js` confere-o).
 
 import { MENSAGEM_ERRO_INESPERADO } from './api';
 import { aplicarFiltros } from './filtros';
