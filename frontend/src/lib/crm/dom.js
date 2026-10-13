@@ -69,7 +69,9 @@ export function el(documento, tag, { texto, classe, atributos, filhos } = {}) {
 }
 
 // '+351 912 345 678' → 'tel:+351912345678'. Só dígitos e um '+' antes do
-// primeiro dígito. Menos de 9 dígitos → null (não se mostra "Ligar").
+// primeiro dígito. Menos de 9 dígitos → null (não há ligação para marcar).
+// Desde 2026-10-13 o cartão da loja já não a usa (mostra o contacto em texto);
+// fica para quem vier a precisar de uma ligação para marcar.
 export function hrefTelefone(telefone) {
   if (telefone === null || telefone === undefined) return null;
   const texto = String(telefone);

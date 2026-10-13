@@ -15,14 +15,19 @@
  *     não centra nada: a vista enquadra as lojas, como sempre;
  *   - o aviso vem do `state` da navegação (`{aviso: 'Loja guardada'}`) e
  *     mostra-se num toast; a loja do aviso é a do `?loja=`;
- *   - os ids são uuid em texto.
+ *   - os ids são uuid em texto;
+ *   - o cartão mostra o contacto em texto (`contactoDaLoja`: pessoa · telefone,
+ *     só o que existe) em vez do botão Ligar, que saiu em 2026-10-13 a pedido
+ *     do Bruce.
  */
 import { MENSAGEM_ERRO_INESPERADO } from './api';
 import { ZOOM_LOJA } from './mapa';
 import { filtrosPadrao } from './filtros';
 import {
   PARAMETRO_LOJA,
+  SEPARADOR_CONTACTO,
   TEXTO_ESCONDIDA_PELOS_FILTROS,
+  contactoDaLoja,
   lerAviso,
   lojaComId,
   textoAviso,
@@ -161,6 +166,51 @@ describe('vistaAoCarregar (a vista quando o pedido das lojas termina)', () => {
     vistaAoCarregar({ lojas, filtros, idLoja: CAFE });
     expect(lojas).toEqual(TRES_LOJAS);
     expect([...filtros.fases]).toEqual(['cliente']);
+  });
+});
+
+describe('contactoDaLoja (a linha "Contacto:" do cartão, em vez do botão Ligar)', () => {
+  test('o separador entre a pessoa e o telefone', () => {
+    expect(SEPARADOR_CONTACTO).toBe(' · ');
+  });
+
+  test('pessoa e telefone: "pessoa · telefone", tal como foram escritos', () => {
+    expect(contactoDaLoja({ ...TRES_LOJAS[0], pessoa_contacto: 'D. Amélia' })).toBe('D. Amélia · +351 912 345 678');
+    expect(contactoDaLoja({ pessoa_contacto: 'Sr. Rui', telefone: '912 345 678' })).toBe('Sr. Rui · 912 345 678');
+  });
+
+  test('só a pessoa, ou só o telefone: mostra o que há, sem separador', () => {
+    expect(contactoDaLoja({ ...TRES_LOJAS[0], pessoa_contacto: null })).toBe('+351 912 345 678');
+    expect(contactoDaLoja({ ...TRES_LOJAS[0], pessoa_contacto: '' })).toBe('+351 912 345 678');
+    expect(contactoDaLoja({ pessoa_contacto: 'D. Amélia' })).toBe('D. Amélia');
+    expect(contactoDaLoja({ pessoa_contacto: 'D. Amélia', telefone: null })).toBe('D. Amélia');
+    expect(contactoDaLoja({ pessoa_contacto: 'D. Amélia', telefone: '' })).toBe('D. Amélia');
+  });
+
+  test('sem pessoa nem telefone (ou só espaços): null — o cartão não mostra a linha', () => {
+    expect(contactoDaLoja(TRES_LOJAS[1])).toBeNull();
+    expect(contactoDaLoja({ pessoa_contacto: '', telefone: '' })).toBeNull();
+    expect(contactoDaLoja({ pessoa_contacto: '   ', telefone: ' ' })).toBeNull();
+    expect(contactoDaLoja({})).toBeNull();
+    for (const loja of [null, undefined, 'x', 3]) expect(contactoDaLoja(loja)).toBeNull();
+  });
+
+  test('os espaços à volta saem; o que não é texto conta como vazio', () => {
+    expect(contactoDaLoja({ pessoa_contacto: '  D. Amélia ', telefone: ' 912 345 678  ' })).toBe('D. Amélia · 912 345 678');
+    expect(contactoDaLoja({ pessoa_contacto: 7, telefone: ['912345678'] })).toBeNull();
+    expect(contactoDaLoja({ pessoa_contacto: { nome: 'x' }, telefone: '912 345 678' })).toBe('912 345 678');
+  });
+
+  test('o telefone não precisa de ser marcável (ao contrário do antigo Ligar): aparece como texto', () => {
+    expect(contactoDaLoja({ telefone: '1234' })).toBe('1234');
+    expect(contactoDaLoja({ telefone: 'sem telefone' })).toBe('sem telefone');
+  });
+
+  test('não altera a loja recebida', () => {
+    const loja = { ...TRES_LOJAS[0], pessoa_contacto: ' D. Amélia ' };
+    const copia = { ...loja };
+    contactoDaLoja(loja);
+    expect(loja).toEqual(copia);
   });
 });
 

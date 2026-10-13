@@ -10,7 +10,10 @@
 //    (no autónomo vinha com o ecrã de onde se saía);
 //  - o aviso de quem manda voltar ao mapa (ex.: "Loja guardada", no `state` da
 //    navegação), com "— os filtros escondem-na do mapa." quando é o caso. O
-//    aviso é um texto fixo: o nome da loja nunca entra nele.
+//    aviso é um texto fixo: o nome da loja nunca entra nele;
+//  - a linha de contacto do cartão da loja (`components/crm/CartaoLoja.js`):
+//    a pessoa de contacto e o telefone em texto, tal como foram escritos. O
+//    botão Ligar do desenho original saiu em 2026-10-13, a pedido do Bruce.
 
 import { MENSAGEM_ERRO_INESPERADO } from './api';
 import { aplicarFiltros } from './filtros';
@@ -22,8 +25,20 @@ export const PARAMETRO_LOJA = 'loja';
 // A loja nova não aparece no mapa porque os filtros guardados a escondem.
 export const TEXTO_ESCONDIDA_PELOS_FILTROS = 'os filtros escondem-na do mapa.';
 
+// Entre a pessoa de contacto e o telefone, na linha "Contacto:" do cartão.
+export const SEPARADOR_CONTACTO = ' · ';
+
 const numero = (valor) => typeof valor === 'number' && Number.isFinite(valor);
 const temCoordenadas = (loja) => numero(loja?.lat) && numero(loja?.lng);
+const texto = (valor) => (typeof valor === 'string' ? valor.trim() : '');
+
+// O contacto do cartão: "pessoa · telefone", só a parte que existe, ou null
+// sem nenhuma das duas (a linha não se mostra). É texto: o React escapa-o e
+// não se monta nenhuma ligação (o telefone aparece tal como foi escrito).
+export function contactoDaLoja(loja) {
+  const partes = [texto(loja?.pessoa_contacto), texto(loja?.telefone)].filter((parte) => parte !== '');
+  return partes.length > 0 ? partes.join(SEPARADOR_CONTACTO) : null;
+}
 
 // A mensagem de um erro do cliente (`ErroCrm`); sem ela, o texto de erro inesperado.
 export function textoDoErro(erro) {

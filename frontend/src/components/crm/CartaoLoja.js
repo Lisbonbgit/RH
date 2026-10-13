@@ -1,18 +1,19 @@
 // O cartão da loja no mapa (desenho original §6.1; plano T2.25): abre ao tocar
-// num pino, por baixo do mapa, com o nome, a fase, a última ação, Ligar (só se
-// houver um telefone que se possa marcar) e Ver ficha. Porta de
-// public/assets/js/componentes/cartao-loja.js do CRM autónomo. O "Adicionar à
-// rota" chega na F3 e a última ação na F5 (linha do tempo).
+// num pino, por baixo do mapa, com o nome, a fase, o contacto (a pessoa de
+// contacto e o telefone, em texto, só o que existe), a última ação e Ver
+// ficha. Porta de public/assets/js/componentes/cartao-loja.js do CRM autónomo.
+// O botão Ligar do desenho original saiu em 2026-10-13, a pedido do Bruce: o
+// contacto lê-se no próprio cartão (`contactoDaLoja`, `lib/crm/ecraMapa.js`).
+// O "Adicionar à rota" chega na F3 e a última ação na F5 (linha do tempo).
 //
-// O nome e a fase entram como texto (o React escapa-os). O `href` do Ligar
-// vem só do `hrefTelefone` (`lib/crm/dom.js`: dígitos e um `+`). O cartão não
-// se fecha sozinho: o "Fechar" avisa a página (`aoFechar`), que também volta a
-// medir o mapa.
+// O nome, a fase e o contacto entram como texto (o React escapa-os); não se
+// monta nenhuma ligação com o telefone. O cartão não se fecha sozinho: o
+// "Fechar" avisa a página (`aoFechar`), que também volta a medir o mapa.
 import React, { useId } from 'react';
 import { Link } from 'react-router-dom';
-import { FileText, Phone, X } from 'lucide-react';
+import { FileText, X } from 'lucide-react';
 import { Button } from '../ui/button';
-import { hrefTelefone } from '../../lib/crm/dom';
+import { contactoDaLoja } from '../../lib/crm/ecraMapa';
 import { FASES, ORDEM } from '../../lib/crm/fases';
 import './crm.css';
 
@@ -21,7 +22,7 @@ export const TEXTO_ULTIMA_ACAO = 'Última ação: ainda sem histórico';
 export default function CartaoLoja({ loja, base, aoFechar, refNome }) {
   const idNome = useId();
   const conhecida = ORDEM.includes(loja.fase);
-  const telefone = hrefTelefone(loja.telefone);
+  const contacto = contactoDaLoja(loja);
 
   return (
     <section
@@ -49,18 +50,15 @@ export default function CartaoLoja({ loja, base, aoFechar, refNome }) {
           {conhecida && <span aria-hidden="true" className={`crm-amostra-fase pino--${loja.fase}`} />}
           {conhecida ? FASES[loja.fase].rotulo : String(loja.fase ?? '')}
         </p>
+        {contacto && (
+          <p className="mt-1 text-sm text-muted-foreground [overflow-wrap:anywhere]" data-testid="crm-cartao-contacto">
+            <strong className="font-semibold text-foreground">Contacto:</strong> {contacto}
+          </p>
+        )}
         <p className="mb-3 mt-1 text-sm text-muted-foreground">
           <strong className="font-semibold text-foreground">Última ação:</strong> ainda sem histórico
         </p>
         <div className="flex flex-wrap gap-2">
-          {telefone && (
-            <Button asChild className="h-11 flex-1 basis-36">
-              <a href={telefone}>
-                <Phone className="h-4 w-4" aria-hidden="true" />
-                Ligar
-              </a>
-            </Button>
-          )}
           <Button asChild variant="outline" className="h-11 flex-1 basis-36">
             <Link to={`${base}/lojas/${encodeURIComponent(loja.id)}`}>
               <FileText className="h-4 w-4" aria-hidden="true" />

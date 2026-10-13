@@ -124,7 +124,7 @@ Interface responsiva única; planeamento otimizado para computador, rota do dia 
 - Todas as lojas como pinos coloridos por fase, **com o nome sempre visível ao lado do pino, em qualquer zoom, sem agrupamento** (decisão explícita: aceita-se sobreposição de nomes com o mapa muito afastado).
 - Ícones 📦 🔁 ⏰ junto ao pino (§4.2).
 - Filtros: fase (por defeito todas), região, "só com pendentes".
-- Tocar num pino → cartão: nome, fase, última ação, botões **Ligar** (`tel:`), **Ver ficha**, **Adicionar à rota** (escolhe o dia).
+- Tocar num pino → cartão: nome, fase, contacto em texto («Contacto: pessoa · telefone», só as partes que existem; nada sem ambas), última ação, botões **Ver ficha**, **Adicionar à rota** (escolhe o dia). O botão **Ligar** (`tel:`) do desenho original saiu em 2026-10-13, a pedido do Bruce: o contacto lê-se no próprio cartão.
 - Atribuição sempre visível no canto do mapa (§9).
 
 ### 6.2 ➕ Adicionar loja
