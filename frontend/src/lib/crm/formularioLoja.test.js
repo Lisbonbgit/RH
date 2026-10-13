@@ -18,7 +18,9 @@
  *   - os limites dos campos de texto são os do servidor, lidos do
  *     `backend/crm/dominio/validador_loja.py`.
  * O horário de receção e os dias fechada são só da ficha (`{ficha: true}`,
- * T2.28); o registo rápido (T2.27) não os tem.
+ * T2.28); o registo rápido (T2.27) não os tem. O Instagram e o site
+ * (2026-10-13, a pedido do dono) seguem o mesmo caminho: só na ficha, e o
+ * limite do site é o do `backend/crm/dominio/campos_loja.py`.
  */
 import fs from 'fs';
 import path from 'path';
@@ -59,6 +61,9 @@ import { TEXTO_REGIAO_GUARDADA } from './filtros';
 // frontend/src/lib/crm → raiz do repositório.
 const VALIDADOR_PY = path.join(
   __dirname, '..', '..', '..', '..', 'backend', 'crm', 'dominio', 'validador_loja.py',
+);
+const CAMPOS_LOJA_PY = path.join(
+  __dirname, '..', '..', '..', '..', 'backend', 'crm', 'dominio', 'campos_loja.py',
 );
 
 const LISBOA = '3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
@@ -118,6 +123,22 @@ test('os limites do nome, da morada, da localidade e da pessoa de contacto são 
     expect([campo, linhas.length]).toEqual([campo, 1]);
     expect([campo, CAMPOS[campo].maxLength]).toEqual([campo, Number(linhas[0][1])]);
   }
+});
+
+test('o Instagram e o site (2026-10-13): rótulos, atributos, e o limite do site é o do servidor (campos_loja.py)', () => {
+  expect(CAMPOS.instagram).toEqual({
+    rotulo: 'Instagram', tipo: 'text', maxLength: 255, placeholder: '@purplehouse', autoComplete: 'off',
+  });
+  expect(CAMPOS.site).toEqual({
+    rotulo: 'Site', tipo: 'url', inputMode: 'url', maxLength: 255, placeholder: 'https://exemplo.pt', autoComplete: 'off',
+  });
+  expect(Object.isFrozen(CAMPOS.instagram) && Object.isFrozen(CAMPOS.site)).toBe(true);
+  // Falha, e não salta, se o ficheiro não estiver lá.
+  expect(fs.existsSync(CAMPOS_LOJA_PY)).toBe(true);
+  const python = fs.readFileSync(CAMPOS_LOJA_PY, 'utf8');
+  const site = [...python.matchAll(/^SITE_MAXIMO = (\d+)$/gm)];
+  expect(site).toHaveLength(1);
+  expect(CAMPOS.site.maxLength).toBe(Number(site[0][1]));
 });
 
 test('a fase escolhe-se com um toque: uma opção por fase, pela ordem do funil, com a cor do pino; começa em Potencial', () => {
@@ -435,6 +456,8 @@ const LOJA = {
   precisao_m: null,
   telefone: '+351 912 345 678',
   pessoa_contacto: null,
+  instagram: 'https://www.instagram.com/mercearia.da.baixa/',
+  site: null,
   notas: 'Fecha à hora de almoço',
   janela1_inicio: '10:00',
   janela1_fim: '13:00',
@@ -454,10 +477,36 @@ test('sem `ficha` (registo rápido, E5) não há horário de receção nem dias 
   expect(separarErros({ janela1_fim: 'x', dias_fechada: 'y' }).restantes).toEqual({ janela1_fim: 'x', dias_fechada: 'y' });
 });
 
+test('sem `ficha` também não há Instagram nem site (2026-10-13): o registo rápido fica como no desenho §6.2', () => {
+  expect(camposDoFormulario()).not.toContain('instagram');
+  expect(camposDoFormulario()).not.toContain('site');
+  expect(Object.keys(estadoInicial().valores)).not.toContain('instagram');
+  expect(Object.keys(valoresDoFormulario({ ...estadoInicial().valores, site: 'x' }))).not.toContain('site');
+  expect(Object.keys(preencherComLoja(LOJA).valores)).not.toContain('instagram');
+  const inicial = estadoInicial();
+  expect(mudarCampo(inicial, 'instagram', '@x')).toBe(inicial); // não há onde escrever
+  expect(separarErros({ instagram: 'x', site: 'y' })).toEqual({ porCampo: {}, primeiro: null, restantes: { instagram: 'x', site: 'y' } });
+});
+
+test('ficha: o Instagram e o site escrevem-se à mão, a seguir à localidade; vão nos valores e limpam o erro', () => {
+  let estado = comErros(estadoInicial({ ficha: true }), { site: 'O site tem de ser um endereço válido (ex.: https://exemplo.pt).' });
+  expect(estado.valores).toMatchObject({ instagram: '', site: '' });
+  estado = escrever(estado, 'instagram', '@purplehouse');
+  expect(estado.valores.instagram).toBe('@purplehouse');
+  expect(estado.erros).toEqual({ site: 'O site tem de ser um endereço válido (ex.: https://exemplo.pt).' });
+  estado = escrever(estado, 'site', 'exemplo.pt');
+  expect(estado.erros).toEqual({});
+  expect(escrever(estado, 'site', 7)).toBe(estado); // só texto
+  expect(valoresDoFormulario(estado.valores, { ficha: true })).toMatchObject({ instagram: '@purplehouse', site: 'exemplo.pt' });
+  expect(valoresDoFormulario({ ...estado.valores, instagram: null, site: undefined }, { ficha: true })).toMatchObject({ instagram: '', site: '' });
+  const { porCampo, primeiro, restantes } = separarErros({ lat: 'x', instagram: 'a', site: 'b' }, { ficha: true });
+  expect([porCampo, primeiro, restantes]).toEqual([{ instagram: 'a', site: 'b' }, 'instagram', { lat: 'x' }]);
+});
+
 test('ficha: o horário de receção (2 janelas, horas HH:MM) e os dias fechada, antes das notas', () => {
   expect(camposDoFormulario({ ficha: true })).toEqual([
     'nome', 'fase', 'regiao_id', 'telefone', 'pessoa_contacto', 'morada', 'codigo_postal', 'localidade',
-    ...CAMPOS_HORAS, 'dias_fechada', 'notas',
+    'instagram', 'site', ...CAMPOS_HORAS, 'dias_fechada', 'notas',
   ]);
   expect([ROTULO_HORARIO, ROTULO_DIAS]).toEqual(['Horário de receção', 'Dias fechada']);
   expect(camposJanelas()).toEqual([
@@ -532,6 +581,8 @@ test('preencherComLoja: os campos ficam com os da loja (null fica vazio), a fase
       morada: 'Rua Augusta 24',
       codigo_postal: '1100-048',
       localidade: 'Lisboa',
+      instagram: 'https://www.instagram.com/mercearia.da.baixa/',
+      site: '',
       notas: 'Fecha à hora de almoço',
       janela1_inicio: '10:00',
       janela1_fim: '13:00',

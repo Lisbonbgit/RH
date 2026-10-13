@@ -39,6 +39,8 @@ REGIAO = "A região não é válida."
 GPS = "Localização imprecisa — ajuste o pino"
 FORMATO_HORA = "A hora tem de estar no formato HH:MM."
 ORIGEM_INVALIDA = "A origem das coordenadas não é válida."
+INSTAGRAM = "O Instagram tem de ser um perfil válido (ex.: @purplehouse)."
+SITE = "O site tem de ser um endereço válido (ex.: https://exemplo.pt)."
 
 REGIAO_ID = "5b0c6f1e-2d3a-4b8c-9e7f-0a1b2c3d4e5f"
 
@@ -97,6 +99,9 @@ LIMPEZAS = [
     ("morada nula", "morada", None, None),
     ("pessoa de contacto só com um espaço ideográfico", "pessoa_contacto", "　", None),
     ("notas vazias", "notas", "", None),
+    ("instagram vazio", "instagram", "", None),
+    ("site nulo", "site", None, None),
+    ("site só com espaços Unicode", "site", " ﻿", None),
     ("código postal nulo", "codigo_postal", None, None),
     ("hora nula", "janela1_inicio", None, None),
     ("dias fechada nulos", "dias_fechada", None, []),
@@ -129,7 +134,16 @@ INVALIDOS = [
     ("dias repetidos", {"dias_fechada": ["seg", "seg"]}, {"dias_fechada": "Há dias repetidos."}),
     ("hora inválida", {"janela2_fim": "7:00"}, {"janela2_fim": FORMATO_HORA}),
     ("notas que não são texto", {"notas": False}, {"notas": "Tem de ser texto."}),
+    ("instagram com hífen", {"instagram": "@purple-house"}, {"instagram": INSTAGRAM}),
+    ("site sem domínio de topo", {"site": "https://exemplo"}, {"site": SITE}),
 ]
+
+
+def test_o_instagram_e_o_site_normalizam_se_como_na_criacao():
+    assert pares(alteracao({"instagram": "instagram.com/purplehouse/", "site": "Exemplo.PT/loja"})) == (
+        [("instagram", "https://www.instagram.com/purplehouse/"), ("site", "https://exemplo.pt/loja")],
+        [],
+    )
 
 
 @pytest.mark.parametrize(
@@ -415,6 +429,8 @@ def test_com_todos_os_campos_os_dados_sao_os_da_criacao():
         "precisao_m": 12.4,
         "telefone": " +351  912 345   678 ",
         "pessoa_contacto": " Ana ",
+        "instagram": "@gelataria.do.rato",
+        "site": "gelatariadorato.pt",
         "notas": " Descarga pela porta lateral. ",
         "janela1_inicio": "10:00",
         "janela1_fim": "13:00",

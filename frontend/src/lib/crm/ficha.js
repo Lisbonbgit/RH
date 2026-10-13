@@ -6,8 +6,8 @@
 // num toque)").
 //
 //  - O formulário é o da nova loja (`formularioLoja.js`), já preenchido com o
-//    GET /api/crm/lojas/{id}, mais o horário de receção (2 janelas) e os dias
-//    fechada.
+//    GET /api/crm/lojas/{id}, mais o Instagram e o site (2026-10-13), o
+//    horário de receção (2 janelas) e os dias fechada.
 //  - A fase muda com um toque: escolher uma pastilha grava logo só a fase
 //    (PATCH {fase, atualizado_em}), sem Guardar, e avisa "Fase guardada". O
 //    resto da ficha fica como está (o que se mudou noutros campos, antes ou

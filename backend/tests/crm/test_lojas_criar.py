@@ -118,6 +118,8 @@ def _loja(numero, nome, lat, lng=LNG, **outros):
         "precisao_m": None,
         "telefone": None,
         "pessoa_contacto": None,
+        "instagram": None,
+        "site": None,
         "notas": None,
         "janelas": [],
         "dias_fechada": [],
@@ -278,6 +280,8 @@ def test_criar_devolve_201_com_a_loja_completa(sessao):
         "precisao_m": 12.4,
         "telefone": "+351  912 345 678",
         "pessoa_contacto": "Rita",
+        "instagram": "@cafe.central",
+        "site": "cafecentral.pt",
         "notas": "Fecha em agosto.",
         "janela1_inicio": "10:00",
         "janela1_fim": "13:00",
@@ -304,6 +308,8 @@ def test_criar_devolve_201_com_a_loja_completa(sessao):
         "precisao_m": 12,
         "telefone": "+351 912 345 678",
         "pessoa_contacto": "Rita",
+        "instagram": "https://www.instagram.com/cafe.central/",
+        "site": "https://cafecentral.pt",
         "notas": "Fecha em agosto.",
         "janela1_inicio": "10:00",
         "janela1_fim": "13:00",
@@ -372,6 +378,8 @@ def test_a_loja_fica_gravada_como_a_api_a_devolve(sessao):
         "precisao_m": None,
         "telefone": None,
         "pessoa_contacto": None,
+        "instagram": None,
+        "site": None,
         "notas": None,
         "janelas": [{"inicio": "09:30", "fim": "12:00"}],
         "dias_fechada": ["seg", "dom"],
@@ -401,7 +409,8 @@ def test_so_com_os_obrigatorios_o_resto_fica_vazio(sessao):
         "Café Central", "potencial", "pin_manual", [],
     )
     for campo in ("regiao_id", "morada", "codigo_postal", "localidade", "precisao_m", "telefone",
-                  "pessoa_contacto", "notas", "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim"):
+                  "pessoa_contacto", "instagram", "site", "notas",
+                  "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim"):
         assert loja[campo] is None, campo
 
 
@@ -464,6 +473,10 @@ INVALIDAS = [
     }),
     ("região que não é um id", _minima(regiao_id="2"), {"regiao_id": "A região não é válida."}),
     ("janela sem fim", _minima(janela1_inicio="10:00"), {"janela1_fim": "Indique também o fim."}),
+    ("instagram e site (2026-10-13)", _minima(instagram="purple house", site="exemplo"), {
+        "instagram": "O Instagram tem de ser um perfil válido (ex.: @purplehouse).",
+        "site": "O site tem de ser um endereço válido (ex.: https://exemplo.pt).",
+    }),
 ]
 
 

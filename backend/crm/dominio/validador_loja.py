@@ -10,7 +10,9 @@ dados também vêm por essa ordem. As outras chaves do pedido (`id`,
 Normalização: textos sem espaços nas pontas (também os Unicode,
 `texto.aparar`) e "" → `None`; lat/lng arredondadas a 6 casas
 meio-para-longe-do-zero; `precisao_m` em metros inteiros e só com origem
-`gps` (nas outras fica `None`); `dias_fechada` pela ordem da semana.
+`gps` (nas outras fica `None`); `dias_fechada` pela ordem da semana; o
+`instagram` como o endereço do perfil e o `site` como URL http(s)
+(`campos_loja.instagram`/`site`, 2026-10-13).
 
 Adaptação do portal (plano T2.5): `regiao_id` é `None` ou o uuid4 em texto
 de uma região (o `str(uuid.uuid4())` com que o portal grava os ids), e não o
@@ -30,10 +32,12 @@ from .geo import MENSAGEM_GPS, MENSAGEM_PORTUGAL, contem_latitude, contem_longit
 from .numeros import arredondar, e_numero_json
 from .texto import aparar
 
-# Os campos da loja que a API aceita, pela ordem da tabela (dossiê §5.2).
+# Os campos da loja que a API aceita, pela ordem da tabela (dossiê §5.2): os 18
+# do autónomo mais `instagram` e `site` (2026-10-13, a pedido do dono), a
+# seguir à pessoa de contacto.
 CAMPOS = (
     "nome", "fase", "regiao_id", "morada", "codigo_postal", "localidade",
-    "lat", "lng", "origem_coords", "precisao_m", "telefone", "pessoa_contacto", "notas",
+    "lat", "lng", "origem_coords", "precisao_m", "telefone", "pessoa_contacto", "instagram", "site", "notas",
     "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim", "dias_fechada",
 )
 
@@ -63,7 +67,7 @@ _UUID4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 
 
 def criacao(dados: dict):
-    """Uma loja nova: `(dados, erros)`, com os 18 campos (os que faltam a `None`).
+    """Uma loja nova: `(dados, erros)`, com os 20 campos (os que faltam a `None`).
 
     Obrigatórios: nome, fase e o pino (lat, lng, origem_coords). As janelas
     só se comparam (`janelas.erros`) quando nenhuma das quatro horas tem erro.
@@ -181,6 +185,10 @@ def _campo(campo: str, valor):
         return campos_loja.codigo_postal(valor)
     if campo == "telefone":
         return campos_loja.telefone(valor)
+    if campo == "instagram":
+        return campos_loja.instagram(valor)
+    if campo == "site":
+        return campos_loja.site(valor)
     if campo == "notas":
         return campos_loja.notas(valor)
     if campo == "dias_fechada":

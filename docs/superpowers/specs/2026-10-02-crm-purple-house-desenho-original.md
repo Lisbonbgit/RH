@@ -93,6 +93,7 @@ Regras dos temporizadores:
 - morada, codigo_postal, localidade
 - lat, lng (`DECIMAL(9,6)`), origem_coords (`pin_manual`|`gps`|`geocoder`), precisao_m (opcional)
 - telefone, pessoa_contacto, notas (incluem férias/feriados na v1)
+- instagram, site (opcionais; acrescentados no portal em 2026-10-13, a pedido do dono: o Instagram guarda-se como o endereço do perfil, `https://www.instagram.com/<nome>/`, e o site como URL `http(s)`, até 255 caracteres; não existiam no CRM autónomo)
 - janela1_inicio, janela1_fim, janela2_inicio, janela2_fim (opcionais; ex.: 10:00–13:00 e 15:00–19:00; sem janelas = qualquer hora do dia de trabalho)
 - dias_fechada (conjunto de dias da semana)
 - visita_pendente_motivo, visita_pendente_desde (🔁, §4.2)
@@ -138,7 +139,7 @@ Interface responsiva única; planeamento otimizado para computador, rota do dia 
 - No telemóvel, adicionar loja exige rede (botão desativado com "sem rede").
 
 ### 6.3 📋 Ficha da loja
-- Dados, fase (mudar com um toque), horário de receção, dias fechada, notas.
+- Dados, fase (mudar com um toque), horário de receção, dias fechada, notas. Desde 2026-10-13 também o Instagram e o site (só aqui, não no registo rápido do §6.2).
 - "Estou nesta loja" também aqui, para corrigir a localização (mesmo fluxo de confirmação).
 - Linha do tempo com botão para registar chamada/visita/nota; uma chamada ou visita com resultado aplica os efeitos de §4.1.
 - Visita pendente 🔁: mostra o motivo e permite anulá-la.

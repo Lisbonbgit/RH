@@ -16,13 +16,25 @@ Armadilhas do Python (plano §10; dossiê §2.1 e §5.2): `[0-9]` e
 """
 import pytest
 
-from crm.dominio.campos_loja import DIAS, codigo_postal, dias_fechada, notas, telefone, texto
+from crm.dominio.campos_loja import (
+    DIAS,
+    SITE_MAXIMO,
+    codigo_postal,
+    dias_fechada,
+    instagram,
+    notas,
+    site,
+    telefone,
+    texto,
+)
 
 TELEFONE = "O telefone tem de ter 9 a 15 algarismos (aceita + e espaços)."
 POSTAL = "O código postal tem de ter o formato 0000-000."
 MENSAGEM_DIAS = "Os dias têm de ser seg, ter, qua, qui, sex, sab ou dom."
 TEXTO = "Tem de ser texto."
 NOTAS = "As notas são demasiado compridas."
+SITE = "O site tem de ser um endereço válido (ex.: https://exemplo.pt)."
+INSTAGRAM = "O Instagram tem de ser um perfil válido (ex.: @purplehouse)."
 
 # Os rótulos e tamanhos do ValidadorLoja::TEXTOS (a tabela fica na T2.5).
 MORADA = ("A morada", 255)
@@ -558,3 +570,261 @@ def test_dias_fechada_vazios_sao_uma_lista_nova_em_cada_chamada():
     primeira, _ = dias_fechada(None)
     primeira.append("seg")
     assert dias_fechada(None) == ([], None)
+
+
+# --- site (2026-10-13, a pedido do dono: a ficha da loja com Instagram e site) ---
+
+
+def test_o_site_guarda_ate_255_caracteres():
+    assert SITE_MAXIMO == 255
+
+
+@pytest.mark.parametrize(
+    "valor, guardado",
+    [
+        ("https://exemplo.pt", "https://exemplo.pt"),
+        ("http://exemplo.pt", "http://exemplo.pt"),
+        ("exemplo.pt", "https://exemplo.pt"),
+        ("www.exemplo.pt", "https://www.exemplo.pt"),
+        ("exemplo.pt/loja", "https://exemplo.pt/loja"),
+        ("exemplo.pt/loja?x=1&y=2#topo", "https://exemplo.pt/loja?x=1&y=2#topo"),
+        ("  exemplo.pt  ", "https://exemplo.pt"),
+        (" https://exemplo.pt　", "https://exemplo.pt"),
+        ("https://exemplo.pt/", "https://exemplo.pt/"),
+        ("https://loja.exemplo.com.pt/a/b", "https://loja.exemplo.com.pt/a/b"),
+        ("HTTPS://Exemplo.PT/Loja", "https://exemplo.pt/Loja"),
+        ("exemplo.pt:8080", "https://exemplo.pt:8080"),
+        ("açaí.pt", "https://açaí.pt"),
+        ("https://" + "a" * 63 + ".pt", "https://" + "a" * 63 + ".pt"),
+        ("https://exemplo.pt/" + "p" * (SITE_MAXIMO - len("https://exemplo.pt/")), "https://exemplo.pt/" + "p" * 236),
+        ("", None),
+        ("   ", None),
+        (None, None),
+    ],
+    ids=[
+        "https",
+        "http fica http",
+        "só o domínio ganha https://",
+        "www sem esquema",
+        "domínio com caminho",
+        "com query e fragmento",
+        "sem os espaços das pontas",
+        "sem os espaços Unicode das pontas",
+        "com barra no fim",
+        "subdomínio e caminho",
+        "esquema e máquina ficam em minúsculas, o caminho não",
+        "com porto",
+        "domínio com acentos",
+        "etiqueta com 63 caracteres",
+        "255 caracteres",
+        "vazio",
+        "só espaços",
+        "nulo",
+    ],
+)
+def test_site_normaliza(valor, guardado):
+    assert site(valor) == (guardado, None)
+
+
+@pytest.mark.parametrize(
+    "valor",
+    [
+        "exemplo",
+        "exemplo pt",
+        "https://exemplo .pt",
+        "https://exem\nplo.pt",
+        "exemplo.pt\tloja",
+        "https://exemplo.pt/ loja",
+        "ftp://exemplo.pt",
+        "mailto:loja@exemplo.pt",
+        "javascript:alert(1)",
+        "https://",
+        "https:///exemplo.pt",
+        "//exemplo.pt",
+        "https://utilizador:senha@exemplo.pt",
+        "https://exemplo.pt:abc",
+        "https://exemplo.pt:99999",
+        "https://192.168.1.1",
+        "https://exemplo.pt.",
+        "https://-exemplo.pt",
+        "https://exemplo-.pt",
+        "https://exemplo.p",
+        "https://exemplo.123",
+        "https://exem_plo.pt",
+        "https://" + "a" * 64 + ".pt",
+        "https://exemplo.pt/" + "p" * (SITE_MAXIMO - len("https://exemplo.pt/") + 1),
+        "exemplo.pt/" + "p" * (SITE_MAXIMO - len("https://exemplo.pt/") + 1),
+        "https://exemplo.pt/\x00",
+        True,
+        0,
+        12.5,
+        ["https://exemplo.pt"],
+        {"url": "https://exemplo.pt"},
+    ],
+    ids=[
+        "sem domínio de topo",
+        "com espaço no meio",
+        "espaço na máquina",
+        "mudança de linha no meio",
+        "tabulação",
+        "espaço sem quebra no caminho",
+        "ftp",
+        "mailto",
+        "javascript",
+        "só o esquema",
+        "sem máquina",
+        "sem esquema e com duas barras",
+        "com utilizador e senha",
+        "porto com letras",
+        "porto fora do intervalo",
+        "endereço IP",
+        "ponto no fim",
+        "etiqueta a começar por hífen",
+        "etiqueta a acabar em hífen",
+        "domínio de topo com uma letra",
+        "domínio de topo só com algarismos",
+        "sublinhado na máquina",
+        "etiqueta com 64 caracteres",
+        "256 caracteres",
+        "256 caracteres depois do https://",
+        "carácter de controlo",
+        "verdadeiro",
+        "zero",
+        "decimal",
+        "lista",
+        "objeto",
+    ],
+)
+def test_site_recusa(valor):
+    assert site(valor) == (None, SITE)
+
+
+# --- instagram ---
+
+
+@pytest.mark.parametrize(
+    "valor, guardado",
+    [
+        ("@purplehouse", "https://www.instagram.com/purplehouse/"),
+        ("purplehouse", "https://www.instagram.com/purplehouse/"),
+        ("@purple.house_pt", "https://www.instagram.com/purple.house_pt/"),
+        ("PurpleHouse", "https://www.instagram.com/PurpleHouse/"),
+        ("  @purplehouse  ", "https://www.instagram.com/purplehouse/"),
+        (" purplehouse﻿", "https://www.instagram.com/purplehouse/"),
+        ("https://www.instagram.com/purplehouse/", "https://www.instagram.com/purplehouse/"),
+        ("https://www.instagram.com/purplehouse", "https://www.instagram.com/purplehouse/"),
+        ("https://instagram.com/purplehouse/", "https://www.instagram.com/purplehouse/"),
+        ("http://www.instagram.com/purplehouse", "https://www.instagram.com/purplehouse/"),
+        ("www.instagram.com/purplehouse", "https://www.instagram.com/purplehouse/"),
+        ("instagram.com/purplehouse", "https://www.instagram.com/purplehouse/"),
+        ("https://m.instagram.com/purplehouse/", "https://www.instagram.com/purplehouse/"),
+        ("https://www.instagram.com/purplehouse/?igsh=abc123", "https://www.instagram.com/purplehouse/"),
+        ("https://www.instagram.com/purplehouse?utm_source=x#y", "https://www.instagram.com/purplehouse/"),
+        ("HTTPS://WWW.INSTAGRAM.COM/purplehouse/", "https://www.instagram.com/purplehouse/"),
+        ("https://www.instagram.com/@purplehouse/", "https://www.instagram.com/purplehouse/"),
+        ("a" * 30, "https://www.instagram.com/" + "a" * 30 + "/"),
+        ("@" + "a" * 30, "https://www.instagram.com/" + "a" * 30 + "/"),
+        ("1", "https://www.instagram.com/1/"),
+        ("", None),
+        ("   ", None),
+        (None, None),
+    ],
+    ids=[
+        "handle com @",
+        "handle sem @",
+        "handle com ponto e sublinhado",
+        "maiúsculas ficam como escritas",
+        "sem os espaços das pontas",
+        "sem os espaços Unicode das pontas",
+        "URL completa",
+        "URL sem barra no fim",
+        "URL sem www",
+        "URL em http",
+        "URL sem esquema",
+        "URL só com o domínio",
+        "URL do telemóvel",
+        "URL de partilha com query",
+        "URL com query e fragmento",
+        "URL em maiúsculas",
+        "URL com @ no caminho",
+        "handle com 30 caracteres",
+        "handle com @ e 30 caracteres",
+        "handle com um carácter",
+        "vazio",
+        "só espaços",
+        "nulo",
+    ],
+)
+def test_instagram_normaliza(valor, guardado):
+    assert instagram(valor) == (guardado, None)
+
+
+@pytest.mark.parametrize(
+    "valor",
+    [
+        "@",
+        "@@purplehouse",
+        "purple house",
+        "@purple house",
+        "purple-house",
+        "purple/house",
+        "purplehouse/",
+        "@purplehouse/",
+        "@purple\nhouse",
+        "açaí",
+        "@purplehouse!",
+        "a" * 31,
+        "@" + "a" * 31,
+        "https://www.instagram.com/",
+        "https://www.instagram.com",
+        "instagram.com",
+        "www.instagram.com/",
+        "https://www.instagram.com/p/ABC123/",
+        "https://www.instagram.com/purplehouse/reels/",
+        "https://www.instagram.com//purplehouse/",
+        "https://www.facebook.com/purplehouse",
+        "https://instagram.com.exemplo.pt/purplehouse",
+        "https://www.instagram.com/purple house/",
+        "https://www.instagram.com/" + "a" * 31 + "/",
+        "purplehouse\x00",
+        True,
+        0,
+        12.5,
+        ["purplehouse"],
+        {"handle": "purplehouse"},
+    ],
+    ids=[
+        "só o @",
+        "dois @",
+        "handle com espaço",
+        "handle com @ e espaço",
+        "handle com hífen",
+        "handle com barra",
+        "handle com barra no fim",
+        "handle com @ e barra no fim",
+        "mudança de linha",
+        "handle com acentos",
+        "handle com ponto de exclamação",
+        "handle com 31 caracteres",
+        "handle com @ e 31 caracteres",
+        "URL sem perfil",
+        "URL sem perfil nem barra",
+        "só o domínio",
+        "só o domínio com www",
+        "URL de uma publicação",
+        "URL dos reels do perfil",
+        "URL com duas barras",
+        "URL de outro sítio",
+        "URL de um domínio parecido",
+        "URL com espaço no perfil",
+        "URL com 31 caracteres no perfil",
+        "carácter de controlo",
+        "verdadeiro",
+        "zero",
+        "decimal",
+        "lista",
+        "objeto",
+    ],
+)
+def test_instagram_recusa(valor):
+    assert instagram(valor) == (None, INSTAGRAM)

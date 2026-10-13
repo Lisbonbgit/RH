@@ -2,8 +2,9 @@
 
 Porta de `ValidadorLoja::criacao` (src/Dominio/Lojas/ValidadorLoja.php) do
 CRM autónomo, com todos os cenários do ValidadorLojaCriacaoTest.php e os
-mesmos nomes nos `ids`. Devolve `(dados, erros)`: os dados têm sempre os 18
-campos de `CAMPOS`, por essa ordem (os que faltam ficam `None`), e só se usam
+mesmos nomes nos `ids`. Devolve `(dados, erros)`: os dados têm sempre os 20
+campos de `CAMPOS` (os 18 do autónomo mais `instagram` e `site`, acrescentados
+em 2026-10-13), por essa ordem (os que faltam ficam `None`), e só se usam
 quando não há erros; os erros são `{campo: mensagem pt-PT}`, também pela
 ordem de `CAMPOS`. A ordem dos dicionários conta, por isso compara-se
 `list(….items())` (o `==` de dois `dict` ignora a ordem), e o tipo também
@@ -35,6 +36,8 @@ GPS = "Localização imprecisa — ajuste o pino"
 FORA = "Fora de Portugal"
 FORMATO_HORA = "A hora tem de estar no formato HH:MM."
 ORIGEM_INVALIDA = "A origem das coordenadas não é válida."
+INSTAGRAM = "O Instagram tem de ser um perfil válido (ex.: @purplehouse)."
+SITE = "O site tem de ser um endereço válido (ex.: https://exemplo.pt)."
 
 # Um uuid4 como os que o portal grava (`str(uuid.uuid4())`): minúsculas, a
 # versão 4 no 13.º algarismo e a variante (8, 9, a ou b) no 17.º.
@@ -68,7 +71,7 @@ def mesmo_valor(a, b):
 def test_os_campos_sao_os_da_tabela_da_loja_por_ordem():
     assert CAMPOS == (
         "nome", "fase", "regiao_id", "morada", "codigo_postal", "localidade",
-        "lat", "lng", "origem_coords", "precisao_m", "telefone", "pessoa_contacto", "notas",
+        "lat", "lng", "origem_coords", "precisao_m", "telefone", "pessoa_contacto", "instagram", "site", "notas",
         "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim", "dias_fechada",
     )
 
@@ -103,6 +106,8 @@ def test_so_com_os_obrigatorios_os_outros_campos_ficam_vazios():
         ("precisao_m", None),
         ("telefone", None),
         ("pessoa_contacto", None),
+        ("instagram", None),
+        ("site", None),
         ("notas", None),
         ("janela1_inicio", None),
         ("janela1_fim", None),
@@ -127,6 +132,8 @@ def test_normaliza_uma_loja_completa():
         "precisao_m": 12.4,
         "telefone": " +351  912 345   678 ",
         "pessoa_contacto": " Ana ",
+        "instagram": " @gelataria.do.rato ",
+        "site": " gelatariadorato.pt ",
         "notas": " Descarga pela porta lateral.\nFérias em agosto. ",
         "janela1_inicio": "10:00",
         "janela1_fim": "13:00",
@@ -149,6 +156,8 @@ def test_normaliza_uma_loja_completa():
         ("precisao_m", 12),
         ("telefone", "+351 912 345 678"),
         ("pessoa_contacto", "Ana"),
+        ("instagram", "https://www.instagram.com/gelataria.do.rato/"),
+        ("site", "https://gelatariadorato.pt"),
         ("notas", "Descarga pela porta lateral.\nFérias em agosto."),
         ("janela1_inicio", "10:00"),
         ("janela1_fim", "13:00"),
@@ -259,6 +268,20 @@ CASOS_OUTROS_CAMPOS = [
     ("notas com mais de 65 535 bytes", {"notas": "é" * 32768}, {"notas": "As notas são demasiado compridas."}),
     ("morada que não é texto", {"morada": ["Rua"]}, {"morada": "Tem de ser texto."}),
     ("notas que não são texto", {"notas": 42}, {"notas": "Tem de ser texto."}),
+    ("instagram com espaço", {"instagram": "purple house"}, {"instagram": INSTAGRAM}),
+    ("instagram com 31 caracteres", {"instagram": "@" + "a" * 31}, {"instagram": INSTAGRAM}),
+    ("instagram de outro sítio", {"instagram": "https://www.facebook.com/purplehouse"}, {"instagram": INSTAGRAM}),
+    ("instagram que não é texto", {"instagram": 7}, {"instagram": INSTAGRAM}),
+    ("site sem domínio de topo", {"site": "exemplo"}, {"site": SITE}),
+    ("site com espaço", {"site": "exemplo .pt"}, {"site": SITE}),
+    ("site ftp", {"site": "ftp://exemplo.pt"}, {"site": SITE}),
+    ("site com 256 caracteres", {"site": "https://exemplo.pt/" + "p" * 237}, {"site": SITE}),
+    ("site que não é texto", {"site": ["exemplo.pt"]}, {"site": SITE}),
+    (
+        "instagram e site errados vêm pela ordem dos campos",
+        {"site": "x", "instagram": "@"},
+        {"instagram": INSTAGRAM, "site": SITE},
+    ),
     ("região em texto", {"regiao_id": "3"}, {"regiao_id": REGIAO}),
     ("região zero", {"regiao_id": 0}, {"regiao_id": REGIAO}),
     ("região negativa", {"regiao_id": -1}, {"regiao_id": REGIAO}),
@@ -315,6 +338,16 @@ NORMALIZACOES = [
     ("localidade sem os espaços Unicode nas pontas", "localidade", "　Lisboa ", "Lisboa"),
     ("localidade com 100 caracteres", "localidade", "l" * 100, "l" * 100),
     ("pessoa de contacto com 100 caracteres", "pessoa_contacto", "p" * 100, "p" * 100),
+    ("instagram com @", "instagram", "@purplehouse", "https://www.instagram.com/purplehouse/"),
+    ("instagram sem @", "instagram", "purple.house_pt", "https://www.instagram.com/purple.house_pt/"),
+    ("instagram em URL", "instagram", "https://instagram.com/purplehouse?igsh=x", "https://www.instagram.com/purplehouse/"),
+    ("instagram vazio", "instagram", "  ", None),
+    ("instagram nulo", "instagram", None, None),
+    ("site só com o domínio", "site", "exemplo.pt", "https://exemplo.pt"),
+    ("site com http", "site", "http://www.exemplo.pt/loja", "http://www.exemplo.pt/loja"),
+    ("site com 255 caracteres", "site", "https://exemplo.pt/" + "p" * 236, "https://exemplo.pt/" + "p" * 236),
+    ("site vazio", "site", "", None),
+    ("site nulo", "site", None, None),
     ("notas com 65 535 bytes", "notas", "n" * 65535, "n" * 65535),
     ("notas vazias", "notas", "", None),
     ("região", "regiao_id", REGIAO_ID, REGIAO_ID),
@@ -793,8 +826,9 @@ def test_os_dados_de_uma_loja_vazia_sao_os_do_autonomo():
     assert list(criacao({})[0].items()) == [
         ("nome", ""), ("fase", None), ("regiao_id", None), ("morada", None), ("codigo_postal", None),
         ("localidade", None), ("lat", None), ("lng", None), ("origem_coords", None), ("precisao_m", None),
-        ("telefone", None), ("pessoa_contacto", None), ("notas", None), ("janela1_inicio", None),
-        ("janela1_fim", None), ("janela2_inicio", None), ("janela2_fim", None), ("dias_fechada", []),
+        ("telefone", None), ("pessoa_contacto", None), ("instagram", None), ("site", None), ("notas", None),
+        ("janela1_inicio", None), ("janela1_fim", None), ("janela2_inicio", None), ("janela2_fim", None),
+        ("dias_fechada", []),
     ]
 
 
@@ -835,6 +869,8 @@ def test_os_erros_vem_sempre_pela_ordem_dos_campos():
         "origem_coords": "x",
         "telefone": "x",
         "pessoa_contacto": 1,
+        "instagram": "@",
+        "site": "x",
         "notas": 1,
         "janela1_inicio": "x",
         "janela1_fim": "x",
