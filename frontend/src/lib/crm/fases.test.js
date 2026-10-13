@@ -35,8 +35,8 @@ test('cada fase tem o rótulo em pt-PT', () => {
   expect(rotulos).toEqual({
     perdida: 'Perdida',
     potencial: 'Potencial',
-    contactada: 'Contactada',
-    amostra: 'Amostra',
+    contactada: 'A aguardar amostra',
+    amostra: 'Amostra recebida',
     cliente: 'Cliente',
   });
 });

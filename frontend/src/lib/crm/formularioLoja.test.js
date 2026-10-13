@@ -123,8 +123,8 @@ test('os limites do nome, da morada, da localidade e da pessoa de contacto são 
 test('a fase escolhe-se com um toque: uma opção por fase, pela ordem do funil, com a cor do pino; começa em Potencial', () => {
   expect(opcoesFase()).toEqual([
     { valor: 'potencial', rotulo: 'Potencial', classeCor: 'crm-amostra-fase pino--potencial' },
-    { valor: 'contactada', rotulo: 'Contactada', classeCor: 'crm-amostra-fase pino--contactada' },
-    { valor: 'amostra', rotulo: 'Amostra', classeCor: 'crm-amostra-fase pino--amostra' },
+    { valor: 'contactada', rotulo: 'A aguardar amostra', classeCor: 'crm-amostra-fase pino--contactada' },
+    { valor: 'amostra', rotulo: 'Amostra recebida', classeCor: 'crm-amostra-fase pino--amostra' },
     { valor: 'cliente', rotulo: 'Cliente', classeCor: 'crm-amostra-fase pino--cliente' },
     { valor: 'perdida', rotulo: 'Perdida', classeCor: 'crm-amostra-fase pino--perdida' },
   ]);

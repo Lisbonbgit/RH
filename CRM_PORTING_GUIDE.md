@@ -255,15 +255,15 @@ Regras gerais: `id` uuid4 em texto em todos os documentos; as respostas nunca ex
 
 ### 5.1 Fases e funil
 - `ORDEM = ("perdida", "potencial", "contactada", "amostra", "cliente")`: é a ordem das regras automáticas. O `FUNIL` (ordem para mostrar e filtrar) é `potencial, contactada, amostra, cliente, perdida`.
-- Cores exatas do pino:
+- Cores exatas do pino e nomes no ecrã (o `rotulo` de `lib/crm/fases.js` é a única fonte: filtros, formulário, cartão, ficha e título do pino leem-no daí; o servidor só conhece as chaves). "Contactada" e "Amostra" passaram a "A aguardar amostra" e "Amostra recebida" em 2026-10-13, a pedido do Bruce, sem mudar chaves, cores, `ORDEM`/`FUNIL` nem regras:
 
-  | Fase | Cor | Contorno |
-  |---|---|---|
-  | `potencial` | `#cfcfcf` | `#888` |
-  | `contactada` | `#f4c20d` | — |
-  | `amostra` | `#f08a24` | — |
-  | `cliente` | `#6b2fa3` | — |
-  | `perdida` | `#1a1a1a` | — |
+  | Fase | Nome no ecrã | Cor | Contorno |
+  |---|---|---|---|
+  | `potencial` | Potencial | `#cfcfcf` | `#888` |
+  | `contactada` | A aguardar amostra | `#f4c20d` | — |
+  | `amostra` | Amostra recebida | `#f08a24` | — |
+  | `cliente` | Cliente | `#6b2fa3` | — |
+  | `perdida` | Perdida | `#1a1a1a` | — |
 
 - `perdida` fica visível no mapa (para se saber que não vale a pena visitar) e pode ser escondida pelo filtro. Só valem os nomes exatos: `"Cliente"` e `" cliente "` são recusados.
 - **Só sobe:** as mudanças automáticas só sobem na `ORDEM`. A exceção é "Não interessado", que passa a loja a `perdida` exceto se for `cliente`. **À mão** a fase muda sempre, com um toque na ficha.
