@@ -39,13 +39,15 @@ Um CRM para a fábrica de sorbet de açaí **Purple House** cujo ecrã principal
 
 ### 4.1 Fases da loja (funil)
 
-| Fase | Pino | Significado |
-|---|---|---|
-| `potencial` | ⚪ cinza claro | Identificada, ainda sem contacto |
-| `contactada` | 🟡 amarelo | Já houve contacto |
-| `amostra` | 🟠 laranja | Amostra entregue, a experimentar |
-| `cliente` | 🟣 roxo | Compra regularmente |
-| `perdida` | ⚫ preto | Não interessada — visível no mapa (para se saber que não vale a pena visitar); pode ser escondida pelo filtro |
+| Fase | Nome no ecrã | Pino | Significado |
+|---|---|---|---|
+| `potencial` | Potencial | ⚪ cinza claro | Identificada, ainda sem contacto |
+| `contactada` | A aguardar amostra | 🟡 amarelo | Já houve contacto; a loja espera a amostra |
+| `amostra` | Amostra recebida | 🟠 laranja | Amostra entregue, a experimentar |
+| `cliente` | Cliente | 🟣 roxo | Compra regularmente |
+| `perdida` | Perdida | ⚫ preto | Não interessada — visível no mapa (para se saber que não vale a pena visitar); pode ser escondida pelo filtro |
+
+O nome interno da fase (a coluna "Fase") é o que a API aceita, o que fica no histórico (`contactada→amostra`) e o que dá a cor ao pino; nunca muda. O nome no ecrã é o único texto que o utilizador vê (filtros, formulário, cartão, ficha, título do pino). Em 2026-10-13 o Bruce renomeou "Contactada" para "A aguardar amostra" e "Amostra" para "Amostra recebida"; as chaves, as cores e as regras automáticas ficaram iguais.
 
 **Ordem para regras automáticas:** `perdida` < `potencial` < `contactada` < `amostra` < `cliente`. As mudanças automáticas **só sobem** nesta ordem, com uma exceção: o resultado "Não interessado" passa a loja a `perdida`, exceto se for `cliente`. A fase pode sempre ser mudada à mão (um toque na ficha). Cada mudança de fase cria uma interação `mudanca_fase` no histórico.
 
@@ -91,6 +93,7 @@ Regras dos temporizadores:
 - morada, codigo_postal, localidade
 - lat, lng (`DECIMAL(9,6)`), origem_coords (`pin_manual`|`gps`|`geocoder`), precisao_m (opcional)
 - telefone, pessoa_contacto, notas (incluem férias/feriados na v1)
+- instagram, site (opcionais; acrescentados no portal em 2026-10-13, a pedido do dono: o Instagram guarda-se como o endereço do perfil, `https://www.instagram.com/<nome>/`, e o site como URL `http(s)`, até 255 caracteres; não existiam no CRM autónomo)
 - janela1_inicio, janela1_fim, janela2_inicio, janela2_fim (opcionais; ex.: 10:00–13:00 e 15:00–19:00; sem janelas = qualquer hora do dia de trabalho)
 - dias_fechada (conjunto de dias da semana)
 - visita_pendente_motivo, visita_pendente_desde (🔁, §4.2)
@@ -122,7 +125,7 @@ Interface responsiva única; planeamento otimizado para computador, rota do dia 
 - Todas as lojas como pinos coloridos por fase, **com o nome sempre visível ao lado do pino, em qualquer zoom, sem agrupamento** (decisão explícita: aceita-se sobreposição de nomes com o mapa muito afastado).
 - Ícones 📦 🔁 ⏰ junto ao pino (§4.2).
 - Filtros: fase (por defeito todas), região, "só com pendentes".
-- Tocar num pino → cartão: nome, fase, última ação, botões **Ligar** (`tel:`), **Ver ficha**, **Adicionar à rota** (escolhe o dia).
+- Tocar num pino → cartão: nome, fase, contacto em texto («Contacto: pessoa · telefone», só as partes que existem; nada sem ambas), última ação, botões **Ver ficha**, **Adicionar à rota** (escolhe o dia). O botão **Ligar** (`tel:`) do desenho original saiu em 2026-10-13, a pedido do Bruce: o contacto lê-se no próprio cartão.
 - Atribuição sempre visível no canto do mapa (§9).
 
 ### 6.2 ➕ Adicionar loja
@@ -136,7 +139,7 @@ Interface responsiva única; planeamento otimizado para computador, rota do dia 
 - No telemóvel, adicionar loja exige rede (botão desativado com "sem rede").
 
 ### 6.3 📋 Ficha da loja
-- Dados, fase (mudar com um toque), horário de receção, dias fechada, notas.
+- Dados, fase (mudar com um toque), horário de receção, dias fechada, notas. Desde 2026-10-13 também o Instagram e o site (só aqui, não no registo rápido do §6.2).
 - "Estou nesta loja" também aqui, para corrigir a localização (mesmo fluxo de confirmação).
 - Linha do tempo com botão para registar chamada/visita/nota; uma chamada ou visita com resultado aplica os efeitos de §4.1.
 - Visita pendente 🔁: mostra o motivo e permite anulá-la.

@@ -1,8 +1,9 @@
 // Os campos de uma loja (desenho original §6.2; plano T2.27; a ficha da T2.28
 // usa os mesmos, já preenchidos): nome*, fase* (um toque, com a cor do pino),
 // região, telefone, pessoa de contacto, morada, código postal, localidade e
-// notas. A ficha tem também o horário de receção (até duas janelas, HH:MM) e os
-// dias fechada, antes das notas; o registo rápido não os tem.
+// notas. A ficha tem também o Instagram e o site (2026-10-13, a seguir à
+// localidade), o horário de receção (até duas janelas, HH:MM) e os dias
+// fechada, antes das notas; o registo rápido não os tem.
 //
 // Porta de public/assets/js/componentes/formulario-loja.js do CRM autónomo,
 // sem o DOM: o estado do formulário é um objeto `{valores, preenchida, erros}`
@@ -49,11 +50,19 @@ export const CAMPOS = Object.freeze({
     rotulo: 'Código postal', tipo: 'text', maxLength: 8, placeholder: '0000-000', autoComplete: 'off',
   }),
   localidade: Object.freeze({ rotulo: 'Localidade', tipo: 'text', maxLength: 100, autoComplete: 'off' }),
+  // Só na ficha (2026-10-13). O servidor normaliza-os ao guardar (`campos_loja.py`: "@nome" → o endereço do
+  // perfil; "exemplo.pt" → "https://exemplo.pt"); o `maxLength` do site é o `SITE_MAXIMO` de lá (o teste lê-o).
+  instagram: Object.freeze({ rotulo: 'Instagram', tipo: 'text', maxLength: 255, placeholder: '@purplehouse', autoComplete: 'off' }),
+  site: Object.freeze({
+    rotulo: 'Site', tipo: 'url', inputMode: 'url', maxLength: 255, placeholder: 'https://exemplo.pt', autoComplete: 'off',
+  }),
   notas: Object.freeze({ rotulo: 'Notas', tag: 'textarea', linhas: 3, autoComplete: 'off' }),
 });
 
 // Os campos de texto que se escrevem à mão.
 const CAMPOS_TEXTO = Object.freeze(['nome', 'telefone', 'pessoa_contacto', 'morada', 'codigo_postal', 'localidade', 'notas']);
+// Os textos que só a ficha tem (2026-10-13), pela ordem do ecrã.
+const CAMPOS_TEXTO_FICHA = Object.freeze(['instagram', 'site']);
 
 // O horário de receção (dossiê §5.6): duas janelas, cada uma com início e fim.
 const JANELAS = Object.freeze([
@@ -77,7 +86,7 @@ const diasPorOrdem = (dias) => VALORES_DIAS.filter((dia) => Array.isArray(dias) 
 export function camposDoFormulario({ ficha = false } = {}) {
   return [
     'nome', 'fase', 'regiao_id', 'telefone', 'pessoa_contacto', 'morada', 'codigo_postal', 'localidade',
-    ...(ficha ? [...CAMPOS_HORAS, 'dias_fechada'] : []),
+    ...(ficha ? [...CAMPOS_TEXTO_FICHA, ...CAMPOS_HORAS, 'dias_fechada'] : []),
     'notas',
   ];
 }
@@ -108,6 +117,7 @@ function valoresVazios({ ficha, regiaoId }) {
     notas: '',
   };
   if (!ficha) return valores;
+  for (const campo of CAMPOS_TEXTO_FICHA) valores[campo] = '';
   for (const campo of CAMPOS_HORAS) valores[campo] = '';
   valores.dias_fechada = [];
   return valores;
@@ -134,6 +144,7 @@ export function valoresDoFormulario(valores, { ficha = false } = {}) {
     notas: textoOuVazio(v.notas),
   };
   if (!ficha) return lidos;
+  for (const campo of CAMPOS_TEXTO_FICHA) lidos[campo] = textoOuVazio(v[campo]);
   for (const campo of CAMPOS_HORAS) lidos[campo] = textoOuVazio(v[campo]);
   lidos.dias_fechada = diasPorOrdem(v.dias_fechada);
   return lidos;
@@ -149,7 +160,8 @@ function semErro(erros, campo) {
 function valorAceite(campo, valor) {
   if (campo === 'fase') return FUNIL.includes(valor);
   if (campo === 'regiao_id') return valor === null || eUuid(valor);
-  return (CAMPOS_TEXTO.includes(campo) || CAMPOS_HORAS.includes(campo)) && typeof valor === 'string';
+  return (CAMPOS_TEXTO.includes(campo) || CAMPOS_TEXTO_FICHA.includes(campo) || CAMPOS_HORAS.includes(campo))
+    && typeof valor === 'string';
 }
 
 // A pessoa mudou um campo: o valor novo, e o erro desse campo sai. Um campo que este formulário não tem, ou
@@ -288,6 +300,7 @@ export function preencherComLoja(loja, { ficha = false } = {}) {
   for (const campo of CAMPOS_TEXTO) valores[campo] = textoOuVazio(loja?.[campo]);
   valores.fase = FUNIL.includes(loja?.fase) ? loja.fase : FASE_INICIAL;
   if (ficha) {
+    for (const campo of CAMPOS_TEXTO_FICHA) valores[campo] = textoOuVazio(loja?.[campo]);
     for (const campo of CAMPOS_HORAS) valores[campo] = textoOuVazio(loja?.[campo]);
     valores.dias_fechada = diasPorOrdem(loja?.dias_fechada);
   }

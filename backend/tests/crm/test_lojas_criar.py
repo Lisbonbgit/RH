@@ -77,7 +77,9 @@ JSON_INVALIDO = {"detail": {"codigo": "json_invalido", "mensagem": "O pedido nã
 SEM_PERMISSAO = {"detail": {"codigo": "sem_permissao", "mensagem": "Sem permissão para esta ação."}}
 SEM_ACESSO = {"detail": {"codigo": "sem_acesso_crm", "mensagem": "Sem acesso ao CRM."}}
 
-PROJECAO_RESUMO = {"_id": 0, "id": 1, "nome": 1, "fase": 1, "regiao_id": 1, "lat": 1, "lng": 1, "telefone": 1}
+PROJECAO_RESUMO = {
+    "_id": 0, "id": 1, "nome": 1, "fase": 1, "regiao_id": 1, "lat": 1, "lng": 1, "telefone": 1, "pessoa_contacto": 1,
+}
 PROJECAO_CANDIDATO = {"_id": 0, "id": 1, "nome": 1, "lat": 1, "lng": 1}
 PROJECAO_ID = {"_id": 0, "id": 1}
 
@@ -118,6 +120,8 @@ def _loja(numero, nome, lat, lng=LNG, **outros):
         "precisao_m": None,
         "telefone": None,
         "pessoa_contacto": None,
+        "instagram": None,
+        "site": None,
         "notas": None,
         "janelas": [],
         "dias_fechada": [],
@@ -278,6 +282,8 @@ def test_criar_devolve_201_com_a_loja_completa(sessao):
         "precisao_m": 12.4,
         "telefone": "+351  912 345 678",
         "pessoa_contacto": "Rita",
+        "instagram": "@cafe.central",
+        "site": "cafecentral.pt",
         "notas": "Fecha em agosto.",
         "janela1_inicio": "10:00",
         "janela1_fim": "13:00",
@@ -304,6 +310,8 @@ def test_criar_devolve_201_com_a_loja_completa(sessao):
         "precisao_m": 12,
         "telefone": "+351 912 345 678",
         "pessoa_contacto": "Rita",
+        "instagram": "https://www.instagram.com/cafe.central/",
+        "site": "https://cafecentral.pt",
         "notas": "Fecha em agosto.",
         "janela1_inicio": "10:00",
         "janela1_fim": "13:00",
@@ -372,6 +380,8 @@ def test_a_loja_fica_gravada_como_a_api_a_devolve(sessao):
         "precisao_m": None,
         "telefone": None,
         "pessoa_contacto": None,
+        "instagram": None,
+        "site": None,
         "notas": None,
         "janelas": [{"inicio": "09:30", "fim": "12:00"}],
         "dias_fechada": ["seg", "dom"],
@@ -401,7 +411,8 @@ def test_so_com_os_obrigatorios_o_resto_fica_vazio(sessao):
         "Café Central", "potencial", "pin_manual", [],
     )
     for campo in ("regiao_id", "morada", "codigo_postal", "localidade", "precisao_m", "telefone",
-                  "pessoa_contacto", "notas", "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim"):
+                  "pessoa_contacto", "instagram", "site", "notas",
+                  "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim"):
         assert loja[campo] is None, campo
 
 
@@ -464,6 +475,10 @@ INVALIDAS = [
     }),
     ("região que não é um id", _minima(regiao_id="2"), {"regiao_id": "A região não é válida."}),
     ("janela sem fim", _minima(janela1_inicio="10:00"), {"janela1_fim": "Indique também o fim."}),
+    ("instagram e site (2026-10-13)", _minima(instagram="purple house", site="exemplo"), {
+        "instagram": "O Instagram tem de ser um perfil válido (ex.: @purplehouse).",
+        "site": "O site tem de ser um endereço válido (ex.: https://exemplo.pt).",
+    }),
 ]
 
 
@@ -733,8 +748,9 @@ def test_a_lista_e_o_resumo_de_todas_as_lojas_por_nome(sessao):
     """`aListaEOResumoDeTodasAsLojasPorNome` (sem maiúsculas nem acentos, como
     a collation do MariaDB)."""
     cafe = _loja(1, "Café Central", 38.720000, fase="cliente", regiao_id=LISBOA,
-                 telefone="+351 912 345 678", notas="Não aparece no resumo.")
-    acai = _loja(2, "Açaí da Esquina", 38.730000, fase="perdida")
+                 telefone="+351 912 345 678", pessoa_contacto="D. Amélia", notas="Não aparece no resumo.",
+                 instagram="https://www.instagram.com/cafecentral/", site="https://cafecentral.pt")
+    acai = _loja(2, "Açaí da Esquina", 38.730000, fase="perdida", pessoa_contacto="Sr. Rui")
     bar = _loja(3, "bar do Rui", 38.740000)
     cliente = sessao(RUI_UTILIZADOR, _base(lojas=[cafe, acai, bar], regioes=[_regiao(LISBOA, "Lisboa")]))
 
@@ -743,13 +759,15 @@ def test_a_lista_e_o_resumo_de_todas_as_lojas_por_nome(sessao):
     assert r.status_code == 200
     assert r.json() == [
         {"id": acai["id"], "nome": "Açaí da Esquina", "fase": "perdida", "regiao_id": None, "lat": 38.73,
-         "lng": -9.1369, "telefone": None},
+         "lng": -9.1369, "telefone": None, "pessoa_contacto": "Sr. Rui"},
         {"id": bar["id"], "nome": "bar do Rui", "fase": "potencial", "regiao_id": None, "lat": 38.74,
-         "lng": -9.1369, "telefone": None},
+         "lng": -9.1369, "telefone": None, "pessoa_contacto": None},
         {"id": cafe["id"], "nome": "Café Central", "fase": "cliente", "regiao_id": LISBOA, "lat": 38.72,
-         "lng": -9.1369, "telefone": "+351 912 345 678"},
+         "lng": -9.1369, "telefone": "+351 912 345 678", "pessoa_contacto": "D. Amélia"},
     ]
-    assert [list(loja) for loja in r.json()] == [["id", "nome", "fase", "regiao_id", "lat", "lng", "telefone"]] * 3
+    assert [list(loja) for loja in r.json()] == [
+        ["id", "nome", "fase", "regiao_id", "lat", "lng", "telefone", "pessoa_contacto"],
+    ] * 3
 
 
 def test_a_lista_pede_so_os_campos_do_resumo(sessao):

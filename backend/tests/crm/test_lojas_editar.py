@@ -138,6 +138,8 @@ def _loja(numero, nome, lat, lng=LNG, **outros):
         "precisao_m": None,
         "telefone": None,
         "pessoa_contacto": None,
+        "instagram": None,
+        "site": None,
         "notas": None,
         "janelas": [],
         "dias_fechada": [],
@@ -498,6 +500,67 @@ def test_limpar_os_opcionais_grava_null_e_os_dias_vazios(sessao):
     assert (guardada["telefone"], guardada["morada"], guardada["notas"]) == (None, None, None)
     assert (guardada["dias_fechada"], guardada["janelas"]) == ([], [])
     assert (r.json()["janela1_inicio"], r.json()["janela1_fim"], r.json()["dias_fechada"]) == (None, None, [])
+
+
+def test_mudar_o_instagram_e_o_site_grava_os_normalizados(sessao):
+    """2026-10-13: os dois campos novos passam pelo `alteracao` como os outros
+    opcionais — o handle vira o endereço do perfil e o domínio ganha https://;
+    limpar grava null."""
+    cliente = sessao(RUI_UTILIZADOR)
+
+    r = cliente.alterar(CAFE, {"instagram": "@cafe.central", "site": "cafecentral.pt"})
+
+    assert r.status_code == 200, r.text
+    assert (r.json()["instagram"], r.json()["site"]) == (
+        "https://www.instagram.com/cafe.central/", "https://cafecentral.pt",
+    )
+    [(_, _filtro, atualizacao, _upsert)] = cliente.base.crm_lojas.chamadas("update_one")
+    assert atualizacao["$set"] == {
+        "instagram": "https://www.instagram.com/cafe.central/",
+        "site": "https://cafecentral.pt",
+        "atualizado_em": AGORA_CARIMBO,
+    }
+    guardada = _guardada(cliente.base)
+    assert (guardada["instagram"], guardada["site"]) == (
+        "https://www.instagram.com/cafe.central/", "https://cafecentral.pt",
+    )
+    assert list(guardada) == list(_cafe()), "As chaves ficam no sítio."
+
+    r = cliente.alterar(CAFE, {"instagram": "", "site": None}, versao=r.json()["atualizado_em"])
+    assert r.status_code == 200, r.text
+    assert (r.json()["instagram"], r.json()["site"]) == (None, None)
+    guardada = _guardada(cliente.base)
+    assert (guardada["instagram"], guardada["site"]) == (None, None)
+
+
+def test_um_instagram_ou_um_site_invalido_da_422_sem_ler_a_base(sessao):
+    cliente = sessao(RUI_UTILIZADOR)
+    r = cliente.alterar(CAFE, {"instagram": "purple house", "site": "exemplo"})
+
+    assert (r.status_code, r.json()) == (422, _validacao({
+        "instagram": "O Instagram tem de ser um perfil válido (ex.: @purplehouse).",
+        "site": "O site tem de ser um endereço válido (ex.: https://exemplo.pt).",
+    }))
+    assert cliente.base.crm_lojas.registo == []
+
+
+def test_uma_loja_gravada_antes_do_instagram_e_do_site_edita_se_e_le_se(sessao):
+    """Um documento de antes de 2026-10-13 não tem os dois campos: lê-se com
+    eles a null, e um PATCH noutro campo não os inventa no `$set`."""
+    antiga = _cafe()
+    del antiga["instagram"]
+    del antiga["site"]
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[antiga]))
+
+    lida = cliente.get(f"{LOJAS_URL}/{CAFE}")
+    assert lida.status_code == 200
+    assert (lida.json()["instagram"], lida.json()["site"]) == (None, None)
+
+    r = cliente.alterar(CAFE, {"telefone": "912 345 678"})
+    assert r.status_code == 200, r.text
+    assert (r.json()["instagram"], r.json()["site"]) == (None, None)
+    [(_, _filtro, atualizacao, _upsert)] = cliente.base.crm_lojas.chamadas("update_one")
+    assert set(atualizacao["$set"]) == {"telefone", "atualizado_em"}
 
 
 def test_a_resposta_nunca_traz_o_id_do_mongo_o_loc_nem_as_janelas_em_lista(sessao):

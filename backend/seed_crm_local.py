@@ -13,7 +13,9 @@ Uso (a partir de backend/):
   como está; sem --repor as palavras-passe nunca mudam.
 - Regiões e lojas (T2.18): as 4 regiões e as 24 lojas "(demo)" do src/Cli/DadosDemo.php do
   CRM autónomo (nomes inventados, telefones +351 000 que não ligam a ninguém, as 5 fases, 2
-  lojas sem região, todas a mais de 200 m umas das outras). Construídas com o
+  lojas sem região, todas a mais de 200 m umas das outras; desde 2026-10-13, 2 com um
+  Instagram de demonstração — perfis com "demo" no nome — e 1 com um site num domínio
+  example.com, reservado pela RFC 2606: nada disto aponta para ninguém). Construídas com o
   `formatar.documento_loja` (a forma que o POST /lojas grava), com o início da fase recuado
   pelos dias na fase de cada uma. Recusa se a base já tiver lojas ou regiões — antes de
   qualquer escrita, também das contas.
@@ -102,12 +104,15 @@ _CONTAS_DEMO = (
 # Nome da região e ordem nas listas.
 REGIOES_DEMO = (("Lisboa", 1), ("Porto", 2), ("Setúbal", 3), ("Algarve", 4))
 
-# Campos opcionais de cada loja, quando a linha não os indica.
+# Campos opcionais de cada loja, quando a linha não os indica. O Instagram e o site
+# (2026-10-13) vão já na forma normalizada, como os telefones.
 _PADROES = {
     "origem_coords": "pin_manual",
     "precisao_m": None,
     "telefone": None,
     "pessoa_contacto": None,
+    "instagram": None,
+    "site": None,
     "notas": None,
     "janela1": (None, None),
     "janela2": (None, None),
@@ -118,6 +123,8 @@ _PADROES = {
 _LOJAS_DEMO = (
     ("Mercearia da Baixa", "cliente", "Lisboa", "Lisboa", 38.710800, -9.136900, 120, {
         "telefone": "+351 000 000 001", "pessoa_contacto": "Ana",
+        "instagram": "https://www.instagram.com/mercearia.da.baixa.demo/",
+        "site": "https://mercearia-da-baixa.example.com",
         "janela1": ("09:00", "12:00"), "janela2": ("14:30", "18:00"), "dias_fechada": ("dom",),
         "notas": "Encomenda todas as semanas. Descarga pela porta lateral.",
     }),
@@ -162,7 +169,7 @@ _LOJAS_DEMO = (
     ("Padaria de São Sebastião", "potencial", "Setúbal", "Setúbal", 38.535000, -8.876000, 4),
 
     ("Gelataria da Sé", "cliente", "Algarve", "Faro", 37.018000, -7.933500, 150, {
-        "telefone": "+351 000 000 009",
+        "telefone": "+351 000 000 009", "instagram": "https://www.instagram.com/gelataria.da.se.demo/",
         "janela1": ("10:00", "12:00"), "janela2": ("16:00", "19:00"), "dias_fechada": ("qua",),
     }),
     ("Mercearia do Largo", "contactada", "Algarve", "Faro", 37.019800, -7.929000, 8),
@@ -325,6 +332,8 @@ def dados_lojas_demo() -> list:
             "precisao_m": opcionais["precisao_m"],
             "telefone": opcionais["telefone"],
             "pessoa_contacto": opcionais["pessoa_contacto"],
+            "instagram": opcionais["instagram"],
+            "site": opcionais["site"],
             "notas": opcionais["notas"],
             "janela1_inicio": opcionais["janela1"][0],
             "janela1_fim": opcionais["janela1"][1],

@@ -826,8 +826,8 @@ def test_a_primeira_loja_por_inteiro():
 
     assert list(loja) == [
         "id", "nome", "fase", "fase_desde", "regiao_id", "morada", "codigo_postal", "localidade",
-        "lat", "lng", "loc", "origem_coords", "precisao_m", "telefone", "pessoa_contacto", "notas",
-        "janelas", "dias_fechada", "visita_pendente_motivo", "visita_pendente_desde",
+        "lat", "lng", "loc", "origem_coords", "precisao_m", "telefone", "pessoa_contacto", "instagram", "site",
+        "notas", "janelas", "dias_fechada", "visita_pendente_motivo", "visita_pendente_desde",
         "ultima_interacao_em", "ultima_visita_ou_entrega_em", "criado_por", "criado_em", "atualizado_em",
     ]
     assert {**loja, "id": "<uuid4>"} == {
@@ -846,6 +846,8 @@ def test_a_primeira_loja_por_inteiro():
         "precisao_m": None,
         "telefone": "+351 000 000 001",
         "pessoa_contacto": "Ana",
+        "instagram": "https://www.instagram.com/mercearia.da.baixa.demo/",
+        "site": "https://mercearia-da-baixa.example.com",
         "notas": "Encomenda todas as semanas. Descarga pela porta lateral.",
         "janelas": [{"inicio": "09:00", "fim": "12:00"}, {"inicio": "14:30", "fim": "18:00"}],
         "dias_fechada": ["dom"],
@@ -876,6 +878,25 @@ def test_os_campos_opcionais_sao_os_do_autonomo():
         assert (loja["origem_coords"], loja["precisao_m"], loja["telefone"], loja["pessoa_contacto"],
                 loja["notas"], loja["janelas"], loja["dias_fechada"]) == (*esperados[:5], janelas, esperados[9])
     assert len(OPCIONAIS_DO_AUTONOMO) == 14
+
+
+def test_duas_lojas_tem_instagram_e_site_de_demonstracao_e_as_outras_nao():
+    """2026-10-13: o Instagram e o site não existiam no autónomo. Duas lojas
+    levam exemplos (um perfil com "demo" no nome e um domínio `example.com`,
+    reservado pela RFC 2606: não apontam para ninguém); as outras ficam a null."""
+    _regioes, lojas = _demo()
+    com_valores = {
+        loja["nome"]: (loja["instagram"], loja["site"])
+        for loja in lojas if loja["instagram"] is not None or loja["site"] is not None
+    }
+    assert com_valores == {
+        "Mercearia da Baixa (demo)": (
+            "https://www.instagram.com/mercearia.da.baixa.demo/", "https://mercearia-da-baixa.example.com",
+        ),
+        "Gelataria da Sé (demo)": ("https://www.instagram.com/gelataria.da.se.demo/", None),
+    }
+    for loja in lojas:
+        assert "instagram" in loja and "site" in loja, loja["nome"]
 
 
 def test_usa_o_instante_do_relogio_e_a_fase_comeca_nos_dias_na_fase():

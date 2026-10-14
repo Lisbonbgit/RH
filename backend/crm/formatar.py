@@ -3,7 +3,7 @@
 Porta de src/Http/Formatar.php (`loja`, `resumoLoja`) e da parte do
 `LojasRepositorio::criar` que monta a linha nova, para o modelo do portal:
 
-- **Na base** (`documento_loja`): `id` uuid4 em texto, os 18 campos do
+- **Na base** (`documento_loja`): `id` uuid4 em texto, os 20 campos do
   `validador_loja`, `lat`/`lng` em `float` e SEMPRE juntos do `loc` GeoJSON
   (`documento_localizacao`, `[lng, lat]`), as janelas numa lista `[{inicio,
   fim}]` (0 a 2, por ordem; `validador_loja.janelas_para_lista`), os dias pela
@@ -21,7 +21,9 @@ Porta de src/Http/Formatar.php (`loja`, `resumoLoja`) e da parte do
 Os documentos só os escreve o `documento_loja` (e o seed, T2.18, por ele): um
 documento estragado à mão (uma janela a meio, um dia desconhecido, uma
 coordenada em texto) é `ValueError` — um 500 —, nunca uma resposta com outra
-forma, com que o frontend não contava. Um campo em falta é `KeyError`.
+forma, com que o frontend não contava. Um campo em falta é `KeyError`, exceto
+o `instagram` e o `site` (2026-10-13): as lojas gravadas antes não os têm,
+leem-se com `.get` e vêm a `null` — sem migração.
 """
 import math
 import uuid
@@ -30,18 +32,21 @@ from . import relogio
 from .dominio.campos_loja import DIAS
 from .dominio.validador_loja import campos_de_janelas, janelas_para_lista
 
-# A loja completa da API, pela ordem do plano §4 ("Loja completa (API)").
+# A loja completa da API, pela ordem do plano §4 ("Loja completa (API)"), com o
+# `instagram` e o `site` (2026-10-13) a seguir à pessoa de contacto.
 CAMPOS_API = (
     "id", "nome", "fase", "fase_desde", "regiao_id", "morada", "codigo_postal", "localidade",
-    "lat", "lng", "origem_coords", "precisao_m", "telefone", "pessoa_contacto", "notas",
+    "lat", "lng", "origem_coords", "precisao_m", "telefone", "pessoa_contacto", "instagram", "site", "notas",
     "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim", "dias_fechada",
     "visita_pendente_motivo", "visita_pendente_desde", "ultima_interacao_em", "ultima_visita_ou_entrega_em",
     "criado_por", "criado_em", "atualizado_em",
 )
 
-# O resumo de cada loja no mapa (GET /lojas): o que o pino, os filtros e o
-# botão Ligar precisam.
-CAMPOS_RESUMO = ("id", "nome", "fase", "regiao_id", "lat", "lng", "telefone")
+# O resumo de cada loja no mapa (GET /lojas): o que o pino, os filtros e a
+# linha "Contacto: pessoa · telefone" do cartão precisam (a `pessoa_contacto`
+# entrou na revisão das alterações do dono, 2026-10-13: o cartão recebe a
+# loja da lista, não a ficha). O `ecraMapa.test.js` lê esta linha: fica numa só.
+CAMPOS_RESUMO = ("id", "nome", "fase", "regiao_id", "lat", "lng", "telefone", "pessoa_contacto")
 
 # Os temporizadores da F4/F5 (dossiê §5.11): já existem no documento, a null.
 _TEMPORIZADORES = (
@@ -102,7 +107,7 @@ def documento_localizacao(lat, lng) -> dict:
 def documento_loja(dados: dict, criado_por, agora) -> dict:
     """A loja nova como fica gravada em `crm_lojas`, pela ordem do plano §3.
 
-    `dados` são os 18 campos do `validador_loja.criacao` SEM erros (as janelas
+    `dados` são os 20 campos do `validador_loja.criacao` SEM erros (as janelas
     a meio são `ValueError`: nunca se gravam); `criado_por` é o `user_id` do
     portal de quem a criou; `agora` uma datetime com fuso (o `relogio.agora()`
     do pedido): `fase_desde` e `criado_em` são o `relogio.instante(agora)` e
@@ -126,6 +131,8 @@ def documento_loja(dados: dict, criado_por, agora) -> dict:
         "precisao_m": dados["precisao_m"],
         "telefone": dados["telefone"],
         "pessoa_contacto": dados["pessoa_contacto"],
+        "instagram": dados["instagram"],
+        "site": dados["site"],
         "notas": dados["notas"],
         "janelas": janelas_para_lista(dados),
         "dias_fechada": _dias(dados["dias_fechada"]),
@@ -154,6 +161,9 @@ def loja_api(doc: dict) -> dict:
         "precisao_m": _precisao(doc["precisao_m"]),
         "telefone": doc["telefone"],
         "pessoa_contacto": doc["pessoa_contacto"],
+        # Entraram em 2026-10-13 sem migração: um documento de antes não os tem.
+        "instagram": doc.get("instagram"),
+        "site": doc.get("site"),
         "notas": doc["notas"],
         **campos_de_janelas(doc["janelas"]),
         "dias_fechada": _dias(doc["dias_fechada"]),
@@ -175,4 +185,5 @@ def resumo_loja_api(doc: dict) -> dict:
         "lat": _coordenada(doc["lat"], -90.0, 90.0),
         "lng": _coordenada(doc["lng"], -180.0, 180.0),
         "telefone": doc["telefone"],
+        "pessoa_contacto": doc["pessoa_contacto"],
     }

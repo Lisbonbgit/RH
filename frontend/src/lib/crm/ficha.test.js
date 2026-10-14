@@ -81,6 +81,8 @@ const LOJA = Object.freeze({
   precisao_m: 12,
   telefone: '+351 912 345 678',
   pessoa_contacto: null,
+  instagram: 'https://www.instagram.com/mercearia.da.baixa/',
+  site: null,
   notas: null,
   janela1_inicio: '10:00',
   janela1_fim: '13:00',
@@ -334,6 +336,8 @@ test('a ficha: o nome no título e o formulário igual ao da criação, já pree
     morada: 'Rua Augusta 24',
     codigo_postal: '1100-048',
     localidade: 'Lisboa',
+    instagram: 'https://www.instagram.com/mercearia.da.baixa/',
+    site: '',
     notas: '',
     janela1_inicio: '10:00',
     janela1_fim: '13:00',
@@ -565,6 +569,43 @@ test('horário e dias: limpar um campo envia null; os dias vão como lista', asy
     dias_fechada: ['sab'],
     atualizado_em: LOJA.atualizado_em,
   });
+});
+
+test('Instagram e site (2026-10-13): vão como texto no que mudou; limpar o Instagram envia null; a resposta normalizada fica', async () => {
+  const m = await carregada();
+  m.ecra.mudarCampo('site', 'exemplo.pt');
+  m.ecra.mudarCampo('instagram', '');
+  expect(m.vista().guardar).toEqual({ ativo: true, texto: 'Guardar', falta: null });
+  const pedido = await guardar(m);
+  expect(corpo(pedido)).toStrictEqual({ instagram: null, site: 'exemplo.pt', atualizado_em: LOJA.atualizado_em });
+  // O servidor devolve o site já com https:// e o Instagram a null: a ficha fica com isso, sem alterações.
+  pedido.resolver(copia(LOJA, { instagram: null, site: 'https://exemplo.pt', atualizado_em: VERSAO_NOVA }));
+  await assentar();
+  expect(m.vista().valores).toMatchObject({ instagram: '', site: 'https://exemplo.pt' });
+  expect(m.vista().guardar).toEqual({ ativo: false, texto: 'Guardar', falta: 'Sem alterações por guardar.' });
+  // Voltar a escrever o Instagram guardado tal e qual não é alteração.
+  m.ecra.mudarCampo('instagram', '@mercearia.da.baixa');
+  m.ecra.mudarCampo('instagram', '');
+  expect(m.vista().guardar.falta).toBe('Sem alterações por guardar.');
+});
+
+test('422 no site e no Instagram: os erros junto aos campos e o foco no primeiro (pela ordem do servidor)', async () => {
+  const m = await carregada();
+  m.ecra.mudarCampo('instagram', 'purple house');
+  m.ecra.mudarCampo('site', 'exemplo');
+  await guardar(m);
+  await falhar(m, 'alterarLoja', erroValidacao({
+    instagram: 'O Instagram tem de ser um perfil válido (ex.: @purplehouse).',
+    site: 'O site tem de ser um endereço válido (ex.: https://exemplo.pt).',
+  }));
+  expect(m.vista().erros).toEqual({
+    instagram: 'O Instagram tem de ser um perfil válido (ex.: @purplehouse).',
+    site: 'O site tem de ser um endereço válido (ex.: https://exemplo.pt).',
+  });
+  expect(m.focos).toEqual(['instagram']);
+  expect(m.vista().alerta).toBe('Verifique os campos assinalados.');
+  m.ecra.mudarCampo('site', 'exemplo.pt');
+  expect(m.vista().erros).toEqual({ instagram: 'O Instagram tem de ser um perfil válido (ex.: @purplehouse).' });
 });
 
 test('os dias marcados pela ordem da semana; desmarcar e voltar a marcar não é alteração', async () => {

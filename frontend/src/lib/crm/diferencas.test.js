@@ -153,3 +153,12 @@ test('portal: as janelas são planas (janela1_inicio…); limpar uma hora envia 
     janela2_fim: '17:30',
   });
 });
+
+test('portal: o instagram e o site (2026-10-13) são textos simples, como o telefone', () => {
+  const loja = { ...original, instagram: 'https://www.instagram.com/cafe.central/', site: null };
+  expect(camposAlterados(loja, { ...loja })).toEqual({});
+  expect(camposAlterados(loja, { ...loja, site: 'exemplo.pt' })).toEqual({ site: 'exemplo.pt' });
+  expect(camposAlterados(loja, { ...loja, instagram: '' })).toEqual({ instagram: null });
+  expect(camposAlterados(loja, { ...loja, site: '' })).toEqual({});
+  expect(camposAlterados({ ...loja, instagram: null }, { ...loja, instagram: '@cafe.central' })).toEqual({ instagram: '@cafe.central' });
+});

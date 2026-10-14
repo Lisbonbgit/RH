@@ -1,8 +1,9 @@
 // Os campos de uma loja (desenho original §6.2; plano T2.27), no aspeto do
 // portal: nome*, fase* (pastilhas com a cor do pino, um toque), região,
 // telefone, pessoa de contacto, morada, código postal, localidade e notas. Com
-// `ficha` (a ficha da loja, T2.28), também o horário de receção (duas janelas,
-// `type="time"`) e os dias fechada, antes das notas. Porta de
+// `ficha` (a ficha da loja, T2.28), também o Instagram e o site (2026-10-13,
+// dois campos de texto a seguir à localidade), o horário de receção (duas
+// janelas, `type="time"`) e os dias fechada, antes das notas. Porta de
 // public/assets/js/componentes/formulario-loja.js do CRM autónomo.
 //
 // Só desenha o estado de `lib/crm/formularioLoja.js` (com testes): os
@@ -233,6 +234,7 @@ const FormularioLoja = forwardRef(function FormularioLoja({
       {campoFase}
       {campoRegiao}
       {['telefone', 'pessoa_contacto', 'morada', 'codigo_postal', 'localidade'].map(campoTexto)}
+      {ficha && ['instagram', 'site'].map(campoTexto)}
       {campoHorario}
       {campoDias}
       {campoTexto('notas')}

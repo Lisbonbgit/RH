@@ -1,6 +1,8 @@
 // Diferenças entre a loja carregada e o formulário da ficha, para o PATCH só
 // levar o que mudou (com o `atualizado_em`, dossiê §5.10). Funções puras.
-// Porta de public/assets/js/diferencas.js do CRM autónomo, tal e qual.
+// Porta de public/assets/js/diferencas.js do CRM autónomo, tal e qual. Os
+// campos novos do portal (o Instagram e o site, 2026-10-13) são textos
+// simples, como o telefone: nada aqui os conhece pelo nome.
 
 // A API exige estes campos juntos (backend/crm/dominio/validador_loja.py,
 // `alteracao`): se um muda, vão todos.

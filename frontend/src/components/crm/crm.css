@@ -10,7 +10,7 @@
  */
 
 /* A área do mapa (a vista): ocupa o que sobra do ecrã. Com o cartão da loja aberto, encolhe até 8rem: o
-   cartão, com Ligar e Ver ficha, fica todo à vista, mesmo com o telemóvel deitado. */
+   cartão, com o contacto e Ver ficha, fica todo à vista, mesmo com o telemóvel deitado. */
 .crm-mapa__vista {
   position: relative;
   flex: 1 1 0%;

@@ -118,8 +118,8 @@ test('o mapa tem altura explícita: ocupa a área toda e pode encolher com o car
   expect(mapa).toMatch(/position:\s*absolute;/);
   expect(mapa).toMatch(/inset:\s*0;/);
   expect(mapa).toMatch(/isolation:\s*isolate;/); // os painéis do Leaflet (até 1000) ficam por baixo do menu
-  // A vista ocupa o que sobra; com o cartão aberto encolhe até 8rem, para Ligar e Ver ficha caberem no
-  // ecrã (telemóvel deitado incluído).
+  // A vista ocupa o que sobra; com o cartão aberto encolhe até 8rem, para o contacto e o Ver ficha caberem
+  // no ecrã (telemóvel deitado incluído).
   const vista = regra('.crm-mapa__vista');
   expect(vista).not.toBeNull();
   expect(vista).toMatch(/position:\s*relative;/);

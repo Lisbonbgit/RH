@@ -15,14 +15,21 @@
  *     não centra nada: a vista enquadra as lojas, como sempre;
  *   - o aviso vem do `state` da navegação (`{aviso: 'Loja guardada'}`) e
  *     mostra-se num toast; a loja do aviso é a do `?loja=`;
- *   - os ids são uuid em texto.
+ *   - os ids são uuid em texto;
+ *   - o cartão mostra o contacto em texto (`contactoDaLoja`: pessoa · telefone,
+ *     só o que existe) em vez do botão Ligar, que saiu em 2026-10-13 a pedido
+ *     do Bruce.
  */
+import fs from 'fs';
+import path from 'path';
 import { MENSAGEM_ERRO_INESPERADO } from './api';
 import { ZOOM_LOJA } from './mapa';
 import { filtrosPadrao } from './filtros';
 import {
   PARAMETRO_LOJA,
+  SEPARADOR_CONTACTO,
   TEXTO_ESCONDIDA_PELOS_FILTROS,
+  contactoDaLoja,
   lerAviso,
   lojaComId,
   textoAviso,
@@ -35,12 +42,25 @@ const MERCEARIA = '0b6f3c1e-1111-4222-8333-444455556666';
 const CAFE = '0b6f3c1e-2222-4222-8333-444455556666';
 const QUIOSQUE = '0b6f3c1e-3333-4222-8333-444455556666';
 
-// As três lojas do ecra-mapa.test.js: cliente e perdida em Lisboa, potencial sem região.
+// As três lojas do ecra-mapa.test.js: cliente e perdida em Lisboa, potencial sem região — com a forma
+// do resumo do `GET /lojas` (`CAMPOS_RESUMO` de `backend/crm/formatar.py`; o teste abaixo lê-a de lá).
 const TRES_LOJAS = [
-  { id: MERCEARIA, nome: 'Mercearia da Baixa', fase: 'cliente', regiao_id: LISBOA, lat: 38.7108, lng: -9.1369, telefone: '+351 912 345 678' },
-  { id: CAFE, nome: 'Café Fechado', fase: 'perdida', regiao_id: LISBOA, lat: 38.7135, lng: -9.1458, telefone: null },
-  { id: QUIOSQUE, nome: 'Quiosque Novo', fase: 'potencial', regiao_id: null, lat: 38.74, lng: -9.16, telefone: null },
+  {
+    id: MERCEARIA, nome: 'Mercearia da Baixa', fase: 'cliente', regiao_id: LISBOA, lat: 38.7108, lng: -9.1369,
+    telefone: '+351 912 345 678', pessoa_contacto: 'D. Amélia',
+  },
+  {
+    id: CAFE, nome: 'Café Fechado', fase: 'perdida', regiao_id: LISBOA, lat: 38.7135, lng: -9.1458,
+    telefone: null, pessoa_contacto: null,
+  },
+  {
+    id: QUIOSQUE, nome: 'Quiosque Novo', fase: 'potencial', regiao_id: null, lat: 38.74, lng: -9.16,
+    telefone: null, pessoa_contacto: null,
+  },
 ];
+
+// frontend/src/lib/crm → raiz do repositório (como o `formularioLoja.test.js`).
+const FORMATAR_PY = path.join(__dirname, '..', '..', '..', '..', 'backend', 'crm', 'formatar.py');
 
 const SO_CLIENTES = { fases: ['cliente'], regiao: 'todas' };
 const SEM_FASES = { fases: [], regiao: 'todas' };
@@ -161,6 +181,65 @@ describe('vistaAoCarregar (a vista quando o pedido das lojas termina)', () => {
     vistaAoCarregar({ lojas, filtros, idLoja: CAFE });
     expect(lojas).toEqual(TRES_LOJAS);
     expect([...filtros.fases]).toEqual(['cliente']);
+  });
+});
+
+describe('contactoDaLoja (a linha "Contacto:" do cartão, em vez do botão Ligar)', () => {
+  test('o separador entre a pessoa e o telefone', () => {
+    expect(SEPARADOR_CONTACTO).toBe(' · ');
+  });
+
+  test('pessoa e telefone: "pessoa · telefone", tal como foram escritos', () => {
+    expect(contactoDaLoja(TRES_LOJAS[0])).toBe('D. Amélia · +351 912 345 678');
+    expect(contactoDaLoja({ pessoa_contacto: 'Sr. Rui', telefone: '912 345 678' })).toBe('Sr. Rui · 912 345 678');
+  });
+
+  test('o resumo do GET /lojas (a loja que o pino dá ao cartão) traz a pessoa e o telefone (formatar.py)', () => {
+    // Revisão das alterações do dono (2026-10-13): o cartão recebe a loja da lista do mapa, não a ficha.
+    // Falha, e não salta, se o ficheiro não estiver lá.
+    expect(fs.existsSync(FORMATAR_PY)).toBe(true);
+    const python = fs.readFileSync(FORMATAR_PY, 'utf8');
+    const linhas = [...python.matchAll(/^CAMPOS_RESUMO = \((.*)\)$/gm)];
+    expect(linhas).toHaveLength(1);
+    const campos = linhas[0][1].split(',').map((campo) => campo.trim().replace(/^"|"$/g, '')).filter(Boolean);
+    expect(campos).toEqual(expect.arrayContaining(['id', 'nome', 'fase', 'regiao_id', 'lat', 'lng']));
+    expect(campos).toEqual(expect.arrayContaining(['pessoa_contacto', 'telefone']));
+    // O fixture tem a forma do resumo: nem mais nem menos chaves.
+    for (const loja of TRES_LOJAS) expect(Object.keys(loja).sort()).toEqual([...campos].sort());
+  });
+
+  test('só a pessoa, ou só o telefone: mostra o que há, sem separador', () => {
+    expect(contactoDaLoja({ ...TRES_LOJAS[0], pessoa_contacto: null })).toBe('+351 912 345 678');
+    expect(contactoDaLoja({ ...TRES_LOJAS[0], pessoa_contacto: '' })).toBe('+351 912 345 678');
+    expect(contactoDaLoja({ pessoa_contacto: 'D. Amélia' })).toBe('D. Amélia');
+    expect(contactoDaLoja({ pessoa_contacto: 'D. Amélia', telefone: null })).toBe('D. Amélia');
+    expect(contactoDaLoja({ pessoa_contacto: 'D. Amélia', telefone: '' })).toBe('D. Amélia');
+  });
+
+  test('sem pessoa nem telefone (ou só espaços): null — o cartão não mostra a linha', () => {
+    expect(contactoDaLoja(TRES_LOJAS[1])).toBeNull();
+    expect(contactoDaLoja({ pessoa_contacto: '', telefone: '' })).toBeNull();
+    expect(contactoDaLoja({ pessoa_contacto: '   ', telefone: ' ' })).toBeNull();
+    expect(contactoDaLoja({})).toBeNull();
+    for (const loja of [null, undefined, 'x', 3]) expect(contactoDaLoja(loja)).toBeNull();
+  });
+
+  test('os espaços à volta saem; o que não é texto conta como vazio', () => {
+    expect(contactoDaLoja({ pessoa_contacto: '  D. Amélia ', telefone: ' 912 345 678  ' })).toBe('D. Amélia · 912 345 678');
+    expect(contactoDaLoja({ pessoa_contacto: 7, telefone: ['912345678'] })).toBeNull();
+    expect(contactoDaLoja({ pessoa_contacto: { nome: 'x' }, telefone: '912 345 678' })).toBe('912 345 678');
+  });
+
+  test('o telefone não precisa de ser marcável (ao contrário do antigo Ligar): aparece como texto', () => {
+    expect(contactoDaLoja({ telefone: '1234' })).toBe('1234');
+    expect(contactoDaLoja({ telefone: 'sem telefone' })).toBe('sem telefone');
+  });
+
+  test('não altera a loja recebida', () => {
+    const loja = { ...TRES_LOJAS[0], pessoa_contacto: ' D. Amélia ' };
+    const copia = { ...loja };
+    contactoDaLoja(loja);
+    expect(loja).toEqual(copia);
   });
 });
 

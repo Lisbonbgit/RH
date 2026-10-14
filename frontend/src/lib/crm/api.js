@@ -214,7 +214,9 @@ export function criarClienteCrm({ pedir = (config) => instanciaCrm.request(confi
     apagarRegiao: async (regiaoId) => chamar({ method: 'DELETE', url: caminhoComId('/regioes', regiaoId) }),
 
     // Lojas: a lista é o resumo `[{id, nome, fase, regiao_id, lat, lng,
-    // telefone}]`; obter, criar e alterar devolvem a loja completa (com o
+    // telefone, pessoa_contacto}]` (`CAMPOS_RESUMO` de `backend/crm/formatar.py`;
+    // a pessoa entrou em 2026-10-13 para a linha de contacto do cartão do
+    // mapa); obter, criar e alterar devolvem a loja completa (com o
     // `atualizado_em` novo). Um 409 `duplicado` traz `extra.lojas` (`[{id,
     // nome, distancia_m}]`) e reenvia-se com `confirmar_duplicado: true`; o 409
     // `conflito` só traz código e mensagem. Apagar → `{apagada: true}` (409
