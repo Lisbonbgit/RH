@@ -1,307 +1,454 @@
-# Calendário das idas às lojas e Face ID na app Gestão Lisbonb — desenho
+# Calendário automático das lojas e Face ID na app Gestão Lisbonb — desenho
 
-**Data:** 2026-10-14 · **Ramo:** `matheus-calendario-gestao`
+**Data:** 2026-10-14 (revisto a 2026-10-15) · **Ramo:** `matheus-calendario-gestao`
 
 ## Porquê
 
-A Carol e a Débora (gestoras) vão às lojas em certos dias: revezam-se, às vezes trabalham em
-lojas diferentes no mesmo dia, ou fazem meio dia cada na mesma loja. Hoje organizam-se por uma
-mensagem de WhatsApp («Escala Outubro / Alfragide: 01- Deb …»), com as férias do pessoal no
-fim. O dono quer isto **dentro da app Gestão Lisbonb**, com três vistas: pessoal, geral e
-férias. Pediu também que a app deixe de pedir a senha a toda a hora, e um menu lateral com
-Faturação e Calendário.
+O grupo tem seis lojas com escala fixa (a sexta, Benfica, ainda sem ninguém). Quando falta
+alguém — folga, férias, loja sem equipa — vai a **Carol** ou a **Débora** (gestoras), às vezes as
+duas, às vezes meio dia cada. Hoje fazem a conta de cabeça e organizam-se por uma mensagem de
+WhatsApp («Escala Outubro / Alfragide: 01- Deb …»).
+
+O dono quer que o calendário **faça essa conta sozinho**: com o horário de cada loja, a escala de
+cada pessoa e as férias aprovadas no RH, mostra onde falta gente; elas só têm de tapar o buraco.
+Quer também ver **quantos dias** cada uma fez (para se equilibrarem), que a app deixe de pedir a
+senha todos os dias, e um menu lateral com Faturação e Calendário.
+
+### A semana normal, como o dono a descreveu
+
+| Loja | Horário | Quem |
+|---|---|---|
+| Alfragide | 10h–23h | Emily 14h–23h, menos qua e qui · Beatrice 10h–19h, menos seg e ter |
+| Algueirão | 13h–22h | Walisson, menos qui e sex · Joana qui e sex |
+| Amadora | 14h–23h | Weber, menos seg e ter · Joana seg e ter |
+| Belém | 11h30–19h; dom 11h30–20h; **fecha à terça** | Rafaela, todos os dias em que abre |
+| Benfica | 13h–22h (a abrir) | ninguém |
+| Oeiras | 13h–22h | Emanuela, menos ter e qua · Joana qua |
+
+Daqui sai, sem mais nada, **a grelha dos buracos de uma semana normal**: Oeiras sem ninguém à
+terça; Alfragide sem ninguém das 10h às 14h à segunda e terça e das 19h às 23h à quarta e
+quinta; Benfica sem ninguém todos os dias. Bate com a mensagem: a Débora está em Oeiras a 6, 13,
+20 e 27 de outubro — as quatro terças — e a Carol cobre a Amadora a 22, 23 e 25/10, quando o
+Weber está de férias de 21 a 25/10.
 
 ## O que foi medido antes de desenhar (main `57d5f6f`)
 
-1. **A escala do RH não serve para isto.** `work_schedule_templates` guarda só dias da semana
-   e hora de início (`server.py:634-667`); a atribuição liga pessoa↔modelo por intervalo de
-   datas (`:669-697`). **Não tem loja, nem data concreta, nem meio dia**, e proíbe duas
-   atribuições sobrepostas para a mesma pessoa (`:2195`). A loja do colaborador é uma só,
-   `employees.location_id` (`:514`).
+1. **A escala do RH é semanal e sem loja.** `work_schedule_templates` guarda `name`,
+   `work_days` (0 = segunda … 6 = domingo) e `start_time` (`server.py:634-667`). A atribuição
+   liga colaborador ↔ modelo por intervalo de datas e **guarda uma cópia de `work_days`**
+   (`:669-697`, `:2201-2208`), que o `PUT /schedules/{id}` volta a sincronizar
+   (`:2244-2247`). Proíbe duas atribuições sobrepostas para a mesma pessoa (`:2188-2196`).
+   A loja do colaborador é uma só, `employees.location_id` (`:514`).
 2. **A escala tem três consumidores e zero testes:** o saldo de férias
-   (`calculate_leave_counted_days`, `:839-889`), o «Em falta» do painel (`_schedule_today`,
-   `:2927`) e o lembrete do ponto (`/me/schedule`, `:2130`). Mexer-lhe é arriscar o saldo de
-   férias sem nada que o apanhe.
-3. **Na mensagem, a mesma pessoa em duas lojas no mesmo dia é frequente:** a Débora a 06, 13,
-   21 e 29/10 (Alfragide + Oeiras), a 24/10 (Benfica + Algueirão); a Carol a 03, 10, 17 e 24/11.
-4. **As ausências já existem:** `GET /calendar/leaves` (`:3154-3194`) devolve as aprovadas que
-   tocam um mês, de todos os tipos, com `employee_name`. Faz uma consulta e um
-   `calculate_leave_counted_days` **por ausência** (`:3184-3192`) — não se copia isso, só o
-   filtro de sobreposição (`:3172-3181`).
-5. **Os feriados existem, mas sem nome:** `get_pt_holidays` (`:792`) devolve um `set` de
-   datas — os nomes estão em comentários — e é chamado **num sítio só** (`:874`). O `set` vive
-   numa cache (`_pt_holiday_cache`, `:790`, `:812`) que não se pode mexer. Os personalizados
-   (`holidays`) **têm `name`** (`HolidayCreate`, `:4536`) e âmbito grupo/empresa/loja
-   (`get_custom_holiday_monthdays`, `:815-828`, regra «OU» em `:823`); aceitam dias impossíveis
-   como 30/02 (`:4549-4554`). **Feriado não é loja fechada:** há lojas abertas a 05/10, 01/12 e
-   08/12.
-6. **Os gestores não têm ficha de colaborador:** quem é criado pela área de administradores
-   fica com `employee_id: None` (`:1294-1303`). Não tem escala nem ausências no RH.
-7. **Não há colaboradores «inactivos»:** quem sai é apagado (`delete_employee`, `:1760-1792`),
-   mas as atribuições de escala dele **ficam órfãs** — o apagar não lhes toca.
+   (`calculate_leave_counted_days`, `:839-889`, que usa a cópia `work_days` da atribuição,
+   `:882`), o «Em falta» do painel (`_schedule_today`, `:2927-2936`, com o recurso
+   `atribuição.work_days or modelo.work_days`, `:2936`) e o lembrete do ponto (`/me/schedule`,
+   `:2130-2153`, que lê `start_time`). Um quarto leitor, o `GET /schedules/assignments`
+   (`:2223-2229`), devolve-o ao ecrã. **Desde que `work_days` continue a querer dizer o mesmo e
+   `start_time` continue a existir, nenhum muda.** O `PUT /schedules/{id}` copia o `work_days`
+   do corpo para **todas** as atribuições, incluindo as já fechadas (`:2242-2247`).
+3. **Os locais não têm horário.** `LocationCreate` tem nome, empresa, morada, cerca e Place ID
+   (`:486-496`); o `LocationResponse` (`:498-507`) só devolve esses. O `PUT /locations/{id}`
+   **substitui todos os campos** com o que vem no corpo (`:1489-1503`) — um campo novo que o
+   formulário não mande fica a `null`. O mesmo vale para `WorkScheduleTemplateResponse`
+   (`:662-667`), que filtra o que não conhece, e para o `work_days` obrigatório do
+   `WorkScheduleTemplateCreate` (`:636`, `:645`).
+4. **As ausências já existem:** `leave_requests` com `employee_id`, `leave_type`
+   (`ferias`/`falta`/`doenca`/`folga`/`ausencia`), `start_date`, `end_date`, `status`
+   (`pendente`/`aprovado`/`recusado`). O `GET /calendar/leaves` (`:3154-3194`) tem o filtro de
+   sobreposição certo, mas faz uma consulta e um `calculate_leave_counted_days` **por
+   ausência** (`:3184-3192`) — não se copia isso.
+5. **Os feriados existem, sem nome.** `get_pt_holidays` (`:792`) devolve um `set` de datas (os
+   nomes estão em comentários), guardado numa cache (`_pt_holiday_cache`) e chamado num sítio só
+   (`:874`). Os personalizados (`holidays`) **têm `name`** (`:4536`) e âmbito
+   grupo/empresa/loja (regra «OU», `:823`); aceitam dias impossíveis como 30/02
+   (`:4549-4554`). **Feriado não é loja fechada:** há lojas abertas a 05/10, 01/12 e 08/12.
+6. **Os gestores não têm ficha de colaborador** (`employee_id: None`, `:1294-1303`): não têm
+   escala nem ausências no RH. **Quem sai é apagado** (`delete_employee`, `:1760-1792`) e as
+   atribuições dele **ficam órfãs**.
+7. **Todo o colaborador tem conta em `users`** com `employee_id` (`:1546-1556`); os gestores
+   também têm conta. `users.id` identifica qualquer pessoa.
 8. **O `/bolso` é um ecrã só** (`pages/bolso/BolsoApp.js`, 732 linhas), rota exata `/bolso`
-   (`App.js:206-210`), só para `admin`/`gerente`/`contabilista`. Já existem `ui/sheet.jsx`
-   (com `side` left/bottom; usado como menu móvel em `components/layouts/AdminLayout.js:654-663`),
-   `ui/calendar.jsx` (react-day-picker 8.10.1, que passa `mode="multiple"` ao DayPicker) e
-   `date-fns` 4. O `Segmento` do bolso é uma constante **dentro** de `BarraDeAmbito`
-   (`BolsoApp.js:372-373`) — tem de sair cá para fora para ser reaproveitado.
-9. **Porque pede a senha:** o token vale **24 h fixas**, sem renovação
-   (`JWT_EXPIRATION_HOURS = 24`, `server.py:58`, desde o primeiro commit). O 401/403 faz
-   `logout()` (`contexts/AuthContext.js:41-44`, `BolsoApp.js:468`) e o painel volta a pedir dados
-   a cada regresso ao ecrã (`BolsoApp.js:486-489`). Há uma **segunda causa**: se o `/auth/me` do
-   arranque falhar por outra razão que não 401/403 (rede, 500, 502), o token fica mas o `user`
-   não (`AuthContext.js:45-49`), e o `ProtectedRoute` manda para o login (`App.js:116-117`).
-   E um defeito ao lado: o `navigate('/login')` do `BolsoApp.js:468` não leva `state.from`,
-   e depois de entrar a app aterra no `/admin/resumo` (`LoginPage.js:38-41`, `lib/resumo.js:173-176`).
-10. **O login** (`server.py:1024-1036`) devolve 401 a credenciais erradas e **429** quando o
-    limite por IP (30 em 15 min, `:71-72`) dispara; procura o email tal como foi escrito.
-11. **A casca** (`app-bolso/`, Capacitor 6, só iOS, build 2) carrega
-    `https://rh.lisbonb.com/bolso` — o site chega sem build nova; só a casca exige TestFlight.
-12. **A Carol e a Débora já têm a app instalada e entram como gestoras** (dito pelo dono).
+   (`App.js:206-210`), para `admin`/`gerente`/`contabilista`. O `Segmento` é uma constante
+   **dentro** de `BarraDeAmbito` (`:372-373`); `useManifestoDoBolso` (`:104`) não é exportado.
+   `ui/sheet.jsx` aceita `side` left/bottom, com um botão de fechar de 16 px em `top-4`.
+9. **Porque pede a senha:** token de **24 h fixas** sem renovação (`server.py:58`). O 401/403
+   faz `logout()` (`contexts/AuthContext.js:41-44`, `BolsoApp.js:468`); o painel relê a cada
+   regresso ao ecrã (`BolsoApp.js:486-489`). **Segunda causa:** se o `/auth/me` do arranque
+   falhar sem ser 401/403, o token fica mas o `user` não (`AuthContext.js:45-49`) e o
+   `ProtectedRoute` manda para o login (`App.js:116-117`). O login (`server.py:1024-1036`) dá
+   401 a credenciais erradas e **429** quando o limite por IP (30 em 15 min, `:71-72`) dispara.
+10. **A casca** (`app-bolso/`, Capacitor 6, só iOS, build 2) carrega
+    `https://rh.lisbonb.com/bolso`: o site chega sem build nova.
+11. **Dito pelo dono:** a Carol e a Débora são administradoras, têm iPhone e a app instalada; os
+    sete colaboradores da tabela estão no RH e as férias deles marcam-se lá.
 
 ## Decisões do dono
 
-1. **Só gestores marcam** as idas — e **só gestores podem ser marcados**. Os extras dos
-   colaboradores («Joana (Extra)») ficam fora do calendário.
-2. **Período: Dia, Manhã ou Tarde.** Sem horas.
-3. **Não há «loja fechada».** Os feriados aparecem como aviso no dia.
-4. **Duas vistas, Mês e Lista**, com um botão para escolher.
-5. **Filtros Pessoal / Geral / Férias.** O Geral inclui os colaboradores pela escala do RH.
-6. **Face ID** para acabar com a senha diária — aceitando que exige a build 3 da casca.
-7. **Uma colecção nova** para as idas, ao lado da escala do RH, que não é tocada.
+1. **O calendário é automático:** calcula os buracos a partir do horário das lojas, da escala de
+   cada pessoa e das ausências aprovadas.
+2. **A escala fixa vive na página Escalas do RH**, que passa a dizer loja e horas por dia — uma
+   escala só, não duas.
+3. **O horário vive nos Locais:** um horário para todos os dias, exceções por dia (domingo de
+   Belém) e os dias em que fecha.
+4. **As idas têm horas**, tiradas do buraco que tapam e que se podem mudar (deixa de haver
+   Dia/Manhã/Tarde).
+5. **Qualquer pessoa pode ser escalada** numa ida (gestor ou colaborador), mas **só os gestores
+   marcam**.
+6. **Vistas Mês, Lista e Contagem; filtros Pessoal, Geral e Férias.**
+7. **Contagem:** uma ida vale 1 dia se cobrir pelo menos metade do horário da loja nesse dia, e
+   0,5 se cobrir menos; nunca mais de 1 dia por pessoa por dia.
+8. **Feriados** só como aviso; não fecham lojas.
+9. **Face ID** para acabar com a senha diária, aceitando que exige a build 3 da casca.
 
 ## Fora de âmbito (de propósito)
 
-- Mexer na escala do RH, nas ausências, no saldo de férias, no «Em falta» ou na app do ponto.
-- Marcar colaboradores, notas por ida («Extra», «cobre o Weber»), loja fechada.
-- Avisos no telemóvel («amanhã vais a Oeiras») — exigiriam outra peça nativa.
+- Horários que passam da meia-noite (nenhuma loja passa hoje).
+- Fecho de uma loja numa **data** concreta (Natal, passagem de ano): o dono decidiu não ter —
+  nesses dias a loja aparece com buraco.
+- Ausências pendentes a abrir buracos — só as aprovadas.
 - Férias dos gestores (não têm ficha de colaborador).
-- Uma página do calendário no portal: a mesma página do bolso abre no browser.
+- Avisos no telemóvel («amanhã vais a Oeiras»).
+- Colaboradores a verem o calendário (entram por outra porta, a do ponto).
+- Mexer no «Em falta» do painel para usar a loja e as horas novas.
 - Sessões mais longas no servidor: as 24 h ficam.
 
 ## O desenho
 
-### Ecrã
+### 1. Os dados
 
-- **Menu lateral (☰)** no cabeçalho do bolso, num `Sheet side="left"`, com **Faturação**,
-  **Calendário**, **Usar Face ID** (só quando a casca o tem e a pessoa ainda não o ligou) e
-  **Terminar sessão**. O conteúdo respeita `safe-area-inset-top` e o botão de fechar tem 44 px
-  (o do `sheet.jsx` tem 16 px e fica debaixo da notch). Um componente pequeno em
-  `pages/bolso/`, usado pelos dois ecrãs. Saem do `BolsoApp.js` para serem partilhados: o
-  `useManifestoDoBolso` (o calendário mantém o título e o manifesto) e o `Segmento` (hoje
-  constante dentro de `BarraDeAmbito`). A `BarraDeAmbito` fica só na Faturação.
-- **Rota nova** `/bolso/calendario`, irmã de `/bolso` em `App.js`, com os mesmos papéis. O
-  nginx já devolve o `index.html` a qualquer caminho, por isso o refresh funciona.
-- **Calendário** (`pages/bolso/BolsoCalendario.js`):
-  - Cabeçalho: ☰, mês e ano, setas ‹ ›, e o botão **Mês | Lista**.
-  - **Mês:** `ui/calendar.jsx` com dias de **44 px** (7 × 44 = 308 px cabe em 375), um ponto
-    nos dias com gente; tocar num dia mostra por baixo a agenda desse dia, agrupada por loja
-    («Alfragide — Débora · manhã»). Abre no dia de hoje.
-  - **Lista:** o mês dia a dia, agrupado por loja, a abrir no dia de hoje; dias sem nada não
-    aparecem.
-  - **Filtros em baixo** (o `Segmento`): **Pessoal** (as minhas idas), **Geral** (as idas de
-    todos + os colaboradores pela escala), **Férias** (ausências aprovadas, com o tipo e as
-    datas). O filtro e a vista lembram-se no `localStorage`, com try/catch; sem ele abre em
-    Mês/Geral.
-  - **Feriados** em todos os filtros, como aviso no dia: «Feriado: Implantação da
-    República». Um feriado de empresa ou de loja só aparece nas lojas a que se aplica.
-  - Linhas da escala do RH levam a marca «escala», para se distinguirem das idas.
-  - **O «hoje» é sempre o do telemóvel**; o servidor não decide que mês se vê.
-  - Os pedidos vão pelo cliente de `lib/bolso.js`, com caminhos escritos por extenso — é o que o
-    teste `tests/fin/test_caminhos_do_bolso.py` lê e confronta com o router.
+**Horário da loja** — dois campos novos em `locations`, editados na página Locais:
 
-### Marcar idas (só administradores e gestores)
+```json
+"horario": {
+  "abre": "11:30", "fecha": "19:00",
+  "excecoes": [{ "dia": 6, "abre": "11:30", "fecha": "20:00" }],
+  "fechada": [1]
+},
+"aberta_desde": "2026-10-24"
+```
 
-- Na agenda do dia, **+ Marcar ida** abre um painel por baixo (`Sheet side="bottom"`) com:
-  **Loja** (os `locations` do RH), **Pessoa** (as contas `admin`/`gerente`; começa em mim se eu
-  estiver na lista, senão vazia), **Período** (Dia | Manhã | Tarde) e **Dias** (um
-  mini-calendário do mês em modo múltiplo, com o dia tocado já marcado; no máximo 31).
-- Tocar numa ida abre o mesmo painel com **Guardar** e **Apagar**. Mudar uma ida é sobre essa
-  ida só (um dia).
-- O botão **+ Marcar ida** e o toque nas idas só existem quando o servidor diz `pode_marcar`.
-  O contabilista vê o calendário mas não marca.
-- Erros dizem o que aconteceu e o que fazer, sem texto cru de excepção: «Já existe essa ida»,
-  «Essa pessoa já não é gestora», «Essa loja já não existe».
+- `dia`: 0 = segunda … 6 = domingo, como `work_days`.
+- Validação: `abre` < `fecha` (HH:MM); dias de 0 a 6 sem repetidos; um dia não pode estar em
+  `excecoes` e em `fechada`.
+- **Só as lojas com `horario` entram no calendário** — a Pizzaria e os escritórios ficam de fora
+  sem ninguém os esconder. `aberta_desde` (opcional) esconde a loja antes de abrir.
+- Os dois campos entram em `LocationCreate`, `LocationResponse`, no `POST` e no `$set` do `PUT`.
+  **O `PUT` só os escreve se vierem no corpo** (`model_fields_set`): um browser com a página
+  antiga em cache (já aconteceu) manda o formulário sem eles, e sem esta guarda apagava o horário.
+  O formulário novo carrega-os ao abrir e manda-os sempre.
 
-### Dados
+**Escala da pessoa** — um campo novo em `work_schedule_templates`, editado na página Escalas:
 
-**Colecção nova `bolso_idas`**, um documento por pessoa, dia, loja e período:
+```json
+"dias": [
+  { "dia": 0, "location_id": "amadora", "inicio": null, "fim": null },
+  { "dia": 2, "location_id": "oeiras",  "inicio": null, "fim": null },
+  { "dia": 3, "location_id": "algueirao", "inicio": "13:00", "fim": "22:00" }
+]
+```
+
+- `location_id` vazio = a loja da ficha do colaborador; `inicio`/`fim` vazios = o horário da
+  loja nesse dia. As duas horas vêm juntas ou nenhuma, e `inicio` < `fim`.
+- **Quando há `dias`, o servidor deriva `work_days` deles** (os `dia`, ordenados), **no `POST` e
+  no `PUT`**, calcula-o uma vez e usa o mesmo valor no modelo e na cópia das atribuições. O
+  formulário continua a mandar `workDays` (é obrigatório, medido 3), mas manda o mesmo que `dias`.
+  Assim `work_days` continua a querer dizer «os dias em que trabalha», e o saldo de férias, o «Em
+  falta» e o lembrete não mudam (medido 2).
+- `dias` entra em `WorkScheduleTemplateCreate` e `WorkScheduleTemplateResponse`; o `PUT` só o
+  escreve se vier no corpo (a mesma guarda dos Locais).
+- **O campo «Hora de início» (`start_time`) fica** como está: é o que o lembrete do ponto lê, e a
+  app do ponto tem o código congelado.
+- **Escalas antigas, sem `dias`, continuam a valer:** loja da ficha e horário da loja. Um dia de
+  `work_days` sem entrada em `dias` também.
+- O formulário das Escalas, por cada dia marcado, ganha uma loja (por omissão: «loja da ficha»)
+  e, opcionalmente, horas. Na prática a escala passa a ser por pessoa («Escala Joana»).
+
+**Idas** — colecção nova `bolso_idas`, uma por pessoa, dia e loja:
 
 ```json
 { "id": "uuid", "data": "2026-10-21", "location_id": "...", "user_id": "...",
-  "periodo": "manha", "criado_por": "...", "criado_em": "...",
-  "alterado_por": "...", "alterado_em": "..." }
+  "inicio": "13:00", "fim": "22:00",
+  "criado_por": "...", "criado_em": "...", "alterado_por": "...", "alterado_em": "..." }
 ```
 
-- `periodo` ∈ `dia` | `manha` | `tarde`.
-- `data` entra como `date` no Pydantic e grava-se com `isoformat()` — nunca o texto tal como
-  chega (o Python 3.11 aceita «20261021», que depois escapava ao filtro do mês e ao índice).
-- **Índice único** em `(data, location_id, user_id, periodo)` — a base recusa o duplicado.
-  O código não depende só dele: o POST grava com `update_one(..., upsert=True)` por essas
-  quatro chaves, e o PUT procura antes a mesma combinação noutra ida (`id ≠`) e devolve **409**;
-  um `DuplicateKeyError` que ainda escape também vira 409. Assim os testes (sem índices) medem o
-  mesmo comportamento que a produção.
-- Índice em `data` para o pedido do mês.
-- Duas lojas no mesmo dia são permitidas. Não há validação de sobreposição (Dia + Manhã).
+- `user_id` é a conta da pessoa, gestor (`admin`/`gerente`) ou colaborador. O contabilista não
+  pode ser escalado. Para cruzar com a escala e as ausências, que são por `employee_id`, usa-se
+  `users.employee_id` (todo o colaborador tem conta, medido 7).
+- `data` entra como `date` no Pydantic e grava-se com `isoformat()`; horas em HH:MM, `inicio` <
+  `fim`.
+- **Só em lojas com horário e abertas nesse dia** (senão **400** «A loja está fechada nesse
+  dia»), e **as horas têm de tocar no horário** da loja (senão 400). Horas que saiam do horário
+  (chegar meia hora antes de abrir) aceitam-se e **recortam-se** ao horário no cálculo e na
+  contagem.
+- **A mesma pessoa não pode ter duas idas com horas sobrepostas no mesmo dia** (não está em dois
+  sítios ao mesmo tempo) — **409** a dizer qual.
+- **Um colaborador não pode ser marcado num dia em que tem ausência aprovada** — **409** «A
+  Joana está de férias nesse dia».
+- Índice único em `(data, user_id, location_id, inicio)` (o duplicado exacto) e índice em `data`.
 
-**A pessoa é `users.id`.** Só se podem marcar `users` com papel `admin` ou `gerente`. Duplicados
-por nome (o `geral@` está duas vezes na base) aparecem uma vez por `id`; arrumá-los é do
-trabalho dos níveis de conta. Uma ida de alguém que entretanto foi apagado ou deixou de ser
-gestor continua a aparecer, com «(conta removida)» — não se apaga dados por arrasto.
+### 2. O cálculo — puro, em `backend/calendario.py`, sem Mongo nem FastAPI
 
-### Servidor
+Para cada loja com horário, e para cada dia do mês:
 
-Tudo debaixo de `/api/bolso/calendario`. **Ler** usa `admin_manager_required` (a porta da
-gestão; inclui o contabilista). **Escrever** exige papel `admin` ou `gerente` — 403 para os
-outros. Um colaborador leva 403 em tudo.
+1. **Estado:** `por_abrir` antes de `aberta_desde`; `fechada` se o dia da semana estiver em
+   `fechada`; senão `aberta`, com o horário do dia (a exceção desse dia, ou o geral).
+2. **Quem lá está pela escala:** parte de **`employees`** (não das atribuições, que podem estar
+   órfãs). Para cada colaborador, a atribuição que cobre o dia (a regra de
+   `find_schedule_assignment`), os dias `atribuição.work_days or modelo.work_days`; se trabalha
+   nesse dia da semana, a entrada de `dias` desse dia diz a loja e as horas (ou a ficha e o
+   horário da loja). **Uma entrada para uma loja fechada nesse dia (ou sem horário, ou por
+   abrir) ignora-se.** As horas recortam-se ao horário.
+3. **Sai quem tem ausência aprovada** que inclua o dia, de qualquer tipo.
+4. **Entram as idas:**
+   - a ida de um **gestor** soma-se à loja;
+   - a ida de um **colaborador** tira à escala dele, nesse dia, **as horas da ida** (subtracção de
+     intervalos): a Joana 13h–15h em Benfica numa quarta deixa Oeiras com buraco só das 13h às
+     15h. As horas da ida que não estavam na escala dele são **extra** (numa folga, a ida toda).
+5. **Buracos** = o horário de abertura menos a união das horas de quem lá está, em intervalos
+   («10:00–14:00»). Vazio = coberta.
+
+Os buracos **não se guardam** — calculam-se a cada pedido, por isso nunca ficam desactualizados.
+
+**Buracos:** `[{inicio, fim}]`; «ninguém» é um buraco único igual a `abre`–`fecha`.
+
+**Feriados do dia:** os nacionais (com nome) e os personalizados de âmbito grupo; **feriados da
+loja:** os personalizados da empresa dela ou dela (a regra «OU» de `:823`). Um personalizado com
+dia impossível salta-se. Os nacionais vêm de um dicionário `{data: nome}` construído à parte; o
+`get_pt_holidays` continua a devolver o mesmo `set` e a cache dele não é tocada.
+
+**Contagem** (por pessoa com idas no ano):
+
+- cada ida vale **1** se as suas horas **dentro do horário** da loja nesse dia forem ≥ metade
+  das horas de abertura, e **0,5** se forem menos (uma ida que entretanto ficou numa loja sem
+  horário vale 1);
+- por pessoa e por dia soma-se e **corta-se em 1**;
+- devolve, por pessoa, os 12 meses e o total do ano. Conta as idas marcadas, **incluindo as
+  futuras** — é o que elas usam para se equilibrarem.
+
+### 3. O servidor
+
+Rotas novas debaixo de `/api/bolso/calendario`. **Ler** usa `admin_manager_required` (inclui o
+contabilista); **escrever** exige `admin` ou `gerente` (403 aos outros).
 
 | Método | Caminho | O quê |
 |---|---|---|
-| GET | `/bolso/calendario?ano=&mes=` | tudo o que o mês precisa (abaixo); `ano` e `mes` obrigatórios |
-| POST | `/bolso/calendario/idas` | `{datas: [date, …≤31], location_id, user_id, periodo}` → cria N, ignora as que já existem |
-| PUT | `/bolso/calendario/idas/{id}` | muda loja, pessoa, período ou dia de uma ida; 409 se já existir |
+| GET | `/bolso/calendario?ano=&mes=` | o mês inteiro (abaixo); `ano` e `mes` obrigatórios |
+| GET | `/bolso/calendario/contagem?ano=` | a contagem do ano |
+| POST | `/bolso/calendario/idas` | `{datas: [date, …≤31], location_id, user_ids: [1..2], inicio, fim}` → cria uma ida por data e por pessoa; **tudo ou nada**: se alguma falhar as regras (sobreposição, ausência, loja fechada), 409/400 com a lista e não grava nenhuma |
+| PUT | `/bolso/calendario/idas/{id}` | muda dia, loja, pessoa ou horas de uma ida; 409 se chocar |
 | DELETE | `/bolso/calendario/idas/{id}` | apaga uma ida |
 
-POST e PUT validam que o `user_id` é um `users` `admin`/`gerente` e que o `location_id` existe;
-senão **400** com texto claro.
+POST e PUT validam: pessoa com papel `admin`/`gerente`/`colaborador`; loja com horário e aberta
+nesse dia; horas válidas e a tocar no horário; datas e pessoas sem repetidos no pedido; senão
+**400** com texto claro. A sobreposição verifica-se com **uma** consulta
+(`{user_id: {$in}, data: {$in}}`) e comparação em memória; o PUT exclui a própria ida.
+**Tudo ou nada sem transacções** (o Atlas tem, o `mongod` dos testes não): grava uma a uma e, se
+uma falhar (`DuplicateKeyError` de quem marcou ao mesmo tempo), **apaga as que este pedido já
+gravou** e devolve 409. Fica uma janela entre verificar e gravar para idas sobrepostas mas não
+iguais, marcadas por duas gestoras no mesmo segundo — aceite (`ponytail:` no código).
 
-O GET devolve, num só pedido:
+O GET do mês devolve, num pedido:
 
-- `idas` do mês, com nome da pessoa e da loja (com recurso «(conta removida)» / «(loja
-  removida)»).
-- `escala`: a escala do RH **calculada dia a dia** para o mês. Parte de **`employees`** (não das
-  atribuições, que podem estar órfãs) e junta as atribuições por `employee_id`. Para cada dia,
-  a atribuição que o cobre (a mesma regra de `find_schedule_assignment`; a criação já proíbe
-  sobreposições) e os dias de trabalho `atribuição.work_days or modelo.work_days` (o mesmo
-  recurso do `_schedule_today`, `:2935`; 0 = segunda, como `weekday()`). Cada linha é
-  `{data, nome, loja}` na loja da ficha (`employees.location_id`; sem loja → «Sem loja»).
-  **Sai o dia em que o colaborador tem uma ausência aprovada.** Lê sem os `to_list(200)` que a
-  escala usa noutros sítios.
-- `ausencias`: as aprovadas que tocam o mês, com o filtro de sobreposição do `/calendar/leaves`
-  (`:3172-3181`), nomes resolvidos **numa só** consulta `$in` e sem calcular dias contados.
-- `feriados`: nacionais e personalizados do mês, **com nome**, e com o âmbito (`company_id` /
-  `location_id`) para o ecrã aplicar a mesma regra «OU» do `:823`. Um personalizado com dia
-  impossível (30/02) salta-se.
-- `lojas` (com `company_id`, para o âmbito dos feriados) e `pessoas` para o painel de marcar.
-- `pode_marcar`: verdadeiro para `admin`/`gerente`.
+```json
+{ "ano": 2026, "mes": 10, "eu": "<user_id>", "pode_marcar": true,
+  "dias": [{ "data": "2026-10-06", "feriados": [],
+             "lojas": [{ "location_id": "...", "nome": "Oeiras", "estado": "aberta",
+                         "abre": "13:00", "fecha": "22:00", "feriados": [],
+                         "pessoas": [{ "user_id": "...", "nome": "Débora", "inicio": "13:00",
+                                       "fim": "22:00", "origem": "ida", "extra": false,
+                                       "ida_id": "..." }],
+                         "buracos": [] }] }],
+  "idas": [ … com nome da pessoa e da loja … ],
+  "ausencias": [{ "nome": "Weber", "tipo": "ferias", "inicio": "2026-10-21",
+                  "fim": "2026-10-25", "loja": "Amadora" }],
+  "lojas": [{ "id": "...", "nome": "Oeiras" }],
+  "pessoas": [{ "id": "...", "nome": "Débora Ferreira", "tipo": "gestor" }] }
+```
 
-O filtro Pessoal é feito no telemóvel sobre a mesma resposta.
+- Os nomes resolvem-se com recurso («(conta removida)», «(loja removida)»).
+- `idas[]` leva `id, data, location_id, user_id, inicio, fim` e os nomes — **é daqui que se
+  montam a vista Pessoal e as idas da Lista**, não de `dias` (uma ida numa loja que entretanto
+  perdeu o horário continua a aparecer).
+- `pessoas[]`: só `admin`/`gerente`/`colaborador`, já ordenadas (gestores, depois nome). A mesma
+  consulta a `users` dá o mapa `employee_id → user_id`.
+- `ausencias[]`: só as **aprovadas** que tocam o mês (o mesmo critério dos buracos), nomes num só
+  `$in`, sem dias contados; «loja» é a da ficha.
+- O contabilista recebe `pode_marcar: false`.
+- 9 consultas fixas por pedido, sem ciclos; a resposta de um mês ronda 100 KB em bruto e o Caddy
+  já comprime (`encode gzip`).
 
-**Feriados com nome:** um dicionário `{data: nome}` para os nacionais, construído à parte; a
-função `get_pt_holidays` continua a devolver o mesmo `set` (o único sítio que a usa, `:874`,
-não muda) e a cache dela não é tocada.
+A contagem devolve `[{user_id, nome, meses: [12], total}]`, ordenada pelo total.
 
-**Níveis de conta:** o trabalho do ramo `matheus-niveis-de-conta` (ainda fora do main) põe
-`bolso` na gaveta `painel`. As rotas novas ficam debaixo de `/api/bolso/`, por isso caem na
-mesma gaveta. Quem entrar no main em segundo acrescenta a linha ao mapa; o teste de cobertura
-desse trabalho fica vermelho se alguém se esquecer.
+Os Locais e as Escalas continuam nas rotas que já têm (`/locations`, `/schedules`), com os
+campos novos nos modelos.
 
-### Login com Face ID
+**Níveis de conta:** o ramo `matheus-niveis-de-conta` (fora do main) põe `bolso` na gaveta
+`painel`. As rotas novas caem na mesma. Quem entrar no main em segundo acrescenta a linha ao
+mapa; o teste de cobertura desse trabalho fica vermelho se alguém se esquecer.
+
+### 4. O ecrã
+
+**Menu lateral (☰)** no cabeçalho do bolso, num `Sheet side="left"`: **Faturação**,
+**Calendário**, **Usar Face ID** (Fase 3) e **Terminar sessão**. Conteúdo com
+`safe-area-inset-top` e botão de fechar de 44 px (o `SheetContent` ganha a opção de não desenhar
+o seu de 16 px). Saem do `BolsoApp.js` para um `pages/bolso/partilhado.js`:
+`useManifestoDoBolso`, `Segmento` e os `ler`/`guardar` do `localStorage`. A `BarraDeAmbito` fica
+só na Faturação. Rota nova `/bolso/calendario`, irmã de `/bolso`, com os mesmos papéis.
+
+**Calendário** (`pages/bolso/BolsoCalendario.js`):
+
+- **Em cima:** ☰, mês e ano, ‹ ›, e **Mês | Lista | Contagem**.
+- **Em baixo:** os filtros **Pessoal | Geral | Férias** (o `Segmento`). Vista e filtro
+  lembram-se no `localStorage`, com try/catch; sem ele abre em Mês/Geral.
+- **Mês** — uma grelha própria a partir de `semanasDoMes()` (função pura, testada em Node; não o
+  `ui/calendar.jsx`, cujo react-day-picker 8 declara o date-fns 2/3 com o 4 instalado), dias de
+  **44 px**, feriados noutra cor. Abre no dia de hoje; tocar num dia mostra-o por baixo.
+  - **Geral:** ponto vermelho nos dias com buraco por tapar. O dia mostra, loja a loja, quem lá
+    está (nome, horas, «escala» ou «extra»), os buracos a vermelho («ninguém») ou amarelo
+    («falta 10h–14h») com o botão **Tapar**, e as lojas fechadas a cinzento.
+  - **Pessoal:** pontos nos dias das minhas idas; o dia mostra só as minhas.
+  - **Férias:** pontos nos dias com ausências; o dia mostra nome, tipo, datas e loja.
+- **Lista** — os dias do mês à vista (a partir de hoje no mês corrente; o mês inteiro nos
+  outros), só **buracos e idas** (Geral), as minhas idas (Pessoal) ou as ausências (Férias). Dias
+  sem nada não aparecem. Avança-se com ‹ ›.
+- **Contagem** — uma linha por pessoa com idas no ano: o mês à vista e o total do ano («Débora ·
+  outubro 18 dias · 2026 60 dias»); tocar abre os meses um a um.
+- **Tapar um buraco** abre um painel (`Sheet side="bottom"`) com: **Pessoas** (uma ou mais;
+  gestores primeiro, depois colaboradores; começa em mim se eu puder ser escalado), **Horas**
+  (as do buraco, editáveis), **Dias** (a grelha do mês a escolher vários, com o dia tocado
+  marcado e o atalho **«Também nas outras terças deste mês com buraco em Oeiras»**, que marca
+  as terças seguintes cujo buraco **contém** as horas escolhidas — calculado só com a resposta). **+ Marcar ida** abre o mesmo painel vazio, com a loja a escolher.
+- **Tocar numa ida** abre o painel com **Guardar** e **Apagar** (um dia, uma pessoa).
+- «Tapar» e «Marcar» só existem com `pode_marcar`.
+- **O «hoje» é o do telemóvel em hora local** (`getFullYear`/`getMonth`/`getDate`), nunca
+  `toISOString()`, que entre a meia-noite e a uma da manhã de Lisboa dá o dia anterior.
+- Os pedidos vão por `lib/bolso.js`, com caminhos por extenso, para o
+  `tests/fin/test_caminhos_do_bolso.py` os confrontar com o router.
+- Erros dizem o que aconteceu e o que fazer: «A Débora já está em Alfragide das 10h às 14h a
+  21/10.»
+
+### 5. Login com Face ID
 
 **Peça nativa:** `@capgo/capacitor-native-biometric@6.0.4`, versão fixa — a única que aceita
 Capacitor 6 e traz numa só peça `isAvailable`, `verifyIdentity`, `setCredentials`,
 `getCredentials` e `deleteCredentials` (MIT; regista-se como `NativeBiometric`). Mais
-`NSFaceIDUsageDescription` no `Info.plist` («Usamos o Face ID para entrar na Gestão Lisbonb sem
-escrever a senha.») e build 3 da casca (`CURRENT_PROJECT_VERSION = 3`).
+`NSFaceIDUsageDescription` («Usamos o Face ID para entrar na Gestão Lisbonb sem escrever a
+senha.») e build 3 (`CURRENT_PROJECT_VERSION = 3`).
 
 **O que esta versão faz e não faz** (lido no Swift do pacote): guarda email e senha no
-**Keychain** do iOS (`kSecClassInternetPassword`, por `server`), mas **sem os prender ao Face
-ID** — o `getCredentials` devolve-os sem pedir nada. Quem garante o Face ID é o nosso código, que
-chama `verifyIdentity` **antes** de ler. Fica com `useFallback: false` (só biometria, sem o código
-do iPhone). Prender a senha ao Face ID no próprio Keychain só existe na série 8 do plugin, que
-exige Capacitor 8 — não compensa migrar a casca agora.
+**Keychain** (`kSecClassInternetPassword`, por `server`), mas **sem os prender ao Face ID** — o
+`getCredentials` devolve-os sem pedir nada. Quem garante o Face ID é o nosso código, que chama
+`verifyIdentity` (com `useFallback: false`, só biometria) **antes** de ler. Prender a senha ao
+Face ID no Keychain só existe na série 8 do plugin, que exige Capacitor 8.
 
-**No site** fica tudo num módulo `lib/faceid.js`, que só faz alguma coisa quando
-`Capacitor.isPluginAvailable('NativeBiometric')` — com a build 2, ou no browser, tudo fica como
-hoje e nada rebenta. O `@capacitor/core` 6 já está no `frontend`; usa-se `registerPlugin`, sem
-instalar o plugin no site.
+**No site**, tudo num módulo `lib/faceid.js`, que só actua com
+`Capacitor.isPluginAvailable('NativeBiometric')` (build 2 e browser ficam como hoje). Usa o
+`registerPlugin` do `@capacitor/core` 6 que o site já tem.
 
-1. **Primeiro login com senha** → «Usar Face ID para entrar?».
-   - Sim → guarda o email **devolvido pelo servidor** e a senha no Keychain.
-   - Não → guarda `faceid_recusado:<email>` no `localStorage` e não volta a perguntar. Quem
-     mudar de ideias usa **Usar Face ID** no menu lateral.
-2. **Barreira.** Ao abrir a app, e ao voltar a ela depois de **mais de 5 minutos fora**, um ecrã
-   opaco tapa tudo até o Face ID passar («Entrar como <email>»). A hora de saída grava-se no
-   `localStorage` ao ficar escondida (`saiuAs`), para sobreviver ao iOS matar a app; sem
-   `saiuAs`, conta como arranque. Os dados não se pedem enquanto a barreira estiver fechada (o
-   `visibilitychange` do bolso espera por ela), e a barreira fecha-se logo ao esconder, para a
-   miniatura do selector de apps não mostrar a faturação.
-3. **Face ID falhou ou foi cancelado** → `logout()` (apaga o token, **não** o Keychain) e o
-   login normal. Sem isto, o ecrã de login devolvia a pessoa para dentro, porque o token ainda
-   era válido.
-4. **Sessão expirada** (no arranque, ou um 401 a meio) → **uma só re-entrada partilhada**: a
-   primeira resposta 401 lança-a e as outras esperam por ela (`reentrar = emCurso ??= …`). Faz
-   Face ID (se a barreira não acabou de o fazer), lê o Keychain e `POST /auth/login`; grava o
-   token e repete o pedido uma vez. Se falhar, login normal.
-5. **Só um 401 do login apaga o Keychain** (a senha foi trocada noutro sítio). Um 429 (limite
-   por IP — numa rede partilhada as falhas dos outros contam) ou a rede em baixo mostram o login
-   e **mantêm** o Keychain.
-6. **Terminar sessão** é uma função à parte, `terminarSessao()` = `logout()` + apagar o
-   Keychain. O `logout()` dos 401 não apaga o Keychain.
-7. **Dois gestores no mesmo iPhone:** o Keychain guarda uma conta por app; quem activar o Face
-   ID por último fica com ele. A barreira diz sempre «Entrar como <email>».
+1. **Primeiro login com senha** → «Usar Face ID para entrar?». Sim → guarda o email devolvido
+   pelo servidor e a senha. Não → `faceid_recusado:<email>` no `localStorage`, não volta a
+   perguntar; **Usar Face ID** no menu lateral para quem mudar de ideias.
+2. **Barreira:** ao abrir a app, e ao voltar depois de **mais de 5 minutos fora**, um ecrã opaco
+   tapa tudo até o Face ID passar («Entrar como <email>»). A hora de saída grava-se no
+   `localStorage` (`saiuAs`) ao esconder; sem ela conta como arranque. Os dados não se pedem com
+   a barreira fechada, e ela fecha logo ao esconder (a miniatura do selector de apps não mostra
+   números).
+3. **Face ID falhou ou cancelado** → `logout()` (apaga o token, não o Keychain) e login normal.
+4. **Sessão expirada** → **uma só re-entrada partilhada** (`reentrar = emCurso ??= …`): Face ID
+   se a barreira não acabou de o fazer, Keychain, `POST /auth/login`, grava o token e repete o
+   pedido uma vez. Falhou → login normal.
+5. **Só um 401 do login apaga o Keychain.** 429 e rede em baixo mantêm-no.
+6. **Terminar sessão** = `terminarSessao()` (`logout()` + apagar o Keychain). O `logout()` dos
+   401 não apaga o Keychain.
+7. **Dois gestores no mesmo iPhone:** fica o último que activou o Face ID; a barreira diz sempre
+   «Entrar como <email>».
 
-**No servidor não muda nada.** As 24 h ficam, trocar a senha continua a cortar as sessões, e
-o formato do token não muda (a app do ponto leva o código congelado no bundle).
+**No servidor não muda nada.** As 24 h ficam; o formato do token não muda (a app do ponto leva o
+código congelado no bundle).
 
 **Duas correcções que vão junto (só site):**
 
-- **Sem ligação:** se o `/auth/me` do arranque falhar por outra razão que não 401/403, o
-  `AuthContext` guarda `semLigacao` e mantém o token; o `ProtectedRoute` mostra «Sem ligação —
-  tentar de novo» em vez de mandar para o login. **Isto muda também o portal no browser** (é a
-  mesma peça): passa a mostrar «Sem ligação» em vez do login quando o servidor não responde —
-  é uma melhoria e fica dito. A app do ponto só a recebe na próxima build dela.
-- O 401 do bolso leva `state.from`, e depois de entrar volta ao ecrã onde se estava
-  (Faturação ou Calendário).
+- **Sem ligação:** se o `/auth/me` do arranque falhar sem ser 401/403, o `AuthContext` guarda
+  `semLigacao` e o `ProtectedRoute` mostra «Sem ligação — tentar de novo» em vez do login.
+  **Muda também o portal no browser** (é a mesma peça) — melhoria, e fica dito.
+- O 401 do bolso leva `state.from`, e depois de entrar volta-se ao ecrã de onde se veio.
 
 ## Entrega por fases
 
-**Fase 1 — menu lateral e calendário** (deploy, sem build). Servidor, ecrã, marcar idas.
-Depois de estar no ar, e com confirmação do dono antes de escrever, carregar as idas de
-outubro a dezembro da mensagem (só gestores; Deb/Débora são a mesma pessoa, Car é a Carol).
+**Fase 1 — horários e escalas** (portal; deploy). Locais com horário, exceções, dias fechados e
+data de abertura; Escalas com loja e horas por dia. Depois, o **script de arranque**, corrido
+pelo dono (as regras desta sessão não me deixam escrever em produção): as 6 lojas com horário e
+as 7 escalas da tabela de cima, com dry-run primeiro. Para a grelha bater: a Emily (14–23) e a
+Beatrice (10–19) levam horas explícitas; a Joana leva loja por dia (Amadora seg/ter, Oeiras qua,
+Algueirão qui/sex); a Rafaela não trabalha à terça (a loja fecha — e assim a terça também não
+conta nas férias dela).
 
-**Fase 2 — login.** Primeiro o código do site (`lib/faceid.js`, barreira, re-entrada, as duas
-correcções), em deploy — com a build 2 instalada nada muda, excepto as duas correcções. Depois a
-build 3 da casca, no TestFlight; o dono, o Bruce, a Carol e a Débora actualizam lá.
+**Fase 2 — o calendário automático** (app; deploy, sem build). O cálculo, as rotas, o menu
+lateral, Mês/Lista/Contagem, os filtros, tapar e marcar. Depois de estar no ar, e com
+confirmação do dono, carregar as idas de outubro a dezembro da mensagem.
+
+**Fase 3 — Face ID.** Primeiro o código do site (deploy; com a build 2 nada muda, excepto as duas
+correcções), depois a build 3 no TestFlight.
+
+Cada fase tem o seu plano.
 
 ## Testes
 
-Antes de correr a suite na worktree, `yarn install` no `frontend` — sem `node_modules` a suite
-salta os testes do frontend em silêncio. Ler sempre `passed` **e** `skipped`.
+Antes da suite na worktree: `ln -sfn ~/Developer/RH/frontend/node_modules frontend/node_modules`
+e o Python da árvore principal. Ler sempre `passed` **e** `skipped`.
 
-1. **Escala calculada:** dia da semana dentro e fora do `work_days`; `work_days` da atribuição
-   vs do modelo; duas atribuições no mês (uma acaba a 10, outra começa a 11); atribuição sem
-   fim; atribuição órfã (colaborador apagado) não aparece; ausência aprovada tira o dia;
-   pendente não tira.
-2. **Feriados:** nacionais com nome; personalizado de loja só nessa loja; de empresa em todas as
-   lojas dela; dia impossível salta-se sem 500; a cache de `get_pt_holidays` fica igual.
-3. **Marcar:** vários dias de uma vez criam N idas; repetir o pedido não duplica; PUT para uma
-   combinação existente dá 409; data em formato estranho é recusada; pessoa que não é gestora ou
-   loja inexistente dão 400; mudar e apagar mexem só na ida certa.
-4. **Porta:** um colaborador leva 403 nas 4 rotas; o contabilista lê (200, `pode_marcar` falso)
-   e leva 403 a escrever; administrador e gestor escrevem.
-5. **Caminho:** as chamadas novas em `lib/bolso.js` são apanhadas pelo
-   `tests/fin/test_caminhos_do_bolso.py`, que as confronta com `server.app.routes`.
-6. **Face ID e sessão (no site, com o plugin simulado):** cancelar fecha a porta; dois 401 ao
-   mesmo tempo dão uma só re-entrada; 401 do login apaga o Keychain, 429 e sem rede não; o «não»
-   fica lembrado; Terminar sessão apaga o Keychain e o 401 não; sem plugin nada muda.
-7. **Cada teste é visto vermelho primeiro** (mutação da regra que prende).
-8. **Ecrãs:** num browser a 375 px, claro e escuro, com a zona da notch; os dias com 44 px; o
-   `mode="multiple"` do react-day-picker 8 com o date-fns 4 instalado, a sério.
-9. **Face ID na casca:** no simulador do iPhone (rosto certo, rosto errado, cancelar, sessão
-   expirada, senha trocada, app morta e reaberta), depois no telemóvel do dono.
-10. **Depois do deploy:** confirmar que o ficheiro servido é o novo (o `deploy.sh` já entregou
-    código antigo) e fazer uma marcação real, que depois se apaga.
+1. **A semana normal** (o teste que dá nome ao trabalho): com os dados da tabela de cima, numa
+   semana **depois** da abertura de Benfica (26/10–01/11), o cálculo dá **exactamente** a grelha
+   dos buracos — Oeiras sem ninguém à terça,
+   Alfragide 10–14 seg/ter e 19–23 qua/qui, Benfica todos os dias, Belém fechada à terça, o resto
+   coberto.
+2. **Outubro:** as férias do Weber (21 a 25/10) abrem a Amadora nesses dias; a Joana marcada em
+   Benfica numa quarta abre Oeiras nessa quarta; 2 horas dela em Benfica abrem só essas 2 horas;
+   numa folga dela a ida é «extra»; marcá-la num dia de férias dá 409.
+3. **Escala:** escalas antigas sem `dias`; `dias` com loja e horas; entrada numa loja fechada
+   ignorada; duas atribuições no mês; atribuição órfã não aparece; ausência pendente não tira;
+   `work_days` derivado de `dias` no POST e no PUT, igual no modelo e nas atribuições;
+   `start_time` intacto; o saldo de férias de quem passa a ter `dias` **dá o mesmo** que antes;
+   um PUT sem `dias`/`horario` no corpo (página antiga) **não os apaga**.
+4. **Horário:** exceção de domingo; dia fechado; antes de `aberta_desde`; validações.
+5. **Feriados:** nacionais com nome; de empresa e de loja só onde se aplicam; dia impossível sem
+   500; a cache de `get_pt_holidays` igual.
+6. **Contagem:** 0,5 e 1 pela metade do horário, contando só as horas dentro do horário; duas
+   meias no mesmo dia = 1; nunca mais de 1; total do ano.
+7. **Marcar:** várias datas e duas pessoas criam N idas; sobreposição dá 409 e **não grava
+   nenhuma** (incluindo o caso de o choque ser só na última data); PUT a chocar dá 409 e não se
+   choca consigo próprio; contabilista, loja inexistente, loja fechada nesse dia, horas fora do
+   horário e repetidos no pedido dão 400; mudar e apagar mexem só na ida certa.
+8. **Porta:** colaborador leva 403 em tudo; contabilista lê (`pode_marcar` falso) e leva 403 a
+   escrever; administrador e gestor escrevem. Teste contra um `mongod` real (o índice único e o
+   «tudo ou nada» medem-se aí).
+9. **Caminho:** as chamadas novas em `lib/bolso.js` são apanhadas pelo
+   `tests/fin/test_caminhos_do_bolso.py`.
+10. **Face ID e sessão** (no site, com o plugin simulado): cancelar fecha a porta; dois 401 dão
+    uma só re-entrada; 401 do login apaga o Keychain, 429 e sem rede não; o «não» fica lembrado;
+    Terminar sessão apaga o Keychain e o 401 não; sem plugin nada muda.
+11. **Cada teste é visto vermelho primeiro** (mutação da regra que prende).
+12. **Ecrãs** num browser a 375 px, claro e escuro, com a zona da notch, contra um servidor local
+    com os dados da semana normal.
+13. **Face ID na casca:** no simulador (rosto certo, errado, cancelar, sessão expirada, senha
+    trocada, app morta e reaberta), depois no telemóvel do dono.
+14. **Depois de cada deploy:** confirmar que o ficheiro servido é o novo (o `deploy.sh` já
+    entregou código antigo) e exercitar o caminho feliz.
 
 ## Riscos aceites
 
-- As férias dos gestores não aparecem (não têm ficha de colaborador).
-- Os extras dos colaboradores ficam fora (decisão 1).
-- Um colaborador aparece sempre na loja da ficha, mesmo que nesse dia cubra outra.
-- A senha fica no Keychain do iPhone e o Face ID é pedido pelo nosso código antes de a ler, não
-  pelo Keychain (limite da versão 6 do plugin). Só esta app lê o seu Keychain, e dentro dela a
-  senha só é lida depois do Face ID.
+- Horários depois da meia-noite não são suportados.
+- **Lojas fechadas numa data** (24, 25 e 31/12, 01/01) aparecem com buraco — decisão do dono.
+- **Editar os dias de uma escala reescreve as atribuições antigas** (comportamento que já existia,
+  `:2242-2247`) e, com isso, o saldo de férias de períodos passados. Com escalas por pessoa vai
+  acontecer mais: para mudar a escala de alguém a partir de uma data, cria-se uma escala nova e
+  uma atribuição nova (é o que a página já permite).
+- Ausências pendentes não abrem buraco.
+- As férias dos gestores não aparecem.
+- O «Em falta» do painel continua a usar a loja da ficha e a hora de início antiga.
+- A senha fica no Keychain e o Face ID é pedido pelo nosso código antes de a ler (limite da
+  versão 6 do plugin); só esta app lê o seu Keychain.
 - O portal no browser passa a mostrar «Sem ligação» em vez do login quando o servidor não
   responde ao arranque.
-- A Carol e a Débora, como gestoras, vêem o portal inteiro até os níveis de conta entrarem.
-  Já é assim hoje; o calendário não muda nada.
+- A Carol e a Débora, como administradoras, vêem o portal inteiro até os níveis de conta entrarem.
