@@ -4,6 +4,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
 import os
 import logging
 from pathlib import Path
@@ -8881,6 +8882,138 @@ async def bolso_calendario_contagem(
         {"id": {"$in": sorted({i["user_id"] for i in idas})}}, {"_id": 0, "id": 1, "name": 1}
     ).to_list(5000)
     return calendario.contagem(idas, lojas, {u["id"]: u.get("name") for u in utilizadores})
+
+
+class BolsoIdasIn(BaseModel):
+    datas: List[date]
+    location_id: str
+    user_ids: List[str]
+    inicio: str
+    fim: str
+
+
+class BolsoIdaIn(BaseModel):
+    data: date
+    location_id: str
+    user_id: str
+    inicio: str
+    fim: str
+
+
+async def bolso_quem_marca(current_user: dict = Depends(admin_manager_required)):
+    """Escrever no calendário: administradores e gestores. O contabilista lê e não marca."""
+    if current_user.get("role") not in calendario.GESTORES:
+        raise HTTPException(status_code=403, detail="Só os gestores marcam idas.")
+    return current_user
+
+
+async def _bolso_validar_idas(novas: List[dict], ignorar_id: Optional[str] = None) -> None:
+    """As regras de uma ida, para todas as do pedido de uma vez: levanta 400/409 com a
+    lista dos problemas, ou não levanta nada. Não grava."""
+    lojas = {l["id"]: l for l in await db.locations.find(
+        {"id": {"$in": sorted({n["location_id"] for n in novas})}}, _BOLSO_CAMPOS_DA_LOJA).to_list(100)}
+    erros = []
+    for nova in novas:
+        erro = calendario.validar_ida(
+            date.fromisoformat(nova["data"]), lojas.get(nova["location_id"]), nova["inicio"], nova["fim"])
+        if erro and erro not in erros:
+            erros.append(erro)
+    if erros:
+        raise HTTPException(status_code=400, detail="\n".join(erros))
+
+    ids = sorted({n["user_id"] for n in novas})
+    pessoas = {u["id"]: u for u in await db.users.find(
+        {"id": {"$in": ids}}, {"_id": 0, "id": 1, "name": 1, "role": 1, "employee_id": 1}).to_list(100)}
+    if any((pessoas.get(i) or {}).get("role") not in calendario.ESCALAVEIS for i in ids):
+        raise HTTPException(
+            status_code=400, detail="Só administradores, gestores e colaboradores podem ser escalados.")
+
+    datas = sorted({n["data"] for n in novas})
+    fichas = [u["employee_id"] for u in pessoas.values() if u.get("role") == "colaborador" and u.get("employee_id")]
+    if fichas:
+        ausencias = await db.leave_requests.find(
+            {"employee_id": {"$in": fichas}, "status": "aprovado",
+             "start_date": {"$lte": datas[-1]}, "end_date": {"$gte": datas[0]}},
+            {"_id": 0, "employee_id": 1, "leave_type": 1, "start_date": 1, "end_date": 1, "status": 1},
+        ).to_list(1000)
+        impedidas = calendario.ausencias_que_impedem(novas, pessoas, ausencias)
+        if impedidas:
+            raise HTTPException(status_code=409, detail="\n".join(impedidas + ["Escolha outra pessoa ou outro dia."]))
+
+    # A sobreposição verifica-se com UMA consulta e compara-se em memória.
+    existentes = await db.bolso_idas.find({"user_id": {"$in": ids}, "data": {"$in": datas}}, {"_id": 0}).to_list(1000)
+    pares = calendario.choques(novas, existentes, ignorar_id)
+    if pares:
+        nomes = {l["id"]: l.get("name") for l in await db.locations.find(
+            {"id": {"$in": sorted({outra["location_id"] for _, outra in pares})}},
+            {"_id": 0, "id": 1, "name": 1}).to_list(100)}
+        linhas = []
+        for nova, outra in pares:
+            linha = calendario.mensagem_de_choque(nova, outra, pessoas, nomes)
+            if linha not in linhas:
+                linhas.append(linha)
+        raise HTTPException(status_code=409, detail="\n".join(linhas + ["Mude as horas ou apague primeiro a outra ida."]))
+
+
+@api_router.post("/bolso/calendario/idas")
+async def bolso_criar_idas(corpo: BolsoIdasIn, current_user: dict = Depends(bolso_quem_marca)):
+    """Uma ida por data e por pessoa — tudo ou nada."""
+    datas = [d.isoformat() for d in corpo.datas]
+    erro = calendario.validar_pedido(datas, corpo.user_ids)
+    if erro:
+        raise HTTPException(status_code=400, detail=erro)
+    agora = datetime.now(timezone.utc).isoformat()
+    novas = [
+        {"id": str(uuid.uuid4()), "data": d, "location_id": corpo.location_id, "user_id": u,
+         "inicio": corpo.inicio, "fim": corpo.fim,
+         "criado_por": current_user.get("user_id"), "criado_em": agora,
+         "alterado_por": None, "alterado_em": None}
+        for d in sorted(datas) for u in corpo.user_ids
+    ]
+    await _bolso_validar_idas(novas)
+    gravadas = []
+    try:
+        for nova in novas:
+            await db.bolso_idas.insert_one(dict(nova))  # cópia: o insert_one mete o _id no dicionário
+            gravadas.append(nova["id"])
+    except DuplicateKeyError:
+        # Tudo ou nada SEM transacções (o Atlas tem, o mongod dos testes não): apaga-se o
+        # que ESTE pedido já gravou.
+        # ponytail: entre verificar e gravar fica uma janela para idas sobrepostas mas não
+        # iguais, marcadas por duas gestoras no mesmo segundo — o índice único só apanha a
+        # igual. Aceite no desenho; uma transacção fecha-a se algum dia acontecer.
+        if gravadas:
+            await db.bolso_idas.delete_many({"id": {"$in": gravadas}})
+        raise HTTPException(
+            status_code=409,
+            detail="Alguém marcou uma destas idas ao mesmo tempo. Nada foi gravado — volte a abrir o dia.")
+    return {"criadas": len(gravadas), "ids": gravadas}
+
+
+@api_router.put("/bolso/calendario/idas/{ida_id}")
+async def bolso_mudar_ida(ida_id: str, corpo: BolsoIdaIn, current_user: dict = Depends(bolso_quem_marca)):
+    """Muda dia, loja, pessoa ou horas de UMA ida; 409 se chocar (consigo própria não choca)."""
+    actual = await db.bolso_idas.find_one({"id": ida_id}, {"_id": 0})
+    if not actual:
+        raise HTTPException(status_code=404, detail="Esta ida já não existe — volte a abrir o dia.")
+    mudancas = {"data": corpo.data.isoformat(), "location_id": corpo.location_id,
+                "user_id": corpo.user_id, "inicio": corpo.inicio, "fim": corpo.fim}
+    await _bolso_validar_idas([dict(actual, **mudancas)], ignorar_id=ida_id)
+    mudancas.update(alterado_por=current_user.get("user_id"), alterado_em=datetime.now(timezone.utc).isoformat())
+    try:
+        await db.bolso_idas.update_one({"id": ida_id}, {"$set": mudancas})
+    except DuplicateKeyError:
+        raise HTTPException(
+            status_code=409, detail="Alguém marcou esta mesma ida ao mesmo tempo — volte a abrir o dia.")
+    return dict(actual, **mudancas)
+
+
+@api_router.delete("/bolso/calendario/idas/{ida_id}")
+async def bolso_apagar_ida(ida_id: str, current_user: dict = Depends(bolso_quem_marca)):
+    resultado = await db.bolso_idas.delete_one({"id": ida_id})
+    if resultado.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Esta ida já não existe — volte a abrir o dia.")
+    return {"apagada": ida_id}
 
 
 @api_router.post("/fin/cron/faturacao")
