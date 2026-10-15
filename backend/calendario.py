@@ -333,3 +333,33 @@ def dia_do_calendario(dia: date, dados: Dict, p: Optional[Dict] = None) -> Dict:
 def calendario_do_mes(ano: int, mes: int, dados: Dict) -> List[Dict]:
     p = _preparar(dados)
     return [dia_do_calendario(date(ano, mes, d), dados, p) for d in range(1, monthrange(ano, mes)[1] + 1)]
+
+
+# --- A contagem: quantos dias cada pessoa fez (e vai fazer) no ano --------------------------
+
+
+def valor_da_ida(ida: Dict, loja: Optional[Dict]) -> float:
+    """1 dia se as horas DENTRO do horário da loja nesse dia forem pelo menos metade das horas
+    de abertura; 0,5 se forem menos. Uma ida numa loja que entretanto ficou sem horário (ou
+    fechada nesse dia, ou apagada) vale 1 — não há com que comparar e a ida aconteceu."""
+    _estado, janela = horario_do_dia(loja, date.fromisoformat(ida["data"]))
+    if not janela:
+        return 1.0
+    dentro = recortar((minutos(ida["inicio"]), minutos(ida["fim"])), janela)
+    feitas = dentro[1] - dentro[0] if dentro else 0
+    return 1.0 if feitas * 2 >= janela[1] - janela[0] else 0.5
+
+
+def contagem(idas: List[Dict], lojas: Dict[str, Dict], nomes: Dict[str, str]) -> List[Dict]:
+    """`[{user_id, nome, meses: [12], total}]`, do total maior para o menor. Por pessoa e por
+    dia soma-se e corta-se em 1 (duas meias no mesmo dia = 1; nunca mais de 1)."""
+    por_dia = {}  # type: Dict[Tuple[str, str], float]
+    for ida in idas:
+        chave = (ida["user_id"], ida["data"])
+        por_dia[chave] = min(1.0, por_dia.get(chave, 0.0) + valor_da_ida(ida, lojas.get(ida.get("location_id"))))
+    meses = {}  # type: Dict[str, List[float]]
+    for (user_id, data), valor in por_dia.items():
+        meses.setdefault(user_id, [0.0] * 12)[int(data[5:7]) - 1] += valor
+    linhas = [{"user_id": u, "nome": nomes.get(u) or NOME_SEM_CONTA, "meses": m, "total": sum(m)}
+              for u, m in meses.items()]
+    return sorted(linhas, key=lambda l: (-l["total"], l["nome"].lower()))
