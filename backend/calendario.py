@@ -291,7 +291,9 @@ def dia_do_calendario(dia: date, dados: Dict, p: Optional[Dict] = None) -> Dict:
     toda); 4. buracos = horário menos a união das horas de quem lá está («ninguém» = um
     buraco igual a abre–fecha).
     Uma ida numa loja sem horário, fechada ou por abrir não entra aqui (continua na lista das
-    idas do mês). A de um colaborador com ausência aprovada nesse dia também não.
+    idas do mês). A de um colaborador com ausência aprovada DEPOIS de a ida existir (marcá-la
+    já de férias dá 409) entra como as outras até um gestor a apagar — decisão do dono; a
+    ausência tira-lhe só a escala, e por isso a ida dele nesse dia é toda «extra».
     """
     p = p or _preparar(dados)
     escala = _escala(dia, p)
@@ -304,12 +306,6 @@ def dia_do_calendario(dia: date, dados: Dict, p: Optional[Dict] = None) -> Dict:
     for ida in (i for i in dados.get("idas", []) if i.get("data") == iso):
         user = p["utilizadores"].get(ida.get("user_id")) or {}
         emp_id = user.get("employee_id") if user.get("role") == "colaborador" else None
-        if emp_id and emp_id in fora:
-            # Férias aprovadas DEPOIS de a ida existir (marcá-la já de férias dá 409): não está
-            # lá, por isso não tapa — nunca «coberta» numa loja vazia. A ida continua em
-            # `idas[]` (vistas Pessoal e Lista). Decisão por omissão, a confirmar com o dono
-            # (Tarefa 16).
-            continue
         horas = (minutos(ida["inicio"]), minutos(ida["fim"]))
         estado, janela = horario_do_dia(p["lojas"].get(ida.get("location_id")), dia)
         dentro = recortar(horas, janela) if estado == "aberta" else None

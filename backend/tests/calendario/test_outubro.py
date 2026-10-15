@@ -93,15 +93,21 @@ def test_chegar_antes_de_abrir_nao_faz_a_ida_extra():
     assert (joana["inicio"], joana["fim"], joana["extra"]) == ("13:00", "22:00", False)
 
 
-def test_a_ida_de_quem_ficou_de_ferias_depois_nao_tapa_o_buraco():
-    # A ida foi marcada e as férias aprovadas depois (marcá-la já de férias dava 409). Ela não
-    # está lá: Benfica e Oeiras ficam sem ninguém — nunca «coberta» numa loja vazia.
+def test_a_ida_de_quem_ficou_de_ferias_depois_continua_a_contar():
+    # Decisão do dono (2026-10-15): a ida foi marcada e as férias aprovadas depois (marcá-la já
+    # de férias dá 409). A ida CONTINUA a tapar a loja e a aparecer no dia até um gestor a apagar
+    # à mão; as férias tiram-lhe só a ESCALA (Oeiras fica sem ninguém) e a ida é toda «extra».
     dados = sn.semana_normal()
     dados["idas"] = [sn.ida("2026-10-28", sn.BENFICA, JOANA, "13:00", "22:00")]
     dados["ausencias"].append(sn.ausencia("Joana", "2026-10-28", "2026-10-28"))
     dias = _dias(dados)
-    assert _buracos(dias, "2026-10-28", "Benfica") == ["13:00-22:00"]
+    assert _buracos(dias, "2026-10-28", "Benfica") == []
+    [joana] = _loja(dias, "2026-10-28", "Benfica")["pessoas"]
+    assert (joana["nome"], joana["origem"], joana["extra"]) == ("Joana", "ida", True)
     assert _buracos(dias, "2026-10-28", "Oeiras") == ["13:00-22:00"]
+    # E conta (a contagem nunca olhou para as ausências).
+    [linha] = calendario.contagem(dados["idas"], {l["id"]: l for l in dados["lojas"]}, {JOANA: "Joana"})
+    assert linha["total"] == 1.0
 
 
 def test_a_ida_de_uma_gestora_soma_se_e_recorta_se_ao_horario():
