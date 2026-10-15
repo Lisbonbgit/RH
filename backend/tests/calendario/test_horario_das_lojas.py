@@ -41,6 +41,7 @@ def test_os_dias_fechados_ficam_por_ordem():
     ({"abre": "11:30", "fecha": "11:30"}, "abrir antes de fechar"),
     ({"abre": "9:00"}, "HH:MM"),
     ({"fecha": "24:00"}, "HH:MM"),
+    ({"fecha": "19:00\n"}, "HH:MM"),          # o `$` de um `re.match` deixava-a passar
     ({"excecoes": [{"dia": 7, "abre": "11:30", "fecha": "20:00"}]}, "Dia inválido"),
     ({"excecoes": [{"dia": 6, "abre": "20:00", "fecha": "11:30"}]}, "abrir antes de fechar"),
     ({"excecoes": [{"dia": 6, "abre": "11:30", "fecha": "20:00"},

@@ -80,6 +80,7 @@ import FatMovimentosCaixa from './pages/admin/faturacao/FatMovimentosCaixa';
 import FatReservasPresas from './pages/admin/faturacao/FatReservasPresas';
 import PosApp from './pages/pos/PosApp';
 import BolsoApp from './pages/bolso/BolsoApp';
+import BolsoCalendario from './pages/bolso/BolsoCalendario';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeProfile from './pages/employee/EmployeeProfile';
 import EmployeeTimeRecord from './pages/employee/EmployeeTimeRecord';
@@ -206,6 +207,13 @@ function AppRoutes() {
       <Route path="/bolso" element={
         <ProtectedRoute allowedRoles={['admin', 'gerente', 'contabilista']}>
           <BolsoApp />
+        </ProtectedRoute>
+      } />
+      {/* O calendário das lojas (onde falta gente), irmão do /bolso: mesmos papéis, mesma
+          casca. O contabilista lê; quem marca é decidido pelo servidor (`pode_marcar`). */}
+      <Route path="/bolso/calendario" element={
+        <ProtectedRoute allowedRoles={['admin', 'gerente', 'contabilista']}>
+          <BolsoCalendario />
         </ProtectedRoute>
       } />
       {/* CRM Purple House: área própria só para membros (guarda no CrmLayout; rotas em pages/crm/rotasCrm.js). */}
