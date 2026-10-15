@@ -790,6 +790,8 @@ class WorkScheduleTemplateResponse(BaseModel):
     name: str
     work_days: List[int]
     start_time: Optional[str] = None
+    # dict e não DiaDaEscala, pela mesma razão do LocationResponse.horario.
+    dias: Optional[List[dict]] = None
     created_at: str
 
 class WorkScheduleAssignmentCreate(BaseModel):
@@ -2245,14 +2247,29 @@ async def vacation_balance_report(
 
 # ==================== WORK SCHEDULE ROUTES ====================
 
+def _dias_de_trabalho(template: WorkScheduleTemplateCreate) -> List[int]:
+    """Os dias em que a pessoa trabalha. Com `dias`, saem deles (ordenados): é isto
+    que mantém o saldo de férias, o «Em falta» do painel e o lembrete do ponto a ler
+    um `work_days` que continua a querer dizer o mesmo."""
+    if template.dias:
+        return sorted(d.dia for d in template.dias)
+    return template.work_days
+
+
+def _dias_para_gravar(template: WorkScheduleTemplateCreate) -> Optional[List[dict]]:
+    if template.dias is None:
+        return None
+    return [d.model_dump() for d in sorted(template.dias, key=lambda d: d.dia)]
+
 @api_router.post("/schedules", response_model=WorkScheduleTemplateResponse)
 async def create_schedule_template(template: WorkScheduleTemplateCreate, current_user: dict = Depends(admin_manager_required)):
     template_id = str(uuid.uuid4())
     template_doc = {
         "id": template_id,
         "name": template.name,
-        "work_days": template.work_days,
+        "work_days": _dias_de_trabalho(template),
         "start_time": template.start_time,
+        "dias": _dias_para_gravar(template),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.work_schedule_templates.insert_one(template_doc)
@@ -2370,16 +2387,19 @@ async def get_schedule_assignments(employee_id: Optional[str] = None, current_us
 
 @api_router.put("/schedules/{template_id}", response_model=WorkScheduleTemplateResponse)
 async def update_schedule_template(template_id: str, template: WorkScheduleTemplateCreate, current_user: dict = Depends(admin_manager_required)):
-    result = await db.work_schedule_templates.update_one(
-        {"id": template_id},
-        {"$set": {"name": template.name, "work_days": template.work_days, "start_time": template.start_time}}
-    )
+    # Calculado UMA vez: o mesmo valor vai para o modelo e para a cópia das atribuições.
+    work_days = _dias_de_trabalho(template)
+    campos = {"name": template.name, "work_days": work_days, "start_time": template.start_time}
+    # A página antiga (em cache no browser) não manda `dias`; sem esta guarda, apagava-os.
+    if "dias" in template.model_fields_set:
+        campos["dias"] = _dias_para_gravar(template)
+    result = await db.work_schedule_templates.update_one({"id": template_id}, {"$set": campos})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Escala não encontrada")
     # Manter os dias coerentes nas atribuições que usam esta escala
     await db.work_schedule_assignments.update_many(
         {"template_id": template_id},
-        {"$set": {"work_days": template.work_days}}
+        {"$set": {"work_days": work_days}}
     )
     updated = await db.work_schedule_templates.find_one({"id": template_id}, {"_id": 0})
     return WorkScheduleTemplateResponse(**updated)
