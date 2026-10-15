@@ -120,7 +120,9 @@ function carregar(ficheiro) {
   const codigo = babel.transformSync(fs.readFileSync(ficheiro, 'utf-8'), {
     presets: [[require.resolve('@babel/preset-react'), { runtime: 'classic' }]],
     plugins: [require.resolve('@babel/plugin-transform-modules-commonjs')],
-    filename: ficheiro, babelrc: false, configFile: false,
+    // Sem o browserslist do package.json (nenhum destes plugins usa targets): com ele, o aviso
+    // «caniuse-lite is 6 months old» ia para o stderr e falhava todos os testes daí a 6 meses.
+    filename: ficheiro, babelrc: false, configFile: false, browserslistConfigFile: false,
   }).code;
   const m = new Module(ficheiro, null);
   m.filename = ficheiro;
