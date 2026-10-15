@@ -487,11 +487,12 @@ class CompanyResponse(BaseModel):
 
 # ---- Calendário das lojas: horário de cada loja (desenho 2026-10-14, «1. Os dados») ----
 # Dias: 0 = segunda … 6 = domingo, como o `work_days` das escalas.
-_RE_HORA = re.compile(r'^([01]\d|2[0-3]):[0-5]\d$')
+# Sempre com `fullmatch`: o `$` de um `match` aceita uma quebra de linha no fim («13:00\n»).
+_RE_HORA = re.compile(r'([01]\d|2[0-3]):[0-5]\d')
 
 
 def _hora(v):
-    if not isinstance(v, str) or not _RE_HORA.match(v):
+    if not isinstance(v, str) or not _RE_HORA.fullmatch(v):
         raise ValueError("Hora inválida. Use o formato HH:MM")
     return v
 

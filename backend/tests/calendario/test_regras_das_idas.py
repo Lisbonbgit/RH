@@ -20,6 +20,10 @@ def test_horas_validas():
     assert calendario.validar_horas("13:00", "22:00") is None
     assert calendario.validar_horas("9:00", "22:00") == HH_MM
     assert calendario.validar_horas("13:00", "24:00") == HH_MM
+    # O `$` de um `re.match` aceita uma quebra de linha no fim: gravava-se «13:00\n», que
+    # escapa ao índice único (data, pessoa, loja, início).
+    assert calendario.validar_horas("13:00\n", "22:00") == HH_MM
+    assert calendario.validar_horas("13:00", "22:00\n") == HH_MM
     assert calendario.validar_horas(None, "22:00") == HH_MM
     assert calendario.validar_horas("22:00", "13:00") == FIM_ANTES
     assert calendario.validar_horas("13:00", "13:00") == FIM_ANTES

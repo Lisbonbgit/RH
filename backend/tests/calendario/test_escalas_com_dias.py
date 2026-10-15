@@ -48,6 +48,7 @@ def test_vazio_quer_dizer_loja_da_ficha_e_horario_da_loja():
     ({"dia": 0, "inicio": "22:00", "fim": "13:00"}, "antes da saída"),
     ({"dia": 0, "inicio": "13:00", "fim": "13:00"}, "antes da saída"),
     ({"dia": 0, "inicio": "9:00", "fim": "13:00"}, "HH:MM"),
+    ({"dia": 0, "inicio": "09:00\n", "fim": "13:00"}, "HH:MM"),   # o `$` de um `re.match` deixava-a passar
 ])
 def test_dias_que_o_servidor_recusa(dia, mensagem):
     with pytest.raises(ValidationError, match=mensagem):

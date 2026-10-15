@@ -24,7 +24,8 @@ GESTORES = ("admin", "gerente")
 ESCALAVEIS = ("admin", "gerente", "colaborador")
 NOME_SEM_CONTA = "(conta removida)"
 NOME_SEM_LOJA = "(loja removida)"
-_HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+# Sempre com `fullmatch`: o `$` de um `match` aceita uma quebra de linha no fim («13:00\n»).
+_HHMM = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
 
 
 def minutos(hhmm_: str) -> int:
@@ -393,7 +394,7 @@ def validar_pedido(datas: List[str], user_ids: List[str]) -> Optional[str]:
 
 
 def validar_horas(inicio, fim) -> Optional[str]:
-    if not all(isinstance(h, str) and _HHMM.match(h) for h in (inicio, fim)):
+    if not all(isinstance(h, str) and _HHMM.fullmatch(h) for h in (inicio, fim)):
         return "As horas escrevem-se HH:MM (por exemplo 13:00)."
     if minutos(inicio) >= minutos(fim):
         return "A hora de fim tem de ser depois da hora de início."
