@@ -7,7 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, EmailStr, field_validator
+from pydantic import BaseModel, Field, EmailStr, field_validator, model_validator
 from typing import List, Optional
 import uuid
 from datetime import datetime, timezone, timedelta, date
@@ -483,6 +483,75 @@ class CompanyResponse(BaseModel):
     description: Optional[str] = None
     created_at: str
 
+# ---- Calendário das lojas: horário de cada loja (desenho 2026-10-14, «1. Os dados») ----
+# Dias: 0 = segunda … 6 = domingo, como o `work_days` das escalas.
+_RE_HORA = re.compile(r'^([01]\d|2[0-3]):[0-5]\d$')
+
+
+def _hora(v):
+    if not isinstance(v, str) or not _RE_HORA.match(v):
+        raise ValueError("Hora inválida. Use o formato HH:MM")
+    return v
+
+
+def _dia_da_semana(v):
+    if v not in range(0, 7):
+        raise ValueError("Dia inválido: use 0 (segunda) a 6 (domingo)")
+    return v
+
+
+class _Horas(BaseModel):
+    abre: str
+    fecha: str
+
+    @field_validator('abre', 'fecha')
+    @classmethod
+    def _valida_hora(cls, v):
+        return _hora(v)
+
+    @model_validator(mode='after')
+    def _abre_antes_de_fechar(self):
+        # "HH:MM" com zeros à esquerda compara-se como texto. Horários que passam da
+        # meia-noite ficam de fora de propósito (desenho, «Fora de âmbito»).
+        if self.abre >= self.fecha:
+            raise ValueError(f"A loja tem de abrir antes de fechar ({self.abre}–{self.fecha})")
+        return self
+
+
+class HorarioDoDia(_Horas):
+    """Uma exceção ao horário geral (ex.: o domingo de Belém, até às 20h)."""
+    dia: int
+
+    @field_validator('dia')
+    @classmethod
+    def _valida_dia(cls, v):
+        return _dia_da_semana(v)
+
+
+class HorarioLoja(_Horas):
+    """O horário de uma loja: o geral, as exceções por dia e os dias em que fecha."""
+    excecoes: List[HorarioDoDia] = []
+    fechada: List[int] = []
+
+    @field_validator('fechada')
+    @classmethod
+    def _valida_fechada(cls, v):
+        for dia in v:
+            _dia_da_semana(dia)
+        if len(set(v)) != len(v):
+            raise ValueError("Dia repetido nos dias em que fecha")
+        return sorted(v)
+
+    @model_validator(mode='after')
+    def _dias_sem_choques(self):
+        dias = [e.dia for e in self.excecoes]
+        if len(set(dias)) != len(dias):
+            raise ValueError("Dia repetido nas exceções")
+        if set(dias) & set(self.fechada):
+            raise ValueError("Um dia não pode ter outro horário e estar fechado")
+        return self
+
+
 class LocationCreate(BaseModel):
     name: str
     company_id: str
@@ -494,6 +563,15 @@ class LocationCreate(BaseModel):
     geofence_radius: Optional[int] = None
     # ID do local no Google (Place ID) — usado para puxar avaliações no Marketing.
     google_place_id: Optional[str] = None
+    # Calendário das lojas: só as lojas com horário entram no calendário;
+    # `aberta_desde` esconde uma loja antes de abrir.
+    horario: Optional[HorarioLoja] = None
+    aberta_desde: Optional[date] = None
+
+    @field_validator('aberta_desde', mode='before')
+    @classmethod
+    def _aberta_desde_vazia(cls, v):
+        return None if v == "" else v
 
 class LocationResponse(BaseModel):
     id: str
@@ -505,6 +583,10 @@ class LocationResponse(BaseModel):
     longitude: Optional[float] = None
     geofence_radius: Optional[int] = None
     google_place_id: Optional[str] = None
+    # dict/str e não os modelos: a lista de Locais alimenta o portal inteiro, e um
+    # documento estranho na base não a pode deitar abaixo com um 500.
+    horario: Optional[dict] = None
+    aberta_desde: Optional[str] = None
 
 class EmployeeCreate(BaseModel):
     name: str
@@ -631,11 +713,48 @@ class AdminLeaveCreate(BaseModel):
             raise ValueError("Tipo inválido. Use 'ferias' ou 'ausencia'")
         return v
 
+class DiaDaEscala(BaseModel):
+    """Onde e a que horas a pessoa trabalha num dia da semana.
+
+    `location_id` vazio = a loja da ficha do colaborador; `inicio`/`fim` vazios = o
+    horário da loja nesse dia. As duas horas vêm juntas ou nenhuma."""
+    dia: int
+    location_id: Optional[str] = None
+    inicio: Optional[str] = None
+    fim: Optional[str] = None
+
+    @field_validator('location_id', 'inicio', 'fim', mode='before')
+    @classmethod
+    def _vazio_e_nada(cls, v):
+        return None if v == "" else v
+
+    @field_validator('dia')
+    @classmethod
+    def _valida_dia(cls, v):
+        return _dia_da_semana(v)
+
+    @field_validator('inicio', 'fim')
+    @classmethod
+    def _valida_hora(cls, v):
+        return v if v is None else _hora(v)
+
+    @model_validator(mode='after')
+    def _horas_juntas(self):
+        if (self.inicio is None) != (self.fim is None):
+            raise ValueError("As horas de um dia escrevem-se as duas (entrada e saída) ou nenhuma")
+        if self.inicio is not None and self.inicio >= self.fim:
+            raise ValueError(f"A entrada tem de ser antes da saída ({self.inicio}–{self.fim})")
+        return self
+
+
 class WorkScheduleTemplateCreate(BaseModel):
     name: str
     work_days: List[int] = Field(alias="workDays")
     # Hora de início do turno (HH:MM). Usada para lembrar o colaborador no app.
     start_time: Optional[str] = Field(default=None, alias="startTime")
+    # Loja e horas por dia (calendário das lojas). Quando vem, o servidor deriva o
+    # work_days daqui — ver _dias_de_trabalho.
+    dias: Optional[List[DiaDaEscala]] = None
 
     model_config = {"populate_by_name": True}
 
@@ -659,11 +778,20 @@ class WorkScheduleTemplateCreate(BaseModel):
             raise ValueError("Hora inválida. Use o formato HH:MM")
         return v
 
+    @field_validator('dias')
+    @classmethod
+    def validate_dias(cls, v):
+        if v is not None and len({d.dia for d in v}) != len(v):
+            raise ValueError("Dia repetido na escala")
+        return v
+
 class WorkScheduleTemplateResponse(BaseModel):
     id: str
     name: str
     work_days: List[int]
     start_time: Optional[str] = None
+    # dict e não DiaDaEscala, pela mesma razão do LocationResponse.horario.
+    dias: Optional[List[dict]] = None
     created_at: str
 
 class WorkScheduleAssignmentCreate(BaseModel):
@@ -1449,6 +1577,13 @@ async def delete_company(company_id: str, current_user: dict = Depends(admin_req
 
 # ==================== LOCATION ROUTES ====================
 
+def _horario_para_gravar(location: LocationCreate) -> dict:
+    """Os dois campos do calendário, na forma em que ficam no Mongo."""
+    return {
+        "horario": location.horario.model_dump() if location.horario else None,
+        "aberta_desde": location.aberta_desde.isoformat() if location.aberta_desde else None,
+    }
+
 @api_router.post("/locations", response_model=LocationResponse)
 async def create_location(location: LocationCreate, current_user: dict = Depends(admin_required)):
     # Verify company exists
@@ -1466,6 +1601,7 @@ async def create_location(location: LocationCreate, current_user: dict = Depends
         "longitude": location.longitude,
         "geofence_radius": location.geofence_radius,
         "google_place_id": location.google_place_id,
+        **_horario_para_gravar(location),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.locations.insert_one(location_doc)
@@ -1488,18 +1624,20 @@ async def get_locations(company_id: Optional[str] = None, current_user: dict = D
 
 @api_router.put("/locations/{location_id}", response_model=LocationResponse)
 async def update_location(location_id: str, location: LocationCreate, current_user: dict = Depends(admin_required)):
-    result = await db.locations.update_one(
-        {"id": location_id},
-        {"$set": {
-            "name": location.name,
-            "company_id": location.company_id,
-            "address": location.address,
-            "latitude": location.latitude,
-            "longitude": location.longitude,
-            "geofence_radius": location.geofence_radius,
-            "google_place_id": location.google_place_id,
-        }}
-    )
+    campos = {
+        "name": location.name,
+        "company_id": location.company_id,
+        "address": location.address,
+        "latitude": location.latitude,
+        "longitude": location.longitude,
+        "geofence_radius": location.geofence_radius,
+        "google_place_id": location.google_place_id,
+    }
+    # O horário e a data de abertura só se escrevem se vierem no corpo: um browser com
+    # a página antiga em cache manda o formulário sem eles, e um $set com None apagava
+    # o horário da loja. O formulário novo manda-os sempre (também para os tirar).
+    campos.update({k: v for k, v in _horario_para_gravar(location).items() if k in location.model_fields_set})
+    result = await db.locations.update_one({"id": location_id}, {"$set": campos})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Local não encontrado")
     updated = await db.locations.find_one({"id": location_id}, {"_id": 0})
@@ -2109,14 +2247,29 @@ async def vacation_balance_report(
 
 # ==================== WORK SCHEDULE ROUTES ====================
 
+def _dias_de_trabalho(template: WorkScheduleTemplateCreate) -> List[int]:
+    """Os dias em que a pessoa trabalha. Com `dias`, saem deles (ordenados): é isto
+    que mantém o saldo de férias, o «Em falta» do painel e o lembrete do ponto a ler
+    um `work_days` que continua a querer dizer o mesmo."""
+    if template.dias:
+        return sorted(d.dia for d in template.dias)
+    return template.work_days
+
+
+def _dias_para_gravar(template: WorkScheduleTemplateCreate) -> Optional[List[dict]]:
+    if template.dias is None:
+        return None
+    return [d.model_dump() for d in sorted(template.dias, key=lambda d: d.dia)]
+
 @api_router.post("/schedules", response_model=WorkScheduleTemplateResponse)
 async def create_schedule_template(template: WorkScheduleTemplateCreate, current_user: dict = Depends(admin_manager_required)):
     template_id = str(uuid.uuid4())
     template_doc = {
         "id": template_id,
         "name": template.name,
-        "work_days": template.work_days,
+        "work_days": _dias_de_trabalho(template),
         "start_time": template.start_time,
+        "dias": _dias_para_gravar(template),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.work_schedule_templates.insert_one(template_doc)
@@ -2234,16 +2387,19 @@ async def get_schedule_assignments(employee_id: Optional[str] = None, current_us
 
 @api_router.put("/schedules/{template_id}", response_model=WorkScheduleTemplateResponse)
 async def update_schedule_template(template_id: str, template: WorkScheduleTemplateCreate, current_user: dict = Depends(admin_manager_required)):
-    result = await db.work_schedule_templates.update_one(
-        {"id": template_id},
-        {"$set": {"name": template.name, "work_days": template.work_days, "start_time": template.start_time}}
-    )
+    # Calculado UMA vez: o mesmo valor vai para o modelo e para a cópia das atribuições.
+    work_days = _dias_de_trabalho(template)
+    campos = {"name": template.name, "work_days": work_days, "start_time": template.start_time}
+    # A página antiga (em cache no browser) não manda `dias`; sem esta guarda, apagava-os.
+    if "dias" in template.model_fields_set:
+        campos["dias"] = _dias_para_gravar(template)
+    result = await db.work_schedule_templates.update_one({"id": template_id}, {"$set": campos})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Escala não encontrada")
     # Manter os dias coerentes nas atribuições que usam esta escala
     await db.work_schedule_assignments.update_many(
         {"template_id": template_id},
-        {"$set": {"work_days": template.work_days}}
+        {"$set": {"work_days": work_days}}
     )
     updated = await db.work_schedule_templates.find_one({"id": template_id}, {"_id": 0})
     return WorkScheduleTemplateResponse(**updated)
