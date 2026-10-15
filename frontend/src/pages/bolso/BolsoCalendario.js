@@ -163,6 +163,15 @@ function Dia({ dados, iso, filtro, onTapar, onIda }) {
       </Cartao>
     );
   }
+  if (!dados.lojas.length) {
+    return (
+      <Cartao titulo={tituloDoDia(iso)} subtitulo={feriados}>
+        <p className="px-4 pb-3 text-[14px] text-muted-foreground">
+          Ainda nenhuma loja tem horário. Defina-o em Locais, no portal.
+        </p>
+      </Cartao>
+    );
+  }
   return (
     <Cartao titulo={tituloDoDia(iso)} subtitulo={feriados}>
       <ul className="divide-y border-t">
@@ -412,7 +421,7 @@ export default function BolsoCalendario() {
           <Contagem linhas={contagem && contagem.ano === ano ? contagem.linhas : null} ano={ano} mes={mes} />
         )}
 
-        {desteMes?.pode_marcar && vista !== 'contagem' && (
+        {desteMes?.pode_marcar && desteMes.lojas.length > 0 && vista !== 'contagem' && (
           <button
             type="button" onClick={marcar}
             className="mt-4 w-full h-12 rounded-2xl border bg-card px-4 flex items-center justify-center gap-2 font-semibold

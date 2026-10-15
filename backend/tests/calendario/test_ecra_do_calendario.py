@@ -275,3 +275,18 @@ const oeiras = [...document.querySelectorAll('main li')].find((li) => li.querySe
 devolve([...oeiras.children].slice(1).map((el) => el.textContent));
 """, mes)
     assert r == ["Emanuela13h–22hescala", "Zé13h–22hescala"]
+
+
+def test_sem_nenhuma_loja_com_horario_o_dia_diz_onde_se_define_e_nao_ha_marcar(tmp_path):
+    # Antes do arranque (ou se o horário se tirar a todas): o cartão do dia ficava em branco e
+    # o «Marcar ida» abria um painel com o seletor de loja vazio.
+    dados = sn.semana_normal()
+    for loja in dados["lojas"]:
+        loja["horario"] = None
+    mes = calendario.resposta_do_mes(2026, 10, dados, sn.DEBORA, True)
+    assert mes["lojas"] == []
+    r = _ecra(tmp_path, """
+devolve({ dia: [...document.querySelectorAll('main section')].pop().textContent, marcar: !!botao('Marcar ida') });
+""", mes)
+    assert r == {"dia": "terça, 27 de outubroAinda nenhuma loja tem horário. Defina-o em Locais, no portal.",
+                 "marcar": False}
