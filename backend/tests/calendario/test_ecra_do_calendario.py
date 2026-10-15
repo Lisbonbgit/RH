@@ -208,6 +208,47 @@ devolve({ aberto: !!document.querySelector('[role="dialog"]'), pedidos: REGISTO.
     assert r == {"aberto": False, "pedidos": ["GET /calendario", "POST /calendario/idas", "GET /calendario"]}
 
 
+# A linha da ida da Débora em Oeiras, a 6/10 (Geral), e o que se vê depois de lhe tocar.
+TOCAR_NA_IDA_DE_OEIRAS = """
+await clicar(document.querySelector('[data-dia="2026-10-06"]'));
+const oeiras = [...document.querySelectorAll('main li')].find((li) => li.querySelector('span').textContent === 'Oeiras');
+const linha = [...oeiras.children].find((el) => el.textContent.startsWith('Débora'));
+const forma = { tag: linha.tagName, texto: linha.textContent };
+await clicar(linha);
+const dlg = document.querySelector('[role="dialog"]');
+"""
+
+
+def test_tocar_numa_ida_abre_a_ida_dessa_pessoa_e_nao_a_de_quem_ve(tmp_path):
+    # Desenho, secção 4: «Tocar numa ida abre o painel com Guardar e Apagar». Quem vê é a
+    # Carol e a ida é da Débora: se o ecrã não passar a pessoa da ida ao painel, ele abre em
+    # quem vê e o «Guardar» passa a ida para a Carol sem aviso. (Com a Débora a ver, cair
+    # nela por omissão dava o mesmo resultado e a falta não se via.)
+    mes, _ = _servidor(eu=sn.CAROL)
+    r = _ecra(tmp_path, TOCAR_NA_IDA_DE_OEIRAS + """
+const painel = { titulo: dlg.querySelector('h2').textContent, loja: dlg.querySelector('[aria-label="Loja"]').value,
+                 inicio: dlg.querySelector('[aria-label="Hora de início"]').value,
+                 fim: dlg.querySelector('[aria-label="Hora de fim"]').value,
+                 dias: [...dlg.querySelectorAll('[data-dia][aria-pressed="true"]')].map((b) => b.getAttribute('data-dia')),
+                 pessoas: [...dlg.querySelectorAll('fieldset button[aria-pressed="true"]')].map((b) => b.textContent),
+                 apagar: !!botao('Apagar', dlg) };
+await clicar(botao('Guardar', dlg));
+await esperar();
+devolve({ forma, painel, gravado: REGISTO.filter((x) => x[0] === 'PUT') });
+""", mes)
+    assert r == {
+        "forma": {"tag": "BUTTON", "texto": "Débora Ferreira13h–22hida"},
+        "painel": {"titulo": "Ida de Débora Ferreira", "loja": sn.OEIRAS, "inicio": "13:00", "fim": "22:00",
+                   "dias": ["2026-10-06"], "pessoas": ["Débora Ferreira"], "apagar": True},
+        "gravado": [["PUT", "/calendario/idas/" + IDAS_DA_DEBORA[0]["id"],
+                     {"data": "2026-10-06", "location_id": sn.OEIRAS, "user_id": sn.DEBORA,
+                      "inicio": "13:00", "fim": "22:00"}, None]]}
+    # Quem só lê (o contabilista) vê a mesma linha como texto: não abre nada.
+    mes, _ = _servidor(eu=sn.CONTABILISTA, pode_marcar=False)
+    r = _ecra(tmp_path, TOCAR_NA_IDA_DE_OEIRAS + "devolve({ forma, aberto: !!dlg });", mes)
+    assert r == {"forma": {"tag": "DIV", "texto": "Débora Ferreira13h–22hida"}, "aberto": False}
+
+
 def test_cada_destino_do_menu_e_uma_rota_do_app_com_os_papeis_do_bolso(tmp_path):
     destinos = correr_js("devolve(importar('pages/bolso/partilhado').DESTINOS.map((d) => d.caminho));",
                          tmp_path, simulados=SESSAO_SIMULADA, dom=True)
