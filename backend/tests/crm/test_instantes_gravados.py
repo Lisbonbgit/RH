@@ -17,6 +17,15 @@ das datas (F4). Por isso:
   do pacote `crm`: nunca `.isoformat` (em lado nenhum) e, fora do
   `crm/relogio.py`, nem `strftime` nem leituras do relógio (`now`, `utcnow`,
   `today`, `fromtimestamp`, `time.time`) — o relógio é um só e substituível.
+- `formatos.escritas_no_terreno(atualizacao)` (T3.14, plano F3 §1 "O terreno
+  ganha"): numa atualização do Mongo (ou num documento inteiro a inserir), as
+  violações ao contrato com a F4 — o escritório só escreve em
+  `paragens.<índice>.<campo do escritório>` e acrescenta paragens novas com o
+  terreno em `pendente`/null/null; nunca `$pull`/`$pop`/`$unset`/`$addToSet`/
+  `$rename` em `paragens…`, a lista inteira, um campo do terreno nem um
+  caminho posicional (`paragens.$…`). Provado aqui com amostras positivas e
+  negativas; as tarefas das rotas (T3.17 em diante) aplicam-no a todas as
+  escritas do registo do duplo.
 """
 import random
 from datetime import datetime, timedelta, timezone
@@ -31,8 +40,11 @@ import crm.db
 from crm import relogio
 from faturacao.auth import utilizador_atual
 
+from crm.dominio import rotas
+
+from . import formatos
 from .duplos import BaseFalsa
-from .formatos import instantes_fora_do_formato, usos_proibidos_do_relogio
+from .formatos import escritas_no_terreno, instantes_fora_do_formato, usos_proibidos_do_relogio
 
 UTC = timezone.utc
 PACOTE_CRM = Path(crm.__file__).resolve().parent
@@ -260,3 +272,142 @@ def test_nenhum_modulo_do_crm_usa_isoformat_nem_le_o_relogio_por_fora():
         if (usos := usos_proibidos_do_relogio(p.read_text(encoding="utf-8"), e_o_relogio=p == relogio_py))
     }
     assert encontrados == {}
+
+
+# --- escritas_no_terreno: o escritório nunca toca no terreno (T3.14) ----------------------
+# (plano F3 §1 "O terreno ganha" e a correção "T3.26 / T3.14": os caminhos posicionais)
+
+
+PARAGEM_NOVA = {
+    "id": "p9",
+    "loja_id": "l9",
+    "ordem": 2,
+    "motivo": "amostra",
+    "tempo_servico_min": 10,
+    "manter_fechada": False,
+    "nao_cabe": False,
+    "chegada_prevista": None,
+    "espera_min": None,
+    "fora_de_horario": False,
+    "adicionada_em": "2026-10-20T09:00:00Z",
+    "adicionada_por": "u1",
+    "removida_em": None,
+    "estado": "pendente",
+    "resultado": None,
+    "concluida_em": None,
+}
+
+
+def _sem(paragem, campo):
+    return {c: v for c, v in paragem.items() if c != campo}
+
+
+def test_os_campos_do_terreno_do_verificador_sao_os_do_dominio():
+    """Escritos à parte de propósito (como as expressões dos instantes): um
+    engano no domínio não passa por estar copiado no teste. Se a F4 alargar os
+    campos do terreno, têm de mudar nos dois sítios."""
+    assert formatos.CAMPOS_DO_TERRENO == rotas.CAMPOS_DO_TERRENO == ("estado", "resultado", "concluida_em")
+
+
+@pytest.mark.parametrize(
+    "atualizacao",
+    [
+        {"$set": rotas.caminhos_paragem(1, {"ordem": 0, "removida_em": None}), "$inc": {"versao": 1}},
+        {"$push": {"paragens": PARAGEM_NOVA}, "$inc": {"versao": 1}, "$set": {"atualizado_em": "x", "atualizado_por": "u1"}},
+        {"$set": {"estado": "planeada", "calculo": None, "hora_saida": "08:30", "resultado": "x", "concluida_em": None}},
+        {"$set": {"paragens.0.chegada_prevista": "09:10", "paragens.12.espera_min": 5, "paragens.3.fora_de_horario": True}},
+        {"$inc": {"paragens.0.tempo_servico_min": 5}},
+        {"$set": {"calculo.atual": False, "paragens.0.motivo": "entrega"}},
+        {"$setOnInsert": {"criado_em": "2026-10-20T09:00:00Z"}},
+        {"$unset": {"calculo": ""}, "$pull": {"avisos": "x"}, "$rename": {"antigo": "novo"}},
+        {},
+        {"id": "r1", "data": "2026-10-20", "versao": 1, "paragens": [PARAGEM_NOVA, {**PARAGEM_NOVA, "id": "p8"}]},
+        {"id": "r1", "data": "2026-10-20", "versao": 1, "paragens": []},
+    ],
+    ids=[
+        "caminhos por índice", "paragem nova", "campos de topo com os nomes do terreno", "horas do Directions",
+        "inc por índice", "subcampo do cálculo", "setOnInsert de topo", "operadores fora de paragens", "vazia",
+        "documento inteiro com paragens novas", "documento inteiro sem paragens",
+    ],
+)
+def test_as_escritas_do_escritorio_passam_no_verificador_do_terreno(atualizacao):
+    assert escritas_no_terreno(atualizacao) == []
+
+
+@pytest.mark.parametrize(
+    "atualizacao, violacoes",
+    [
+        ({"$pull": {"paragens": {"id": "p1"}}}, [("$pull", "paragens", formatos.OPERADOR_PROIBIDO)]),
+        ({"$pop": {"paragens": 1}}, [("$pop", "paragens", formatos.OPERADOR_PROIBIDO)]),
+        ({"$unset": {"paragens.0.motivo": ""}}, [("$unset", "paragens.0.motivo", formatos.OPERADOR_PROIBIDO)]),
+        ({"$unset": {"paragens": ""}}, [("$unset", "paragens", formatos.OPERADOR_PROIBIDO)]),
+        ({"$addToSet": {"paragens": PARAGEM_NOVA}}, [("$addToSet", "paragens", formatos.OPERADOR_PROIBIDO)]),
+        ({"$rename": {"paragens": "antigas"}}, [("$rename", "paragens", formatos.OPERADOR_PROIBIDO)]),
+        ({"$rename": {"antigas": "paragens"}}, [("$rename", "paragens", formatos.OPERADOR_PROIBIDO)]),
+        ({"$rename": {"paragens.0.estado": "paragens.0.x"}}, [("$rename", "paragens.0.estado", formatos.OPERADOR_PROIBIDO)]),
+        ({"$bit": {"paragens.0.ordem": {"and": 1}}}, [("$bit", "paragens.0.ordem", formatos.OPERADOR_PROIBIDO)]),
+        ({"$setOnInsert": {"paragens.0.ordem": 0}}, [("$setOnInsert", "paragens.0.ordem", formatos.OPERADOR_PROIBIDO)]),
+        ({"$set": {"paragens": []}}, [("$set", "paragens", formatos.SUBSTITUI_A_LISTA)]),
+        ({"$set": {"paragens": [PARAGEM_NOVA]}}, [("$set", "paragens", formatos.SUBSTITUI_A_LISTA)]),
+        ({"$setOnInsert": {"paragens": [PARAGEM_NOVA]}}, [("$setOnInsert", "paragens", formatos.SUBSTITUI_A_LISTA)]),
+        ({"$inc": {"paragens": 1}}, [("$inc", "paragens", formatos.SUBSTITUI_A_LISTA)]),
+        ({"$set": {"paragens.0": PARAGEM_NOVA}}, [("$set", "paragens.0", formatos.SUBSTITUI_A_PARAGEM)]),
+        ({"$set": {"paragens.ordem": 0}}, [("$set", "paragens.ordem", formatos.CAMINHO_SEM_INDICE)]),
+        ({"$set": {"paragens.0.estado": "feita"}}, [("$set", "paragens.0.estado", formatos.CAMPO_DO_TERRENO)]),
+        ({"$set": {"paragens.3.resultado": "entregue"}}, [("$set", "paragens.3.resultado", formatos.CAMPO_DO_TERRENO)]),
+        ({"$set": {"paragens.12.concluida_em": None}}, [("$set", "paragens.12.concluida_em", formatos.CAMPO_DO_TERRENO)]),
+        ({"$set": {"paragens.0.estado.x": 1}}, [("$set", "paragens.0.estado.x", formatos.CAMPO_DO_TERRENO)]),
+        ({"$inc": {"paragens.0.estado": 1}}, [("$inc", "paragens.0.estado", formatos.CAMPO_DO_TERRENO)]),
+        ({"$set": {"paragens.$.estado": "feita"}}, [("$set", "paragens.$.estado", formatos.CAMINHO_POSICIONAL)]),
+        ({"$set": {"paragens.$.ordem": 0}}, [("$set", "paragens.$.ordem", formatos.CAMINHO_POSICIONAL)]),
+        ({"$set": {"paragens.$[].ordem": 0}}, [("$set", "paragens.$[].ordem", formatos.CAMINHO_POSICIONAL)]),
+        ({"$set": {"paragens.$[p].ordem": 0}}, [("$set", "paragens.$[p].ordem", formatos.CAMINHO_POSICIONAL)]),
+        ({"$inc": {"paragens.$.tempo_servico_min": 5}}, [("$inc", "paragens.$.tempo_servico_min", formatos.CAMINHO_POSICIONAL)]),
+        ({"$push": {"paragens.$.historico": 1}}, [("$push", "paragens.$.historico", formatos.CAMINHO_POSICIONAL)]),
+        ({"$push": {"paragens": {**PARAGEM_NOVA, "estado": "feita"}}}, [("$push", "paragens", formatos.PARAGEM_NOVA_FORA_DO_FORMATO)]),
+        ({"$push": {"paragens": {**PARAGEM_NOVA, "resultado": "entregue"}}}, [("$push", "paragens", formatos.PARAGEM_NOVA_FORA_DO_FORMATO)]),
+        ({"$push": {"paragens": {**PARAGEM_NOVA, "concluida_em": "2026-10-20T10:00:00Z"}}}, [("$push", "paragens", formatos.PARAGEM_NOVA_FORA_DO_FORMATO)]),
+        ({"$push": {"paragens": _sem(PARAGEM_NOVA, "estado")}}, [("$push", "paragens", formatos.PARAGEM_NOVA_FORA_DO_FORMATO)]),
+        ({"$push": {"paragens": _sem(PARAGEM_NOVA, "resultado")}}, [("$push", "paragens", formatos.PARAGEM_NOVA_FORA_DO_FORMATO)]),
+        ({"$push": {"paragens": _sem(PARAGEM_NOVA, "concluida_em")}}, [("$push", "paragens", formatos.PARAGEM_NOVA_FORA_DO_FORMATO)]),
+        ({"$push": {"paragens": "p1"}}, [("$push", "paragens", formatos.PARAGEM_NOVA_FORA_DO_FORMATO)]),
+        ({"$push": {"paragens": {"$each": [PARAGEM_NOVA]}}}, [("$push", "paragens", formatos.PARAGEM_NOVA_FORA_DO_FORMATO)]),
+        ({"$push": {"paragens.0.historico": {"x": 1}}}, [("$push", "paragens.0.historico", formatos.PUSH_DENTRO_DA_PARAGEM)]),
+        (
+            {"id": "r1", "paragens": [PARAGEM_NOVA, {**PARAGEM_NOVA, "estado": "feita"}, "p"]},
+            [("documento", "paragens.1", formatos.PARAGEM_NOVA_FORA_DO_FORMATO), ("documento", "paragens.2", formatos.PARAGEM_NOVA_FORA_DO_FORMATO)],
+        ),
+        ({"id": "r1", "paragens": None}, [("documento", "paragens", formatos.SUBSTITUI_A_LISTA)]),
+        (
+            {"$pull": {"paragens": {}}, "$set": {"paragens.0.estado": "feita", "paragens.1.ordem": 0, "paragens.$.ordem": 1}},
+            [
+                ("$pull", "paragens", formatos.OPERADOR_PROIBIDO),
+                ("$set", "paragens.0.estado", formatos.CAMPO_DO_TERRENO),
+                ("$set", "paragens.$.ordem", formatos.CAMINHO_POSICIONAL),
+            ],
+        ),
+    ],
+    ids=[
+        "pull", "pop", "unset num campo", "unset da lista", "addToSet", "rename da lista", "rename para a lista",
+        "rename de um campo do terreno", "bit", "setOnInsert por índice", "set da lista vazia", "set da lista",
+        "setOnInsert da lista", "inc na lista", "set de uma paragem inteira", "caminho sem índice",
+        "set estado", "set resultado", "set concluida_em", "subcampo do terreno", "inc no terreno",
+        "posicional no terreno", "posicional no escritório", "posicional todos", "posicional filtrado",
+        "inc posicional", "push posicional", "push com estado feita", "push com resultado", "push com concluida_em",
+        "push sem estado", "push sem resultado", "push sem concluida_em", "push de texto", "push com each",
+        "push dentro da paragem", "documento com paragens fora do formato", "documento com paragens null",
+        "várias violações pela ordem",
+    ],
+)
+def test_o_verificador_do_terreno_aponta_as_escritas_proibidas(atualizacao, violacoes):
+    assert escritas_no_terreno(atualizacao) == violacoes
+
+
+@pytest.mark.parametrize(
+    "atualizacao",
+    ["x", None, [{"$set": {}}], {"$set": "x"}, {"$set": {"a": 1}, "id": "r1"}],
+    ids=["texto", "null", "lista", "operador sem dicionário", "operadores misturados com campos"],
+)
+def test_o_verificador_do_terreno_recusa_o_que_nao_e_uma_atualizacao_nem_um_documento(atualizacao):
+    with pytest.raises(TypeError):
+        escritas_no_terreno(atualizacao)

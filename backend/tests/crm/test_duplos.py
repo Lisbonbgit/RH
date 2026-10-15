@@ -9,6 +9,7 @@ import copy
 from pathlib import Path
 
 import pytest
+from bson import ObjectId
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
@@ -305,7 +306,7 @@ def test_booleano_nao_casa_com_inteiro():
     assert [d["id"] for d in correr(col.find({"ativo": True}).to_list(10))] == ["a"]
 
 
-@pytest.mark.parametrize("filtro", [{"n": {"$gt": 1}}, {"$or": [{"id": "a"}]}])
+@pytest.mark.parametrize("filtro", [{"n": {"$regex": "a"}}, {"$or": [{"id": "a"}]}])
 def test_operador_nao_suportado_rebenta_em_vez_de_mentir(filtro):
     col = ColeccaoFalsa([{"id": "a", "n": 2}])
     with pytest.raises(NotImplementedError):
@@ -403,7 +404,7 @@ def test_update_one_sem_operadores_e_recusado_como_no_pymongo():
 def test_update_one_com_operador_nao_suportado_rebenta():
     col = ColeccaoFalsa([{"id": "a", "n": 1}])
     with pytest.raises(NotImplementedError):
-        correr(col.update_one({"id": "a"}, {"$inc": {"n": 1}}))
+        correr(col.update_one({"id": "a"}, {"$mul": {"n": 2}}))
 
 
 # --- find_one_and_update ------------------------------------------------------------
@@ -455,7 +456,7 @@ def test_find_one_and_update_devolve_copia():
 @pytest.mark.parametrize("atualizacao, erro", [
     ({"ordem": 0}, ValueError),
     ({}, ValueError),
-    ({"$inc": {"ordem": 1}}, NotImplementedError),
+    ({"$mul": {"ordem": 2}}, NotImplementedError),
 ], ids=["sem operadores", "vazia", "operador não suportado"])
 def test_find_one_and_update_recusa_o_que_o_pymongo_recusa_ou_o_duplo_nao_conhece(atualizacao, erro):
     col = ColeccaoFalsa([{"id": "a", "ordem": 2}])
@@ -555,3 +556,364 @@ def test_falha_injetada_de_chave_duplicada_simula_a_corrida():
 def test_falhar_com_operacao_desconhecida_e_um_erro_do_teste():
     with pytest.raises(ValueError):
         ColeccaoFalsa(falhar={"insert": RuntimeError("gralha")})
+
+
+# --- T3.14: caminhos com pontos e índices, $inc, $push e o conflito 40 ---------------
+# (as rotas: o escritório escreve em `paragens.<índice>.<campo>` e acrescenta com
+# $push, sempre condicionado à versão e a "nenhuma paragem com registo".)
+
+
+ROTA = {
+    "id": "r1",
+    "data": "2026-10-20",
+    "estado": "rascunho",
+    "versao": 3,
+    "paragens": [
+        {"id": "p1", "loja_id": "l1", "ordem": 0, "estado": "pendente", "resultado": None, "concluida_em": None},
+        {"id": "p2", "loja_id": "l2", "ordem": 1, "estado": "pendente", "resultado": None, "concluida_em": None},
+    ],
+    "calculo": None,
+}
+
+FILTRO_DO_ESCRITORIO = {
+    "id": "r1",
+    "versao": 3,
+    "estado": {"$in": ["rascunho", "planeada"]},
+    "paragens.estado": {"$nin": ["feita", "nao_feita"]},
+}
+
+
+def _rota():
+    return ColeccaoFalsa([ROTA], unicos=("id", "data"))
+
+
+def _guardada(col):
+    return col.sem_id()[0]
+
+
+# $set com pontos e índices
+
+
+def test_set_com_caminho_por_indice_escreve_so_nessa_paragem():
+    col = _rota()
+    resultado = correr(col.update_one({"id": "r1"}, {"$set": {"paragens.1.ordem": 0, "paragens.0.ordem": 1}}))
+    assert (resultado.matched_count, resultado.modified_count) == (1, 1)
+    guardada = _guardada(col)
+    assert [p["ordem"] for p in guardada["paragens"]] == [1, 0]
+    assert guardada["paragens"][1]["estado"] == "pendente"
+    assert len(guardada["paragens"]) == 2
+
+
+def test_set_com_indice_para_la_do_fim_rebenta_e_nao_estica_a_lista():
+    """O Mongo esticava a lista com nulls; o duplo rebenta, porque um índice
+    para lá do fim é sempre um erro do código do escritório."""
+    col = _rota()
+    with pytest.raises(NotImplementedError):
+        correr(col.update_one({"id": "r1"}, {"$set": {"paragens.2.ordem": 2}}))
+    with pytest.raises(NotImplementedError):
+        correr(col.find_one_and_update({"id": "r1"}, {"$set": {"paragens.7.ordem": 2}}))
+    assert _guardada(col) == ROTA
+
+
+def test_set_com_caminho_sem_indice_numa_lista_e_recusado_como_no_mongo():
+    col = _rota()
+    with pytest.raises(OperationFailure) as excinfo:
+        correr(col.update_one({"id": "r1"}, {"$set": {"paragens.ordem": 0}}))
+    assert excinfo.value.code == 28
+    assert _guardada(col) == ROTA
+
+
+def test_set_com_caminho_num_subdocumento_cria_o_que_falta_como_o_mongo():
+    col = ColeccaoFalsa([{"id": "r1"}])
+    correr(col.update_one({"id": "r1"}, {"$set": {"calculo.atual": True}}))
+    assert col.sem_id() == [{"id": "r1", "calculo": {"atual": True}}]
+    correr(col.update_one({"id": "r1"}, {"$set": {"calculo.assinatura": "x"}}))
+    assert col.sem_id() == [{"id": "r1", "calculo": {"atual": True, "assinatura": "x"}}]
+
+
+@pytest.mark.parametrize("caminho", ["calculo.atual", "versao.x", "paragens.0.estado.x"], ids=["null", "número", "texto"])
+def test_set_com_caminho_atraves_de_null_ou_de_um_escalar_e_recusado_como_no_mongo(caminho):
+    col = ColeccaoFalsa([{"id": "r1", "calculo": None, "versao": 3, "paragens": [{"estado": "pendente"}]}])
+    with pytest.raises(OperationFailure) as excinfo:
+        correr(col.update_one({"id": "r1"}, {"$set": {caminho: 1}}))
+    assert excinfo.value.code == 28
+    assert col.sem_id() == [{"id": "r1", "calculo": None, "versao": 3, "paragens": [{"estado": "pendente"}]}]
+
+
+def test_set_por_indice_guarda_copia_e_so_altera_o_primeiro_que_coincide():
+    col = ColeccaoFalsa([ROTA, {**ROTA, "id": "r2", "data": "2026-10-21"}], unicos=("id", "data"))
+    valor = {"lat": 38.7, "lng": -9.1}
+    correr(col.update_one({"estado": "rascunho"}, {"$set": {"paragens.0.loc": valor}}))
+    valor["lat"] = 0
+    assert col.docs[0]["paragens"][0]["loc"] == {"lat": 38.7, "lng": -9.1}
+    assert "loc" not in col.docs[1]["paragens"][0]
+
+
+# $inc
+
+
+def test_inc_soma_ao_valor_e_cria_o_campo_em_falta_com_o_proprio_valor():
+    col = ColeccaoFalsa([{"id": "r1", "versao": 3, "paragens": [{"n": 1}]}])
+    resultado = correr(col.update_one(
+        {"id": "r1"}, {"$inc": {"versao": 1, "tentativas": 2, "paragens.0.n": -1, "resumo.total": 0.5}}
+    ))
+    assert (resultado.matched_count, resultado.modified_count) == (1, 1)
+    assert col.sem_id() == [{"id": "r1", "versao": 4, "tentativas": 2, "paragens": [{"n": 0}], "resumo": {"total": 0.5}}]
+
+
+@pytest.mark.parametrize("valor", ["3", True, None, [1], {"n": 1}], ids=["texto", "booleano", "null", "lista", "dicionário"])
+def test_inc_num_campo_que_nao_e_numero_e_recusado_como_no_mongo(valor):
+    col = ColeccaoFalsa([{"id": "r1", "versao": valor}])
+    with pytest.raises(OperationFailure) as excinfo:
+        correr(col.update_one({"id": "r1"}, {"$inc": {"versao": 1}}))
+    assert excinfo.value.code == 14
+    assert col.sem_id() == [{"id": "r1", "versao": valor}]
+
+
+@pytest.mark.parametrize("argumento", ["1", True, None, [1]], ids=["texto", "booleano", "null", "lista"])
+def test_inc_com_argumento_que_nao_e_numero_e_recusado_como_no_mongo(argumento):
+    col = ColeccaoFalsa([{"id": "r1", "versao": 3}])
+    with pytest.raises(OperationFailure) as excinfo:
+        correr(col.update_one({"id": "r1"}, {"$inc": {"versao": argumento}}))
+    assert excinfo.value.code == 14
+    assert col.sem_id() == [{"id": "r1", "versao": 3}]
+
+
+# $push
+
+
+def test_push_acrescenta_ao_fim_e_cria_a_lista_em_falta():
+    col = ColeccaoFalsa([{"id": "r1", "paragens": [{"id": "p1"}]}])
+    resultado = correr(col.update_one(
+        {"id": "r1"}, {"$push": {"paragens": {"id": "p2"}, "avisos": "x", "resumo.itens": 1}}
+    ))
+    assert (resultado.matched_count, resultado.modified_count) == (1, 1)
+    assert col.sem_id() == [{"id": "r1", "paragens": [{"id": "p1"}, {"id": "p2"}], "avisos": ["x"], "resumo": {"itens": [1]}}]
+
+
+def test_push_guarda_uma_copia():
+    col = ColeccaoFalsa([{"id": "r1", "paragens": []}])
+    paragem = {"id": "p1", "janelas": [{"inicio": "10:00"}]}
+    correr(col.update_one({"id": "r1"}, {"$push": {"paragens": paragem}}))
+    paragem["janelas"][0]["inicio"] = "mudado"
+    assert col.docs[0]["paragens"] == [{"id": "p1", "janelas": [{"inicio": "10:00"}]}]
+
+
+@pytest.mark.parametrize("valor", ["x", None, {"id": "p1"}, 3], ids=["texto", "null", "dicionário", "número"])
+def test_push_num_campo_que_nao_e_lista_e_recusado_como_no_mongo(valor):
+    col = ColeccaoFalsa([{"id": "r1", "paragens": valor}])
+    with pytest.raises(OperationFailure) as excinfo:
+        correr(col.find_one_and_update({"id": "r1"}, {"$push": {"paragens": {"id": "p2"}}}))
+    assert excinfo.value.code == 2
+    assert col.sem_id() == [{"id": "r1", "paragens": valor}]
+
+
+def test_push_com_modificadores_nao_esta_modelado():
+    col = ColeccaoFalsa([{"id": "r1", "paragens": []}])
+    with pytest.raises(NotImplementedError):
+        correr(col.update_one({"id": "r1"}, {"$push": {"paragens": {"$each": [{"id": "p1"}]}}}))
+    assert col.sem_id() == [{"id": "r1", "paragens": []}]
+
+
+# O conflito de caminhos (código 40 do Mongo)
+
+
+def test_push_e_set_por_indice_no_mesmo_caminho_dao_o_conflito_40_do_mongo():
+    col = _rota()
+    atualizacao = {"$push": {"paragens": {"id": "p3"}}, "$set": {"paragens.0.ordem": 1}}
+    with pytest.raises(OperationFailure) as excinfo:
+        correr(col.update_one({"id": "r1"}, atualizacao))
+    assert excinfo.value.code == 40
+    assert str(excinfo.value).startswith(
+        "Updating the path 'paragens.0.ordem' would create a conflict at 'paragens'"
+    )
+    assert _guardada(col) == ROTA
+    # O Mongo lê a atualização antes de procurar o documento: rebenta mesmo sem nenhum coincidir.
+    with pytest.raises(OperationFailure) as excinfo:
+        correr(col.find_one_and_update({"id": "nada"}, atualizacao))
+    assert excinfo.value.code == 40
+
+
+@pytest.mark.parametrize("atualizacao, caminho, em", [
+    ({"$set": {"versao": 1}, "$inc": {"versao": 1}}, "versao", "versao"),
+    ({"$set": {"calculo": None, "calculo.atual": True}}, "calculo.atual", "calculo"),
+    ({"$inc": {"paragens.0.n": 1}, "$push": {"paragens": {}}}, "paragens.0.n", "paragens"),
+    ({"$set": {"paragens.0.ordem": 1}, "$inc": {"paragens.0.ordem": 1}}, "paragens.0.ordem", "paragens.0.ordem"),
+], ids=["set e inc no mesmo campo", "o pai e o filho no mesmo set", "inc por índice e push", "set e inc por índice"])
+def test_dois_caminhos_em_que_um_e_prefixo_do_outro_dao_o_conflito_40(atualizacao, caminho, em):
+    col = _rota()
+    with pytest.raises(OperationFailure) as excinfo:
+        correr(col.update_one({"id": "r1"}, atualizacao))
+    assert excinfo.value.code == 40
+    assert str(excinfo.value).startswith("Updating the path '%s' would create a conflict at '%s'" % (caminho, em))
+    assert _guardada(col) == ROTA
+
+
+def test_caminhos_irmaos_ou_so_com_o_mesmo_prefixo_de_texto_nao_dao_conflito():
+    col = _rota()
+    correr(col.update_one(
+        {"id": "r1"},
+        {"$set": {"paragens.0.ordem": 1, "paragens.1.ordem": 0, "paragensx": 1, "calculo": {"atual": True}}, "$inc": {"versao": 1}},
+    ))
+    guardada = _guardada(col)
+    assert [p["ordem"] for p in guardada["paragens"]] == [1, 0]
+    assert (guardada["paragensx"], guardada["calculo"], guardada["versao"]) == (1, {"atual": True}, 4)
+
+
+# Filtros: comparações e caminhos através de listas
+
+
+DOCS_ROTAS = [
+    {"id": "a", "data": "2026-10-10", "versao": 1, "paragens": [
+        {"loja_id": "l1", "estado": "pendente", "ordem": 0}, {"loja_id": "l2", "estado": "feita", "ordem": 1},
+    ]},
+    {"id": "b", "data": "2026-10-12", "versao": 2.5, "paragens": [
+        {"loja_id": "l2", "estado": "pendente", "ordem": 0}, {"loja_id": "l3", "ordem": 1},
+    ]},
+    {"id": "c", "data": "2026-10-20", "versao": "3", "paragens": []},
+    {"id": "d", "data": "2026-09-01", "versao": True},
+]
+
+
+def _ids_rotas(filtro):
+    col = ColeccaoFalsa(DOCS_ROTAS, unicos=("id", "data"))
+    return [d["id"] for d in correr(col.find(filtro).to_list(100))]
+
+
+@pytest.mark.parametrize(
+    "filtro, esperado",
+    [
+        ({"versao": {"$gt": 1}}, ["b"]),
+        ({"versao": {"$gte": 1}}, ["a", "b"]),
+        ({"versao": {"$lt": 2}}, ["a"]),
+        ({"versao": {"$lte": 2.5}}, ["a", "b"]),
+        ({"versao": {"$gt": "2"}}, ["c"]),
+        ({"versao": {"$gte": "3"}}, ["c"]),
+        ({"data": {"$gte": "2026-10-10", "$lte": "2026-10-12"}}, ["a", "b"]),
+        ({"data": {"$lt": "2026-10-10"}}, ["d"]),
+        ({"paragens.loja_id": "l2"}, ["a", "b"]),
+        ({"paragens.loja_id": {"$in": ["l3", "l9"]}}, ["b"]),
+        ({"paragens.loja_id": {"$ne": "l1"}}, ["b", "c", "d"]),
+        ({"paragens.estado": {"$nin": ["feita", "nao_feita"]}}, ["b", "c", "d"]),
+        ({"paragens.estado": "feita"}, ["a"]),
+        ({"paragens.estado": None}, ["b", "c", "d"]),
+        ({"paragens.estado": {"$exists": True}}, ["a", "b"]),
+        ({"paragens.estado": {"$exists": False}}, ["c", "d"]),
+        ({"paragens.ordem": {"$gt": 0}}, ["a", "b"]),
+        ({"paragens.1.estado": "feita"}, ["a"]),
+        ({"paragens.1.estado": None}, ["b", "c", "d"]),
+        ({"paragens.0.loja_id": {"$in": ["l1", "l2"]}}, ["a", "b"]),
+        ({"paragens.5.estado": {"$exists": True}}, []),
+        ({"paragens.0.ordem": {"$lte": 0}}, ["a", "b"]),
+        ({"id": "a", "versao": 1, "paragens.estado": {"$nin": ["feita", "nao_feita"]}}, []),
+        ({"id": "b", "versao": 2.5, "paragens.estado": {"$nin": ["feita", "nao_feita"]}}, ["b"]),
+    ],
+    ids=[
+        "gt-numero", "gte-numero", "lt-numero", "lte-numero", "gt-texto", "gte-texto", "intervalo-de-datas",
+        "lt-data", "algum-elemento", "in-algum-elemento", "ne-nenhum-elemento", "nin-nenhum-elemento",
+        "igualdade-algum-elemento", "null-elemento-sem-campo-lista-vazia-ou-sem-lista", "exists-algum-elemento",
+        "exists-false", "gt-algum-elemento", "indice-no-filtro", "indice-em-falta-e-null", "indice-com-in",
+        "indice-fora-do-fim", "indice-com-lte", "escrita-do-escritorio-recusada", "escrita-do-escritorio-aceite",
+    ],
+)
+def test_filtros_com_comparacoes_e_caminhos_atraves_de_listas(filtro, esperado):
+    assert _ids_rotas(filtro) == esperado
+
+
+@pytest.mark.parametrize("argumento", [None, True, [1], {"a": 1}], ids=["null", "booleano", "lista", "dicionário"])
+def test_comparacao_com_argumento_que_nao_e_numero_nem_texto_nao_esta_modelada(argumento):
+    col = ColeccaoFalsa([{"id": "a", "n": 1}])
+    with pytest.raises(NotImplementedError):
+        correr(col.find_one({"n": {"$gt": argumento}}))
+
+
+# find_one_and_update com todos os operadores e a escrita condicional do escritório
+
+
+def test_find_one_and_update_aplica_set_por_indice_inc_e_push_juntos():
+    col = _rota()
+    depois = correr(col.find_one_and_update(
+        FILTRO_DO_ESCRITORIO,
+        {"$set": {"paragens.0.ordem": 1, "paragens.1.ordem": 0, "atualizado_em": "x"}, "$inc": {"versao": 1}},
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
+    ))
+    assert depois["versao"] == 4
+    assert [p["ordem"] for p in depois["paragens"]] == [1, 0]
+    assert depois["atualizado_em"] == "x"
+    depois = correr(col.find_one_and_update(
+        {**FILTRO_DO_ESCRITORIO, "versao": 4},
+        {"$push": {"paragens": {"id": "p3", "loja_id": "l3", "ordem": 2, "estado": "pendente"}}, "$inc": {"versao": 1}},
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
+    ))
+    assert depois["versao"] == 5
+    assert [p["id"] for p in depois["paragens"]] == ["p1", "p2", "p3"]
+    assert _guardada(col) == depois
+
+
+def test_a_escrita_condicional_do_escritorio_nao_passa_com_uma_paragem_feita_nem_com_outra_versao():
+    com_registo = copy.deepcopy(ROTA)
+    com_registo["paragens"][1]["estado"] = "feita"
+    col = ColeccaoFalsa([com_registo], unicos=("id", "data"))
+    assert correr(col.find_one_and_update(FILTRO_DO_ESCRITORIO, {"$inc": {"versao": 1}})) is None
+    assert col.sem_id() == [com_registo]
+    col = _rota()
+    assert correr(col.find_one_and_update({**FILTRO_DO_ESCRITORIO, "versao": 2}, {"$inc": {"versao": 1}})) is None
+    assert _guardada(col) == ROTA
+
+
+# O gancho antes_de: a escrita concorrente do motorista (F4) entre a leitura e a escrita
+
+
+def test_antes_de_corre_o_gancho_antes_da_operacao_sobre_os_proprios_documentos():
+    col = _rota()
+    chamadas = []
+
+    def motorista(docs):
+        chamadas.append(len(docs))
+        docs[0]["paragens"][1]["estado"] = "feita"
+
+    col.antes_de("find_one_and_update", motorista)
+    assert correr(col.find_one_and_update(FILTRO_DO_ESCRITORIO, {"$inc": {"versao": 1}})) is None
+    assert chamadas == [1]
+    assert col.docs[0]["paragens"][1]["estado"] == "feita"
+    assert col.docs[0]["versao"] == 3
+    assert [c[0] for c in col.registo] == ["find_one_and_update"]
+
+
+def test_antes_de_corre_em_cada_chamada_ate_ser_retirado():
+    col = ColeccaoFalsa([{"id": "r1", "versao": 1}])
+    col.antes_de("find_one_and_update", lambda docs: docs[0].__setitem__("versao", docs[0]["versao"] + 1))
+    for esperado in (2, 3):
+        depois = correr(col.find_one_and_update(
+            {"id": "r1"}, {"$inc": {"tentativas": 1}}, return_document=ReturnDocument.AFTER
+        ))
+        assert depois["versao"] == esperado
+    col.antes_de("find_one_and_update", None)
+    depois = correr(col.find_one_and_update({"id": "r1"}, {"$inc": {"tentativas": 1}}, return_document=ReturnDocument.AFTER))
+    assert (depois["versao"], depois["tentativas"]) == (3, 3)
+
+
+def test_antes_de_no_find_corre_no_to_list_e_nao_ao_chamar_o_find():
+    col = ColeccaoFalsa([{"id": "a"}])
+    col.antes_de("find", lambda docs: docs.append({"id": "b", "_id": ObjectId()}))
+    cursor = col.find({})
+    assert col.sem_id() == [{"id": "a"}]
+    assert [d["id"] for d in correr(cursor.to_list(10))] == ["a", "b"]
+
+
+def test_antes_de_so_para_a_operacao_indicada_e_corre_antes_da_falha_injetada():
+    col = ColeccaoFalsa([{"id": "a"}], falhar={"insert_one": RuntimeError("em baixo")})
+    visto = []
+    col.antes_de("insert_one", lambda docs: visto.append("gancho"))
+    with pytest.raises(RuntimeError):
+        correr(col.insert_one({"id": "b"}))
+    correr(col.find_one({"id": "a"}))
+    correr(col.update_one({"id": "a"}, {"$set": {"x": 1}}))
+    assert visto == ["gancho"]
+
+
+def test_antes_de_com_operacao_desconhecida_e_um_erro_do_teste():
+    with pytest.raises(ValueError):
+        ColeccaoFalsa().antes_de("insert", lambda docs: None)
