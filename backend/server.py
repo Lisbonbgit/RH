@@ -7,7 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, EmailStr, field_validator
+from pydantic import BaseModel, Field, EmailStr, field_validator, model_validator
 from typing import List, Optional
 import uuid
 from datetime import datetime, timezone, timedelta, date
@@ -483,6 +483,75 @@ class CompanyResponse(BaseModel):
     description: Optional[str] = None
     created_at: str
 
+# ---- Calendário das lojas: horário de cada loja (desenho 2026-10-14, «1. Os dados») ----
+# Dias: 0 = segunda … 6 = domingo, como o `work_days` das escalas.
+_RE_HORA = re.compile(r'^([01]\d|2[0-3]):[0-5]\d$')
+
+
+def _hora(v):
+    if not isinstance(v, str) or not _RE_HORA.match(v):
+        raise ValueError("Hora inválida. Use o formato HH:MM")
+    return v
+
+
+def _dia_da_semana(v):
+    if v not in range(0, 7):
+        raise ValueError("Dia inválido: use 0 (segunda) a 6 (domingo)")
+    return v
+
+
+class _Horas(BaseModel):
+    abre: str
+    fecha: str
+
+    @field_validator('abre', 'fecha')
+    @classmethod
+    def _valida_hora(cls, v):
+        return _hora(v)
+
+    @model_validator(mode='after')
+    def _abre_antes_de_fechar(self):
+        # "HH:MM" com zeros à esquerda compara-se como texto. Horários que passam da
+        # meia-noite ficam de fora de propósito (desenho, «Fora de âmbito»).
+        if self.abre >= self.fecha:
+            raise ValueError(f"A loja tem de abrir antes de fechar ({self.abre}–{self.fecha})")
+        return self
+
+
+class HorarioDoDia(_Horas):
+    """Uma exceção ao horário geral (ex.: o domingo de Belém, até às 20h)."""
+    dia: int
+
+    @field_validator('dia')
+    @classmethod
+    def _valida_dia(cls, v):
+        return _dia_da_semana(v)
+
+
+class HorarioLoja(_Horas):
+    """O horário de uma loja: o geral, as exceções por dia e os dias em que fecha."""
+    excecoes: List[HorarioDoDia] = []
+    fechada: List[int] = []
+
+    @field_validator('fechada')
+    @classmethod
+    def _valida_fechada(cls, v):
+        for dia in v:
+            _dia_da_semana(dia)
+        if len(set(v)) != len(v):
+            raise ValueError("Dia repetido nos dias em que fecha")
+        return sorted(v)
+
+    @model_validator(mode='after')
+    def _dias_sem_choques(self):
+        dias = [e.dia for e in self.excecoes]
+        if len(set(dias)) != len(dias):
+            raise ValueError("Dia repetido nas exceções")
+        if set(dias) & set(self.fechada):
+            raise ValueError("Um dia não pode ter outro horário e estar fechado")
+        return self
+
+
 class LocationCreate(BaseModel):
     name: str
     company_id: str
@@ -494,6 +563,15 @@ class LocationCreate(BaseModel):
     geofence_radius: Optional[int] = None
     # ID do local no Google (Place ID) — usado para puxar avaliações no Marketing.
     google_place_id: Optional[str] = None
+    # Calendário das lojas: só as lojas com horário entram no calendário;
+    # `aberta_desde` esconde uma loja antes de abrir.
+    horario: Optional[HorarioLoja] = None
+    aberta_desde: Optional[date] = None
+
+    @field_validator('aberta_desde', mode='before')
+    @classmethod
+    def _aberta_desde_vazia(cls, v):
+        return None if v == "" else v
 
 class LocationResponse(BaseModel):
     id: str
@@ -505,6 +583,10 @@ class LocationResponse(BaseModel):
     longitude: Optional[float] = None
     geofence_radius: Optional[int] = None
     google_place_id: Optional[str] = None
+    # dict/str e não os modelos: a lista de Locais alimenta o portal inteiro, e um
+    # documento estranho na base não a pode deitar abaixo com um 500.
+    horario: Optional[dict] = None
+    aberta_desde: Optional[str] = None
 
 class EmployeeCreate(BaseModel):
     name: str
