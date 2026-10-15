@@ -102,6 +102,11 @@ PERFIS_POR_ROTA = {
     # são públicas (o motorista só ganha rotas na F4).
     ("GET", "/api/crm/morada/pesquisa"): PERFIS_ESCRITORIO,
     ("GET", "/api/crm/morada/inversa"): PERFIS_ESCRITORIO,
+    # Rotas (F3, T3.18): a lista dos dias e a rota de um dia, para o
+    # escritório (plano F3 §4: todas as rotas novas são para o escritório; o
+    # motorista só ganha rotas na F4).
+    ("GET", "/api/crm/rotas"): PERFIS_ESCRITORIO,
+    ("GET", "/api/crm/rotas/{data}"): PERFIS_ESCRITORIO,
 }
 
 # Os motivos de `_classificar` (os meta-testes comparam-nos tal e qual).
@@ -588,13 +593,14 @@ def _perfis_pela_regra_da_api(metodo, caminho):
     """A coluna "Família / perfis" da §4 do plano (API da F1–F2), escrita como
     uma regra por recurso e não como lista: membros e definições, só o admin;
     as regiões, o escritório lê e só o admin escreve; lojas, `/config` e
-    morada, o escritório. `None` para um recurso que a regra não conhece."""
+    morada, o escritório; as rotas (F3 §4, a partir da T3.18), o escritório.
+    `None` para um recurso que a regra não conhece."""
     recurso = caminho[len(PREFIXO):].split("/")[1]
     if recurso in ("membros", "definicoes"):
         return PERFIS_ADMIN
     if recurso == "regioes":
         return PERFIS_ESCRITORIO if metodo == "GET" else PERFIS_ADMIN
-    if recurso in ("lojas", "config", "morada"):
+    if recurso in ("lojas", "config", "morada", "rotas"):
         return PERFIS_ESCRITORIO
     return None
 
