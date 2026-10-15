@@ -76,6 +76,15 @@ def test_numa_folga_dela_a_ida_e_extra():
     assert (joana["origem"], joana["extra"]) == ("ida", True)
 
 
+def test_as_horas_fora_da_escala_dela_sao_extra_mesmo_num_dia_de_trabalho():
+    # Quarta: escala Oeiras 13h–22h. A ida a Alfragide das 10h às 14h tem 10h–13h fora da
+    # escala → «extra», embora ela trabalhe nesse dia; Oeiras fica sem ninguém só das 13h às 14h.
+    dias = _com_ida(sn.ida("2026-10-28", sn.ALFRAGIDE, JOANA, "10:00", "14:00"))
+    joana = next(p for p in _loja(dias, "2026-10-28", "Alfragide")["pessoas"] if p["nome"] == "Joana")
+    assert (joana["inicio"], joana["fim"], joana["origem"], joana["extra"]) == ("10:00", "14:00", "ida", True)
+    assert _buracos(dias, "2026-10-28", "Oeiras") == ["13:00-14:00"]
+
+
 def test_chegar_antes_de_abrir_nao_faz_a_ida_extra():
     # Quarta: a escala dela é Oeiras 13h–22h. A ida a Benfica das 12h30 mostra-se 13h–22h
     # (recortada ao horário) e cabe toda na escala dela — não é «extra».
