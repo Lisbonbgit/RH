@@ -69,6 +69,6 @@ def test_um_erro_num_clique_do_react_falha_o_teste(tmp_path):
 def test_o_aviso_da_base_do_browserslist_nao_falha_o_teste(tmp_path):
     """O babel procura o `browserslist` do frontend/package.json e o browserslist avisa no
     stderr quando a base do caniuse-lite tem 6 meses. Como o stderr falha o teste, sem
-    `browserslistConfigFile: false` todos os `importar` ficavam vermelhos ao fim de 6 meses
+    `BROWSERSLIST_IGNORE_OLD_DATA` todos os `importar` ficavam vermelhos ao fim de 6 meses
     (com o relógio real ou com um `pararRelogio` no futuro, como aqui)."""
     assert correr_js("pararRelogio(2027, 6, 1); devolve(importar('lib/utils').cn('a'));", tmp_path, dom=True) == "a"

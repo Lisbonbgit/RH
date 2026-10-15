@@ -120,9 +120,7 @@ function carregar(ficheiro) {
   const codigo = babel.transformSync(fs.readFileSync(ficheiro, 'utf-8'), {
     presets: [[require.resolve('@babel/preset-react'), { runtime: 'classic' }]],
     plugins: [require.resolve('@babel/plugin-transform-modules-commonjs')],
-    // Sem o browserslist do package.json (nenhum destes plugins usa targets): com ele, o aviso
-    // «caniuse-lite is 6 months old» ia para o stderr e falhava todos os testes daí a 6 meses.
-    filename: ficheiro, babelrc: false, configFile: false, browserslistConfigFile: false,
+    filename: ficheiro, babelrc: false, configFile: false,
   }).code;
   const m = new Module(ficheiro, null);
   m.filename = ficheiro;
@@ -201,7 +199,11 @@ def correr_js(guiao: str, tmp_path: Path, simulados: Optional[Dict[str, str]] = 
     ficheiro.write_text("\n".join(partes), encoding="utf-8")
     resultado = subprocess.run(
         [_node(), str(ficheiro)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(FRONTEND),
-        env={"NODE_PATH": str(FRONTEND / "node_modules"), "PATH": "/usr/bin:/bin", "TZ": "Europe/Lisbon"},
+        # O babel consulta o browserslist do frontend/package.json, que avisa no stderr quando a base
+        # do caniuse-lite faz 6 meses: com o stderr a contar, todos os testes ficavam vermelhos
+        # nesse dia (ou num guião com `pararRelogio` no futuro). Calado aqui, vale para todos.
+        env={"NODE_PATH": str(FRONTEND / "node_modules"), "PATH": "/usr/bin:/bin", "TZ": "Europe/Lisbon",
+             "BROWSERSLIST_IGNORE_OLD_DATA": "1"},
         timeout=180)
     # O stderr conta mesmo com saída 0: é lá que o React deixa as excepções dos handlers (que
     # apanha e não relança) e os avisos de act(). Ignorá-lo deixava os testes negativos verdes.
