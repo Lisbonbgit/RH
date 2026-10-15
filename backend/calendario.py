@@ -468,10 +468,11 @@ def ausencias_que_impedem(novas: List[Dict], utilizadores: Dict[str, Dict], ause
 # --- A resposta do mês (GET /api/bolso/calendario) -----------------------------------------
 
 
-def pessoas_escalaveis(utilizadores: List[Dict]) -> List[Dict]:
-    """Quem pode ser escalado numa ida: gestores primeiro, depois colaboradores, por nome.
-    O contabilista lê o calendário mas não pode ser escalado."""
-    escolhidas = [u for u in utilizadores if u.get("role") in ESCALAVEIS]
+def pessoas_escalaveis(utilizadores: List[Dict], fichas: Set[str]) -> List[Dict]:
+    """Quem pode ser escalado numa ida: gestores primeiro (todos), depois os colaboradores cuja
+    ficha está em `fichas`, por nome. O contabilista lê o calendário mas não pode ser escalado."""
+    escolhidas = [u for u in utilizadores if u.get("role") in GESTORES
+                  or (u.get("role") == "colaborador" and u.get("employee_id") in fichas)]
     escolhidas.sort(key=lambda u: (u.get("role") not in GESTORES, (u.get("name") or "").lower()))
     return [{"id": u["id"], "nome": u.get("name") or NOME_SEM_CONTA,
              "tipo": "gestor" if u.get("role") in GESTORES else "colaborador"} for u in escolhidas]
@@ -487,11 +488,18 @@ def resposta_do_mes(ano: int, mes: int, dados: Dict, eu: Optional[str], pode_mar
     empregados = {e["id"]: e for e in dados.get("empregados", [])}
     idas = sorted((i for i in dados.get("idas", []) if inicio <= i["data"] <= fim),
                   key=lambda i: (i["data"], i["inicio"]))
-    ausencias = sorted((a for a in dados.get("ausencias", []) if _aprovada_entre(a, inicio, fim)),
-                       key=lambda a: a.get("start_date") or "")
+    # O grupo tem empresas sem calendário (a pizzaria, com uma «Loja Alfragide» homónima): as
+    # ausências e os colaboradores contam só os das empresas das lojas COM horário, pela empresa
+    # da FICHA — não pela loja dela, que os colaboradores «sem loja» não têm.
+    empresas = {l.get("company_id") for l in lojas.values() if l.get("horario")}
+    fichas = {e["id"] for e in empregados.values() if e.get("company_id") in empresas}
 
     def _ficha(a):
         return empregados.get(a.get("employee_id")) or {}
+
+    ausencias = sorted((a for a in dados.get("ausencias", [])
+                        if a.get("employee_id") in fichas and _aprovada_entre(a, inicio, fim)),
+                       key=lambda a: a.get("start_date") or "")
 
     return {
         "ano": ano, "mes": mes, "eu": eu, "pode_marcar": pode_marcar,
@@ -507,5 +515,5 @@ def resposta_do_mes(ano: int, mes: int, dados: Dict, eu: Optional[str], pode_mar
                       for a in ausencias],
         "lojas": [{"id": l["id"], "nome": l.get("name")}
                   for l in sorted(lojas.values(), key=lambda l: (l.get("name") or "").lower()) if l.get("horario")],
-        "pessoas": pessoas_escalaveis(dados.get("utilizadores", [])),
+        "pessoas": pessoas_escalaveis(dados.get("utilizadores", []), fichas),
     }
