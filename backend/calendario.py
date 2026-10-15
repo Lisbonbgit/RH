@@ -247,12 +247,17 @@ def _escala(dia: date, p: Dict) -> Dict[str, Tuple[str, Intervalo]]:
     return fora
 
 
+def _aprovada_entre(a: Dict, de: str, ate: str) -> bool:
+    """A ausência está APROVADA (de qualquer tipo) e toca [de, ate] (AAAA-MM-DD). A regra é só
+    esta: os buracos, o 409 de «está de férias» e a lista do mês usam-na, para não divergirem."""
+    return (a.get("status") == "aprovado"
+            and (a.get("start_date") or "")[:10] <= ate and (a.get("end_date") or "")[:10] >= de)
+
+
 def ausentes(dia: date, ausencias: List[Dict]) -> Set[str]:
     """Os `employee_id` com ausência APROVADA (de qualquer tipo) que inclui o dia."""
     iso = dia.isoformat()
-    return {a.get("employee_id") for a in ausencias
-            if a.get("status") == "aprovado"
-            and (a.get("start_date") or "")[:10] <= iso <= (a.get("end_date") or "")[:10]}
+    return {a.get("employee_id") for a in ausencias if _aprovada_entre(a, iso, iso)}
 
 
 def _pessoa(user_id, nome, horas: Intervalo, origem: str, extra: bool = False, ida_id=None) -> Dict:
@@ -450,8 +455,7 @@ def ausencias_que_impedem(novas: List[Dict], utilizadores: Dict[str, Dict], ause
         if user.get("role") != "colaborador":
             continue
         for a in ausencias:
-            if (a.get("employee_id") == user.get("employee_id") and a.get("status") == "aprovado"
-                    and (a.get("start_date") or "")[:10] <= nova["data"] <= (a.get("end_date") or "")[:10]):
+            if a.get("employee_id") == user.get("employee_id") and _aprovada_entre(a, nova["data"], nova["data"]):
                 linha = "%s está %s a %s." % (primeiro_nome(user.get("name")),
                                               AUSENCIAS.get(a.get("leave_type"), "ausente"), data_curta(nova["data"]))
                 if linha not in linhas:
@@ -482,9 +486,7 @@ def resposta_do_mes(ano: int, mes: int, dados: Dict, eu: Optional[str], pode_mar
     empregados = {e["id"]: e for e in dados.get("empregados", [])}
     idas = sorted((i for i in dados.get("idas", []) if inicio <= i["data"] <= fim),
                   key=lambda i: (i["data"], i["inicio"]))
-    ausencias = sorted((a for a in dados.get("ausencias", [])
-                        if a.get("status") == "aprovado"
-                        and (a.get("start_date") or "")[:10] <= fim and (a.get("end_date") or "")[:10] >= inicio),
+    ausencias = sorted((a for a in dados.get("ausencias", []) if _aprovada_entre(a, inicio, fim)),
                        key=lambda a: a.get("start_date") or "")
 
     def _ficha(a):
