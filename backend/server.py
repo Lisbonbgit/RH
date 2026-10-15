@@ -713,11 +713,48 @@ class AdminLeaveCreate(BaseModel):
             raise ValueError("Tipo inválido. Use 'ferias' ou 'ausencia'")
         return v
 
+class DiaDaEscala(BaseModel):
+    """Onde e a que horas a pessoa trabalha num dia da semana.
+
+    `location_id` vazio = a loja da ficha do colaborador; `inicio`/`fim` vazios = o
+    horário da loja nesse dia. As duas horas vêm juntas ou nenhuma."""
+    dia: int
+    location_id: Optional[str] = None
+    inicio: Optional[str] = None
+    fim: Optional[str] = None
+
+    @field_validator('location_id', 'inicio', 'fim', mode='before')
+    @classmethod
+    def _vazio_e_nada(cls, v):
+        return None if v == "" else v
+
+    @field_validator('dia')
+    @classmethod
+    def _valida_dia(cls, v):
+        return _dia_da_semana(v)
+
+    @field_validator('inicio', 'fim')
+    @classmethod
+    def _valida_hora(cls, v):
+        return v if v is None else _hora(v)
+
+    @model_validator(mode='after')
+    def _horas_juntas(self):
+        if (self.inicio is None) != (self.fim is None):
+            raise ValueError("As horas de um dia escrevem-se as duas (entrada e saída) ou nenhuma")
+        if self.inicio is not None and self.inicio >= self.fim:
+            raise ValueError(f"A entrada tem de ser antes da saída ({self.inicio}–{self.fim})")
+        return self
+
+
 class WorkScheduleTemplateCreate(BaseModel):
     name: str
     work_days: List[int] = Field(alias="workDays")
     # Hora de início do turno (HH:MM). Usada para lembrar o colaborador no app.
     start_time: Optional[str] = Field(default=None, alias="startTime")
+    # Loja e horas por dia (calendário das lojas). Quando vem, o servidor deriva o
+    # work_days daqui — ver _dias_de_trabalho.
+    dias: Optional[List[DiaDaEscala]] = None
 
     model_config = {"populate_by_name": True}
 
@@ -739,6 +776,13 @@ class WorkScheduleTemplateCreate(BaseModel):
             return None
         if not re.match(r'^([01]\d|2[0-3]):[0-5]\d$', v):
             raise ValueError("Hora inválida. Use o formato HH:MM")
+        return v
+
+    @field_validator('dias')
+    @classmethod
+    def validate_dias(cls, v):
+        if v is not None and len({d.dia for d in v}) != len(v):
+            raise ValueError("Dia repetido na escala")
         return v
 
 class WorkScheduleTemplateResponse(BaseModel):
