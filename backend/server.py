@@ -1531,6 +1531,13 @@ async def delete_company(company_id: str, current_user: dict = Depends(admin_req
 
 # ==================== LOCATION ROUTES ====================
 
+def _horario_para_gravar(location: LocationCreate) -> dict:
+    """Os dois campos do calendário, na forma em que ficam no Mongo."""
+    return {
+        "horario": location.horario.model_dump() if location.horario else None,
+        "aberta_desde": location.aberta_desde.isoformat() if location.aberta_desde else None,
+    }
+
 @api_router.post("/locations", response_model=LocationResponse)
 async def create_location(location: LocationCreate, current_user: dict = Depends(admin_required)):
     # Verify company exists
@@ -1548,6 +1555,7 @@ async def create_location(location: LocationCreate, current_user: dict = Depends
         "longitude": location.longitude,
         "geofence_radius": location.geofence_radius,
         "google_place_id": location.google_place_id,
+        **_horario_para_gravar(location),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.locations.insert_one(location_doc)
@@ -1570,18 +1578,20 @@ async def get_locations(company_id: Optional[str] = None, current_user: dict = D
 
 @api_router.put("/locations/{location_id}", response_model=LocationResponse)
 async def update_location(location_id: str, location: LocationCreate, current_user: dict = Depends(admin_required)):
-    result = await db.locations.update_one(
-        {"id": location_id},
-        {"$set": {
-            "name": location.name,
-            "company_id": location.company_id,
-            "address": location.address,
-            "latitude": location.latitude,
-            "longitude": location.longitude,
-            "geofence_radius": location.geofence_radius,
-            "google_place_id": location.google_place_id,
-        }}
-    )
+    campos = {
+        "name": location.name,
+        "company_id": location.company_id,
+        "address": location.address,
+        "latitude": location.latitude,
+        "longitude": location.longitude,
+        "geofence_radius": location.geofence_radius,
+        "google_place_id": location.google_place_id,
+    }
+    # O horário e a data de abertura só se escrevem se vierem no corpo: um browser com
+    # a página antiga em cache manda o formulário sem eles, e um $set com None apagava
+    # o horário da loja. O formulário novo manda-os sempre (também para os tirar).
+    campos.update({k: v for k, v in _horario_para_gravar(location).items() if k in location.model_fields_set})
+    result = await db.locations.update_one({"id": location_id}, {"$set": campos})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Local não encontrado")
     updated = await db.locations.find_one({"id": location_id}, {"_id": 0})
