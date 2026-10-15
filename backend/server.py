@@ -42,6 +42,7 @@ except ImportError:
     HTTPX_AVAILABLE = False
 
 import bolso
+import calendario
 import fin_faturacao
 
 ROOT_DIR = Path(__file__).parent
@@ -8810,6 +8811,78 @@ async def bolso_painel(
     }
 
 
+# ====================================================================
+# ===== CALENDÁRIO DAS LOJAS — onde falta gente, no telemóvel =====
+# ====================================================================
+# O cálculo é todo do módulo `calendario` (puro, testável sem Mongo); aqui ficam as
+# leituras e as guardas. Os buracos NÃO se guardam: calculam-se a cada pedido, a partir
+# do horário das lojas, da escala de cada pessoa, das ausências aprovadas e das idas
+# (`bolso_idas`) — por isso nunca ficam desactualizados.
+# Desenho: docs/superpowers/specs/2026-10-14-calendario-gestao-design.md, secção 3.
+
+_BOLSO_CAMPOS_DA_LOJA = {"_id": 0, "id": 1, "name": 1, "company_id": 1, "horario": 1, "aberta_desde": 1}
+
+
+async def _bolso_criar_indices():
+    """O índice único apanha a MESMA ida gravada duas vezes (duas gestoras no mesmo
+    segundo) — é com ele que o «tudo ou nada» do POST se compensa; o de `data` serve a
+    leitura do mês. `create_index` é idempotente."""
+    await db.bolso_idas.create_index(
+        [("data", 1), ("user_id", 1), ("location_id", 1), ("inicio", 1)], unique=True)
+    await db.bolso_idas.create_index([("data", 1)])
+
+
+@api_router.get("/bolso/calendario")
+async def bolso_calendario(
+    ano: int = Query(..., ge=2020, le=2100),
+    mes: int = Query(..., ge=1, le=12),
+    current_user: dict = Depends(admin_manager_required),
+):
+    """O mês inteiro num pedido (forma em `calendario.resposta_do_mes`).
+
+    Consultas fixas e sem ciclos — o `GET /calendar/leaves` faz uma consulta por ausência e
+    é exactamente o que aqui não se copia. O contabilista lê (`pode_marcar: false`)."""
+    inicio, fim = calendario.limites_do_mes(ano, mes)
+    dados = {
+        "lojas": await db.locations.find({}, _BOLSO_CAMPOS_DA_LOJA).to_list(1000),
+        "empregados": await db.employees.find(
+            {}, {"_id": 0, "id": 1, "name": 1, "location_id": 1, "company_id": 1}).to_list(5000),
+        "atribuicoes": await db.work_schedule_assignments.find(
+            {"start_date": {"$lte": fim}}, {"_id": 0}).to_list(20000),
+        "modelos": await db.work_schedule_templates.find(
+            {}, {"_id": 0, "id": 1, "work_days": 1, "dias": 1}).to_list(5000),
+        "ausencias": await db.leave_requests.find(
+            {"status": "aprovado", "start_date": {"$lte": fim}, "end_date": {"$gte": inicio}},
+            {"_id": 0, "employee_id": 1, "leave_type": 1, "start_date": 1, "end_date": 1, "status": 1},
+        ).to_list(5000),
+        "idas": await db.bolso_idas.find({"data": {"$gte": inicio, "$lte": fim}}, {"_id": 0}).to_list(20000),
+        "utilizadores": await db.users.find(
+            {}, {"_id": 0, "id": 1, "name": 1, "role": 1, "employee_id": 1}).to_list(5000),
+        "feriados": await db.holidays.find(
+            {}, {"_id": 0, "name": 1, "month": 1, "day": 1, "company_id": 1, "location_id": 1}).to_list(500),
+    }
+    return calendario.resposta_do_mes(
+        ano, mes, dados, current_user.get("user_id"), current_user.get("role") in calendario.GESTORES)
+
+
+@api_router.get("/bolso/calendario/contagem")
+async def bolso_calendario_contagem(
+    ano: int = Query(..., ge=2020, le=2100),
+    current_user: dict = Depends(admin_manager_required),
+):
+    """Quantos dias cada pessoa fez no ano — as idas marcadas, futuras incluídas (é o que
+    as gestoras usam para se equilibrarem)."""
+    idas = await db.bolso_idas.find(
+        {"data": {"$gte": "%d-01-01" % ano, "$lte": "%d-12-31" % ano}},
+        {"_id": 0, "data": 1, "user_id": 1, "location_id": 1, "inicio": 1, "fim": 1},
+    ).to_list(50000)
+    lojas = {l["id"]: l for l in await db.locations.find({}, _BOLSO_CAMPOS_DA_LOJA).to_list(1000)}
+    utilizadores = await db.users.find(
+        {"id": {"$in": sorted({i["user_id"] for i in idas})}}, {"_id": 0, "id": 1, "name": 1}
+    ).to_list(5000)
+    return calendario.contagem(idas, lojas, {u["id"]: u.get("name") for u in utilizadores})
+
+
 @api_router.post("/fin/cron/faturacao")
 async def fin_cron_faturacao(
     key: str = Query(...),
@@ -9902,6 +9975,13 @@ async def startup_event():
         await db.fin_movements.create_index([("invoice_id", 1)])
     except Exception:  # noqa: BLE001
         logger.warning("[fin] não foi possível criar os índices de fin_sales/bol_leituras")
+
+    # O índice único das idas é o que torna o «tudo ou nada» do calendário possível sem
+    # transacções. À parte do de cima: uma falha num não pode deixar o outro por criar.
+    try:
+        await _bolso_criar_indices()
+    except Exception:  # noqa: BLE001
+        logger.warning("[bolso] não foi possível criar os índices de bolso_idas")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
