@@ -28,7 +28,8 @@ import os
 import re
 import sys
 import unicodedata
-from datetime import date
+import uuid
+from datetime import date, datetime, timedelta, timezone
 
 from pymongo import MongoClient
 
@@ -45,6 +46,20 @@ HORARIOS = {
               "excecoes": [{"dia": 6, "abre": "11:30", "fecha": "20:00"}], "fechada": [1]},
     "Benfica": {"abre": "13:00", "fecha": "22:00", "excecoes": [], "fechada": []},
     "Oeiras": {"abre": "13:00", "fecha": "22:00", "excecoes": [], "fechada": []},
+}
+
+# A escala de cada pessoa: (loja, dias, entrada, saída). Horas None = o horário da loja.
+# A loja vai explícita em todos os dias, para não depender de a ficha estar certa.
+ESCALAS = {
+    "Emily": [("Alfragide", (0, 1, 4, 5, 6), "14:00", "23:00")],
+    "Beatrice": [("Alfragide", (2, 3, 4, 5, 6), "10:00", "19:00")],
+    "Walisson": [("Algueirão", (0, 1, 2, 5, 6), None, None)],
+    "Joana": [("Amadora", (0, 1), None, None), ("Oeiras", (2,), None, None),
+              ("Algueirão", (3, 4), None, None)],
+    "Weber": [("Amadora", (2, 3, 4, 5, 6), None, None)],
+    "Emanuela": [("Oeiras", (0, 3, 4, 5, 6), None, None)],
+    # Belém fecha à terça: a Rafaela não trabalha à terça (nem lhe conta nas férias).
+    "Rafaela": [("Belém", (0, 2, 3, 4, 5, 6), None, None)],
 }
 
 # Quando um nome curto casa com mais de um registo em produção: o nome mais comprido a
@@ -82,6 +97,10 @@ def _resumo_horario(h):
     return " · ".join(partes)
 
 
+def _dia(texto):
+    return date.fromisoformat(str(texto)[:10])
+
+
 def _planear_lojas(lojas, benfica_desde, linhas, ops):
     """Junta às `linhas` e às `ops` o horário de cada loja; devolve {chave: id}."""
     ids = {}
@@ -104,11 +123,94 @@ def _planear_lojas(lojas, benfica_desde, linhas, ops):
     return ids
 
 
+def _planear_escalas(lojas, pessoas, escalas, atribuicoes, ids, desde, linhas, ops):
+    """Uma «Escala <Nome>» por pessoa; a atribuição activa fecha na véspera de `desde`
+    e uma nova começa em `desde`. Junta tudo às `linhas` e às `ops`."""
+    nome_da_loja = {loja["id"]: loja.get("name") for loja in lojas}
+    agora = datetime.now(timezone.utc).isoformat()
+    vespera = (desde - timedelta(days=1)).isoformat()
+    for chave, blocos in ESCALAS.items():
+        pessoa = _um(pessoas, PROCURAR.get(chave, chave), "A pessoa")
+        fora = sorted({loja for loja, _, _, _ in blocos if loja not in ids})
+        if fora:
+            raise Paragem("A escala de %s usa %s, que ficou de fora." % (chave, ", ".join(fora)))
+        dias = sorted(
+            ({"dia": d, "location_id": ids[loja], "inicio": inicio, "fim": fim}
+             for loja, ds, inicio, fim in blocos for d in ds),
+            key=lambda x: x["dia"])
+        work_days = [d["dia"] for d in dias]
+        nome = "Escala %s" % chave
+
+        minhas = sorted((a for a in atribuicoes if a.get("employee_id") == pessoa["id"]),
+                        key=lambda a: a["start_date"])
+        futuras = [a for a in minhas if _dia(a["start_date"]) > desde]
+        if futuras:
+            raise Paragem("%s já tem uma escala a começar a %s, depois de %s: decidir à mão."
+                          % (pessoa["name"], futuras[0]["start_date"], desde.isoformat()))
+        # Sem futuras, a que cobre `desde` é a que não acabou antes dele.
+        activa = next((a for a in minhas if not a.get("end_date") or _dia(a["end_date"]) >= desde), None)
+        com_o_nome = [e for e in escalas if e.get("name") == nome]
+        if len(com_o_nome) > 1:
+            raise Paragem("Há %d escalas chamadas «%s»: decidir à mão qual fica." % (len(com_o_nome), nome))
+        escala = com_o_nome[0] if com_o_nome else None
+        antiga = next((e for e in escalas if activa and e.get("id") == activa.get("template_id")), None)
+
+        linhas.append("%s: %s" % (pessoa["name"], " · ".join(
+            "%s %s%s" % (DIAS[d["dia"]], nome_da_loja[d["location_id"]],
+                         " %s–%s" % (d["inicio"], d["fim"]) if d["inicio"] else "")
+            for d in dias)))
+        if pessoa.get("location_id") not in {d["location_id"] for d in dias}:
+            linhas.append("  aviso: a ficha diz «%s»; o «Em falta» do painel continua a usar a ficha."
+                          % nome_da_loja.get(pessoa.get("location_id"), "sem loja"))
+
+        if escala is None:
+            # A hora de início vem da escala antiga: é o que o lembrete do ponto lê.
+            start_time = antiga.get("start_time") if antiga else None
+            escala = {"id": str(uuid.uuid4()), "name": nome, "work_days": work_days,
+                      "start_time": start_time, "dias": dias, "created_at": agora}
+            ops.append(("work_schedule_templates", "insert_one", escala))
+            linhas.append("  criar «%s» (hora de início: %s%s)" % (
+                nome, start_time or "nenhuma", ", da escala «%s»" % antiga["name"] if antiga else ""))
+        elif escala.get("dias") != dias or escala.get("work_days") != work_days:
+            # O mesmo que o PUT /schedules: o modelo e a cópia das atribuições com o mesmo valor.
+            ops.append(("work_schedule_templates", "update_one", {"id": escala["id"]},
+                        {"$set": {"dias": dias, "work_days": work_days}}))
+            ops.append(("work_schedule_assignments", "update_many", {"template_id": escala["id"]},
+                        {"$set": {"work_days": work_days}}))
+            linhas.append("  «%s» já existe: passa a ter estes dias" % nome)
+        else:
+            linhas.append("  «%s» já está assim" % nome)
+
+        if activa and activa.get("template_id") == escala["id"]:
+            linhas.append("  atribuição desde %s: já é esta" % activa["start_date"])
+            continue
+        if activa:
+            if _dia(activa["start_date"]) >= desde:
+                raise Paragem("A escala actual de %s começa a %s: não se pode fechar na véspera de %s."
+                              % (pessoa["name"], activa["start_date"], desde.isoformat()))
+            dias_antes = activa.get("work_days") or (antiga or {}).get("work_days") or []
+            ops.append(("work_schedule_assignments", "update_one", {"id": activa["id"]},
+                        {"$set": {"end_date": vespera}}))
+            linhas.append("  fechar «%s» (%s → %s; dias %s) a %s" % (
+                antiga["name"] if antiga else "(escala removida)", activa["start_date"],
+                activa.get("end_date") or "em aberto", ", ".join(DIAS[d] for d in dias_antes), vespera))
+        ops.append(("work_schedule_assignments", "insert_one", {
+            "id": str(uuid.uuid4()), "employee_id": pessoa["id"], "template_id": escala["id"],
+            "work_days": work_days, "start_date": desde.isoformat(), "end_date": None,
+            "created_at": agora}))
+        linhas.append("  nova atribuição desde %s (dias %s)" % (
+            desde.isoformat(), ", ".join(DIAS[d] for d in work_days)))
+
+
 def planear(db, desde, benfica_desde):
     """(linhas para mostrar, operações para gravar) — sem escrever nada."""
     lojas = list(db.locations.find({}, {"_id": 0}))
+    pessoas = list(db.employees.find({}, {"_id": 0, "id": 1, "name": 1, "location_id": 1}))
+    escalas = list(db.work_schedule_templates.find({}, {"_id": 0}))
+    atribuicoes = list(db.work_schedule_assignments.find({}, {"_id": 0}))
     linhas, ops = [], []
-    _planear_lojas(lojas, benfica_desde, linhas, ops)
+    ids = _planear_lojas(lojas, benfica_desde, linhas, ops)
+    _planear_escalas(lojas, pessoas, escalas, atribuicoes, ids, desde, linhas, ops)
     return linhas, ops
 
 
