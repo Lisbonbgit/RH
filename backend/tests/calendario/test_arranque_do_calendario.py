@@ -370,13 +370,12 @@ def test_a_escala_que_ja_existe_com_os_mesmos_dias_de_trabalho_diz_que_ficam_igu
 
 
 @pytest.mark.parametrize("atribuicoes, para_tras", [
-    # O update_many toca em TODAS as atribuições da escala: a mais antiga é de outra pessoa e já
-    # acabou (a da Joana, de 2026-01-01, é doutra escala e não conta).
+    # O update_many toca em TODAS as atribuições da escala, as antigas também (a da Joana, de
+    # 2026-01-01, é doutra escala e não conta). Se uma delas for de OUTRA pessoa, o script pára
+    # — ver test_a_escala_que_tambem_foi_de_outra_pessoa_*.
     ([{"id": "a-web", "employee_id": "e-web", "template_id": "t-web", "work_days": [0, 1, 2, 3, 4],
-       "start_date": "2026-03-01", "end_date": None},
-      {"id": "a-car", "employee_id": "e-car", "template_id": "t-web", "work_days": [0, 1, 2, 3, 4],
-       "start_date": "2026-02-01", "end_date": "2026-02-28"}],
-     "e isto vale também para trás, desde 2026-02-01 (o saldo de férias muda)"),
+       "start_date": "2026-03-01", "end_date": None}],
+     "e isto vale também para trás, desde 2026-03-01 (o saldo de férias muda)"),
     ([], "ainda não está atribuída a ninguém, nada muda para trás"),
 ])
 def test_a_escala_que_ja_existe_com_outros_dias_de_trabalho_avisa_que_mudam_para_tras(
@@ -387,3 +386,52 @@ def test_a_escala_que_ja_existe_com_outros_dias_de_trabalho_avisa_que_mudam_para
     assert arranque.main() == 0
     assert ("  «Escala Weber» já existe: os dias de trabalho MUDAM de Seg, Ter, Qua, Qui, Sex para "
             "Qua, Qui, Sex, Sáb, Dom — " + para_tras) in capsys.readouterr().out.splitlines()
+
+
+# ---- Correcção: em produção a «Escala Weber» também esteve atribuída à Joana (jan–mar) ----
+# O script grava `dias` na escala com o nome e faz update_many do work_days em TODAS as
+# atribuições dela: as de outra pessoa também.
+
+def _escala_weber_tambem_da_joana(db, work_days_da_escala, work_days_da_joana, fim_da_joana):
+    db.work_schedule_templates.insert_one({"id": "t-web", "name": "Escala Weber", "work_days": work_days_da_escala})
+    db.work_schedule_assignments.insert_one({
+        "id": "a-joa-web", "employee_id": "e-joa", "template_id": "t-web", "work_days": work_days_da_joana,
+        "start_date": "2026-01-01", "end_date": fim_da_joana})
+
+
+@pytest.mark.parametrize("fim_da_joana", [None, "2026-10-01"])      # DESDE é 2026-10-01
+def test_a_escala_que_tambem_esta_atribuida_a_outra_pessoa_em_desde_para(prod, monkeypatch, capsys, fim_da_joana):
+    _escala_weber_tambem_da_joana(prod, [2, 3, 4, 5, 6], [2, 3, 4, 5, 6], fim_da_joana)
+    antes = _tudo(prod)
+    monkeypatch.setenv("GRAVAR", "1")
+    assert arranque.main() == 1
+    assert ("PARADO, nada foi escrito: A «Escala Weber» também está atribuída a Joana Pereira "
+            "(desde 2026-01-01): decidir à mão.") in capsys.readouterr().out
+    assert _tudo(prod) == antes
+
+
+@pytest.mark.parametrize("work_days_da_joana", [[2, 3, 4, 5, 6], None])   # None = os da escala
+def test_a_escala_que_tambem_foi_de_outra_pessoa_com_os_mesmos_dias_avisa_e_nao_para(
+        prod, monkeypatch, capsys, work_days_da_joana):
+    _escala_weber_tambem_da_joana(prod, [2, 3, 4, 5, 6], work_days_da_joana, "2026-03-31")
+    assert arranque.main() == 0
+    assert ("  aviso: a «Escala Weber» também foi de Joana Pereira (até 2026-03-31); os dias de "
+            "trabalho ficam iguais e o saldo de férias não lhe muda") in capsys.readouterr().out.splitlines()
+    monkeypatch.setenv("GRAVAR", "1")
+    assert arranque.main() == 0
+    joana = prod.work_schedule_assignments.find_one({"id": "a-joa-web"}, {"_id": 0})
+    assert (joana["employee_id"], joana["end_date"]) == ("e-joa", "2026-03-31")
+    assert joana["work_days"] in ([2, 3, 4, 5, 6], None) and \
+        (joana["work_days"] or _escala(prod, "Escala Weber")["work_days"]) == [2, 3, 4, 5, 6]
+
+
+def test_a_escala_que_tambem_foi_de_outra_pessoa_com_outros_dias_para(prod, monkeypatch, capsys):
+    # A escala já tem os dias novos; é a cópia na atribuição da Joana que o update_many mudava.
+    _escala_weber_tambem_da_joana(prod, [2, 3, 4, 5, 6], [0, 1, 2, 3, 4], "2026-03-31")
+    antes = _tudo(prod)
+    monkeypatch.setenv("GRAVAR", "1")
+    assert arranque.main() == 1
+    assert ("PARADO, nada foi escrito: A «Escala Weber» também foi de Joana Pereira (até 2026-03-31) "
+            "com os dias Seg, Ter, Qua, Qui, Sex: passar a Qua, Qui, Sex, Sáb, Dom mudava-lhe o saldo "
+            "de férias para trás — decidir à mão.") in capsys.readouterr().out
+    assert _tudo(prod) == antes

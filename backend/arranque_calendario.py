@@ -143,6 +143,7 @@ def _planear_escalas(lojas, empresas, pessoas, escalas, atribuicoes, ids, desde,
     a atribuição activa fecha na véspera de `desde` e uma nova começa em `desde`. Junta
     tudo às `linhas` e às `ops`."""
     nome_da_loja = {loja["id"]: loja.get("name") for loja in lojas}
+    nome_da_pessoa = {p["id"]: p.get("name") for p in pessoas}
     agora = datetime.now(timezone.utc).isoformat()
     vespera = (desde - timedelta(days=1)).isoformat()
     for chave, blocos in ESCALAS.items():
@@ -182,6 +183,24 @@ def _planear_escalas(lojas, empresas, pessoas, escalas, atribuicoes, ids, desde,
         if pessoa.get("location_id") not in {d["location_id"] for d in dias}:
             linhas.append("  aviso: a ficha diz «%s»; o «Em falta» do painel continua a usar a ficha."
                           % nome_da_loja.get(pessoa.get("location_id"), "sem loja"))
+
+        # Abaixo grava-se `dias` na escala e o work_days em TODAS as atribuições dela (em
+        # produção a «Escala Weber» também foi da Joana): as de outra pessoa não podem mudar.
+        de_outras = sorted((a for a in atribuicoes if escala and a.get("template_id") == escala["id"]
+                            and a.get("employee_id") != pessoa["id"]), key=lambda a: a["start_date"])
+        for a in de_outras:
+            outra = nome_da_pessoa.get(a.get("employee_id")) or a.get("employee_id")
+            if not a.get("end_date") or _dia(a["end_date"]) >= desde:
+                raise Paragem("A «%s» também está atribuída a %s (desde %s): decidir à mão."
+                              % (nome, outra, a["start_date"]))
+            dela = sorted(a.get("work_days") or escala.get("work_days") or [])
+            if dela != work_days:
+                raise Paragem("A «%s» também foi de %s (até %s) com os dias %s: passar a %s mudava-lhe "
+                              "o saldo de férias para trás — decidir à mão." % (
+                                  nome, outra, str(a["end_date"])[:10], ", ".join(DIAS[d] for d in dela),
+                                  ", ".join(DIAS[d] for d in work_days)))
+            linhas.append("  aviso: a «%s» também foi de %s (até %s); os dias de trabalho ficam iguais "
+                          "e o saldo de férias não lhe muda" % (nome, outra, str(a["end_date"])[:10]))
 
         if escala is None:
             # A hora de início vem da escala antiga: é o que o lembrete do ponto lê.
