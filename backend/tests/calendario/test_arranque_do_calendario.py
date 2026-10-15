@@ -329,3 +329,61 @@ def test_saltar_com_um_nome_que_nao_e_de_ninguem_para_antes_de_escrever(prod, mo
     saida = capsys.readouterr().out
     assert "PARADO, nada foi escrito: SALTAR tem «Rafela», que não é nenhuma das pessoas" in saida
     assert _tudo(prod) == antes
+
+
+# ---- Correcção: o nome da escala vem da pessoa, e o ensaio diz se os dias de trabalho mudam ----
+
+def test_o_nome_da_escala_vem_da_pessoa_e_nao_da_chave(prod, monkeypatch, capsys):
+    # Como em produção: a chave é «Walisson» (um l), a pessoa é «Wallison Silva» e já tem a
+    # «Escala Wallison» desde 2026-04-01, com os mesmos dias. O dono procura-a com PROCURAR_JSON.
+    prod.employees.update_one({"id": "e-wal"}, {"$set": {"name": "Wallison Silva"}})
+    prod.work_schedule_templates.insert_one({
+        "id": "t-wal", "name": "Escala Wallison", "work_days": [0, 1, 2, 5, 6], "start_time": "13:00",
+        "created_at": "2026-04-01T00:00:00+00:00"})
+    prod.work_schedule_assignments.insert_one({
+        "id": "a-wal", "employee_id": "e-wal", "template_id": "t-wal", "work_days": [0, 1, 2, 5, 6],
+        "start_date": "2026-04-01", "end_date": None, "created_at": "2026-04-01T00:00:00+00:00"})
+    monkeypatch.setenv("PROCURAR_JSON", json.dumps({"Walisson": "Wallison"}))
+    assert arranque.main() == 0
+    saida = capsys.readouterr().out
+    assert "Escala Walisson" not in saida
+    assert "criar «Escala Wallison»" not in saida and "fechar «Escala Wallison»" not in saida
+    assert "  «Escala Wallison» já existe: " in saida
+    assert "  atribuição desde 2026-04-01: já é esta" in saida.splitlines()
+    monkeypatch.setenv("GRAVAR", "1")
+    assert arranque.main() == 0
+    assert _escala(prod, "Escala Walisson") is None
+    wallison = _escala(prod, "Escala Wallison")
+    assert wallison["dias"] == [{"dia": d, "location_id": "l-alg", "inicio": None, "fim": None}
+                                for d in (0, 1, 2, 5, 6)]
+    assert (wallison["work_days"], wallison["start_time"]) == ([0, 1, 2, 5, 6], "13:00")
+    [atribuicao] = _atribuicoes(prod, "e-wal")
+    assert (atribuicao["id"], atribuicao["template_id"], atribuicao["start_date"], atribuicao["end_date"]) == \
+        ("a-wal", "t-wal", "2026-04-01", None)
+
+
+def test_a_escala_que_ja_existe_com_os_mesmos_dias_de_trabalho_diz_que_ficam_iguais(prod, capsys):
+    prod.work_schedule_templates.insert_one({"id": "t-web", "name": "Escala Weber", "work_days": [2, 3, 4, 5, 6]})
+    assert arranque.main() == 0
+    assert ("  «Escala Weber» já existe: os dias de trabalho ficam iguais (Qua, Qui, Sex, Sáb, Dom); "
+            "só ganha a loja e as horas de cada dia") in capsys.readouterr().out.splitlines()
+
+
+@pytest.mark.parametrize("atribuicoes, para_tras", [
+    # O update_many toca em TODAS as atribuições da escala: a mais antiga é de outra pessoa e já
+    # acabou (a da Joana, de 2026-01-01, é doutra escala e não conta).
+    ([{"id": "a-web", "employee_id": "e-web", "template_id": "t-web", "work_days": [0, 1, 2, 3, 4],
+       "start_date": "2026-03-01", "end_date": None},
+      {"id": "a-car", "employee_id": "e-car", "template_id": "t-web", "work_days": [0, 1, 2, 3, 4],
+       "start_date": "2026-02-01", "end_date": "2026-02-28"}],
+     "e isto vale também para trás, desde 2026-02-01 (o saldo de férias muda)"),
+    ([], "ainda não está atribuída a ninguém, nada muda para trás"),
+])
+def test_a_escala_que_ja_existe_com_outros_dias_de_trabalho_avisa_que_mudam_para_tras(
+        prod, capsys, atribuicoes, para_tras):
+    prod.work_schedule_templates.insert_one({"id": "t-web", "name": "Escala Weber", "work_days": [0, 1, 2, 3, 4]})
+    if atribuicoes:
+        prod.work_schedule_assignments.insert_many(atribuicoes)
+    assert arranque.main() == 0
+    assert ("  «Escala Weber» já existe: os dias de trabalho MUDAM de Seg, Ter, Qua, Qui, Sex para "
+            "Qua, Qui, Sex, Sáb, Dom — " + para_tras) in capsys.readouterr().out.splitlines()

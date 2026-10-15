@@ -138,8 +138,10 @@ def _planear_lojas(lojas, empresas, benfica_desde, linhas, ops):
 
 
 def _planear_escalas(lojas, empresas, pessoas, escalas, atribuicoes, ids, desde, linhas, ops, saltar=()):
-    """Uma «Escala <Nome>» por pessoa; a atribuição activa fecha na véspera de `desde`
-    e uma nova começa em `desde`. Junta tudo às `linhas` e às `ops`."""
+    """Uma «Escala <primeiro nome>» por pessoa (o nome da ficha, não a chave de ESCALAS: em
+    produção a chave «Walisson» encontra «Wallison Silva», que já tem a «Escala Wallison»);
+    a atribuição activa fecha na véspera de `desde` e uma nova começa em `desde`. Junta
+    tudo às `linhas` e às `ops`."""
     nome_da_loja = {loja["id"]: loja.get("name") for loja in lojas}
     agora = datetime.now(timezone.utc).isoformat()
     vespera = (desde - timedelta(days=1)).isoformat()
@@ -157,7 +159,7 @@ def _planear_escalas(lojas, empresas, pessoas, escalas, atribuicoes, ids, desde,
              for loja, ds, inicio, fim in blocos for d in ds),
             key=lambda x: x["dia"])
         work_days = [d["dia"] for d in dias]
-        nome = "Escala %s" % chave
+        nome = "Escala %s" % pessoa["name"].split()[0]
 
         minhas = sorted((a for a in atribuicoes if a.get("employee_id") == pessoa["id"]),
                         key=lambda a: a["start_date"])
@@ -195,7 +197,19 @@ def _planear_escalas(lojas, empresas, pessoas, escalas, atribuicoes, ids, desde,
                         {"$set": {"dias": dias, "work_days": work_days}}))
             ops.append(("work_schedule_assignments", "update_many", {"template_id": escala["id"]},
                         {"$set": {"work_days": work_days}}))
-            linhas.append("  «%s» já existe: passa a ter estes dias" % nome)
+            eram = ", ".join(DIAS[d] for d in escala.get("work_days") or []) or "nenhum"
+            ficam = ", ".join(DIAS[d] for d in work_days)
+            if escala.get("work_days") == work_days:
+                linhas.append("  «%s» já existe: os dias de trabalho ficam iguais (%s); "
+                              "só ganha a loja e as horas de cada dia" % (nome, ficam))
+            else:
+                # O update_many acima chega às atribuições antigas: o saldo de férias muda.
+                inicios = [_dia(a["start_date"]) for a in atribuicoes if a.get("template_id") == escala["id"]]
+                para_tras = ("e isto vale também para trás, desde %s (o saldo de férias muda)"
+                             % min(inicios).isoformat() if inicios
+                             else "ainda não está atribuída a ninguém, nada muda para trás")
+                linhas.append("  «%s» já existe: os dias de trabalho MUDAM de %s para %s — %s"
+                              % (nome, eram, ficam, para_tras))
         else:
             linhas.append("  «%s» já está assim" % nome)
 
