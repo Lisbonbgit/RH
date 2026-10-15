@@ -805,7 +805,7 @@ Servidores locais, `preview_start` e como parar: dossiê §12.6. A pré-visualiz
   - **Mutações (25):** 15 no duplo, 8 no `formatos` e 2 no `db.py` (`paragens.loja_id` único; a `data` sem ser única), todas apanhadas à 1.ª; ficheiros repostos e conferidos com `cmp` e sha256 (`t3.14-mutacoes.log`, script `t3.14-mutacoes.py`).
   - **Desvios:** nenhum ficheiro fora da lista da tarefa; `$pullAll` juntou-se aos operadores proibidos. A nota e o commit são da corrida da T3.15.
 
-#### [ ] T3.15 Definições das rotas na API (40 min)
+#### [x] T3.15 Definições das rotas na API (40 min)
 - **Ficheiros:** `backend/crm/definicoes.py`, `backend/tests/crm/test_definicoes.py`.
 - **Teste primeiro.** Falha porque o `GET` devolve 3 chaves em vez de 9.
   - **`GET`:** as 9 chaves, com os minutos como `int`.
@@ -817,6 +817,14 @@ Servidores locais, `preview_start` e como parar: dossiê §12.6. A pré-visualiz
   - **Os testes antigos** com dicionários exatos passam a usar `{**PADROES_EM_VIGOR, …}`.
   - **O frontend não muda:** `fabrica.js` só lê as `fabrica_*`. O Jest de `src/lib/crm/fabrica.test.js` continua verde.
 - **Commit:** `CRM: definições das rotas na API`
+- **Feito (2026-10-15):** aplicada a correção "T3.5 / T3.15": a tarefa ficou só com a coerência das horas no PATCH (o GET com as 9 chaves, o `{"rota_hora_saida": "07:30"}` que grava e devolve, o `{"servico_entrega_min": 0}` → 422 e o `instantes_fora_do_formato` já eram verdes da T3.5, com `{**PADROES, …}` nos dicionários exatos). Vermelho: `{"rota_hora_regresso": "07:00"}` com a saída guardada às 08:00 gravava e respondia 200 em vez de 422 (`assert (200, {...}) == (422, …)`): 25 failed, 106 passed em `test_definicoes.py` (`t3.15-vermelho.log`; 10 dos 35 testes novos já passavam, por fixarem o que não muda: os erros dos campos antes da coerência e o PATCH só da fábrica ou dos minutos sem 422). Verde: **131 passed** (`t3.15-verde.log`). Bateria `tests/crm`: **5839 passed, 27 skipped** (5804 + 35), 19,3 s, os 6 avisos de sempre (`t3.15-bateria-crm.log`); `asyncio.run(` em `tests/crm` → 0. Jest de `src/lib/crm/fabrica.test.js`: **33 passed** (`t3.15-jest-fabrica.log`; o frontend não muda).
+  - **Decisões fixadas pelos testes:**
+    - Ordem do PATCH: a guarda → o corpo (400) → `alteracao` (422 dos campos, sem ler a base nem o relógio; com um campo errado a coerência nem corre) → **só com `rota_hora_saida` ou `rota_hora_regresso` no pedido**, `coerencia({**em_vigor(base), **horas do pedido})` → 422 `{"rota_hora_regresso": "A hora de regresso tem de ser depois da hora de saída."}` (sempre nessa chave, a única em `campos`), antes da primeira escrita, com uma só leitura e sem ler o relógio → uma escrita por chave → reler. O registo de um PATCH com horas é `find, update_one × n, find`; o de um PATCH só da fábrica ou dos minutos continua `update_one × n, find`.
+    - As horas do pedido ficam por cima das guardadas (as duas no pedido comparam-se entre si; o pedido corrige horas guardadas incoerentes); uma hora guardada estragada conta como o padrão (pelo `em_vigor`, que também ignora as linhas estragadas: 422, nunca 500); a mesma hora é erro; "00:00" → "23:59" vale.
+    - Um PATCH só da fábrica, só dos minutos ou vazio nunca recebe 422 por causa das horas guardadas (como `semMexerNasJanelasNaoSeVerificamAsGuardadas`), e a base nem se lê antes de gravar.
+    - Com a coerência a falhar nada se grava, mesmo com a morada, o ponto ou os minutos válidos no mesmo pedido; o GET seguinte mostra o que estava. A rota chama a `coerencia` do domínio e devolve o que ela disser (provado com um `monkeypatch`).
+  - **Mutações (11; a tarefa não lista mínimas):** a coerência sempre; só depois das escritas; só as guardadas; as guardadas por cima do pedido; só com as duas horas; só com o regresso; só com a saída; o erro noutra chave; o erro sem travar a escrita; a base lida com erros dos campos; sem o `em_vigor` (só os padrões). Todas apanhadas à 1.ª; ficheiro reposto e conferido com `cmp` e sha256 (`t3.15-mutacoes.log`, script `t3.15-mutacoes.py`, com `PYTHONDONTWRITEBYTECODE=1`).
+  - **Desvios:** o dossiê §5.9 (título e um ponto da F3) e a linha de `/definicoes` no §6 atualizados aqui, fora da lista de ficheiros da tarefa (a T3.5 deixou-os para a T3.15/T3.43). A T3.14 foi fechada no início desta corrida (nota e commit `764cd47`).
 
 #### [ ] T3.16 Formatar: a rota e a paragem na base e na API (60 min)
 - **Ficheiros:** `backend/crm/formatar_rota.py`, `backend/tests/crm/test_formatar_rota.py`.

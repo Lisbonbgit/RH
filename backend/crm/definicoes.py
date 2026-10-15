@@ -12,8 +12,11 @@ CRM autónomo. As regras do corpo e os padrões estão em
   minutos como números (`combinar`; as chaves das rotas são da F3, T3.5).
 - `PATCH /definicoes` (admin) com só as chaves que mudam → 200 com as
   definições em vigor, relidas da base. Ordem: o corpo (400) → as regras
-  (422, sem tocar na base nem no relógio) → uma escrita por chave → reler.
-  Um PATCH vazio não escreve nada e devolve as definições.
+  (422, sem tocar na base nem no relógio) → com `rota_hora_saida` ou
+  `rota_hora_regresso` no pedido, a coerência das horas sobre as definições
+  em vigor (`coerencia`, T3.15: 422 só com a leitura, antes da primeira
+  escrita) → uma escrita por chave → reler. Um PATCH vazio não escreve nada
+  e devolve as definições.
 
 `crm_definicoes` guarda só o que o admin alterou, `{chave, valor (texto),
 atualizado_em, atualizado_por}` (plano §3), com um upsert por `chave` (índice
@@ -94,12 +97,26 @@ async def ver_definicoes(admin: Dict = Depends(SO_ADMIN)) -> Dict:
 async def alterar_definicoes(admin: Dict = Depends(SO_ADMIN), corpo: Dict = Depends(corpo_json)) -> Dict:
     """Só as chaves que mudam, dos `PADROES` (a latitude e a longitude
     juntas) → as definições em vigor depois de gravar. Uma chave
-    desconhecida, ou um valor inválido, dá 422 e não se grava nada."""
+    desconhecida, ou um valor inválido, dá 422 e não se grava nada; com uma
+    das horas das rotas no pedido, também um regresso que não fica depois
+    da saída (a coerência, T3.15)."""
     valores, erros = regras.alteracao(corpo)
     if erros:
         raise validacao(erros)
     base = bd.obter_db()
     if valores:
+        horas = {chave: valores[chave] for chave in regras.HORAS if chave in valores}
+        if horas:
+            # A coerência da saída com o regresso (plano F3 §4, T3.15): sobre
+            # as definições em vigor com as horas do pedido por cima, só
+            # quando o pedido traz uma delas (como as janelas da loja: um
+            # PATCH só da fábrica ou dos minutos nunca dá 422 por causa das
+            # horas guardadas) e antes da primeira escrita. O `em_vigor` já
+            # repõe o padrão numa hora guardada estragada, por isso a
+            # `coerencia` recebe sempre duas horas válidas.
+            erros = regras.coerencia({**await em_vigor(base), **horas})
+            if erros:
+                raise validacao(erros)
         quando = relogio.carimbo(relogio.agora())
         definicoes = _colecao(base)
         # Pela ordem dos PADROES (a da `alteracao`): ver o docstring do módulo.
