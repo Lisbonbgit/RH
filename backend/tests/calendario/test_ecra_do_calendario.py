@@ -57,7 +57,7 @@ def _ecra(tmp_path, cenario, mes, contagem=(), falha=None, antes="", novembro=No
         "localStorage.setItem('bolso_cal_vista', %s);" % json.dumps(vista) if vista else "",
         antes,       # depois do servidor: pode embrulhá-lo (segurar uma resposta)
         "const BolsoCalendario = importar('pages/bolso/BolsoCalendario').default;",
-        "await montar(React.createElement(BolsoCalendario));",
+        "const raiz = await montar(React.createElement(BolsoCalendario));",   # para recarregar o ecrã
         "await esperar();",
         cenario,
     ]), tmp_path, simulados=dict(SESSAO_SIMULADA, axios=AXIOS_FABRICADO), dom=True)
@@ -505,7 +505,8 @@ segurar = true;
 await clicar(botao('Semana seguinte')); await esperar();
 const antes = { titulo: titulo(), celulas: document.querySelectorAll('main [data-celula]').length,
                 esqueleto: [...document.querySelectorAll('main div[aria-hidden="true"]')]
-                  .some((d) => d.className.includes('animate-pulse')), marcar: !!botao('Marcar ida') };
+                  .some((d) => d.className.includes('animate-pulse')), marcar: !!botao('Marcar ida'),
+                lojas: !!document.querySelector('[aria-label="Filtro de loja"]') };
 await act(async () => { soltar(MESES[11]); });
 await esperar();
 devolve({ antes, depois: grelha() });
@@ -521,7 +522,8 @@ global.SERVIDOR = (metodo, url, corpo, params) => {
   return servidor(metodo, url, corpo, params);
 };
 """)
-    assert r == {"antes": {"titulo": "26 out – 1 nov", "celulas": 0, "esqueleto": True, "marcar": False},
+    # As pastilhas das lojas ficam (vêm da última leitura): o cabeçalho não salta a cada semana.
+    assert r == {"antes": {"titulo": "26 out – 1 nov", "celulas": 0, "esqueleto": True, "marcar": False, "lojas": True},
                  "depois": GRELHA_DE_26_OUT}
 
 
@@ -560,3 +562,142 @@ global.SERVIDOR = (metodo, url, corpo, params) => {
 """)
     assert r == {"antes": GRELHA_DE_26_OUT, "depois": GRELHA_DE_26_OUT, "titulo": "26 out – 1 nov", "alerta": False,
                  "pedidos": [10, 11, 10, 10, 11]}
+
+
+# --- O filtro de loja: «Todas | Alfragide | …» por baixo das vistas (adenda de 2026-10-15) ----
+
+FILA_DE_LOJAS = """
+const fila = () => document.querySelector('[aria-label="Filtro de loja"]');
+const pastilha = (nome) => botao(nome, fila());
+const escolhida = () => [...fila().querySelectorAll('button[aria-pressed="true"]')].map((b) => b.textContent);
+const pontos = () => [...document.querySelectorAll('main [data-dia]')].filter((d) => d.querySelector('[data-ponto]'))
+  .map((d) => d.getAttribute('data-dia').slice(8));
+"""
+LER_O_PAINEL = """
+const lerPainel = () => {
+  const dlg = document.querySelector('[role="dialog"]');
+  return { titulo: dlg.querySelector('h2').textContent, loja: dlg.querySelector('[aria-label="Loja"]').value,
+           opcoes: dlg.querySelectorAll('[aria-label="Loja"] option').length,
+           inicio: dlg.querySelector('[aria-label="Hora de início"]').value,
+           fim: dlg.querySelector('[aria-label="Hora de fim"]').value,
+           dias: [...dlg.querySelectorAll('[data-dia][aria-pressed="true"]')].map((b) => b.getAttribute('data-dia')) };
+};
+const fecharPainel = () => clicar(botao('Fechar', document.querySelector('[role="dialog"]')));
+"""
+# Uma ida que tapa Alfragide (29/10) e outra a mais em Oeiras (30/10): na Lista de Oeiras só fica a de Oeiras.
+IDAS_DO_FILTRO = IDAS_DA_DEBORA + [sn.ida("2026-10-29", sn.ALFRAGIDE, sn.CAROL, "19:00", "23:00"),
+                                  sn.ida("2026-10-30", sn.OEIRAS, sn.CAROL, "13:00", "17:00")]
+GRELHA_DE_OEIRAS = [["Oeiras", ["ok", "—", "ok", "ok", "ok", "ok", "ok"]]]
+
+
+def test_escolher_uma_loja_deixa_so_essa_loja_na_semana_no_mes_e_na_lista(tmp_path):
+    dados = sn.semana_normal()
+    # Em produção as lojas chamam-se «Loja Oeiras»: a pastilha (e a linha da Semana) dizem só «Oeiras».
+    next(l for l in dados["lojas"] if l["id"] == sn.OEIRAS)["name"] = "Loja Oeiras"
+    outubro, novembro = _semana(dados, idas=IDAS_DO_FILTRO)
+    r = _ecra(tmp_path, LER_A_SEMANA + FILA_DE_LOJAS + """
+const pastilhas = [...fila().querySelectorAll('button')].map((b) => [b.textContent, b.getAttribute('aria-pressed')]);
+const forma = { altas: [...fila().querySelectorAll('button')].every((b) => b.classList.contains('h-11')),
+                desliza: fila().classList.contains('overflow-x-auto') };
+await clicar(pastilha('Oeiras'));
+const semana = { escolhida: escolhida(), grelha: grelha(), buracos: lerBuracos(),
+                 guardada: localStorage.getItem('bolso_cal_loja') };
+await clicar(botao('Mês')); await esperar();
+const mes = { escolhida: escolhida(), pontos: pontos(), buracos: lerBuracos() };
+await clicar(botao('Lista'));
+devolve({ pastilhas, forma, semana, mes, lista: [...document.querySelectorAll('main section')].map((s) => s.textContent) });
+""", outubro, novembro=novembro, vista=None)
+    assert r["pastilhas"] == [["Todas", "true"], ["Alfragide", "false"], ["Algueirão", "false"], ["Amadora", "false"],
+                              ["Belém", "false"], ["Benfica", "false"], ["Oeiras", "false"]]
+    # 44 px de alto; a fila desliza para o lado sozinha (a página não).
+    assert r["forma"] == {"altas": True, "desliza": True}
+    assert r["semana"] == {"escolhida": ["Oeiras"], "grelha": GRELHA_DE_OEIRAS,
+                           "buracos": [["Loja Oeiras", "ninguém"]], "guardada": sn.OEIRAS}
+    # Sem o filtro, o Mês tinha pontos em 21 dias (Alfragide e Benfica): Oeiras só falta às terças por tapar.
+    assert r["mes"] == {"escolhida": ["Oeiras"], "pontos": ["20", "27"], "buracos": [["Loja Oeiras", "ninguém"]]}
+    assert r["lista"] == ["terça, 27 de outubroLoja Oeiras13h–22hninguémTapar",
+                          "sexta, 30 de outubroCarol Santos · Loja Oeiras13h–17h"]
+
+
+def test_nas_ferias_ficam_so_as_ausencias_de_quem_tem_a_loja_na_ficha(tmp_path):
+    dados = sn.semana_normal()
+    dados["ausencias"] = [sn.ausencia("Emanuela", "2026-10-29", "2026-10-30"),   # ficha em Oeiras
+                          sn.ausencia("Rafaela", "2026-10-20", "2026-10-26"),    # Belém
+                          sn.ausencia("Weber", "2026-10-30", "2026-11-02"),      # Amadora
+                          sn.ausencia("Joana", "2026-10-28", "2026-10-28")]      # Algueirão (às quartas vai a Oeiras)
+    outubro, novembro = _semana(dados)
+    r = _ecra(tmp_path, FILA_DE_LOJAS + """
+const linhas = () => [...document.querySelectorAll('main p.font-semibold')].map((p) => p.textContent);
+await clicar(botao('Férias'));
+const todas = linhas();
+await clicar(pastilha('Oeiras'));
+const semana = linhas();
+await clicar(botao('Mês')); await esperar();
+devolve({ todas, semana, pontos: pontos() });
+""", outubro, novembro=novembro, vista=None)
+    assert r["todas"] == ["Rafaela · Férias", "Joana · Férias", "Emanuela · Férias", "Weber · Férias"]
+    # Desenho: «ausências de quem tem essa loja na ficha» — a Joana trabalha em Oeiras à quarta, mas a ficha é de Algueirão.
+    assert (r["semana"], r["pontos"]) == (["Emanuela · Férias"], ["29", "30"])
+
+
+def test_a_loja_lembra_se_ao_recarregar_e_uma_que_ja_nao_existe_volta_a_todas(tmp_path):
+    outubro, novembro = _semana()
+    r = _ecra(tmp_path, LER_A_SEMANA + FILA_DE_LOJAS + """
+await clicar(pastilha('Oeiras'));
+await act(async () => { raiz.unmount(); });
+await montar(React.createElement(BolsoCalendario));
+await esperar();
+const recarregado = { escolhida: escolhida(), grelha: grelha() };
+await clicar(pastilha('Todas'));
+devolve({ recarregado, todas: { escolhida: escolhida(), linhas: grelha().length,
+                                guardada: localStorage.getItem('bolso_cal_loja') } });
+""", outubro, novembro=novembro, vista=None)
+    assert r == {"recarregado": {"escolhida": ["Oeiras"], "grelha": GRELHA_DE_OEIRAS},
+                 "todas": {"escolhida": ["Todas"], "linhas": 6, "guardada": None}}
+    # Uma loja guardada que entretanto saiu do calendário (perdeu o horário, fechou) conta como «Todas».
+    r = _ecra(tmp_path, LER_A_SEMANA + FILA_DE_LOJAS + "devolve({ escolhida: escolhida(), grelha: grelha() });",
+              outubro, novembro=novembro, vista=None, antes="localStorage.setItem('bolso_cal_loja', 'loja-que-fechou');")
+    assert r == {"escolhida": ["Todas"], "grelha": GRELHA_DE_26_OUT}
+
+
+def test_com_uma_loja_escolhida_marcar_abre_nela_e_tapar_e_editar_continuam(tmp_path):
+    outubro, novembro = _semana()
+    r = _ecra(tmp_path, FILA_DE_LOJAS + LER_O_PAINEL + """
+await clicar(pastilha('Oeiras'));
+await clicar(botao('Marcar ida'));
+const marcar = lerPainel();
+await fecharPainel();
+await clicar(pastilha('Belém'));
+await clicar(botao('Marcar ida'));
+const fechada = lerPainel();
+await fecharPainel();
+await clicar(pastilha('Oeiras'));
+await clicar(botao('Tapar', document.querySelector('main [data-buraco]')));
+const tapar = lerPainel();
+await fecharPainel();
+await clicar(botao('Mês')); await esperar();
+await clicar(document.querySelector('main [data-dia="2026-10-06"]'));
+await clicar([...document.querySelectorAll('main li button')].find((b) => b.textContent.startsWith('Débora')));
+devolve({ marcar, fechada, tapar, editar: lerPainel() });
+""", outubro, novembro=novembro, vista=None)
+    # As horas são as da loja no dia, como ao escolhê-la no painel; o painel continua a ter as 6 lojas.
+    assert r["marcar"] == {"titulo": "Marcar ida", "loja": sn.OEIRAS, "opcoes": 6, "inicio": "13:00", "fim": "22:00",
+                           "dias": ["2026-10-27"]}
+    # Belém fecha à terça: a loja vem escolhida e as horas vazias (no painel também não as enche).
+    assert r["fechada"] == {"titulo": "Marcar ida", "loja": sn.BELEM, "opcoes": 6, "inicio": "", "fim": "",
+                            "dias": ["2026-10-27"]}
+    assert r["tapar"] == {"titulo": "Tapar Oeiras", "loja": sn.OEIRAS, "opcoes": 6, "inicio": "13:00", "fim": "22:00",
+                          "dias": ["2026-10-27"]}
+    assert r["editar"] == {"titulo": "Ida de Débora Ferreira", "loja": sn.OEIRAS, "opcoes": 6, "inicio": "13:00",
+                           "fim": "22:00", "dias": ["2026-10-06"]}
+
+
+def test_a_contagem_nao_tem_filtro_de_loja(tmp_path):
+    mes, contagem = _servidor()
+    r = _ecra(tmp_path, FILA_DE_LOJAS + """
+await clicar(pastilha('Alfragide'));
+await clicar(botao('Contagem')); await esperar();
+devolve({ fila: !!fila(), linha: document.querySelector('main li button').textContent });
+""", mes, contagem)
+    # As idas da Débora são em Oeiras e continuam a contar com «Alfragide» escolhida.
+    assert r == {"fila": False, "linha": "Débora · outubro 2 dias · 2026 2 dias"}
