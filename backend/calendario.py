@@ -363,3 +363,146 @@ def contagem(idas: List[Dict], lojas: Dict[str, Dict], nomes: Dict[str, str]) ->
     linhas = [{"user_id": u, "nome": nomes.get(u) or NOME_SEM_CONTA, "meses": m, "total": sum(m)}
               for u, m in meses.items()]
     return sorted(linhas, key=lambda l: (-l["total"], l["nome"].lower()))
+
+
+# --- As regras de uma ida (as rotas levantam 400/409 com estes textos) ---------------------
+
+AUSENCIAS = {"ferias": "de férias", "folga": "de folga", "doenca": "de baixa",
+             "falta": "com falta marcada", "ausencia": "ausente"}
+
+
+def limites_do_mes(ano: int, mes: int) -> Tuple[str, str]:
+    return date(ano, mes, 1).isoformat(), date(ano, mes, monthrange(ano, mes)[1]).isoformat()
+
+
+def validar_pedido(datas: List[str], user_ids: List[str]) -> Optional[str]:
+    if not 1 <= len(datas) <= 31:
+        return "Escolha entre 1 e 31 dias."
+    if not 1 <= len(user_ids) <= 2:
+        return "Escolha uma ou duas pessoas."
+    if len(set(datas)) != len(datas):
+        return "Há dias repetidos no pedido."
+    if len(set(user_ids)) != len(user_ids):
+        return "Há pessoas repetidas no pedido."
+    return None
+
+
+def validar_horas(inicio, fim) -> Optional[str]:
+    if not all(isinstance(h, str) and _HHMM.match(h) for h in (inicio, fim)):
+        return "As horas escrevem-se HH:MM (por exemplo 13:00)."
+    if minutos(inicio) >= minutos(fim):
+        return "A hora de fim tem de ser depois da hora de início."
+    return None
+
+
+def validar_ida(dia: date, loja: Optional[Dict], inicio, fim) -> Optional[str]:
+    """Horas válidas; loja com horário e aberta nesse dia; horas a TOCAR no horário (as que
+    saem dele aceitam-se e recortam-se no cálculo e na contagem)."""
+    erro = validar_horas(inicio, fim)
+    if erro:
+        return erro
+    if not loja:
+        return "Essa loja não existe."
+    nome = loja.get("name") or "A loja"
+    estado, janela = horario_do_dia(loja, dia)
+    quando = data_curta(dia.isoformat())
+    if estado == "sem_horario":
+        return "%s não tem horário e não entra no calendário." % nome
+    if estado == "por_abrir":
+        return "%s só abre a %s." % (nome, data_curta(loja["aberta_desde"]))
+    if estado == "fechada":
+        return "%s está fechada a %s. Escolha outro dia." % (nome, quando)
+    if not recortar((minutos(inicio), minutos(fim)), janela):
+        return "%s abre das %s às %s a %s: as horas da ida têm de tocar nesse horário." % (
+            nome, hora_curta(hhmm(janela[0])), hora_curta(hhmm(janela[1])), quando)
+    return None
+
+
+def choques(novas: List[Dict], existentes: List[Dict], ignorar_id: Optional[str] = None) -> List[Tuple[Dict, Dict]]:
+    """Pares (nova, existente) da MESMA pessoa no MESMO dia com horas sobrepostas — ninguém
+    está em dois sítios ao mesmo tempo. Horas encostadas (13h–17h e 17h–22h) não chocam."""
+    pares = []
+    for nova in novas:
+        horas = (minutos(nova["inicio"]), minutos(nova["fim"]))
+        for outra in existentes:
+            if ignorar_id and outra.get("id") == ignorar_id:
+                continue
+            if (outra["user_id"] == nova["user_id"] and outra["data"] == nova["data"]
+                    and recortar(horas, (minutos(outra["inicio"]), minutos(outra["fim"])))):
+                pares.append((nova, outra))
+    return pares
+
+
+def mensagem_de_choque(nova: Dict, outra: Dict, utilizadores: Dict[str, Dict], nomes_lojas: Dict[str, str]) -> str:
+    # Sem artigo («Débora já está…», não «A Débora…»): o RH não guarda o género.
+    return "%s já está em %s das %s às %s a %s." % (
+        primeiro_nome((utilizadores.get(nova["user_id"]) or {}).get("name")) or "Esta pessoa",
+        nomes_lojas.get(outra["location_id"]) or NOME_SEM_LOJA,
+        hora_curta(outra["inicio"]), hora_curta(outra["fim"]), data_curta(outra["data"]))
+
+
+def ausencias_que_impedem(novas: List[Dict], utilizadores: Dict[str, Dict], ausencias: List[Dict]) -> List[str]:
+    """Um colaborador não se marca num dia em que tem ausência APROVADA (os gestores não têm
+    ficha nem ausências no RH)."""
+    linhas = []
+    for nova in novas:
+        user = utilizadores.get(nova["user_id"]) or {}
+        if user.get("role") != "colaborador":
+            continue
+        for a in ausencias:
+            if (a.get("employee_id") == user.get("employee_id") and a.get("status") == "aprovado"
+                    and (a.get("start_date") or "")[:10] <= nova["data"] <= (a.get("end_date") or "")[:10]):
+                linha = "%s está %s a %s." % (primeiro_nome(user.get("name")),
+                                              AUSENCIAS.get(a.get("leave_type"), "ausente"), data_curta(nova["data"]))
+                if linha not in linhas:
+                    linhas.append(linha)
+                break
+    return linhas
+
+
+# --- A resposta do mês (GET /api/bolso/calendario) -----------------------------------------
+
+
+def pessoas_escalaveis(utilizadores: List[Dict]) -> List[Dict]:
+    """Quem pode ser escalado numa ida: gestores primeiro, depois colaboradores, por nome.
+    O contabilista lê o calendário mas não pode ser escalado."""
+    escolhidas = [u for u in utilizadores if u.get("role") in ESCALAVEIS]
+    escolhidas.sort(key=lambda u: (u.get("role") not in GESTORES, (u.get("name") or "").lower()))
+    return [{"id": u["id"], "nome": u.get("name") or NOME_SEM_CONTA,
+             "tipo": "gestor" if u.get("role") in GESTORES else "colaborador"} for u in escolhidas]
+
+
+def resposta_do_mes(ano: int, mes: int, dados: Dict, eu: Optional[str], pode_marcar: bool) -> Dict:
+    """O mês inteiro, como o ecrã o lê. `idas[]` leva as idas do mês com os nomes — é daqui
+    que se montam a vista Pessoal e as idas da Lista (uma ida numa loja que entretanto perdeu
+    o horário continua a aparecer aqui, e não em `dias`)."""
+    inicio, fim = limites_do_mes(ano, mes)
+    lojas = {l["id"]: l for l in dados.get("lojas", [])}
+    utilizadores = {u["id"]: u for u in dados.get("utilizadores", [])}
+    empregados = {e["id"]: e for e in dados.get("empregados", [])}
+    idas = sorted((i for i in dados.get("idas", []) if inicio <= i["data"] <= fim),
+                  key=lambda i: (i["data"], i["inicio"]))
+    ausencias = sorted((a for a in dados.get("ausencias", [])
+                        if a.get("status") == "aprovado"
+                        and (a.get("start_date") or "")[:10] <= fim and (a.get("end_date") or "")[:10] >= inicio),
+                       key=lambda a: a.get("start_date") or "")
+
+    def _ficha(a):
+        return empregados.get(a.get("employee_id")) or {}
+
+    return {
+        "ano": ano, "mes": mes, "eu": eu, "pode_marcar": pode_marcar,
+        "dias": calendario_do_mes(ano, mes, dados),
+        "idas": [{"id": i.get("id"), "data": i["data"], "location_id": i.get("location_id"),
+                  "user_id": i.get("user_id"), "inicio": i["inicio"], "fim": i["fim"],
+                  "nome": (utilizadores.get(i.get("user_id")) or {}).get("name") or NOME_SEM_CONTA,
+                  "loja": (lojas.get(i.get("location_id")) or {}).get("name") or NOME_SEM_LOJA}
+                 for i in idas],
+        "ausencias": [{"nome": _ficha(a).get("name") or NOME_SEM_CONTA, "tipo": a.get("leave_type"),
+                       "inicio": (a.get("start_date") or "")[:10], "fim": (a.get("end_date") or "")[:10],
+                       "loja": (lojas.get(_ficha(a).get("location_id")) or {}).get("name")}
+                      for a in ausencias],
+        "lojas": [{"id": l["id"], "nome": l.get("name")}
+                  for l in sorted(lojas.values(), key=lambda l: (l.get("name") or "").lower()) if l.get("horario")],
+        "pessoas": pessoas_escalaveis(dados.get("utilizadores", [])),
+    }
