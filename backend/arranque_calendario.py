@@ -8,6 +8,7 @@ dono as descreveu (docs/superpowers/specs/2026-10-14-calendario-gestao-design.md
   GRAVAR=1.
 - Lê tudo e decide tudo ANTES da primeira escrita: se um nome casar com mais de uma
   loja/pessoa (ou com nenhuma), PÁRA sem ter escrito nada.
+- As lojas procuram-se só nos Locais da empresa EMPRESA_DAS_LOJAS; as pessoas, em todas.
 - Nunca apaga. Uma escala antiga fecha-se (end_date na véspera de DESDE) e cria-se
   uma nova a partir de DESDE.
 - Pode correr-se outra vez: o que já está como devia não se reescreve.
@@ -35,6 +36,10 @@ from pymongo import MongoClient
 
 DESDE_POR_OMISSAO = "2026-10-01"
 DIAS = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+
+# As lojas procuram-se só nos Locais desta empresa (palavra inteira no nome): há lojas
+# com o mesmo nome noutras empresas do grupo, ex. a «Loja Alfragide» da pizzaria.
+EMPRESA_DAS_LOJAS = "Fordaimon"
 
 # O horário de cada loja (0 = segunda … 6 = domingo), na forma que o servidor valida
 # (server.HorarioLoja). A chave é o nome a procurar nos Locais.
@@ -77,12 +82,14 @@ def _normal(texto):
     return " ".join(re.sub(r"[^a-z0-9]+", " ", sem_acentos.lower()).split())
 
 
-def _um(docs, chave, o_que):
-    """O único documento cujo nome contém `chave` como palavra(s) inteira(s)."""
+def _um(docs, chave, o_que, empresas):
+    """O único documento cujo nome contém `chave` como palavra(s) inteira(s). Num empate,
+    `empresas` (id → nome) diz a empresa de cada candidato."""
     alvo = " %s " % _normal(chave)
     achados = [d for d in docs if alvo in " %s " % _normal(d.get("name"))]
     if len(achados) != 1:
-        nomes = ", ".join("«%s» (%s)" % (d.get("name"), d.get("id")) for d in achados) or "nenhum"
+        nomes = ", ".join("«%s» (%s)" % (d.get("name"), ", ".join(
+            filter(None, (d.get("id"), empresas.get(d.get("company_id")))))) for d in achados) or "nenhum"
         raise Paragem("%s «%s» casa com %d: %s" % (o_que, chave, len(achados), nomes))
     return achados[0]
 
@@ -101,14 +108,19 @@ def _dia(texto):
     return date.fromisoformat(str(texto)[:10])
 
 
-def _planear_lojas(lojas, benfica_desde, linhas, ops):
-    """Junta às `linhas` e às `ops` o horário de cada loja; devolve {chave: id}."""
+def _planear_lojas(lojas, empresas, benfica_desde, linhas, ops):
+    """Junta às `linhas` e às `ops` o horário de cada loja da empresa EMPRESA_DAS_LOJAS;
+    devolve {chave: id}."""
+    empresa = _um([{"id": i, "name": n} for i, n in empresas.items()], EMPRESA_DAS_LOJAS,
+                  "A empresa das lojas", {})
+    lojas = [loja for loja in lojas if loja.get("company_id") == empresa["id"]]
     ids = {}
     for chave, horario in HORARIOS.items():
         if chave == "Benfica" and benfica_desde is None:
             linhas.append("Loja Benfica: SALTADA — falta BENFICA_DESDE=AAAA-MM-DD (o dia em que abre).")
             continue
-        loja = _um(lojas, PROCURAR.get(chave, chave), "A loja")
+        loja = _um(lojas, PROCURAR.get(chave, chave),
+                   "A procurar só na empresa «%s», a loja" % empresa["name"], empresas)
         ids[chave] = loja["id"]
         campos = {"horario": horario}
         if chave == "Benfica":
@@ -123,14 +135,14 @@ def _planear_lojas(lojas, benfica_desde, linhas, ops):
     return ids
 
 
-def _planear_escalas(lojas, pessoas, escalas, atribuicoes, ids, desde, linhas, ops):
+def _planear_escalas(lojas, empresas, pessoas, escalas, atribuicoes, ids, desde, linhas, ops):
     """Uma «Escala <Nome>» por pessoa; a atribuição activa fecha na véspera de `desde`
     e uma nova começa em `desde`. Junta tudo às `linhas` e às `ops`."""
     nome_da_loja = {loja["id"]: loja.get("name") for loja in lojas}
     agora = datetime.now(timezone.utc).isoformat()
     vespera = (desde - timedelta(days=1)).isoformat()
     for chave, blocos in ESCALAS.items():
-        pessoa = _um(pessoas, PROCURAR.get(chave, chave), "A pessoa")
+        pessoa = _um(pessoas, PROCURAR.get(chave, chave), "A pessoa", empresas)
         fora = sorted({loja for loja, _, _, _ in blocos if loja not in ids})
         if fora:
             raise Paragem("A escala de %s usa %s, que ficou de fora." % (chave, ", ".join(fora)))
@@ -204,13 +216,14 @@ def _planear_escalas(lojas, pessoas, escalas, atribuicoes, ids, desde, linhas, o
 
 def planear(db, desde, benfica_desde):
     """(linhas para mostrar, operações para gravar) — sem escrever nada."""
+    empresas = {e["id"]: e.get("name") for e in db.companies.find({}, {"_id": 0, "id": 1, "name": 1})}
     lojas = list(db.locations.find({}, {"_id": 0}))
-    pessoas = list(db.employees.find({}, {"_id": 0, "id": 1, "name": 1, "location_id": 1}))
+    pessoas = list(db.employees.find({}, {"_id": 0, "id": 1, "name": 1, "location_id": 1, "company_id": 1}))
     escalas = list(db.work_schedule_templates.find({}, {"_id": 0}))
     atribuicoes = list(db.work_schedule_assignments.find({}, {"_id": 0}))
     linhas, ops = [], []
-    ids = _planear_lojas(lojas, benfica_desde, linhas, ops)
-    _planear_escalas(lojas, pessoas, escalas, atribuicoes, ids, desde, linhas, ops)
+    ids = _planear_lojas(lojas, empresas, benfica_desde, linhas, ops)
+    _planear_escalas(lojas, empresas, pessoas, escalas, atribuicoes, ids, desde, linhas, ops)
     return linhas, ops
 
 

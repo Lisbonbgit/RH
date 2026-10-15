@@ -1,6 +1,6 @@
 """O script de arranque do calendário (backend/arranque_calendario.py), contra um mongod
-real com a forma da produção: lojas com o nome da marca à frente, uma pizzaria e um
-escritório que não entram, e uma escala antiga atribuída à Joana.
+real com a forma da produção: as empresas do grupo, lojas com o nome da marca à frente,
+uma pizzaria e um escritório que não entram, e uma escala antiga atribuída à Joana.
 
 O que se prende: o ensaio não escreve nada; GRAVAR=1 escreve o que o ensaio mostrou;
 uma ambiguidade pára tudo ANTES da primeira escrita; nunca se apaga; correr outra vez
@@ -17,6 +17,8 @@ import server
 
 BASE = "teste_arranque"
 COLECOES = ("locations", "employees", "work_schedule_templates", "work_schedule_assignments")
+# As lojas do açaí são da Fordaimon; em produção, a pizzaria é outra empresa do grupo.
+EMPRESAS = {"c1": "Fordaimon Foods", "c2": "Lenha e Brasa"}
 LOJAS = {
     "l-alf": "L'Açaí Alfragide", "l-alg": "L'Açaí Algueirão", "l-ama": "L'Açaí Amadora",
     "l-bel": "L'Açaí Belém", "l-ben": "L'Açaí Benfica", "l-oei": "L'Açaí Oeiras",
@@ -37,8 +39,10 @@ def prod(mongod_porta, monkeypatch):
     cliente = MongoClient(url)
     cliente.drop_database(BASE)
     db = cliente[BASE]
+    db.companies.insert_many([{"id": i, "name": n} for i, n in EMPRESAS.items()])
     db.locations.insert_many([{"id": i, "name": n, "company_id": "c1"} for i, n in LOJAS.items()])
-    db.employees.insert_many([{"id": i, "name": n, "location_id": loja} for i, (n, loja) in PESSOAS.items()])
+    db.employees.insert_many([{"id": i, "name": n, "location_id": loja, "company_id": "c1"}
+                             for i, (n, loja) in PESSOAS.items()])
     db.work_schedule_templates.insert_one({
         "id": "t-5x2", "name": "5x2", "work_days": [0, 1, 2, 3, 4], "start_time": "13:00",
         "created_at": "2026-01-01T00:00:00+00:00"})
@@ -95,7 +99,8 @@ def test_um_nome_que_casa_com_duas_lojas_para_tudo_antes_de_escrever(prod, monke
     antes = _tudo(prod)
     monkeypatch.setenv("GRAVAR", "1")
     assert arranque.main() == 1
-    assert "PARADO, nada foi escrito: A loja «Oeiras» casa com 2" in capsys.readouterr().out
+    assert ("PARADO, nada foi escrito: A procurar só na empresa «Fordaimon Foods», "
+            "a loja «Oeiras» casa com 2") in capsys.readouterr().out
     assert _tudo(prod) == antes        # nem Alfragide, que vem antes de Oeiras, foi escrita
 
 
@@ -235,6 +240,18 @@ def test_a_ficha_noutra_loja_da_um_aviso_e_nao_para(prod, capsys):
     (lambda db: db.work_schedule_templates.insert_many([
         {"id": "t-x1", "name": "Escala Weber"}, {"id": "t-x2", "name": "Escala Weber"}]),
      "Há 2 escalas chamadas «Escala Weber»"),
+    # Em produção há nomes iguais em empresas diferentes: um empate mostra a de cada um.
+    (lambda db: db.employees.insert_one(
+        {"id": "e-joa2", "name": "Joana Martins", "location_id": "l-piz", "company_id": "c2"}),
+     "A pessoa «Joana» casa com 2: «Joana Pereira» (e-joa, Fordaimon Foods), "
+     "«Joana Martins» (e-joa2, Lenha e Brasa)"),
+    # As lojas procuram-se só na empresa do açaí: sem ela, ou com duas, não se sabe onde.
+    (lambda db: db.companies.delete_one({"id": "c1"}),
+     "A empresa das lojas «Fordaimon» casa com 0: nenhum"),
+    (lambda db: db.companies.insert_one({"id": "c3", "name": "Fordaimon Foods Franquias"}),
+     "A empresa das lojas «Fordaimon» casa com 2"),
+    (lambda db: db.locations.update_one({"id": "l-oei"}, {"$set": {"company_id": "c2"}}),
+     "A procurar só na empresa «Fordaimon Foods», a loja «Oeiras» casa com 0: nenhum"),
 ])
 def test_o_que_pede_uma_decisao_para_tudo_antes_de_escrever(prod, monkeypatch, capsys, estrago, motivo):
     estrago(prod)
@@ -265,3 +282,21 @@ def test_as_escalas_do_script_passam_na_validacao_do_servidor(prod, monkeypatch)
             {"name": doc["name"], "workDays": doc["work_days"], "dias": doc["dias"]})
         assert server._dias_de_trabalho(corpo) == doc["work_days"]
         assert server._dias_para_gravar(corpo) == doc["dias"]
+
+
+# ---- Correcção: em produção, a pizzaria também tem uma «Loja Alfragide» ----
+
+def test_a_loja_alfragide_da_pizzaria_nao_para_o_ensaio_nem_recebe_nada(prod, monkeypatch, capsys):
+    prod.locations.update_one({"id": "l-alf"}, {"$set": {"name": "Loja Alfragide"}})
+    da_pizzaria = {"id": "l-piz-alf", "name": "Loja Alfragide", "company_id": "c2"}
+    prod.locations.insert_one(dict(da_pizzaria))
+    antes = _tudo(prod)
+    assert arranque.main() == 0
+    assert "PARADO" not in capsys.readouterr().out
+    assert _tudo(prod) == antes
+    monkeypatch.setenv("GRAVAR", "1")
+    assert arranque.main() == 0
+    assert prod.locations.find_one({"id": "l-alf"})["horario"] == arranque.HORARIOS["Alfragide"]
+    assert prod.locations.find_one({"id": "l-piz-alf"}, {"_id": 0}) == da_pizzaria
+    for nome in ("Emily", "Beatrice"):
+        assert {d["location_id"] for d in _escala(prod, "Escala " + nome)["dias"]} == {"l-alf"}, nome
