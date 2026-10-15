@@ -79,7 +79,7 @@ function LojaDoDia({ loja, data, podeMarcar, onTapar, onIda, soBuracos = false }
       </div>
       {loja.feriados.length > 0 && <p className="text-[12px] text-warning-strong">{loja.feriados.join(' · ')}</p>}
       {!soBuracos && loja.pessoas.map((p) => (
-        <Linha key={`${p.user_id}-${p.inicio}`} onClick={p.ida_id && podeMarcar ? () => onIda(p.ida_id) : null}>
+        <Linha key={`${p.origem}-${p.ida_id || p.user_id || p.nome}-${p.inicio}`} onClick={p.ida_id && podeMarcar ? () => onIda(p.ida_id) : null}>
           <span className="min-w-0 flex-1 truncate">{p.nome}</span>
           <span className="tabular-nums text-muted-foreground">{intervaloCurto(p.inicio, p.fim)}</span>
           <span className={`text-[12px] font-semibold ${p.origem === 'escala' ? 'text-muted-foreground' : 'text-primary'}`}>

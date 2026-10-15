@@ -258,3 +258,20 @@ def test_cada_destino_do_menu_e_uma_rota_do_app_com_os_papeis_do_bolso(tmp_path)
         rota = re.compile(r'<Route path="%s" element=\{\s*<ProtectedRoute allowedRoles=\{\[\'admin\', '
                           r'\'gerente\', \'contabilista\'\]\}>' % re.escape(caminho))
         assert rota.search(app), "O App.js não tem a rota %s com os papéis do bolso." % caminho
+
+
+def test_duas_pessoas_sem_conta_a_mesma_hora_na_mesma_loja_aparecem_as_duas(tmp_path):
+    # A chave das linhas era `${user_id}-${inicio}`: duas pessoas da escala sem conta no RH
+    # (user_id null) a entrar à mesma hora repetiam-na («same key» no stderr do React).
+    dados = sn.semana_normal()
+    dados["utilizadores"] = [u for u in dados["utilizadores"] if u["id"] != sn.user("Emanuela")]
+    dados["empregados"].append({"id": "e-ze", "name": "Zé", "location_id": sn.OEIRAS, "company_id": sn.FORDAIMON})
+    dados["atribuicoes"].append({"id": "a-ze", "employee_id": "e-ze", "template_id": "m-emanuela",
+                                 "work_days": [0, 3, 4, 5, 6], "start_date": "2026-01-01", "end_date": None})
+    mes = calendario.resposta_do_mes(2026, 10, dados, sn.DEBORA, True)
+    r = _ecra(tmp_path, """
+await clicar(document.querySelector('[data-dia="2026-10-26"]'));
+const oeiras = [...document.querySelectorAll('main li')].find((li) => li.querySelector('span').textContent === 'Oeiras');
+devolve([...oeiras.children].slice(1).map((el) => el.textContent));
+""", mes)
+    assert r == ["Emanuela13h–22hescala", "Zé13h–22hescala"]
