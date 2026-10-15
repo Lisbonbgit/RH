@@ -2,7 +2,7 @@
 
 A passagem entre o que o servidor guarda (`horario`, `aberta_desde`, `dias`) e o que o
 ecrã mostra vive em `frontend/src/lib/horarios.js`. Aqui corre-se o ficheiro VERDADEIRO
-em Node (o Babel só troca `export` por CommonJS) — nunca uma cópia, que ficaria verde
+em Node (pelo ajudante comum `tests/bolso_js.py`) — nunca uma cópia, que ficaria verde
 com o ecrã errado. Mais abaixo (Tarefas 6 e 7), os guardas de que os dois ecrãs o usam
 mesmo: uma função pura testada não prova nada se a linha que a chama desaparecer.
 
@@ -11,17 +11,13 @@ em ~/.local/node/bin) e de `node` (no PATH ou em ~/.local/node/bin); sem eles SA
 """
 import json
 import re
-import shutil
-import subprocess
+import tempfile
 from pathlib import Path
 
-import pytest
+from tests.bolso_js import SRC, correr_js
 
-_RAIZ = Path(__file__).resolve().parents[3]
-_FRONTEND = _RAIZ / "frontend"
-_HORARIOS = _FRONTEND / "src" / "lib" / "horarios.js"
-_LOCAIS = _FRONTEND / "src" / "pages" / "admin" / "AdminLocations.js"
-_ESCALAS = _FRONTEND / "src" / "pages" / "admin" / "AdminSchedules.js"
+_LOCAIS = SRC / "pages" / "admin" / "AdminLocations.js"
+_ESCALAS = SRC / "pages" / "admin" / "AdminSchedules.js"
 
 BELEM = {
     "abre": "11:30", "fecha": "19:00",
@@ -30,46 +26,16 @@ BELEM = {
 }
 
 
-def _node():
-    caminho = shutil.which("node")
-    if caminho:
-        return caminho
-    candidato = Path.home() / ".local" / "node" / "bin" / "node"
-    if candidato.exists():
-        return str(candidato)
-    pytest.skip("Sem `node` (nem no PATH nem em ~/.local/node/bin): o JavaScript dos formulários NÃO foi testado.")
-
-
 def _no_node(guiao):
-    if not (_FRONTEND / "node_modules" / "@babel" / "core").exists():
-        pytest.skip("Sem frontend/node_modules: cd frontend && yarn install --frozen-lockfile (yarn em ~/.local/node/bin)")
-    resultado = subprocess.run(
-        [_node(), "-e", guiao],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        cwd=str(_FRONTEND),
-        env={"NODE_PATH": str(_FRONTEND / "node_modules"), "PATH": "/usr/bin:/bin"},
-    )
-    if resultado.returncode != 0:
-        pytest.fail("O JavaScript não correu:\n" + resultado.stderr.decode("utf-8", "replace"))
-    return json.loads(resultado.stdout.decode("utf-8"))
+    """Corre `guiao` pelo ajudante comum (`tests/bolso_js.py`): a mesma porta para o node,
+    o mesmo babel e o stderr a contar, como nos testes do calendário do bolso."""
+    with tempfile.TemporaryDirectory() as pasta:
+        return correr_js(guiao, Path(pasta))
 
 
 def _corre(expressao):
     """Avalia `expressao` (JavaScript, com `h` = o módulo lib/horarios.js) e devolve o JSON."""
-    return _no_node("\n".join([
-        "const fs = require('fs');",
-        "const babel = require('@babel/core');",
-        "const Module = require('module');",
-        "const ficheiro = %s;" % json.dumps(str(_HORARIOS)),
-        "const codigo = babel.transformSync(fs.readFileSync(ficheiro, 'utf-8'), {",
-        "  plugins: [require.resolve('@babel/plugin-transform-modules-commonjs')],",
-        "  filename: ficheiro, babelrc: false, configFile: false,",
-        "}).code;",
-        "const m = new Module(ficheiro, null);",
-        "m._compile(codigo, ficheiro);",
-        "const h = m.exports;",
-        "process.stdout.write(JSON.stringify(%s));" % expressao,
-    ]))
+    return _no_node("const h = importar('lib/horarios');\ndevolve(%s);" % expressao)
 
 
 # ---- Locais ----
@@ -155,14 +121,12 @@ def _compila(ficheiro):
     """O ecrã passa pelo Babel com o preset de React: apanha um JSX partido sem
     esperar pelo build de produção."""
     _no_node("\n".join([
-        "const fs = require('fs');",
-        "const babel = require('@babel/core');",
         "const ficheiro = %s;" % json.dumps(str(ficheiro)),
-        "babel.transformSync(fs.readFileSync(ficheiro, 'utf-8'), {",
+        "require('@babel/core').transformSync(require('fs').readFileSync(ficheiro, 'utf-8'), {",
         "  presets: [[require.resolve('@babel/preset-react'), { runtime: 'classic' }]],",
         "  filename: ficheiro, babelrc: false, configFile: false,",
         "});",
-        "process.stdout.write('null');",
+        "devolve(null);",
     ]))
 
 
