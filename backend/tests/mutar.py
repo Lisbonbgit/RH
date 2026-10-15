@@ -8,7 +8,9 @@ Uso (a partir de backend/):
     python tests/mutar.py <ficheiro> <texto-original> <texto-estragado> -- <comando de teste…>
 
 Sai com 0 se o teste ficou vermelho (mutação apanhada), 1 se ficou verde, 2 se o texto a
-estragar não aparece exactamente uma vez no ficheiro.
+estragar não aparece exactamente uma vez no ficheiro, 3 se o comando não chegou a correr os
+testes (o pytest sai com 2 num erro de colecção, 4 com um caminho errado, 5 sem testes:
+nenhum teste ficou vermelho, por isso não é prova).
 """
 import os
 import shutil
@@ -42,6 +44,9 @@ def main(argv):
     if resultado.returncode == 0:
         print("\nMUTAÇÃO NÃO APANHADA: o teste ficou VERDE com o código estragado.")
         return 1
+    if resultado.returncode != 1:
+        print("\nO comando não chegou a correr os testes (saída %d). %s reposto." % (resultado.returncode, caminho))
+        return 3
     print("\nMutação apanhada (o teste ficou vermelho). %s reposto." % caminho)
     return 0
 
