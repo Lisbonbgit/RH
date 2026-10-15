@@ -6,6 +6,7 @@ código que o servidor corre — sobre a semana normal. Se o servidor mudar a fo
 resposta, é aqui que o ecrã fica vermelho (a lição do voucher ao balcão: duas suites verdes
 por cima de um contrato partido).
 """
+import copy
 import json
 import re
 
@@ -29,20 +30,34 @@ def _servidor(eu=sn.DEBORA, pode_marcar=True):
     return mes, contagem
 
 
-def _ecra(tmp_path, cenario, mes, contagem=(), falha=None, antes=""):
+def _semana(dados=None, idas=IDAS_DA_DEBORA):
+    """Outubro E novembro, do mesmo `dados`: a semana de hoje (26/10 a 1/11) atravessa os dois."""
+    dados = dados or sn.semana_normal()
+    dados["idas"] = list(idas)
+    return [calendario.resposta_do_mes(2026, m, dados, sn.DEBORA, True) for m in (10, 11)]
+
+
+def _ecra(tmp_path, cenario, mes, contagem=(), falha=None, antes="", novembro=None, vista="mes"):
+    # `vista`: a vista guardada antes de abrir. Os testes do Mês guardam «mes»; com None não há
+    # nada guardado e o ecrã abre na Semana. Um mês sem resposta aqui falha à vista (500).
     return correr_js("\n".join([
         "pararRelogio(2026, 10, 27, 10, 0);",
-        "const MES = %s;" % json.dumps(mes, ensure_ascii=False),
+        "const MESES = { 10: %s, 11: %s };" % (json.dumps(mes, ensure_ascii=False),
+                                               json.dumps(novembro, ensure_ascii=False)),
         "const CONTAGEM = %s;" % json.dumps(list(contagem), ensure_ascii=False),
         "const FALHA = %s;" % json.dumps(falha),
-        "global.SERVIDOR = (metodo, url) => {",
-        "  if (metodo === 'GET' && url === '/calendario') return FALHA ? { erro: FALHA } : MES;",
+        "global.SERVIDOR = (metodo, url, corpo, params) => {",
+        "  if (metodo === 'GET' && url === '/calendario') {",
+        "    if (FALHA) return { erro: FALHA };",
+        "    return MESES[params.mes] || { erro: { response: { status: 500, data: { detail: 'Sem o mês ' + params.mes } } } };",
+        "  }",
         "  if (metodo === 'GET' && url === '/calendario/contagem') return CONTAGEM;",
         "  return {};",
         "};",
+        "localStorage.setItem('bolso_cal_vista', %s);" % json.dumps(vista) if vista else "",
         antes,       # depois do servidor: pode embrulhá-lo (segurar uma resposta)
         "const BolsoCalendario = importar('pages/bolso/BolsoCalendario').default;",
-        "await montar(React.createElement(BolsoCalendario));",
+        "const raiz = await montar(React.createElement(BolsoCalendario));",   # para recarregar o ecrã
         "await esperar();",
         cenario,
     ]), tmp_path, simulados=dict(SESSAO_SIMULADA, axios=AXIOS_FABRICADO), dom=True)
@@ -139,15 +154,16 @@ devolve({ primeira, meses: document.querySelectorAll('main ol li').length, filtr
                  "pedidos": ["/calendario", "/calendario/contagem"]}
 
 
-def test_a_vista_e_o_filtro_lembram_se_e_sem_localstorage_abre_em_mes_geral(tmp_path):
-    mes, _ = _servidor()
+def test_a_vista_e_o_filtro_lembram_se_e_sem_localstorage_abre_em_semana_geral(tmp_path):
+    outubro, novembro = _semana()
     lembrado = _ecra(
         tmp_path, "devolve([botao('Lista').getAttribute('aria-pressed'), botao('Férias').getAttribute('aria-pressed')]);",
-        mes, antes="localStorage.setItem('bolso_cal_vista', 'lista'); localStorage.setItem('bolso_cal_filtro', 'ferias');")
+        outubro, vista="lista", antes="localStorage.setItem('bolso_cal_filtro', 'ferias');")
     assert lembrado == ["true", "true"]
     sem = _ecra(
-        tmp_path, "devolve([botao('Mês').getAttribute('aria-pressed'), botao('Geral').getAttribute('aria-pressed')]);",
-        mes, antes="Object.defineProperty(global, 'localStorage', { get() { throw new Error('modo privado'); }, configurable: true });")
+        tmp_path, "devolve([botao('Semana').getAttribute('aria-pressed'), botao('Geral').getAttribute('aria-pressed')]);",
+        outubro, novembro=novembro, vista=None,
+        antes="Object.defineProperty(global, 'localStorage', { get() { throw new Error('modo privado'); }, configurable: true });")
     assert sem == ["true", "true"]
 
 
@@ -343,3 +359,367 @@ await clicar(botao('Contagem'));
 await esperar();
 """ + LER_A_CONTAGEM + "devolve({ antes, ...lido });", mes, contagem, antes=SEGURAR_A_PRIMEIRA_CONTAGEM)
     assert r == {"antes": True, "linha": "Débora · outubro 2 dias · 2026 2 dias", "alerta": False, "pedidos": 2}
+
+
+# --- A Semana: as lojas em linhas, os 7 dias em colunas (adenda de 2026-10-15) ---------------
+
+# A grelha tal como se vê: o cabeçalho e, por loja, o texto de cada célula.
+LER_A_SEMANA = """
+const celula = (loja, dia) => document.querySelector('main [data-loja="' + loja + '"] [data-celula="' + dia + '"]');
+const grelha = () => [...document.querySelectorAll('main [data-loja]')].map((linha) => [
+  linha.firstElementChild.textContent, [...linha.querySelectorAll('[data-celula]')].map((c) => c.textContent)]);
+const cabecalho = () => [...document.querySelectorAll('main [data-cabecalho] span')].map((s) => s.textContent).filter(Boolean);
+const escolhidos = () => [...new Set([...document.querySelectorAll('main [data-celula][aria-pressed="true"]')]
+  .map((c) => c.getAttribute('data-celula')))];
+const titulo = () => document.querySelector('h1').textContent;
+const lerBuracos = () => [...document.querySelectorAll('main [data-buraco]')].map((b) => [
+  b.closest('li').querySelector('span').textContent, b.querySelector('span').textContent]);
+"""
+
+# A semana normal de 26/10 a 1/11 (desenho, «A semana normal»): Alfragide sem ninguém das 10 às
+# 14 (Emily só às 14, seg/ter) e das 19 às 23 (Beatrice sai às 19, qua/qui); Belém fecha à
+# terça; Benfica abriu a 24/10 e ainda não tem escala; Oeiras sem ninguém à terça. O domingo,
+# 1/11, vem da resposta de NOVEMBRO.
+GRELHA_DE_26_OUT = [
+    ["Alfragide", ["10h–14h", "10h–14h", "19h–23h", "19h–23h", "ok", "ok", "ok"]],
+    ["Algueirão", ["ok"] * 7],
+    ["Amadora", ["ok"] * 7],
+    ["Belém", ["ok", "fech.", "ok", "ok", "ok", "ok", "ok"]],
+    ["Benfica", ["—"] * 7],
+    ["Oeiras", ["ok", "—", "ok", "ok", "ok", "ok", "ok"]],
+]
+
+
+def test_a_semana_abre_por_omissao_com_a_grelha_das_lojas(tmp_path):
+    outubro, novembro = _semana()
+    r = _ecra(tmp_path, LER_A_SEMANA + """
+const celulas = [...document.querySelectorAll('main [data-celula]')];
+devolve({ semana: botao('Semana').getAttribute('aria-pressed'), titulo: titulo(), cabecalho: cabecalho(),
+          grelha: grelha(), escolhidos: escolhidos(),
+          botoes: celulas.every((c) => c.tagName === 'BUTTON' && c.classList.contains('h-11')),
+          setas: [!!botao('Semana anterior'), !!botao('Semana seguinte'), !!botao('Mês anterior')],
+          dia: document.querySelector('main h2').textContent, buracos: lerBuracos(),
+          marcar: !!botao('Marcar ida'), pedidos: REGISTO.map((x) => [x[1], x[3]]) });
+""", outubro, novembro=novembro, vista=None)
+    assert (r["semana"], r["titulo"]) == ("true", "26 out – 1 nov")
+    assert r["cabecalho"] == ["S 26", "T 27", "Q 28", "Q 29", "S 30", "S 31", "D 1"]
+    assert r["grelha"] == GRELHA_DE_26_OUT
+    assert (r["escolhidos"], r["botoes"], r["setas"]) == (["2026-10-27"], True, [True, True, False])
+    # Por baixo, a agenda de hoje — a mesma do Mês, com Tapar.
+    assert r["dia"] == "terça, 27 de outubro"
+    assert r["buracos"] == [["Alfragide", "falta 10h–14h"], ["Benfica", "ninguém"], ["Oeiras", "ninguém"]]
+    assert r["marcar"] is True
+    assert r["pedidos"] == [["/calendario", {"ano": 2026, "mes": 10}], ["/calendario", {"ano": 2026, "mes": 11}]]
+
+
+def test_as_setas_da_semana_andam_sete_dias_e_pedem_os_meses_da_semana(tmp_path):
+    outubro, novembro = _semana()
+    r = _ecra(tmp_path, LER_A_SEMANA + """
+const passos = [];
+const passo = () => passos.push([titulo(), REGISTO.splice(0).map((x) => x[3].mes)]);
+passo();
+await clicar(botao('Semana anterior')); await esperar(); passo();
+await clicar(botao('Semana seguinte')); await esperar(); passo();
+const voltou = grelha();
+await clicar(botao('Semana seguinte')); await esperar(); passo();
+// O dia escolhido é um só: passou a 3/11, toca-se no 5/11, e o Mês abre em novembro com ele.
+await clicar(celula('loja-oeiras', '2026-11-05'));
+await clicar(botao('Mês')); await esperar(); passo();
+const noMes = document.querySelector('[data-dia][aria-pressed="true"]').getAttribute('data-dia');
+const setas = [!!botao('Mês anterior'), !!botao('Semana anterior')];
+// No Mês as setas continuam a andar um mês (e voltar a outubro escolhe hoje).
+await clicar(botao('Mês anterior')); await esperar(); passo();
+devolve({ passos, voltou, noMes, setas,
+          depois: document.querySelector('[data-dia][aria-pressed="true"]').getAttribute('data-dia') });
+""", outubro, novembro=novembro, vista=None)
+    assert r["passos"] == [["26 out – 1 nov", [10, 11]], ["19 – 25 out", [10]], ["26 out – 1 nov", [10, 11]],
+                           ["2 – 8 nov", [11]], ["novembro 2026", []], ["outubro 2026", [10]]]
+    assert r["voltou"] == GRELHA_DE_26_OUT
+    # (7 dias antes do 5/11 era o 29/10: aqui volta-se um MÊS, para hoje.)
+    assert (r["noMes"], r["setas"], r["depois"]) == ("2026-11-05", [True, False], "2026-10-27")
+
+
+def test_tocar_numa_celula_mostra_esse_dia_por_baixo_e_tapa_com_o_mes_dele(tmp_path):
+    outubro, novembro = _semana()
+    r = _ecra(tmp_path, LER_A_SEMANA + """
+await clicar(celula('loja-alfragide', '2026-10-29'));
+const quinta = { dia: document.querySelector('main h2').textContent, escolhidos: escolhidos(), buracos: lerBuracos() };
+await clicar(celula('loja-belem', '2026-11-01'));
+const domingo = { dia: document.querySelector('main h2').textContent, escolhidos: escolhidos(), buracos: lerBuracos(),
+                  titulo: titulo() };
+await clicar(botao('Tapar', document.querySelector('main [data-buraco]')));
+const dlg = document.querySelector('[role="dialog"]');
+devolve({ quinta, domingo, painel: { titulo: dlg.querySelector('h2').textContent,
+  loja: dlg.querySelector('[aria-label="Loja"]').value, inicio: dlg.querySelector('[aria-label="Hora de início"]').value,
+  dias: [...dlg.querySelectorAll('[data-dia][aria-pressed="true"]')].map((b) => b.getAttribute('data-dia')) } });
+""", outubro, novembro=novembro, vista=None)
+    assert r["quinta"] == {"dia": "quinta, 29 de outubro", "escolhidos": ["2026-10-29"],
+                           "buracos": [["Alfragide", "falta 19h–23h"], ["Benfica", "ninguém"]]}
+    # Tocar na linha de Belém escolhe o DIA (a agenda mostra todas as lojas); o 1/11 é de novembro.
+    assert r["domingo"] == {"dia": "domingo, 1 de novembro", "escolhidos": ["2026-11-01"],
+                            "buracos": [["Benfica", "ninguém"]], "titulo": "26 out – 1 nov"}
+    # O painel abre na grelha de NOVEMBRO com o 1/11 escolhido (com a de outubro, o dia não estava lá).
+    assert r["painel"] == {"titulo": "Tapar Benfica", "loja": sn.BENFICA, "inicio": "13:00", "dias": ["2026-11-01"]}
+
+
+def test_o_pessoal_da_semana_mostra_so_as_horas_das_minhas_idas(tmp_path):
+    outubro, novembro = _semana(idas=IDAS_DA_DEBORA + [sn.ida("2026-10-14", sn.OEIRAS, sn.CAROL, "13:00", "22:00")])
+    r = _ecra(tmp_path, LER_A_SEMANA + """
+await clicar(botao('Semana anterior')); await esperar();
+await clicar(botao('Semana anterior')); await esperar();
+await clicar(botao('Pessoal'));
+const cheias = [...document.querySelectorAll('main [data-celula]')].filter((c) => c.textContent)
+  .map((c) => [c.closest('[data-loja]').getAttribute('data-loja'), c.getAttribute('data-celula'), c.textContent]);
+devolve({ titulo: titulo(), linhas: grelha().length, cheias, dia: document.querySelector('main h2').textContent });
+""", outubro, novembro=novembro, vista=None)
+    # A ida da Carol a 14/10 e as escalas não são minhas: só a minha ida de 13/10 tem horas.
+    assert r == {"titulo": "12 – 18 out", "linhas": 6, "cheias": [[sn.OEIRAS, "2026-10-13", "13h–22h"]],
+                 "dia": "terça, 13 de outubro"}
+
+
+def test_as_ferias_da_semana_sao_a_lista_das_ausencias_que_tocam_a_semana(tmp_path):
+    dados = sn.semana_normal()
+    dados["ausencias"] = [sn.ausencia("Emanuela", "2026-10-15", "2026-10-15"),
+                          sn.ausencia("Rafaela", "2026-10-20", "2026-10-26"),
+                          sn.ausencia("Weber", "2026-10-30", "2026-11-02")]
+    outubro, novembro = _semana(dados)
+    r = _ecra(tmp_path, """
+await clicar(botao('Férias'));
+const cartao = document.querySelector('main section');
+devolve({ celulas: document.querySelectorAll('main [data-celula]').length, titulo: cartao.querySelector('h2').textContent,
+          linhas: [...cartao.querySelectorAll('p.font-semibold')].map((p) => p.parentElement.textContent),
+          marcar: !!botao('Marcar ida') });
+""", outubro, novembro=novembro, vista=None)
+    # Sem grelha; a Emanuela (15/10) fica de fora; o Weber vem nos dois meses e aparece uma vez.
+    assert r == {"celulas": 0, "titulo": "Ausências da semana",
+                 "linhas": ["Rafaela · Férias20/10–26/10 · Belém", "Weber · Férias30/10–02/11 · Amadora"],
+                 "marcar": True}
+
+
+def test_enquanto_falta_um_dos_meses_a_semana_fica_em_esqueleto(tmp_path):
+    # Na semana de 19/10 o ecrã já tem outubro; ao voltar à de 26/10 falta só novembro (seguro).
+    outubro, novembro = _semana()
+    r = _ecra(tmp_path, LER_A_SEMANA + """
+await clicar(botao('Semana anterior')); await esperar();
+segurar = true;
+await clicar(botao('Semana seguinte')); await esperar();
+const antes = { titulo: titulo(), celulas: document.querySelectorAll('main [data-celula]').length,
+                esqueleto: [...document.querySelectorAll('main div[aria-hidden="true"]')]
+                  .some((d) => d.className.includes('animate-pulse')), marcar: !!botao('Marcar ida'),
+                lojas: !!document.querySelector('[aria-label="Filtro de loja"]') };
+await act(async () => { soltar(MESES[11]); });
+await esperar();
+devolve({ antes, depois: grelha() });
+""", outubro, novembro=novembro, vista=None, antes="""
+const servidor = global.SERVIDOR;
+let segurar = false;
+let soltar = null;
+global.SERVIDOR = (metodo, url, corpo, params) => {
+  if (segurar && url === '/calendario' && params.mes === 11) {
+    segurar = false;
+    return new Promise((ok) => { soltar = ok; });
+  }
+  return servidor(metodo, url, corpo, params);
+};
+""")
+    # As pastilhas das lojas ficam (vêm da última leitura): o cabeçalho não salta a cada semana.
+    assert r == {"antes": {"titulo": "26 out – 1 nov", "celulas": 0, "esqueleto": True, "marcar": False, "lojas": True},
+                 "depois": GRELHA_DE_26_OUT}
+
+
+def _outubro_velho(outubro):
+    """Outubro com outra cara (todas as lojas tapadas): se ele chegar ao ecrã, vê-se."""
+    velho = copy.deepcopy(outubro)
+    for dia in velho["dias"]:
+        for loja in dia["lojas"]:
+            loja["buracos"] = []
+    return velho
+
+
+@pytest.mark.parametrize("o_que_chega_tarde", ["velho", "erro"])
+def test_a_resposta_atrasada_de_outra_semana_nao_pisa_a_actual(tmp_path, o_que_chega_tarde):
+    # Como no Mês: cada pedido leva um número e só o último escreve no ecrã. O pedido de
+    # outubro da semana de 19/10 fica seguro; volta-se à de 26/10 e só depois ele chega.
+    outubro, novembro = _semana()
+    tarde = (_outubro_velho(outubro) if o_que_chega_tarde == "velho"
+             else {"erro": {"response": {"status": 500, "data": {"detail": "Falhou a semana velha"}}}})
+    r = _ecra(tmp_path, LER_A_SEMANA + """
+await clicar(botao('Semana anterior')); await esperar();
+await clicar(botao('Semana seguinte')); await esperar();
+const antes = grelha();
+await act(async () => { soltar(%s); });
+await esperar();
+devolve({ antes, depois: grelha(), titulo: titulo(), alerta: !!document.querySelector('[role="alert"]'),
+          pedidos: REGISTO.map((x) => x[3].mes) });
+""" % json.dumps(tarde, ensure_ascii=False), outubro, novembro=novembro, vista=None, antes="""
+const servidor = global.SERVIDOR;
+let soltar = null;
+let outubros = 0;
+global.SERVIDOR = (metodo, url, corpo, params) => {
+  if (url === '/calendario' && params.mes === 10 && ++outubros === 2) return new Promise((ok) => { soltar = ok; });
+  return servidor(metodo, url, corpo, params);
+};
+""")
+    assert r == {"antes": GRELHA_DE_26_OUT, "depois": GRELHA_DE_26_OUT, "titulo": "26 out – 1 nov", "alerta": False,
+                 "pedidos": [10, 11, 10, 10, 11]}
+
+
+# --- O filtro de loja: «Todas | Alfragide | …» por baixo das vistas (adenda de 2026-10-15) ----
+
+FILA_DE_LOJAS = """
+const fila = () => document.querySelector('[aria-label="Filtro de loja"]');
+const pastilha = (nome) => botao(nome, fila());
+const escolhida = () => [...fila().querySelectorAll('button[aria-pressed="true"]')].map((b) => b.textContent);
+const pontos = () => [...document.querySelectorAll('main [data-dia]')].filter((d) => d.querySelector('[data-ponto]'))
+  .map((d) => d.getAttribute('data-dia').slice(8));
+"""
+LER_O_PAINEL = """
+const lerPainel = () => {
+  const dlg = document.querySelector('[role="dialog"]');
+  return { titulo: dlg.querySelector('h2').textContent, loja: dlg.querySelector('[aria-label="Loja"]').value,
+           opcoes: dlg.querySelectorAll('[aria-label="Loja"] option').length,
+           inicio: dlg.querySelector('[aria-label="Hora de início"]').value,
+           fim: dlg.querySelector('[aria-label="Hora de fim"]').value,
+           dias: [...dlg.querySelectorAll('[data-dia][aria-pressed="true"]')].map((b) => b.getAttribute('data-dia')) };
+};
+const fecharPainel = () => clicar(botao('Fechar', document.querySelector('[role="dialog"]')));
+"""
+# Uma ida que tapa Alfragide (29/10) e outra a mais em Oeiras (30/10): na Lista de Oeiras só fica a de Oeiras.
+IDAS_DO_FILTRO = IDAS_DA_DEBORA + [sn.ida("2026-10-29", sn.ALFRAGIDE, sn.CAROL, "19:00", "23:00"),
+                                  sn.ida("2026-10-30", sn.OEIRAS, sn.CAROL, "13:00", "17:00")]
+GRELHA_DE_OEIRAS = [["Oeiras", ["ok", "—", "ok", "ok", "ok", "ok", "ok"]]]
+
+
+def test_escolher_uma_loja_deixa_so_essa_loja_na_semana_no_mes_e_na_lista(tmp_path):
+    dados = sn.semana_normal()
+    # Em produção as lojas chamam-se «Loja Oeiras»: a pastilha (e a linha da Semana) dizem só «Oeiras».
+    next(l for l in dados["lojas"] if l["id"] == sn.OEIRAS)["name"] = "Loja Oeiras"
+    outubro, novembro = _semana(dados, idas=IDAS_DO_FILTRO)
+    r = _ecra(tmp_path, LER_A_SEMANA + FILA_DE_LOJAS + """
+const pastilhas = [...fila().querySelectorAll('button')].map((b) => [b.textContent, b.getAttribute('aria-pressed')]);
+const forma = { altas: [...fila().querySelectorAll('button')].every((b) => b.classList.contains('h-11')),
+                desliza: fila().classList.contains('overflow-x-auto') };
+await clicar(pastilha('Oeiras'));
+const semana = { escolhida: escolhida(), grelha: grelha(), buracos: lerBuracos(),
+                 guardada: localStorage.getItem('bolso_cal_loja') };
+await clicar(botao('Mês')); await esperar();
+const mes = { escolhida: escolhida(), pontos: pontos(), buracos: lerBuracos() };
+await clicar(botao('Lista'));
+devolve({ pastilhas, forma, semana, mes, lista: [...document.querySelectorAll('main section')].map((s) => s.textContent) });
+""", outubro, novembro=novembro, vista=None)
+    assert r["pastilhas"] == [["Todas", "true"], ["Alfragide", "false"], ["Algueirão", "false"], ["Amadora", "false"],
+                              ["Belém", "false"], ["Benfica", "false"], ["Oeiras", "false"]]
+    # 44 px de alto; a fila desliza para o lado sozinha (a página não).
+    assert r["forma"] == {"altas": True, "desliza": True}
+    assert r["semana"] == {"escolhida": ["Oeiras"], "grelha": GRELHA_DE_OEIRAS,
+                           "buracos": [["Loja Oeiras", "ninguém"]], "guardada": sn.OEIRAS}
+    # Sem o filtro, o Mês tinha pontos em 21 dias (Alfragide e Benfica): Oeiras só falta às terças por tapar.
+    assert r["mes"] == {"escolhida": ["Oeiras"], "pontos": ["20", "27"], "buracos": [["Loja Oeiras", "ninguém"]]}
+    assert r["lista"] == ["terça, 27 de outubroLoja Oeiras13h–22hninguémTapar",
+                          "sexta, 30 de outubroCarol Santos · Loja Oeiras13h–17h"]
+
+
+def test_nas_ferias_ficam_so_as_ausencias_de_quem_tem_a_loja_na_ficha(tmp_path):
+    dados = sn.semana_normal()
+    dados["ausencias"] = [sn.ausencia("Emanuela", "2026-10-29", "2026-10-30"),   # ficha em Oeiras
+                          sn.ausencia("Rafaela", "2026-10-20", "2026-10-26"),    # Belém
+                          sn.ausencia("Weber", "2026-10-30", "2026-11-02"),      # Amadora
+                          sn.ausencia("Joana", "2026-10-28", "2026-10-28")]      # Algueirão (às quartas vai a Oeiras)
+    outubro, novembro = _semana(dados)
+    r = _ecra(tmp_path, FILA_DE_LOJAS + """
+const linhas = () => [...document.querySelectorAll('main p.font-semibold')].map((p) => p.textContent);
+await clicar(botao('Férias'));
+const todas = linhas();
+await clicar(pastilha('Oeiras'));
+const semana = linhas();
+await clicar(botao('Mês')); await esperar();
+devolve({ todas, semana, pontos: pontos() });
+""", outubro, novembro=novembro, vista=None)
+    assert r["todas"] == ["Rafaela · Férias", "Joana · Férias", "Emanuela · Férias", "Weber · Férias"]
+    # Desenho: «ausências de quem tem essa loja na ficha» — a Joana trabalha em Oeiras à quarta, mas a ficha é de Algueirão.
+    assert (r["semana"], r["pontos"]) == (["Emanuela · Férias"], ["29", "30"])
+
+
+def test_a_loja_lembra_se_ao_recarregar_e_uma_que_ja_nao_existe_volta_a_todas(tmp_path):
+    outubro, novembro = _semana()
+    r = _ecra(tmp_path, LER_A_SEMANA + FILA_DE_LOJAS + """
+await clicar(pastilha('Oeiras'));
+await act(async () => { raiz.unmount(); });
+await montar(React.createElement(BolsoCalendario));
+await esperar();
+const recarregado = { escolhida: escolhida(), grelha: grelha() };
+await clicar(pastilha('Todas'));
+devolve({ recarregado, todas: { escolhida: escolhida(), linhas: grelha().length,
+                                guardada: localStorage.getItem('bolso_cal_loja') } });
+""", outubro, novembro=novembro, vista=None)
+    assert r == {"recarregado": {"escolhida": ["Oeiras"], "grelha": GRELHA_DE_OEIRAS},
+                 "todas": {"escolhida": ["Todas"], "linhas": 6, "guardada": None}}
+    # Uma loja guardada que entretanto saiu do calendário (perdeu o horário, fechou) conta como «Todas».
+    r = _ecra(tmp_path, LER_A_SEMANA + FILA_DE_LOJAS + "devolve({ escolhida: escolhida(), grelha: grelha() });",
+              outubro, novembro=novembro, vista=None, antes="localStorage.setItem('bolso_cal_loja', 'loja-que-fechou');")
+    assert r == {"escolhida": ["Todas"], "grelha": GRELHA_DE_26_OUT}
+
+
+def test_a_pastilha_escolhida_e_levada_a_vista_ao_abrir_e_ao_mudar(tmp_path):
+    # Medido no browser a 375 px: com «Oeiras» (a última) guardada, a fila abria no início — via-se
+    # «Todas» sem destaque e a escolhida escondida à direita. O jsdom não tem `scrollIntoView`:
+    # espia-se e regista-se em que pastilha foi chamado e com que opções.
+    outubro, novembro = _semana()
+    r = _ecra(tmp_path, FILA_DE_LOJAS + """
+const ao_abrir = vistas.splice(0);
+await clicar(pastilha('Belém'));
+devolve({ ao_abrir, ao_mudar: vistas.splice(0),
+          sem_barra: fila().classList.contains('[scrollbar-width:none]')
+                     && fila().classList.contains('[&::-webkit-scrollbar]:hidden') });
+""", outubro, novembro=novembro, vista=None, antes="""
+localStorage.setItem('bolso_cal_loja', %s);
+const vistas = [];
+window.Element.prototype.scrollIntoView = function (opcoes) { vistas.push([this.textContent, opcoes]); };
+""" % json.dumps(sn.OEIRAS))
+    # `block: 'nearest'`: só a fila desliza para o lado; a página não salta na vertical.
+    assert r == {"ao_abrir": [["Oeiras", {"block": "nearest", "inline": "center"}]],
+                 "ao_mudar": [["Belém", {"block": "nearest", "inline": "center"}]],
+                 "sem_barra": True}
+
+
+def test_com_uma_loja_escolhida_marcar_abre_nela_e_tapar_e_editar_continuam(tmp_path):
+    outubro, novembro = _semana()
+    r = _ecra(tmp_path, FILA_DE_LOJAS + LER_O_PAINEL + """
+await clicar(pastilha('Oeiras'));
+await clicar(botao('Marcar ida'));
+const marcar = lerPainel();
+await fecharPainel();
+await clicar(pastilha('Belém'));
+await clicar(botao('Marcar ida'));
+const fechada = lerPainel();
+await fecharPainel();
+await clicar(pastilha('Oeiras'));
+await clicar(botao('Tapar', document.querySelector('main [data-buraco]')));
+const tapar = lerPainel();
+await fecharPainel();
+await clicar(botao('Mês')); await esperar();
+await clicar(document.querySelector('main [data-dia="2026-10-06"]'));
+await clicar([...document.querySelectorAll('main li button')].find((b) => b.textContent.startsWith('Débora')));
+devolve({ marcar, fechada, tapar, editar: lerPainel() });
+""", outubro, novembro=novembro, vista=None)
+    # As horas são as da loja no dia, como ao escolhê-la no painel; o painel continua a ter as 6 lojas.
+    assert r["marcar"] == {"titulo": "Marcar ida", "loja": sn.OEIRAS, "opcoes": 6, "inicio": "13:00", "fim": "22:00",
+                           "dias": ["2026-10-27"]}
+    # Belém fecha à terça: a loja vem escolhida e as horas vazias (no painel também não as enche).
+    assert r["fechada"] == {"titulo": "Marcar ida", "loja": sn.BELEM, "opcoes": 6, "inicio": "", "fim": "",
+                            "dias": ["2026-10-27"]}
+    assert r["tapar"] == {"titulo": "Tapar Oeiras", "loja": sn.OEIRAS, "opcoes": 6, "inicio": "13:00", "fim": "22:00",
+                          "dias": ["2026-10-27"]}
+    assert r["editar"] == {"titulo": "Ida de Débora Ferreira", "loja": sn.OEIRAS, "opcoes": 6, "inicio": "13:00",
+                           "fim": "22:00", "dias": ["2026-10-06"]}
+
+
+def test_a_contagem_nao_tem_filtro_de_loja(tmp_path):
+    mes, contagem = _servidor()
+    r = _ecra(tmp_path, FILA_DE_LOJAS + """
+await clicar(pastilha('Alfragide'));
+await clicar(botao('Contagem')); await esperar();
+devolve({ fila: !!fila(), linha: document.querySelector('main li button').textContent });
+""", mes, contagem)
+    # As idas da Débora são em Oeiras e continuam a contar com «Alfragide» escolhida.
+    assert r == {"fila": False, "linha": "Débora · outubro 2 dias · 2026 2 dias"}

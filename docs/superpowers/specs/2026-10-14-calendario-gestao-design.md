@@ -452,3 +452,22 @@ e o Python da árvore principal. Ler sempre `passed` **e** `skipped`.
 - O portal no browser passa a mostrar «Sem ligação» em vez do login quando o servidor não
   responde ao arranque.
 - A Carol e a Débora, como administradoras, vêem o portal inteiro até os níveis de conta entrarem.
+
+## Adenda de 2026-10-15 — vista Semana e filtro de loja (pedido do dono, depois de ver a Fase 2)
+
+- **Vista Semana**, a primeira do botão: **Semana | Mês | Lista | Contagem** (por omissão para quem ainda
+  não escolheu; quem já tinha uma vista guardada mantém-na). Uma grelha com as **lojas em linhas** e os
+  **7 dias (seg a dom) em colunas**. Cada célula: «ok» (coberta), a primeira falta («10–14»; «2 faltas»
+  se houver mais de uma), «—» (ninguém), «fech.» (fechada); antes de `aberta_desde` a célula fica vazia.
+  Tocar numa célula escolhe esse dia e mostra-o por baixo (a mesma agenda do Mês, com Tapar).
+- **‹ › na Semana andam 7 dias**, também quando a semana atravessa dois meses (o ecrã pede os dois
+  meses ao servidor e junta-os). O dia escolhido é um só para todas as vistas: mudar de semana muda o
+  mês à vista para o mês do dia escolhido.
+- **Filtros na Semana:** Geral = a grelha de cobertura; Pessoal = a grelha só com as minhas idas
+  (horas nas células onde vou; o resto vazio); Férias = a lista das ausências que tocam a semana.
+- **Filtro de loja**: pastilhas «Todas | Alfragide | …» por baixo das vistas (nomes sem o «Loja » à
+  frente), memorizado no `localStorage` (com try/catch; uma loja que já não exista volta a «Todas»).
+  Aplica-se à Semana (só essa linha), ao Mês (pontos e agenda só dessa loja), à Lista e às Férias
+  (ausências de quem tem essa loja na ficha). Não se aplica à Contagem. Com uma loja escolhida,
+  «Marcar ida» abre com essa loja já escolhida.
+- O servidor passa a mandar o `location_id` da ficha em cada ausência (`ausencias[].location_id`).

@@ -4,9 +4,10 @@ import { AlertTriangle, ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { getCalendario, getContagem } from '@/lib/bolso';
 import {
-  FILTROS, MESES, NOMES_DAS_AUSENCIAS, VISTAS, ausenciasDoDia, dataCurta, diasComPonto, feriadosDoMes,
-  hojeIso, intervaloCurto, isoDe, linhaDaContagem, lista, mensagemDeErro, mesAoLado, minhasIdas,
-  quantosDias, tituloDoDia, tituloDoMes,
+  DIAS_DA_SEMANA, FILTROS, MESES, NOMES_DAS_AUSENCIAS, VISTAS, ausenciasDoDia, celulaDaSemana, dataCurta,
+  diaAoLado, diasComPonto, feriadosDoMes, filtrarPorLoja, hojeIso, intervaloCurto, isoDe, juntarMeses,
+  linhaDaContagem, lista, mensagemDeErro, mesAoLado, mesesDaSemana, minhasIdas, nomeCurtoDaLoja, quantosDias,
+  semanaDe, tituloDaSemana, tituloDoDia, tituloDoMes,
 } from '@/lib/calendario';
 import {
   BotaoMenu, Calha, GrelhaDoMes, MenuLateral, Segmento, guardar, ler, useManifestoDoBolso,
@@ -19,18 +20,23 @@ import PainelIda from './PainelIda';
 // ausências aprovadas + idas) e manda o mês inteiro num pedido; este ecrã só desenha. As
 // contas do ecrã vivem em `lib/calendario.js` (puras, testadas em Node).
 //
-// Em cima: ☰, o mês, ‹ › e Mês | Lista | Contagem. Em baixo: Pessoal | Geral | Férias. Vista
-// e filtro lembram-se no `localStorage` (sem ele, abre em Mês/Geral). «Tapar» e «Marcar ida»
-// só existem para quem pode marcar (o servidor diz `pode_marcar`; o contabilista só lê).
+// Em cima: ☰, a semana (ou o mês), ‹ › e Semana | Mês | Lista | Contagem. Em baixo: Pessoal |
+// Geral | Férias. Por baixo das vistas, o filtro de loja (Todas | Alfragide | …; a Contagem não
+// o tem). Vista, filtro e loja lembram-se no `localStorage` (sem ele, abre em Semana/Geral/Todas).
+// Há um só dia escolhido para todas as vistas, e o mês à vista é sempre o dele. «Tapar» e
+// «Marcar ida» só existem para quem pode marcar (o servidor diz `pode_marcar`; o contabilista
+// só lê).
 
 const CHAVE_VISTA = 'bolso_cal_vista';
 const CHAVE_FILTRO = 'bolso_cal_filtro';
+const CHAVE_LOJA = 'bolso_cal_loja';
 const COR_DO_PONTO = { geral: 'bg-destructive', pessoal: 'bg-primary', ferias: 'bg-warning' };
 const lerOpcao = (chave, opcoes, omissao) => {
   const v = ler(chave, omissao);
   return opcoes.includes(v) ? v : omissao;
 };
 const etiqueta = (p) => (p.origem === 'escala' ? 'escala' : p.extra ? 'extra' : 'ida');
+const chaveDoMes = (ano, mes) => isoDe(ano, mes, 1).slice(0, 7);
 
 const Esqueleto = () => (
   <div aria-hidden="true" className="mt-3 h-40 rounded-2xl bg-muted-foreground/15 motion-safe:animate-pulse" />
@@ -213,6 +219,99 @@ function Lista({ dados, filtro, hoje, onTapar, onIda }) {
   ));
 }
 
+// As cores das células são as da agenda do dia (contrastes medidos lá): «—» a vermelho cheio,
+// a falta a âmbar; «ok» e «fech.» discretos, para os buracos saltarem à vista.
+const COR_DA_CELULA = {
+  ninguem: 'bg-destructive-strong text-white font-semibold',
+  falta: 'bg-warning/15 text-warning-strong font-semibold',
+  minha: 'text-primary font-semibold',
+  ok: 'text-muted-foreground',
+  fechada: 'text-muted-foreground',
+  vazia: '',
+};
+const GRELHA_DA_SEMANA = 'grid grid-cols-[4rem_repeat(7,minmax(0,1fr))] gap-0.5';
+
+// A Semana: as lojas em linhas, os 7 dias (seg a dom) em colunas; tocar numa célula escolhe o
+// dia. Cabe em 375px: 4rem para o nome e ~38px por dia; «10h–14h» parte a seguir ao traço.
+function Semana({ dados, filtro, escolhido, onTocar }) {
+  const dias = semanaDe(escolhido);
+  const doDia = (iso, id) => (dados.dias || []).find((d) => d.data === iso)?.lojas.find((l) => l.location_id === id);
+  return (
+    <section className="rounded-2xl border bg-card p-1">
+      <div data-cabecalho="" aria-hidden="true" className={`${GRELHA_DA_SEMANA} pb-1 text-center text-[11px] tabular-nums`}>
+        <span />
+        {dias.map((iso, i) => (
+          <span key={iso} className={iso === escolhido ? 'font-bold text-foreground' : 'font-semibold text-muted-foreground'}>
+            {DIAS_DA_SEMANA[i][0].toUpperCase()} {Number(iso.slice(8))}
+          </span>
+        ))}
+      </div>
+      {dados.lojas.map((loja) => (
+        <div key={loja.id} data-loja={loja.id} className={`${GRELHA_DA_SEMANA} mt-0.5`}>
+          <span className="self-center truncate pl-1 text-[12px] font-semibold">{nomeCurtoDaLoja(loja.nome)}</span>
+          {dias.map((iso) => {
+            const c = celulaDaSemana(doDia(iso, loja.id), filtro, dados.eu);
+            const [antes, ...depois] = c.texto.split('–');
+            return (
+              <button
+                key={iso} type="button" data-celula={iso} aria-pressed={iso === escolhido} onClick={() => onTocar(iso)}
+                aria-label={`${loja.nome}, ${tituloDoDia(iso)}${c.texto ? `: ${c.estado === 'ninguem' ? 'ninguém' : c.texto}` : ''}`}
+                className={`h-11 min-w-0 overflow-hidden break-words rounded-md px-0.5 text-[11px] leading-tight tabular-nums
+                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${COR_DA_CELULA[c.estado]} ${
+                  iso === escolhido ? 'ring-2 ring-inset ring-primary' : ''}`}
+              >
+                {antes}{depois.length > 0 && <>–<wbr />{depois.join('–')}</>}
+              </button>
+            );
+          })}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+// Férias na Semana: as ausências que tocam a semana, sem grelha.
+function FeriasDaSemana({ dados, escolhido }) {
+  const dias = semanaDe(escolhido);
+  const ausencias = (dados.ausencias || []).filter((a) => a.inicio <= dias[6] && a.fim >= dias[0]);
+  return (
+    <Cartao titulo="Ausências da semana">
+      <div className="px-4 pb-2 divide-y">
+        {ausencias.length === 0 && <p className="py-2 text-[14px] text-muted-foreground">Ninguém ausente nesta semana.</p>}
+        {ausencias.map((a) => <AusenciaLinha key={`${a.nome}-${a.inicio}`} ausencia={a} />)}
+      </div>
+    </Cartao>
+  );
+}
+
+// O filtro de loja: «Todas» + uma pastilha por loja, de 44px. Com muitas lojas a fila desliza
+// para o lado sozinha (a página não), sem barra à vista. As cores são as das pessoas no painel da ida.
+// A escolhida é levada à vista ao abrir e ao mudar: com «Oeiras» (a última) guardada, a fila
+// abria no início e via-se «Todas» sem destaque — não se percebia que só se via uma loja.
+function FiltroDeLoja({ lojas, escolhida, onEscolher }) {
+  const activa = useRef(null);
+  // `block: 'nearest'`: só a fila desliza; a página não salta. O `?.` é para quem não o tem (jsdom).
+  useEffect(() => { activa.current?.scrollIntoView?.({ block: 'nearest', inline: 'center' }); }, [escolhida]);
+  const pastilha = (id, nome) => (
+    <button
+      key={id || 'todas'} ref={escolhida === id ? activa : undefined}
+      type="button" aria-pressed={escolhida === id} onClick={() => onEscolher(id)}
+      className={`h-11 shrink-0 px-4 rounded-full text-sm font-semibold focus-visible:outline-none
+                  focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${escolhida === id
+        ? 'bg-primary text-primary-foreground dark:text-background' : 'bg-muted text-foreground'}`}
+    >
+      {nome}
+    </button>
+  );
+  return (
+    <div role="group" aria-label="Filtro de loja" className="flex gap-2 overflow-x-auto px-3 pb-2
+                [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      {pastilha('', 'Todas')}
+      {lojas.map((l) => pastilha(l.id, nomeCurtoDaLoja(l.nome)))}
+    </div>
+  );
+}
+
 // «Débora · outubro 18 dias · 2026 60 dias»; tocar abre os meses um a um.
 function Contagem({ linhas, ano, mes }) {
   const [aberta, setAberta] = useState(null);
@@ -254,11 +353,15 @@ export default function BolsoCalendario() {
   const navigate = useNavigate();
   const { logout } = useAuth();
   const hoje = hojeIso();
-  const [{ ano, mes }, setMes] = useState(() => ({ ano: Number(hoje.slice(0, 4)), mes: Number(hoje.slice(5, 7)) }));
-  const [vista, setVista] = useState(() => lerOpcao(CHAVE_VISTA, VISTAS, 'mes'));
+  const [vista, setVista] = useState(() => lerOpcao(CHAVE_VISTA, VISTAS, 'semana'));
   const [filtro, setFiltro] = useState(() => lerOpcao(CHAVE_FILTRO, FILTROS, 'geral'));
+  const [lojaGuardada, setLojaGuardada] = useState(() => ler(CHAVE_LOJA, ''));
+  // Um só dia escolhido para todas as vistas; o mês à vista é o dele.
   const [escolhido, setEscolhido] = useState(hoje);
-  const [dados, setDados] = useState(null);
+  const ano = Number(escolhido.slice(0, 4));
+  const mes = Number(escolhido.slice(5, 7));
+  // As respostas do servidor, por mês ('AAAA-MM'): na Semana são duas quando ela atravessa o mês.
+  const [respostas, setRespostas] = useState({});
   const [contagem, setContagem] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState(null);
@@ -275,21 +378,27 @@ export default function BolsoCalendario() {
 
   const semSessao = useCallback(() => { logout(); navigate('/login'); }, [logout, navigate]);
 
+  // Os meses que o ecrã precisa, numa chave estável: tocar noutro dia da mesma semana (ou do
+  // mesmo mês) não volta a pedir nada.
+  const meses = (vista === 'semana' ? mesesDaSemana(escolhido) : [{ ano, mes }])
+    .map((m) => chaveDoMes(m.ano, m.mes)).join(' ');
+
   const carregar = useCallback(async () => {
     pedido.current += 1;
     const meu = pedido.current;
     setCarregando(true);
     setErro(null);
     try {
-      const { data } = await getCalendario(ano, mes);
-      if (meu === pedido.current) setDados(data);
+      const pedidos = meses.split(' ');
+      const lidas = await Promise.all(pedidos.map((m) => getCalendario(Number(m.slice(0, 4)), Number(m.slice(5)))));
+      if (meu === pedido.current) setRespostas(Object.fromEntries(pedidos.map((m, i) => [m, lidas[i].data])));
     } catch (e) {
       if (e?.response?.status === 401) { semSessao(); return; }
       if (meu === pedido.current) setErro(mensagemDeErro(e));
     } finally {
       if (meu === pedido.current) setCarregando(false);
     }
-  }, [ano, mes, semSessao]);
+  }, [meses, semSessao]);
 
   // A mesma guarda do mês, com o erro à parte: pedir de novo limpa só o da contagem.
   const carregarContagem = useCallback(async () => {
@@ -319,17 +428,30 @@ export default function BolsoCalendario() {
     return () => document.removeEventListener('visibilitychange', aoVoltar);
   }, [carregar, carregarContagem, vista]);
 
+  // Na Semana as setas andam 7 dias; no resto, um mês (para hoje, se for o mês de hoje).
   const irPara = (passo) => {
+    if (vista === 'semana') { setEscolhido(diaAoLado(escolhido, 7 * passo)); return; }
     const novo = mesAoLado(ano, mes, passo);
-    setMes(novo);
-    setEscolhido(hoje.slice(0, 7) === isoDe(novo.ano, novo.mes, 1).slice(0, 7) ? hoje : isoDe(novo.ano, novo.mes, 1));
+    setEscolhido(hoje.slice(0, 7) === chaveDoMes(novo.ano, novo.mes) ? hoje : isoDe(novo.ano, novo.mes, 1));
   };
   const escolherVista = (v) => { setVista(v); guardar(CHAVE_VISTA, v); };
   const escolherFiltro = (f) => { setFiltro(f); guardar(CHAVE_FILTRO, f); };
+  const escolherLoja = (id) => { setLojaGuardada(id); guardar(CHAVE_LOJA, id || null); };
+
+  // As lojas não dependem do mês: servem as da última leitura (as pastilhas não piscam ao mudar
+  // de semana). Uma loja guardada que já não está entre elas conta como «Todas».
+  const lojas = Object.values(respostas)[0]?.lojas || [];
+  const loja = lojas.some((l) => l.id === lojaGuardada) ? lojaGuardada : '';
 
   const erroVisivel = erro || (vista === 'contagem' ? erroDaContagem : null);
-  // Os números no ecrã são DESTE mês? Enquanto não forem, esqueletos.
-  const desteMes = dados && dados.ano === ano && dados.mes === mes ? dados : null;
+  // Os números no ecrã são DESTES meses? Enquanto faltar um, esqueletos. O painel e o editar
+  // usam o mês do dia escolhido (a grelha do painel é a desse mês); a Semana, os meses juntos.
+  // O filtro de loja só muda o que se desenha: o painel recebe o mês inteiro (todas as lojas).
+  const lidas = meses.split(' ').map((m) => respostas[m]);
+  const prontos = lidas.every(Boolean);
+  const desteMes = prontos ? respostas[chaveDoMes(ano, mes)] : null;
+  const doMes = filtrarPorLoja(desteMes, loja);
+  const daSemana = prontos && vista === 'semana' ? filtrarPorLoja(juntarMeses(lidas), loja) : null;
 
   const abrirPainel = (p) => {
     aberturas.current += 1;
@@ -352,10 +474,11 @@ export default function BolsoCalendario() {
   };
   // «+ Marcar ida» abre o painel vazio, com a loja a escolher (desenho, secção 4); as horas
   // vêm do horário da loja que se escolher (PainelIda). Fica o dia tocado e a pessoa por
-  // omissão, como no Tapar.
+  // omissão, como no Tapar. Com o filtro de loja, abre já nessa loja; as horas dela no dia
+  // põe-nas o painel, com a mesma regra de quando se escolhe a loja lá dentro.
   const marcar = () => abrirPainel({
     modo: 'marcar',
-    inicial: { datas: escolhido ? [escolhido] : [], location_id: '', inicio: '', fim: '' },
+    inicial: { datas: escolhido ? [escolhido] : [], location_id: loja, inicio: '', fim: '' },
   });
   const guardado = () => {
     setPainel(null);
@@ -373,27 +496,31 @@ export default function BolsoCalendario() {
           <BotaoMenu onClick={() => setMenu(true)} />
           <div className="min-w-0 flex-1">
             <h1 className="font-heading font-bold text-base leading-tight truncate first-letter:uppercase">
-              {tituloDoMes(ano, mes)}
+              {vista === 'semana' ? tituloDaSemana(escolhido) : tituloDoMes(ano, mes)}
             </h1>
             <p className="text-[11px] text-muted-foreground leading-tight truncate">
               {carregando ? 'A ler…' : 'Calendário das lojas'}
               {erroVisivel && <span className="text-destructive"> · falhou</span>}
             </p>
           </div>
-          <button type="button" aria-label="Mês anterior" onClick={() => irPara(-1)} className={seta}>
+          <button type="button" aria-label={vista === 'semana' ? 'Semana anterior' : 'Mês anterior'} onClick={() => irPara(-1)} className={seta}>
             <ChevronLeft className="h-5 w-5" />
           </button>
-          <button type="button" aria-label="Mês seguinte" onClick={() => irPara(1)} className={seta}>
+          <button type="button" aria-label={vista === 'semana' ? 'Semana seguinte' : 'Mês seguinte'} onClick={() => irPara(1)} className={seta}>
             <ChevronRight className="h-5 w-5" />
           </button>
         </div>
         <div className="px-3 pb-2">
           <Calha>
+            <Segmento activo={vista === 'semana'} onClick={() => escolherVista('semana')}>Semana</Segmento>
             <Segmento activo={vista === 'mes'} onClick={() => escolherVista('mes')}>Mês</Segmento>
             <Segmento activo={vista === 'lista'} onClick={() => escolherVista('lista')}>Lista</Segmento>
             <Segmento activo={vista === 'contagem'} onClick={() => escolherVista('contagem')}>Contagem</Segmento>
           </Calha>
         </div>
+        {vista !== 'contagem' && lojas.length > 0 && (
+          <FiltroDeLoja lojas={lojas} escolhida={loja} onEscolher={escolherLoja} />
+        )}
       </header>
 
       <main className="px-3 pt-3 pb-6 max-w-2xl mx-auto">
@@ -407,22 +534,30 @@ export default function BolsoCalendario() {
           </section>
         )}
 
+        {vista === 'semana' && (!daSemana ? <Esqueleto /> : filtro === 'ferias'
+          ? <FeriasDaSemana dados={daSemana} escolhido={escolhido} />
+          : (
+            <>
+              <Semana dados={daSemana} filtro={filtro} escolhido={escolhido} onTocar={setEscolhido} />
+              <Dia dados={daSemana} iso={escolhido} filtro={filtro} onTapar={tapar} onIda={editar} />
+            </>
+          ))}
         {vista === 'mes' && (
           <>
             <section className="rounded-2xl border bg-card p-2">
               <GrelhaDoMes
                 ano={ano} mes={mes} hoje={hoje} escolhidos={escolhido ? [escolhido] : []} onTocar={setEscolhido}
-                pontos={desteMes ? diasComPonto(desteMes, filtro) : []} corDoPonto={COR_DO_PONTO[filtro]}
+                pontos={doMes ? diasComPonto(doMes, filtro) : []} corDoPonto={COR_DO_PONTO[filtro]}
                 feriados={desteMes ? feriadosDoMes(desteMes) : []}
               />
             </section>
-            {desteMes
-              ? <Dia dados={desteMes} iso={escolhido} filtro={filtro} onTapar={tapar} onIda={editar} />
+            {doMes
+              ? <Dia dados={doMes} iso={escolhido} filtro={filtro} onTapar={tapar} onIda={editar} />
               : <Esqueleto />}
           </>
         )}
-        {vista === 'lista' && (desteMes
-          ? <Lista dados={desteMes} filtro={filtro} hoje={hoje} onTapar={tapar} onIda={editar} />
+        {vista === 'lista' && (doMes
+          ? <Lista dados={doMes} filtro={filtro} hoje={hoje} onTapar={tapar} onIda={editar} />
           : <Esqueleto />)}
         {vista === 'contagem' && (
           <Contagem linhas={contagem && contagem.ano === ano ? contagem.linhas : null} ano={ano} mes={mes} />

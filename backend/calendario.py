@@ -507,7 +507,8 @@ def resposta_do_mes(ano: int, mes: int, dados: Dict, eu: Optional[str], pode_mar
                  for i in idas],
         "ausencias": [{"nome": _ficha(a).get("name") or NOME_SEM_CONTA, "tipo": a.get("leave_type"),
                        "inicio": (a.get("start_date") or "")[:10], "fim": (a.get("end_date") or "")[:10],
-                       "loja": (lojas.get(_ficha(a).get("location_id")) or {}).get("name")}
+                       "loja": (lojas.get(_ficha(a).get("location_id")) or {}).get("name"),
+                       "location_id": _ficha(a).get("location_id")}
                       for a in ausencias],
         "lojas": [{"id": l["id"], "nome": l.get("name")}
                   for l in sorted(lojas.values(), key=lambda l: (l.get("name") or "").lower()) if l.get("horario")],

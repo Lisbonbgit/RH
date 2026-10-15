@@ -15,8 +15,9 @@ import { GrelhaDoMes } from './partilhado';
 //
 // `painel`: { modo: 'tapar' | 'marcar' | 'editar', nomeDaLoja?, inicial: { datas, location_id,
 // inicio, fim, user_ids?, ida_id?, nome? } }. Monta-se de novo a cada abertura (o ecrã dá-lhe
-// uma `key`), por isso o estado começa sempre no `inicial`. No `marcar` a loja e as horas
-// chegam vazias (desenho, secção 4: «o mesmo painel vazio, com a loja a escolher»).
+// uma `key`), por isso o estado começa sempre no `inicial`. No `marcar` as horas chegam vazias
+// e a loja também (desenho, secção 4: «o mesmo painel vazio, com a loja a escolher»), ou a do
+// filtro de loja do ecrã; as horas enche-as o painel, com o horário dessa loja (`horarioDe`).
 //
 // Vermelho de texto: `text-destructive-strong dark:text-destructive`, o par que passa sobre o
 // fundo do painel nos dois temas (6,2:1 e 4,7:1). O `text-destructive` sozinho dá 3,8:1 no
@@ -28,10 +29,16 @@ const MAXIMO_DE_PESSOAS = 2; // o servidor recusa mais (POST /api/bolso/calendar
 export default function PainelIda({ painel, dados, hoje, onFechar, onGuardado, onSemSessao }) {
   const { modo, inicial } = painel;
   const editar = modo === 'editar';
+  // O horário da loja num dia, se estiver aberta. Uma só regra para as horas da loja que vem
+  // no `inicial` e da que se escolher depois (`escolherLoja`).
+  const horarioDe = (id, iso) => (dados.dias || []).find((d) => d.data === iso)
+    ?.lojas.find((l) => l.location_id === id && l.estado === 'aberta');
+  const base = (inicial.datas || [])[0];
+  const daLoja = horarioDe(inicial.location_id, base);
   const [loja, setLoja] = useState(inicial.location_id || '');
   const [pessoas, setPessoas] = useState(() => inicial.user_ids || pessoasIniciais(dados));
-  const [inicio, setInicio] = useState(inicial.inicio || '');
-  const [fim, setFim] = useState(inicial.fim || '');
+  const [inicio, setInicio] = useState(inicial.inicio || daLoja?.abre || '');
+  const [fim, setFim] = useState(inicial.fim || daLoja?.fecha || '');
   const [datas, setDatas] = useState(inicial.datas || []);
   const [aGravar, setAGravar] = useState(false);
   const [erro, setErro] = useState(null);
@@ -39,7 +46,6 @@ export default function PainelIda({ painel, dados, hoje, onFechar, onGuardado, o
   const [confirmarApagar, setConfirmarApagar] = useState(false);
 
   const nomeDaLoja = (dados.lojas || []).find((l) => l.id === loja)?.nome || '';
-  const base = (inicial.datas || [])[0];
   const outros = editar ? [] : outrosDiasComBuraco(dados, base, loja, inicio, fim).filter((d) => !datas.includes(d));
   const quantas = datas.length * pessoas.length;
   const pronto = Boolean(loja && inicio && fim && quantas > 0 && !aGravar);
@@ -61,11 +67,9 @@ export default function PainelIda({ painel, dados, hoje, onFechar, onGuardado, o
   // No `marcar`, escolher a loja enche as horas com o horário dela no dia (o primeiro
   // escolhido); trocar de loja volta a enchê-las enquanto forem as da loja anterior. Horas
   // mexidas à mão ficam.
-  const horarioDe = (id) => (dados.dias || []).find((d) => d.data === datas[0])
-    ?.lojas.find((l) => l.location_id === id && l.estado === 'aberta');
   const escolherLoja = (id) => {
-    const antes = horarioDe(loja);
-    const nova = horarioDe(id);
+    const antes = horarioDe(loja, datas[0]);
+    const nova = horarioDe(id, datas[0]);
     const porMexer = (!inicio && !fim) || (antes && inicio === antes.abre && fim === antes.fecha);
     setLoja(id);
     if (modo === 'marcar' && nova && porMexer) { setInicio(nova.abre); setFim(nova.fecha); }
