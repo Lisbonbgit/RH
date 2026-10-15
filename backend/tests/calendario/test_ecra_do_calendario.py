@@ -660,6 +660,28 @@ devolve({ recarregado, todas: { escolhida: escolhida(), linhas: grelha().length,
     assert r == {"escolhida": ["Todas"], "grelha": GRELHA_DE_26_OUT}
 
 
+def test_a_pastilha_escolhida_e_levada_a_vista_ao_abrir_e_ao_mudar(tmp_path):
+    # Medido no browser a 375 px: com «Oeiras» (a última) guardada, a fila abria no início — via-se
+    # «Todas» sem destaque e a escolhida escondida à direita. O jsdom não tem `scrollIntoView`:
+    # espia-se e regista-se em que pastilha foi chamado e com que opções.
+    outubro, novembro = _semana()
+    r = _ecra(tmp_path, FILA_DE_LOJAS + """
+const ao_abrir = vistas.splice(0);
+await clicar(pastilha('Belém'));
+devolve({ ao_abrir, ao_mudar: vistas.splice(0),
+          sem_barra: fila().classList.contains('[scrollbar-width:none]')
+                     && fila().classList.contains('[&::-webkit-scrollbar]:hidden') });
+""", outubro, novembro=novembro, vista=None, antes="""
+localStorage.setItem('bolso_cal_loja', %s);
+const vistas = [];
+window.Element.prototype.scrollIntoView = function (opcoes) { vistas.push([this.textContent, opcoes]); };
+""" % json.dumps(sn.OEIRAS))
+    # `block: 'nearest'`: só a fila desliza para o lado; a página não salta na vertical.
+    assert r == {"ao_abrir": [["Oeiras", {"block": "nearest", "inline": "center"}]],
+                 "ao_mudar": [["Belém", {"block": "nearest", "inline": "center"}]],
+                 "sem_barra": True}
+
+
 def test_com_uma_loja_escolhida_marcar_abre_nela_e_tapar_e_editar_continuam(tmp_path):
     outubro, novembro = _semana()
     r = _ecra(tmp_path, FILA_DE_LOJAS + LER_O_PAINEL + """

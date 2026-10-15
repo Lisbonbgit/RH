@@ -285,11 +285,17 @@ function FeriasDaSemana({ dados, escolhido }) {
 }
 
 // O filtro de loja: «Todas» + uma pastilha por loja, de 44px. Com muitas lojas a fila desliza
-// para o lado sozinha (a página não). As cores são as das pessoas no painel da ida.
+// para o lado sozinha (a página não), sem barra à vista. As cores são as das pessoas no painel da ida.
+// A escolhida é levada à vista ao abrir e ao mudar: com «Oeiras» (a última) guardada, a fila
+// abria no início e via-se «Todas» sem destaque — não se percebia que só se via uma loja.
 function FiltroDeLoja({ lojas, escolhida, onEscolher }) {
+  const activa = useRef(null);
+  // `block: 'nearest'`: só a fila desliza; a página não salta. O `?.` é para quem não o tem (jsdom).
+  useEffect(() => { activa.current?.scrollIntoView?.({ block: 'nearest', inline: 'center' }); }, [escolhida]);
   const pastilha = (id, nome) => (
     <button
-      key={id || 'todas'} type="button" aria-pressed={escolhida === id} onClick={() => onEscolher(id)}
+      key={id || 'todas'} ref={escolhida === id ? activa : undefined}
+      type="button" aria-pressed={escolhida === id} onClick={() => onEscolher(id)}
       className={`h-11 shrink-0 px-4 rounded-full text-sm font-semibold focus-visible:outline-none
                   focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${escolhida === id
         ? 'bg-primary text-primary-foreground dark:text-background' : 'bg-muted text-foreground'}`}
@@ -298,7 +304,8 @@ function FiltroDeLoja({ lojas, escolhida, onEscolher }) {
     </button>
   );
   return (
-    <div role="group" aria-label="Filtro de loja" className="flex gap-2 overflow-x-auto px-3 pb-2">
+    <div role="group" aria-label="Filtro de loja" className="flex gap-2 overflow-x-auto px-3 pb-2
+                [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {pastilha('', 'Todas')}
       {lojas.map((l) => pastilha(l.id, nomeCurtoDaLoja(l.nome)))}
     </div>
