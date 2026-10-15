@@ -177,3 +177,128 @@ def feriados_da_loja(dia: date, personalizados: List[Dict], loja: Dict) -> List[
             if _cai_no_dia(h, dia) and (
                 (h.get("company_id") and h.get("company_id") == loja.get("company_id"))
                 or (h.get("location_id") and h.get("location_id") == loja.get("id")))]
+
+
+# --- A escala: quem está em cada loja, num dia, pela escala fixa do RH ----------------------
+
+
+def atribuicao_do_dia(atribuicoes: List[Dict], dia: date) -> Optional[Dict]:
+    """A regra do `find_schedule_assignment` do `server.py`: a primeira, por data de início,
+    que cobre o dia (`end_date` vazio = sem fim)."""
+    iso = dia.isoformat()
+    for a in sorted(atribuicoes, key=lambda a: a.get("start_date") or ""):
+        inicio = (a.get("start_date") or "")[:10]
+        fim = (a.get("end_date") or "")[:10]
+        if inicio and inicio <= iso and (not fim or iso <= fim):
+            return a
+    return None
+
+
+def _preparar(dados: Dict) -> Dict:
+    """Os índices que cada dia consulta, construídos uma vez por pedido."""
+    atribuicoes = {}  # type: Dict[str, List[Dict]]
+    for a in dados.get("atribuicoes", []):
+        atribuicoes.setdefault(a.get("employee_id"), []).append(a)
+    utilizadores = {u["id"]: u for u in dados.get("utilizadores", [])}
+    lojas = {l["id"]: l for l in dados.get("lojas", [])}
+    empregados = dados.get("empregados", [])
+    return {
+        "lojas": lojas,
+        "lojas_ordenadas": sorted(lojas.values(), key=lambda l: (l.get("name") or "").lower()),
+        "empregados": empregados,
+        "nome_do_emp": {e["id"]: e.get("name") for e in empregados},
+        "atribuicoes": atribuicoes,
+        "modelos": {m["id"]: m for m in dados.get("modelos", [])},
+        "utilizadores": utilizadores,
+        "user_do_emp": {u["employee_id"]: u["id"] for u in utilizadores.values() if u.get("employee_id")},
+    }
+
+
+def _escala(dia: date, p: Dict) -> Dict[str, Tuple[str, Intervalo]]:
+    """`{employee_id: (location_id, horas)}` de quem trabalha neste dia pela escala.
+
+    Parte de `employees` e não das atribuições: quem sai é apagado e as atribuições dele
+    ficam órfãs (desenho, medido 6). Dias = `atribuição.work_days or modelo.work_days` (o
+    recurso do «Em falta»). A entrada de `dias` desse dia diz a loja (vazia = a da ficha) e
+    as horas (vazias = o horário da loja). Uma entrada para uma loja fechada, sem horário ou
+    por abrir ignora-se; as horas recortam-se ao horário.
+    """
+    semana = dia.weekday()
+    fora = {}
+    for emp in p["empregados"]:
+        atribuicao = atribuicao_do_dia(p["atribuicoes"].get(emp["id"], []), dia)
+        if not atribuicao:
+            continue
+        modelo = p["modelos"].get(atribuicao.get("template_id")) or {}
+        if semana not in (atribuicao.get("work_days") or modelo.get("work_days") or []):
+            continue
+        entrada = next((d for d in modelo.get("dias") or [] if d.get("dia") == semana), {})
+        loja_id = entrada.get("location_id") or emp.get("location_id")
+        estado, janela = horario_do_dia(p["lojas"].get(loja_id), dia)
+        if estado != "aberta":
+            continue
+        if entrada.get("inicio") and entrada.get("fim"):
+            pedido = (minutos(entrada["inicio"]), minutos(entrada["fim"]))
+        else:
+            pedido = janela
+        horas = recortar(pedido, janela)
+        if horas:
+            fora[emp["id"]] = (loja_id, horas)
+    return fora
+
+
+def ausentes(dia: date, ausencias: List[Dict]) -> Set[str]:
+    """Os `employee_id` com ausência APROVADA (de qualquer tipo) que inclui o dia."""
+    iso = dia.isoformat()
+    return {a.get("employee_id") for a in ausencias
+            if a.get("status") == "aprovado"
+            and (a.get("start_date") or "")[:10] <= iso <= (a.get("end_date") or "")[:10]}
+
+
+def _pessoa(user_id, nome, horas: Intervalo, origem: str, extra: bool = False, ida_id=None) -> Dict:
+    return {"user_id": user_id, "nome": nome, "inicio": hhmm(horas[0]), "fim": hhmm(horas[1]),
+            "origem": origem, "extra": extra, "ida_id": ida_id}
+
+
+def _loja_do_dia(loja: Dict, dia: date, pessoas: List[Dict], personalizados: List[Dict]) -> Dict:
+    estado, janela = horario_do_dia(loja, dia)
+    pessoas = sorted(pessoas, key=lambda x: (x["inicio"], x["nome"] or ""))
+    buracos = []
+    if janela:
+        ocupado = [(minutos(x["inicio"]), minutos(x["fim"])) for x in pessoas]
+        buracos = [{"inicio": hhmm(a), "fim": hhmm(b)} for a, b in subtrair([janela], ocupado)]
+    return {
+        "location_id": loja["id"], "nome": loja.get("name"), "estado": estado,
+        "abre": hhmm(janela[0]) if janela else None, "fecha": hhmm(janela[1]) if janela else None,
+        "feriados": feriados_da_loja(dia, personalizados, loja),
+        "pessoas": pessoas, "buracos": buracos,
+    }
+
+
+def dia_do_calendario(dia: date, dados: Dict, p: Optional[Dict] = None) -> Dict:
+    """Um dia: para cada loja com horário (as por abrir não aparecem), quem lá está e os buracos.
+
+    1. a escala (`_escala`); 2. sai quem tem ausência aprovada; 3. buracos = horário menos a
+    união das horas de quem lá está («ninguém» é um buraco único igual a abre–fecha).
+    """
+    p = p or _preparar(dados)
+    escala = _escala(dia, p)
+    for emp_id in ausentes(dia, dados.get("ausencias", [])):
+        escala.pop(emp_id, None)
+    presentes = {}  # type: Dict[str, List[Dict]]
+    for emp_id, (loja_id, horas) in escala.items():
+        presentes.setdefault(loja_id, []).append(_pessoa(
+            p["user_do_emp"].get(emp_id), p["nome_do_emp"].get(emp_id), horas, "escala"))
+    personalizados = dados.get("feriados", [])
+    return {
+        "data": dia.isoformat(),
+        "feriados": feriados_do_dia(dia, personalizados),
+        "lojas": [_loja_do_dia(loja, dia, presentes.get(loja["id"], []), personalizados)
+                  for loja in p["lojas_ordenadas"]
+                  if horario_do_dia(loja, dia)[0] in ("aberta", "fechada")],
+    }
+
+
+def calendario_do_mes(ano: int, mes: int, dados: Dict) -> List[Dict]:
+    p = _preparar(dados)
+    return [dia_do_calendario(date(ano, mes, d), dados, p) for d in range(1, monthrange(ano, mes)[1] + 1)]
