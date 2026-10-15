@@ -39,7 +39,8 @@ def test_as_idas_do_mes_com_os_nomes_e_o_recurso_para_o_que_foi_apagado():
 
 def test_as_ausencias_sao_so_as_aprovadas_que_tocam_o_mes():
     assert _resposta()["ausencias"] == [
-        {"nome": "Weber", "tipo": "ferias", "inicio": "2026-10-21", "fim": "2026-10-25", "loja": "Amadora"}]
+        {"nome": "Weber", "tipo": "ferias", "inicio": "2026-10-21", "fim": "2026-10-25", "loja": "Amadora",
+         "location_id": sn.AMADORA}]
 
 
 def test_as_lojas_sao_so_as_com_horario_por_nome():
@@ -80,7 +81,8 @@ def _com_a_pizzaria():
 
 def test_as_ausencias_sao_so_da_empresa_das_lojas_com_horario_mesmo_sem_loja_na_ficha():
     assert _com_a_pizzaria()["ausencias"] == [
-        {"nome": "Joana", "tipo": "ferias", "inicio": "2026-10-13", "fim": "2026-10-14", "loja": None}]
+        {"nome": "Joana", "tipo": "ferias", "inicio": "2026-10-13", "fim": "2026-10-14", "loja": None,
+         "location_id": None}]
 
 
 def test_os_colaboradores_de_outra_empresa_nao_se_escalam_e_os_gestores_ficam_todos():

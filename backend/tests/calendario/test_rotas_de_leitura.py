@@ -40,7 +40,7 @@ def test_o_mes_no_servidor_tem_os_buracos_as_ferias_e_as_idas(semana):
     assert _loja(r, "2026-10-27", "Oeiras")["buracos"] == []
     assert _loja(r, "2026-10-22", "Amadora")["buracos"] == [{"inicio": "14:00", "fim": "23:00"}]
     assert r["ausencias"] == [{"nome": "Weber", "tipo": "ferias", "inicio": "2026-10-21",
-                               "fim": "2026-10-25", "loja": "Amadora"}]
+                               "fim": "2026-10-25", "loja": "Amadora", "location_id": sn.AMADORA}]
     assert [(i["data"], i["nome"], i["loja"]) for i in r["idas"]] == [("2026-10-27", "Débora Ferreira", "Oeiras")]
     assert [l["nome"] for l in r["lojas"]] == ["Alfragide", "Algueirão", "Amadora", "Belém", "Benfica", "Oeiras"]
 

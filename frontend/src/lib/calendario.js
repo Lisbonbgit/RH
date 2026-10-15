@@ -2,15 +2,15 @@
 //
 // O servidor manda o mês inteiro num pedido (`GET /api/bolso/calendario`, montado por
 // `backend/calendario.py::resposta_do_mes`); daqui sai o que o ecrã desenha: a grelha, os
-// pontos, a Lista, a Contagem e o atalho das outras terças. Tudo puro, corrido em Node a
-// partir da suite do backend (`backend/tests/calendario/test_lib_calendario.py`).
+// pontos, a Semana, a Lista, a Contagem, o filtro de loja e o atalho das outras terças. Tudo
+// puro, corrido em Node a partir da suite do backend (`backend/tests/calendario/test_lib_calendario.py`).
 
 export const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
   'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
 // 0 = segunda … 6 = domingo, como o `work_days` do servidor.
 export const DIAS_DA_SEMANA = ['segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado', 'domingo'];
 const NO_PLURAL = ['segundas', 'terças', 'quartas', 'quintas', 'sextas', 'sábados', 'domingos'];
-export const VISTAS = ['mes', 'lista', 'contagem'];
+export const VISTAS = ['semana', 'mes', 'lista', 'contagem'];
 export const FILTROS = ['pessoal', 'geral', 'ferias'];
 export const NOMES_DAS_AUSENCIAS = {
   ferias: 'Férias', folga: 'Folga', doenca: 'Doença', falta: 'Falta', ausencia: 'Ausência',
@@ -55,6 +55,85 @@ export const horaCurta = (hhmm) => {
 export const intervaloCurto = (inicio, fim) => `${horaCurta(inicio)}–${horaCurta(fim)}`;
 export const primeiroNome = (nome) => String(nome || '').trim().split(/\s+/)[0] || '';
 export const quantosDias = (n) => `${String(n).replace('.', ',')} ${n === 1 ? 'dia' : 'dias'}`;
+
+// --- A Semana: lojas × 7 dias, de segunda a domingo ------------------------------------------
+
+// Em UTC não há horas de verão: somar um dia é sempre somar um dia (a 25/10, com 25 horas,
+// somar 24 h à meia-noite local deixava-nos no mesmo dia).
+export const diaAoLado = (iso, passo) => {
+  const d = new Date(Date.UTC(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)) - 1, Number(iso.slice(8)) + passo));
+  return isoDe(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+};
+
+// O domingo FECHA a semana (0 = segunda … 6 = domingo).
+export const semanaDe = (iso) => {
+  const segunda = diaAoLado(iso, -diaDaSemana(iso));
+  return [0, 1, 2, 3, 4, 5, 6].map((n) => diaAoLado(segunda, n));
+};
+
+// Os meses a pedir ao servidor: 1, ou 2 quando a semana atravessa o mês.
+export const mesesDaSemana = (iso) => [...new Set(semanaDe(iso).map((d) => d.slice(0, 7)))]
+  .map((m) => ({ ano: Number(m.slice(0, 4)), mes: Number(m.slice(5)) }));
+
+// «5 – 11 out», «26 out – 1 nov», «29 dez – 4 jan» (jan, fev, … dez são as 3 primeiras letras).
+const diaEMesCurto = (iso) => `${Number(iso.slice(8))} ${MESES[Number(iso.slice(5, 7)) - 1].slice(0, 3)}`;
+export const tituloDaSemana = (iso) => {
+  const [segunda, , , , , , domingo] = semanaDe(iso);
+  const inicio = segunda.slice(0, 7) === domingo.slice(0, 7) ? Number(segunda.slice(8)) : diaEMesCurto(segunda);
+  return `${inicio} – ${diaEMesCurto(domingo)}`;
+};
+
+export const nomeCurtoDaLoja = (nome) => String(nome || '').replace(/^Loja /, '');
+
+// Uma célula da Semana a partir de `dias[].lojas[]` do servidor (`undefined` = a loja não está
+// nesse dia: por abrir). Geral = a cobertura; Pessoal = as horas das MINHAS idas lá.
+export function celulaDaSemana(loja, filtro, eu) {
+  const vazia = { estado: 'vazia', texto: '' };
+  if (!loja) return vazia;
+  if (filtro === 'pessoal') {
+    const minhas = (loja.pessoas || []).filter((p) => p.origem === 'ida' && p.user_id === eu);
+    return minhas.length ? { estado: 'minha', texto: minhas.map((p) => intervaloCurto(p.inicio, p.fim)).join(' · ') } : vazia;
+  }
+  if (loja.estado === 'fechada') return { estado: 'fechada', texto: 'fech.' };
+  const buracos = loja.buracos || [];
+  if (!buracos.length) return { estado: 'ok', texto: 'ok' };
+  if (buracos.length > 1) return { estado: 'falta', texto: `${buracos.length} faltas` };
+  const [b] = buracos;
+  if (b.inicio === loja.abre && b.fim === loja.fecha) return { estado: 'ninguem', texto: '—' };
+  return { estado: 'falta', texto: intervaloCurto(b.inicio, b.fim) };
+}
+
+// Uma semana que atravessa dois meses pede os dois ao servidor e junta-os aqui. A ausência que
+// toca os dois meses vem nas duas respostas (não traz id: compara-se inteira). O resto
+// (lojas, pessoas, eu, pode_marcar) não depende do mês: vem da primeira.
+export function juntarMeses(respostas) {
+  const vistas = new Set();
+  const ausencias = respostas.flatMap((r) => r.ausencias || []).filter((a) => {
+    const chave = JSON.stringify(a);
+    if (vistas.has(chave)) return false;
+    vistas.add(chave);
+    return true;
+  });
+  return {
+    ...respostas[0],
+    dias: respostas.flatMap((r) => r.dias || []),
+    idas: respostas.flatMap((r) => r.idas || []),
+    ausencias,
+  };
+}
+
+// O filtro de loja: só essa loja nos dias, nas idas e nas lojas, e as ausências de quem tem
+// essa loja na ficha. Sem loja, os dados tal como vieram. Nunca mexe nos dados recebidos.
+export function filtrarPorLoja(dados, locationId) {
+  if (!locationId || !dados) return dados;
+  return {
+    ...dados,
+    dias: (dados.dias || []).map((d) => ({ ...d, lojas: (d.lojas || []).filter((l) => l.location_id === locationId) })),
+    idas: (dados.idas || []).filter((i) => i.location_id === locationId),
+    lojas: (dados.lojas || []).filter((l) => l.id === locationId),
+    ausencias: (dados.ausencias || []).filter((a) => a.location_id === locationId),
+  };
+}
 
 export const minhasIdas = (dados) => (dados?.idas || []).filter((i) => i.user_id === dados.eu);
 export const ausenciasDoDia = (dados, iso) => (
