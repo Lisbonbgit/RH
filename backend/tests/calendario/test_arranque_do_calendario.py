@@ -51,7 +51,7 @@ def prod(mongod_porta, monkeypatch):
         "start_date": "2026-01-01", "end_date": None, "created_at": "2026-01-01T00:00:00+00:00"})
     monkeypatch.setenv("MONGO_URL", url)
     monkeypatch.setenv("DB_NAME", BASE)
-    for nome in ("GRAVAR", "DESDE", "BENFICA_DESDE", "PROCURAR_JSON"):
+    for nome in ("GRAVAR", "DESDE", "BENFICA_DESDE", "PROCURAR_JSON", "SALTAR"):
         monkeypatch.delenv(nome, raising=False)
     # Os nomes desta base são os do teste: o PROCURAR real (nomes de produção) fica de fora.
     monkeypatch.setattr(arranque, "PROCURAR", {})
@@ -221,6 +221,9 @@ def test_a_ficha_noutra_loja_da_um_aviso_e_nao_para(prod, capsys):
      "A pessoa «Joana» casa com 2"),
     (lambda db: db.employees.delete_one({"id": "e-web"}),
      "A pessoa «Weber» casa com 0: nenhum"),
+    # Sem SALTAR, a Rafaela que ainda não existe no RH continua a parar tudo, como antes.
+    (lambda db: db.employees.delete_one({"id": "e-raf"}),
+     "A pessoa «Rafaela» casa com 0: nenhum"),
     (lambda db: db.work_schedule_assignments.insert_one({
         "id": "a-web", "employee_id": "e-web", "template_id": "t-5x2", "work_days": [0, 1, 2, 3, 4],
         "start_date": "2026-11-01", "end_date": None}),
@@ -300,3 +303,29 @@ def test_a_loja_alfragide_da_pizzaria_nao_para_o_ensaio_nem_recebe_nada(prod, mo
     assert prod.locations.find_one({"id": "l-piz-alf"}, {"_id": 0}) == da_pizzaria
     for nome in ("Emily", "Beatrice"):
         assert {d["location_id"] for d in _escala(prod, "Escala " + nome)["dias"]} == {"l-alf"}, nome
+
+
+# ---- Correcção: a Rafaela ainda não existe no RH de produção; entra mais tarde ----
+
+def test_saltar_deixa_a_rafaela_de_fora_e_grava_as_outras(prod, monkeypatch, capsys):
+    prod.employees.delete_one({"id": "e-raf"})
+    monkeypatch.setenv("SALTAR", "Rafaela")
+    assert arranque.main() == 0
+    saida = capsys.readouterr().out
+    assert "PARADO" not in saida
+    assert "Rafaela: SALTADA (SALTAR)" in saida
+    monkeypatch.setenv("GRAVAR", "1")
+    assert arranque.main() == 0
+    nomes = sorted(e["name"] for e in prod.work_schedule_templates.find({"name": {"$regex": "^Escala "}}))
+    assert nomes == sorted("Escala " + c for c in arranque.ESCALAS if c != "Rafaela")
+    assert prod.locations.find_one({"id": "l-bel"})["horario"] == arranque.HORARIOS["Belém"]   # a loja entra
+
+
+def test_saltar_com_um_nome_que_nao_e_de_ninguem_para_antes_de_escrever(prod, monkeypatch, capsys):
+    antes = _tudo(prod)
+    monkeypatch.setenv("SALTAR", "Rafela")
+    monkeypatch.setenv("GRAVAR", "1")
+    assert arranque.main() == 1
+    saida = capsys.readouterr().out
+    assert "PARADO, nada foi escrito: SALTAR tem «Rafela», que não é nenhuma das pessoas" in saida
+    assert _tudo(prod) == antes

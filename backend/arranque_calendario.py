@@ -22,7 +22,9 @@ stdin, com o MONGO_URL e o DB_NAME do próprio contentor:
 Variáveis opcionais: DESDE=AAAA-MM-DD (por omissão 2026-10-01), o primeiro dia das
 escalas novas; BENFICA_DESDE=AAAA-MM-DD, o dia em que Benfica abre — sem ela, Benfica
 fica de fora e o script di-lo; PROCURAR_JSON='{"Joana": "Joana Pereira"}', quando um
-nome casa com mais de um registo (junta-se ao PROCURAR, sem mudar este ficheiro).
+nome casa com mais de um registo (junta-se ao PROCURAR, sem mudar este ficheiro);
+SALTAR=Rafaela (chaves de ESCALAS separadas por vírgulas), quem fica de fora desta vez —
+não se procura nem se escreve, e entra ao correr outra vez sem SALTAR.
 """
 import json
 import os
@@ -135,13 +137,17 @@ def _planear_lojas(lojas, empresas, benfica_desde, linhas, ops):
     return ids
 
 
-def _planear_escalas(lojas, empresas, pessoas, escalas, atribuicoes, ids, desde, linhas, ops):
+def _planear_escalas(lojas, empresas, pessoas, escalas, atribuicoes, ids, desde, linhas, ops, saltar=()):
     """Uma «Escala <Nome>» por pessoa; a atribuição activa fecha na véspera de `desde`
     e uma nova começa em `desde`. Junta tudo às `linhas` e às `ops`."""
     nome_da_loja = {loja["id"]: loja.get("name") for loja in lojas}
     agora = datetime.now(timezone.utc).isoformat()
     vespera = (desde - timedelta(days=1)).isoformat()
     for chave, blocos in ESCALAS.items():
+        if chave in saltar:
+            linhas.append("%s: SALTADA (SALTAR) — não se procura nem se escreve; a escala entra "
+                          "ao correr outra vez sem SALTAR." % chave)
+            continue
         pessoa = _um(pessoas, PROCURAR.get(chave, chave), "A pessoa", empresas)
         fora = sorted({loja for loja, _, _, _ in blocos if loja not in ids})
         if fora:
@@ -214,8 +220,13 @@ def _planear_escalas(lojas, empresas, pessoas, escalas, atribuicoes, ids, desde,
             desde.isoformat(), ", ".join(DIAS[d] for d in work_days)))
 
 
-def planear(db, desde, benfica_desde):
+def planear(db, desde, benfica_desde, saltar=()):
     """(linhas para mostrar, operações para gravar) — sem escrever nada."""
+    # Um erro de escrita no SALTAR não pode passar em silêncio (e a pessoa entrar na mesma).
+    desconhecidas = [c for c in saltar if c not in ESCALAS]
+    if desconhecidas:
+        raise Paragem("SALTAR tem %s, que não é nenhuma das pessoas: %s." % (
+            ", ".join("«%s»" % c for c in desconhecidas), ", ".join(ESCALAS)))
     empresas = {e["id"]: e.get("name") for e in db.companies.find({}, {"_id": 0, "id": 1, "name": 1})}
     lojas = list(db.locations.find({}, {"_id": 0}))
     pessoas = list(db.employees.find({}, {"_id": 0, "id": 1, "name": 1, "location_id": 1, "company_id": 1}))
@@ -223,7 +234,7 @@ def planear(db, desde, benfica_desde):
     atribuicoes = list(db.work_schedule_assignments.find({}, {"_id": 0}))
     linhas, ops = [], []
     ids = _planear_lojas(lojas, empresas, benfica_desde, linhas, ops)
-    _planear_escalas(lojas, empresas, pessoas, escalas, atribuicoes, ids, desde, linhas, ops)
+    _planear_escalas(lojas, empresas, pessoas, escalas, atribuicoes, ids, desde, linhas, ops, saltar)
     return linhas, ops
 
 
@@ -245,11 +256,13 @@ def main():
     # -e PROCURAR_JSON='{"Joana": "Joana Pereira"}'. Um JSON partido rebenta aqui,
     # antes de qualquer leitura ou escrita na base.
     PROCURAR.update(json.loads(os.environ.get("PROCURAR_JSON") or "{}"))
+    # Quem ainda não existe no RH fica de fora desta vez: -e SALTAR=Rafaela.
+    saltar = [c.strip() for c in (os.environ.get("SALTAR") or "").split(",") if c.strip()]
     cliente = MongoClient(os.environ["MONGO_URL"], serverSelectionTimeoutMS=10000)
     try:
         db = cliente[os.environ["DB_NAME"]]
         try:
-            linhas, ops = planear(db, desde, benfica_desde)
+            linhas, ops = planear(db, desde, benfica_desde, saltar)
         except Paragem as erro:
             print("PARADO, nada foi escrito: %s" % erro)
             return 1
