@@ -6,6 +6,7 @@ import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Card, CardContent } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
+import { Checkbox } from '../../components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -32,11 +33,16 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
-import { MapPin, Plus, Pencil, Trash2, LocateFixed, Loader2, Star, Search } from 'lucide-react';
+import { MapPin, Plus, Pencil, Trash2, LocateFixed, Loader2, Star, Search, Clock } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import { toast } from 'sonner';
+import { DIAS_DA_SEMANA, horarioParaFormulario, formularioParaHorario, resumoDoHorario } from '../../lib/horarios';
+import { detalhesErro } from '../../lib/faturacao';
 
-const emptyForm = { name: '', company_id: '', address: '', latitude: '', longitude: '', geofence_radius: '', google_place_id: '' };
+const emptyForm = {
+  name: '', company_id: '', address: '', latitude: '', longitude: '', geofence_radius: '', google_place_id: '',
+  horario: horarioParaFormulario(null, null),
+};
 
 export default function AdminLocations() {
   const { selectedCompany } = useOutletContext();
@@ -85,6 +91,7 @@ export default function AdminLocations() {
         longitude: location.longitude ?? '',
         geofence_radius: location.geofence_radius ?? '',
         google_place_id: location.google_place_id || '',
+        horario: horarioParaFormulario(location.horario, location.aberta_desde),
       });
     } else {
       setSelectedLocation(null);
@@ -138,6 +145,18 @@ export default function AdminLocations() {
     );
   };
 
+  // O horário vive dentro do formData; estas duas mudam-no sem tocar no resto.
+  const mudarHorario = (mudanca) =>
+    setFormData((prev) => ({ ...prev, horario: { ...prev.horario, ...mudanca } }));
+  const mudarDia = (dia, mudanca) =>
+    setFormData((prev) => ({
+      ...prev,
+      horario: {
+        ...prev.horario,
+        dias: prev.horario.dias.map((d, i) => (i === dia ? { ...d, ...mudanca } : d)),
+      },
+    }));
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!formData.company_id) {
@@ -152,6 +171,8 @@ export default function AdminLocations() {
       longitude: formData.longitude === '' ? null : parseFloat(formData.longitude),
       geofence_radius: formData.geofence_radius === '' ? null : parseInt(formData.geofence_radius, 10),
       google_place_id: formData.google_place_id.trim() || null,
+      // Vai SEMPRE (horario + aberta_desde): o PUT só os escreve se vierem no corpo.
+      ...formularioParaHorario(formData.horario),
     };
     setSaving(true);
     try {
@@ -165,7 +186,7 @@ export default function AdminLocations() {
       setDialogOpen(false);
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Erro ao guardar local');
+      toast.error(detalhesErro(error, 'Erro ao guardar local').mensagem);
     } finally {
       setSaving(false);
     }
@@ -221,6 +242,7 @@ export default function AdminLocations() {
                     <TableHead>Empresa</TableHead>
                     <TableHead className="hidden md:table-cell">Morada</TableHead>
                     <TableHead className="hidden sm:table-cell">Cerca</TableHead>
+                    <TableHead className="hidden lg:table-cell">Horário</TableHead>
                     <TableHead className="text-right">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -247,6 +269,13 @@ export default function AdminLocations() {
                         ) : (
                           <span className="text-xs text-muted-foreground">Desligada</span>
                         )}
+                      </TableCell>
+                      <TableCell
+                        className="hidden lg:table-cell text-xs text-muted-foreground"
+                        data-testid={`location-horario-${location.id}`}
+                      >
+                        {resumoDoHorario(location.horario) || '—'}
+                        {location.aberta_desde ? ` · abre a ${location.aberta_desde}` : ''}
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-2">
@@ -329,6 +358,108 @@ export default function AdminLocations() {
                   placeholder="Morada do local"
                   data-testid="location-address-input"
                 />
+              </div>
+
+              {/* Horário — só as lojas com horário entram no calendário das lojas */}
+              <div className="rounded-lg border p-3 space-y-3 bg-muted/30" data-testid="location-horario">
+                <div className="flex items-center gap-2">
+                  <Clock className="h-4 w-4 text-primary" />
+                  <span className="font-medium text-sm">Horário da loja (opcional)</span>
+                </div>
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={formData.horario.tem}
+                    onCheckedChange={(v) => mudarHorario({ tem: v === true })}
+                    data-testid="location-horario-tem"
+                  />
+                  Esta loja tem horário (entra no calendário das lojas)
+                </label>
+                <p className="text-xs text-muted-foreground">
+                  Escritórios e locais fora do calendário ficam sem horário.
+                </p>
+                {formData.horario.tem && (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label htmlFor="horario-abre" className="text-xs">Abre</Label>
+                        <Input
+                          id="horario-abre"
+                          type="time"
+                          required
+                          value={formData.horario.abre}
+                          onChange={(e) => mudarHorario({ abre: e.target.value })}
+                          data-testid="location-horario-abre"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="horario-fecha" className="text-xs">Fecha</Label>
+                        <Input
+                          id="horario-fecha"
+                          type="time"
+                          required
+                          value={formData.horario.fecha}
+                          onChange={(e) => mudarHorario({ fecha: e.target.value })}
+                          data-testid="location-horario-fecha"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <p className="text-xs text-muted-foreground">
+                        Por dia: o horário geral, outro horário (ex.: domingo até mais tarde) ou fechada.
+                      </p>
+                      {DIAS_DA_SEMANA.map((nome, dia) => {
+                        const d = formData.horario.dias[dia];
+                        return (
+                          <div key={dia} className="flex flex-wrap items-center gap-2" data-testid={`location-horario-dia-${dia}`}>
+                            <span className="w-10 text-sm">{nome}</span>
+                            <select
+                              value={d.modo}
+                              onChange={(e) => mudarDia(dia, { modo: e.target.value })}
+                              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                              aria-label={`Horário de ${nome}`}
+                              data-testid={`location-horario-modo-${dia}`}
+                            >
+                              <option value="geral">Horário geral</option>
+                              <option value="outro">Outro horário</option>
+                              <option value="fechada">Fechada</option>
+                            </select>
+                            {d.modo === 'outro' && (
+                              <>
+                                <Input
+                                  type="time"
+                                  required
+                                  className="w-28"
+                                  value={d.abre}
+                                  onChange={(e) => mudarDia(dia, { abre: e.target.value })}
+                                  aria-label={`${nome}: abre`}
+                                />
+                                <Input
+                                  type="time"
+                                  required
+                                  className="w-28"
+                                  value={d.fecha}
+                                  onChange={(e) => mudarDia(dia, { fecha: e.target.value })}
+                                  aria-label={`${nome}: fecha`}
+                                />
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="aberta-desde" className="text-xs">Aberta desde (opcional — só para uma loja a abrir)</Label>
+                      <Input
+                        id="aberta-desde"
+                        type="date"
+                        className="w-44"
+                        value={formData.horario.abertaDesde}
+                        onChange={(e) => mudarHorario({ abertaDesde: e.target.value })}
+                        data-testid="location-aberta-desde"
+                      />
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* Cerca geográfica */}

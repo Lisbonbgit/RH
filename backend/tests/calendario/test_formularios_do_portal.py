@@ -146,3 +146,36 @@ def test_o_resumo_dos_dias_na_tabela():
         "Seg Amadora · Qui loja da ficha 13:00–22:00"
     perdida = json.dumps([{"dia": 2, "location_id": "x", "inicio": None, "fim": None}])
     assert _corre("h.resumoDosDias(%s, () => undefined)" % perdida) == "Qua (loja removida)"
+
+
+# ---- Os ecrãs usam mesmo o lib/horarios.js, e compilam ----
+
+def _compila(ficheiro):
+    """O ecrã passa pelo Babel com o preset de React: apanha um JSX partido sem
+    esperar pelo build de produção."""
+    _no_node("\n".join([
+        "const fs = require('fs');",
+        "const babel = require('@babel/core');",
+        "const ficheiro = %s;" % json.dumps(str(ficheiro)),
+        "babel.transformSync(fs.readFileSync(ficheiro, 'utf-8'), {",
+        "  presets: [[require.resolve('@babel/preset-react'), { runtime: 'classic' }]],",
+        "  filename: ficheiro, babelrc: false, configFile: false,",
+        "});",
+        "process.stdout.write('null');",
+    ]))
+
+
+def test_o_formulario_dos_locais_carrega_e_manda_o_horario():
+    texto = _LOCAIS.read_text(encoding="utf-8")
+    # Ao abrir uma loja, o horário gravado vai para o formulário…
+    assert "horario: horarioParaFormulario(location.horario, location.aberta_desde)," in texto
+    # …uma loja nova começa sem horário…
+    assert "horario: horarioParaFormulario(null, null)," in texto
+    # …e o corpo do POST/PUT leva SEMPRE as duas chaves.
+    assert "...formularioParaHorario(formData.horario)," in texto
+    # 422 legível: nunca o array do Pydantic directo no toast.
+    assert "toast.error(detalhesErro(error, 'Erro ao guardar local').mensagem);" in texto
+
+
+def test_o_ecra_dos_locais_compila():
+    _compila(_LOCAIS)
