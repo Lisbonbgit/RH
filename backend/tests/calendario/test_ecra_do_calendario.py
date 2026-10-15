@@ -9,6 +9,8 @@ por cima de um contrato partido).
 import json
 import re
 
+import pytest
+
 import calendario
 from tests.bolso_js import AXIOS_FABRICADO, SESSAO_SIMULADA, SRC, correr_js
 
@@ -30,7 +32,6 @@ def _servidor(eu=sn.DEBORA, pode_marcar=True):
 def _ecra(tmp_path, cenario, mes, contagem=(), falha=None, antes=""):
     return correr_js("\n".join([
         "pararRelogio(2026, 10, 27, 10, 0);",
-        antes,
         "const MES = %s;" % json.dumps(mes, ensure_ascii=False),
         "const CONTAGEM = %s;" % json.dumps(list(contagem), ensure_ascii=False),
         "const FALHA = %s;" % json.dumps(falha),
@@ -39,6 +40,7 @@ def _ecra(tmp_path, cenario, mes, contagem=(), falha=None, antes=""):
         "  if (metodo === 'GET' && url === '/calendario/contagem') return CONTAGEM;",
         "  return {};",
         "};",
+        antes,       # depois do servidor: pode embrulhá-lo (segurar uma resposta)
         "const BolsoCalendario = importar('pages/bolso/BolsoCalendario').default;",
         "await montar(React.createElement(BolsoCalendario));",
         "await esperar();",
@@ -290,3 +292,54 @@ devolve({ dia: [...document.querySelectorAll('main section')].pop().textContent,
 """, mes)
     assert r == {"dia": "terça, 27 de outubroAinda nenhuma loja tem horário. Defina-o em Locais, no portal.",
                  "marcar": False}
+
+
+
+# O 1.º pedido da contagem fica seguro até `soltar(...)`; os seguintes respondem já.
+SEGURAR_A_PRIMEIRA_CONTAGEM = """
+const servidor = global.SERVIDOR;
+let soltar = null;
+global.SERVIDOR = (metodo, url, ...resto) => {
+  if (url === '/calendario/contagem' && !soltar) return new Promise((ok) => { soltar = ok; });
+  return servidor(metodo, url, ...resto);
+};
+"""
+LER_A_CONTAGEM = """
+const lido = { linha: (document.querySelector('main li button') || {}).textContent || null,
+               alerta: !!document.querySelector('[role="alert"]'),
+               pedidos: REGISTO.filter((x) => x[1] === '/calendario/contagem').length };
+"""
+
+
+@pytest.mark.parametrize("o_que_chega_tarde", [
+    "[]",                                                                        # a contagem velha
+    "{ erro: { response: { status: 500, data: { detail: 'Falhou a contagem velha' } } } }",
+])
+def test_a_contagem_que_chega_atrasada_nao_pisa_a_mais_recente(tmp_path, o_que_chega_tarde):
+    # Como o mês: cada pedido leva um número e só o último escreve no ecrã (resposta ou erro).
+    mes, contagem = _servidor()
+    r = _ecra(tmp_path, """
+await clicar(botao('Contagem'));
+await esperar();
+await clicar(botao('Mês'));
+await clicar(botao('Contagem'));
+await esperar();
+await act(async () => { soltar(%s); });
+await esperar();
+""" % o_que_chega_tarde + LER_A_CONTAGEM + "devolve(lido);", mes, contagem, antes=SEGURAR_A_PRIMEIRA_CONTAGEM)
+    assert r == {"linha": "Débora · outubro 2 dias · 2026 2 dias", "alerta": False, "pedidos": 2}
+
+
+def test_o_erro_da_contagem_sai_ao_pedir_de_novo(tmp_path):
+    mes, contagem = _servidor()
+    r = _ecra(tmp_path, """
+await clicar(botao('Contagem'));
+await esperar();
+await act(async () => { soltar({ erro: { response: { status: 500, data: { detail: 'Falhou' } } } }); });
+await esperar();
+const antes = !!document.querySelector('[role="alert"]');
+await clicar(botao('Mês'));
+await clicar(botao('Contagem'));
+await esperar();
+""" + LER_A_CONTAGEM + "devolve({ antes, ...lido });", mes, contagem, antes=SEGURAR_A_PRIMEIRA_CONTAGEM)
+    assert r == {"antes": True, "linha": "Débora · outubro 2 dias · 2026 2 dias", "alerta": False, "pedidos": 2}

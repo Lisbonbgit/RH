@@ -33,7 +33,8 @@ SRC = FRONTEND / "src"
 # O axios trocado por um servidor fabricado: cada pedido fica em `REGISTO` como
 # [verbo, url, corpo, params] e a resposta vem de `global.SERVIDOR(método, url, corpo, params)`,
 # que o guião define. Se a resposta trouxer `erro`, o pedido falha com esse objecto (ex.:
-# `{ erro: { response: { status: 409, data: { detail: '…' } } } }`). As instâncias de
+# `{ erro: { response: { status: 409, data: { detail: '…' } } } }`). Pode devolver uma Promise
+# para segurar a resposta (pedidos que chegam fora de ordem). As instâncias de
 # `axios.create()` — a do `lib/bolso.js` — passam por aqui com o código delas intacto.
 AXIOS_FABRICADO = r"""(() => {
   const instancia = () => {
@@ -44,7 +45,7 @@ AXIOS_FABRICADO = r"""(() => {
         const corpo = semCorpo ? null : (a === undefined ? null : a);
         const params = ((semCorpo ? a : b) || {}).params || null;
         REGISTO.push([metodo.toUpperCase(), url, corpo, params]);
-        const resposta = global.SERVIDOR(metodo.toUpperCase(), url, corpo, params || {});
+        const resposta = await global.SERVIDOR(metodo.toUpperCase(), url, corpo, params || {});
         if (resposta && resposta.erro) throw resposta.erro;
         return { data: resposta };
       };

@@ -262,11 +262,13 @@ export default function BolsoCalendario() {
   const [contagem, setContagem] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState(null);
+  const [erroDaContagem, setErroDaContagem] = useState(null);
   const [menu, setMenu] = useState(false);
   const [painel, setPainel] = useState(null);
   // Cada pedido leva um número; só o último escreve no ecrã. Sem isto, tocar ‹ › depressa
   // deixava a resposta de um mês antigo chegar por último e ficar.
   const pedido = useRef(0);
+  const pedidoDaContagem = useRef(0);
   // Cada abertura do painel é uma montagem nova (a `key`), para o formulário começar sempre
   // no que se tocou e não no que ficou da vez anterior.
   const aberturas = useRef(0);
@@ -289,13 +291,17 @@ export default function BolsoCalendario() {
     }
   }, [ano, mes, semSessao]);
 
+  // A mesma guarda do mês, com o erro à parte: pedir de novo limpa só o da contagem.
   const carregarContagem = useCallback(async () => {
+    pedidoDaContagem.current += 1;
+    const meu = pedidoDaContagem.current;
+    setErroDaContagem(null);
     try {
       const { data } = await getContagem(ano);
-      setContagem({ ano, linhas: data });
+      if (meu === pedidoDaContagem.current) setContagem({ ano, linhas: data });
     } catch (e) {
       if (e?.response?.status === 401) { semSessao(); return; }
-      setErro(mensagemDeErro(e));
+      if (meu === pedidoDaContagem.current) setErroDaContagem(mensagemDeErro(e));
     }
   }, [ano, semSessao]);
 
@@ -321,6 +327,7 @@ export default function BolsoCalendario() {
   const escolherVista = (v) => { setVista(v); guardar(CHAVE_VISTA, v); };
   const escolherFiltro = (f) => { setFiltro(f); guardar(CHAVE_FILTRO, f); };
 
+  const erroVisivel = erro || (vista === 'contagem' ? erroDaContagem : null);
   // Os números no ecrã são DESTE mês? Enquanto não forem, esqueletos.
   const desteMes = dados && dados.ano === ano && dados.mes === mes ? dados : null;
 
@@ -370,7 +377,7 @@ export default function BolsoCalendario() {
             </h1>
             <p className="text-[11px] text-muted-foreground leading-tight truncate">
               {carregando ? 'A ler…' : 'Calendário das lojas'}
-              {erro && <span className="text-destructive"> · falhou</span>}
+              {erroVisivel && <span className="text-destructive"> · falhou</span>}
             </p>
           </div>
           <button type="button" aria-label="Mês anterior" onClick={() => irPara(-1)} className={seta}>
@@ -390,12 +397,12 @@ export default function BolsoCalendario() {
       </header>
 
       <main className="px-3 pt-3 pb-6 max-w-2xl mx-auto">
-        {erro && (
+        {erroVisivel && (
           <section role="alert" className="mb-3 rounded-2xl border border-destructive/40 bg-destructive/10 p-3 flex items-start gap-2.5">
             <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
             <div className="min-w-0">
               <p className="font-medium">Não foi possível ler agora.</p>
-              <p className="text-sm text-muted-foreground mt-0.5 whitespace-pre-line break-words">{erro}</p>
+              <p className="text-sm text-muted-foreground mt-0.5 whitespace-pre-line break-words">{erroVisivel}</p>
             </div>
           </section>
         )}
