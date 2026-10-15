@@ -467,15 +467,12 @@ export default function BolsoCalendario() {
   };
   // «+ Marcar ida» abre o painel vazio, com a loja a escolher (desenho, secção 4); as horas
   // vêm do horário da loja que se escolher (PainelIda). Fica o dia tocado e a pessoa por
-  // omissão, como no Tapar. Com o filtro de loja, abre já nessa loja e com as horas dela no
-  // dia — as mesmas que o painel poria ao escolhê-la (fechada, o servidor manda-as a null).
-  const marcar = () => {
-    const doDia = (desteMes.dias || []).find((d) => d.data === escolhido)?.lojas.find((l) => l.location_id === loja);
-    abrirPainel({
-      modo: 'marcar',
-      inicial: { datas: escolhido ? [escolhido] : [], location_id: loja, inicio: doDia?.abre || '', fim: doDia?.fecha || '' },
-    });
-  };
+  // omissão, como no Tapar. Com o filtro de loja, abre já nessa loja; as horas dela no dia
+  // põe-nas o painel, com a mesma regra de quando se escolhe a loja lá dentro.
+  const marcar = () => abrirPainel({
+    modo: 'marcar',
+    inicial: { datas: escolhido ? [escolhido] : [], location_id: loja, inicio: '', fim: '' },
+  });
   const guardado = () => {
     setPainel(null);
     carregar();
