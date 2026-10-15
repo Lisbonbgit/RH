@@ -184,7 +184,7 @@ function pararRelogio(ano, mes, dia, hora = 12, minuto = 0) {
 
 def correr_js(guiao: str, tmp_path: Path, simulados: Optional[Dict[str, str]] = None, dom: bool = False):
     """Corre `guiao` em Node e devolve o que ele passou a `devolve()`. Um erro no JavaScript
-    falha o teste com a mensagem do Node."""
+    (ou qualquer linha no stderr) falha o teste com a mensagem do Node."""
     if not (FRONTEND / "node_modules" / "@babel" / "core").exists():
         pytest.skip("Sem frontend/node_modules (ln -sfn ~/Developer/RH/frontend/node_modules "
                     "frontend/node_modules): este JavaScript NÃO foi testado.")
@@ -201,7 +201,10 @@ def correr_js(guiao: str, tmp_path: Path, simulados: Optional[Dict[str, str]] = 
         [_node(), str(ficheiro)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(FRONTEND),
         env={"NODE_PATH": str(FRONTEND / "node_modules"), "PATH": "/usr/bin:/bin", "TZ": "Europe/Lisbon"},
         timeout=180)
-    if resultado.returncode != 0:
-        pytest.fail("O JavaScript não correu:\n%s" % resultado.stderr.decode("utf-8", "replace"))
+    # O stderr conta mesmo com saída 0: é lá que o React deixa as excepções dos handlers (que
+    # apanha e não relança) e os avisos de act(). Ignorá-lo deixava os testes negativos verdes.
+    if resultado.returncode != 0 or resultado.stderr.strip():
+        pytest.fail("O JavaScript não correu (ou escreveu no stderr):\n%s"
+                    % resultado.stderr.decode("utf-8", "replace"))
     saida = resultado.stdout.decode("utf-8")
     return json.loads(saida) if saida else None

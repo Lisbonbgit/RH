@@ -52,3 +52,15 @@ def test_o_relogio_parado_e_o_localstorage_do_jsdom(tmp_path):
 def test_um_erro_no_javascript_falha_o_teste_com_a_mensagem(tmp_path):
     with pytest.raises(pytest.fail.Exception, match="rebentou de propósito"):
         correr_js("throw new Error('rebentou de propósito');", tmp_path)
+
+
+def test_um_erro_num_clique_do_react_falha_o_teste(tmp_path):
+    """O React apanha a excepção de um handler e só a escreve no stderr: o Node sai com 0 e,
+    sem olhar para o stderr, um teste negativo («clicou e não saiu pedido») ficava verde."""
+    with pytest.raises(pytest.fail.Exception, match="handler rebentou"):
+        correr_js(
+            "await montar(React.createElement('button',\n"
+            "  { onClick: () => { throw new Error('handler rebentou'); } }, 'Ir'));\n"
+            "await clicar(botao('Ir'));\n"
+            "devolve('continuou');",
+            tmp_path, dom=True)
