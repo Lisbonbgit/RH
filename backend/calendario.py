@@ -278,20 +278,51 @@ def _loja_do_dia(loja: Dict, dia: date, pessoas: List[Dict], personalizados: Lis
 def dia_do_calendario(dia: date, dados: Dict, p: Optional[Dict] = None) -> Dict:
     """Um dia: para cada loja com horário (as por abrir não aparecem), quem lá está e os buracos.
 
-    1. a escala (`_escala`); 2. sai quem tem ausência aprovada; 3. buracos = horário menos a
-    união das horas de quem lá está («ninguém» é um buraco único igual a abre–fecha).
+    1. a escala (`_escala`); 2. sai quem tem ausência aprovada; 3. entram as idas — a de um
+    gestor soma-se à loja; a de um colaborador TIRA à escala dele as horas da ida (a Joana
+    13h–15h em Benfica numa quarta deixa Oeiras com buraco só das 13h às 15h), e as horas da
+    ida (recortadas ao horário) que não estavam na escala dele são «extra» (numa folga, a ida
+    toda); 4. buracos = horário menos a união das horas de quem lá está («ninguém» = um
+    buraco igual a abre–fecha).
+    Uma ida numa loja sem horário, fechada ou por abrir não entra aqui (continua na lista das
+    idas do mês). A de um colaborador com ausência aprovada nesse dia também não.
     """
     p = p or _preparar(dados)
     escala = _escala(dia, p)
-    for emp_id in ausentes(dia, dados.get("ausencias", [])):
+    fora = ausentes(dia, dados.get("ausencias", []))
+    for emp_id in fora:
         escala.pop(emp_id, None)
+    iso = dia.isoformat()
     presentes = {}  # type: Dict[str, List[Dict]]
+    tirado = {}  # type: Dict[str, List[Intervalo]]
+    for ida in (i for i in dados.get("idas", []) if i.get("data") == iso):
+        user = p["utilizadores"].get(ida.get("user_id")) or {}
+        emp_id = user.get("employee_id") if user.get("role") == "colaborador" else None
+        if emp_id and emp_id in fora:
+            # Férias aprovadas DEPOIS de a ida existir (marcá-la já de férias dá 409): não está
+            # lá, por isso não tapa — nunca «coberta» numa loja vazia. A ida continua em
+            # `idas[]` (vistas Pessoal e Lista). Decisão por omissão, a confirmar com o dono
+            # (Tarefa 16).
+            continue
+        horas = (minutos(ida["inicio"]), minutos(ida["fim"]))
+        estado, janela = horario_do_dia(p["lojas"].get(ida.get("location_id")), dia)
+        dentro = recortar(horas, janela) if estado == "aberta" else None
+        extra = False
+        if emp_id:
+            tirado.setdefault(emp_id, []).append(horas)
+            minha = escala.get(emp_id)
+            # Com as horas recortadas: chegar meia hora antes de abrir não é «extra».
+            extra = bool(subtrair([dentro or horas], [minha[1]] if minha else []))
+        if dentro:
+            presentes.setdefault(ida["location_id"], []).append(_pessoa(
+                ida.get("user_id"), user.get("name") or NOME_SEM_CONTA, dentro, "ida", extra, ida.get("id")))
     for emp_id, (loja_id, horas) in escala.items():
-        presentes.setdefault(loja_id, []).append(_pessoa(
-            p["user_do_emp"].get(emp_id), p["nome_do_emp"].get(emp_id), horas, "escala"))
+        for pedaco in subtrair([horas], tirado.get(emp_id, [])):
+            presentes.setdefault(loja_id, []).append(_pessoa(
+                p["user_do_emp"].get(emp_id), p["nome_do_emp"].get(emp_id), pedaco, "escala"))
     personalizados = dados.get("feriados", [])
     return {
-        "data": dia.isoformat(),
+        "data": iso,
         "feriados": feriados_do_dia(dia, personalizados),
         "lojas": [_loja_do_dia(loja, dia, presentes.get(loja["id"], []), personalizados)
                   for loja in p["lojas_ordenadas"]
