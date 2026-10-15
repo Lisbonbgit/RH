@@ -84,3 +84,17 @@ def test_todas_as_chamadas_do_bolso_apontam_para_rotas_que_existem():
         "Estas chamadas do ecrã de bolso não têm rota no servidor e respondem "
         "404 ou 405: %s" % ", ".join(orfas)
     )
+
+
+def test_o_guarda_ve_as_chamadas_do_calendario():
+    """O calendário (2026-10-15) acrescentou cinco chamadas. Se a expressão regular deixar de
+    as VER (um caminho montado por concatenação, por exemplo), o teste de cima fica verde com
+    elas erradas — por isso pergunta-se por cada uma. Quem as confronta com o servidor é o
+    teste de cima; este só garante que ele as está a ver."""
+    conteudo = _ler()
+    prefixo = _RE_BASE_URL.search(conteudo).group(1)
+    vistas = {(v.upper(), _normaliza(prefixo + c)) for v, _aspas, c in _RE_CHAMADA.findall(conteudo)}
+    for esperada in [("GET", "/api/bolso/calendario"), ("GET", "/api/bolso/calendario/contagem"),
+                     ("POST", "/api/bolso/calendario/idas"), ("PUT", "/api/bolso/calendario/idas/{}"),
+                     ("DELETE", "/api/bolso/calendario/idas/{}")]:
+        assert esperada in vistas, "%s %s não aparece em lib/bolso.js" % esperada

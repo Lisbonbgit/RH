@@ -49,6 +49,18 @@ api.interceptors.request.use((config) => {
 export const getPainel = (empresa = 'all', unidade = null) =>
   api.get('/painel', { params: unidade ? { empresa, unidade } : { empresa } });
 
+// --- Calendário das lojas (`/api/bolso/calendario`) --------------------------------------
+// Caminhos por extenso, sempre: o `tests/fin/test_caminhos_do_bolso.py` lê-os daqui e
+// confronta-os com as rotas do servidor (o POS já esteve morto em produção com a suite
+// verde por um prefixo errado).
+export const getCalendario = (ano, mes) => api.get('/calendario', { params: { ano, mes } });
+export const getContagem = (ano) => api.get('/calendario/contagem', { params: { ano } });
+// corpo: { datas: ['AAAA-MM-DD', …], location_id, user_ids: [uma ou duas], inicio: 'HH:MM', fim: 'HH:MM' }
+export const criarIdas = (corpo) => api.post('/calendario/idas', corpo);
+// corpo: { data, location_id, user_id, inicio, fim }
+export const mudarIda = (id, corpo) => api.put(`/calendario/idas/${id}`, corpo);
+export const apagarIda = (id) => api.delete(`/calendario/idas/${id}`);
+
 // O dinheiro escreve-se sempre com duas casas e o símbolo à frente, como no
 // resto do portal. **`null` não é zero**: um valor que o servidor não soube
 // dizer sai "—" e nunca "0,00 €" — é a regra da casa, e é por isso que este
