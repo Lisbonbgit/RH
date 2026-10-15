@@ -10,9 +10,9 @@ A lista não se escreve só à mão: procura-se no código do pacote `crm`, pela
 árvore sintática, cada leitura do ambiente (`os.environ.get(…)`,
 `os.environ[…]`, `… in os.environ`, `os.getenv(…)`), com o nome literal ou
 numa constante do módulo (`VARIAVEL_CHAVE = "…"`). Uma leitura que não se
-consiga resolver falha o teste em vez de passar em silêncio. Assim, quando a
-F3 ler `CRM_ORS_CHAVE`, este teste fica vermelho até o nome entrar no
-`.env.example`.
+consiga resolver falha o teste em vez de passar em silêncio. Foi assim na F3
+(T3.11): ao ler `CRM_ORS_CHAVE` e `CRM_ORS_URL`, este teste ficou vermelho
+até os nomes entrarem no `.env.example` e em `LIDAS_PELO_CRM`.
 
 As mensagens de falha mostram só nomes, nunca valores do `.env.example`
 (plano §0, regra 8).
@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 from crm import config_mapa
-from crm.servicos import geoapify
+from crm.servicos import geoapify, ors
 
 BACKEND = Path(__file__).resolve().parents[2]
 ENV_EXAMPLE = BACKEND / ".env.example"
@@ -34,7 +34,8 @@ PACOTE_CRM = BACKEND / "crm"
 PREFIXO_CRM = "CRM_"
 CABECALHO_DO_BLOCO = "CRM Purple House"
 
-# O que o pacote `crm` lê do ambiente na F2. Uma variável nova no código falha
+# O que o pacote `crm` lê do ambiente (F2 e, desde a T3.11, o openrouteservice
+# da F3). Uma variável nova no código falha
 # `test_o_pacote_crm_le_exatamente_estas_variaveis` até entrar aqui E no
 # `.env.example`.
 LIDAS_PELO_CRM = {
@@ -43,6 +44,8 @@ LIDAS_PELO_CRM = {
     config_mapa.VARIAVEL_CHAVE,  # chave dos mosaicos (vai ao browser)
     geoapify.VARIAVEL_CHAVE_SERVIDOR,  # chave da pesquisa de morada (só no servidor)
     geoapify.VARIAVEL_URL,  # opcional: por omissão https://api.geoapify.com
+    ors.VARIAVEL_CHAVE,  # chave do openrouteservice (só no servidor, no cabeçalho Authorization)
+    ors.VARIAVEL_URL,  # opcional: por omissão https://api.openrouteservice.org (ou o simulador local)
 }
 
 _ATRIBUICAO = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)")
@@ -204,8 +207,14 @@ def test_os_nomes_das_variaveis_da_geoapify():
     assert geoapify.VARIAVEL_URL == "CRM_GEOAPIFY_URL"
 
 
+def test_os_nomes_das_variaveis_do_openrouteservice():
+    """Os nomes do plano F3 (§1 "openrouteservice", T3.11) e do dossiê §9."""
+    assert ors.VARIAVEL_CHAVE == "CRM_ORS_CHAVE"
+    assert ors.VARIAVEL_URL == "CRM_ORS_URL"
+
+
 def test_o_pacote_crm_le_exatamente_estas_variaveis():
-    """Prova também que a procura não está vazia por engano: encontra as cinco."""
+    """Prova também que a procura não está vazia por engano: encontra as sete."""
     assert _lidas_pelo_pacote_crm() == LIDAS_PELO_CRM
 
 
@@ -216,7 +225,7 @@ def test_cada_variavel_que_o_crm_le_tem_o_nome_no_env_example():
 
 
 def test_o_env_example_so_tem_variaveis_crm_que_o_pacote_le():
-    """Nem nomes a mais (um `CRM_ORS_CHAVE` antes da F3, o
+    """Nem nomes a mais (um nome de uma fase futura antes do tempo, o
     `CRM_MONGO_TESTE_URL` do ensaio local) nem repetidos."""
     do_crm = [nome for _, nome, _ in _do_env_example() if nome.startswith(PREFIXO_CRM)]
     repetidos = sorted(nome for nome, vezes in Counter(do_crm).items() if vezes > 1)

@@ -1,0 +1,4 @@
+{
+  "_origem": "manual — nunca se regrava: o gravador (T3.12) não consegue provocar um 429 de forma garantida. Corpo do limite por minuto do openrouteservice (40 pedidos por minuto no plano Standard); o cliente só olha para o estado HTTP 429.",
+  "error": "Rate limit exceeded"
+}

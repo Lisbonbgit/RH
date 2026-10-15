@@ -19,10 +19,63 @@ Os valores são EXACTAMENTE os que os testes existentes já usam
 tests/test_seguranca_login.py, tests/fin/*). `setdefault` nunca sobrepõe um
 valor que já lá esteja. `teste_sem_ligacao` é um nome de base que nenhum teste
 chega a abrir: os testes do CRM usam sempre o duplo da base.
+
+No fim fica a guarda contra o openrouteservice verdadeiro (F3, T3.11): um
+fixture `autouse` que nenhum teste do CRM consegue esquecer.
 """
 import os
+
+import pytest
 
 os.environ.setdefault("POS_JWT_SECRET", "segredo-de-teste-pos")
 os.environ.setdefault("JWT_SECRET", "segredo-de-teste")
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("DB_NAME", "teste_sem_ligacao")
+
+
+# --- A guarda contra o openrouteservice verdadeiro (plano F3, T3.11) -----------------------
+#
+# Nenhum teste do CRM pode fazer um pedido ao openrouteservice (§0, regra 2).
+# Por omissão, o cliente (`crm.servicos.ors`) fica com um transporte que só
+# regista o pedido e responde 599; no fim de cada teste, um pedido registado
+# faz o teste falhar (correção "T3.11 (conftest: guarda contra a rede)": um
+# transporte que levantasse uma exceção virava uma `FalhaOrs` e um 503, e um
+# teste que esperasse esse 503 passava pelo motivo errado). Quem precisa do
+# ORS instala o seu `httpx.MockTransport` (monkeypatch de `ors._transporte`).
+#
+# A guarda tira também `CRM_ORS_CHAVE` e `CRM_ORS_URL` do ambiente: os testes
+# não dependem da shell, e quem precisa de chave põe-na com `setenv`.
+#
+# Os `import` ficam dentro da função, depois das `setdefault` do topo (o pacote
+# `crm` importa o `faturacao`, que lê o ambiente à importação).
+
+
+ESTADO_DA_GUARDA_ORS = 599
+MENSAGEM_DA_GUARDA_ORS = "pedido ao openrouteservice sem o transporte do teste"
+
+
+def guarda_contra_o_ors(monkeypatch):
+    """O gerador do fixture `pedidos_ao_ors_sem_transporte`, à parte para os
+    meta-testes o poderem chamar à mão (test_ors.py). Dá a lista dos pedidos
+    que chegaram à guarda e, no fim, exige que esteja vazia."""
+    import httpx
+
+    from crm.servicos import ors
+
+    pedidos = []
+
+    def _guarda(pedido):
+        pedidos.append(pedido)
+        return httpx.Response(ESTADO_DA_GUARDA_ORS)
+
+    monkeypatch.delenv(ors.VARIAVEL_CHAVE, raising=False)
+    monkeypatch.delenv(ors.VARIAVEL_URL, raising=False)
+    monkeypatch.setattr(ors, "_transporte", httpx.MockTransport(_guarda))
+    yield pedidos
+    assert pedidos == [], MENSAGEM_DA_GUARDA_ORS
+
+
+@pytest.fixture(autouse=True)
+def pedidos_ao_ors_sem_transporte(monkeypatch):
+    """Em todos os testes do CRM: a guarda contra o openrouteservice."""
+    yield from guarda_contra_o_ors(monkeypatch)
