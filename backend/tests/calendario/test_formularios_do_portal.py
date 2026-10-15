@@ -6,10 +6,11 @@ em Node (o Babel só troca `export` por CommonJS) — nunca uma cópia, que fica
 com o ecrã errado. Mais abaixo (Tarefas 6 e 7), os guardas de que os dois ecrãs o usam
 mesmo: uma função pura testada não prova nada se a linha que a chama desaparecer.
 
-Precisa de `frontend/node_modules` (o atalho para ~/Developer/RH/frontend/node_modules)
-e de `node` (no PATH ou em ~/.local/node/bin); sem eles SALTA e diz porquê.
+Precisa de `frontend/node_modules` (`cd frontend && yarn install --frozen-lockfile`, com o yarn
+em ~/.local/node/bin) e de `node` (no PATH ou em ~/.local/node/bin); sem eles SALTA e diz porquê.
 """
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -41,7 +42,7 @@ def _node():
 
 def _no_node(guiao):
     if not (_FRONTEND / "node_modules" / "@babel" / "core").exists():
-        pytest.skip("Sem frontend/node_modules: ln -sfn ~/Developer/RH/frontend/node_modules frontend/node_modules")
+        pytest.skip("Sem frontend/node_modules: cd frontend && yarn install --frozen-lockfile (yarn em ~/.local/node/bin)")
     resultado = subprocess.run(
         [_node(), "-e", guiao],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -175,6 +176,18 @@ def test_o_formulario_dos_locais_carrega_e_manda_o_horario():
     assert "...formularioParaHorario(formData.horario)," in texto
     # 422 legível: nunca o array do Pydantic directo no toast.
     assert "toast.error(detalhesErro(error, 'Erro ao guardar local').mensagem);" in texto
+
+
+def test_tocar_no_texto_do_horario_marca_a_caixa():
+    # Medido no browser: sem id/htmlFor, tocar no texto não marcava a caixa — só a bolinha.
+    texto = _LOCAIS.read_text(encoding="utf-8")
+    marca = texto.index('data-testid="location-horario-tem"')
+    caixa = texto[texto.rindex("<Checkbox", 0, marca):texto.index("/>", marca)]
+    achado = re.search(r'\bid="([^"]+)"', caixa)
+    assert achado, "O Checkbox location-horario-tem não tem id"
+    rotulo = re.search(r'<label\b[^>]*\bhtmlFor="%s"[^>]*>(.*?)</label>' % re.escape(achado.group(1)), texto, re.S)
+    assert rotulo, "Nenhum <label> com htmlFor=%r" % achado.group(1)
+    assert "Esta loja tem horário" in rotulo.group(1)
 
 
 def test_o_ecra_dos_locais_compila():

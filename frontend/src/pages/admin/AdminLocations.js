@@ -366,8 +366,9 @@ export default function AdminLocations() {
                   <Clock className="h-4 w-4 text-primary" />
                   <span className="font-medium text-sm">Horário da loja (opcional)</span>
                 </div>
-                <label className="flex items-center gap-2 text-sm">
+                <label htmlFor="location-horario-tem" className="flex items-center gap-2 text-sm">
                   <Checkbox
+                    id="location-horario-tem"
                     checked={formData.horario.tem}
                     onCheckedChange={(v) => mudarHorario({ tem: v === true })}
                     data-testid="location-horario-tem"
