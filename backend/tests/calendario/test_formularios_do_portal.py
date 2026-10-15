@@ -179,3 +179,23 @@ def test_o_formulario_dos_locais_carrega_e_manda_o_horario():
 
 def test_o_ecra_dos_locais_compila():
     _compila(_LOCAIS)
+
+
+def test_o_formulario_das_escalas_carrega_e_manda_os_dias():
+    texto = _ESCALAS.read_text(encoding="utf-8")
+    # Ao editar, a loja e as horas de cada dia vão para o formulário…
+    assert "porDia: diasParaFormulario(template.dias)," in texto
+    # …e o MESMO corpo, com `dias` dos dias marcados, vai no criar e no editar.
+    assert "dias: formularioParaDias(templateForm.workDays, templateForm.porDia)," in texto
+    assert "await updateSchedule(editingTemplate.id, corpo);" in texto
+    assert "await createSchedule(corpo);" in texto
+    # A «Hora de início» continua lá: é o que o lembrete do ponto lê.
+    assert "startTime: templateForm.startTime || null," in texto
+    assert "toast.error(detalhesErro(error, 'Erro ao guardar escala').mensagem);" in texto
+    # O seletor da loja só oferece lojas com horário (uma entrada noutra loja não conta
+    # no calendário), mas não esconde a que já está escolhida.
+    assert "locations.filter((loc) => loc.horario || loc.id === d.location_id).map((loc) => (" in texto
+
+
+def test_o_ecra_das_escalas_compila():
+    _compila(_ESCALAS)
