@@ -52,7 +52,12 @@ global.NB = {
     if (!this.keychain || this.keychain.server !== o.server) throw new Error('No password');
     return { username: this.keychain.username, password: this.keychain.password };
   },
-  async deleteCredentials() { this.chamadas.push('deleteCredentials'); this.keychain = null; },
+  // Como o iOS: sem o `server` certo não se apaga nada (o Keychain fica).
+  async deleteCredentials(o) {
+    this.chamadas.push('deleteCredentials');
+    if ((o || {}).server !== 'gestao.lisbonb.com') throw new Error('No server');
+    this.keychain = null;
+  },
 };
 """
 
