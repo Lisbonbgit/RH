@@ -419,7 +419,8 @@ e o Python da árvore principal. Ler sempre `passed` **e** `skipped`.
    um PUT sem `dias`/`horario` no corpo (página antiga) **não os apaga**.
 4. **Horário:** exceção de domingo; dia fechado; antes de `aberta_desde`; validações.
 5. **Feriados:** nacionais com nome; de empresa e de loja só onde se aplicam; dia impossível sem
-   500; a cache de `get_pt_holidays` igual.
+   500; a cache de `get_pt_holidays` igual; no feriado da loja a escala não põe ninguém, as idas
+   contam e o «extra» mede-se contra a escala normal.
 6. **Contagem:** 0,5 e 1 pela metade do horário, contando só as horas dentro do horário; duas
    meias no mesmo dia = 1; nunca mais de 1; total do ano.
 7. **Marcar:** várias datas e duas pessoas criam N idas; sobreposição dá 409 e **não grava
