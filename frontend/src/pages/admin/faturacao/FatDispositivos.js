@@ -365,7 +365,7 @@ export default function FatDispositivos() {
           <AlertDialogHeader>
             <AlertDialogTitle>Apagar dispositivo</AlertDialogTitle>
             <AlertDialogDescription>
-              Apagar "{deleteTarget?.nome || 'este PC'}" da lista? Já está revogado — o POS desse PC não abre. As vendas feitas nele não são afetadas.
+              Apagar "{deleteTarget?.nome || 'este PC'}" da lista? Já está revogado. As vendas feitas nele não são afetadas.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
