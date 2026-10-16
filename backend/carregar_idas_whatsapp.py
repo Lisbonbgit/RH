@@ -202,6 +202,8 @@ def executar(db, gravar, escrever=print):
         "modelos": list(db.work_schedule_templates.find({}, {"_id": 0, "id": 1, "work_days": 1, "dias": 1})),
         "ausencias": list(db.leave_requests.find(
             {"status": "aprovado"}, {"_id": 0, "employee_id": 1, "start_date": 1, "end_date": 1, "status": 1})),
+        "feriados": list(db.holidays.find(
+            {}, {"_id": 0, "name": 1, "month": 1, "day": 1, "company_id": 1, "location_id": 1})),
     }
     for linha, ficam in zip(plano["divididas"], _buracos_que_ficam(plano, dados)):
         escrever("DIVIDIDO AO MEIO: %s · ficam buracos: %s" % (linha, ficam))

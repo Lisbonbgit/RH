@@ -98,7 +98,10 @@ Weber está de férias de 21 a 25/10.
 6. **Vistas Mês, Lista e Contagem; filtros Pessoal, Geral e Férias.**
 7. **Contagem:** uma ida vale 1 dia se cobrir pelo menos metade do horário da loja nesse dia, e
    0,5 se cobrir menos; nunca mais de 1 dia por pessoa por dia.
-8. **Feriados** só como aviso; não fecham lojas.
+8. **Feriados não fecham lojas, e no feriado a escala não põe ninguém** (2026-10-16, substitui
+   «Feriados só como aviso»): «no feriado não se pode pôr as pessoas automaticamente, porque não
+   se sabe quem vai trabalhar; no feriado coloca-se à mão.» A loja fica com buraco até se marcarem
+   idas.
 9. **Face ID** para acabar com a senha diária, aceitando que exige a build 3 da casca.
 
 ## Fora de âmbito (de propósito)
@@ -198,7 +201,10 @@ Para cada loja com horário, e para cada dia do mês:
    `find_schedule_assignment`), os dias `atribuição.work_days or modelo.work_days`; se trabalha
    nesse dia da semana, a entrada de `dias` desse dia diz a loja e as horas (ou a ficha e o
    horário da loja). **Uma entrada para uma loja fechada nesse dia (ou sem horário, ou por
-   abrir) ignora-se.** As horas recortam-se ao horário.
+   abrir) ignora-se.** As horas recortam-se ao horário. **Num feriado da loja** (nacional, do
+   grupo, da empresa dela ou dela — a regra «OU» dos feriados da loja) **a escala não põe lá
+   ninguém** (decisão do dono, 2026-10-16): a loja continua aberta e fica com buraco até um gestor
+   marcar idas; as idas contam como sempre e o «extra» mede-se contra a escala normal.
 3. **Sai quem tem ausência aprovada** que inclua o dia, de qualquer tipo.
 4. **Entram as idas:**
    - a ida de um **gestor** soma-se à loja;
@@ -413,7 +419,8 @@ e o Python da árvore principal. Ler sempre `passed` **e** `skipped`.
    um PUT sem `dias`/`horario` no corpo (página antiga) **não os apaga**.
 4. **Horário:** exceção de domingo; dia fechado; antes de `aberta_desde`; validações.
 5. **Feriados:** nacionais com nome; de empresa e de loja só onde se aplicam; dia impossível sem
-   500; a cache de `get_pt_holidays` igual.
+   500; a cache de `get_pt_holidays` igual; no feriado da loja a escala não põe ninguém, as idas
+   contam e o «extra» mede-se contra a escala normal.
 6. **Contagem:** 0,5 e 1 pela metade do horário, contando só as horas dentro do horário; duas
    meias no mesmo dia = 1; nunca mais de 1; total do ano.
 7. **Marcar:** várias datas e duas pessoas criam N idas; sobreposição dá 409 e **não grava

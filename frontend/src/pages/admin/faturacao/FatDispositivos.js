@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  getDispositivosPos, gerarCodigoDispositivo, revogarDispositivo, getLojas,
+  getDispositivosPos, gerarCodigoDispositivo, revogarDispositivo, apagarDispositivo, getLojas,
   detalhesErro,
 } from '../../../lib/faturacao';
 import { Card, CardContent } from '../../../components/ui/card';
@@ -19,7 +19,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../../components/ui/table';
-import { Smartphone, Plus, Trash2, Copy, Check, Clock } from 'lucide-react';
+import { Smartphone, Plus, Trash2, Ban, Copy, Check, Clock } from 'lucide-react';
 import PageHeader from '../../../components/PageHeader';
 import { toast } from 'sonner';
 
@@ -72,6 +72,9 @@ export default function FatDispositivos() {
 
   const [revokeTarget, setRevokeTarget] = useState(null);
   const [revoking, setRevoking] = useState(false);
+
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => { fetchAll(); }, []);
 
@@ -174,6 +177,21 @@ export default function FatDispositivos() {
     }
   };
 
+  const handleDelete = async () => {
+    const alvo = deleteTarget;
+    setDeleteTarget(null);
+    setDeleting(true);
+    try {
+      await apagarDispositivo(alvo.id);
+      toast.success('Dispositivo apagado');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Erro ao apagar o dispositivo');
+    } finally {
+      setDeleting(false);
+      fetchAll();
+    }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in" data-testid="fat-dispositivos-page">
       <PageHeader icon={Smartphone} title="Dispositivos" subtitle="PCs autorizados a abrir o POS, loja a loja">
@@ -213,8 +231,12 @@ export default function FatDispositivos() {
                       <TableCell className="text-sm text-muted-foreground">{formatarData(d.ultima_atividade_em) || 'Nunca'}</TableCell>
                       <TableCell>{estadoBadge(d.estado)}</TableCell>
                       <TableCell className="text-right">
-                        {d.estado === 'activo' && (
+                        {d.estado === 'activo' ? (
                           <Button variant="ghost" size="icon" title="Revogar" onClick={() => setRevokeTarget(d)} data-testid={`revoke-dispositivo-${d.id}`}>
+                            <Ban className="h-4 w-4 text-destructive" />
+                          </Button>
+                        ) : (
+                          <Button variant="ghost" size="icon" title="Apagar" onClick={() => setDeleteTarget(d)} disabled={deleting} data-testid={`delete-dispositivo-${d.id}`}>
                             <Trash2 className="h-4 w-4 text-destructive" />
                           </Button>
                         )}
@@ -332,6 +354,24 @@ export default function FatDispositivos() {
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
             <AlertDialogAction onClick={handleRevoke} disabled={revoking} className="bg-destructive text-destructive-foreground">
               {revoking ? 'A revogar...' : 'Revogar'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Confirmar apagar (só aparece em dispositivos já revogados) */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Apagar dispositivo</AlertDialogTitle>
+            <AlertDialogDescription>
+              Apagar "{deleteTarget?.nome || 'este PC'}" da lista? Já está revogado. As vendas feitas nele não são afetadas.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDelete} disabled={deleting} className="bg-destructive text-destructive-foreground" data-testid="confirmar-apagar-dispositivo">
+              {deleting ? 'A apagar...' : 'Apagar'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
