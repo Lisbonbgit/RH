@@ -222,7 +222,8 @@ def test_o_filtro_de_loja_deixa_so_essa_loja_e_as_ausencias_de_quem_la_tem_a_fic
     assert r["idas"] == ["Oeiras"]
     assert r["lojas"] == [{"id": sn.OEIRAS, "nome": "Oeiras"}]
     assert r["ausencias"] == ["Emanuela"]                                   # o Weber é de Amadora
-    assert r["pontos"] == ["2026-10-06", "2026-10-13", "2026-10-15", "2026-10-20"]  # 15/10 a Emanuela de férias; 27/10 tapado
+    # 05/10 é feriado (a escala não põe ninguém); 15/10 a Emanuela de férias; 27/10 tapado.
+    assert r["pontos"] == ["2026-10-05", "2026-10-06", "2026-10-13", "2026-10-15", "2026-10-20"]
     assert r["ferias"] == [["Emanuela"]]
     assert r["vazio"] is True
     assert r["intacto"] == 6                                                # não estraga os dados do mês

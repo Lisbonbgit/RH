@@ -284,8 +284,10 @@ def _loja_do_dia(loja: Dict, dia: date, pessoas: List[Dict], personalizados: Lis
 def dia_do_calendario(dia: date, dados: Dict, p: Optional[Dict] = None) -> Dict:
     """Um dia: para cada loja com horário (as por abrir não aparecem), quem lá está e os buracos.
 
-    1. a escala (`_escala`); 2. sai quem tem ausência aprovada; 3. entram as idas — a de um
-    gestor soma-se à loja; a de um colaborador TIRA à escala dele as horas da ida (a Joana
+    1. a escala (`_escala`), que num feriado DA LOJA (nacional, do grupo, da empresa ou dela)
+    não põe lá ninguém — a loja fica aberta e com buraco até se marcarem idas; o «extra» das
+    idas mede-se na mesma contra a escala normal; 2. sai quem tem ausência aprovada; 3. entram
+    as idas — a de um gestor soma-se à loja; a de um colaborador TIRA à escala dele as horas da ida (a Joana
     13h–15h em Benfica numa quarta deixa Oeiras com buraco só das 13h às 15h), e as horas da
     ida (recortadas ao horário) que não estavam na escala dele são «extra» (numa folga, a ida
     toda); 4. buracos = horário menos a união das horas de quem lá está («ninguém» = um
@@ -318,14 +320,18 @@ def dia_do_calendario(dia: date, dados: Dict, p: Optional[Dict] = None) -> Dict:
         if dentro:
             presentes.setdefault(ida["location_id"], []).append(_pessoa(
                 ida.get("user_id"), user.get("name") or NOME_SEM_CONTA, dentro, "ida", extra, ida.get("id")))
+    personalizados = dados.get("feriados", [])
+    do_dia = feriados_do_dia(dia, personalizados)
     for emp_id, (loja_id, horas) in escala.items():
+        # No feriado da loja a escala não põe ninguém: coloca-se à mão (decisão do dono, 2026-10-16).
+        if do_dia or feriados_da_loja(dia, personalizados, p["lojas"][loja_id]):
+            continue
         for pedaco in subtrair([horas], tirado.get(emp_id, [])):
             presentes.setdefault(loja_id, []).append(_pessoa(
                 p["user_do_emp"].get(emp_id), p["nome_do_emp"].get(emp_id), pedaco, "escala"))
-    personalizados = dados.get("feriados", [])
     return {
         "data": iso,
-        "feriados": feriados_do_dia(dia, personalizados),
+        "feriados": do_dia,
         "lojas": [_loja_do_dia(loja, dia, presentes.get(loja["id"], []), personalizados)
                   for loja in p["lojas_ordenadas"]
                   if horario_do_dia(loja, dia)[0] in ("aberta", "fechada")],

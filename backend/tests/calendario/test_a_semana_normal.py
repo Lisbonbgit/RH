@@ -3,7 +3,9 @@
 Com os dados da tabela do dono, numa semana DEPOIS da abertura de Benfica (26/10–01/11), o
 cálculo dá EXACTAMENTE a grelha dos buracos: Oeiras sem ninguém à terça; Alfragide 10–14 à
 segunda e terça e 19–23 à quarta e quinta; Benfica todos os dias; Belém fechada à terça; o
-resto coberto. Os outros testes prendem as regras da escala (desenho, secção 2, passo 2).
+resto coberto. O domingo, 1/11, é Todos os Santos: no feriado a escala não põe ninguém
+(decisão do dono, 2026-10-16) e as lojas ficam abertas sem ninguém; o domingo normal vê-se
+a 8/11. Os outros testes prendem as regras da escala (desenho, secção 2, passo 2).
 """
 import calendario
 
@@ -49,8 +51,11 @@ def test_a_semana_normal_da_exactamente_a_grelha_dos_buracos():
         "2026-10-29": _semana({"Alfragide": ["19:00-23:00"]}),
         "2026-10-30": _semana(),
         "2026-10-31": _semana(),
-        "2026-11-01": _semana(),
+        # Feriado: ninguém pela escala, todas abertas (Belém ao domingo até às 20h).
+        "2026-11-01": {"Alfragide": ["10:00-23:00"], "Algueirão": ["13:00-22:00"], "Amadora": ["14:00-23:00"],
+                       "Belém": ["11:30-20:00"], "Benfica": ["13:00-22:00"], "Oeiras": ["13:00-22:00"]},
     }
+    assert _grelha(dias, "2026-11-08", "2026-11-08") == {"2026-11-08": _semana()}   # o domingo normal
 
 
 def test_os_horarios_destes_testes_sao_os_que_o_arranque_da_fase_1_carrega():
