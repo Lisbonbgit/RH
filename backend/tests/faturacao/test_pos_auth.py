@@ -36,6 +36,7 @@ from faturacao.pos_auth import (
     PedidoCodigo,
     PedidoEmparelhar,
     PedidoEntrar,
+    apagar_dispositivo,
     dispositivo_atual,
     emparelhar,
     entrar,
@@ -860,6 +861,93 @@ def test_revogar_um_dispositivo_nao_afecta_os_outros_da_mesma_loja(monkeypatch):
     # O drive-thru continua vivo.
     disp_drive = _corre(dispositivo_atual(x_device_token=par_drive["device_token"]))
     assert disp_drive["loja_id"] == "loja-1"
+
+
+# --- Apagar dispositivos revogados ---------------------------------------------
+#
+# Pedido do dono: a lista só sabia revogar, e os PCs revogados ficavam lá para
+# sempre. Apagar tira-os da lista — mas só depois de revogados, e sem tirar o
+# documento da base (o nome continua a servir às contas que o referem).
+
+
+def _emparelhado(db, monkeypatch, nome="PC Balcão"):
+    monkeypatch.setattr(pos_auth_mod, "obter_db", lambda: db)
+    codigo = _corre(
+        gerar_codigo_emparelhamento(PedidoCodigo(loja_id="loja-1", nome=nome), _={})
+    )
+    par = _corre(emparelhar(PedidoEmparelhar(codigo=codigo["codigo"])))
+    disp_id = next(d["id"] for d in _corre(listar_dispositivos(_={})) if d["nome"] == nome)
+    return disp_id, par["device_token"]
+
+
+def test_apagar_um_dispositivo_revogado_tira_o_da_lista(monkeypatch):
+    registo = []
+    db = _db(registo, lojas=[{"id": "loja-1", "nome": "Belém"}])
+    disp_id, _token = _emparelhado(db, monkeypatch)
+    outro_id, _ = _emparelhado(db, monkeypatch, nome="PC Drive-Thru")
+    _corre(revogar_dispositivo(disp_id, _={}))
+
+    assert _corre(apagar_dispositivo(disp_id, _={})) == {"apagado": True}
+
+    assert [d["id"] for d in _corre(listar_dispositivos(_={}))] == [outro_id]
+
+
+def test_apagar_um_dispositivo_ACTIVO_e_recusado_e_ele_continua_a_entrar(monkeypatch):
+    """Apagar um PC activo cortava o POS de uma loja com um toque e sem
+    rasto — tem de se revogar primeiro."""
+    registo = []
+    db = _db(registo, lojas=[{"id": "loja-1", "nome": "Belém"}])
+    disp_id, token = _emparelhado(db, monkeypatch)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(apagar_dispositivo(disp_id, _={}))
+    assert excinfo.value.status_code == 404
+
+    assert _corre(dispositivo_atual(x_device_token=token))["id"] == disp_id
+    assert _corre(listar_dispositivos(_={}))[0]["estado"] == "activo"
+
+
+def test_apagar_duas_vezes_ou_um_id_inexistente_da_404(monkeypatch):
+    registo = []
+    db = _db(registo, lojas=[{"id": "loja-1", "nome": "Belém"}])
+    disp_id, _token = _emparelhado(db, monkeypatch)
+    _corre(revogar_dispositivo(disp_id, _={}))
+    _corre(apagar_dispositivo(disp_id, _={}))
+
+    for alvo in (disp_id, "nao-existe"):
+        with pytest.raises(HTTPException) as excinfo:
+            _corre(apagar_dispositivo(alvo, _={}))
+        assert excinfo.value.status_code == 404
+
+
+def test_um_dispositivo_apagado_nao_volta_a_entrar_nem_a_ser_revogado(monkeypatch):
+    registo = []
+    db = _db(registo, lojas=[{"id": "loja-1", "nome": "Belém"}])
+    disp_id, token = _emparelhado(db, monkeypatch)
+    _corre(revogar_dispositivo(disp_id, _={}))
+    _corre(apagar_dispositivo(disp_id, _={}))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(dispositivo_atual(x_device_token=token))
+    assert excinfo.value.status_code == 401
+    with pytest.raises(HTTPException) as excinfo:
+        _corre(revogar_dispositivo(disp_id, _={}))
+    assert excinfo.value.status_code == 404
+
+
+def test_o_dispositivo_apagado_continua_na_base_com_o_nome(monkeypatch):
+    """As contas guardam o `dispositivo_id` e o fecho traduz-o para o nome
+    (`caixa._nome_dos_dispositivos`) — apagar da lista não pode apagar isso."""
+    registo = []
+    db = _db(registo, lojas=[{"id": "loja-1", "nome": "Belém"}])
+    disp_id, _token = _emparelhado(db, monkeypatch)
+    _corre(revogar_dispositivo(disp_id, _={}))
+    _corre(apagar_dispositivo(disp_id, _={}))
+
+    doc = _corre(db[COLECOES["dispositivos"]].find_one({"id": disp_id}))
+    assert doc["nome"] == "PC Balcão"
+    assert doc["estado"] == "apagado"
+    assert doc["apagado_em"]
 
 
 # --- Qual PC (Task: a conta é do posto, não da caixa toda) ---------------------

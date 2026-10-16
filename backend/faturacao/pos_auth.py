@@ -237,7 +237,7 @@ async def listar_dispositivos(_: dict = Depends(gestor_atual)) -> List[dict]:
             "ultima_atividade_em": d.get("ultima_atividade_em"),
         }
         for d in todos
-        if d.get("estado") != "pendente"
+        if d.get("estado") not in ("pendente", "apagado")
     ]
 
 
@@ -259,6 +259,35 @@ async def revogar_dispositivo(dispositivo_id: str, _: dict = Depends(gestor_atua
         {"$set": {"estado": "revogado", "revogado_em": _agora().isoformat()}},
     )
     return {"revogado": True}
+
+
+@router.post("/dispositivos-pos/{dispositivo_id}/apagar")
+async def apagar_dispositivo(dispositivo_id: str, _: dict = Depends(gestor_atual)) -> dict:
+    """Tira da lista um dispositivo JÁ REVOGADO — o PC que foi substituído ou
+    deitado fora não precisa de ficar ali para sempre.
+
+    Só depois de revogado, de propósito: apagar um PC activo cortava o POS de
+    uma loja a meio do serviço com um toque, sem deixar rasto na lista.
+
+    O documento fica na base (estado 'apagado'), não sai dela: as contas e os
+    documentos guardam o `dispositivo_id`, e `caixa._nome_dos_dispositivos`
+    continua a saber dizer "PC Balcão" em vez de um uuid. Para o resto do
+    código é igual a revogado — nada lê dispositivos fora de estado='activo'
+    a não ser essa tradução do nome."""
+    db = obter_db()
+    disp = await db[COLECOES["dispositivos"]].find_one(
+        {"id": dispositivo_id, "estado": "revogado"}
+    )
+    if not disp:
+        raise HTTPException(
+            status_code=404,
+            detail="Dispositivo não encontrado, ainda ativo ou já apagado.",
+        )
+    await db[COLECOES["dispositivos"]].update_one(
+        {"id": dispositivo_id},
+        {"$set": {"estado": "apagado", "apagado_em": _agora().isoformat()}},
+    )
+    return {"apagado": True}
 
 
 async def dispositivo_atual(x_device_token: Optional[str] = Header(default=None)) -> Dict:
