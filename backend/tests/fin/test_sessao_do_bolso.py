@@ -355,3 +355,155 @@ def test_dois_rostos_pedidos_ao_mesmo_tempo_sao_um_pedido_ao_iphone(tmp_path):
       return { r, rostos: NB.chamadas.filter((c) => c.startsWith('verifyIdentity')).length };
     """, tmp_path)
     assert r == {"r": [True, True], "rostos": 1}
+
+
+# --- lib/sessao.js ---------------------------------------------------------------
+
+
+def test_sem_plugin_a_sessao_nao_fecha_nem_reentra_nem_pergunta(tmp_path):
+    r = _corre("""
+      const s = lib('lib/sessao');
+      let logins = 0;
+      s.ligarEntrada(async () => { logins += 1; });
+      return {
+        fechadaAoCarregar: s.barreiraFechada(), fechou: s.fecharBarreira(),
+        fechada: s.barreiraFechada(), saiu: localStorage.getItem('saiuAs'),
+        reentrou: await s.reentrar(), logins,
+        depois: await s.depoisDoLoginComSenha('carol@lisbonb.com', 'x'), chamadas: NB.chamadas,
+      };
+    """, tmp_path, antes="NB.presente = false;" + _LIGADO)
+    assert r == {"fechadaAoCarregar": False, "fechou": False, "fechada": False, "saiu": None,
+                 "reentrou": False, "logins": 0, "depois": "nada", "chamadas": []}
+
+
+def test_dois_401_ao_mesmo_tempo_dao_uma_so_reentrada(tmp_path):
+    r = _corre("""
+      const s = lib('lib/sessao');
+      const logins = [];
+      s.ligarEntrada(async (email, senha) => {
+        logins.push([email, senha]);
+        await new Promise((r) => setTimeout(r, 10));
+      });
+      const [a, b] = await Promise.all([s.reentrar(), s.reentrar()]);
+      const rostos = NB.chamadas.filter((c) => c.startsWith('verifyIdentity')).length;
+      const depois = await s.reentrar();   // acabada a primeira, a próxima tenta de novo
+      return { a, b, depois, logins, rostos };
+    """, tmp_path, antes=_LIGADO)
+    assert r == {"a": True, "b": True, "depois": True, "rostos": 1,
+                 "logins": [["carol@lisbonb.com", "segredo"], ["carol@lisbonb.com", "segredo"]]}
+
+
+@pytest.mark.parametrize("estado,apaga", [(401, True), (429, False), (None, False)])
+def test_so_o_401_do_login_apaga_o_keychain(tmp_path, estado, apaga):
+    """401 = a senha guardada já não é a certa. 429 (limite de tentativas) e
+    a rede em baixo (`None`: erro sem resposta) não dizem nada da senha."""
+    r = _corre("""
+      const s = lib('lib/sessao');
+      const estado = %s;
+      s.ligarEntrada(async () => {
+        const e = new Error('falhou');
+        if (estado) e.response = { status: estado };
+        throw e;
+      });
+      const ok = await s.reentrar();
+      return { ok, keychain: NB.keychain !== null, email: localStorage.getItem('faceid_email') };
+    """ % json.dumps(estado), tmp_path, antes=_LIGADO)
+    assert r["ok"] is False
+    assert r["keychain"] is (not apaga)
+    assert (r["email"] is None) is apaga
+
+
+def test_cancelar_o_face_id_na_reentrada_nao_entra_e_guarda_o_keychain(tmp_path):
+    r = _corre("""
+      const s = lib('lib/sessao');
+      let logins = 0;
+      s.ligarEntrada(async () => { logins += 1; });
+      NB.rosto = 'cancela';
+      return { ok: await s.reentrar(), logins, keychain: NB.keychain !== null };
+    """, tmp_path, antes=_LIGADO)
+    assert r == {"ok": False, "logins": 0, "keychain": True}
+
+
+@pytest.mark.parametrize("saiu_ha_ms,fechada", [
+    (None, True),                 # sem `saiuAs`: conta como arranque
+    (5 * 60 * 1000, False),       # voltou aos 5 minutos certos: não pede
+    (5 * 60 * 1000 + 1, True),    # passou dos 5 minutos: pede
+])
+def test_ao_carregar_a_barreira_fecha_se_nao_voltou_a_tempo(tmp_path, saiu_ha_ms, fechada):
+    antes = _RELOGIO + _LIGADO
+    if saiu_ha_ms is not None:
+        antes += "localStorage.setItem('saiuAs', String(AGORA - %d));" % saiu_ha_ms
+    r = _corre("return lib('lib/sessao').barreiraFechada();", tmp_path, antes=antes)
+    assert r is fechada
+
+
+def test_esconder_com_a_barreira_aberta_grava_a_hora_e_fecha(tmp_path):
+    """`saiuAs` é a hora a que se saiu de uma sessão ABERTA. Esconder com a barreira
+    ainda fechada (o rosto por passar) não é sair: se gravasse, voltar logo a seguir
+    contava como «voltou a tempo» e a barreira abria sem ninguém ter passado o rosto."""
+    r = _corre("""
+      const s = lib('lib/sessao');
+      // Sem `saiuAs` = arranque: a barreira começa fechada.
+      const fechadaNaoGrava = { fechou: s.fecharBarreira(AGORA - 1000), saiu: localStorage.getItem('saiuAs') };
+      s.abrirBarreira();
+      const fechou = s.fecharBarreira();
+      return { fechadaNaoGrava, fechou, fechada: s.barreiraFechada(), saiu: localStorage.getItem('saiuAs'),
+               aos5: s.voltouATempo(AGORA + 5 * 60 * 1000),
+               depois: s.voltouATempo(AGORA + 5 * 60 * 1000 + 1) };
+    """, tmp_path, antes=_RELOGIO + _LIGADO)
+    assert r == {"fechadaNaoGrava": {"fechou": True, "saiu": None},
+                 "fechou": True, "fechada": True, "saiu": "1700000000000",
+                 "aos5": True, "depois": False}
+
+
+def test_os_pedidos_esperam_que_a_barreira_abra(tmp_path):
+    r = _corre("""
+      const s = lib('lib/sessao');
+      let passou = false;
+      s.esperarBarreira().then(() => { passou = true; });
+      await new Promise((r) => setTimeout(r, 20));
+      const antes = passou;
+      s.abrirBarreira();
+      await new Promise((r) => setTimeout(r, 0));
+      return { antes, depois: passou };
+    """, tmp_path, antes=_LIGADO)
+    assert r == {"antes": False, "depois": True}
+
+
+def test_o_nao_fica_lembrado_por_email(tmp_path):
+    r = _corre("""
+      const s = lib('lib/sessao');
+      const primeira = await s.depoisDoLoginComSenha('debora@lisbonb.com', 'x');
+      s.recusar('debora@lisbonb.com');
+      const segunda = await s.depoisDoLoginComSenha('debora@lisbonb.com', 'x');
+      const outraPessoa = await s.depoisDoLoginComSenha('carol@lisbonb.com', 'y');
+      s.esquecerRecusa('debora@lisbonb.com');
+      const mudouDeIdeias = await s.depoisDoLoginComSenha('debora@lisbonb.com', 'x');
+      return { primeira, segunda, outraPessoa, mudouDeIdeias };
+    """, tmp_path)
+    assert r == {"primeira": "perguntar", "segunda": "nada", "outraPessoa": "perguntar",
+                 "mudouDeIdeias": "perguntar"}
+
+
+def test_quem_ja_tem_face_id_nao_e_perguntado_e_a_senha_nova_substitui_a_guardada(tmp_path):
+    r = _corre("""
+      const s = lib('lib/sessao');
+      const resposta = await s.depoisDoLoginComSenha('carol@lisbonb.com', 'senha-nova');
+      return { resposta, keychain: NB.keychain };
+    """, tmp_path, antes=_LIGADO)
+    assert r == {"resposta": "nada", "keychain": {"username": "carol@lisbonb.com",
+                 "password": "senha-nova", "server": "gestao.lisbonb.com"}}
+
+
+def test_ligar_o_face_id_so_guarda_depois_de_o_rosto_passar(tmp_path):
+    r = _corre("""
+      const s = lib('lib/sessao');
+      NB.rosto = 'cancela';
+      const cancelado = await s.ligarFaceId('carol@lisbonb.com', 'segredo');
+      const nada = { keychain: NB.keychain, email: localStorage.getItem('faceid_email') };
+      NB.rosto = 'certo';
+      const ligado = await s.ligarFaceId('carol@lisbonb.com', 'segredo');
+      return { cancelado, nada, ligado, email: localStorage.getItem('faceid_email') };
+    """, tmp_path)
+    assert r == {"cancelado": False, "nada": {"keychain": None, "email": None},
+                 "ligado": True, "email": "carol@lisbonb.com"}
