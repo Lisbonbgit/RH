@@ -379,14 +379,15 @@ const lerBuracos = () => [...document.querySelectorAll('main [data-buraco]')].ma
 # A semana normal de 26/10 a 1/11 (desenho, «A semana normal»): Alfragide sem ninguém das 10 às
 # 14 (Emily só às 14, seg/ter) e das 19 às 23 (Beatrice sai às 19, qua/qui); Belém fecha à
 # terça; Benfica abriu a 24/10 e ainda não tem escala; Oeiras sem ninguém à terça. O domingo,
-# 1/11, vem da resposta de NOVEMBRO.
+# 1/11, vem da resposta de NOVEMBRO e é Todos os Santos: no feriado a escala não põe ninguém
+# (decisão do dono, 2026-10-16), por isso todas as lojas abertas ficam «—».
 GRELHA_DE_26_OUT = [
-    ["Alfragide", ["10h–14h", "10h–14h", "19h–23h", "19h–23h", "ok", "ok", "ok"]],
-    ["Algueirão", ["ok"] * 7],
-    ["Amadora", ["ok"] * 7],
-    ["Belém", ["ok", "fech.", "ok", "ok", "ok", "ok", "ok"]],
+    ["Alfragide", ["10h–14h", "10h–14h", "19h–23h", "19h–23h", "ok", "ok", "—"]],
+    ["Algueirão", ["ok"] * 6 + ["—"]],
+    ["Amadora", ["ok"] * 6 + ["—"]],
+    ["Belém", ["ok", "fech.", "ok", "ok", "ok", "ok", "—"]],
     ["Benfica", ["—"] * 7],
-    ["Oeiras", ["ok", "—", "ok", "ok", "ok", "ok", "ok"]],
+    ["Oeiras", ["ok", "—", "ok", "ok", "ok", "ok", "—"]],
 ]
 
 
@@ -455,11 +456,15 @@ devolve({ quinta, domingo, painel: { titulo: dlg.querySelector('h2').textContent
 """, outubro, novembro=novembro, vista=None)
     assert r["quinta"] == {"dia": "quinta, 29 de outubro", "escolhidos": ["2026-10-29"],
                            "buracos": [["Alfragide", "falta 19h–23h"], ["Benfica", "ninguém"]]}
-    # Tocar na linha de Belém escolhe o DIA (a agenda mostra todas as lojas); o 1/11 é de novembro.
+    # Tocar na linha de Belém escolhe o DIA (a agenda mostra todas as lojas); o 1/11 é de novembro
+    # e é feriado (Todos os Santos): a escala não põe ninguém, todas as lojas ficam sem ninguém.
     assert r["domingo"] == {"dia": "domingo, 1 de novembro", "escolhidos": ["2026-11-01"],
-                            "buracos": [["Benfica", "ninguém"]], "titulo": "26 out – 1 nov"}
-    # O painel abre na grelha de NOVEMBRO com o 1/11 escolhido (com a de outubro, o dia não estava lá).
-    assert r["painel"] == {"titulo": "Tapar Benfica", "loja": sn.BENFICA, "inicio": "13:00", "dias": ["2026-11-01"]}
+                            "buracos": [[l, "ninguém"] for l in ("Alfragide", "Algueirão", "Amadora", "Belém",
+                                                                  "Benfica", "Oeiras")],
+                            "titulo": "26 out – 1 nov"}
+    # O painel (o primeiro Tapar, Alfragide) abre na grelha de NOVEMBRO com o 1/11 escolhido (com
+    # a de outubro, o dia não estava lá).
+    assert r["painel"] == {"titulo": "Tapar Alfragide", "loja": sn.ALFRAGIDE, "inicio": "10:00", "dias": ["2026-11-01"]}
 
 
 def test_o_pessoal_da_semana_mostra_so_as_horas_das_minhas_idas(tmp_path):
@@ -587,7 +592,7 @@ const fecharPainel = () => clicar(botao('Fechar', document.querySelector('[role=
 # Uma ida que tapa Alfragide (29/10) e outra a mais em Oeiras (30/10): na Lista de Oeiras só fica a de Oeiras.
 IDAS_DO_FILTRO = IDAS_DA_DEBORA + [sn.ida("2026-10-29", sn.ALFRAGIDE, sn.CAROL, "19:00", "23:00"),
                                   sn.ida("2026-10-30", sn.OEIRAS, sn.CAROL, "13:00", "17:00")]
-GRELHA_DE_OEIRAS = [["Oeiras", ["ok", "—", "ok", "ok", "ok", "ok", "ok"]]]
+GRELHA_DE_OEIRAS = [["Oeiras", ["ok", "—", "ok", "ok", "ok", "ok", "—"]]]   # 1/11 é feriado: ninguém
 
 
 def test_escolher_uma_loja_deixa_so_essa_loja_na_semana_no_mes_e_na_lista(tmp_path):
@@ -613,8 +618,9 @@ devolve({ pastilhas, forma, semana, mes, lista: [...document.querySelectorAll('m
     assert r["forma"] == {"altas": True, "desliza": True}
     assert r["semana"] == {"escolhida": ["Oeiras"], "grelha": GRELHA_DE_OEIRAS,
                            "buracos": [["Loja Oeiras", "ninguém"]], "guardada": sn.OEIRAS}
-    # Sem o filtro, o Mês tinha pontos em 21 dias (Alfragide e Benfica): Oeiras só falta às terças por tapar.
-    assert r["mes"] == {"escolhida": ["Oeiras"], "pontos": ["20", "27"], "buracos": [["Loja Oeiras", "ninguém"]]}
+    # Sem o filtro, o Mês tinha pontos em 21 dias (Alfragide e Benfica): Oeiras só falta às terças por
+    # tapar e a 05/10, feriado (a escala não põe ninguém).
+    assert r["mes"] == {"escolhida": ["Oeiras"], "pontos": ["05", "20", "27"], "buracos": [["Loja Oeiras", "ninguém"]]}
     assert r["lista"] == ["terça, 27 de outubroLoja Oeiras13h–22hninguémTapar",
                           "sexta, 30 de outubroCarol Santos · Loja Oeiras13h–17h"]
 
