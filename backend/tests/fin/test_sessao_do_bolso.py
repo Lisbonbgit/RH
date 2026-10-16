@@ -333,6 +333,18 @@ def test_guardar_e_apagar_mexem_no_keychain_e_no_email(tmp_path):
     }
 
 
+def test_guardar_sem_conseguir_escrever_o_email_nao_deixa_a_senha_no_keychain(tmp_path):
+    """Sem o `faceid_email` o site dá o Face ID por desligado (`faceIdLigado()`
+    falso) e nunca usa essa senha: ficava órfã no Keychain."""
+    r = _corre("""
+      const f = lib('lib/faceid');
+      const guardou = await f.guardar('carol@lisbonb.com', 'segredo');
+      return { guardou, keychain: NB.keychain, chamadas: NB.chamadas };
+    """, tmp_path, antes="localStorage.setItem = () => { throw new Error('QuotaExceededError'); };")
+    assert r == {"guardou": False, "keychain": None,
+                 "chamadas": ["setCredentials", "deleteCredentials"]}
+
+
 def test_dois_rostos_pedidos_ao_mesmo_tempo_sao_um_pedido_ao_iphone(tmp_path):
     """No ensaio (`craco start`) o `<React.StrictMode>` do `index.js` monta a
     Barreira duas vezes: dois `verificar()` ao mesmo tempo. Dois pedidos ao iPhone

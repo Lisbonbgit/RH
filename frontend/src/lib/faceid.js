@@ -90,9 +90,15 @@ export async function guardar(email, senha) {
   if (!pluginPresente()) return false;
   try {
     await NativeBiometric.setCredentials({ username: email, password: senha, server: SERVIDOR });
+  } catch (e) {
+    return false;
+  }
+  try {
     localStorage.setItem(CHAVE_EMAIL, email);
     return true;
   } catch (e) {
+    // Sem o email o Face ID conta como desligado e a senha ficava órfã no Keychain.
+    try { await NativeBiometric.deleteCredentials({ server: SERVIDOR }); } catch (e2) { /* fica */ }
     return false;
   }
 }
