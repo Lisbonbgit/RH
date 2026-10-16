@@ -156,6 +156,9 @@ _LIGADO = (
 
 
 def _corre(cenario: str, tmp_path: Path, dom: bool = False, antes: str = ""):
+    # Duplica parte do `tests/bolso_js.py` (Babel, jsdom, stderr que falha) DE
+    # PROPÓSITO nesta fase: as Tarefas 2 a 7 assentam neste `_corre` tal como está.
+    # Unifica-se com o `correr_js` depois da Fase 3.
     """Corre `cenario` (corpo de uma função async; o `return` é o resultado, em
     JSON) depois de `antes` (que corre ANTES de qualquer módulo do site ser
     carregado — é aí que se prepara o localStorage e o NB)."""
