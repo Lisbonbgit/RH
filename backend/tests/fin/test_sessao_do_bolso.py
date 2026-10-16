@@ -302,6 +302,19 @@ def test_verificar_distingue_recusa_de_interrupcao_e_um_rosto_vale_60_segundos(t
                  "aos59s": True, "aos61s": False}
 
 
+def test_com_o_relogio_a_recuar_o_rosto_pede_se_outra_vez(tmp_path):
+    """Acerto da hora (ou mudança à mão para trás): a diferença fica negativa,
+    menor que 60 s, e o rosto antigo passava a valer até o relógio o alcançar."""
+    r = _corre("""
+      const f = lib('lib/faceid');
+      await f.verificar();
+      NB.rosto = 'cancela';
+      AGORA -= 10 * 60 * 1000;
+      return await f.verificar();
+    """, tmp_path, antes=_RELOGIO)
+    assert r is False
+
+
 def test_guardar_e_apagar_mexem_no_keychain_e_no_email(tmp_path):
     r = _corre("""
       const f = lib('lib/faceid');

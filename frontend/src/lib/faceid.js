@@ -60,7 +60,9 @@ export async function temFaceId() {
 // true = passou · false = falhou ou a pessoa cancelou · null = interrompido pelo sistema.
 // Só biometria (`useFallback: false`): o código do iPhone não abre a senha da gestão.
 export async function verificar() {
-  if (Date.now() - verificadoAs < JANELA_MS) return true;
+  // `d >= 0`: com o relógio a recuar a diferença fica negativa e o rosto antigo valia.
+  const d = Date.now() - verificadoAs;
+  if (d >= 0 && d < JANELA_MS) return true;
   if (!pluginPresente()) return false;
   emVerificacao ??= NativeBiometric.verifyIdentity({
     reason: 'Entrar na Gestão Lisbonb',
