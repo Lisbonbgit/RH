@@ -18,6 +18,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import jwt
 import pytest
 
 from ..bolso_js import _node
@@ -360,6 +361,28 @@ def test_dois_rostos_pedidos_ao_mesmo_tempo_sao_um_pedido_ao_iphone(tmp_path):
 # --- lib/sessao.js ---------------------------------------------------------------
 
 
+def _token(email):
+    """Um token com a forma do `create_token` do server.py (o browser só lê o
+    corpo; a assinatura não conta). O `x` obriga o corpo a ter `-` e `_` do
+    base64url: um `atob` que não os trocasse por `+` e `/` rebentava."""
+    corpo = {"user_id": "u-" + email.split("@")[0], "email": email, "role": "gerente",
+             "employee_id": None, "must_change_password": False,
+             "iat": 1700000000, "exp": 1700086400, "x": "???>>>"}
+    t = jwt.encode(corpo, "segredo-dos-testes-com-mais-de-32-bytes", algorithm="HS256")
+    assert "-" in t.split(".")[1] and "_" in t.split(".")[1]
+    return t
+
+
+def _sessao(email):
+    """A sessão aberta no browser é a de `email` (o token no localStorage)."""
+    return "localStorage.setItem('token', %s);" % json.dumps(_token(email))
+
+
+# A sessão aberta é a da Carol, a mesma que ligou o Face ID (decisão 1A do dono:
+# o Face ID só actua sobre a conta que o ligou).
+_SESSAO_DA_CAROL = _sessao("carol@lisbonb.com")
+
+
 def test_sem_plugin_a_sessao_nao_fecha_nem_reentra_nem_pergunta(tmp_path):
     r = _corre("""
       const s = lib('lib/sessao');
@@ -371,7 +394,7 @@ def test_sem_plugin_a_sessao_nao_fecha_nem_reentra_nem_pergunta(tmp_path):
         reentrou: await s.reentrar(), logins,
         depois: await s.depoisDoLoginComSenha('carol@lisbonb.com', 'x'), chamadas: NB.chamadas,
       };
-    """, tmp_path, antes="NB.presente = false;" + _LIGADO)
+    """, tmp_path, antes="NB.presente = false;" + _LIGADO + _SESSAO_DA_CAROL)
     assert r == {"fechadaAoCarregar": False, "fechou": False, "fechada": False, "saiu": None,
                  "reentrou": False, "logins": 0, "depois": "nada", "chamadas": []}
 
@@ -388,7 +411,7 @@ def test_dois_401_ao_mesmo_tempo_dao_uma_so_reentrada(tmp_path):
       const rostos = NB.chamadas.filter((c) => c.startsWith('verifyIdentity')).length;
       const depois = await s.reentrar();   // acabada a primeira, a próxima tenta de novo
       return { a, b, depois, logins, rostos };
-    """, tmp_path, antes=_LIGADO)
+    """, tmp_path, antes=_LIGADO + _SESSAO_DA_CAROL)
     assert r == {"a": True, "b": True, "depois": True, "rostos": 1,
                  "logins": [["carol@lisbonb.com", "segredo"], ["carol@lisbonb.com", "segredo"]]}
 
@@ -407,7 +430,7 @@ def test_so_o_401_do_login_apaga_o_keychain(tmp_path, estado, apaga):
       });
       const ok = await s.reentrar();
       return { ok, keychain: NB.keychain !== null, email: localStorage.getItem('faceid_email') };
-    """ % json.dumps(estado), tmp_path, antes=_LIGADO)
+    """ % json.dumps(estado), tmp_path, antes=_LIGADO + _SESSAO_DA_CAROL)
     assert r["ok"] is False
     assert r["keychain"] is (not apaga)
     assert (r["email"] is None) is apaga
@@ -420,7 +443,7 @@ def test_cancelar_o_face_id_na_reentrada_nao_entra_e_guarda_o_keychain(tmp_path)
       s.ligarEntrada(async () => { logins += 1; });
       NB.rosto = 'cancela';
       return { ok: await s.reentrar(), logins, keychain: NB.keychain !== null };
-    """, tmp_path, antes=_LIGADO)
+    """, tmp_path, antes=_LIGADO + _SESSAO_DA_CAROL)
     assert r == {"ok": False, "logins": 0, "keychain": True}
 
 
@@ -450,7 +473,7 @@ def test_esconder_com_a_barreira_aberta_grava_a_hora_e_fecha(tmp_path):
       return { fechadaNaoGrava, fechou, fechada: s.barreiraFechada(), saiu: localStorage.getItem('saiuAs'),
                aos5: s.voltouATempo(AGORA + 5 * 60 * 1000),
                depois: s.voltouATempo(AGORA + 5 * 60 * 1000 + 1) };
-    """, tmp_path, antes=_RELOGIO + _LIGADO)
+    """, tmp_path, antes=_RELOGIO + _LIGADO + _SESSAO_DA_CAROL)
     assert r == {"fechadaNaoGrava": {"fechou": True, "saiu": None},
                  "fechou": True, "fechada": True, "saiu": "1700000000000",
                  "aos5": True, "depois": False}
@@ -507,3 +530,59 @@ def test_ligar_o_face_id_so_guarda_depois_de_o_rosto_passar(tmp_path):
     """, tmp_path)
     assert r == {"cancelado": False, "nada": {"keychain": None, "email": None},
                  "ligado": True, "email": "carol@lisbonb.com"}
+
+
+# --- decisão 1A do dono (2026-10-15): o Face ID só actua sobre a conta que o ligou ---
+#
+# Dois gestores no mesmo iPhone: a sessão aberta é a da Débora e o Face ID é o da
+# Carol (a última que o ligou).
+
+
+@pytest.mark.parametrize("sessao", [
+    _sessao("debora@lisbonb.com"),
+    "",                                          # sem sessão nenhuma
+    "localStorage.setItem('token', 'velho');",   # token ilegível
+], ids=["sessao-de-outra-conta", "sem-sessao", "token-ilegivel"])
+def test_a_reentrada_so_usa_o_keychain_da_conta_cuja_sessao_expirou(tmp_path, sessao):
+    """Com a sessão da Débora expirada, entrar com a senha da Carol punha a conta
+    da Carol (e as empresas dela) por baixo dos ecrãs da Débora, sem o dizer. Sem
+    sessão, ou com um token que não se lê, não se sabe de quem era: login normal.
+    Nem se pede o rosto (`chamadas` vazio): não há nada a fazer com ele."""
+    r = _corre("""
+      const s = lib('lib/sessao');
+      let logins = 0;
+      s.ligarEntrada(async () => { logins += 1; });
+      return { ok: await s.reentrar(), logins, chamadas: NB.chamadas };
+    """, tmp_path, antes=_LIGADO + sessao)
+    assert r == {"ok": False, "logins": 0, "chamadas": []}
+
+
+def test_esconder_com_a_sessao_de_outra_conta_nao_fecha_a_barreira(tmp_path):
+    """Senão a Débora, ao voltar, via «Entrar como carol@…» por cima dos números
+    dela — e o rosto da Carol abria a sessão da Débora."""
+    r = _corre("""
+      const s = lib('lib/sessao');
+      s.abrirBarreira();
+      return { fechou: s.fecharBarreira(), fechada: s.barreiraFechada(),
+               saiu: localStorage.getItem('saiuAs') };
+    """, tmp_path, antes=_RELOGIO + _LIGADO + _sessao("debora@lisbonb.com"))
+    assert r == {"fechou": False, "fechada": False, "saiu": None}
+
+
+def test_com_um_atob_que_exige_o_igual_a_sessao_le_se_na_mesma(tmp_path):
+    """O corpo do token vem sem o `=` do fim (base64url). O `atob` do Node e o do
+    jsdom aceitam-no assim; motores mais antigos não. Aqui o `atob` é estrito: sem
+    o `=` reposto a sessão não se lia, e a barreira nunca fechava ao esconder."""
+    assert len(_token("carol@lisbonb.com").split(".")[1]) % 4   # precisa mesmo do `=`
+    r = _corre("""
+      const s = lib('lib/sessao');
+      s.abrirBarreira();
+      return s.fecharBarreira();
+    """, tmp_path, antes=_RELOGIO + _LIGADO + _SESSAO_DA_CAROL + """
+      const atobSolto = atob;
+      Object.defineProperty(globalThis, 'atob', { configurable: true, value: (s) => {
+        if (s.length % 4) throw new Error('InvalidCharacterError');
+        return atobSolto(s);
+      } });
+    """)
+    assert r is True

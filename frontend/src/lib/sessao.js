@@ -19,6 +19,26 @@ const CHAVE_RECUSA = 'faceid_recusado:';
 const lerLocal = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 const gravarLocal = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* modo privado */ } };
 
+// O email da sessão aberta, lido do próprio token (o `create_token` do servidor
+// põe-no lá; a assinatura não se confere aqui, só se lê). É a única fonte que
+// serve no arranque: com a sessão expirada o `/auth/me` dá 401 e o `user` nunca
+// chega. Sem token, ou ilegível: null.
+const emailDaSessao = () => {
+  try {
+    const b64 = lerLocal('token').split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    // O `=` em falta, como faz o jwt-decode: há `atob` que o exigem.
+    return JSON.parse(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4))).email || null;
+  } catch (e) {
+    return null;
+  }
+};
+
+// Decisão 1A do dono (2026-10-15): o Face ID só actua sobre a conta que o ligou.
+// Dois gestores no mesmo iPhone, sessão da Débora aberta, Face ID da Carol (a
+// última que o ligou): a barreira não se fecha por cima da Débora a dizer
+// «Entrar como carol@…», e a re-entrada não troca a sessão da Débora pela da Carol.
+const faceIdDestaSessao = () => faceIdLigado() && emailGuardado() === emailDaSessao();
+
 // --- 1. A barreira -------------------------------------------------------------
 
 // Saiu há 5 minutos ou menos? Sem `saiuAs` conta como arranque (→ não).
@@ -40,10 +60,10 @@ export function abrirBarreira() {
   aEspera.splice(0).forEach((soltar) => soltar());
 }
 
-// Ao esconder. Sem Face ID ligado não fecha nada: no browser, esconder o
-// separador fechava a porta e ninguém a voltava a abrir.
+// Ao esconder. Sem Face ID ligado PARA ESTA SESSÃO não fecha nada: no browser,
+// esconder o separador fechava a porta e ninguém a voltava a abrir.
 export function fecharBarreira(agora = Date.now()) {
-  if (!faceIdLigado()) return false;
+  if (!faceIdDestaSessao()) return false;
   // `saiuAs` = a hora a que se saiu de uma sessão ABERTA. Com a barreira ainda
   // fechada (ir ao ecrã principal enquanto o Face ID pede o rosto) não se grava:
   // senão, ao voltar logo, contava como «voltou a tempo» e abria sem rosto.
@@ -63,7 +83,9 @@ let entrar = null;
 export const ligarEntrada = (fn) => { entrar = fn; };
 
 async function tentarReentrar() {
-  if (!entrar || !faceIdLigado()) return false;
+  // Só com o Keychain da MESMA conta cuja sessão expirou (decisão 1A); senão
+  // login normal — e nem se pede o rosto.
+  if (!entrar || !faceIdDestaSessao()) return false;
   const credenciais = await ler(); // pede o Face ID, salvo se acabou de passar
   if (!credenciais) return false;
   try {
