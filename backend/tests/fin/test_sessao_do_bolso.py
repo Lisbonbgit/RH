@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from ..faturacao.test_arredondamento_do_ecra import _node
+from ..bolso_js import _node
 
 _RAIZ = Path(__file__).resolve().parents[3]
 _FRONTEND = _RAIZ / "frontend"
@@ -178,8 +178,10 @@ def _corre(cenario: str, tmp_path: Path, dom: bool = False, antes: str = ""):
         cenario,
         # Sair pela mão: um temporizador pendurado (do React, do jsdom) não
         # pode prender o processo. Sai-se só DEPOIS de o stdout escrever.
+        # O stderr também se esvazia antes de sair: é ele que o Python lê para falhar.
         "})().then(",
-        "  (r) => process.stdout.write(JSON.stringify(r === undefined ? null : r), () => process.exit(0)),",
+        "  (r) => process.stdout.write(JSON.stringify(r === undefined ? null : r),",
+        "    () => process.stderr.write('', () => process.exit(0))),",
         "  (e) => {",
         "    console.error((e && e.stack) || e, (e && e.errors || []).map((x) => x.stack).join('\\n'));",
         "    process.exit(1);",
@@ -193,11 +195,46 @@ def _corre(cenario: str, tmp_path: Path, dom: bool = False, antes: str = ""):
         stderr=subprocess.PIPE,
         cwd=str(_FRONTEND),
         timeout=30,
-        env={"NODE_PATH": str(_FRONTEND / "node_modules"), "PATH": "/usr/bin:/bin"},
+        # Como o `tests/bolso_js.py`: o browserslist avisa no stderr quando a base do
+        # caniuse-lite faz 6 meses, e o stderr falha o teste — calado aqui.
+        env={"NODE_PATH": str(_FRONTEND / "node_modules"), "PATH": "/usr/bin:/bin",
+             "TZ": "Europe/Lisbon", "BROWSERSLIST_IGNORE_OLD_DATA": "1"},
     )
-    if r.returncode != 0:
-        pytest.fail("O JavaScript não correu:\n%s" % r.stderr.decode("utf-8", "replace"))
+    # O stderr conta mesmo com saída 0: é lá que o React deixa as excepções dos
+    # handlers (apanha-as e não as relança). Sem isto um teste negativo («a
+    # barreira não abriu») ficava verde com o ecrã a rebentar.
+    if r.returncode != 0 or r.stderr.strip():
+        pytest.fail("O JavaScript não correu (ou escreveu no stderr):\n%s"
+                    % r.stderr.decode("utf-8", "replace"))
     return json.loads(r.stdout.decode("utf-8"))
+
+
+# --- o próprio _corre --------------------------------------------------------------
+
+
+def test_uma_excepcao_num_clique_do_react_falha_o_teste(tmp_path):
+    """O React apanha a excepção do handler e só a escreve no stderr: o Node sai com 0."""
+    with pytest.raises(pytest.fail.Exception, match="handler rebentou"):
+        _corre("""
+          const caixa = document.getElementById('raiz');
+          const raiz = createRoot(caixa);
+          await act(async () => { raiz.render(React.createElement('button',
+            { onClick: () => { throw new Error('handler rebentou'); } }, 'Ir')); });
+          await act(async () => {
+            caixa.querySelector('button').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+          });
+          return 'continuou';
+        """, tmp_path, dom=True)
+
+
+def test_o_aviso_da_base_do_browserslist_nao_falha_o_teste(tmp_path):
+    """Com o relógio em 2027 a base do caniuse-lite tem mais de 6 meses e o
+    browserslist avisa no stderr ao primeiro ficheiro que o Babel transforma.
+    (Ele mede com `new Date()`, não com `Date.now`: troca-se a classe.)"""
+    r = _corre("return lib('lib/faceid').JANELA_MS;", tmp_path, antes=(
+        "const DataReal = Date; global.Date = class extends DataReal {"
+        " constructor(...a) { super(...(a.length ? a : [2027, 5, 1])); } };"))
+    assert r == 60000
 
 
 # --- lib/faceid.js ---------------------------------------------------------------
@@ -221,18 +258,22 @@ def test_sem_plugin_o_faceid_diz_que_nao_e_nao_toca_na_peca(tmp_path):
 
 def test_ler_so_depois_do_face_id_e_so_com_biometria(tmp_path):
     """A versão 6 do plugin NÃO prende a senha ao Face ID: quem a prende é o
-    `ler()`. Cancelado o rosto, o Keychain nem é tocado."""
+    `ler()`. Cancelado ou interrompido o rosto, o Keychain nem é tocado."""
     r = _corre("""
       const f = lib('lib/faceid');
       NB.rosto = 'cancela';
       const cancelado = await f.ler();
+      NB.rosto = 'sistema';
+      const interrompido = await f.ler();
       const tocouNoKeychain = NB.chamadas.includes('getCredentials');
       NB.rosto = 'certo';
       const lido = await f.ler();
       const pedido = NB.chamadas.filter((c) => c.startsWith('verifyIdentity')).pop();
-      return { cancelado, tocouNoKeychain, lido, pedido };
+      return { cancelado, interrompido, tocouNoKeychain, lido, pedido };
     """, tmp_path, antes=_LIGADO)
     assert r["cancelado"] is None
+    # Interrompido pelo iOS (`null`) também não é rosto: a porta fica fechada.
+    assert r["interrompido"] is None
     assert r["tocouNoKeychain"] is False
     assert r["lido"] == {"email": "carol@lisbonb.com", "senha": "segredo"}
     assert '"useFallback":false' in r["pedido"]
