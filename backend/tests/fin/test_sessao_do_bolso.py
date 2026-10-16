@@ -570,6 +570,19 @@ def test_esconder_com_a_sessao_de_outra_conta_nao_fecha_a_barreira(tmp_path):
     assert r == {"fechou": False, "fechada": False, "saiu": None}
 
 
+def test_ao_carregar_com_a_sessao_de_outra_conta_a_barreira_fecha_na_mesma(tmp_path):
+    """LACUNA CONHECIDA, escrita aqui para não ficar escondida: a 1A só cobre o
+    esconder e a re-entrada. Ao carregar, o critério é o do brief
+    (`faceIdLigado()`): com a sessão da Débora e o Face ID da Carol, o arranque a
+    frio fecha a barreira com «Entrar como carol@…». Sem `saiuAs` porque o
+    esconder da Débora nunca o grava (teste acima): vale para TODOS os arranques
+    dela, mesmo 10 s depois de sair. Se o dono escolher o critério da 1A também
+    aqui (`faceIdDestaSessao()`), este teste passa a esperar `False`."""
+    r = _corre("return lib('lib/sessao').barreiraFechada();", tmp_path,
+               antes=_RELOGIO + _LIGADO + _sessao("debora@lisbonb.com"))
+    assert r is True
+
+
 def test_com_um_atob_que_exige_o_igual_a_sessao_le_se_na_mesma(tmp_path):
     """O corpo do token vem sem o `=` do fim (base64url). O `atob` do Node e o do
     jsdom aceitam-no assim; motores mais antigos não. Aqui o `atob` é estrito: sem
