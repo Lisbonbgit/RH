@@ -42,9 +42,11 @@ const faceIdDestaSessao = () => faceIdLigado() && emailGuardado() === emailDaSes
 // --- 1. A barreira -------------------------------------------------------------
 
 // Saiu há 5 minutos ou menos? Sem `saiuAs` conta como arranque (→ não).
+// `d >= 0`: com o relógio a recuar a diferença fica negativa e abria sem rosto.
 export const voltouATempo = (agora = Date.now()) => {
   const saiu = Number(lerLocal(CHAVE_SAIU));
-  return saiu > 0 && agora - saiu <= CINCO_MINUTOS;
+  const d = agora - saiu;
+  return saiu > 0 && d >= 0 && d <= CINCO_MINUTOS;
 };
 
 // Decide-se ao carregar a página, antes de qualquer ecrã montar: os efeitos dos

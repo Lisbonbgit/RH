@@ -451,6 +451,7 @@ def test_cancelar_o_face_id_na_reentrada_nao_entra_e_guarda_o_keychain(tmp_path)
     (None, True),                 # sem `saiuAs`: conta como arranque
     (5 * 60 * 1000, False),       # voltou aos 5 minutos certos: não pede
     (5 * 60 * 1000 + 1, True),    # passou dos 5 minutos: pede
+    (-1, True),                   # `saiuAs` no futuro (relógio a recuar): pede
 ])
 def test_ao_carregar_a_barreira_fecha_se_nao_voltou_a_tempo(tmp_path, saiu_ha_ms, fechada):
     antes = _RELOGIO + _LIGADO
