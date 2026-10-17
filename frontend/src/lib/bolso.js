@@ -11,6 +11,7 @@
 // quem entra com outra conta a meio da sessão do browser tem de ver o pedido
 // seguinte a viajar com o token novo.
 import axios from 'axios';
+import { esperarBarreira, reentrar } from './sessao';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL + '/api/bolso';
 
@@ -31,12 +32,25 @@ const api = axios.create({
   headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
 });
 
-api.interceptors.request.use((config) => {
+api.interceptors.request.use(async (config) => {
+  // Com a barreira do Face ID fechada, nenhum pedido sai (ver lib/sessao.js).
+  await esperarBarreira();
   let token = null;
   try { token = localStorage.getItem('token'); } catch (e) { /* modo privado */ }
   config.headers = config.headers || {};
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
+});
+
+// **401 → uma re-entrada pelo Face ID e o MESMO pedido mais uma vez.** Aqui, e
+// não em cada ecrã: todas as chamadas do bolso passam por esta instância.
+// Sem Face ID (browser, build 2) a re-entrada diz logo «não» e o 401 segue
+// para o ecrã como sempre seguiu.
+api.interceptors.response.use(undefined, async (erro) => {
+  const pedido = erro?.config;
+  if (erro?.response?.status !== 401 || !pedido || pedido.repetido) throw erro;
+  if (!(await reentrar())) throw erro;
+  return api({ ...pedido, repetido: true });
 });
 
 // `empresa` é o id de uma empresa ou 'all' (o grupo); `unidade` é a loja, o

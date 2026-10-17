@@ -600,3 +600,81 @@ def test_com_um_atob_que_exige_o_igual_a_sessao_le_se_na_mesma(tmp_path):
       } });
     """)
     assert r is True
+
+
+# --- lib/bolso.js: o cliente de todos os ecrãs do bolso ------------------------
+
+# Um servidor de mentira à frente do axios VERDADEIRO (o `adapter` é a última
+# peça antes da rede: os interceptores correm todos). `RESPOSTAS['GET /bolso/painel']`
+# é `[estado, corpo]`, uma fila `[[estado, corpo], …]` ou `'rede'` (sem resposta).
+_SERVIDOR = r"""
+const axios = require('axios');
+global.RESPOSTAS = {};
+global.PEDIDOS = [];
+global.CABECALHOS = [];
+axios.defaults.adapter = async (config) => {
+  const caminho = ((config.baseURL || '') + config.url).replace(/^.*\/api/, '');
+  const chave = config.method.toUpperCase() + ' ' + caminho;
+  PEDIDOS.push(chave);
+  CABECALHOS.push(config.headers && config.headers.Authorization || null);
+  const fila = RESPOSTAS[chave];
+  const r = Array.isArray(fila) && Array.isArray(fila[0]) ? fila.shift() : fila;
+  if (r === 'rede' || !r) { const e = new Error('Network Error'); e.config = config; throw e; }
+  const [status, data] = r;
+  if (status >= 400) {
+    const e = new Error('HTTP ' + status); e.config = config; e.response = { status, data }; throw e;
+  }
+  return { data, status, statusText: 'OK', headers: {}, config };
+};
+"""
+
+
+def test_bolso_401_reentra_e_repete_o_pedido_com_o_token_novo(tmp_path):
+    r = _corre("""
+      const s = lib('lib/sessao');
+      s.abrirBarreira();
+      s.ligarEntrada(async () => { localStorage.setItem('token', 'novo'); });
+      const { data } = await lib('lib/bolso').getPainel('all');
+      return { data, pedidos: PEDIDOS, cabecalhos: CABECALHOS };
+    """, tmp_path, antes=_SERVIDOR + _LIGADO + _SESSAO_DA_CAROL + r"""
+      RESPOSTAS['GET /bolso/painel'] = [[401, {}], [200, { ok: true }]];
+    """)
+    assert r == {"data": {"ok": True}, "pedidos": ["GET /bolso/painel", "GET /bolso/painel"],
+                 "cabecalhos": ["Bearer " + _token("carol@lisbonb.com"), "Bearer novo"]}
+
+
+def test_bolso_401_depois_de_reentrar_nao_volta_a_tentar(tmp_path):
+    """Repete UMA vez. Sem isto, um 401 que se repete era um ciclo sem fim."""
+    r = _corre("""
+      const s = lib('lib/sessao');
+      s.abrirBarreira();
+      let logins = 0;
+      s.ligarEntrada(async () => { logins += 1; });
+      let estado = null;
+      try { await lib('lib/bolso').getPainel('all'); } catch (e) { estado = e.response.status; }
+      return { pedidos: PEDIDOS.length, logins, estado };
+    """, tmp_path, antes=_SERVIDOR + _LIGADO + _SESSAO_DA_CAROL
+       + "RESPOSTAS['GET /bolso/painel'] = [401, {}];")
+    assert r == {"pedidos": 2, "logins": 1, "estado": 401}
+
+
+def test_bolso_sem_face_id_o_401_chega_ao_ecra_como_sempre(tmp_path):
+    r = _corre("""
+      let estado = null;
+      try { await lib('lib/bolso').getPainel('all'); } catch (e) { estado = e.response.status; }
+      return { pedidos: PEDIDOS.length, estado, chamadas: NB.chamadas };
+    """, tmp_path, antes=_SERVIDOR + "NB.presente = false; RESPOSTAS['GET /bolso/painel'] = [401, {}];")
+    assert r == {"pedidos": 1, "estado": 401, "chamadas": []}
+
+
+def test_bolso_com_a_barreira_fechada_nenhum_pedido_sai(tmp_path):
+    r = _corre("""
+      const s = lib('lib/sessao');
+      const pedido = lib('lib/bolso').getPainel('all');
+      await new Promise((r) => setTimeout(r, 20));
+      const antes = PEDIDOS.length;
+      s.abrirBarreira();
+      await pedido;
+      return { antes, depois: PEDIDOS.length };
+    """, tmp_path, antes=_SERVIDOR + _LIGADO + "RESPOSTAS['GET /bolso/painel'] = [200, {}];")
+    assert r == {"antes": 0, "depois": 1}
