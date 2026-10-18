@@ -2,9 +2,10 @@
 
 Porta de `ValidadorLoja::criacao` (src/Dominio/Lojas/ValidadorLoja.php) do
 CRM autónomo, com todos os cenários do ValidadorLojaCriacaoTest.php e os
-mesmos nomes nos `ids`. Devolve `(dados, erros)`: os dados têm sempre os 20
+mesmos nomes nos `ids`. Devolve `(dados, erros)`: os dados têm sempre os 21
 campos de `CAMPOS` (os 18 do autónomo mais `instagram` e `site`, acrescentados
-em 2026-10-13), por essa ordem (os que faltam ficam `None`), e só se usam
+em 2026-10-13, e `google_place_id`, 2026-10-18, no bloco da localização), por
+essa ordem (os que faltam ficam `None`), e só se usam
 quando não há erros; os erros são `{campo: mensagem pt-PT}`, também pela
 ordem de `CAMPOS`. A ordem dos dicionários conta, por isso compara-se
 `list(….items())` (o `==` de dois `dict` ignora a ordem), e o tipo também
@@ -39,6 +40,10 @@ ORIGEM_INVALIDA = "A origem das coordenadas não é válida."
 INSTAGRAM = "O Instagram tem de ser um perfil válido (ex.: @purplehouse)."
 SITE = "O site tem de ser um endereço válido (ex.: https://exemplo.pt)."
 SITE_COMPRIDO = "O site tem no máximo 255 caracteres."
+PLACE_ID = "O identificador do lugar na Google não é válido."
+
+# Um place ID como a Google os dá (o do exemplo da documentação): fica tal e qual.
+PLACE = "ChIJN1t_tDeuEmsRUsoyG83frY4"
 
 # Um uuid4 como os que o portal grava (`str(uuid.uuid4())`): minúsculas, a
 # versão 4 no 13.º algarismo e a variante (8, 9, a ou b) no 17.º.
@@ -72,7 +77,8 @@ def mesmo_valor(a, b):
 def test_os_campos_sao_os_da_tabela_da_loja_por_ordem():
     assert CAMPOS == (
         "nome", "fase", "regiao_id", "morada", "codigo_postal", "localidade",
-        "lat", "lng", "origem_coords", "precisao_m", "telefone", "pessoa_contacto", "instagram", "site", "notas",
+        "lat", "lng", "origem_coords", "precisao_m", "google_place_id",
+        "telefone", "pessoa_contacto", "instagram", "site", "notas",
         "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim", "dias_fechada",
     )
 
@@ -105,6 +111,7 @@ def test_so_com_os_obrigatorios_os_outros_campos_ficam_vazios():
         ("lng", -9.1364),
         ("origem_coords", "pin_manual"),
         ("precisao_m", None),
+        ("google_place_id", None),
         ("telefone", None),
         ("pessoa_contacto", None),
         ("instagram", None),
@@ -131,6 +138,7 @@ def test_normaliza_uma_loja_completa():
         "lng": -9.1452,
         "origem_coords": "gps",
         "precisao_m": 12.4,
+        "google_place_id": " ChIJN1t_tDeuEmsRUsoyG83frY4 ",
         "telefone": " +351  912 345   678 ",
         "pessoa_contacto": " Ana ",
         "instagram": " @gelataria.do.rato ",
@@ -155,6 +163,7 @@ def test_normaliza_uma_loja_completa():
         ("lng", -9.1452),
         ("origem_coords", "gps"),
         ("precisao_m", 12),
+        ("google_place_id", "ChIJN1t_tDeuEmsRUsoyG83frY4"),
         ("telefone", "+351 912 345 678"),
         ("pessoa_contacto", "Ana"),
         ("instagram", "https://www.instagram.com/gelataria.do.rato/"),
@@ -350,6 +359,9 @@ NORMALIZACOES = [
     ("site com 255 caracteres", "site", "https://exemplo.pt/" + "p" * 236, "https://exemplo.pt/" + "p" * 236),
     ("site vazio", "site", "", None),
     ("site nulo", "site", None, None),
+    ("identificador do lugar na Google", "google_place_id", " ChIJN1t_tDeuEmsRUsoyG83frY4 ", "ChIJN1t_tDeuEmsRUsoyG83frY4"),
+    ("identificador do lugar vazio", "google_place_id", "  ", None),
+    ("identificador do lugar nulo", "google_place_id", None, None),
     ("notas com 65 535 bytes", "notas", "n" * 65535, "n" * 65535),
     ("notas vazias", "notas", "", None),
     ("região", "regiao_id", REGIAO_ID, REGIAO_ID),
@@ -747,6 +759,56 @@ def test_precisao_sem_origem_so_diz_que_falta_a_origem():
     assert list(criacao(corpo)[1].items()) == [("origem_coords", "Indique a origem das coordenadas.")]
 
 
+# --- O identificador do lugar na Google (2026-10-18, mapa Google; plano G3) ---
+
+
+def test_a_origem_google_nunca_chega_a_base():
+    """A origem `google` é só um estado passageiro do seletor (plano do mapa
+    Google, §1 "Regra do arrasto"): `ORIGENS` não muda e o servidor recusa-a
+    como qualquer origem desconhecida, mesmo com o identificador do lugar."""
+    assert "google" not in ORIGENS
+    dados, erros = criacao(minima({"origem_coords": "google", "google_place_id": PLACE}))
+
+    assert list(erros.items()) == [("origem_coords", ORIGEM_INVALIDA)]
+    assert (dados["origem_coords"], dados["precisao_m"], dados["google_place_id"]) == (None, None, PLACE)
+
+
+@pytest.mark.parametrize(
+    "origem, precisao",
+    [("pin_manual", None), ("gps", 10), ("geocoder", None)],
+    ids=["pino manual", "GPS", "pesquisa de morada"],
+)
+def test_o_identificador_do_lugar_aceita_se_com_qualquer_origem_valida(origem, precisao):
+    dados, erros = criacao(minima({"origem_coords": origem, "precisao_m": precisao, "google_place_id": PLACE}))
+
+    assert erros == {}
+    assert (dados["origem_coords"], dados["google_place_id"]) == (origem, PLACE)
+
+
+def test_sem_o_identificador_do_lugar_fica_nulo_a_seguir_a_precisao():
+    dados, erros = criacao(minima())
+
+    assert erros == {}
+    assert dados["google_place_id"] is None
+    assert list(dados).index("google_place_id") == list(dados).index("precisao_m") + 1
+
+
+@pytest.mark.parametrize(
+    "valor",
+    ["a b", "<b>x</b>", "a&b", "a'b", 'a"b', "ção", "x" * 256, 42, True],
+    ids=["com espaço", "HTML", "e comercial", "plica", "aspas", "acentos", "256 caracteres", "número", "verdadeiro"],
+)
+def test_um_identificador_do_lugar_invalido_da_o_erro_no_campo(valor):
+    assert erros_de({"google_place_id": valor}) == [("google_place_id", PLACE_ID)]
+
+
+def test_o_erro_do_identificador_do_lugar_vem_a_seguir_ao_da_precisao():
+    assert erros_de({"origem_coords": "gps", "precisao_m": 80, "google_place_id": "a b"}) == [
+        ("precisao_m", GPS),
+        ("google_place_id", PLACE_ID),
+    ]
+
+
 @pytest.mark.parametrize(
     "fase",
     [" cliente", "cliente ", "cliente\n", " ", True, False, 0, 4, ["cliente"], {"fase": "cliente"}],
@@ -828,6 +890,7 @@ def test_os_dados_de_uma_loja_vazia_sao_os_do_autonomo():
     assert list(criacao({})[0].items()) == [
         ("nome", ""), ("fase", None), ("regiao_id", None), ("morada", None), ("codigo_postal", None),
         ("localidade", None), ("lat", None), ("lng", None), ("origem_coords", None), ("precisao_m", None),
+        ("google_place_id", None),
         ("telefone", None), ("pessoa_contacto", None), ("instagram", None), ("site", None), ("notas", None),
         ("janela1_inicio", None), ("janela1_fim", None), ("janela2_inicio", None), ("janela2_fim", None),
         ("dias_fechada", []),
@@ -869,6 +932,7 @@ def test_os_erros_vem_sempre_pela_ordem_dos_campos():
         "lat": "x",
         "lng": "x",
         "origem_coords": "x",
+        "google_place_id": "a b",
         "telefone": "x",
         "pessoa_contacto": 1,
         "instagram": "@",

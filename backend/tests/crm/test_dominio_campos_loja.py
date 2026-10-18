@@ -13,14 +13,22 @@ Armadilhas do Python (plano §10; dossiê §2.1 e §5.2): `[0-9]` e
 `re.fullmatch` (o `\\d` aceita algarismos árabes e o `$` um "\\n" final);
 `mb_strlen` → `len`, `strlen` → bytes UTF-8; `bool` e números não são texto;
 `array_is_list` → `isinstance(x, list)`.
+
+`google_place_id` (2026-10-18, mapa Google; plano G3) não tem par no PHP: o
+identificador do lugar na Google que acompanha o pino arrastado a partir de
+um negócio ou de uma morada da Google. A Google não documenta o formato dos
+place IDs, por isso só se recusa o que não serve à base nem ao HTML (ASCII
+imprimível sem espaço nem `<>"'&`, 1 a 255 caracteres).
 """
 import pytest
 
 from crm.dominio.campos_loja import (
     DIAS,
+    PLACE_ID_MAXIMO,
     SITE_MAXIMO,
     codigo_postal,
     dias_fechada,
+    google_place_id,
     instagram,
     notas,
     site,
@@ -36,6 +44,7 @@ NOTAS = "As notas são demasiado compridas."
 SITE = "O site tem de ser um endereço válido (ex.: https://exemplo.pt)."
 SITE_COMPRIDO = "O site tem no máximo 255 caracteres."
 INSTAGRAM = "O Instagram tem de ser um perfil válido (ex.: @purplehouse)."
+PLACE_ID = "O identificador do lugar na Google não é válido."
 
 # Os rótulos e tamanhos do ValidadorLoja::TEXTOS (a tabela fica na T2.5).
 MORADA = ("A morada", 255)
@@ -879,3 +888,127 @@ def test_instagram_normaliza(valor, guardado):
 )
 def test_instagram_recusa(valor):
     assert instagram(valor) == (None, INSTAGRAM)
+
+
+# --- google_place_id (2026-10-18, mapa Google; plano G3) ---
+
+
+def test_o_identificador_do_lugar_guarda_ate_255_caracteres():
+    assert PLACE_ID_MAXIMO == 255
+
+
+# Os seis caracteres do ASCII imprimível que ficam de fora: o espaço, as aspas,
+# a plica, o `&` e os `<>` (a Google não documenta o formato dos place IDs:
+# só se recusa o que não serve à base nem ao HTML).
+EXCLUIDOS = (" ", '"', "'", "&", "<", ">")
+# Os outros 89 (0x21–0x7E menos os cinco que não são o espaço), todos aceites.
+ACEITES = tuple(chr(codigo) for codigo in range(0x21, 0x7F) if chr(codigo) not in EXCLUIDOS)
+
+
+def test_os_caracteres_aceites_sao_89():
+    assert len(ACEITES) == 94 - 5
+    assert set(ACEITES).isdisjoint(EXCLUIDOS)
+
+
+@pytest.mark.parametrize(
+    "valor, guardado",
+    [
+        ("ChIJN1t_tDeuEmsRUsoyG83frY4", "ChIJN1t_tDeuEmsRUsoyG83frY4"),
+        ("EiJSdWEgQXVndXN0YSwgTGlzYm9h", "EiJSdWEgQXVndXN0YSwgTGlzYm9h"),
+        ("a", "a"),
+        ("A" * 255, "A" * 255),
+        ("x.y:z/w+q==", "x.y:z/w+q=="),
+        ("".join(ACEITES), "".join(ACEITES)),
+        ("  ChIJN1t_tDeuEmsRUsoyG83frY4  ", "ChIJN1t_tDeuEmsRUsoyG83frY4"),
+        ("\u00a0ChIJN1t_tDeuEmsRUsoyG83frY4\ufeff", "ChIJN1t_tDeuEmsRUsoyG83frY4"),
+        ("", None),
+        ("  ", None),
+        ("\u00a0", None),
+        (None, None),
+    ],
+    ids=[
+        "um place ID de um negócio",
+        "um place ID de uma morada",
+        "um carácter",
+        "255 caracteres",
+        "pontuação que a base e o HTML aceitam",
+        "todos os 89 caracteres aceites juntos",
+        "sem os espaços das pontas",
+        "sem os espaços Unicode das pontas",
+        "vazio",
+        "só espaços",
+        "só um espaço sem quebra",
+        "nulo",
+    ],
+)
+def test_google_place_id_normaliza(valor, guardado):
+    assert google_place_id(valor) == (guardado, None)
+
+
+@pytest.mark.parametrize("caracter", ACEITES, ids=[f"U+{ord(c):04X}" for c in ACEITES])
+def test_google_place_id_aceita_cada_caracter_ascii_imprimivel_nao_excluido(caracter):
+    assert google_place_id(caracter) == (caracter, None)
+    assert google_place_id("a" + caracter + "b") == ("a" + caracter + "b", None)
+
+
+@pytest.mark.parametrize("caracter", EXCLUIDOS, ids=["espaço", "aspas", "plica", "e comercial", "menor", "maior"])
+def test_google_place_id_recusa_cada_caracter_excluido(caracter):
+    assert google_place_id("a" + caracter + "b") == (None, PLACE_ID)
+    assert google_place_id("ab" + caracter + "c" * 253) == (None, PLACE_ID)
+
+
+@pytest.mark.parametrize(
+    "valor",
+    [
+        "abc def",
+        "<b>x</b>",
+        "a&b",
+        "a'b",
+        'a"b',
+        "ção",
+        "A" * 256,
+        "a\tb",
+        "a\nb",
+        "ab\x00",
+        "a\x7fb",
+        "a\u00a0b",
+        "😀",
+        "ChIJ…",
+        42,
+        1.5,
+        True,
+        False,
+        ["ChIJN1t_tDeuEmsRUsoyG83frY4"],
+        {"placeId": "ChIJN1t_tDeuEmsRUsoyG83frY4"},
+    ],
+    ids=[
+        "com espaço",
+        "HTML",
+        "e comercial",
+        "plica",
+        "aspas",
+        "letras acentuadas",
+        "256 caracteres",
+        "tabulação",
+        "mudança de linha",
+        "carácter nulo",
+        "DEL",
+        "espaço sem quebra no meio",
+        "emoji",
+        "reticências Unicode",
+        "número",
+        "decimal",
+        "verdadeiro",
+        "falso",
+        "lista",
+        "objeto",
+    ],
+)
+def test_google_place_id_recusa(valor):
+    assert google_place_id(valor) == (None, PLACE_ID)
+
+
+def test_google_place_id_conta_caracteres_depois_de_aparar_e_so_recusa_a_partir_do_256():
+    assert google_place_id("x" * PLACE_ID_MAXIMO) == ("x" * PLACE_ID_MAXIMO, None)
+    assert google_place_id(" " + "x" * PLACE_ID_MAXIMO + " ") == ("x" * PLACE_ID_MAXIMO, None)
+    assert google_place_id("x" * (PLACE_ID_MAXIMO + 1)) == (None, PLACE_ID)

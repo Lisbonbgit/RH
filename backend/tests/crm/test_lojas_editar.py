@@ -77,6 +77,8 @@ LAT = 38.710800
 LNG = -9.136900
 # Longe de tudo (1 km para norte).
 LAT_LONGE = 38.719800
+# Um place ID como a Google os dá (o do exemplo da documentação); vai tal e qual.
+PLACE = "ChIJN1t_tDeuEmsRUsoyG83frY4"
 
 # A forma das lojas "inseridas por SQL" (LojasTeste).
 CRIADA_EM = "2026-10-03T09:00:00Z"
@@ -136,6 +138,7 @@ def _loja(numero, nome, lat, lng=LNG, **outros):
         "loc": {"type": "Point", "coordinates": [lng, lat]},
         "origem_coords": "pin_manual",
         "precisao_m": None,
+        "google_place_id": None,
         "telefone": None,
         "pessoa_contacto": None,
         "instagram": None,
@@ -407,6 +410,7 @@ def test_o_set_grava_os_campos_com_os_tipos_da_base_e_a_versao_nova(sessao, monk
         "loc": {"type": "Point", "coordinates": [-9.1368, 38.7109]},
         "origem_coords": "gps",
         "precisao_m": 8,
+        "google_place_id": None,
         "telefone": "912 345 678",
         "janelas": [{"inicio": "10:00", "fim": "13:00"}],
         "dias_fechada": ["seg", "dom"],
@@ -561,6 +565,80 @@ def test_uma_loja_gravada_antes_do_instagram_e_do_site_edita_se_e_le_se(sessao):
     assert (r.json()["instagram"], r.json()["site"]) == (None, None)
     [(_, _filtro, atualizacao, _upsert)] = cliente.base.crm_lojas.chamadas("update_one")
     assert set(atualizacao["$set"]) == {"telefone", "atualizado_em"}
+
+
+def test_o_bloco_da_localizacao_grava_e_limpa_o_identificador_do_lugar(sessao):
+    """Plano do mapa Google (G3): "Corrigir localização" manda o bloco com o
+    `google_place_id` (o pino arrastado a partir de um negócio ou de uma morada
+    da Google fica `pin_manual` + o id), que se grava a seguir à precisão;
+    `null` limpa-o."""
+    cliente = sessao(RUI_UTILIZADOR)
+
+    r = cliente.alterar(CAFE, {**_pino(38.7109), "google_place_id": PLACE})
+
+    assert r.status_code == 200, r.text
+    assert (r.json()["origem_coords"], r.json()["google_place_id"]) == ("pin_manual", PLACE)
+    [(_, _filtro, atualizacao, _upsert)] = cliente.base.crm_lojas.chamadas("update_one")
+    assert atualizacao["$set"] == {
+        "lat": 38.7109, "lng": LNG, "loc": {"type": "Point", "coordinates": [LNG, 38.7109]},
+        "origem_coords": "pin_manual", "precisao_m": None, "google_place_id": PLACE,
+        "atualizado_em": AGORA_CARIMBO,
+    }
+    guardada = _guardada(cliente.base)
+    assert guardada["google_place_id"] == PLACE
+    assert list(guardada) == list(_cafe()), "As chaves ficam no sítio (o $set só muda valores)."
+
+    r = cliente.alterar(CAFE, {**_pino(38.7109), "google_place_id": None}, versao=r.json()["atualizado_em"])
+    assert r.status_code == 200, r.text
+    assert r.json()["google_place_id"] is None
+    assert _guardada(cliente.base)["google_place_id"] is None
+
+
+def test_mudar_o_pino_sem_o_identificador_do_lugar_limpa_o_guardado(sessao):
+    """Tocar no mapa à mão limpa o `google_place_id` no seletor (adenda §6); no
+    servidor, o bloco da localização sem a chave grava null, como a `precisao_m`
+    sem GPS — o pino já não é o do negócio. Um PATCH noutro campo não lhe toca."""
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe(google_place_id=PLACE)]))
+
+    r = cliente.alterar(CAFE, _pino(38.7109))
+
+    assert r.status_code == 200, r.text
+    assert r.json()["google_place_id"] is None
+    [(_, _filtro, atualizacao, _upsert)] = cliente.base.crm_lojas.chamadas("update_one")
+    assert atualizacao["$set"]["google_place_id"] is None
+    assert _guardada(cliente.base)["google_place_id"] is None
+
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe(google_place_id=PLACE)]))
+    r = cliente.alterar(CAFE, {"telefone": "912 345 678"})
+    assert (r.status_code, r.json()["google_place_id"]) == (200, PLACE)
+    [(_, _filtro, atualizacao, _upsert)] = cliente.base.crm_lojas.chamadas("update_one")
+    assert "google_place_id" not in atualizacao["$set"]
+    assert _guardada(cliente.base)["google_place_id"] == PLACE
+
+
+def test_uma_loja_gravada_antes_do_identificador_do_lugar_edita_se_e_le_se(sessao):
+    """Um documento de antes do mapa Google não tem a chave (sem migração, plano
+    §3): lê-se com ela a null, um PATCH noutro campo não a inventa no `$set`, e
+    o bloco da localização acrescenta-a."""
+    antiga = _cafe()
+    del antiga["google_place_id"]
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[antiga]))
+
+    lida = cliente.get(f"{LOJAS_URL}/{CAFE}")
+    assert (lida.status_code, lida.json()["google_place_id"]) == (200, None)
+
+    r = cliente.alterar(CAFE, {"telefone": "912 345 678"})
+    assert r.status_code == 200, r.text
+    assert r.json()["google_place_id"] is None
+    [(_, _filtro, atualizacao, _upsert)] = cliente.base.crm_lojas.chamadas("update_one")
+    assert set(atualizacao["$set"]) == {"telefone", "atualizado_em"}
+    assert "google_place_id" not in _guardada(cliente.base)
+
+    r = cliente.alterar(CAFE, {**_pino(38.7109), "google_place_id": PLACE}, versao=r.json()["atualizado_em"])
+    assert r.status_code == 200, r.text
+    assert r.json()["google_place_id"] == PLACE
+    assert _guardada(cliente.base)["google_place_id"] == PLACE
+    assert cliente.get(f"{LOJAS_URL}/{CAFE}").json()["google_place_id"] == PLACE
 
 
 def test_a_resposta_nunca_traz_o_id_do_mongo_o_loc_nem_as_janelas_em_lista(sessao):
@@ -1104,6 +1182,20 @@ def test_mudar_as_coordenadas_para_junto_de_outra_loja_da_409_duplicado(sessao):
     assert _escritas(cliente.base) == []
 
 
+def test_mudar_o_pino_para_junto_de_outra_loja_com_o_identificador_do_lugar_da_409(sessao):
+    """O 409 dos 50 m continua a aplicar-se ao bloco com `google_place_id`: a
+    regra é sobre o pino posto pela pessoa (adenda §2.1), e nada muda."""
+    vizinha = _loja(2, "Bar da Esquina", LAT)
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[vizinha, _loja(1, "Café Central", LAT_LONGE)]))
+
+    r = cliente.alterar(CAFE, {**_pino(38.710890), "google_place_id": PLACE})
+
+    assert (r.status_code, r.json()["detail"]["codigo"]) == (409, "duplicado")
+    guardada = _guardada(cliente.base)
+    assert (guardada["lat"], guardada["google_place_id"], guardada["atualizado_em"]) == (LAT_LONGE, None, VERSAO)
+    assert _escritas(cliente.base) == []
+
+
 def test_os_duplicados_procuram_se_pelo_pre_filtro_sem_a_propria_loja(sessao):
     """O `find` é o círculo de 60 m da T2.3 sem a própria loja (`excluir_id`),
     com só os campos que a regra dos 50 m usa."""
@@ -1227,6 +1319,13 @@ LOCALIZACOES_INVALIDAS = [
     ("só a latitude", {"lat": 38.710890}, {"lng": INCOMPLETA, "origem_coords": INCOMPLETA}),
     ("fora de Portugal", {"lat": 40.4168, "lng": -3.7038, "origem_coords": "pin_manual"},
      {"lng": "Fora de Portugal"}),
+    ("só o identificador do lugar na Google", {"google_place_id": PLACE},
+     {"lat": INCOMPLETA, "lng": INCOMPLETA, "origem_coords": INCOMPLETA}),
+    ("origem google (só estado do seletor; nunca chega à base)",
+     {"lat": 38.710890, "lng": LNG, "origem_coords": "google", "google_place_id": PLACE},
+     {"origem_coords": "A origem das coordenadas não é válida."}),
+    ("identificador do lugar inválido", {**_pino(38.710890), "google_place_id": "a b"},
+     {"google_place_id": "O identificador do lugar na Google não é válido."}),
 ]
 
 

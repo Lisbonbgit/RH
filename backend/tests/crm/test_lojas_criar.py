@@ -62,6 +62,8 @@ AGORA_DO_RELOGIO = relogio.agora  # o verdadeiro, antes de qualquer monkeypatch
 # Rua Augusta, em Lisboa. Os outros pontos medem-se a partir daqui, para norte (1 m ≈ 0,000009°).
 LAT = 38.710800
 LNG = -9.136900
+# Um place ID como a Google os dá (o do exemplo da documentação); vai tal e qual.
+PLACE = "ChIJN1t_tDeuEmsRUsoyG83frY4"
 
 # A forma das lojas "inseridas por SQL" (LojasTeste).
 CRIADA_EM = "2026-10-03T09:00:00Z"
@@ -118,6 +120,7 @@ def _loja(numero, nome, lat, lng=LNG, **outros):
         "loc": {"type": "Point", "coordinates": [lng, lat]},
         "origem_coords": "pin_manual",
         "precisao_m": None,
+        "google_place_id": None,
         "telefone": None,
         "pessoa_contacto": None,
         "instagram": None,
@@ -280,6 +283,7 @@ def test_criar_devolve_201_com_a_loja_completa(sessao):
         "lng": -9.1369,
         "origem_coords": "gps",
         "precisao_m": 12.4,
+        "google_place_id": PLACE,
         "telefone": "+351  912 345 678",
         "pessoa_contacto": "Rita",
         "instagram": "@cafe.central",
@@ -308,6 +312,7 @@ def test_criar_devolve_201_com_a_loja_completa(sessao):
         "lng": -9.1369,
         "origem_coords": "gps",
         "precisao_m": 12,
+        "google_place_id": PLACE,
         "telefone": "+351 912 345 678",
         "pessoa_contacto": "Rita",
         "instagram": "https://www.instagram.com/cafe.central/",
@@ -333,6 +338,7 @@ def test_criar_devolve_201_com_a_loja_completa(sessao):
     # Com o relógio parado: o mesmo instante, sem e com os microssegundos.
     assert (loja["criado_em"], loja["atualizado_em"]) == (AGORA_INSTANTE, AGORA_CARIMBO)
     assert '"lat":38.7108,"lng":-9.1369,' in r.text, "lat e lng vão como números."
+    assert '"precisao_m":12,"google_place_id":"ChIJN1t_tDeuEmsRUsoyG83frY4",' in r.text
 
 
 def test_criar_com_o_relogio_verdadeiro_da_o_instante_do_pedido(sessao, monkeypatch):
@@ -378,6 +384,7 @@ def test_a_loja_fica_gravada_como_a_api_a_devolve(sessao):
         "loc": {"type": "Point", "coordinates": [-9.1369, 38.7108]},
         "origem_coords": "pin_manual",
         "precisao_m": None,
+        "google_place_id": None,
         "telefone": None,
         "pessoa_contacto": None,
         "instagram": None,
@@ -410,10 +417,54 @@ def test_so_com_os_obrigatorios_o_resto_fica_vazio(sessao):
     assert (loja["nome"], loja["fase"], loja["origem_coords"], loja["dias_fechada"]) == (
         "Café Central", "potencial", "pin_manual", [],
     )
-    for campo in ("regiao_id", "morada", "codigo_postal", "localidade", "precisao_m", "telefone",
+    for campo in ("regiao_id", "morada", "codigo_postal", "localidade", "precisao_m", "google_place_id", "telefone",
                   "pessoa_contacto", "instagram", "site", "notas",
                   "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim"):
         assert loja[campo] is None, campo
+
+
+def test_criar_com_o_identificador_do_lugar_grava_o_e_devolve_o(sessao):
+    """Plano do mapa Google (G3): o `google_place_id` vai no bloco da
+    localização com qualquer origem válida (aqui o pino arrastado, `pin_manual`),
+    grava-se tal e qual a seguir à precisão e sai no 201 e no GET da loja."""
+    cliente = sessao(RUI_UTILIZADOR)
+    r = cliente.post(LOJAS_URL, json=_minima(google_place_id=PLACE))
+
+    assert r.status_code == 201, r.text
+    assert (r.json()["origem_coords"], r.json()["google_place_id"]) == ("pin_manual", PLACE)
+    assert '"precisao_m":null,"google_place_id":"ChIJN1t_tDeuEmsRUsoyG83frY4",' in r.text
+    [gravada] = cliente.base.crm_lojas.sem_id()
+    assert gravada["google_place_id"] == PLACE
+    assert list(gravada).index("google_place_id") == list(gravada).index("precisao_m") + 1
+    lida = cliente.get(f"{LOJAS_URL}/{r.json()['id']}")
+    assert (lida.status_code, lida.json()["google_place_id"]) == (200, PLACE)
+
+
+def test_a_lista_nao_traz_o_identificador_do_lugar(sessao):
+    """O resumo do mapa (`CAMPOS_RESUMO`) não muda: o `google_place_id` só vem na loja completa."""
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_loja(1, "Bar", 38.72, google_place_id=PLACE)]))
+    r = cliente.get(LOJAS_URL)
+
+    assert r.status_code == 200
+    assert "google_place_id" not in r.json()[0]
+    assert "google_place_id" not in PROJECAO_RESUMO
+    assert cliente.base.crm_lojas.registo == [("find", {}, PROJECAO_RESUMO)]
+
+
+def test_o_duplicado_a_menos_de_50_metros_aplica_se_mesmo_com_o_identificador_do_lugar(sessao):
+    """A regra dos 50 m é sobre o pino posto pela pessoa (adenda §2.1): um
+    negócio da Google ao lado de uma loja gravada dá 409 na mesma, nada se
+    grava, e com `confirmar_duplicado` grava-se com o identificador."""
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_loja(1, "Bar a 10 m", 38.710710)]))
+
+    r = cliente.post(LOJAS_URL, json=_minima(google_place_id=PLACE))
+    assert r.status_code == 409
+    assert r.json()["detail"]["codigo"] == "duplicado"
+    assert len(cliente.base.crm_lojas.docs) == 1 and _escritas(cliente.base) == []
+
+    r = cliente.post(LOJAS_URL, json=_minima(google_place_id=PLACE, confirmar_duplicado=True))
+    assert r.status_code == 201, r.text
+    assert r.json()["google_place_id"] == PLACE
 
 
 def test_os_campos_que_o_servidor_decide_ignoram_se(sessao):
@@ -478,6 +529,12 @@ INVALIDAS = [
     ("instagram e site (2026-10-13)", _minima(instagram="purple house", site="exemplo"), {
         "instagram": "O Instagram tem de ser um perfil válido (ex.: @purplehouse).",
         "site": "O site tem de ser um endereço válido (ex.: https://exemplo.pt).",
+    }),
+    ("origem google (só estado do seletor; nunca chega à base)",
+     _minima(origem_coords="google", google_place_id=PLACE),
+     {"origem_coords": "A origem das coordenadas não é válida."}),
+    ("identificador do lugar na Google inválido", _minima(google_place_id="<b>x</b>"), {
+        "google_place_id": "O identificador do lugar na Google não é válido.",
     }),
 ]
 

@@ -3,8 +3,8 @@
 `alteracao` é a porta de `ValidadorLoja::alteracao`
 (src/Dominio/Lojas/ValidadorLoja.php) do CRM autónomo, com todos os cenários
 do ValidadorLojaAlteracaoTest.php e os mesmos nomes nos `ids`: só as chaves
-enviadas, com as regras da criação; a localização (lat, lng, origem_coords e
-precisao_m) vai sempre junta; as janelas não se comparam aqui, porque a
+enviadas, com as regras da criação; a localização (lat, lng, origem_coords,
+precisao_m e, desde o mapa Google, google_place_id) vai sempre junta; as janelas não se comparam aqui, porque a
 coerência depende das horas que a loja já tem (a rota, na T2.11, chama
 `janelas.erros` sobre a loja já alterada). A ordem dos dicionários conta,
 por isso compara-se `list(….items())`, e o tipo também (o `assertSame` do
@@ -41,7 +41,9 @@ FORMATO_HORA = "A hora tem de estar no formato HH:MM."
 ORIGEM_INVALIDA = "A origem das coordenadas não é válida."
 INSTAGRAM = "O Instagram tem de ser um perfil válido (ex.: @purplehouse)."
 SITE = "O site tem de ser um endereço válido (ex.: https://exemplo.pt)."
+PLACE_ID = "O identificador do lugar na Google não é válido."
 
+PLACE = "ChIJN1t_tDeuEmsRUsoyG83frY4"
 REGIAO_ID = "5b0c6f1e-2d3a-4b8c-9e7f-0a1b2c3d4e5f"
 
 # Uma localização completa e válida, a base dos casos "com as regras da criação".
@@ -161,7 +163,7 @@ def test_uma_hora_sozinha_nao_se_compara_com_as_outras():
     assert pares(alteracao({"janela1_fim": "13:00"})) == ([("janela1_fim", "13:00")], [])
 
 
-def test_a_localizacao_completa_devolve_os_quatro_campos():
+def test_a_localizacao_completa_devolve_os_cinco_campos():
     dados, erros = alteracao({
         "lat": 41.15780049,
         "lng": -8.6296,
@@ -175,6 +177,7 @@ def test_a_localizacao_completa_devolve_os_quatro_campos():
         ("lng", -8.6296),
         ("origem_coords", "pin_manual"),
         ("precisao_m", None),
+        ("google_place_id", None),
     ]
 
 
@@ -187,6 +190,7 @@ def test_a_localizacao_por_gps_guarda_a_precisao():
         ("lng", -8.6296),
         ("origem_coords", "gps"),
         ("precisao_m", 50),
+        ("google_place_id", None),
     ]
     assert type(dados["precisao_m"]) is int
 
@@ -197,6 +201,8 @@ LOCALIZACOES_INCOMPLETAS = [
     ("latitude e longitude sem origem", {"lat": 38.7075, "lng": -9.1364}, {"origem_coords": INCOMPLETA}),
     ("só a origem", {"origem_coords": "gps"}, {"lat": INCOMPLETA, "lng": INCOMPLETA}),
     ("só a precisão", {"precisao_m": 10}, {"lat": INCOMPLETA, "lng": INCOMPLETA, "origem_coords": INCOMPLETA}),
+    ("só o identificador do lugar na Google", {"google_place_id": PLACE},
+     {"lat": INCOMPLETA, "lng": INCOMPLETA, "origem_coords": INCOMPLETA}),
 ]
 
 
@@ -213,10 +219,41 @@ def test_a_localizacao_incompleta_nao_entra_nos_dados():
     assert pares(alteracao({"nome": "Café", "lat": 38.7075}))[0] == [("nome", "Café")]
 
 
+def test_o_identificador_do_lugar_vai_com_o_bloco_da_localizacao():
+    """2026-10-18 (mapa Google, plano G3): grava-se com o bloco (aparado), limpa-se
+    com `null` ou "", e se não vier fica `None` — o bloco vem sempre completo,
+    como a `precisao_m` (o pino que se move à mão já não é o do negócio)."""
+    assert pares(alteracao({**LOCALIZACAO, "google_place_id": " " + PLACE + " "})) == (
+        [("lat", 38.7075), ("lng", -9.1364), ("origem_coords", "pin_manual"), ("precisao_m", None),
+         ("google_place_id", PLACE)],
+        [],
+    )
+    for limpar in (None, "", "  "):
+        dados, erros = pares(alteracao({**LOCALIZACAO, "google_place_id": limpar}))
+        assert (dados[-1], erros) == (("google_place_id", None), []), repr(limpar)
+    dados, erros = pares(alteracao(LOCALIZACAO))
+    assert (dados[-1], erros) == (("google_place_id", None), [])
+
+
+@pytest.mark.parametrize(
+    "origem, precisao",
+    [("pin_manual", None), ("gps", 10), ("geocoder", None)],
+    ids=["pino manual", "GPS", "pesquisa de morada"],
+)
+def test_o_identificador_do_lugar_aceita_se_com_qualquer_origem_valida(origem, precisao):
+    dados, erros = alteracao({**LOCALIZACAO, "origem_coords": origem, "precisao_m": precisao, "google_place_id": PLACE})
+
+    assert erros == {}
+    assert (dados["origem_coords"], dados["google_place_id"]) == (origem, PLACE)
+
+
 LOCALIZACOES_INVALIDAS = [
     ("fora de Portugal", {"lat": 40.4168, "lng": -3.7038}, {"lng": "Fora de Portugal"}),
     ("latitude nula", {"lat": None}, {"lat": "Coloque o pino no mapa."}),
-    ("origem desconhecida", {"origem_coords": "google"}, {"origem_coords": ORIGEM_INVALIDA}),
+    ("origem desconhecida", {"origem_coords": "mapa"}, {"origem_coords": ORIGEM_INVALIDA}),
+    ("origem google (só estado do seletor; nunca chega à base)",
+     {"origem_coords": "google", "google_place_id": PLACE}, {"origem_coords": ORIGEM_INVALIDA}),
+    ("identificador do lugar inválido", {"google_place_id": "<b>x</b>"}, {"google_place_id": PLACE_ID}),
     ("GPS com 80 m", {"origem_coords": "gps", "precisao_m": 80}, {"precisao_m": GPS}),
     ("GPS sem precisão", {"origem_coords": "gps"}, {"precisao_m": GPS}),
 ]
@@ -243,8 +280,10 @@ def test_a_localizacao_completa_tem_as_regras_da_criacao(localizacao, erros):
         ({"lat": None}, {"lng": INCOMPLETA, "origem_coords": INCOMPLETA}),
         ({"precisao_m": None}, {"lat": INCOMPLETA, "lng": INCOMPLETA, "origem_coords": INCOMPLETA}),
         ({"origem_coords": None, "precisao_m": None}, {"lat": INCOMPLETA, "lng": INCOMPLETA}),
+        ({"google_place_id": None}, {"lat": INCOMPLETA, "lng": INCOMPLETA, "origem_coords": INCOMPLETA}),
     ],
-    ids=["latitude nula sozinha", "precisão nula sozinha", "origem e precisão nulas"],
+    ids=["latitude nula sozinha", "precisão nula sozinha", "origem e precisão nulas",
+         "identificador do lugar nulo sozinho"],
 )
 def test_uma_chave_da_localizacao_conta_mesmo_nula(parcial, erros):
     # O `array_intersect_key` do PHP vê as chaves, não os valores: `"lat": null` foi enviada.
@@ -253,7 +292,7 @@ def test_uma_chave_da_localizacao_conta_mesmo_nula(parcial, erros):
 
 def test_a_localizacao_com_as_tres_chaves_nulas_e_completa_e_valida_se():
     assert pares(alteracao({"lat": None, "lng": None, "origem_coords": None})) == (
-        [("lat", None), ("lng", None), ("origem_coords", None), ("precisao_m", None)],
+        [("lat", None), ("lng", None), ("origem_coords", None), ("precisao_m", None), ("google_place_id", None)],
         [
             ("lat", "Coloque o pino no mapa."),
             ("lng", "Coloque o pino no mapa."),
@@ -285,6 +324,7 @@ def test_a_localizacao_incompleta_junta_se_aos_outros_erros_pela_ordem_dos_campo
 
 def test_a_localizacao_completa_vem_pela_ordem_dos_campos_mesmo_com_o_corpo_ao_contrario():
     dados, erros = alteracao({
+        "google_place_id": PLACE,
         "precisao_m": 12.5,
         "origem_coords": "gps",
         "lng": -9.1364,
@@ -300,6 +340,7 @@ def test_a_localizacao_completa_vem_pela_ordem_dos_campos_mesmo_com_o_corpo_ao_c
         ("lng", -9.1364),
         ("origem_coords", "gps"),
         ("precisao_m", 13),
+        ("google_place_id", PLACE),
         ("notas", "x"),
     ]
     assert type(dados["precisao_m"]) is int
