@@ -24,6 +24,19 @@ condicionais em `rotas_bd` (T3.17): aqui só se valida, lê, decide e responde.
   `calculo_disponivel` diz se há `CRM_ORS_CHAVE` (`ors.chave()`; ler nunca
   chama o openrouteservice). 422 em `data` (formato, ou mais de um ano a
   partir de hoje), sem tocar na base.
+- `GET /rotas/{data}/sugestoes` → `{sem_paragens, no_caminho, grupos}` do
+  `dominio.sugestoes` (T3.9): as lojas contactadas e depois as potenciais a
+  ≤ 5 km de qualquer paragem ativa com loja e, com `calculo.atual`, também
+  as a ≤ 3 km da linha gravada (o corredor; a atualidade é a mesma conta do
+  `rota_api`, com as definições em vigor a resolver a fábrica). Lê a rota,
+  as lojas das paragens ativas (`lojas_da_rota`) e, só com paragens, todas
+  as lojas pela `PROJECAO_LOJA_SUGESTAO` (nunca o telefone); sem cálculo
+  não lê as definições. As lojas das paragens ativas (também as fechadas,
+  as `nao_cabe` e as sem loja) nunca se sugerem; uma retirada volta a ser
+  sugerida. Sem rota ou sem paragens com loja → `sem_paragens: true`, sem
+  ler as lojas. Só leitura: uma rota passada ou com registo do motorista
+  responde na mesma; nunca chama o openrouteservice. 422 em `data`, como o
+  `GET /rotas/{data}`.
 - `POST /rotas/{data}/paragens` `{loja_id, motivo?, versao?}` → **201** com
   a rota completa. Sem rota nesse dia, cria-a em `rascunho` (versão 1) já
   com a primeira paragem, numa só `insert_one`; com rota, `$push` da paragem
@@ -137,7 +150,7 @@ from . import db as bd
 from . import relogio, rotas_bd
 from .auth import ESCRITORIO
 from .definicoes import em_vigor
-from .dominio import directions, horarios, rotas, validador_rota, vroom
+from .dominio import directions, horarios, polilinha, rotas, sugestoes, validador_rota, vroom
 from .dominio.datas import texto_data
 from .dominio.horas import segundos
 from .dominio.vroom import RespostaInvalida
@@ -178,6 +191,10 @@ CAMPOS_DO_DIA = ("hora_saida", "hora_regresso_limite", "inicio", "fim", "evitar_
 # As horas de uma paragem que o Directions não leva (fechada sem "Manter",
 # `nao_cabe`, sem loja): nenhuma.
 SEM_HORAS = {"chegada_prevista": None, "espera_min": None, "fora_de_horario": False}
+
+# As lojas de todas as sugestões leem-se só com isto (plano, T3.23): nunca o
+# telefone, a morada, as notas nem a pessoa de contacto.
+PROJECAO_LOJA_SUGESTAO = {"_id": 0, "id": 1, "nome": 1, "fase": 1, "lat": 1, "lng": 1, "dias_fechada": 1}
 
 # As secções cujas paragens vão ao VROOM no otimizar: as da rota e as que não
 # couberam no cálculo anterior (correção "T3.22 / §1"); as fechadas sem
@@ -223,6 +240,25 @@ async def ver_rota(data: str, membro: Dict = Depends(ESCRITORIO)) -> Dict:
     lojas = await rotas_bd.lojas_da_rota(base, rota)
     definicoes = await em_vigor(base)
     return _resposta(rota, dia, hoje, lojas, definicoes)
+
+
+@router.get("/rotas/{data}/sugestoes")
+async def sugestoes_da_rota(data: str, membro: Dict = Depends(ESCRITORIO)) -> Dict:
+    """As lojas para aproveitar a viagem do dia `data` (`dominio.sugestoes`):
+    perto das paragens ativas e, com o cálculo atual, no caminho da linha."""
+    hoje = relogio.hoje()
+    dia, erros = validador_rota.data_do_caminho(data, hoje)
+    if erros:
+        raise validacao(erros)
+    base = bd.obter_db()
+    rota = await rotas_bd.ler(base, texto_data(dia))
+    lojas_das_paragens = await rotas_bd.lojas_da_rota(base, rota)
+    if not lojas_das_paragens:
+        return sugestoes.sugerir([], [], [], dia)
+    todas = await base[bd.COLECOES["lojas"]].find({}, PROJECAO_LOJA_SUGESTAO).to_list(None)
+    ids_na_rota = [paragem["loja_id"] for paragem in rotas.ativas(rota["paragens"])]
+    linha = await _linha_da_rota(base, rota, lojas_das_paragens, dia)
+    return sugestoes.sugerir(todas, lojas_das_paragens, ids_na_rota, dia, linha)
 
 
 @router.post("/rotas/{data}/paragens", status_code=201)
@@ -560,6 +596,26 @@ def _registar_falha(rota, operacao, motivo) -> None:
     operação (`recalcular`/`otimizar`) e o motivo fixo — nunca coordenadas,
     nomes, ids nem a chave."""
     logger.warning("[crm] rota %s: o openrouteservice falhou (%s) — %s", rota["data"], operacao, motivo)
+
+
+async def _linha_da_rota(base, rota, lojas, dia):
+    """A linha da rota para o corredor das sugestões: a geometria do `calculo`
+    descodificada, só se o cálculo ainda é o atual — a mesma conta do
+    `rota_api`: a assinatura gravada é a de `entrada_calculo` da rota como
+    está, só com a secção "rota" pela ordem e o início e o fim resolvidos
+    pelas definições em vigor. `None` sem cálculo (as definições nem se
+    leem) ou com um cálculo velho."""
+    calculo = rota["calculo"]
+    if calculo is None:
+        return None
+    definicoes = await em_vigor(base)
+    seccoes = rotas.seccoes(rota["paragens"], {loja["id"]: loja for loja in lojas}, dia)
+    incluidas = [(paragem, loja) for paragem, loja, seccao, _ in seccoes if seccao == "rota"]
+    inicio = _ponto_resolvido(rota["inicio"], definicoes)
+    fim = _ponto_resolvido(rota["fim"], definicoes)
+    if calculo["assinatura"] != horarios.assinatura(horarios.entrada_calculo(rota, incluidas, inicio, fim)):
+        return None
+    return polilinha.descodificar(calculo["geometria"])
 
 
 def _ponto_resolvido(ponto, definicoes) -> tuple:

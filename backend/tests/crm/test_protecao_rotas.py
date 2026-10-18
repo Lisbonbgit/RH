@@ -119,6 +119,9 @@ PERFIS_POR_ROTA = {
     # A melhor ordem pelo VROOM e as horas pelo Directions (T3.22): o
     # planeador do escritório (gasta a quota da chave do servidor).
     ("POST", "/api/crm/rotas/{data}/otimizar"): PERFIS_ESCRITORIO,
+    # As sugestões de lojas para aproveitar a viagem (T3.23): o planeador do
+    # escritório, só leitura (nunca chama o openrouteservice).
+    ("GET", "/api/crm/rotas/{data}/sugestoes"): PERFIS_ESCRITORIO,
 }
 
 # Os motivos de `_classificar` (os meta-testes comparam-nos tal e qual).
