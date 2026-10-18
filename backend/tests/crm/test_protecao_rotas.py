@@ -116,6 +116,9 @@ PERFIS_POR_ROTA = {
     # Recalcular as horas da rota pelo Directions do openrouteservice (T3.21):
     # o planeador do escritório (gasta a quota da chave do servidor).
     ("POST", "/api/crm/rotas/{data}/recalcular"): PERFIS_ESCRITORIO,
+    # A melhor ordem pelo VROOM e as horas pelo Directions (T3.22): o
+    # planeador do escritório (gasta a quota da chave do servidor).
+    ("POST", "/api/crm/rotas/{data}/otimizar"): PERFIS_ESCRITORIO,
 }
 
 # Os motivos de `_classificar` (os meta-testes comparam-nos tal e qual).

@@ -98,6 +98,30 @@ condicionais em `rotas_bd` (T3.17): aqui só se valida, lê, decide e responde.
   2010 — a mensagem diz a paragem N da secção "rota", o início ou o fim —,
   `indisponivel` no resto; fica um aviso no registo só com o motivo) → a
   escrita condicional → a falha, como no PATCH.
+- `POST /rotas/{data}/otimizar` `{versao}` → 200 com a rota completa pela
+  melhor ordem, e a versão + 1. Primeiro o VROOM (um POST `/optimization`,
+  `servicos.ors.otimizar`, pelo `dominio.vroom`): vão todas as paragens
+  ativas com loja — as da secção "rota" e as `nao_cabe` de um cálculo
+  anterior —, pela ordem gravada, e ficam de fora só as fechadas nesse dia
+  sem "Manter" e as `sem_loja` (correções "T3.22" e "T3.22 / §1"); um *job*
+  por paragem (`id` 1..n, `[lng, lat]`, o serviço em segundos, a prioridade
+  100 na entrega e 1 nas outras, as janelas `[a, b − s]`), as impossíveis
+  (nenhuma janela leva o serviço) não se enviam e sem nenhum *job* não se
+  chama nada. **Depois sempre o Directions**, só com as atribuídas e pela
+  ordem devolvida; sem nenhuma atribuída (`routes: []`, ou nenhum *job*)
+  não se chama e o `calculo` fica `None` (correção "T3.6 / T3.22"). É
+  **atómico**: uma falha em qualquer dos dois é o 503 `calculo_indisponivel`
+  (com o aviso "(otimizar)" no registo) e nada muda; num 2010 do Directions
+  a mensagem diz o número ATUAL da paragem na rota gravada (a ordem nova
+  ainda não está gravada), ou a geral se ela não tiver número. Uma só
+  `find_one_and_update` (`rotas_bd.alterar`, com o `$inc` da versão: o
+  plano muda): a `ordem` — a do VROOM, as não atribuídas, as impossíveis,
+  as fechadas e as `sem_loja` (`rotas.nova_ordem`) —, os sinais `nao_cabe`
+  de todas as enviadas (`True` nas não atribuídas e nas impossíveis, `False`
+  nas atribuídas), as horas das atribuídas (nenhumas nas outras ativas) e o
+  `calculo`; só o que muda, e sem nada a mudar 200 sem escrever e sem subir
+  a versão. As verificações pela ordem do recalcular, e a falha da escrita
+  como no PATCH.
 
 O "hoje" é o dia em Lisboa do relógio do CRM, lido UMA vez por pedido (ao
 ler, `relogio.hoje()`; ao escrever, `relogio.agora()` e o seu
@@ -154,6 +178,11 @@ CAMPOS_DO_DIA = ("hora_saida", "hora_regresso_limite", "inicio", "fim", "evitar_
 # As horas de uma paragem que o Directions não leva (fechada sem "Manter",
 # `nao_cabe`, sem loja): nenhuma.
 SEM_HORAS = {"chegada_prevista": None, "espera_min": None, "fora_de_horario": False}
+
+# As secções cujas paragens vão ao VROOM no otimizar: as da rota e as que não
+# couberam no cálculo anterior (correção "T3.22 / §1"); as fechadas sem
+# "Manter" e as `sem_loja` ficam de fora.
+SECCOES_PARA_O_VROOM = ("rota", "nao_cabe")
 
 # Sem `versao` no corpo, quantas vezes se lê e tenta gravar antes do 409 `conflito`.
 TENTATIVAS_SEM_VERSAO = 3
@@ -327,15 +356,154 @@ async def recalcular_rota(data: str, membro: Dict = Depends(ESCRITORIO), corpo: 
     return _resposta(depois, dia, hoje, lojas, definicoes)
 
 
+@router.post("/rotas/{data}/otimizar")
+async def otimizar_rota(data: str, membro: Dict = Depends(ESCRITORIO), corpo: Dict = Depends(corpo_json)) -> Dict:
+    """`{versao}` → 200 com a rota do dia pela melhor ordem do VROOM, os
+    sinais `nao_cabe` e as horas do Directions (a ordem das verificações está
+    no docstring do módulo). A versão sobe."""
+    agora = relogio.agora()
+    hoje = relogio.hoje(agora)
+    dia, erros = validador_rota.data_do_caminho(data, hoje)
+    dados, erros_do_corpo = validador_rota.so_versao(corpo)
+    erros.update(erros_do_corpo)
+    if erros:
+        raise validacao(erros)
+
+    base = bd.obter_db()
+    rota = await rotas_bd.ler(base, texto_data(dia))
+    if rota is None:
+        raise nao_encontrado(MENSAGEM_SEM_ROTA)
+    bloqueio = rotas.bloqueio_de_escrita(rota, dia, hoje)
+    if bloqueio is not None:
+        raise erro(409, bloqueio, MENSAGENS_DO_BLOQUEIO[bloqueio])
+    if rota["versao"] != dados["versao"]:
+        raise _conflito()
+
+    lojas = await rotas_bd.lojas_da_rota(base, rota)
+    definicoes = await em_vigor(base)
+    seccoes = rotas.seccoes(rota["paragens"], {loja["id"]: loja for loja in lojas}, dia)
+    set_ = await _melhor_ordem(rota, seccoes, definicoes, agora)
+    if not set_:
+        return _resposta(rota, dia, hoje, lojas, definicoes)
+    depois = await rotas_bd.alterar(base, rota, set_, membro_id=membro["user_id"], agora=agora)
+    if depois is None:
+        raise await _erro_da_escrita(base, rota)
+    return _resposta(depois, dia, hoje, lojas, definicoes)
+
+
 async def _horas_pelo_directions(rota, seccoes, incluidas, definicoes, agora) -> Dict:
-    """O `$set` das horas da `rota` lida: um pedido ao Directions com
-    `[início] + incluídas + [fim]`, as chegadas e as esperas do domínio pelos
-    caminhos `paragens.<índice>.<campo>` (só o que muda; as excluídas sem
-    horas) e o `calculo` inteiro. Uma falha do openrouteservice, ou uma
-    resposta sem a forma esperada, é o 503 `calculo_indisponivel` (lançado
-    fora do `except`, sem a exceção como causa) com um aviso no registo."""
+    """O `$set` do recalcular sobre a `rota` lida: um pedido ao Directions com
+    `[início] + incluídas + [fim]` (`_trocos_e_horas`), as chegadas e as
+    esperas do domínio pelos caminhos `paragens.<índice>.<campo>` (só o que
+    muda; as excluídas sem horas) e o `calculo` inteiro."""
     inicio = _ponto_resolvido(rota["inicio"], definicoes)
     fim = _ponto_resolvido(rota["fim"], definicoes)
+    trocos, horas = await _trocos_e_horas(rota, incluidas, inicio, fim, "recalcular")
+    set_ = {}
+    _horas_no_set(set_, rota, [paragem for paragem, _, _, _ in seccoes], horas.por_paragem)
+    set_["calculo"] = _documento_calculo(rota, incluidas, inicio, fim, trocos, horas, agora)
+    return set_
+
+
+async def _melhor_ordem(rota, seccoes, definicoes, agora) -> Dict:
+    """O `$set` do otimizar sobre a `rota` lida: só o que muda, e `{}` sem
+    nada a mudar.
+
+    Ao VROOM vão todas as paragens ativas com loja — as da secção "rota" e as
+    `nao_cabe` de um cálculo anterior —, pela ordem gravada; ficam de fora só
+    as fechadas nesse dia sem "Manter" e as `sem_loja` (correções "T3.22" e
+    "T3.22 / §1"). As impossíveis (nenhuma janela leva o serviço) não se
+    enviam (`vroom.pedido_otimizacao`) e sem nenhum *job* não se chama o
+    openrouteservice. Depois, o Directions só com as atribuídas, pela ordem
+    devolvida (`_trocos_e_horas`); sem nenhuma atribuída (`routes: []`, ou
+    nenhum *job*) não se chama e o `calculo` fica `None` (correção "T3.6 /
+    T3.22"). Tudo ou nada: uma falha em qualquer dos dois é o 503 antes de se
+    escrever o que quer que seja.
+
+    No `$set`: a `ordem` nova — a do VROOM, as não atribuídas, as impossíveis,
+    as fechadas e as `sem_loja` (`rotas.nova_ordem`), pelos caminhos por
+    índice —, os sinais `nao_cabe` de todas as enviadas (`True` nas não
+    atribuídas e nas impossíveis, `False` nas atribuídas), as horas das
+    atribuídas e nenhumas nas outras ativas, e o `calculo`.
+    """
+    inicio = _ponto_resolvido(rota["inicio"], definicoes)
+    fim = _ponto_resolvido(rota["fim"], definicoes)
+    enviaveis = [(paragem, loja) for paragem, loja, seccao, _ in seccoes if seccao in SECCOES_PARA_O_VROOM]
+    pedido = vroom.pedido_otimizacao(
+        [vroom.paragem_calculo(paragem, loja) for paragem, loja in enviaveis],
+        inicio,
+        fim,
+        segundos(rota["hora_saida"]),
+        segundos(rota["hora_regresso_limite"]),
+    )
+    ordem_vroom, nao_atribuidas = ([], []) if pedido.corpo is None else await _ordem_pelo_vroom(rota, pedido)
+    nao_cabem = [*nao_atribuidas, *pedido.impossiveis]
+
+    enviada = {paragem["id"]: (paragem, loja) for paragem, loja in enviaveis}
+    atribuidas = [enviada[id_] for id_ in ordem_vroom]
+    por_paragem, calculo = {}, None
+    if atribuidas:
+        numero_atual = {paragem["id"]: numero for paragem, _, _, numero in seccoes}
+        numeros = [numero_atual[paragem["id"]] for paragem, _ in atribuidas]
+        trocos, horas = await _trocos_e_horas(rota, atribuidas, inicio, fim, "otimizar", numeros)
+        por_paragem = horas.por_paragem
+        calculo = _documento_calculo(rota, atribuidas, inicio, fim, trocos, horas, agora)
+
+    set_ = {}
+    indice = {paragem["id"]: i for i, paragem in enumerate(rota["paragens"])}
+    ativas = [paragem for paragem, _, _, _ in seccoes]
+    por_id = {paragem["id"]: paragem for paragem in ativas}
+    de_fora = [
+        paragem["id"]
+        for qual in ("fechada", "sem_loja")
+        for paragem, _, seccao, _ in seccoes
+        if seccao == qual
+    ]
+    for posicao, id_ in enumerate(rotas.nova_ordem(ativas, [*ordem_vroom, *nao_cabem, *de_fora])):
+        if por_id[id_]["ordem"] != posicao:
+            set_.update(rotas.caminhos_paragem(indice[id_], {"ordem": posicao}))
+    fora = set(nao_cabem)
+    for paragem, _ in enviaveis:
+        nao_cabe = paragem["id"] in fora
+        if paragem["nao_cabe"] != nao_cabe:
+            set_.update(rotas.caminhos_paragem(indice[paragem["id"]], {"nao_cabe": nao_cabe}))
+    _horas_no_set(set_, rota, ativas, por_paragem)
+    if calculo is not None:
+        set_["calculo"] = calculo
+    elif rota["calculo"] is not None:
+        set_["calculo"] = None
+    return set_
+
+
+async def _ordem_pelo_vroom(rota, pedido) -> tuple:
+    """`(ordem, nao_atribuidas)` — ids de paragens — do VROOM para o `pedido`
+    (`vroom.PedidoOtimizacao` com corpo): um POST `/optimization`
+    (`servicos.ors.otimizar`) e o parser estrito
+    (`vroom.interpretar_otimizacao`). Uma falha do openrouteservice, ou uma
+    resposta sem a forma esperada, é o 503 `calculo_indisponivel` (lançado
+    fora do `except`, sem a exceção como causa) com um aviso no registo; na
+    otimização não há coordenada a apontar, por isso só o `tipo` conta."""
+    falha = None
+    try:
+        return vroom.interpretar_otimizacao(await ors.otimizar(pedido.corpo), pedido.por_job)
+    except FalhaOrs as excecao:
+        falha = (excecao.tipo, excecao.motivo)
+    except RespostaInvalida as excecao:
+        falha = ("indisponivel", excecao.motivo)
+    tipo, motivo = falha
+    _registar_falha(rota, "otimizar", motivo)
+    raise _calculo_indisponivel(tipo, None, 0)
+
+
+async def _trocos_e_horas(rota, incluidas, inicio, fim, operacao, numeros=None) -> tuple:
+    """`(trocos, horas)` do Directions para `[início] + incluídas + [fim]`: o
+    pedido (`directions.pedido_direcoes`: só coordenadas e constantes), o
+    POST (`servicos.ors.direcoes`), os troços (`directions.interpretar_direcoes`)
+    e as chegadas, as esperas e os avisos (`horarios.calcular_horarios`). Uma
+    falha do openrouteservice, ou uma resposta sem a forma esperada, é o 503
+    `calculo_indisponivel` (lançado fora do `except`, sem a exceção como
+    causa) com um aviso no registo da `operacao`; `numeros` dá o número atual
+    de cada incluída para a mensagem do 2010, quando não é a sua posição."""
     pontos = [inicio, *((loja["lat"], loja["lng"]) for _, loja in incluidas), fim]
     pedido = directions.pedido_direcoes(pontos, rota["evitar_portagens"])
 
@@ -348,31 +516,50 @@ async def _horas_pelo_directions(rota, seccoes, incluidas, definicoes, agora) ->
         falha = ("indisponivel", None, excecao.motivo)
     if falha is not None:
         tipo, indice, motivo = falha
-        logger.warning("[crm] rota %s: o openrouteservice falhou (recalcular) — %s", rota["data"], motivo)
-        raise _calculo_indisponivel(tipo, indice, len(pontos))
+        _registar_falha(rota, operacao, motivo)
+        raise _calculo_indisponivel(tipo, indice, len(pontos), numeros)
 
-    calculo = horarios.calcular_horarios(
+    horas = horarios.calcular_horarios(
         segundos(rota["hora_saida"]),
         segundos(rota["hora_regresso_limite"]),
         [vroom.paragem_calculo(paragem, loja) for paragem, loja in incluidas],
         trocos.duracoes,
     )
+    return trocos, horas
+
+
+def _horas_no_set(set_, rota, ativas, por_paragem) -> None:
+    """Junta ao `set_` as horas de cada paragem ativa pelos caminhos
+    `paragens.<índice>.<campo>`: as de `por_paragem` (pelo id) nas que o
+    Directions levou e nenhumas (`SEM_HORAS`) nas outras — só o que difere do
+    gravado. As retiradas não se tocam."""
     indice = {paragem["id"]: i for i, paragem in enumerate(rota["paragens"])}
-    set_ = {}
-    for paragem, _, seccao, _ in seccoes:
-        horas = calculo.por_paragem[paragem["id"]] if seccao == "rota" else SEM_HORAS
+    for paragem in ativas:
+        horas = por_paragem.get(paragem["id"], SEM_HORAS)
         mudam = {campo: valor for campo, valor in horas.items() if valor != paragem[campo]}
         set_.update(rotas.caminhos_paragem(indice[paragem["id"]], mudam))
-    set_["calculo"] = {
+
+
+def _documento_calculo(rota, incluidas, inicio, fim, trocos, horas, agora) -> Dict:
+    """O `calculo` que fica gravado: a assinatura da entrada (a mesma conta do
+    `rota_api`, por isso `calculo.atual: true` na resposta), os totais dos
+    troços, o regresso, a linha e `calculado_em` de agora."""
+    return {
         "assinatura": horarios.assinatura(horarios.entrada_calculo(rota, incluidas, inicio, fim)),
         "distancia_m": trocos.distancia_m,
         "duracao_s": trocos.duracao_s,
-        "regresso_previsto": calculo.regresso_previsto,
-        "depois_do_limite": calculo.depois_do_limite,
+        "regresso_previsto": horas.regresso_previsto,
+        "depois_do_limite": horas.depois_do_limite,
         "geometria": trocos.geometria,
         "calculado_em": relogio.instante(agora),
     }
-    return set_
+
+
+def _registar_falha(rota, operacao, motivo) -> None:
+    """O aviso no registo de uma falha do openrouteservice: só o dia, a
+    operação (`recalcular`/`otimizar`) e o motivo fixo — nunca coordenadas,
+    nomes, ids nem a chave."""
+    logger.warning("[crm] rota %s: o openrouteservice falhou (%s) — %s", rota["data"], operacao, motivo)
 
 
 def _ponto_resolvido(ponto, definicoes) -> tuple:
@@ -383,12 +570,15 @@ def _ponto_resolvido(ponto, definicoes) -> tuple:
     return (ponto["lat"], ponto["lng"])
 
 
-def _calculo_indisponivel(tipo, indice, n_pontos):
+def _calculo_indisponivel(tipo, indice, n_pontos, numeros=None):
     """O 503 `calculo_indisponivel` com a mensagem do `tipo` (plano F3 §1):
     `limite` → a do limite; `ponto_sem_estrada` → o ponto de início (a
-    coordenada 0), o de fim (a última) ou a paragem N (as coordenadas 1..n
-    são as paragens da secção "rota", numeradas pela mesma ordem); um índice
-    que não é de nenhum ponto, `sem_chave` e `indisponivel` → a geral."""
+    coordenada 0), o de fim (a última) ou a paragem N — as coordenadas 1..n
+    são as paragens enviadas ao Directions, pela ordem, e N é o número atual
+    de cada uma na rota gravada: a própria posição no recalcular (vai pela
+    secção "rota") ou `numeros[i − 1]` no otimizar, cuja ordem ainda não está
+    gravada (correção "T3.22"; sem número atual, a mensagem geral); um
+    índice que não é de nenhum ponto, `sem_chave` e `indisponivel` → a geral."""
     mensagem = MENSAGEM_CALCULO_INDISPONIVEL
     if tipo == "limite":
         mensagem = MENSAGEM_CALCULO_LIMITE
@@ -398,7 +588,9 @@ def _calculo_indisponivel(tipo, indice, n_pontos):
         elif indice == n_pontos - 1:
             mensagem = MENSAGEM_FIM_SEM_ESTRADA
         elif type(indice) is int and 0 < indice < n_pontos - 1:
-            mensagem = MENSAGEM_PARAGEM_SEM_ESTRADA.format(numero=indice)
+            numero = indice if numeros is None else numeros[indice - 1]
+            if numero is not None:
+                mensagem = MENSAGEM_PARAGEM_SEM_ESTRADA.format(numero=numero)
         else:
             tipo = "indisponivel"
     return erro(503, "calculo_indisponivel", mensagem, tipo=tipo)
