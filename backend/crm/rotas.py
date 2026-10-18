@@ -1,6 +1,7 @@
 """`/api/crm/rotas` — as rotas de um dia (F3: planear rota, versão simples).
 
-Plano F3 §4; T3.18 (ler) e T3.19 (adicionar uma loja). Só o escritório
+Plano F3 §4; T3.18 (ler), T3.19 (adicionar uma loja) e T3.20 (alterar a
+rota do dia). Só o escritório
 (admin e utilizador do CRM): o motorista dá 403 `sem_permissao`, quem não é
 membro 403 `sem_acesso_crm` e, sem sessão, os 401/403 herdados do portal. Os
 parâmetros (`data`, `de`, `ate`) e os corpos leem-se como texto e validam-se
@@ -45,6 +46,33 @@ condicionais em `rotas_bd` (T3.17): aqui só se valida, lê, decide e responde.
   pessoas a criar a rota do mesmo dia: a segunda `insert_one` falha pelo
   índice único de `data` e volta-se a ler (sem versão, acrescenta-se; com
   `versao: null`, é um `conflito`).
+- `PATCH /rotas/{data}` `{versao, hora_saida?, hora_regresso_limite?, inicio?,
+  fim?, evitar_portagens?, ordem?, paragens?, retirar?, estado?}` → 200 com
+  a rota completa. As definições do dia, a ordem, as paragens, retirar e
+  "Guardar rota" (`estado: "planeada"`) gravam-se numa só
+  `find_one_and_update` (`rotas_bd.alterar`: o filtro de guarda com a
+  `versao` recebida, o `$set` só do que muda e o `$inc` da versão). O que já
+  está gravado com o mesmo valor não se escreve e, sem nada a mudar (também
+  um PATCH só com a `versao`), responde 200 sem escrever e sem subir a
+  versão. Por campo: as horas comparam-se com as guardadas
+  (`coerencia_horas`, só quando o pedido traz uma hora); `inicio`/`fim`
+  como ponto ou `null` (a fábrica); a `ordem` é leniente (`rotas.nova_ordem`:
+  as ativas em falta vão para o fim, pela ordem delas) e só as posições que
+  mudam se escrevem; `paragens.<id>.motivo` sem tempo põe o padrão do
+  motivo novo nas definições em vigor (com tempo, o enviado ganha; o mesmo
+  motivo não mexe no tempo); `retirar` põe `removida_em` de agora e
+  `ordem` nula e renumera as que ficam 0..k−1 (os ids de `retirar` saem da
+  `ordem`: correção "T3.4 / T3.20"). Uma escrita que deixe a rota sem
+  paragens incluídas (nenhuma na secção "rota") limpa o `calculo` na mesma
+  escrita, se havia um (correção "T3.20 / T3.27"). Pela ordem das
+  verificações do plano §4: 400 → 422 (`data` e corpo, juntos) → 404 "Ainda
+  não há rota para este dia." (uma rota só nasce com a primeira paragem;
+  também num dia passado) → 409 `rota_fechada` → 409 `rota_em_curso` → 409
+  `conflito` → 422 contra a rota (um id que não é de uma paragem ativa, em
+  `ordem`, `paragens.<id>` ou `retirar`; a coerência das horas) → a escrita
+  condicional. Se não casar, `rotas_bd.porque_falhou` decide, sem nova
+  tentativa: `nao_existe` → 404, `em_curso` → 409 `rota_em_curso`, senão
+  409 `conflito`.
 
 O "hoje" é o dia em Lisboa do relógio do CRM, lido UMA vez por pedido (ao
 ler, `relogio.hoje()`; ao escrever, `relogio.agora()` e o seu
@@ -75,6 +103,12 @@ MENSAGEM_ROTA_CHEIA = f"Uma rota tem no máximo {rotas.LIMITE_PARAGENS} paragens
 MENSAGEM_ROTA_FECHADA = "Este dia já passou — a rota só se pode ver."
 MENSAGEM_ROTA_EM_CURSO = "A rota já tem registos do motorista — no escritório só se pode ver."
 MENSAGENS_DO_BLOQUEIO = {"rota_fechada": MENSAGEM_ROTA_FECHADA, "rota_em_curso": MENSAGEM_ROTA_EM_CURSO}
+# O 404 do `PATCH` (código `nao_encontrado`, plano F3 §4): uma rota só nasce
+# com a primeira paragem.
+MENSAGEM_SEM_ROTA = "Ainda não há rota para este dia."
+
+# Os campos de topo que o `PATCH` escreve tal e qual (pela ordem do validador).
+CAMPOS_DO_DIA = ("hora_saida", "hora_regresso_limite", "inicio", "fim", "evitar_portagens", "estado")
 
 # Sem `versao` no corpo, quantas vezes se lê e tenta gravar antes do 409 `conflito`.
 TENTATIVAS_SEM_VERSAO = 3
@@ -168,6 +202,126 @@ async def adicionar_paragem(data: str, membro: Dict = Depends(ESCRITORIO), corpo
 
     lojas = await rotas_bd.lojas_da_rota(base, depois)
     return _resposta(depois, dia, hoje, lojas, definicoes)
+
+
+@router.patch("/rotas/{data}")
+async def alterar_rota(data: str, membro: Dict = Depends(ESCRITORIO), corpo: Dict = Depends(corpo_json)) -> Dict:
+    """`{versao, hora_saida?, hora_regresso_limite?, inicio?, fim?,
+    evitar_portagens?, ordem?, paragens?, retirar?, estado?}` → 200 com a
+    rota do dia como ficou (a ordem das verificações está no docstring do
+    módulo)."""
+    agora = relogio.agora()
+    hoje = relogio.hoje(agora)
+    dia, erros = validador_rota.data_do_caminho(data, hoje)
+    dados, erros_do_corpo = validador_rota.alteracao(corpo)
+    erros.update(erros_do_corpo)
+    if erros:
+        raise validacao(erros)
+
+    base = bd.obter_db()
+    rota = await rotas_bd.ler(base, texto_data(dia))
+    if rota is None:
+        raise nao_encontrado(MENSAGEM_SEM_ROTA)
+    bloqueio = rotas.bloqueio_de_escrita(rota, dia, hoje)
+    if bloqueio is not None:
+        raise erro(409, bloqueio, MENSAGENS_DO_BLOQUEIO[bloqueio])
+    if rota["versao"] != dados["versao"]:
+        raise _conflito()
+    erros = _contra_a_rota(rota, dados)
+    if erros:
+        raise validacao(erros)
+
+    lojas = await rotas_bd.lojas_da_rota(base, rota)
+    definicoes = await em_vigor(base)
+    set_ = _alteracoes(rota, dados, definicoes, agora)
+    if set_ and rota["calculo"] is not None and not _fica_com_incluidas(rota, set_, lojas, dia):
+        set_["calculo"] = None
+    if not set_:
+        return _resposta(rota, dia, hoje, lojas, definicoes)
+    depois = await rotas_bd.alterar(base, rota, set_, membro_id=membro["user_id"], agora=agora)
+    if depois is None:
+        motivo = await rotas_bd.porque_falhou(base, rota["id"], rota["versao"])
+        if motivo == rotas_bd.NAO_EXISTE:
+            raise nao_encontrado(MENSAGEM_SEM_ROTA)
+        if motivo == rotas_bd.EM_CURSO:
+            raise erro(409, "rota_em_curso", MENSAGEM_ROTA_EM_CURSO)
+        raise _conflito()
+    return _resposta(depois, dia, hoje, lojas, definicoes)
+
+
+def _contra_a_rota(rota, dados) -> Dict:
+    """Os 422 que só se veem com a rota lida (plano F3 §4), pela ordem das
+    chaves: a coerência das horas (os valores do pedido juntos com os
+    guardados; só quando o pedido traz uma hora) e os ids de `ordem`,
+    `paragens.<id>` e `retirar` que não são de uma paragem ativa."""
+    erros = {}
+    if "hora_saida" in dados or "hora_regresso_limite" in dados:
+        erros.update(validador_rota.coerencia_horas(
+            dados.get("hora_saida", rota["hora_saida"]),
+            dados.get("hora_regresso_limite", rota["hora_regresso_limite"]),
+        ))
+    na_rota = {paragem["id"] for paragem in rotas.ativas(rota["paragens"])}
+    if any(id_ not in na_rota for id_ in dados.get("ordem", ())):
+        erros["ordem"] = validador_rota.MENSAGEM_NAO_ESTA_NA_ROTA
+    for id_ in dados.get("paragens", {}):
+        if id_ not in na_rota:
+            erros[f"paragens.{id_}"] = validador_rota.MENSAGEM_NAO_ESTA_NA_ROTA
+    if any(id_ not in na_rota for id_ in dados.get("retirar", ())):
+        erros["retirar"] = validador_rota.MENSAGEM_NAO_ESTA_NA_ROTA
+    return erros
+
+
+def _alteracoes(rota, dados, definicoes, agora) -> Dict:
+    """O `$set` do PATCH sobre a `rota` lida: só o que muda. Os campos de
+    topo tal e qual; por paragem, pelos caminhos `paragens.<índice>.<campo>`
+    (`rotas.caminhos_paragem`): o motivo novo com o tempo padrão dele (o
+    tempo enviado ganha), os sinais, o retirar (`removida_em` de agora e
+    `ordem` nula) e as posições novas da ordem (`rotas.nova_ordem` sobre as
+    ativas que ficam) que diferem das gravadas."""
+    set_ = {}
+    for campo in CAMPOS_DO_DIA:
+        if campo in dados and dados[campo] != rota[campo]:
+            set_[campo] = dados[campo]
+
+    indice = {paragem["id"]: i for i, paragem in enumerate(rota["paragens"])}
+    por_id = {paragem["id"]: paragem for paragem in rota["paragens"]}
+    for id_, alteracoes in dados.get("paragens", {}).items():
+        paragem = por_id[id_]
+        campos = {}
+        if "motivo" in alteracoes and alteracoes["motivo"] != paragem["motivo"]:
+            campos["motivo"] = alteracoes["motivo"]
+            campos["tempo_servico_min"] = rotas.servico_padrao(alteracoes["motivo"], definicoes)
+        if "tempo_servico_min" in alteracoes:
+            campos["tempo_servico_min"] = alteracoes["tempo_servico_min"]
+        for sinal in ("manter_fechada", "nao_cabe"):
+            if sinal in alteracoes:
+                campos[sinal] = alteracoes[sinal]
+        mudam = {campo: valor for campo, valor in campos.items() if valor != paragem[campo]}
+        set_.update(rotas.caminhos_paragem(indice[id_], mudam))
+
+    retirar = dados.get("retirar", [])
+    for id_ in retirar:
+        set_.update(rotas.caminhos_paragem(indice[id_], {"removida_em": relogio.instante(agora), "ordem": None}))
+    if retirar or "ordem" in dados:
+        ficam = [paragem for paragem in rotas.ativas(rota["paragens"]) if paragem["id"] not in retirar]
+        for posicao, id_ in enumerate(rotas.nova_ordem(ficam, dados.get("ordem", []))):
+            if por_id[id_]["ordem"] != posicao:
+                set_.update(rotas.caminhos_paragem(indice[id_], {"ordem": posicao}))
+    return set_
+
+
+def _fica_com_incluidas(rota, set_, lojas, dia) -> bool:
+    """Depois de aplicar o `set_` às paragens (em memória), fica alguma na
+    secção "rota" (`rotas.seccoes`: ativa, com loja, não fechada sem
+    "Manter" e sem `nao_cabe`)? É o que o Directions levaria; sem nenhuma,
+    o `calculo` gravado limpa-se (correção "T3.20 / T3.27")."""
+    paragens = [dict(paragem) for paragem in rota["paragens"]]
+    for caminho, valor in set_.items():
+        if caminho.startswith("paragens."):
+            _, i, campo = caminho.split(".")
+            paragens[int(i)][campo] = valor
+    lojas_por_id = {loja["id"]: loja for loja in lojas}
+    return any(seccao == "rota" for _, _, seccao, _ in rotas.seccoes(paragens, lojas_por_id, dia))
 
 
 async def _gravar_paragem(base, rota, loja, motivo, servico, ordem, membro_id, agora):

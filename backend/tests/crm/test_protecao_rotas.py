@@ -110,6 +110,9 @@ PERFIS_POR_ROTA = {
     # Adicionar uma loja à rota de um dia (T3.19): o escritório, pelo cartão
     # do mapa e pelo planeador.
     ("POST", "/api/crm/rotas/{data}/paragens"): PERFIS_ESCRITORIO,
+    # Alterar a rota de um dia (T3.20): as definições do dia, a ordem, as
+    # paragens, retirar e "Guardar rota", pelo planeador do escritório.
+    ("PATCH", "/api/crm/rotas/{data}"): PERFIS_ESCRITORIO,
 }
 
 # Os motivos de `_classificar` (os meta-testes comparam-nos tal e qual).

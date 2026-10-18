@@ -69,8 +69,8 @@ def test_validacao_mantem_a_ordem_dos_campos():
 
 @pytest.mark.parametrize(
     "mensagem",
-    ["Loja não encontrada.", "Região não encontrada.", "Membro não encontrado."],
-    ids=["loja", "regiao", "membro"],
+    ["Loja não encontrada.", "Região não encontrada.", "Membro não encontrado.", "Ainda não há rota para este dia."],
+    ids=["loja", "regiao", "membro", "rota"],
 )
 def test_nao_encontrado_da_404_com_a_mensagem_da_entidade(mensagem):
     e = nao_encontrado(mensagem)

@@ -595,7 +595,7 @@ janela2_inicio, janela2_fim, dias_fechada` (20: os 18 do autónomo mais `instagr
 | `json_invalido` | 400 | "O pedido não é JSON válido." |
 | `sem_acesso_crm` | 403 | "Sem acesso ao CRM." |
 | `sem_permissao` | 403 | "Sem permissão para esta ação." |
-| `nao_encontrado` | 404 | "Loja não encontrada." / "Região não encontrada." / "Membro não encontrado." |
+| `nao_encontrado` | 404 | "Loja não encontrada." / "Região não encontrada." / "Membro não encontrado." / "Ainda não há rota para este dia." (F3, T3.20: o `PATCH /rotas/{data}` de um dia sem rota — uma rota só nasce com a primeira paragem) |
 | `validacao` | 422 | "Verifique os campos assinalados." + `campos` |
 | `duplicado` | 409 | "Já existe {nome} aqui — é a mesma?" + `lojas` |
 | `conflito` | 409 | "Alterado por outra pessoa — recarregar" |
