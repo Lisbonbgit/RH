@@ -34,14 +34,15 @@ PACOTE_CRM = BACKEND / "crm"
 PREFIXO_CRM = "CRM_"
 CABECALHO_DO_BLOCO = "CRM Purple House"
 
-# O que o pacote `crm` lê do ambiente (F2 e, desde a T3.11, o openrouteservice
-# da F3). Uma variável nova no código falha
+# O que o pacote `crm` lê do ambiente (F2; desde a T3.11 o openrouteservice
+# da F3; desde a G2 a Google). Uma variável nova no código falha
 # `test_o_pacote_crm_le_exatamente_estas_variaveis` até entrar aqui E no
 # `.env.example`.
 LIDAS_PELO_CRM = {
     "ADMIN_EMAIL",  # crm.auth: o admin master (já existia no portal)
     "CRON_KEY",  # crm.auth.exigir_cron_key (já existia, partilhada com o Financeiro)
-    config_mapa.VARIAVEL_CHAVE,  # chave dos mosaicos (vai ao browser)
+    config_mapa.VARIAVEL_CHAVE,  # chave do navegador da Google (vai ao browser)
+    config_mapa.VARIAVEL_MAP_ID,  # Map ID da Google (vai ao browser, com a chave)
     geoapify.VARIAVEL_CHAVE_SERVIDOR,  # chave da pesquisa de morada (só no servidor)
     geoapify.VARIAVEL_URL,  # opcional: por omissão https://api.geoapify.com
     ors.VARIAVEL_CHAVE,  # chave do openrouteservice (só no servidor, no cabeçalho Authorization)
@@ -200,9 +201,14 @@ def test_le_as_atribuicoes_e_ignora_comentarios_e_linhas_em_branco():
 # --- O pacote crm e o backend/.env.example -----------------------------------------------
 
 
+def test_os_nomes_das_variaveis_da_google():
+    """Os nomes do plano do mapa Google (§1, G2) e da adenda §6.2."""
+    assert config_mapa.VARIAVEL_CHAVE == "CRM_GOOGLE_CHAVE_NAVEGADOR"
+    assert config_mapa.VARIAVEL_MAP_ID == "CRM_GOOGLE_MAP_ID"
+
+
 def test_os_nomes_das_variaveis_da_geoapify():
     """Os nomes do plano (T2.16) e do desenho §4.4, tal e qual."""
-    assert config_mapa.VARIAVEL_CHAVE == "CRM_GEOAPIFY_CHAVE_MOSAICOS"
     assert geoapify.VARIAVEL_CHAVE_SERVIDOR == "CRM_GEOAPIFY_CHAVE_SERVIDOR"
     assert geoapify.VARIAVEL_URL == "CRM_GEOAPIFY_URL"
 
@@ -214,7 +220,7 @@ def test_os_nomes_das_variaveis_do_openrouteservice():
 
 
 def test_o_pacote_crm_le_exatamente_estas_variaveis():
-    """Prova também que a procura não está vazia por engano: encontra as sete."""
+    """Prova também que a procura não está vazia por engano: encontra as oito."""
     assert _lidas_pelo_pacote_crm() == LIDAS_PELO_CRM
 
 
@@ -234,8 +240,8 @@ def test_o_env_example_so_tem_variaveis_crm_que_o_pacote_le():
 
 
 def test_as_variaveis_do_crm_vao_sem_valor():
-    """Só os nomes: nenhuma chave entra no git (sem chaves, o CRM usa os
-    mosaicos OSM e a pesquisa de morada responde 503)."""
+    """Só os nomes: nenhuma chave entra no git (sem chaves, o CRM diz "Mapa
+    não configurado" e a morada sugerida do GPS fica indisponível)."""
     com_valor = sorted(nome for _, nome, valor in _do_env_example() if nome.startswith(PREFIXO_CRM) and valor != "")
     assert com_valor == []
 

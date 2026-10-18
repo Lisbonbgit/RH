@@ -1,30 +1,29 @@
-"""`GET /api/crm/config` — a configuração do mapa: os mosaicos, a alternativa
-e o centro.
+"""`GET /api/crm/config` — a configuração do mapa: a chave do navegador e o
+Map ID da Google, e o centro.
 
-Plano T2.13; dossiê §6 e §8. Porta de src/Http/ConfigMapa.php do CRM
-autónomo, onde este "mapa" vinha dentro do `GET /api/sessao`; aqui é uma
-rota própria, para o escritório (admin e utilizador do CRM; o motorista só
-entra na F4). Responde `{mosaicos: {url, atribuicao}, alternativa: {url},
-centro: {lat, lng}}`:
+Plano do mapa Google (G2; antes T2.13); dossiê §6 e §8. Porta de
+src/Http/ConfigMapa.php do CRM autónomo, onde este "mapa" vinha dentro do
+`GET /api/sessao`; aqui é uma rota própria, para o escritório (admin e
+utilizador do CRM; o motorista só entra na F4). Responde
+`{google: {chave, map_id} | null, centro: {lat, lng}}`:
 
-- Com a chave dos mosaicos (`CRM_GEOAPIFY_CHAVE_MOSAICOS`), a URL principal é
-  a da Geoapify com `?apiKey=<chave codificada>` e a atribuição é
-  `geoapify`. A chave vai para o browser de propósito (é a dos mosaicos, não
-  a do servidor) e fica restrita por Referer no painel da Geoapify (dossiê
-  §8); por isso esta rota nunca é pública.
-- Sem chave (o normal em local), a principal passa a ser a alternativa do
-  OpenStreetMap, com a atribuição `osm`.
-- A alternativa vem sempre: o mapa muda para ela sozinho se os mosaicos
-  falharem (mosaicos.js).
+- `google` leva a chave do navegador (`CRM_GOOGLE_CHAVE_NAVEGADOR`) e o Map ID
+  (`CRM_GOOGLE_MAP_ID`), tal e qual (vão no JSON, não num URL). As duas são
+  obrigatórias: falta uma, ou está vazia, e vai `null` — o ecrã diz "Mapa não
+  configurado". Não há mapa alternativo.
+- A chave do navegador é pública por natureza (qualquer membro a vê nas
+  ferramentas do browser): o que a protege é a restrição por referrer e por
+  API na consola Google (Maps JavaScript + Places (New), `https://lisbonb.com/*`)
+  e os tetos de uso. Por isso vai ao browser de propósito, só a membros do
+  escritório (esta rota nunca é pública) e sem proxy no servidor.
 - O centro é o ponto da fábrica, das definições em vigor (o mapa usa-o quando
   ainda não há lojas).
 
-A chave lê-se do ambiente a cada pedido (não à importação) e nunca se escreve
-nos registos.
+A chave e o Map ID leem-se do ambiente a cada pedido (não à importação) e
+nunca se escrevem nos registos.
 """
 import os
-from typing import Dict
-from urllib.parse import quote
+from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends
 
@@ -34,43 +33,34 @@ from .definicoes import em_vigor
 
 router = APIRouter()
 
-VARIAVEL_CHAVE = "CRM_GEOAPIFY_CHAVE_MOSAICOS"
-MODELO_MOSAICOS = "https://maps.geoapify.com/v1/tile/osm-bright/{z}/{x}/{y}.png"
-ALTERNATIVA = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+VARIAVEL_CHAVE = "CRM_GOOGLE_CHAVE_NAVEGADOR"
+VARIAVEL_MAP_ID = "CRM_GOOGLE_MAP_ID"
 
 
-def chave_mosaicos() -> str:
-    """A chave dos mosaicos, lida do ambiente a cada chamada ("" sem ela)."""
+def chave_navegador() -> str:
+    """A chave do navegador, lida do ambiente a cada chamada ("" sem ela)."""
     return os.environ.get(VARIAVEL_CHAVE, "")
 
 
-def _codificar(chave: str) -> str:
-    """O `rawurlencode` do PHP (RFC 3986): só `A-Za-z0-9-_.~` ficam, a barra
-    também se codifica (`safe=""`). Os bytes que não são UTF-8 numa variável
-    de ambiente chegam ao Python como surrogates (surrogateescape) e voltam a
-    ser esses bytes, codificados um a um — como o PHP, sem rebentar."""
-    return quote(chave.encode("utf-8", "surrogateescape"), safe="")
+def map_id_google() -> str:
+    """O Map ID, lido do ambiente a cada chamada ("" sem ele)."""
+    return os.environ.get(VARIAVEL_MAP_ID, "")
 
 
-def config_mapa(chave: str, definicoes: Dict, modelo: str = MODELO_MOSAICOS, alternativa: str = ALTERNATIVA) -> Dict:
-    """O "mapa" a partir da chave dos mosaicos e das definições em vigor
-    (`definicoes.em_vigor` / `dominio.definicoes.combinar`). Só a chave vazia
-    conta como "sem chave", como no autónomo (`$chave === ''`). Um modelo que
-    já tem parâmetros recebe a chave com `&`."""
-    if chave == "":
-        mosaicos = {"url": alternativa, "atribuicao": "osm"}
-    else:
-        separador = "&" if "?" in modelo else "?"
-        mosaicos = {"url": f"{modelo}{separador}apiKey={_codificar(chave)}", "atribuicao": "geoapify"}
+def config_mapa(chave: str, map_id: str, definicoes: Dict) -> Dict:
+    """O "mapa" a partir da chave do navegador, do Map ID e das definições em
+    vigor (`definicoes.em_vigor` / `dominio.definicoes.combinar`). Só o texto
+    vazio conta como "sem valor", como no autónomo (`$chave === ''`); os dois
+    têm de existir para o mapa carregar."""
+    google: Optional[Dict] = None if chave == "" or map_id == "" else {"chave": chave, "map_id": map_id}
 
     return {
-        "mosaicos": mosaicos,
-        "alternativa": {"url": alternativa},
+        "google": google,
         "centro": {"lat": definicoes["fabrica_lat"], "lng": definicoes["fabrica_lng"]},
     }
 
 
 @router.get("/config")
 async def ver_config(membro: Dict = Depends(ESCRITORIO)) -> Dict:
-    """`{mosaicos: {url, atribuicao}, alternativa: {url}, centro: {lat, lng}}`."""
-    return config_mapa(chave_mosaicos(), await em_vigor(bd.obter_db()))
+    """`{google: {chave, map_id} | null, centro: {lat, lng}}`."""
+    return config_mapa(chave_navegador(), map_id_google(), await em_vigor(bd.obter_db()))
