@@ -297,6 +297,7 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
   const lista = listarFicheiros();
   for (const relativo of [
     'lib/crm/mapa.js',
+    'lib/crm/carregadorGoogle.js',
     'lib/crm/dom.js',
     'lib/crm/atribuicoes.js',
     'lib/crm/api.js',
