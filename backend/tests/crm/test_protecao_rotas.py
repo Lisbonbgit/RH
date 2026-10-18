@@ -113,6 +113,9 @@ PERFIS_POR_ROTA = {
     # Alterar a rota de um dia (T3.20): as definições do dia, a ordem, as
     # paragens, retirar e "Guardar rota", pelo planeador do escritório.
     ("PATCH", "/api/crm/rotas/{data}"): PERFIS_ESCRITORIO,
+    # Recalcular as horas da rota pelo Directions do openrouteservice (T3.21):
+    # o planeador do escritório (gasta a quota da chave do servidor).
+    ("POST", "/api/crm/rotas/{data}/recalcular"): PERFIS_ESCRITORIO,
 }
 
 # Os motivos de `_classificar` (os meta-testes comparam-nos tal e qual).

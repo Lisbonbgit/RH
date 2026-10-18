@@ -609,6 +609,7 @@ janela2_inicio, janela2_fim, dias_fechada` (20: os 18 do autónomo mais `instagr
 | `rota_cheia` | 409 | "Uma rota tem no máximo 48 paragens." (F3, T3.19) |
 | `rota_fechada` | 409 | "Este dia já passou — a rota só se pode ver." (F3, T3.19: um dia anterior a hoje em Lisboa, com ou sem rota) |
 | `rota_em_curso` | 409 | "A rota já tem registos do motorista — no escritório só se pode ver." (F3, T3.19: uma rota fora de `rascunho`/`planeada` ou com alguma paragem `feita`/`nao_feita`, mesmo retirada) |
+| `calculo_indisponivel` | 503 | (F3, T3.21: o openrouteservice não deu horas; nada muda na rota.) Pelo `tipo` do erro: `sem_chave`/`indisponivel` → "Cálculo automático indisponível — ordene à mão"; `limite` (429) → "Cálculo automático indisponível por agora (limite de pedidos) — espere um minuto ou ordene à mão"; `ponto_sem_estrada` (2010) → "A paragem {n} não fica perto de uma estrada — corrija a localização da loja" (n = o número na secção "rota") / "O ponto de início não fica perto de uma estrada — escolha outro ponto" / "O ponto de fim não fica perto de uma estrada — escolha outro ponto" |
 
 | Rota | Perfis | Sucesso |
 |---|---|---|

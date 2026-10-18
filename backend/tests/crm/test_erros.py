@@ -102,6 +102,9 @@ def test_os_codigos_e_estados_sao_os_da_tabela_do_plano():
         "rota_cheia": 409,
         "rota_fechada": 409,
         "rota_em_curso": 409,
+        # F3 (T3.21): o openrouteservice não deu horas (sem chave, limite,
+        # ponto sem estrada, falha); a mensagem vai pelo `tipo`.
+        "calculo_indisponivel": 503,
     }
 
 

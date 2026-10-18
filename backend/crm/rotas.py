@@ -1,7 +1,7 @@
 """`/api/crm/rotas` — as rotas de um dia (F3: planear rota, versão simples).
 
-Plano F3 §4; T3.18 (ler), T3.19 (adicionar uma loja) e T3.20 (alterar a
-rota do dia). Só o escritório
+Plano F3 §4; T3.18 (ler), T3.19 (adicionar uma loja), T3.20 (alterar a
+rota do dia) e T3.21 (as horas pelo Directions). Só o escritório
 (admin e utilizador do CRM): o motorista dá 403 `sem_permissao`, quem não é
 membro 403 `sem_acesso_crm` e, sem sessão, os 401/403 herdados do portal. Os
 parâmetros (`data`, `de`, `ate`) e os corpos leem-se como texto e validam-se
@@ -73,12 +73,38 @@ condicionais em `rotas_bd` (T3.17): aqui só se valida, lê, decide e responde.
   condicional. Se não casar, `rotas_bd.porque_falhou` decide, sem nova
   tentativa: `nao_existe` → 404, `em_curso` → 409 `rota_em_curso`, senão
   409 `conflito`.
+- `POST /rotas/{data}/recalcular` `{versao}` → 200 com a rota completa e as
+  horas do Directions (`calculo.atual: true`). As horas vêm **só do
+  Directions** (§1 "Horas"): um POST `/v2/directions/driving-car/json`
+  (`servicos.ors.direcoes`) com as coordenadas `[início] + incluídas + [fim]`
+  — as paragens da secção "rota" pela ordem (`rotas.seccoes`: sem as
+  fechadas sem "Manter", as `nao_cabe` e as `sem_loja`), o início e o fim
+  próprios da rota ou a fábrica das definições em vigor — e `avoid_features`
+  com `evitar_portagens`; ao openrouteservice só vão coordenadas e
+  constantes (§0, regra 12). Os troços (`directions.interpretar_direcoes`)
+  dão as chegadas, as esperas e os avisos (`horarios.calcular_horarios`) e
+  gravam-se numa só `find_one_and_update` **sem subir a versão**
+  (`rotas_bd.alterar(..., subir_versao=False)`: dados derivados, com o filtro
+  da versão lida): por paragem ativa, `paragens.N.chegada_prevista|espera_min|
+  fora_de_horario` só do que muda (as excluídas ficam a `None`/`None`/`False`)
+  e o `calculo` inteiro (a assinatura da entrada, os totais, o regresso, a
+  geometria e `calculado_em` de agora). Sem paragens incluídas não se chama
+  o openrouteservice: o `calculo` que havia limpa-se (`calculo: None`), e
+  sem nenhum responde-se 200 sem escrever. Pela ordem das verificações do
+  plano §4: 400 → 422 (`data` e `versao`, juntos) → 404 "Ainda não há rota
+  para este dia." → 409 `rota_fechada` → 409 `rota_em_curso` → 409
+  `conflito` → 503 `calculo_indisponivel` (nada muda; `tipo` no erro:
+  `sem_chave` sem pedido nenhum, `limite` no 429, `ponto_sem_estrada` num
+  2010 — a mensagem diz a paragem N da secção "rota", o início ou o fim —,
+  `indisponivel` no resto; fica um aviso no registo só com o motivo) → a
+  escrita condicional → a falha, como no PATCH.
 
 O "hoje" é o dia em Lisboa do relógio do CRM, lido UMA vez por pedido (ao
 ler, `relogio.hoje()`; ao escrever, `relogio.agora()` e o seu
 `relogio.hoje(agora)`): a validação, os instantes gravados e a resposta usam
 o mesmo instante (à meia-noite não se valida com um dia e grava com outro).
 """
+import logging
 from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends
@@ -87,13 +113,18 @@ from . import db as bd
 from . import relogio, rotas_bd
 from .auth import ESCRITORIO
 from .definicoes import em_vigor
-from .dominio import rotas, validador_rota
+from .dominio import directions, horarios, rotas, validador_rota, vroom
 from .dominio.datas import texto_data
+from .dominio.horas import segundos
+from .dominio.vroom import RespostaInvalida
 from .erros import erro, nao_encontrado, validacao
 from .formatar_rota import PROJECAO_LOJA_ROTA, documento_paragem, documento_rota, resumo_rota_api, rota_api
 from .lojas import MENSAGEM_CONFLITO, MENSAGEM_NAO_ENCONTRADA
 from .pedidos import corpo_json
 from .servicos import ors
+from .servicos.ors import FalhaOrs
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -107,8 +138,22 @@ MENSAGENS_DO_BLOQUEIO = {"rota_fechada": MENSAGEM_ROTA_FECHADA, "rota_em_curso":
 # com a primeira paragem.
 MENSAGEM_SEM_ROTA = "Ainda não há rota para este dia."
 
+# As mensagens do 503 `calculo_indisponivel` (plano F3 §1 "Mensagens das
+# falhas do ORS" e §4), pelo `tipo` da `FalhaOrs`.
+MENSAGEM_CALCULO_INDISPONIVEL = "Cálculo automático indisponível — ordene à mão"
+MENSAGEM_CALCULO_LIMITE = (
+    "Cálculo automático indisponível por agora (limite de pedidos) — espere um minuto ou ordene à mão"
+)
+MENSAGEM_PARAGEM_SEM_ESTRADA = "A paragem {numero} não fica perto de uma estrada — corrija a localização da loja"
+MENSAGEM_INICIO_SEM_ESTRADA = "O ponto de início não fica perto de uma estrada — escolha outro ponto"
+MENSAGEM_FIM_SEM_ESTRADA = "O ponto de fim não fica perto de uma estrada — escolha outro ponto"
+
 # Os campos de topo que o `PATCH` escreve tal e qual (pela ordem do validador).
 CAMPOS_DO_DIA = ("hora_saida", "hora_regresso_limite", "inicio", "fim", "evitar_portagens", "estado")
+
+# As horas de uma paragem que o Directions não leva (fechada sem "Manter",
+# `nao_cabe`, sem loja): nenhuma.
+SEM_HORAS = {"chegada_prevista": None, "espera_min": None, "fora_de_horario": False}
 
 # Sem `versao` no corpo, quantas vezes se lê e tenta gravar antes do 409 `conflito`.
 TENTATIVAS_SEM_VERSAO = 3
@@ -240,13 +285,135 @@ async def alterar_rota(data: str, membro: Dict = Depends(ESCRITORIO), corpo: Dic
         return _resposta(rota, dia, hoje, lojas, definicoes)
     depois = await rotas_bd.alterar(base, rota, set_, membro_id=membro["user_id"], agora=agora)
     if depois is None:
-        motivo = await rotas_bd.porque_falhou(base, rota["id"], rota["versao"])
-        if motivo == rotas_bd.NAO_EXISTE:
-            raise nao_encontrado(MENSAGEM_SEM_ROTA)
-        if motivo == rotas_bd.EM_CURSO:
-            raise erro(409, "rota_em_curso", MENSAGEM_ROTA_EM_CURSO)
-        raise _conflito()
+        raise await _erro_da_escrita(base, rota)
     return _resposta(depois, dia, hoje, lojas, definicoes)
+
+
+@router.post("/rotas/{data}/recalcular")
+async def recalcular_rota(data: str, membro: Dict = Depends(ESCRITORIO), corpo: Dict = Depends(corpo_json)) -> Dict:
+    """`{versao}` → 200 com a rota do dia e as horas do Directions (a ordem
+    das verificações está no docstring do módulo). A versão não muda."""
+    agora = relogio.agora()
+    hoje = relogio.hoje(agora)
+    dia, erros = validador_rota.data_do_caminho(data, hoje)
+    dados, erros_do_corpo = validador_rota.so_versao(corpo)
+    erros.update(erros_do_corpo)
+    if erros:
+        raise validacao(erros)
+
+    base = bd.obter_db()
+    rota = await rotas_bd.ler(base, texto_data(dia))
+    if rota is None:
+        raise nao_encontrado(MENSAGEM_SEM_ROTA)
+    bloqueio = rotas.bloqueio_de_escrita(rota, dia, hoje)
+    if bloqueio is not None:
+        raise erro(409, bloqueio, MENSAGENS_DO_BLOQUEIO[bloqueio])
+    if rota["versao"] != dados["versao"]:
+        raise _conflito()
+
+    lojas = await rotas_bd.lojas_da_rota(base, rota)
+    definicoes = await em_vigor(base)
+    seccoes = rotas.seccoes(rota["paragens"], {loja["id"]: loja for loja in lojas}, dia)
+    incluidas = [(paragem, loja) for paragem, loja, seccao, _ in seccoes if seccao == "rota"]
+    if incluidas:
+        set_ = await _horas_pelo_directions(rota, seccoes, incluidas, definicoes, agora)
+    elif rota["calculo"] is not None:
+        set_ = {"calculo": None}
+    else:
+        return _resposta(rota, dia, hoje, lojas, definicoes)
+    depois = await rotas_bd.alterar(base, rota, set_, subir_versao=False, membro_id=membro["user_id"], agora=agora)
+    if depois is None:
+        raise await _erro_da_escrita(base, rota)
+    return _resposta(depois, dia, hoje, lojas, definicoes)
+
+
+async def _horas_pelo_directions(rota, seccoes, incluidas, definicoes, agora) -> Dict:
+    """O `$set` das horas da `rota` lida: um pedido ao Directions com
+    `[início] + incluídas + [fim]`, as chegadas e as esperas do domínio pelos
+    caminhos `paragens.<índice>.<campo>` (só o que muda; as excluídas sem
+    horas) e o `calculo` inteiro. Uma falha do openrouteservice, ou uma
+    resposta sem a forma esperada, é o 503 `calculo_indisponivel` (lançado
+    fora do `except`, sem a exceção como causa) com um aviso no registo."""
+    inicio = _ponto_resolvido(rota["inicio"], definicoes)
+    fim = _ponto_resolvido(rota["fim"], definicoes)
+    pontos = [inicio, *((loja["lat"], loja["lng"]) for _, loja in incluidas), fim]
+    pedido = directions.pedido_direcoes(pontos, rota["evitar_portagens"])
+
+    falha = None
+    try:
+        trocos = directions.interpretar_direcoes(await ors.direcoes(pedido), len(pontos))
+    except FalhaOrs as excecao:
+        falha = (excecao.tipo, excecao.indice, excecao.motivo)
+    except RespostaInvalida as excecao:
+        falha = ("indisponivel", None, excecao.motivo)
+    if falha is not None:
+        tipo, indice, motivo = falha
+        logger.warning("[crm] rota %s: o openrouteservice falhou (recalcular) — %s", rota["data"], motivo)
+        raise _calculo_indisponivel(tipo, indice, len(pontos))
+
+    calculo = horarios.calcular_horarios(
+        segundos(rota["hora_saida"]),
+        segundos(rota["hora_regresso_limite"]),
+        [vroom.paragem_calculo(paragem, loja) for paragem, loja in incluidas],
+        trocos.duracoes,
+    )
+    indice = {paragem["id"]: i for i, paragem in enumerate(rota["paragens"])}
+    set_ = {}
+    for paragem, _, seccao, _ in seccoes:
+        horas = calculo.por_paragem[paragem["id"]] if seccao == "rota" else SEM_HORAS
+        mudam = {campo: valor for campo, valor in horas.items() if valor != paragem[campo]}
+        set_.update(rotas.caminhos_paragem(indice[paragem["id"]], mudam))
+    set_["calculo"] = {
+        "assinatura": horarios.assinatura(horarios.entrada_calculo(rota, incluidas, inicio, fim)),
+        "distancia_m": trocos.distancia_m,
+        "duracao_s": trocos.duracao_s,
+        "regresso_previsto": calculo.regresso_previsto,
+        "depois_do_limite": calculo.depois_do_limite,
+        "geometria": trocos.geometria,
+        "calculado_em": relogio.instante(agora),
+    }
+    return set_
+
+
+def _ponto_resolvido(ponto, definicoes) -> tuple:
+    """`(lat, lng)` do início ou do fim: o ponto da rota, ou a fábrica das
+    definições em vigor quando é `None` (como o `rota_api` o resolve)."""
+    if ponto is None:
+        return (definicoes["fabrica_lat"], definicoes["fabrica_lng"])
+    return (ponto["lat"], ponto["lng"])
+
+
+def _calculo_indisponivel(tipo, indice, n_pontos):
+    """O 503 `calculo_indisponivel` com a mensagem do `tipo` (plano F3 §1):
+    `limite` → a do limite; `ponto_sem_estrada` → o ponto de início (a
+    coordenada 0), o de fim (a última) ou a paragem N (as coordenadas 1..n
+    são as paragens da secção "rota", numeradas pela mesma ordem); um índice
+    que não é de nenhum ponto, `sem_chave` e `indisponivel` → a geral."""
+    mensagem = MENSAGEM_CALCULO_INDISPONIVEL
+    if tipo == "limite":
+        mensagem = MENSAGEM_CALCULO_LIMITE
+    elif tipo == "ponto_sem_estrada":
+        if indice == 0:
+            mensagem = MENSAGEM_INICIO_SEM_ESTRADA
+        elif indice == n_pontos - 1:
+            mensagem = MENSAGEM_FIM_SEM_ESTRADA
+        elif type(indice) is int and 0 < indice < n_pontos - 1:
+            mensagem = MENSAGEM_PARAGEM_SEM_ESTRADA.format(numero=indice)
+        else:
+            tipo = "indisponivel"
+    return erro(503, "calculo_indisponivel", mensagem, tipo=tipo)
+
+
+async def _erro_da_escrita(base, rota):
+    """A escrita condicional não casou: `rotas_bd.porque_falhou` decide, sem
+    nova tentativa — `nao_existe` → 404, `em_curso` → 409 `rota_em_curso`,
+    senão 409 `conflito`."""
+    motivo = await rotas_bd.porque_falhou(base, rota["id"], rota["versao"])
+    if motivo == rotas_bd.NAO_EXISTE:
+        return nao_encontrado(MENSAGEM_SEM_ROTA)
+    if motivo == rotas_bd.EM_CURSO:
+        return erro(409, "rota_em_curso", MENSAGEM_ROTA_EM_CURSO)
+    return _conflito()
 
 
 def _contra_a_rota(rota, dados) -> Dict:
