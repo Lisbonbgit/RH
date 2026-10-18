@@ -22,7 +22,19 @@ autónomo (etiqueta `referencia-standalone`): `apagarDa200EDepois404`,
   `delete_many` não desfaz nada (a loja já foi) e fica numa linha `[crm]` no
   registo (plano §1, "Sem transações");
 - o `Cache-Control: no-store, private` não se porta (diferença assumida na
-  T2.9, dossiê §5.8).
+  T2.9, dossiê §5.8);
+- **F3 (T3.24): uma loja numa rota não se apaga** (plano F3 §1 "Apagar uma
+  loja" e §4). Depois do histórico, leem-se as rotas em que a loja está
+  (`rotas_bd.rotas_com_loja`: o índice `paragens.loja_id`, sem o `calculo`)
+  e a regra pura `dominio.rotas.loja_presa_em_rota(rotas, loja_id, hoje)`
+  decide: uma paragem ativa, ou com registo do motorista mesmo retirada,
+  prende; uma retirada e ainda `pendente` não. 409 `loja_em_rota`, com
+  "está numa rota — retire-a da rota ou mude a fase para perdida" numa
+  rota de hoje ou do futuro e "esteve numa rota — mude a fase para
+  perdida" quando só há rotas passadas (correção "T3.24": essa rota é só
+  de leitura, retirar é impossível). Ordem: 404 → `loja_com_historico` →
+  `loja_em_rota` → `delete_one`. O "hoje" é o do relógio do CRM, em
+  Lisboa.
 
 Rotas por `TestClient` com `dependency_overrides[utilizador_atual]` e
 `monkeypatch.setattr(crm.db, "obter_db", …)` (plano §10); as corridas com
@@ -47,7 +59,7 @@ import faturacao.auth
 from crm import lojas as rotas_lojas
 from crm import relogio
 from crm.auth import ESCRITORIO, membro_crm_atual
-from crm.lojas import MENSAGEM_COM_HISTORICO, apagar_loja
+from crm.lojas import MENSAGEM_COM_HISTORICO, MENSAGEM_LOJA_EM_ROTA, MENSAGEM_LOJA_ESTEVE_EM_ROTA, apagar_loja
 from crm.pedidos import corpo_json
 from faturacao.auth import utilizador_atual
 
@@ -78,6 +90,15 @@ COM_HISTORICO = {
     }
 }
 APAGADA = {"apagada": True}
+EM_ROTA = {
+    "detail": {
+        "codigo": "loja_em_rota",
+        "mensagem": "Esta loja está numa rota — retire-a da rota ou mude a fase para perdida.",
+    }
+}
+ESTEVE_EM_ROTA = {
+    "detail": {"codigo": "loja_em_rota", "mensagem": "Esta loja esteve numa rota — mude a fase para perdida."}
+}
 SEM_PERMISSAO = {"detail": {"codigo": "sem_permissao", "mensagem": "Sem permissão para esta ação."}}
 SEM_ACESSO = {"detail": {"codigo": "sem_acesso_crm", "mensagem": "Sem acesso ao CRM."}}
 
@@ -85,6 +106,12 @@ PROJECAO_ID = {"_id": 0, "id": 1}
 # O `podeApagar` do autónomo: `SELECT 1 FROM interacoes WHERE loja_id = ? AND tipo <> 'mudanca_fase' LIMIT 1`.
 FILTRO_HISTORICO = {"tipo": {"$ne": "mudanca_fase"}}
 FILTRO_MUDANCAS_DE_FASE = {"tipo": "mudanca_fase"}
+# As rotas em que a loja está (`rotas_bd.rotas_com_loja`): pelo índice
+# `paragens.loja_id`, sem a geometria.
+SEM_CALCULO = {"_id": 0, "calculo": 0}
+
+# AGORA é 09:30Z de 2026-10-10: em Lisboa (WEST) ainda é dia 10.
+ONTEM, HOJE, AMANHA = "2026-10-09", "2026-10-10", "2026-10-11"
 
 
 def _id(n):
@@ -94,6 +121,7 @@ def _id(n):
 
 CAFE, BAR = _id(1), _id(2)
 NAO_EXISTE = _id(999)
+FILTRO_ROTAS = {"paragens.loja_id": CAFE}
 
 
 def _loja(numero, nome, lat, lng=LNG, **outros):
@@ -156,6 +184,35 @@ def _mudanca(numero, loja_id, resultado="potencial→contactada"):
     return _interacao(numero, loja_id, "mudanca_fase", resultado)
 
 
+def _paragem(loja_id, ordem, **campos):
+    """Uma paragem como está na base (plano F3 §3)."""
+    return {
+        "id": _id(700 + ordem if ordem is not None else 799), "loja_id": loja_id, "ordem": ordem,
+        "motivo": "angariacao", "tempo_servico_min": 15, "manter_fechada": False, "nao_cabe": False,
+        "chegada_prevista": None, "espera_min": None, "fora_de_horario": False,
+        "adicionada_em": "2026-10-08T09:00:00Z", "adicionada_por": "u-rui", "removida_em": None,
+        "estado": "pendente", "resultado": None, "concluida_em": None, **campos,
+    }
+
+
+def _retirada(loja_id, **campos):
+    return _paragem(loja_id, None, removida_em="2026-10-08T10:00:00Z", **campos)
+
+
+def _rota_do_dia(data, *paragens):
+    """Uma rota escrita à mão na base (plano F3 §3), com um `calculo` para
+    provar que a leitura o deixa de fora."""
+    return {
+        "id": f"r-{data}", "data": data, "estado": "planeada", "versao": 2, "hora_saida": "08:00",
+        "hora_regresso_limite": "19:00", "inicio": None, "fim": None, "evitar_portagens": False,
+        "paragens": list(paragens),
+        "calculo": {"assinatura": "sha256:" + "0" * 64, "distancia_m": 1, "duracao_s": 1, "regresso_previsto": "09:00",
+                    "depois_do_limite": False, "geometria": "_p~iF~ps|U", "calculado_em": "2026-10-08T09:30:00Z"},
+        "criado_em": "2026-10-08T09:00:00Z", "criado_por": "u-rui", "atualizado_em": "2026-10-08T09:00:00.000000Z",
+        "atualizado_por": "u-rui",
+    }
+
+
 USERS = [
     {"id": "u-admin", "email": ADMIN_LOCAL, "name": "Administrador Principal", "role": "admin",
      "password": "$2b$12$hash-do-admin"},
@@ -186,21 +243,22 @@ RUI_MEMBRO = {**RUI_UTILIZADOR, "crm_perfil": "utilizador", "crm_admin_master": 
 ANA_MEMBRO = {**ANA_ADMIN_DO_CRM, "crm_perfil": "admin", "crm_admin_master": False}
 
 
-def _base(lojas=(), interacoes=(), lojas_coleccao=None, interacoes_coleccao=None):
+def _base(lojas=(), interacoes=(), rotas=(), lojas_coleccao=None, interacoes_coleccao=None, rotas_coleccao=None):
     return BaseFalsa({
         "crm_membros": list(MEMBROS),
         "users": list(USERS),
         "crm_regioes": [],
         "crm_lojas": lojas_coleccao if lojas_coleccao is not None else list(lojas),
         "crm_interacoes": interacoes_coleccao if interacoes_coleccao is not None else list(interacoes),
+        "crm_rotas": rotas_coleccao if rotas_coleccao is not None else list(rotas),
     })
 
 
 def _escritas(base):
-    """As escritas em `crm_lojas` e `crm_interacoes`, pela ordem de cada coleção."""
+    """As escritas em `crm_lojas`, `crm_interacoes` e `crm_rotas`, pela ordem de cada coleção."""
     return [
         c
-        for coleccao in (base.crm_lojas, base.crm_interacoes)
+        for coleccao in (base.crm_lojas, base.crm_interacoes, base.crm_rotas)
         for c in coleccao.registo
         if c[0] in ("insert_one", "update_one", "delete_one", "delete_many")
     ]
@@ -292,10 +350,17 @@ def test_a_mensagem_e_a_do_autonomo():
     assert MENSAGEM_COM_HISTORICO == COM_HISTORICO["detail"]["mensagem"]
 
 
+def test_as_mensagens_da_loja_numa_rota_sao_as_do_plano():
+    assert MENSAGEM_LOJA_EM_ROTA == EM_ROTA["detail"]["mensagem"]
+    assert MENSAGEM_LOJA_ESTEVE_EM_ROTA == ESTEVE_EM_ROTA["detail"]["mensagem"]
+
+
 def test_o_gancho_da_f5_esta_no_unico_sitio_que_decide_se_se_pode_apagar():
-    """Plano §7, "Ganchos": na F5 as encomendas e as paragens também impedem
-    de apagar (o `podeApagar` do autónomo: "Etapa 2: recusar também…")."""
-    assert "F5: bloquear se houver encomendas ou paragens" in inspect.getsource(rotas_lojas._pode_apagar)
+    """Plano §7, "Ganchos": na F5 as encomendas também impedem de apagar (o
+    `podeApagar` do autónomo: "Etapa 2: recusar também…"). As paragens já
+    contam desde a T3.24 (`_presa_em_rota`)."""
+    assert "F5: bloquear se houver encomendas" in inspect.getsource(rotas_lojas._pode_apagar)
+    assert "paragens" not in inspect.getsource(rotas_lojas._pode_apagar).split("F5:")[1].split("\n")[0]
 
 
 # --- Apagar um engano -----------------------------------------------------------------------------------
@@ -330,12 +395,14 @@ def test_apagar_le_a_loja_procura_o_historico_e_apaga_por_esta_ordem(sessao):
     base = _base(
         lojas_coleccao=Registada([_cafe()], nome="crm_lojas"),
         interacoes_coleccao=Registada([_mudanca(1, CAFE)], nome="crm_interacoes"),
+        rotas_coleccao=Registada([_rota_do_dia(ONTEM, _retirada(CAFE))], nome="crm_rotas"),
     )
 
     assert sessao(RUI_UTILIZADOR, base).apagar(CAFE).status_code == 200
     assert ordem == [
         ("crm_lojas", "find_one", {"id": CAFE}, PROJECAO_ID),
         ("crm_interacoes", "find_one", {"loja_id": CAFE, **FILTRO_HISTORICO}, PROJECAO_ID),
+        ("crm_rotas", "find", FILTRO_ROTAS, SEM_CALCULO),
         ("crm_lojas", "delete_one", {"id": CAFE}),
         ("crm_interacoes", "delete_many", {"loja_id": CAFE, **FILTRO_MUDANCAS_DE_FASE}),
     ]
@@ -437,6 +504,119 @@ def test_na_duvida_uma_interacao_que_nao_e_exatamente_mudanca_de_fase_conta_como
     assert cliente.base.crm_interacoes.sem_id() == [interacao]
 
 
+# --- Uma loja numa rota não se apaga (F3, T3.24) ------------------------------------------------------
+
+
+def _rotas_lidas(base):
+    return base.crm_rotas.registo
+
+
+@pytest.mark.parametrize("data", [HOJE, AMANHA], ids=["hoje", "amanhã"])
+def test_numa_paragem_ativa_de_uma_rota_de_hoje_ou_do_futuro_da_409_loja_em_rota(sessao, data):
+    """Plano F3 §1 "Apagar uma loja": 409 só com `codigo` e `mensagem`, a loja
+    e as mudanças de fase ficam, nada se escreve, e as rotas leram-se pelo
+    índice `paragens.loja_id`, sem o `calculo`."""
+    rotas = [_rota_do_dia(data, _paragem(BAR, 0), _paragem(CAFE, 1))]
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe(), _bar()], interacoes=[_mudanca(1, CAFE)], rotas=rotas))
+    antes = cliente.base.crm_rotas.sem_id()
+
+    r = cliente.apagar(CAFE)
+
+    assert (r.status_code, r.json()) == (409, EM_ROTA)
+    assert _ids(cliente.base.crm_lojas) == [CAFE, BAR]
+    assert len(cliente.base.crm_interacoes.docs) == 1
+    assert cliente.base.crm_rotas.sem_id() == antes
+    assert _escritas(cliente.base) == []
+    assert _rotas_lidas(cliente.base) == [("find", FILTRO_ROTAS, SEM_CALCULO)]
+    assert cliente.get(f"{LOJAS_URL}/{CAFE}").status_code == 200
+
+
+def test_so_numa_rota_passada_da_409_com_a_mensagem_de_esteve_em_rota(sessao):
+    """Correção "T3.24": a rota de ontem é só de leitura (`rota_fechada`), por
+    isso "retire-a da rota" é impossível — o mesmo código, outra mensagem."""
+    rotas = [_rota_do_dia(ONTEM, _paragem(CAFE, 0)), _rota_do_dia("2026-09-01", _paragem(CAFE, 0))]
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe()], rotas=rotas))
+    r = cliente.apagar(CAFE)
+    assert (r.status_code, r.json()) == (409, ESTEVE_EM_ROTA)
+    assert _ids(cliente.base.crm_lojas) == [CAFE]
+    assert _escritas(cliente.base) == []
+
+
+def test_numa_rota_passada_e_noutra_de_hoje_ou_do_futuro_ganha_a_mensagem_da_atual(sessao):
+    rotas = [_rota_do_dia(ONTEM, _paragem(CAFE, 0)), _rota_do_dia(AMANHA, _paragem(CAFE, 0))]
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe()], rotas=rotas))
+    assert cliente.apagar(CAFE).json() == EM_ROTA
+
+
+def test_so_numa_paragem_retirada_e_pendente_apaga_e_as_rotas_ficam_como_estavam(sessao):
+    """Uma paragem retirada e ainda `pendente` não prende (§1): a loja
+    apaga-se, as mudanças de fase vão com ela e as rotas não se tocam (a
+    paragem fica, órfã — a rota é só de acrescentar)."""
+    rotas = [_rota_do_dia(ONTEM, _retirada(CAFE)), _rota_do_dia(HOJE, _retirada(CAFE), _paragem(BAR, 0)), _rota_do_dia(AMANHA, _retirada(CAFE))]
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe(), _bar()], interacoes=[_mudanca(1, CAFE)], rotas=rotas))
+    antes = cliente.base.crm_rotas.sem_id()
+
+    r = cliente.apagar(CAFE)
+
+    assert (r.status_code, r.json()) == (200, APAGADA)
+    assert _ids(cliente.base.crm_lojas) == [BAR]
+    assert cliente.base.crm_interacoes.docs == []
+    assert cliente.base.crm_rotas.sem_id() == antes
+    assert _rotas_lidas(cliente.base) == [("find", FILTRO_ROTAS, SEM_CALCULO)], "só a leitura: nunca uma escrita nas rotas"
+
+
+@pytest.mark.parametrize("registo", ["feita", "nao_feita"])
+@pytest.mark.parametrize("data, esperado", [(AMANHA, EM_ROTA), (ONTEM, ESTEVE_EM_ROTA)], ids=["amanhã", "ontem"])
+def test_numa_paragem_retirada_com_registo_do_motorista_da_409(sessao, registo, data, esperado):
+    """O motorista fez a visita e a paragem foi retirada: há um registo do
+    terreno, e a loja não se apaga (§1: "ou numa paragem com registo")."""
+    rotas = [_rota_do_dia(data, _retirada(CAFE, estado=registo, resultado="interessado", concluida_em="2026-10-09T10:00:00Z"))]
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe()], rotas=rotas))
+    r = cliente.apagar(CAFE)
+    assert (r.status_code, r.json()) == (409, esperado)
+    assert _ids(cliente.base.crm_lojas) == [CAFE]
+    assert _escritas(cliente.base) == []
+
+
+def test_as_rotas_de_outras_lojas_nao_prendem(sessao):
+    rotas = [_rota_do_dia(AMANHA, _paragem(BAR, 0)), _rota_do_dia(ONTEM, _paragem(BAR, 0, estado="feita"))]
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe(), _bar()], rotas=rotas))
+    assert cliente.apagar(CAFE).json() == APAGADA
+    assert _ids(cliente.base.crm_lojas) == [BAR]
+    assert _rotas_lidas(cliente.base) == [("find", FILTRO_ROTAS, SEM_CALCULO)]
+
+
+def test_com_historico_e_numa_rota_ganha_o_historico_e_as_rotas_nem_se_leem(sessao):
+    """A ordem do plano §4: 404 → `loja_com_historico` → `loja_em_rota`."""
+    rotas = [_rota_do_dia(AMANHA, _paragem(CAFE, 0))]
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe()], interacoes=[_interacao(1, CAFE, "visita")], rotas=rotas))
+    r = cliente.apagar(CAFE)
+    assert (r.status_code, r.json()) == (409, COM_HISTORICO)
+    assert _rotas_lidas(cliente.base) == []
+    assert _escritas(cliente.base) == []
+
+
+def test_o_hoje_das_rotas_e_o_do_relogio_do_crm_em_lisboa(sessao, monkeypatch):
+    """Às 23:30Z de 10 de outubro (WEST) já é dia 11 em Lisboa: a rota de dia
+    10 passou a ser passada, e a de dia 11 é a de hoje."""
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe(), _bar()], rotas=[_rota_do_dia(HOJE, _paragem(CAFE, 0)), _rota_do_dia(AMANHA, _paragem(BAR, 0))]))
+    monkeypatch.setattr(relogio, "agora", lambda: datetime(2026, 10, 10, 23, 30, tzinfo=UTC))
+    assert cliente.apagar(CAFE).json() == ESTEVE_EM_ROTA
+
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe()], rotas=[_rota_do_dia(AMANHA, _paragem(CAFE, 0))]))
+    monkeypatch.setattr(relogio, "agora", lambda: datetime(2026, 10, 10, 23, 30, tzinfo=UTC))
+    assert cliente.apagar(CAFE).json() == EM_ROTA
+
+
+def test_quando_a_base_falha_a_ler_as_rotas_e_um_erro_e_nada_se_apaga(sessao):
+    rotas = ColeccaoFalsa([], falhar={"find": RuntimeError("base em baixo")}, nome="crm_rotas")
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe()], interacoes=[_mudanca(1, CAFE)], rotas_coleccao=rotas), levantar=False)
+    assert cliente.apagar(CAFE).status_code == 500
+    assert len(cliente.base.crm_lojas.docs) == 1
+    assert len(cliente.base.crm_interacoes.docs) == 1
+    assert _escritas(cliente.base) == []
+
+
 # --- Lojas que não existem ------------------------------------------------------------------------
 
 
@@ -451,6 +631,7 @@ def test_apagar_uma_loja_que_nao_existe_da_404_sem_olhar_para_o_historico(sessao
     assert (r.status_code, r.json()) == (404, NAO_ENCONTRADA)
     assert cliente.base.crm_lojas.registo == [("find_one", {"id": NAO_EXISTE}, PROJECAO_ID)]
     assert cliente.base.crm_interacoes.registo == []
+    assert cliente.base.crm_rotas.registo == []
     assert cliente.base.crm_interacoes.sem_id() == orfas
 
 

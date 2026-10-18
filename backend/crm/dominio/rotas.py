@@ -18,6 +18,11 @@ documento de `crm_rotas` com as `paragens` embutidas, que só se acrescentam
 - **O terreno ganha (desenho §4.3):** o escritório escreve só pelos caminhos
   `paragens.<índice>.<campo do escritório>` (`caminhos_paragem`); os campos do
   terreno só se escrevem ao criar a paragem.
+- **Apagar uma loja (T3.24):** `loja_presa_em_rota` diz se alguma paragem da
+  loja a prende — ativa, ou com registo do motorista mesmo retirada; uma
+  retirada e ainda `pendente` não — e se há uma rota de hoje ou do futuro
+  (`LOJA_EM_ROTA`: pode retirar-se de lá) ou só rotas passadas
+  (`LOJA_ESTEVE_EM_ROTA`: só de leitura, correção "T3.24").
 
 Os dias (`data`, `hoje`) são `date` (`datas.ler_data`, `relogio.hoje`), nunca
 texto nem instantes.
@@ -25,7 +30,7 @@ texto nem instantes.
 from datetime import date
 from types import MappingProxyType
 
-from .datas import dia_da_semana
+from .datas import dia_da_semana, ler_data
 
 # Igual a MOTIVOS em frontend/src/lib/crm/rota.js (test_consistencia_frontend.py, T3.27): manter numa só linha.
 MOTIVOS = ("entrega", "amostra", "acompanhamento", "angariacao")
@@ -55,6 +60,12 @@ ESTADOS_EDITAVEIS = ("rascunho", "planeada")
 # primeiro, a rota é só de leitura no escritório (`rotas_bd` filtra também
 # por eles com `"paragens.estado": {"$nin": ...}`).
 ESTADOS_COM_REGISTO = ("feita", "nao_feita")
+
+# Porque é que uma loja não se apaga (`loja_presa_em_rota`): está numa rota de
+# hoje ou do futuro (ainda se pode retirar de lá), ou só esteve em rotas
+# passadas (só de leitura: resta mudar a fase para perdida).
+LOJA_EM_ROTA = "em_rota"
+LOJA_ESTEVE_EM_ROTA = "esteve_em_rota"
 
 # As secções do planeador, pela ordem da precedência em `seccoes`, e os avisos.
 SECCOES = ("rota", "fechada", "nao_cabe", "sem_loja")
@@ -132,6 +143,49 @@ def bloqueio_de_escrita(rota, data: date, hoje: date):
     ):
         return "rota_em_curso"
     return None
+
+
+def loja_presa_em_rota(rotas, loja_id, hoje: date):
+    """Porque é que a loja `loja_id` não se pode apagar, ou `None` (plano F3
+    §1 "Apagar uma loja"; o `DELETE /lojas/{id}`, T3.24).
+
+    `rotas` são as rotas em que a loja está numa paragem
+    (`rotas_bd.rotas_com_loja`: a `data` em texto `AAAA-MM-DD` e as
+    `paragens`). Uma paragem da loja prende-a se estiver ativa (`removida_em`
+    nulo) ou tiver um registo do motorista (`feita`/`nao_feita`), mesmo
+    retirada; uma retirada e ainda `pendente` não prende. O estado da rota
+    não conta: são as paragens.
+
+    - alguma paragem que prende numa rota de hoje ou do futuro →
+      `LOJA_EM_ROTA` ("retire-a da rota ou mude a fase para perdida");
+    - só em rotas passadas → `LOJA_ESTEVE_EM_ROTA` (a rota é só de leitura e
+      retirar é impossível: "mude a fase para perdida", correção "T3.24");
+    - nenhuma → `None`.
+
+    `hoje` tem de ser `date` (`TypeError`, também sem rotas); uma `data` que
+    não é um dia é um erro (`ValueError`), nunca uma resposta. Não mexe nas
+    rotas.
+    """
+    if type(hoje) is not date:
+        raise TypeError("Os dias das rotas são datetime.date.")
+    passadas = False
+    for rota in rotas:
+        if not any(_paragem_prende(paragem, loja_id) for paragem in rota["paragens"]):
+            continue
+        data = ler_data(rota["data"])
+        if data is None:
+            raise ValueError(f"A rota {rota.get('id')!r} tem uma data que não é um dia: {rota['data']!r}")
+        if not _passado(data, hoje):
+            return LOJA_EM_ROTA
+        passadas = True
+    return LOJA_ESTEVE_EM_ROTA if passadas else None
+
+
+def _paragem_prende(paragem, loja_id) -> bool:
+    """A paragem é desta loja e prende-a: ativa, ou com registo do motorista."""
+    return paragem.get("loja_id") == loja_id and (
+        paragem.get("removida_em") is None or paragem.get("estado") in ESTADOS_COM_REGISTO
+    )
 
 
 def ativas(paragens) -> list:

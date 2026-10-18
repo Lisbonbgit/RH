@@ -40,6 +40,10 @@ ESTADOS = {
     # pedidos (429), um ponto longe da estrada (2010) ou uma falha; o `tipo`
     # vai no extra e a mensagem segue-o (plano F3 §1 "Mensagens das falhas").
     "calculo_indisponivel": 503,
+    # F3 (T3.24): apagar uma loja que está numa rota — numa paragem ativa, ou
+    # numa com registo do motorista mesmo retirada — é recusado; a mensagem
+    # distingue uma rota de hoje ou do futuro de só rotas passadas.
+    "loja_em_rota": 409,
 }
 
 MENSAGEM_VALIDACAO = "Verifique os campos assinalados."

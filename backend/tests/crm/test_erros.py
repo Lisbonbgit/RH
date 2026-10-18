@@ -105,6 +105,9 @@ def test_os_codigos_e_estados_sao_os_da_tabela_do_plano():
         # F3 (T3.21): o openrouteservice não deu horas (sem chave, limite,
         # ponto sem estrada, falha); a mensagem vai pelo `tipo`.
         "calculo_indisponivel": 503,
+        # F3 (T3.24): apagar uma loja que está numa rota (numa paragem ativa,
+        # ou com registo do motorista mesmo retirada) é recusado.
+        "loja_em_rota": 409,
     }
 
 

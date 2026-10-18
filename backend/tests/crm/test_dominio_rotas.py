@@ -15,7 +15,13 @@ O CRM autónomo não tem código de rotas: as regras vêm do desenho original
   "T3.3 / T3.16" e "T3.3 (ativas com ordem nula)"): essa vai para o fim;
 - o escritório só escreve pelos caminhos `paragens.<índice>.<campo do
   escritório>`: os campos do terreno, o `id` e o `loja_id` ficam de fora
-  ("o terreno ganha", desenho §4.3).
+  ("o terreno ganha", desenho §4.3);
+- uma loja numa rota não se apaga (T3.24, §1 "Apagar uma loja"):
+  `loja_presa_em_rota(rotas, loja_id, hoje)` diz se alguma paragem da loja
+  a prende — ativa, ou com registo do motorista mesmo retirada; uma
+  retirada e ainda `pendente` não — e distingue uma rota de hoje ou do
+  futuro (`em_rota`: pode retirar-se) de só rotas passadas
+  (`esteve_em_rota`: só de leitura, correção "T3.24").
 """
 import ast
 import copy
@@ -41,6 +47,8 @@ from crm.dominio.rotas import (
     ESTADOS_COM_REGISTO,
     ESTADOS_EDITAVEIS,
     LIMITE_PARAGENS,
+    LOJA_EM_ROTA,
+    LOJA_ESTEVE_EM_ROTA,
     MOTIVO_POR_FASE,
     MOTIVOS,
     PRIORIDADE_ENTREGA,
@@ -52,6 +60,7 @@ from crm.dominio.rotas import (
     caminhos_paragem,
     estado_efetivo,
     fechada_neste_dia,
+    loja_presa_em_rota,
     motivo_por_fase,
     nova_ordem,
     prioridade,
@@ -294,6 +303,102 @@ def test_bloqueio_de_escrita_nao_muda_a_rota():
 def test_bloqueio_de_escrita_so_compara_dias(dia, hoje):
     with pytest.raises(TypeError):
         bloqueio_de_escrita(None, dia, hoje)
+
+
+# --- loja_presa_em_rota (T3.24) ------------------------------------------------------------------------
+
+ONTEM_TXT, HOJE_TXT, AMANHA_TXT = "2026-10-11", "2026-10-12", "2026-10-13"
+
+
+def _rota_com(data, *paragens, estado="rascunho"):
+    """Uma rota como `rotas_bd.rotas_com_loja` a devolve: a `data` em texto, sem o `calculo`."""
+    return {"id": f"r-{data}", "data": data, "estado": estado, "versao": 1, "paragens": list(paragens)}
+
+
+def test_os_dois_motivos_de_uma_loja_presa():
+    assert (LOJA_EM_ROTA, LOJA_ESTEVE_EM_ROTA) == ("em_rota", "esteve_em_rota")
+
+
+def test_sem_rotas_a_loja_esta_livre():
+    assert loja_presa_em_rota([], "l-a", HOJE) is None
+
+
+@pytest.mark.parametrize("data", [HOJE_TXT, AMANHA_TXT], ids=["hoje", "amanhã"])
+def test_uma_paragem_ativa_numa_rota_de_hoje_ou_do_futuro_prende(data):
+    assert loja_presa_em_rota([_rota_com(data, _paragem("a", 0))], "l-a", HOJE) == LOJA_EM_ROTA
+
+
+def test_uma_paragem_ativa_so_numa_rota_passada_e_esteve_em_rota():
+    # Correção "T3.24": a rota passada é só de leitura (`rota_fechada`), por
+    # isso retirar é impossível — a mensagem tem de ser outra.
+    assert loja_presa_em_rota([_rota_com(ONTEM_TXT, _paragem("a", 0))], "l-a", HOJE) == LOJA_ESTEVE_EM_ROTA
+    assert loja_presa_em_rota([_rota_com("2025-01-01", _paragem("a", 0))], "l-a", HOJE) == LOJA_ESTEVE_EM_ROTA
+
+
+def test_uma_paragem_retirada_e_ainda_pendente_nao_prende():
+    rotas_ = [_rota_com(ONTEM_TXT, _retirada("a")), _rota_com(HOJE_TXT, _retirada("a")), _rota_com(AMANHA_TXT, _retirada("a"))]
+    assert loja_presa_em_rota(rotas_, "l-a", HOJE) is None
+
+
+@pytest.mark.parametrize("registo", ["feita", "nao_feita"])
+@pytest.mark.parametrize(
+    "data, esperado", [(AMANHA_TXT, LOJA_EM_ROTA), (HOJE_TXT, LOJA_EM_ROTA), (ONTEM_TXT, LOJA_ESTEVE_EM_ROTA)],
+    ids=["amanhã", "hoje", "ontem"],
+)
+def test_uma_paragem_retirada_com_registo_do_motorista_prende(registo, data, esperado):
+    assert loja_presa_em_rota([_rota_com(data, _retirada("a", estado=registo))], "l-a", HOJE) == esperado
+
+
+@pytest.mark.parametrize("registo", ["feita", "nao_feita"])
+def test_uma_paragem_ativa_com_registo_prende_como_qualquer_ativa(registo):
+    assert loja_presa_em_rota([_rota_com(HOJE_TXT, _paragem("a", 0, estado=registo))], "l-a", HOJE) == LOJA_EM_ROTA
+    assert loja_presa_em_rota([_rota_com(ONTEM_TXT, _paragem("a", 0, estado=registo))], "l-a", HOJE) == LOJA_ESTEVE_EM_ROTA
+
+
+def test_com_uma_rota_passada_e_outra_de_hoje_ou_do_futuro_ganha_a_atual():
+    rotas_ = [_rota_com(ONTEM_TXT, _paragem("a", 0)), _rota_com(AMANHA_TXT, _paragem("a", 0))]
+    assert loja_presa_em_rota(rotas_, "l-a", HOJE) == LOJA_EM_ROTA
+    assert loja_presa_em_rota(list(reversed(rotas_)), "l-a", HOJE) == LOJA_EM_ROTA
+
+
+def test_uma_rota_futura_so_com_a_loja_retirada_e_pendente_nao_tapa_a_passada():
+    rotas_ = [_rota_com(ONTEM_TXT, _paragem("a", 0)), _rota_com(AMANHA_TXT, _retirada("a"))]
+    assert loja_presa_em_rota(rotas_, "l-a", HOJE) == LOJA_ESTEVE_EM_ROTA
+
+
+def test_so_as_paragens_da_propria_loja_contam():
+    rota = _rota_com(AMANHA_TXT, _paragem("b", 0), _retirada("a"))
+    assert loja_presa_em_rota([rota], "l-a", HOJE) is None
+    assert loja_presa_em_rota([rota], "l-b", HOJE) == LOJA_EM_ROTA
+    assert loja_presa_em_rota([rota], "l-c", HOJE) is None
+
+
+def test_o_estado_da_rota_nao_conta_so_as_paragens():
+    # A F4 grava `em_curso` na rota; o que prende a loja são as paragens dela.
+    assert loja_presa_em_rota([_rota_com(AMANHA_TXT, _retirada("a"), estado="em_curso")], "l-a", HOJE) is None
+    assert loja_presa_em_rota([_rota_com(AMANHA_TXT, _paragem("a", 0), estado="em_curso")], "l-a", HOJE) == LOJA_EM_ROTA
+
+
+def test_loja_presa_em_rota_nao_muda_as_rotas():
+    rotas_ = [_rota_com(ONTEM_TXT, _paragem("a", 0)), _rota_com(AMANHA_TXT, _retirada("a", estado="feita"))]
+    antes = copy.deepcopy(rotas_)
+    loja_presa_em_rota(rotas_, "l-a", HOJE)
+    assert rotas_ == antes
+
+
+@pytest.mark.parametrize(
+    "hoje", ["2026-10-12", datetime(2026, 10, 12, tzinfo=timezone.utc), None], ids=["texto", "com hora", "nada"]
+)
+@pytest.mark.parametrize("rotas_", [[], [_rota_com(AMANHA_TXT, _paragem("a", 0))]], ids=["sem rotas", "com rota"])
+def test_loja_presa_em_rota_exige_o_dia_de_hoje_como_date(rotas_, hoje):
+    with pytest.raises(TypeError):
+        loja_presa_em_rota(rotas_, "l-a", hoje)
+
+
+@pytest.mark.parametrize("data", ["2026-13-40", "ontem", None], ids=["dia impossível", "texto", "null"])
+def test_uma_data_estragada_na_base_e_um_erro_nunca_uma_resposta(data):
+    with pytest.raises((ValueError, TypeError)):
+        loja_presa_em_rota([_rota_com(data, _paragem("a", 0))], "l-a", HOJE)
 
 
 # --- ativas ------------------------------------------------------------------------------------------

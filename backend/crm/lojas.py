@@ -62,18 +62,31 @@ linha `[crm]` no registo (sem dados pessoais) e responde-se 200 na mesma.
 
 `DELETE /lojas/{loja_id}` (sem corpo) → `{apagada: true}`. Só os enganos: uma
 loja com histórico (interações que não sejam `mudanca_fase`) dá 409
-`loja_com_historico`, e usa-se a fase perdida. Ordem, a do
+`loja_com_historico`, e uma loja numa rota (F3, T3.24) dá 409
+`loja_em_rota`; nos dois casos usa-se a fase perdida. Ordem, a do
 `LojasControlador::apagar` sem transações (o autónomo bloqueava a linha e as
-interações iam com ela pelo `ON DELETE CASCADE`):
+interações iam com ela pelo `ON DELETE CASCADE`), com as rotas no meio
+(plano F3 §4):
 
 1. ler a loja (404) — interações órfãs de um id que não existe nem se olham;
 2. há histórico? (`_pode_apagar`; 409, e nada se escreve);
-3. `delete_one` da loja; `deleted_count 0` (apagada por outra pessoa entre a
+3. está numa rota? (`_presa_em_rota`: as rotas em que a loja está, pelo
+   índice `paragens.loja_id` e sem o `calculo` (`rotas_bd.rotas_com_loja`),
+   e a regra pura `dominio.rotas.loja_presa_em_rota` com o dia de hoje em
+   Lisboa. Uma paragem ativa, ou com registo do motorista mesmo retirada,
+   prende; uma retirada e ainda `pendente` não. 409 `loja_em_rota`, com
+   "está numa rota — retire-a da rota ou mude a fase para perdida" numa
+   rota de hoje ou do futuro e "esteve numa rota — mude a fase para
+   perdida" quando só há rotas passadas, que são só de leitura (correção
+   "T3.24"); nada se escreve, nem nas rotas, que são só de acrescentar);
+4. `delete_one` da loja; `deleted_count 0` (apagada por outra pessoa entre a
    leitura e esta escrita) → 404;
-4. só depois, `delete_many` das `mudanca_fase` dela — e só dessas: uma visita
-   que chegue numa corrida entre 2 e 3 fica, órfã, e nunca se apaga histórico
-   verdadeiro. Se o `delete_many` falhar, a loja já foi: responde-se 200 na
-   mesma e fica uma linha `[crm]` no registo (sem dados pessoais).
+5. só depois, `delete_many` das `mudanca_fase` dela — e só dessas: uma visita
+   que chegue numa corrida entre 2 e 4 fica, órfã, e nunca se apaga histórico
+   verdadeiro (e uma paragem que chegue entre 3 e 4 fica sem loja, que o
+   `rota_api` mostra como `sem_loja`). Se o `delete_many` falhar, a loja já
+   foi: responde-se 200 na mesma e fica uma linha `[crm]` no registo (sem
+   dados pessoais).
 """
 import logging
 import uuid
@@ -82,9 +95,9 @@ from typing import Dict, List
 from fastapi import APIRouter, Depends
 
 from . import db as bd
-from . import relogio
+from . import relogio, rotas_bd
 from .auth import ESCRITORIO
-from .dominio import janelas, validador_loja
+from .dominio import janelas, rotas, validador_loja
 from .dominio.geo import encontrar_duplicados, filtro_candidatos
 from .dominio.texto import chave_comparacao
 from .dominio.validador_loja import campos_de_janelas, janelas_para_lista
@@ -119,6 +132,14 @@ MENSAGEM_REGIAO_NAO_EXISTE = "A região não existe."
 MENSAGEM_SEM_VERSAO = "Indique o atualizado_em que recebeu com a loja."
 MENSAGEM_CONFLITO = "Alterado por outra pessoa — recarregar"
 MENSAGEM_COM_HISTORICO = "Esta loja tem histórico — mude a fase para perdida em vez de a apagar."
+# F3 (T3.24; plano F3 §4 e correção "T3.24"): numa rota de hoje ou do futuro
+# ainda se pode retirar; de uma rota passada, só de leitura, não.
+MENSAGEM_LOJA_EM_ROTA = "Esta loja está numa rota — retire-a da rota ou mude a fase para perdida."
+MENSAGEM_LOJA_ESTEVE_EM_ROTA = "Esta loja esteve numa rota — mude a fase para perdida."
+MENSAGENS_LOJA_EM_ROTA = {
+    rotas.LOJA_EM_ROTA: MENSAGEM_LOJA_EM_ROTA,
+    rotas.LOJA_ESTEVE_EM_ROTA: MENSAGEM_LOJA_ESTEVE_EM_ROTA,
+}
 
 # O tipo da interação que cada mudança de fase grava. As outras (visita,
 # chamada, amostra, entrega, nota; F4/F5) são o histórico real da loja.
@@ -220,14 +241,17 @@ async def alterar_loja(loja_id: str, membro: Dict = Depends(ESCRITORIO), corpo: 
 
 @router.delete("/lojas/{loja_id}")
 async def apagar_loja(loja_id: str, membro: Dict = Depends(ESCRITORIO)) -> Dict:
-    """→ `{apagada: true}`, ou 409 `loja_com_historico` (ordem e corridas no
-    docstring do módulo). Não lê o corpo."""
+    """→ `{apagada: true}`, ou 409 `loja_com_historico` / `loja_em_rota`
+    (ordem e corridas no docstring do módulo). Não lê o corpo."""
     base = bd.obter_db()
     lojas = base[bd.COLECOES["lojas"]]
     if await lojas.find_one({"id": loja_id}, PROJECAO_ID) is None:
         raise nao_encontrado(MENSAGEM_NAO_ENCONTRADA)
     if not await _pode_apagar(base, loja_id):
         raise erro(409, "loja_com_historico", MENSAGEM_COM_HISTORICO)
+    presa = await _presa_em_rota(base, loja_id, relogio.hoje())
+    if presa is not None:
+        raise erro(409, "loja_em_rota", MENSAGENS_LOJA_EM_ROTA[presa])
     resultado = await lojas.delete_one({"id": loja_id})
     if resultado.deleted_count == 0:
         # Apagada por outra pessoa entre a leitura e esta escrita: quem a
@@ -374,11 +398,24 @@ async def _pode_apagar(base, loja_id: str) -> bool:
     apanha-a): na dúvida, não se apaga histórico. Com histórico, usa-se a
     fase perdida (spec §5).
 
-    F5: bloquear se houver encomendas ou paragens (plano §7, "Ganchos"; o
-    "Etapa 2: recusar também…" do autónomo).
+    F5: bloquear se houver encomendas (plano §7, "Ganchos"; o "Etapa 2:
+    recusar também…" do autónomo). As paragens já contam desde a T3.24, em
+    `_presa_em_rota`.
     """
     historico = {"loja_id": loja_id, "tipo": {"$ne": MUDANCA_FASE}}
     return await base[bd.COLECOES["interacoes"]].find_one(historico, PROJECAO_ID) is None
+
+
+async def _presa_em_rota(base, loja_id: str, hoje):
+    """Porque é que a loja não se apaga por estar numa rota, ou `None` (F3,
+    T3.24; plano F3 §1 "Apagar uma loja"): as rotas em que está numa
+    paragem, ativa ou retirada (`rotas_bd.rotas_com_loja`: o índice
+    `paragens.loja_id`, sem o `calculo`), e a regra pura
+    `dominio.rotas.loja_presa_em_rota` com o dia de `hoje` em Lisboa —
+    `LOJA_EM_ROTA` numa rota de hoje ou do futuro, `LOJA_ESTEVE_EM_ROTA` só
+    com rotas passadas. Só leitura: as rotas são só de acrescentar, e a
+    paragem retirada de uma loja apagada fica, órfã."""
+    return rotas.loja_presa_em_rota(await rotas_bd.rotas_com_loja(base, loja_id), loja_id, hoje)
 
 
 async def _apagar_mudancas_de_fase(base, loja_id: str) -> None:
