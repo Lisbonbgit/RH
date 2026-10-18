@@ -30,6 +30,12 @@ ESTADOS = {
     "ja_membro": 409,
     "admin_master": 409,
     "morada_indisponivel": 503,
+    # F3 (plano F3 §4; T3.19): as recusas de escrever numa rota. O
+    # `rota_em_curso` entra aqui e não na T3.20 (correção "T3.19 / T3.20").
+    "ja_na_rota": 409,
+    "rota_cheia": 409,
+    "rota_fechada": 409,
+    "rota_em_curso": 409,
 }
 
 MENSAGEM_VALIDACAO = "Verifique os campos assinalados."

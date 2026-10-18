@@ -107,6 +107,9 @@ PERFIS_POR_ROTA = {
     # motorista só ganha rotas na F4).
     ("GET", "/api/crm/rotas"): PERFIS_ESCRITORIO,
     ("GET", "/api/crm/rotas/{data}"): PERFIS_ESCRITORIO,
+    # Adicionar uma loja à rota de um dia (T3.19): o escritório, pelo cartão
+    # do mapa e pelo planeador.
+    ("POST", "/api/crm/rotas/{data}/paragens"): PERFIS_ESCRITORIO,
 }
 
 # Os motivos de `_classificar` (os meta-testes comparam-nos tal e qual).

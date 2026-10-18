@@ -605,6 +605,10 @@ janela2_inicio, janela2_fim, dias_fechada` (20: os 18 do autónomo mais `instagr
 | `ja_membro` | 409 | "Esta pessoa já é membro do CRM." |
 | `admin_master` | 409 | "O administrador principal já é admin do CRM." |
 | `morada_indisponivel` | 503 | Pesquisa: "Pesquisa de morada indisponível — coloque o pino no mapa ou use 'Estou nesta loja'"; inversa: "Morada sugerida indisponível — escreva a morada à mão." |
+| `ja_na_rota` | 409 | "Esta loja já está na rota deste dia." (F3, T3.19) |
+| `rota_cheia` | 409 | "Uma rota tem no máximo 48 paragens." (F3, T3.19) |
+| `rota_fechada` | 409 | "Este dia já passou — a rota só se pode ver." (F3, T3.19: um dia anterior a hoje em Lisboa, com ou sem rota) |
+| `rota_em_curso` | 409 | "A rota já tem registos do motorista — no escritório só se pode ver." (F3, T3.19: uma rota fora de `rascunho`/`planeada` ou com alguma paragem `feita`/`nao_feita`, mesmo retirada) |
 
 | Rota | Perfis | Sucesso |
 |---|---|---|

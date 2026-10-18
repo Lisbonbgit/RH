@@ -96,6 +96,12 @@ def test_os_codigos_e_estados_sao_os_da_tabela_do_plano():
         "ja_membro": 409,
         "admin_master": 409,
         "morada_indisponivel": 503,
+        # F3 (T3.19; a correção "T3.19 / T3.20 (código rota_em_curso)" traz o
+        # `rota_em_curso` para aqui): as recusas de escrever numa rota.
+        "ja_na_rota": 409,
+        "rota_cheia": 409,
+        "rota_fechada": 409,
+        "rota_em_curso": 409,
     }
 
 

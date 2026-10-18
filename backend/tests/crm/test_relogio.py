@@ -415,6 +415,24 @@ def test_hoje_nao_depende_do_fuso_do_processo(fuso_de_toquio, monkeypatch, momen
     assert hoje() == dia
 
 
+@pytest.mark.parametrize("momento, dia", CASOS_DE_HOJE, ids=IDS_DE_HOJE)
+def test_hoje_de_um_momento_dado_nao_le_o_relogio(monkeypatch, momento, dia):
+    """`hoje(momento)` (T3.19: as rotas de escrita leem o relógio uma vez e
+    tiram-lhe o dia) dá o dia em Lisboa desse instante, sem chamar `agora`."""
+
+    def _nunca():
+        raise AssertionError("hoje(momento) leu o relógio")
+
+    monkeypatch.setattr(relogio, "agora", _nunca)
+    assert hoje(momento) == dia
+    assert type(hoje(momento)) is date
+
+
+def test_hoje_recusa_um_momento_sem_fuso():
+    with pytest.raises(ValueError):
+        hoje(datetime(2026, 10, 10, 23, 30, 0))
+
+
 def test_hoje_aceita_um_agora_com_outro_desvio(monkeypatch):
     # O relógio devolve sempre UTC, mas o resultado só depende do instante.
     toquio = timezone(timedelta(hours=9))

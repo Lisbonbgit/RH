@@ -58,14 +58,18 @@ def _em_utc(momento: "datetime | None") -> datetime:
     return momento.astimezone(timezone.utc)
 
 
-def hoje() -> date:
-    """O dia de hoje em Lisboa (`Europe/Lisbon`), pelo relógio substituível.
+def hoje(momento: "datetime | None" = None) -> date:
+    """O dia em Lisboa (`Europe/Lisbon`) de `momento` (por omissão, `agora()`,
+    o relógio substituível).
 
     Às 23:00:00Z do verão já é o dia seguinte (WEST, UTC+1); no inverno o dia
-    é o de UTC (WET). Não depende do fuso do processo. Um `agora()` sem fuso é
-    recusado (ValueError).
+    é o de UTC (WET). Não depende do fuso do processo. Uma datetime sem fuso
+    (do `agora()` ou de `momento`) é recusada (ValueError). As rotas de
+    escrita (F3, T3.19) leem o relógio uma vez — `agora = relogio.agora()` —
+    e tiram-lhe o dia com `hoje(agora)`: a validação, os instantes gravados e
+    a resposta ficam do mesmo instante.
     """
-    return _em_utc(None).astimezone(FUSO_LISBOA).date()
+    return _em_utc(momento).astimezone(FUSO_LISBOA).date()
 
 
 def instante(momento: "datetime | None" = None) -> str:
