@@ -759,7 +759,13 @@ const texto = () => document.body.textContent;
 _ESPIAO = r"""
       const { AuthProvider, useAuth } = lib('contexts/AuthContext');
       let auth = null;
-      const Espiao = () => { auth = useAuth(); return null; };
+      // Cada render fica no histórico: [email, semLigacao, loading].
+      const historico = [];
+      const Espiao = () => {
+        auth = useAuth();
+        historico.push([auth.user && auth.user.email, auth.semLigacao, auth.loading]);
+        return null;
+      };
       const raiz = createRoot(document.getElementById('raiz'));
       await act(async () => {
         raiz.render(React.createElement(AuthProvider, null, React.createElement(Espiao)));
@@ -797,9 +803,10 @@ def test_tentar_de_novo_volta_a_perguntar_e_entra(tmp_path):
     r = _corre(_ESPIAO + """
       const antes = estado();
       RESPOSTAS['GET /auth/me'] = [200, %s];
+      historico.length = 0;
       await act(async () => { auth.tentarDeNovo(); });
       await espera(50);
-      return { antes, depois: estado() };
+      return { antes, depois: estado(), renders: historico };
     """ % _EU, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _SEM_LIGACAO_ESPERADO + r"""
       localStorage.setItem('token', 't');
       RESPOSTAS['GET /auth/me'] = [502, {}];
@@ -807,6 +814,9 @@ def test_tentar_de_novo_volta_a_perguntar_e_entra(tmp_path):
     assert r["antes"]["semLigacao"] is True
     assert r["depois"] == {"user": "carol@lisbonb.com", "semLigacao": False, "loading": False,
                            "token": "t"}
+    # Entre o toque e a resposta NUNCA pode haver «sem user, com ligação, sem
+    # loading»: o ProtectedRoute mandava para o /login a cada tentativa.
+    assert r["renders"] and [None, False, False] not in r["renders"]
 
 
 def test_sem_ligacao_com_a_barreira_fechada_o_tentar_de_novo_nao_espera_por_ela(tmp_path):
