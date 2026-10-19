@@ -539,12 +539,19 @@ def test_ligar_o_face_id_so_guarda_depois_de_o_rosto_passar(tmp_path):
 # Carol (a última que o ligou).
 
 
-@pytest.mark.parametrize("sessao", [
-    _sessao("debora@lisbonb.com"),
-    "",                                          # sem sessão nenhuma
-    "localStorage.setItem('token', 'velho');",   # token ilegível
+# Uma sessão VIVA de quem não é dona do Face ID: saiu agora mesmo e voltou (sem
+# isto, o arranque a frio já lhe tinha tirado o token — decisão A).
+_VOLTOU_AGORA = "localStorage.setItem('saiuAs', String(AGORA));"
+
+
+@pytest.mark.parametrize("sessao,com_token", [
+    # a Débora voltou a tempo: o token dela sobrevive ao carregar (decisão A) e é
+    # ele que expira às 24 h
+    (_RELOGIO + _sessao("debora@lisbonb.com") + _VOLTOU_AGORA, True),
+    ("", False),                                          # sem sessão nenhuma
+    ("localStorage.setItem('token', 'velho');", True),    # token ilegível
 ], ids=["sessao-de-outra-conta", "sem-sessao", "token-ilegivel"])
-def test_a_reentrada_so_usa_o_keychain_da_conta_cuja_sessao_expirou(tmp_path, sessao):
+def test_a_reentrada_so_usa_o_keychain_da_conta_cuja_sessao_expirou(tmp_path, sessao, com_token):
     """Com a sessão da Débora expirada, entrar com a senha da Carol punha a conta
     da Carol (e as empresas dela) por baixo dos ecrãs da Débora, sem o dizer. Sem
     sessão, ou com um token que não se lê, não se sabe de quem era: login normal.
@@ -553,9 +560,12 @@ def test_a_reentrada_so_usa_o_keychain_da_conta_cuja_sessao_expirou(tmp_path, se
       const s = lib('lib/sessao');
       let logins = 0;
       s.ligarEntrada(async () => { logins += 1; });
-      return { ok: await s.reentrar(), logins, chamadas: NB.chamadas };
+      const token = localStorage.getItem('token') !== null;
+      return { ok: await s.reentrar(), logins, chamadas: NB.chamadas, token };
     """, tmp_path, antes=_LIGADO + sessao)
-    assert r == {"ok": False, "logins": 0, "chamadas": []}
+    # `token`: a sessão da Débora tem de estar viva; sem ela o caso fica igual a
+    # «sem-sessao» e já não prende a guarda da 1A.
+    assert r == {"ok": False, "logins": 0, "chamadas": [], "token": com_token}
 
 
 def test_esconder_com_a_sessao_de_outra_conta_nao_fecha_a_barreira_mas_grava_a_hora(tmp_path):
@@ -573,11 +583,6 @@ def test_esconder_com_a_sessao_de_outra_conta_nao_fecha_a_barreira_mas_grava_a_h
 
 
 # --- decisão A do dono (2026-10-17): a sessão de outra conta volta à senha ---------
-
-# Uma sessão VIVA de quem não é dona do Face ID: saiu agora mesmo e voltou (sem
-# isto, o arranque a frio já lhe tinha tirado o token — decisão A).
-_VOLTOU_AGORA = "localStorage.setItem('saiuAs', String(AGORA));"
-
 
 @pytest.mark.parametrize("saiu_ha_ms,fica", [
     (None, False),                # arranque a frio: volta à senha
