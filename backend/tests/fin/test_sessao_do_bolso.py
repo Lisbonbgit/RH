@@ -743,3 +743,184 @@ def test_bolso_com_a_barreira_fechada_nenhum_pedido_sai(tmp_path):
     """, tmp_path, antes=_SERVIDOR + _LIGADO + _SESSAO_DA_CAROL
        + "RESPOSTAS['GET /bolso/painel'] = [200, {}];")
     assert r == {"antes": 0, "depois": 1}
+
+
+# --- AuthContext: o arranque, a re-entrada e o Terminar sessão ------------------
+
+_EU = '{"id": "u1", "email": "carol@lisbonb.com", "role": "admin", "name": "Carol"}'
+
+# `espera(ms)` deixa correr os efeitos e as promessas dentro do `act`.
+_ESPERA = """
+const espera = (ms = 0) => act(async () => { await new Promise((r) => setTimeout(r, ms)); });
+const texto = () => document.body.textContent;
+"""
+
+# O AuthProvider VERDADEIRO, com um espião que guarda o que o contexto expõe.
+_ESPIAO = r"""
+      const { AuthProvider, useAuth } = lib('contexts/AuthContext');
+      let auth = null;
+      const Espiao = () => { auth = useAuth(); return null; };
+      const raiz = createRoot(document.getElementById('raiz'));
+      await act(async () => {
+        raiz.render(React.createElement(AuthProvider, null, React.createElement(Espiao)));
+      });
+      await espera(50);
+      const estado = () => ({ user: auth.user && auth.user.email, semLigacao: auth.semLigacao,
+                              loading: auth.loading, token: localStorage.getItem('token') });
+"""
+
+# O `/auth/me` sem resposta deixa de propósito uma linha no stderr (o AuthContext
+# regista o pedido que falhou), e o `_corre` falha qualquer stderr. Nos testes que
+# a provocam cala-se SÓ essa linha: qualquer outra continua a falhar o teste.
+_SEM_LIGACAO_ESPERADO = r"""
+const erroDaConsola = console.error;
+console.error = (...a) => {
+  if (!String(a[0]).startsWith('Não foi possível confirmar a sessão')) erroDaConsola(...a);
+};
+"""
+
+
+@pytest.mark.parametrize("falha", ["[502, {}]", "'rede'"])
+def test_arranque_sem_resposta_do_servidor_e_sem_ligacao_e_nao_login(tmp_path, falha):
+    """`rede` leva ~3 s: são as três tentativas (1 s + 2 s) que já existiam."""
+    r = _corre(_ESPIAO + """
+      await espera(3200);
+      return estado();
+    """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _SEM_LIGACAO_ESPERADO + r"""
+      localStorage.setItem('token', 't');
+      RESPOSTAS['GET /auth/me'] = %s;
+    """ % falha)
+    assert r == {"user": None, "semLigacao": True, "loading": False, "token": "t"}
+
+
+def test_tentar_de_novo_volta_a_perguntar_e_entra(tmp_path):
+    r = _corre(_ESPIAO + """
+      const antes = estado();
+      RESPOSTAS['GET /auth/me'] = [200, %s];
+      await act(async () => { auth.tentarDeNovo(); });
+      await espera(50);
+      return { antes, depois: estado() };
+    """ % _EU, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _SEM_LIGACAO_ESPERADO + r"""
+      localStorage.setItem('token', 't');
+      RESPOSTAS['GET /auth/me'] = [502, {}];
+    """)
+    assert r["antes"]["semLigacao"] is True
+    assert r["depois"] == {"user": "carol@lisbonb.com", "semLigacao": False, "loading": False,
+                           "token": "t"}
+
+
+def test_sem_ligacao_com_a_barreira_fechada_o_tentar_de_novo_nao_espera_por_ela(tmp_path):
+    """O «Sem ligação» aparece no lugar dos ecrãs, por isso sem a Barreira montada:
+    o `/auth/me` do AuthContext não passa pelo `esperarBarreira` do `lib/bolso`, e
+    o «tentar de novo» entra com a barreira ainda fechada (é a Barreira, depois,
+    que pede o rosto)."""
+    r = _corre(_ESPIAO + """
+      const s = lib('lib/sessao');
+      const antes = { ...estado(), barreira: s.barreiraFechada() };
+      RESPOSTAS['GET /auth/me'] = [200, %s];
+      await act(async () => { auth.tentarDeNovo(); });
+      await espera(50);
+      return { antes: [antes.semLigacao, antes.barreira],
+               depois: [estado().user, estado().semLigacao, s.barreiraFechada()],
+               pedidos: PEDIDOS };
+    """ % _EU, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _SEM_LIGACAO_ESPERADO + _LIGADO + _SESSAO_DA_CAROL
+       + r"""
+      RESPOSTAS['GET /auth/me'] = [502, {}];
+    """)
+    assert r == {"antes": [True, True], "depois": ["carol@lisbonb.com", False, True],
+                 "pedidos": ["GET /auth/me", "GET /auth/me"]}
+
+
+def test_arranque_com_a_sessao_expirada_e_face_id_reentra_sem_login(tmp_path):
+    # A sessão expirada é a da Carol (token com a forma do servidor): a re-entrada
+    # só usa o Keychain da conta cuja sessão expirou (decisão 1A).
+    r = _corre(_ESPIAO + """
+      await espera(50);
+      return { ...estado(), pedidos: PEDIDOS, barreira: lib('lib/sessao').barreiraFechada() };
+    """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _LIGADO + _SESSAO_DA_CAROL + r"""
+      RESPOSTAS['GET /auth/me'] = [[401, {}], [200, %s]];
+      RESPOSTAS['POST /auth/login'] = [200, { token: 'novo', user: %s }];
+    """ % (_EU, _EU))
+    # A re-entrada já fez o Face ID: entra-se, e a barreira fica aberta (um rosto só).
+    assert r == {"user": "carol@lisbonb.com", "semLigacao": False, "loading": False,
+                 "token": "novo", "barreira": False,
+                 "pedidos": ["GET /auth/me", "POST /auth/login", "GET /auth/me"]}
+
+
+def test_arranque_com_a_sessao_expirada_sem_face_id_vai_para_o_login(tmp_path):
+    r = _corre(_ESPIAO + """
+      return { ...estado(), pedidos: PEDIDOS };
+    """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + r"""
+      localStorage.setItem('token', 'velho');
+      RESPOSTAS['GET /auth/me'] = [401, {}];
+    """)
+    assert r == {"user": None, "semLigacao": False, "loading": False, "token": None,
+                 "pedidos": ["GET /auth/me"]}
+
+
+def test_terminar_sessao_apaga_o_keychain_e_o_logout_nao(tmp_path):
+    r = _corre(_ESPIAO + """
+      await act(async () => { auth.logout(); });
+      const depoisDoLogout = { keychain: NB.keychain !== null, email: localStorage.getItem('faceid_email') };
+      localStorage.setItem('token', 't');
+      await act(async () => { auth.terminarSessao(); });
+      await espera();
+      return { depoisDoLogout, ...estado(), keychain: NB.keychain,
+               email: localStorage.getItem('faceid_email') };
+    """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _LIGADO + r"""
+      localStorage.setItem('token', 't');
+      RESPOSTAS['GET /auth/me'] = [200, %s];
+    """ % _EU)
+    assert r == {"depoisDoLogout": {"keychain": True, "email": "carol@lisbonb.com"},
+                 "user": None, "semLigacao": False, "loading": False, "token": None,
+                 "keychain": None, "email": None}
+
+
+def test_entrar_e_sair_limpam_o_aviso_de_ligacao(tmp_path):
+    """Quem passou do «Sem ligação» ao /login e entrou não pode, ao sair mais tarde,
+    dar outra vez com um «Sem ligação» que já não é verdade (o `ProtectedRoute`
+    mostrava-o em vez do login)."""
+    r = _corre(_ESPIAO + """
+      const inicio = estado().semLigacao;
+      RESPOSTAS['GET /auth/me'] = [200, %s];
+      await act(async () => { await auth.login('carol@lisbonb.com', 'segredo'); });
+      await espera(50);
+      const depoisDoLogin = estado().semLigacao;
+      // Um piscar de rede com a sessão aberta volta a pô-lo de pé…
+      RESPOSTAS['GET /auth/me'] = [502, {}];
+      await act(async () => { auth.tentarDeNovo(); });
+      await espera(50);
+      const comSessao = estado();
+      // …e o logout (o de um 401, o de Terminar sessão) tem de o esquecer.
+      await act(async () => { auth.logout(); });
+      return { inicio, depoisDoLogin, comSessao: [comSessao.user, comSessao.semLigacao],
+               depoisDoLogout: estado().semLigacao };
+    """ % _EU, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _SEM_LIGACAO_ESPERADO + r"""
+      localStorage.setItem('token', 't');
+      RESPOSTAS['GET /auth/me'] = [502, {}];
+      RESPOSTAS['POST /auth/login'] = [200, { token: 'novo', user: %s }];
+    """ % _EU)
+    assert r == {"inicio": True, "depoisDoLogin": False,
+                 "comSessao": ["carol@lisbonb.com", True], "depoisDoLogout": False}
+
+
+@pytest.mark.parametrize("ligado_a,fica", [
+    ("carol@lisbonb.com", "senha-nova"),   # o Face ID é desta conta: o Keychain leva a senha nova
+    ("debora@lisbonb.com", "segredo"),     # é de outra pessoa neste iPhone: não se lhe mexe
+])
+def test_mudar_a_senha_leva_a_nova_ao_keychain_so_de_quem_tem_o_face_id(tmp_path, ligado_a, fica):
+    """O `/alterar-senha` (senha provisória): sem isto o Keychain ficava com a senha
+    antiga, a próxima re-entrada dava 401 e o Face ID perdia-se."""
+    r = _corre(_ESPIAO + """
+      await act(async () => { await auth.changePassword('segredo', 'senha-nova'); });
+      await espera(50);
+      return { dono: NB.keychain.username, senha: NB.keychain.password };
+    """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + r"""
+      const dono = %s;
+      localStorage.setItem('token', 't');
+      localStorage.setItem('faceid_email', dono);
+      NB.keychain = { username: dono, password: 'segredo', server: 'gestao.lisbonb.com' };
+      RESPOSTAS['GET /auth/me'] = [200, %s];
+      RESPOSTAS['POST /auth/change-password'] = [200, { token: 'novo' }];
+    """ % (json.dumps(ligado_a), _EU))
+    assert r == {"dono": ligado_a, "senha": fica}
