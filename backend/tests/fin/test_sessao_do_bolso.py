@@ -628,6 +628,25 @@ def test_sem_plugin_a_sessao_de_outra_conta_nao_sai(tmp_path):
     assert r == {"sai": False, "token": True}
 
 
+def test_com_a_peca_mas_sem_face_id_ligado_a_sessao_fica_como_hoje(tmp_path):
+    """O caso mais comum da build 3: a peça existe, ninguém ligou o Face ID (disse
+    «Não», ou ainda não lho perguntaram) e há uma sessão aberta. Sem dono do Face
+    ID não há «outra conta»: o arranque não lhe tira o token, esconder não fecha
+    nem grava `saiuAs`, e voltar não a manda para a senha. Sem isto, trocar o
+    `faceIdLigado()` do `sessaoDeOutraConta` por `pluginPresente()` deixava esta
+    gente sem sessão a cada arranque — e a suite verde (os outros casos com a peça
+    põem todos `_LIGADO`)."""
+    r = _corre("""
+      const s = lib('lib/sessao');
+      const token = localStorage.getItem('token') !== null;
+      const fechadaAoCarregar = s.barreiraFechada();
+      const fechou = s.fecharBarreira();
+      return { fechada: fechadaAoCarregar, token, fechou,
+               saiu: localStorage.getItem('saiuAs'), sai: s.outraContaTemDeSair() };
+    """, tmp_path, antes=_RELOGIO + _sessao("debora@lisbonb.com"))
+    assert r == {"fechada": False, "token": True, "fechou": False, "saiu": None, "sai": False}
+
+
 def test_com_um_atob_que_exige_o_igual_a_sessao_le_se_na_mesma(tmp_path):
     """O corpo do token vem sem o `=` do fim (base64url). O `atob` do Node e o do
     jsdom aceitam-no assim; motores mais antigos não. Aqui o `atob` é estrito: sem
