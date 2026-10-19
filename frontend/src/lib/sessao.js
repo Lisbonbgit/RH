@@ -33,12 +33,21 @@ const emailDaSessao = () => {
   }
 };
 
-// Decisão 1A do dono (2026-10-15), que cobre SÓ o esconder e a re-entrada. Dois
-// gestores no mesmo iPhone, sessão da Débora aberta, Face ID da Carol (a última
-// que o ligou): ESCONDER não fecha a barreira por cima da Débora a dizer «Entrar
-// como carol@…», e a re-entrada não troca a sessão da Débora pela da Carol.
-// AO CARREGAR a barreira fecha na mesma (ver `let fechada` abaixo).
+// Decisão 1A do dono (2026-10-15): o Face ID só actua sobre a conta que o ligou.
+// Dois gestores no mesmo iPhone, sessão da Débora aberta, Face ID da Carol (a
+// última que o ligou): nunca há barreira «Entrar como carol@…» por cima da Débora,
+// e a re-entrada não troca a sessão da Débora pela da Carol.
 const faceIdDestaSessao = () => faceIdLigado() && emailGuardado() === emailDaSessao();
+
+// Decisão A do dono (2026-10-17): a sessão aberta é de OUTRA conta. O Face ID deste
+// iPhone não serve para ela, por isso onde a Carol teria a barreira (ao abrir, ou
+// ao voltar depois de 5 minutos) a Débora volta à senha.
+export const sessaoDeOutraConta = () => (
+  faceIdLigado() && emailDaSessao() !== null && !faceIdDestaSessao()
+);
+export const outraContaTemDeSair = (agora = Date.now()) => (
+  sessaoDeOutraConta() && !voltouATempo(agora)
+);
 
 // --- 1. A barreira -------------------------------------------------------------
 
@@ -53,14 +62,12 @@ export const voltouATempo = (agora = Date.now()) => {
 // Decide-se ao carregar a página, antes de qualquer ecrã montar: os efeitos dos
 // filhos correm ANTES dos do pai, e o primeiro pedido do painel não pode sair
 // à frente da barreira.
-// LACUNA CONHECIDA: aqui o critério é `faceIdLigado()` (o do brief), não o da
-// 1A. Com a sessão da Débora e o Face ID da Carol, cada arranque a frio (ou o
-// iOS a matar a WebView) mostra «Entrar como carol@…»: o rosto da Carol abre a
-// sessão da Débora, o da Débora falha e faz `logout()`. Como o `fecharBarreira`
-// nunca grava `saiuAs` para ela, acontece mesmo 10 s depois de sair. Trocar por
-// `faceIdDestaSessao()` espera pela decisão do dono; o teste que fixa isto:
-// test_ao_carregar_com_a_sessao_de_outra_conta_a_barreira_fecha_na_mesma.
-let fechada = faceIdLigado() && !voltouATempo();
+// A sessão de outra conta acaba aqui, antes de o AuthContext ler o token: sem ele,
+// abre o login (decisão A).
+if (outraContaTemDeSair()) {
+  try { localStorage.removeItem('token'); } catch (e) { /* modo privado */ }
+}
+let fechada = faceIdDestaSessao() && !voltouATempo();
 let aEspera = [];
 
 export const barreiraFechada = () => fechada;
@@ -73,6 +80,12 @@ export function abrirBarreira() {
 // Ao esconder. Sem Face ID ligado PARA ESTA SESSÃO não fecha nada: no browser,
 // esconder o separador fechava a porta e ninguém a voltava a abrir.
 export function fecharBarreira(agora = Date.now()) {
+  // A sessão de outra conta não leva barreira, mas a hora de saída conta: ao voltar
+  // depois de 5 minutos, `outraContaTemDeSair()` manda-a para a senha.
+  if (sessaoDeOutraConta()) {
+    gravarLocal(CHAVE_SAIU, String(agora));
+    return false;
+  }
   if (!faceIdDestaSessao()) return false;
   // `saiuAs` = a hora a que se saiu de uma sessão ABERTA. Com a barreira ainda
   // fechada (ir ao ecrã principal enquanto o Face ID pede o rosto) não se grava:

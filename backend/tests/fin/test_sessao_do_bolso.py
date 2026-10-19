@@ -454,7 +454,7 @@ def test_cancelar_o_face_id_na_reentrada_nao_entra_e_guarda_o_keychain(tmp_path)
     (-1, True),                   # `saiuAs` no futuro (relógio a recuar): pede
 ])
 def test_ao_carregar_a_barreira_fecha_se_nao_voltou_a_tempo(tmp_path, saiu_ha_ms, fechada):
-    antes = _RELOGIO + _LIGADO
+    antes = _RELOGIO + _LIGADO + _SESSAO_DA_CAROL
     if saiu_ha_ms is not None:
         antes += "localStorage.setItem('saiuAs', String(AGORA - %d));" % saiu_ha_ms
     r = _corre("return lib('lib/sessao').barreiraFechada();", tmp_path, antes=antes)
@@ -490,7 +490,7 @@ def test_os_pedidos_esperam_que_a_barreira_abra(tmp_path):
       s.abrirBarreira();
       await new Promise((r) => setTimeout(r, 0));
       return { antes, depois: passou };
-    """, tmp_path, antes=_LIGADO)
+    """, tmp_path, antes=_LIGADO + _SESSAO_DA_CAROL)
     assert r == {"antes": False, "depois": True}
 
 
@@ -558,29 +558,69 @@ def test_a_reentrada_so_usa_o_keychain_da_conta_cuja_sessao_expirou(tmp_path, se
     assert r == {"ok": False, "logins": 0, "chamadas": []}
 
 
-def test_esconder_com_a_sessao_de_outra_conta_nao_fecha_a_barreira(tmp_path):
+def test_esconder_com_a_sessao_de_outra_conta_nao_fecha_a_barreira_mas_grava_a_hora(tmp_path):
     """Senão a Débora, ao voltar, via «Entrar como carol@…» por cima dos números
-    dela — e o rosto da Carol abria a sessão da Débora."""
+    dela — e o rosto da Carol abria a sessão da Débora. A hora grava-se: é ela que
+    decide, ao voltar, se a Débora volta à senha (decisão A)."""
     r = _corre("""
       const s = lib('lib/sessao');
       s.abrirBarreira();
       return { fechou: s.fecharBarreira(), fechada: s.barreiraFechada(),
                saiu: localStorage.getItem('saiuAs') };
-    """, tmp_path, antes=_RELOGIO + _LIGADO + _sessao("debora@lisbonb.com"))
-    assert r == {"fechou": False, "fechada": False, "saiu": None}
+    """, tmp_path, antes=_RELOGIO + _LIGADO + _sessao("debora@lisbonb.com")
+       + "localStorage.setItem('saiuAs', String(AGORA - 1000));")
+    assert r == {"fechou": False, "fechada": False, "saiu": "1700000000000"}
 
 
-def test_ao_carregar_com_a_sessao_de_outra_conta_a_barreira_fecha_na_mesma(tmp_path):
-    """LACUNA CONHECIDA, escrita aqui para não ficar escondida: a 1A só cobre o
-    esconder e a re-entrada. Ao carregar, o critério é o do brief
-    (`faceIdLigado()`): com a sessão da Débora e o Face ID da Carol, o arranque a
-    frio fecha a barreira com «Entrar como carol@…». Sem `saiuAs` porque o
-    esconder da Débora nunca o grava (teste acima): vale para TODOS os arranques
-    dela, mesmo 10 s depois de sair. Se o dono escolher o critério da 1A também
-    aqui (`faceIdDestaSessao()`), este teste passa a esperar `False`."""
-    r = _corre("return lib('lib/sessao').barreiraFechada();", tmp_path,
-               antes=_RELOGIO + _LIGADO + _sessao("debora@lisbonb.com"))
-    assert r is True
+# --- decisão A do dono (2026-10-17): a sessão de outra conta volta à senha ---------
+
+# Uma sessão VIVA de quem não é dona do Face ID: saiu agora mesmo e voltou (sem
+# isto, o arranque a frio já lhe tinha tirado o token — decisão A).
+_VOLTOU_AGORA = "localStorage.setItem('saiuAs', String(AGORA));"
+
+
+@pytest.mark.parametrize("saiu_ha_ms,fica", [
+    (None, False),                # arranque a frio: volta à senha
+    (5 * 60 * 1000, True),        # voltou a tempo (o iOS matou a WebView): fica
+    (5 * 60 * 1000 + 1, False),   # passou dos 5 minutos: volta à senha
+])
+def test_ao_carregar_a_sessao_de_outra_conta_volta_a_senha(tmp_path, saiu_ha_ms, fica):
+    """Onde a Carol teria a barreira, a Débora perde a sessão: o AuthContext lê o
+    token DEPOIS de o `lib/sessao` carregar e, sem ele, mostra o login. Nunca há
+    barreira por cima dela (o rosto da Carol não abre a sessão da Débora)."""
+    antes = _RELOGIO + _LIGADO + _sessao("debora@lisbonb.com")
+    if saiu_ha_ms is not None:
+        antes += "localStorage.setItem('saiuAs', String(AGORA - %d));" % saiu_ha_ms
+    r = _corre("""
+      const s = lib('lib/sessao');
+      return { fechada: s.barreiraFechada(), token: localStorage.getItem('token') !== null };
+    """, tmp_path, antes=antes)
+    assert r == {"fechada": False, "token": fica}
+
+
+@pytest.mark.parametrize("sessao,sai", [
+    (_sessao("debora@lisbonb.com"), True),
+    (_SESSAO_DA_CAROL, False),     # a dona do Face ID tem a barreira, não a senha
+    ("", False),                   # sem sessão não há nada de que sair
+], ids=["outra-conta", "dona-do-face-id", "sem-sessao"])
+def test_ao_voltar_depois_de_5_minutos_so_a_sessao_de_outra_conta_tem_de_sair(tmp_path, sessao, sai):
+    r = _corre("""
+      const s = lib('lib/sessao');
+      s.abrirBarreira();
+      s.fecharBarreira();
+      return { aos5: s.outraContaTemDeSair(AGORA + 5 * 60 * 1000),
+               depois: s.outraContaTemDeSair(AGORA + 5 * 60 * 1000 + 1) };
+    """, tmp_path, antes=_RELOGIO + _LIGADO + sessao + _VOLTOU_AGORA)
+    assert r == {"aos5": False, "depois": sai}
+
+
+def test_sem_plugin_a_sessao_de_outra_conta_nao_sai(tmp_path):
+    """No browser e na build 2 não há Face ID de ninguém: tudo como hoje."""
+    r = _corre("""
+      const s = lib('lib/sessao');
+      return { sai: s.outraContaTemDeSair(), token: localStorage.getItem('token') !== null };
+    """, tmp_path, antes="NB.presente = false;" + _RELOGIO + _LIGADO + _sessao("debora@lisbonb.com"))
+    assert r == {"sai": False, "token": True}
 
 
 def test_com_um_atob_que_exige_o_igual_a_sessao_le_se_na_mesma(tmp_path):
@@ -676,5 +716,6 @@ def test_bolso_com_a_barreira_fechada_nenhum_pedido_sai(tmp_path):
       s.abrirBarreira();
       await pedido;
       return { antes, depois: PEDIDOS.length };
-    """, tmp_path, antes=_SERVIDOR + _LIGADO + "RESPOSTAS['GET /bolso/painel'] = [200, {}];")
+    """, tmp_path, antes=_SERVIDOR + _LIGADO + _SESSAO_DA_CAROL
+       + "RESPOSTAS['GET /bolso/painel'] = [200, {}];")
     assert r == {"antes": 0, "depois": 1}
