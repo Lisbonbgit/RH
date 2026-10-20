@@ -100,7 +100,6 @@ PERFIS_POR_ROTA = {
     # Pesquisa de morada e morada sugerida (T2.15): o escritório, ao criar e
     # corrigir lojas; gastam créditos da chave do servidor, por isso nunca
     # são públicas (o motorista só ganha rotas na F4).
-    ("GET", "/api/crm/morada/pesquisa"): PERFIS_ESCRITORIO,
     ("GET", "/api/crm/morada/inversa"): PERFIS_ESCRITORIO,
     # Rotas (F3, T3.18): a lista dos dias e a rota de um dia, para o
     # escritório (plano F3 §4: todas as rotas novas são para o escritório; o
