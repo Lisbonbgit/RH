@@ -371,9 +371,19 @@ test('nenhum ficheiro do CRM põe dados no DOM como HTML', () => {
   expect(violacoes).toEqual([]);
 });
 
+// Desde a G6 do plano do mapa Google, o mapa.js já não usa o Leaflet: enquanto estas regras existirem (a G8
+// tira-as e prova o mesmo com `google.maps` e `content:`), a precisão das exceções prova-se com o código do
+// Leaflet que o mapa.js tinha, e o mapa.js de agora não acusa nada em sítio nenhum.
 test('as exceções do mapa.js são precisas: o mesmo código noutro ficheiro seria recusado', () => {
-  const mapa = fs.readFileSync(path.join(SRC, 'lib/crm/mapa.js'), 'utf8');
-  const noutroSitio = regras(mapa, 'components/crm/MapaLojas.js');
+  const codigoLeaflet = [
+    "const camada = L.tileLayer(url, { attribution: ATRIBUICOES[chave].html });",
+    "marcador.bindTooltip(el(documento, 'span', { texto: loja.nome }), { permanent: true });",
+  ].join('\n');
+  expect(regras(codigoLeaflet, MAPA)).toEqual([]);
+  const noutroSitio = regras(codigoLeaflet, 'components/crm/MapaLojas.js');
   expect(noutroSitio).toContain('conteúdo do Leaflet fora do mapa.js');
   expect(noutroSitio).toContain('attribution fora do mapa.js');
+  const mapa = fs.readFileSync(path.join(SRC, MAPA), 'utf8');
+  expect(regras(mapa, MAPA)).toEqual([]);
+  expect(regras(mapa, 'components/crm/MapaLojas.js')).toEqual([]);
 });
