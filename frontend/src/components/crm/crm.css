@@ -174,7 +174,7 @@
 }
 
 /* O painel "Negócio selecionado" (NegocioSelecionado): no ecrã do mapa, no lugar do cartão da loja; no seletor,
-   por baixo do mapa. Vive fora da caixa do mapa e encolhe-a, nunca por cima (a atribuição da Google fica no
+   entre a dica e o mapa. Vive fora da caixa do mapa e encolhe-a, nunca por cima (a atribuição da Google fica no
    fundo do mapa). Só texto fixo e botões: nenhum dado do negócio. */
 .crm-negocio {
   flex: none;

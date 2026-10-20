@@ -1,8 +1,8 @@
 // Google Maps falso para testar o mapa no Jest (a Maps JavaScript API
 // verdadeira não corre no jsdom: pede a rede, mede o elemento e desenha em
 // canvas). Só testes; fica fora do varrimento do seguranca.test.js, que exclui
-// a pasta `testes/`. Substitui o `leafletFalso.js` (plano do mapa Google, G5;
-// adenda §6.5).
+// a pasta `testes/`. Substitui o falso da biblioteca do mapa antigo (plano do
+// mapa Google, G5; adenda §6.5).
 //
 // Imita só o que `lib/crm/mapa.js`, `seletor.js`, `lugarGoogle.js` e, na F3b,
 // o `mostrarRota` usam, com o comportamento da Google que importa para os
@@ -22,11 +22,11 @@
 //    são as formas fixas para os testes;
 //  - onde a Google só aceita um `LatLng` ou um literal (`center`, `setCenter`,
 //    `panTo`, `position`, `LatLngBounds.extend`, o `path` de uma linha), o falso
-//    também só aceita isso e rebenta com um par `[lat, lng]` do Leaflet, para o
+//    também só aceita isso e rebenta com um par `[lat, lng]`, para o
 //    falso não deixar passar o que a Google recusa;
 //  - `gmp-click` só existe com `gmpClickable: true` e o arrasto só com
 //    `gmpDraggable: true` (`tocar()` e `arrastarPara()` rebentam sem eles, como
-//    o `MarcadorFalso` do Leaflet fazia);
+//    o marcador falso do mapa antigo fazia);
 //  - `Place.fetchFields` só preenche os campos pedidos (e cada campo a mais
 //    muda o que a Google cobra): o falso regista-os em `registo.camposPedidos` e
 //    copia só esses do lugar que o teste pôs em `registo.lugares[id]` — as
@@ -69,8 +69,8 @@ export class LatLngFalso {
   toString() { return `(${this.latitude}, ${this.longitude})`; }
 }
 
-// {lat, lng} numérico a partir de um literal ou de um LatLng (funções); o resto (um par [lat, lng] do
-// Leaflet incluído) dá null, como a Google, que só aceita estas duas formas.
+// {lat, lng} numérico a partir de um literal ou de um LatLng (funções); o resto (um par [lat, lng]
+// incluído) dá null, como a Google, que só aceita estas duas formas.
 export function pontoLiteral(valor) {
   if (valor === null || typeof valor !== 'object' || Array.isArray(valor)) return null;
   const lat = typeof valor.lat === 'function' ? valor.lat() : valor.lat;
