@@ -1,74 +1,51 @@
 /*
- * O mapa das lojas do CRM (MapaLojas, FiltrosMapa, CartaoLoja e a página Mapa) e o seletor da
- * localização (SeletorLocalizacao).
- * Porta das regras do mapa do public/assets/css/app.css do CRM autónomo, com as
- * classes do portal; o resto do aspeto é o do portal (Tailwind e shadcn).
+ * O mapa das lojas do CRM (MapaLojas, FiltrosMapa, CartaoLoja e a página Mapa), o seletor da localização
+ * (SeletorLocalizacao) e o painel do negócio selecionado (NegocioSelecionado), sobre o Google Maps. O resto
+ * do aspeto é o do portal (Tailwind e shadcn).
  *
- * O mapa é o mesmo no tema claro e no escuro: os mosaicos são claros, por isso
- * os pinos e as etiquetas têm cores fixas. O lib/crm/css.test.js confere estas
- * regras (as cores dos pinos com as de lib/crm/fases.js).
+ * O mapa é o mesmo no tema claro e no escuro (o da Google é claro), por isso os pinos e as etiquetas têm
+ * cores fixas. O lib/crm/css.test.js confere estas regras (as cores dos pinos com as de lib/crm/fases.js).
+ *
+ * A ancoragem: os pinos são o `content` de marcadores avançados da Google (nós feitos com o el() em
+ * lib/crm/mapa.js e seletor.js). A Google põe o fundo ao centro desse conteúdo no ponto: o .pino desce metade
+ * da altura (a bola fica no ponto da loja) e a gota do .pino-seletor tem a ponta no fundo ao centro.
+ *
+ * A atribuição: o logótipo, os termos e os dados do mapa são postos pela própria Google no fundo do mapa e
+ * nunca se escondem nem se tapam (adenda §2.2). Daí a regra de disposição:
+ *  - o elemento do mapa (.crm-mapa) é da Google: nenhum seletor deste ficheiro entra nele (nada de filhos,
+ *    descendentes ou outras classes nossas lá dentro) e nenhum toca nas classes nem nos elementos da Google;
+ *  - cartões, painéis, pegas e rodapés vivem fora da caixa do mapa e encolhem-na (são irmãos da vista, por
+ *    baixo ou ao lado dela), nunca absolutos por cima do mapa;
+ *  - por cima do mapa só fica a barra de cima (.crm-mapa__barra), presa pelo top, longe do fundo, e que deixa
+ *    passar os toques.
+ * O Playwright da G21 confere no browser que nada nosso interseta a caixa do logótipo e da atribuição.
  */
 
-/* A área do mapa (a vista): ocupa o que sobra do ecrã. Com o cartão da loja aberto, encolhe até 8rem: o
-   cartão, com o contacto e Ver ficha, fica todo à vista, mesmo com o telemóvel deitado. */
+/* A área do mapa (a vista): ocupa o que sobra do ecrã. Com o cartão da loja (ou o painel do negócio) aberto
+   por baixo, encolhe até 8rem: o cartão, com o contacto e Ver ficha, fica todo à vista, mesmo com o telemóvel
+   deitado. */
 .crm-mapa__vista {
   position: relative;
   flex: 1 1 0%;
   min-height: 8rem;
 }
 
-/* O mapa enche a vista: o Leaflet precisa de uma área com tamanho. O isolation deixa tudo o que é do Leaflet
-   (painéis até 700, controlos 1000) por baixo da barra e dos menus do portal. */
+/* O elemento do mapa da Google enche a vista (o mapa precisa de uma área com tamanho). O isolation deixa tudo
+   o que é da Google (controlos e balões, com z-index altos) por baixo da barra e dos menus do portal. */
 .crm-mapa {
   position: absolute;
   inset: 0;
   isolation: isolate;
 }
 
-.crm-mapa.leaflet-container {
-  font-family: inherit;
-}
-
-/* Sem juntas brancas entre os mosaicos (defeito do Chromium com escalas fracionárias): os bordos
-   semitransparentes somam-se. O contentor fica isolado para a soma não incluir o fundo cinzento do mapa. */
-.crm-mapa .leaflet-tile-container {
-  isolation: isolate;
-}
-
-.crm-mapa img.leaflet-tile {
-  mix-blend-mode: plus-lighter;
-}
-
-/* Botões de zoom com 44 px de área de toque. O Leaflet põe a classe leaflet-touch em todos os browsers com
-   PointerEvent, e o `.leaflet-touch .leaflet-bar a` do leaflet.css (30 px) vem depois deste ficheiro no build:
-   esta regra ganha pela especificidade (.crm-mapa.leaflet-container), não pela ordem (T2.32). */
-.crm-mapa.leaflet-container .leaflet-bar a {
-  width: 44px;
-  height: 44px;
-  line-height: 44px;
-  font-size: 1.375rem;
-}
-
-/* Os controlos (zoom, atribuição) não ficam debaixo do entalhe nem da barra do iPhone. */
-.crm-mapa .leaflet-bottom {
-  bottom: env(safe-area-inset-bottom, 0px);
-}
-
-.crm-mapa .leaflet-left {
-  left: env(safe-area-inset-left, 0px);
-}
-
-.crm-mapa .leaflet-right {
-  right: env(safe-area-inset-right, 0px);
-}
-
-/* "N lojas", Filtros e Nova loja, por cima do mapa, no canto de cima à direita (à esquerda ficam os botões de
-   zoom). A barra deixa passar os toques para o mapa; só os filhos os recebem. */
+/* "N lojas", Filtros e Nova loja, por cima do mapa, no canto de cima à direita (os botões de zoom e a
+   atribuição da Google ficam no fundo). É irmã do .crm-mapa, presa pelo top: nunca chega ao fundo. A barra
+   deixa passar os toques para o mapa; só os filhos os recebem. */
 .crm-mapa__barra {
   position: absolute;
   top: 10px;
   right: max(10px, env(safe-area-inset-right));
-  left: 66px;
+  left: max(10px, env(safe-area-inset-left));
   z-index: 2;
   display: flex;
   flex-wrap: wrap;
@@ -82,16 +59,18 @@
   pointer-events: auto;
 }
 
-/* Pino de uma loja: a área de toque (L.divIcon) tem 44 px e a bola, ao centro, a cor da fase. */
+/* Pino de uma loja: um bloco de 44 × 44 px (a área de toque) com a bola ao centro, na cor da fase. O marcador
+   avançado põe o fundo ao centro do bloco no ponto: a descer metade da altura, é a bola que fica lá. */
 .pino {
   --cor-pino: #cfcfcf;
   --contorno-pino: #fff;
-  border-radius: 50%;
-  background: transparent;
+  position: relative;
+  width: 44px;
+  height: 44px;
+  transform: translateY(50%);
 }
 
-.pino::before {
-  content: "";
+.pino__bola {
   position: absolute;
   top: 50%;
   left: 50%;
@@ -110,28 +89,29 @@
 .pino--amostra { --cor-pino: #f08a24; }
 .pino--cliente { --cor-pino: #6b2fa3; }
 
-/* O nome da loja, sempre visível à direita do pino (tooltip permanente do Leaflet, sem a seta), e inteiro:
-   um nome comprido passa a outra linha, sem reticências. O width: max-content é preciso porque o tooltip do
-   Leaflet não tem largura disponível (sem ele, partia-se em cada palavra). Não recebe toques (CSS do Leaflet):
-   o toque vai para o mapa ou para o pino. */
-.leaflet-tooltip.etiqueta-loja {
+/* O nome da loja, sempre visível à direita da bola e ao meio da altura dela, e inteiro: um nome comprido passa
+   a outra linha, sem reticências. O width: max-content é preciso porque o bloco do pino só tem 44 px (sem ele,
+   o nome partia-se em cada palavra). Dentro do mapa o texto herdava a letra da Google: fica a do portal. Não
+   recebe toques: o toque vai para o mapa ou para a bola. */
+.etiqueta-loja {
+  position: absolute;
+  top: 50%;
+  left: 32px;
   width: max-content;
   max-width: 16rem;
   padding: 2px 7px;
-  border: 0;
   border-radius: 6px;
   background: rgb(255 255 255 / 92%);
   box-shadow: 0 1px 2px rgb(0 0 0 / 35%);
   color: #221a2e;
+  font-family: 'Hanken Grotesk', sans-serif;
   font-size: 0.8125rem;
   font-weight: 600;
   line-height: 1.3;
   white-space: normal;
   overflow-wrap: anywhere;
-}
-
-.leaflet-tooltip.etiqueta-loja::before {
-  display: none;
+  pointer-events: none;
+  transform: translateY(-50%);
 }
 
 /* A amostra da cor da fase, nos filtros e no cartão (as cores vêm das classes .pino--<fase>). O contorno por
@@ -153,11 +133,14 @@
   overflow: hidden;
 }
 
-/* O pino do seletor: uma gota roxa cuja ponta (iconAnchor [22, 38]) fica no sítio da loja. A área de toque
-   (o L.divIcon, sem HTML) tem 44 px, para se agarrar bem com o dedo. O roxo é o do círculo da precisão
-   (lib/crm/seletor.js). */
+/* O pino do seletor: uma gota roxa (o roxo do círculo da precisão, lib/crm/seletor.js) num bloco de 44 px de
+   largura, para se agarrar bem com o dedo. A Google põe o fundo ao centro do bloco no ponto, e é aí que fica o
+   bico da gota: um quadrado de 28 px rodado -45°, com o centro a 18 px do topo e o bico a meia diagonal
+   (≈ 20 px) por baixo, aos 38 px. */
 .pino-seletor {
-  background: transparent;
+  position: relative;
+  width: 44px;
+  height: 38px;
 }
 
 .pino-seletor::before {
@@ -188,4 +171,33 @@
 /* Confirmada a localização, a gota escurece (o pino já não se arrasta). */
 .crm-seletor[data-estado="confirmado"] .pino-seletor::before {
   background: #4f1f7d;
+}
+
+/* O painel "Negócio selecionado" (NegocioSelecionado): no ecrã do mapa, no lugar do cartão da loja; no seletor,
+   por baixo do mapa. Vive fora da caixa do mapa e encolhe-a, nunca por cima (a atribuição da Google fica no
+   fundo do mapa). Só texto fixo e botões: nenhum dado do negócio. */
+.crm-negocio {
+  flex: none;
+  margin: 0;
+  padding: 12px 16px max(14px, env(safe-area-inset-bottom));
+  border-top: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+}
+
+/* O rodapé dos botões: a ação e o Fechar lado a lado, a passar a outra linha num ecrã estreito. */
+.crm-negocio__acoes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* A dica por baixo da ação: o nome da loja escreve-se à mão. */
+.crm-negocio__dica {
+  margin-top: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.875rem;
+  line-height: 1.4;
 }
