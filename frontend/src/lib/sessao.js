@@ -110,7 +110,9 @@ async function tentarReentrar() {
   // login normal — e nem se pede o rosto.
   if (!entrar || !faceIdDestaSessao()) return false;
   const credenciais = await ler(); // pede o Face ID, salvo se acabou de passar
-  if (!credenciais) return false;
+  // O Keychain pode ter a senha de outra pessoa (o iOS guarda um item por email):
+  // só serve a da conta cuja sessão expirou.
+  if (!credenciais || credenciais.email !== emailDaSessao()) return false;
   try {
     await entrar(credenciais.email, credenciais.senha);
     return true;

@@ -8,7 +8,7 @@ apaga o Keychain e o 401 não; sem a peça nativa nada muda.
 **Como corre.** Cada teste escreve um guião de Node que carrega os ficheiros
 REAIS de `frontend/src` (o Babel transforma-os à entrada, o `@/` resolve-se como
 no build) e troca UM só módulo: o `@capacitor/core`, cujo `registerPlugin`
-devolve o `NB` daqui — uma peça nativa de mentira com o Keychain numa variável
+devolve o `NB` daqui — uma peça nativa de mentira com o Keychain numa lista (como o iOS)
 e um registo de chamadas. O axios é o verdadeiro, com o `adapter` trocado (o
 servidor fabricado). Os ecrãs montam-se num jsdom com o React verdadeiro.
 
@@ -34,9 +34,16 @@ _SRC = (_FRONTEND / "src").resolve()
 # A peça nativa de mentira. `NB.rosto` decide o que o Face ID responde:
 # 'certo' passa; 'cancela' (16) e 'errado' (10) recusam; 'sistema' (15) é o
 # iOS a interromper; 'espera' fica pendurado até `NB.soltar()`.
+#
+# O Keychain imita o iOS da 6.0.4 (ios/Plugin/Plugin.swift): `NB.keychain` é uma
+# LISTA, um item por `username` (numa kSecClassInternetPassword a conta faz parte da
+# chave). Outro email junta um SEGUNDO item; o mesmo email cai no `SecItemUpdate` só
+# por `server`, que com dois itens falha; o `getCredentials({server})` devolve UM
+# (`kSecMatchLimitOne`; aqui o primeiro, o mais antigo); o `deleteCredentials({server})`
+# apaga todos. Um duplo com uma gaveta só escondia a senha de outra pessoa.
 _PLUGIN = r"""
 global.NB = {
-  presente: true, disponivel: true, rosto: 'certo', keychain: null, chamadas: [],
+  presente: true, disponivel: true, rosto: 'certo', keychain: [], chamadas: [],
   async isAvailable() {
     this.chamadas.push('isAvailable');
     return { isAvailable: this.disponivel, biometryType: 2 };
@@ -47,17 +54,25 @@ global.NB = {
     const codigos = { cancela: '16', errado: '10', sistema: '15' };
     if (this.rosto !== 'certo') { const e = new Error('nao'); e.code = codigos[this.rosto]; throw e; }
   },
-  async setCredentials(c) { this.chamadas.push('setCredentials'); this.keychain = c; },
+  async setCredentials(c) {
+    this.chamadas.push('setCredentials');
+    const doServidor = this.keychain.filter((i) => i.server === c.server);
+    if (!doServidor.some((i) => i.username === c.username)) { this.keychain.push(c); return; }
+    // errSecDuplicateItem → SecItemUpdate por server: pôr a mesma conta em dois itens choca.
+    if (doServidor.length > 1) throw new Error('errSecDuplicateItem');
+    this.keychain = this.keychain.filter((i) => i.server !== c.server).concat([c]);
+  },
   async getCredentials(o) {
     this.chamadas.push('getCredentials');
-    if (!this.keychain || this.keychain.server !== o.server) throw new Error('No password');
-    return { username: this.keychain.username, password: this.keychain.password };
+    const item = this.keychain.find((i) => i.server === o.server);
+    if (!item) throw new Error('No password');
+    return { username: item.username, password: item.password };
   },
   // Como o iOS: sem o `server` certo não se apaga nada (o Keychain fica).
   async deleteCredentials(o) {
     this.chamadas.push('deleteCredentials');
     if ((o || {}).server !== 'gestao.lisbonb.com') throw new Error('No server');
-    this.keychain = null;
+    this.keychain = this.keychain.filter((i) => i.server !== o.server);
   },
 };
 """
@@ -156,8 +171,8 @@ _RELOGIO = "global.AGORA = 1700000000000; Date.now = () => global.AGORA;"
 # A Carol activou o Face ID neste iPhone.
 _LIGADO = (
     "localStorage.setItem('faceid_email', 'carol@lisbonb.com');"
-    " NB.keychain = { username: 'carol@lisbonb.com', password: 'segredo',"
-    " server: 'gestao.lisbonb.com' };"
+    " NB.keychain = [{ username: 'carol@lisbonb.com', password: 'segredo',"
+    " server: 'gestao.lisbonb.com' }];"
 )
 
 
@@ -320,17 +335,17 @@ def test_guardar_e_apagar_mexem_no_keychain_e_no_email(tmp_path):
     r = _corre("""
       const f = lib('lib/faceid');
       const guardou = await f.guardar('carol@lisbonb.com', 'segredo');
-      const depois = { keychain: NB.keychain, email: f.emailGuardado(), ligado: f.faceIdLigado() };
+      const depois = { keychain: NB.keychain.slice(), email: f.emailGuardado(), ligado: f.faceIdLigado() };
       await f.apagar();
       return { guardou, depois,
                apagado: { keychain: NB.keychain, email: f.emailGuardado(), ligado: f.faceIdLigado() } };
     """, tmp_path)
     assert r == {
         "guardou": True,
-        "depois": {"keychain": {"username": "carol@lisbonb.com", "password": "segredo",
-                                "server": "gestao.lisbonb.com"},
+        "depois": {"keychain": [{"username": "carol@lisbonb.com", "password": "segredo",
+                                 "server": "gestao.lisbonb.com"}],
                    "email": "carol@lisbonb.com", "ligado": True},
-        "apagado": {"keychain": None, "email": None, "ligado": False},
+        "apagado": {"keychain": [], "email": None, "ligado": False},
     }
 
 
@@ -342,8 +357,39 @@ def test_guardar_sem_conseguir_escrever_o_email_nao_deixa_a_senha_no_keychain(tm
       const guardou = await f.guardar('carol@lisbonb.com', 'segredo');
       return { guardou, keychain: NB.keychain, chamadas: NB.chamadas };
     """, tmp_path, antes="localStorage.setItem = () => { throw new Error('QuotaExceededError'); };")
-    assert r == {"guardou": False, "keychain": None,
-                 "chamadas": ["setCredentials", "deleteCredentials"]}
+    assert r == {"guardou": False, "keychain": [],
+                 "chamadas": ["deleteCredentials", "setCredentials", "deleteCredentials"]}
+
+
+_CAROL = {"username": "carol@lisbonb.com", "password": "senha-da-carol", "server": "gestao.lisbonb.com"}
+_DEBORA = {"username": "debora@lisbonb.com", "password": "senha-da-debora", "server": "gestao.lisbonb.com"}
+
+
+def test_dois_gestores_a_ligar_o_face_id_fica_so_o_ultimo_no_keychain(tmp_path):
+    """O iOS junta um item POR email: sem apagar antes de gravar, o Keychain ficava
+    {carol, debora} e o `getCredentials` devolvia um deles, sem escolha. Fica o
+    último que activou (desenho §5.7), e é só esse."""
+    r = _corre("""
+      const f = lib('lib/faceid');
+      const a = await f.guardar('carol@lisbonb.com', 'senha-da-carol');
+      const b = await f.guardar('debora@lisbonb.com', 'senha-da-debora');
+      return { a, b, keychain: NB.keychain, email: f.emailGuardado() };
+    """, tmp_path)
+    assert r == {"a": True, "b": True, "keychain": [_DEBORA], "email": "debora@lisbonb.com"}
+
+
+def test_guardar_que_falha_depois_de_apagar_nao_deixa_o_email_da_senha_antiga(tmp_path):
+    """O `guardar()` apaga a senha antiga antes de gravar a nova. Se a nova não entra,
+    o Keychain fica vazio — e o `faceid_email` não pode continuar a dizer «ligado»
+    (uma barreira «Entrar como carol@…» sem senha nenhuma por trás)."""
+    r = _corre("""
+      const f = lib('lib/faceid');
+      NB.setCredentials = async () => { NB.chamadas.push('setCredentials'); throw new Error('-25299'); };
+      const guardou = await f.guardar('carol@lisbonb.com', 'senha-nova');
+      return { guardou, keychain: NB.keychain, email: f.emailGuardado(), chamadas: NB.chamadas };
+    """, tmp_path, antes=_LIGADO)
+    assert r == {"guardou": False, "keychain": [], "email": None,
+                 "chamadas": ["deleteCredentials", "setCredentials"]}
 
 
 def test_dois_rostos_pedidos_ao_mesmo_tempo_sao_um_pedido_ao_iphone(tmp_path):
@@ -429,7 +475,7 @@ def test_so_o_401_do_login_apaga_o_keychain(tmp_path, estado, apaga):
         throw e;
       });
       const ok = await s.reentrar();
-      return { ok, keychain: NB.keychain !== null, email: localStorage.getItem('faceid_email') };
+      return { ok, keychain: NB.keychain.length > 0, email: localStorage.getItem('faceid_email') };
     """ % json.dumps(estado), tmp_path, antes=_LIGADO + _SESSAO_DA_CAROL)
     assert r["ok"] is False
     assert r["keychain"] is (not apaga)
@@ -442,7 +488,7 @@ def test_cancelar_o_face_id_na_reentrada_nao_entra_e_guarda_o_keychain(tmp_path)
       let logins = 0;
       s.ligarEntrada(async () => { logins += 1; });
       NB.rosto = 'cancela';
-      return { ok: await s.reentrar(), logins, keychain: NB.keychain !== null };
+      return { ok: await s.reentrar(), logins, keychain: NB.keychain.length > 0 };
     """, tmp_path, antes=_LIGADO + _SESSAO_DA_CAROL)
     assert r == {"ok": False, "logins": 0, "keychain": True}
 
@@ -515,8 +561,8 @@ def test_quem_ja_tem_face_id_nao_e_perguntado_e_a_senha_nova_substitui_a_guardad
       const resposta = await s.depoisDoLoginComSenha('carol@lisbonb.com', 'senha-nova');
       return { resposta, keychain: NB.keychain };
     """, tmp_path, antes=_LIGADO)
-    assert r == {"resposta": "nada", "keychain": {"username": "carol@lisbonb.com",
-                 "password": "senha-nova", "server": "gestao.lisbonb.com"}}
+    assert r == {"resposta": "nada", "keychain": [{"username": "carol@lisbonb.com",
+                 "password": "senha-nova", "server": "gestao.lisbonb.com"}]}
 
 
 def test_ligar_o_face_id_so_guarda_depois_de_o_rosto_passar(tmp_path):
@@ -524,12 +570,12 @@ def test_ligar_o_face_id_so_guarda_depois_de_o_rosto_passar(tmp_path):
       const s = lib('lib/sessao');
       NB.rosto = 'cancela';
       const cancelado = await s.ligarFaceId('carol@lisbonb.com', 'segredo');
-      const nada = { keychain: NB.keychain, email: localStorage.getItem('faceid_email') };
+      const nada = { keychain: NB.keychain.slice(), email: localStorage.getItem('faceid_email') };
       NB.rosto = 'certo';
       const ligado = await s.ligarFaceId('carol@lisbonb.com', 'segredo');
       return { cancelado, nada, ligado, email: localStorage.getItem('faceid_email') };
     """, tmp_path)
-    assert r == {"cancelado": False, "nada": {"keychain": None, "email": None},
+    assert r == {"cancelado": False, "nada": {"keychain": [], "email": None},
                  "ligado": True, "email": "carol@lisbonb.com"}
 
 
@@ -566,6 +612,41 @@ def test_a_reentrada_so_usa_o_keychain_da_conta_cuja_sessao_expirou(tmp_path, se
     # `token`: a sessão da Débora tem de estar viva; sem ela o caso fica igual a
     # «sem-sessao» e já não prende a guarda da 1A.
     assert r == {"ok": False, "logins": 0, "chamadas": [], "token": com_token}
+
+
+def test_carol_e_debora_ligam_o_face_id_e_a_sessao_da_debora_expira_nunca_entra_como_carol(tmp_path):
+    """O caso do iOS verdadeiro: a Carol liga o Face ID, a Débora entra e liga o dela.
+    Ao fim das 24 h a re-entrada da Débora só pode entrar como a Débora (ou não
+    entrar): nunca com a senha da Carol, por baixo de um ecrã que diz «debora»."""
+    r = _corre("""
+      const f = lib('lib/faceid');
+      await f.guardar('carol@lisbonb.com', 'senha-da-carol');
+      await f.guardar('debora@lisbonb.com', 'senha-da-debora');
+      localStorage.setItem('token', %s);
+      const s = lib('lib/sessao');
+      const logins = [];
+      s.ligarEntrada(async (email) => { logins.push(email); });
+      return { ok: await s.reentrar(), logins };
+    """ % json.dumps(_token("debora@lisbonb.com")), tmp_path)
+    assert r["logins"] in ([], ["debora@lisbonb.com"])
+    assert r["ok"] is (r["logins"] == ["debora@lisbonb.com"])
+
+
+def test_a_reentrada_recusa_a_senha_do_keychain_que_nao_e_da_sessao(tmp_path):
+    """Defesa no sítio onde a senha se usa: o Keychain pode ainda ter dois itens (de
+    uma build anterior a esta correcção) e o `getCredentials` devolve um sem escolha.
+    O email que vem do Keychain tem de ser o da sessão que expirou."""
+    r = _corre("""
+      const s = lib('lib/sessao');
+      const logins = [];
+      s.ligarEntrada(async (email) => { logins.push(email); });
+      return { ok: await s.reentrar(), logins, keychain: NB.keychain.length };
+    """, tmp_path, antes=_sessao("debora@lisbonb.com") + r"""
+      localStorage.setItem('faceid_email', 'debora@lisbonb.com');
+      NB.keychain = [%s, %s];
+    """ % (json.dumps(_CAROL), json.dumps(_DEBORA)))
+    # Não entra, e não apaga nada: não houve 401 nenhum do login.
+    assert r == {"ok": False, "logins": [], "keychain": 2}
 
 
 def test_esconder_com_a_sessao_de_outra_conta_nao_fecha_a_barreira_mas_grava_a_hora(tmp_path):
@@ -871,7 +952,7 @@ def test_arranque_com_a_sessao_expirada_sem_face_id_vai_para_o_login(tmp_path):
 def test_terminar_sessao_apaga_o_keychain_e_o_logout_nao(tmp_path):
     r = _corre(_ESPIAO + """
       await act(async () => { auth.logout(); });
-      const depoisDoLogout = { keychain: NB.keychain !== null, email: localStorage.getItem('faceid_email') };
+      const depoisDoLogout = { keychain: NB.keychain.length > 0, email: localStorage.getItem('faceid_email') };
       localStorage.setItem('token', 't');
       await act(async () => { auth.terminarSessao(); });
       await espera();
@@ -883,7 +964,7 @@ def test_terminar_sessao_apaga_o_keychain_e_o_logout_nao(tmp_path):
     """ % _EU)
     assert r == {"depoisDoLogout": {"keychain": True, "email": "carol@lisbonb.com"},
                  "user": None, "semLigacao": False, "loading": False, "token": None,
-                 "keychain": None, "email": None}
+                 "keychain": [], "email": None}
 
 
 def test_entrar_e_sair_limpam_o_aviso_de_ligacao(tmp_path):
@@ -924,16 +1005,16 @@ def test_mudar_a_senha_leva_a_nova_ao_keychain_so_de_quem_tem_o_face_id(tmp_path
     r = _corre(_ESPIAO + """
       await act(async () => { await auth.changePassword('segredo', 'senha-nova'); });
       await espera(50);
-      return { dono: NB.keychain.username, senha: NB.keychain.password };
+      return NB.keychain.map((i) => [i.username, i.password]);
     """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + r"""
       const dono = %s;
       localStorage.setItem('token', 't');
       localStorage.setItem('faceid_email', dono);
-      NB.keychain = { username: dono, password: 'segredo', server: 'gestao.lisbonb.com' };
+      NB.keychain = [{ username: dono, password: 'segredo', server: 'gestao.lisbonb.com' }];
       RESPOSTAS['GET /auth/me'] = [200, %s];
       RESPOSTAS['POST /auth/change-password'] = [200, { token: 'novo' }];
     """ % (json.dumps(ligado_a), _EU))
-    assert r == {"dono": ligado_a, "senha": fica}
+    assert r == [[ligado_a, fica]]
 
 
 # --- LoginPage: «Usar Face ID para entrar?» -------------------------------------
@@ -987,11 +1068,11 @@ def test_depois_da_senha_pergunta_antes_de_sair_do_login(tmp_path, resposta):
     assert r["pergunta"] == {"aberta": True, "jaSaiu": False}
     assert r["saiu"] is True   # e foi para o sítio de onde veio (state.from)
     if resposta == "Agora não":
-        assert (r["recusa"], r["keychain"], r["email"]) == ("1", None, None)
+        assert (r["recusa"], r["keychain"], r["email"]) == ("1", [], None)
     else:
         assert r["recusa"] is None
-        assert r["keychain"] == {"username": "carol@lisbonb.com", "password": "segredo",
-                                 "server": "gestao.lisbonb.com"}
+        assert r["keychain"] == [{"username": "carol@lisbonb.com", "password": "segredo",
+                                  "server": "gestao.lisbonb.com"}]
         assert r["email"] == "carol@lisbonb.com"
 
 
@@ -1104,7 +1185,7 @@ def test_a_barreira_fecha_ao_esconder_e_so_pede_o_rosto_depois_de_5_minutos(tmp_
 
 def test_cancelar_o_rosto_na_barreira_sai_mas_guarda_o_keychain(tmp_path):
     r = _corre(_BARREIRA + r"""
-      return { token: localStorage.getItem('token'), keychain: NB.keychain !== null,
+      return { token: localStorage.getItem('token'), keychain: NB.keychain.length > 0,
                email: localStorage.getItem('faceid_email'), painel: painel() };
     """, tmp_path, dom=True,
         antes=_SERVIDOR + _ESPERA + _LIGADO + _SESSAO_VALIDA + "NB.rosto = 'cancela';")
@@ -1160,7 +1241,7 @@ def test_sem_a_peca_nao_ha_barreira_e_sem_face_id_disponivel_sai(tmp_path, caso)
       await act(async () => { esconder(false); });
       await espera();
       return { inicio, depois: cortina(), token: localStorage.getItem('token'), rostos: rostos(),
-               keychain: NB.keychain !== null };
+               keychain: NB.keychain.length > 0 };
     """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _LIGADO + _SESSAO_VALIDA
         + ("NB.presente = false;" if caso == "sem-plugin" else "NB.disponivel = false;"))
     if caso == "sem-plugin":
@@ -1190,7 +1271,7 @@ def test_a_sessao_de_outra_conta_que_volta_depois_de_5_minutos_vai_para_o_login(
       await espera();
       passos.push(['voltou depois dos 5 min', cortina(), auth.user && auth.user.email]);
       return { passos, token: localStorage.getItem('token'), rostos: rostos(),
-               keychain: NB.keychain !== null, faceid: localStorage.getItem('faceid_email') };
+               keychain: NB.keychain.length > 0, faceid: localStorage.getItem('faceid_email') };
     """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _RELOGIO + _LIGADO
         + _sessao("debora@lisbonb.com") + _VOLTOU_AGORA + r"""
       RESPOSTAS['GET /auth/me'] = [200, %s];

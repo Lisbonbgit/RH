@@ -88,9 +88,16 @@ export async function ler() {
 
 export async function guardar(email, senha) {
   if (!pluginPresente()) return false;
+  // **Apagar antes de gravar.** O iOS guarda um item POR email (a conta faz parte da
+  // chave de uma kSecClassInternetPassword): sem isto a Débora juntava o dela ao da
+  // Carol, e o `getCredentials({server})` devolvia um dos dois, sem escolha — a
+  // re-entrada da Débora podia entrar com a senha da Carol. Fica o último que activou.
+  try { await NativeBiometric.deleteCredentials({ server: SERVIDOR }); } catch (e) { /* não havia */ }
   try {
     await NativeBiometric.setCredentials({ username: email, password: senha, server: SERVIDOR });
   } catch (e) {
+    // A senha antiga já se apagou: o email dela não pode continuar a dizer «ligado».
+    try { localStorage.removeItem(CHAVE_EMAIL); } catch (e2) { /* modo privado */ }
     return false;
   }
   try {
