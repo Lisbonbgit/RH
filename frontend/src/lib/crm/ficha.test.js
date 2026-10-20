@@ -136,9 +136,9 @@ test('corpoAlteracao: só os campos alterados + o atualizado_em da loja carregad
   expect(corpoAlteracao(LOJA, atual, { confirmarDuplicado: true })).toStrictEqual({
     fase: 'cliente', atualizado_em: LOJA.atualizado_em, confirmar_duplicado: true,
   });
-  // A localização vai em bloco.
+  // A localização vai em bloco (com o google_place_id desde o mapa Google, plano G9: a LOJA não o tem → null).
   expect(corpoAlteracao(LOJA, { lat: 38.7095, lng: -9.1372, origem_coords: 'pin_manual', precisao_m: null })).toStrictEqual({
-    lat: 38.7095, lng: -9.1372, origem_coords: 'pin_manual', precisao_m: null, atualizado_em: LOJA.atualizado_em,
+    lat: 38.7095, lng: -9.1372, origem_coords: 'pin_manual', precisao_m: null, google_place_id: null, atualizado_em: LOJA.atualizado_em,
   });
   // Sem alterações, só a versão (o servidor aceita-o e avança a versão: o ecrã não o envia).
   expect(corpoAlteracao(LOJA, { nome: LOJA.nome })).toStrictEqual({ atualizado_em: LOJA.atualizado_em });
@@ -150,6 +150,20 @@ test('textoLocalizacao: de onde vem o pino guardado', () => {
   expect(textoLocalizacao({ origem_coords: 'geocoder', precisao_m: null })).toBe('Pino da morada escolhida na pesquisa.');
   expect(textoLocalizacao({ origem_coords: 'pin_manual', precisao_m: null })).toBe('Pino posto à mão no mapa.');
   expect(textoLocalizacao(null)).toBe('Pino posto à mão no mapa.');
+});
+
+test('textoLocalizacao: o pino posto à mão a partir de um lugar da Google (plano G9)', () => {
+  expect(textoLocalizacao({ origem_coords: 'pin_manual', precisao_m: null, google_place_id: 'ChIJa1b2c3' }))
+    .toBe('Pino posto à mão a partir de um lugar da Google.');
+  // Sem google_place_id (ou vazio), os textos de sempre.
+  for (const google_place_id of [undefined, null, '', '   ']) {
+    expect(textoLocalizacao({ origem_coords: 'pin_manual', precisao_m: null, google_place_id })).toBe('Pino posto à mão no mapa.');
+  }
+  // O id só conta com o pino posto à mão (as outras origens nunca o trazem; se trouxessem, ficava o texto delas).
+  expect(textoLocalizacao({ origem_coords: 'gps', precisao_m: 12, google_place_id: 'ChIJa1b2c3' }))
+    .toBe('Pino do GPS, no local (precisão de 12 m).');
+  expect(textoLocalizacao({ origem_coords: 'geocoder', precisao_m: null, google_place_id: 'ChIJa1b2c3' }))
+    .toBe('Pino da morada escolhida na pesquisa.');
 });
 
 test('opcoesRegiaoFicha: "Sem região" e as regiões; a da loja fica como "Região guardada" enquanto não estiver na lista', () => {
@@ -959,12 +973,25 @@ test('arrastar o pino e confirmar: Guardar envia o bloco da localização (pin_m
   m.ecra.mudarLocalizacao(PINO_NOVO);
   expect(m.vista().guardar.ativo).toBe(true);
   const pedido = await guardar(m);
-  expect(corpo(pedido)).toStrictEqual({ ...PINO_NOVO, atualizado_em: LOJA.atualizado_em });
+  // O bloco leva o google_place_id (mapa Google, plano G9): um pino posto à mão não o tem → null.
+  expect(corpo(pedido)).toStrictEqual({ ...PINO_NOVO, google_place_id: null, atualizado_em: LOJA.atualizado_em });
   pedido.resolver(copia(LOJA, { ...PINO_NOVO, atualizado_em: VERSAO_NOVA }));
   await assentar();
   expect(m.vista().correcao).toBe(null);
   expect(m.vista().resumoLocalizacao).toBe('Pino posto à mão no mapa.');
   expect(m.avisos).toEqual(['Alterações guardadas']);
+});
+
+test('o pino arrastado a partir de um lugar da Google: Guardar leva o google_place_id e o resumo di-lo (plano G9)', async () => {
+  const m = await carregada();
+  m.ecra.abrirCorrecao();
+  const doGoogle = { ...PINO_NOVO, google_place_id: 'ChIJa1b2c3' };
+  m.ecra.mudarLocalizacao(doGoogle);
+  const pedido = await guardar(m);
+  expect(corpo(pedido)).toStrictEqual({ ...doGoogle, atualizado_em: LOJA.atualizado_em });
+  pedido.resolver(copia(LOJA, { ...doGoogle, atualizado_em: VERSAO_NOVA }));
+  await assentar();
+  expect(m.vista().resumoLocalizacao).toBe('Pino posto à mão a partir de um lugar da Google.');
 });
 
 test('confirmar sem mexer no pino: não há alterações', async () => {

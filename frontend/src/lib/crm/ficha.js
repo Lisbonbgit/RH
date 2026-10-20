@@ -133,6 +133,9 @@ export function textoLocalizacao(loja) {
       : 'Pino do GPS, no local.';
   }
   if (loja?.origem_coords === 'geocoder') return 'Pino da morada escolhida na pesquisa.';
+  // O pino de um lugar da Google é sempre arrastado pela pessoa (mapa Google, plano G9): fica pin_manual + id.
+  const doGoogle = typeof loja?.google_place_id === 'string' && loja.google_place_id.trim() !== '';
+  if (loja?.origem_coords === 'pin_manual' && doGoogle) return 'Pino posto à mão a partir de um lugar da Google.';
   return 'Pino posto à mão no mapa.';
 }
 
