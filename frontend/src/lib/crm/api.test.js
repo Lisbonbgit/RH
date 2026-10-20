@@ -18,8 +18,11 @@
  * uma lista), porque um objeto vazio é subconjunto de tudo.
  *
  * As chamadas da F2 (T2.24): regiões, lojas, definições, configuração do mapa
- * e morada. Os `params` da morada comparam-se com `toStrictEqual`: o `toEqual`
- * ignora as chaves com `undefined` e deixava passar um `lat: undefined`.
+ * e morada (só a inversa, para o GPS: a pesquisa de moradas da Geoapify saiu
+ * na G11 do plano do mapa Google, que a substitui pelo elemento de pesquisa da
+ * própria Google). Os `params` da morada comparam-se com `toStrictEqual`: o
+ * `toEqual` ignora as chaves com `undefined` e deixava passar um
+ * `lat: undefined`.
  */
 import axios, { AxiosError, AxiosHeaders } from 'axios';
 import {
@@ -27,11 +30,12 @@ import {
   obterEu, listarMembros, listarCandidatos, adicionarMembro, mudarPerfilMembro, retirarMembro,
   listarRegioes, criarRegiao, alterarRegiao, apagarRegiao,
   listarLojas, obterLoja, criarLoja, alterarLoja, apagarLoja,
-  obterDefinicoes, alterarDefinicoes, obterConfigMapa, pesquisarMorada, moradaInversa,
+  obterDefinicoes, alterarDefinicoes, obterConfigMapa, moradaInversa,
   MENSAGEM_SEM_REDE, MENSAGEM_ERRO_INESPERADO, MENSAGEM_VALIDACAO, MENSAGEM_SEM_SESSAO,
   TIMEOUT_CRM_MS, URL_BASE_CRM,
 } from './api';
-import { criarPesquisaMorada, pontoDeBias, MENSAGEM_MORADA_INDISPONIVEL } from './morada';
+import * as moduloApi from './api';
+import { pontoDeBias } from './morada';
 
 // Um erro do axios COM resposta do servidor, tal como o axios o entrega.
 const comResposta = (estado, data) => new AxiosError(
@@ -425,7 +429,7 @@ describe('criarClienteCrm — chamadas da F2 com pedir falso', () => {
   test('definições da fábrica (GET e PATCH) e configuração do mapa (GET /config)', async () => {
     const definicoes = { fabrica_morada: 'Rua A', fabrica_lat: 38.7, fabrica_lng: -9.1 };
     const alteradas = { ...definicoes, fabrica_morada: 'Rua B' };
-    const config = { mosaicos: { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', atribuicao: 'osm' }, alternativa: { url: 'x' }, centro: { lat: 38.7, lng: -9.1 } };
+    const config = { google: { chave: 'chave-teste-navegador', map_id: 'map-id-teste' }, centro: { lat: 38.7, lng: -9.1 } };
     const pedir = pedirQueResponde(definicoes, alteradas, config);
     const cliente = criarClienteCrm({ pedir });
     const corpo = { fabrica_morada: 'Rua B' };
@@ -442,103 +446,14 @@ describe('criarClienteCrm — chamadas da F2 com pedir falso', () => {
     expect(pedir.mock.calls[1][0].data).toBe(corpo);
   });
 
-  test('pesquisarMorada faz GET /morada/pesquisa com o texto e o ponto na query, e devolve as sugestões', async () => {
-    const sugestoes = [{ rotulo: 'Rua Augusta 24, Lisboa', morada: 'Rua Augusta 24', codigo_postal: '1100-053', localidade: 'Lisboa', lat: 38.71, lng: -9.137 }];
-    const pedir = pedirQueResponde(sugestoes);
-    const cliente = criarClienteCrm({ pedir });
-
-    await expect(cliente.pesquisarMorada({ texto: 'rua augusta', lat: 38.712346, lng: -9.1, outra: 'x' }))
-      .resolves.toBe(sugestoes);
-
-    expect(pedir).toHaveBeenCalledTimes(1);
-    const [config] = pedir.mock.calls[0];
-    expect(config.method).toBe('GET');
-    expect(config.url).toBe('/morada/pesquisa');
-    expect(config.data).toBeUndefined();
-    // Só texto, lat e lng (a `outra` não vai).
-    expect(config.params).toStrictEqual({ texto: 'rua augusta', lat: 38.712346, lng: -9.1 });
-  });
-
-  test('pesquisarMorada: os parâmetros nulos (ou em falta) não saem, e o zero é um número', async () => {
-    const pedir = pedirQueResponde([], [], [], [], [], []);
-    const cliente = criarClienteCrm({ pedir });
-
-    await cliente.pesquisarMorada({ texto: 'rua', lat: null, lng: null });
-    await cliente.pesquisarMorada({ texto: 'rua' });
-    await cliente.pesquisarMorada({ texto: 'rua', lat: undefined, lng: 0 });
-    await cliente.pesquisarMorada({ texto: 'rua', lat: 0, lng: 0 });
-    await cliente.pesquisarMorada({ texto: null, lat: 38.7, lng: -9.1 });
-    // Sem pedido nenhum, sai sem parâmetros (o servidor responde 422 no texto).
-    await cliente.pesquisarMorada();
-
-    expect(pedidos(pedir, (c) => c.params)).toStrictEqual([
-      { texto: 'rua' },
-      { texto: 'rua' },
-      { texto: 'rua', lng: 0 },
-      { texto: 'rua', lat: 0, lng: 0 },
-      { lat: 38.7, lng: -9.1 },
-      {},
-    ]);
-  });
-
-  test('ligada ao criarPesquisaMorada como no seletor: leva o ponto do pontoDeBias, e sem ponto vai só o texto', async () => {
-    jest.useFakeTimers();
-    try {
-      const sugestoes = [{ rotulo: 'Rua Augusta 24, Lisboa' }];
-      const pedir = pedirQueResponde(sugestoes, []);
-      const cliente = criarClienteCrm({ pedir });
-      const estados = [];
-      const pesquisa = criarPesquisaMorada({
-        api: (texto, extra) => cliente.pesquisarMorada({ texto, ...(extra ?? {}) }),
-        aoMudarEstado: (e) => estados.push(e),
-      });
-
-      pesquisa.escrever('  rua augusta ', pontoDeBias({ lat: 38.7123456, lng: -9.1 }));
-      jest.advanceTimersByTime(300);
-      for (let i = 0; i < 10; i += 1) await Promise.resolve();
-      pesquisa.escrever('praça', pontoDeBias(null));
-      jest.advanceTimersByTime(300);
-      for (let i = 0; i < 10; i += 1) await Promise.resolve();
-
-      expect(pedidos(pedir, (c) => [c.method, c.url, c.params])).toStrictEqual([
-        ['GET', '/morada/pesquisa', { texto: 'rua augusta', lat: 38.712346, lng: -9.1 }],
-        ['GET', '/morada/pesquisa', { texto: 'praça' }],
-      ]);
-      expect(estados.filter((e) => e.estado === 'resultados')).toEqual([
-        { estado: 'resultados', texto: 'rua augusta', sugestoes },
-        { estado: 'resultados', texto: 'praça', sugestoes: [] },
-      ]);
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  test('ligada ao criarPesquisaMorada: sem rede continua sem_rede, e o 503 dá morada_indisponivel', async () => {
-    jest.useFakeTimers();
-    try {
-      const pedir = jest.fn()
-        .mockRejectedValueOnce(semResposta())
-        .mockRejectedValueOnce(comResposta(503, { detail: { codigo: 'morada_indisponivel', mensagem: MENSAGEM_MORADA_INDISPONIVEL } }));
-      const cliente = criarClienteCrm({ pedir });
-      const estados = [];
-      const pesquisa = criarPesquisaMorada({
-        api: (texto, extra) => cliente.pesquisarMorada({ texto, ...(extra ?? {}) }),
-        aoMudarEstado: (e) => estados.push(e),
-      });
-
-      for (const texto of ['rua augusta', 'rua do ouro']) {
-        pesquisa.escrever(texto, null);
-        jest.advanceTimersByTime(300);
-        for (let i = 0; i < 10; i += 1) await Promise.resolve();
-      }
-
-      expect(estados.filter((e) => e.estado === 'erro')).toEqual([
-        { estado: 'erro', codigo: 'sem_rede', mensagem: MENSAGEM_MORADA_INDISPONIVEL },
-        { estado: 'erro', codigo: 'morada_indisponivel', mensagem: MENSAGEM_MORADA_INDISPONIVEL },
-      ]);
-    } finally {
-      jest.useRealTimers();
-    }
+  test('a pesquisa de moradas da Geoapify saiu do cliente e do módulo (a da Google vive no seletor); fica a inversa', () => {
+    const cliente = criarClienteCrm({ pedir: jest.fn() });
+    // Nenhuma chamada de pesquisa, no cliente nem nas exportações soltas do módulo.
+    const pesquisas = (nomes) => nomes.filter((nome) => /pesquis/i.test(nome));
+    expect(pesquisas(Object.keys(cliente))).toEqual([]);
+    expect(pesquisas(Object.keys(moduloApi))).toEqual([]);
+    expect(typeof cliente.moradaInversa).toBe('function');
+    expect(typeof moduloApi.moradaInversa).toBe('function');
   });
 
   test('moradaInversa faz GET /morada/inversa com lat e lng; sem ponto (pontoDeBias nulo) vai sem parâmetros', async () => {
@@ -630,15 +545,12 @@ describe('criarClienteCrm — chamadas da F2 com pedir falso', () => {
     }));
   });
 
-  test('503 da morada chega como morada_indisponivel, com a mensagem do servidor', async () => {
+  test('503 da morada inversa chega como morada_indisponivel, com a mensagem do servidor', async () => {
     const inversa = 'Morada sugerida indisponível — escreva a morada à mão.';
     const pedir = jest.fn()
-      .mockRejectedValueOnce(comResposta(503, { detail: { codigo: 'morada_indisponivel', mensagem: MENSAGEM_MORADA_INDISPONIVEL } }))
       .mockRejectedValueOnce(comResposta(503, { detail: { codigo: 'morada_indisponivel', mensagem: inversa } }));
     const cliente = criarClienteCrm({ pedir });
 
-    expect(forma(await rejeicao(cliente.pesquisarMorada({ texto: 'rua augusta' }))))
-      .toEqual(esperado('morada_indisponivel', MENSAGEM_MORADA_INDISPONIVEL, 503));
     expect(forma(await rejeicao(cliente.moradaInversa({ lat: 38.7, lng: -9.1 }))))
       .toEqual(esperado('morada_indisponivel', inversa, 503));
   });
@@ -652,7 +564,7 @@ describe('criarClienteCrm — chamadas da F2 com pedir falso', () => {
       () => cliente.alterarLoja(LOJA_ID, { atualizado_em: VERSAO }), () => cliente.apagarLoja(LOJA_ID),
       () => cliente.obterDefinicoes(), () => cliente.alterarDefinicoes({ fabrica_morada: 'X' }),
       () => cliente.obterConfigMapa(),
-      () => cliente.pesquisarMorada({ texto: 'rua' }), () => cliente.moradaInversa({ lat: 38.7, lng: -9.1 }),
+      () => cliente.moradaInversa({ lat: 38.7, lng: -9.1 }),
     ]) {
       const e = await rejeicao(chamada());
       expect(e).toBeInstanceOf(ErroCrm);
@@ -796,7 +708,6 @@ describe('a instância axios do CRM', () => {
     await obterDefinicoes();
     await alterarDefinicoes({ fabrica_lat: 38.7, fabrica_lng: -9.1 });
     await obterConfigMapa();
-    await pesquisarMorada({ texto: 'rua', lat: null, lng: null });
     await moradaInversa({ lat: 38.7, lng: -9.1 });
 
     expect(adaptador.mock.calls.map(([c]) => `${c.method.toUpperCase()} ${axios.getUri(c)}`)).toEqual([
@@ -812,7 +723,6 @@ describe('a instância axios do CRM', () => {
       `GET ${URL_BASE_CRM}/definicoes`,
       `PATCH ${URL_BASE_CRM}/definicoes`,
       `GET ${URL_BASE_CRM}/config`,
-      `GET ${URL_BASE_CRM}/morada/pesquisa?texto=rua`,
       `GET ${URL_BASE_CRM}/morada/inversa?lat=38.7&lng=-9.1`,
     ]);
     const corpo = (i) => JSON.parse(adaptador.mock.calls[i][0].data);
@@ -822,24 +732,24 @@ describe('a instância axios do CRM', () => {
     expect(corpo(7)).toEqual({ fase: 'cliente', atualizado_em: '2026-10-10T09:00:00.123456Z' });
     expect(corpo(10)).toEqual({ fabrica_lat: 38.7, fabrica_lng: -9.1 });
     // Os GET e os DELETE não levam corpo.
-    for (const i of [0, 3, 4, 5, 8, 9, 11, 12, 13]) expect(adaptador.mock.calls[i][0].data).toBeUndefined();
+    for (const i of [0, 3, 4, 5, 8, 9, 11, 12]) expect(adaptador.mock.calls[i][0].data).toBeUndefined();
   });
 
-  test('a query da morada chega ao servidor como foi escrita (espaços, acentos, vírgula, &, # e +), sem nulos', async () => {
-    const adaptador = adaptadorQueResponde([]);
+  test('a query da morada inversa chega ao servidor com os números por extenso, sem nulos', async () => {
+    const adaptador = adaptadorQueResponde(null);
     instanciaCrm.defaults.adapter = adaptador;
-    const texto = 'Praça do Comércio, 1 & 2 #3 + 4';
-    await pesquisarMorada({ texto, lat: 38.707751, lng: -9.136592 });
-    await pesquisarMorada({ texto, lat: null, lng: undefined });
+    await moradaInversa(pontoDeBias({ lat: 38.7077514, lng: -9.1365923 }));
+    await moradaInversa({ lat: null, lng: undefined });
+    await moradaInversa({ lat: 0, lng: 0 });
 
-    // A query lê-se como o servidor a lê (o `+` é um espaço, como no
-    // `parse_qsl` do Starlette); o caminho não muda com o texto.
+    // A query lê-se como o servidor a lê (o `parse_qsl` do Starlette).
     const lida = (i) => {
       const [caminho, query] = axios.getUri(adaptador.mock.calls[i][0]).split('?');
-      return [caminho, [...new URLSearchParams(query).entries()]];
+      return [caminho, [...new URLSearchParams(query ?? '').entries()]];
     };
-    expect(lida(0)).toEqual([`${URL_BASE_CRM}/morada/pesquisa`, [['texto', texto], ['lat', '38.707751'], ['lng', '-9.136592']]]);
-    expect(lida(1)).toEqual([`${URL_BASE_CRM}/morada/pesquisa`, [['texto', texto]]]);
+    expect(lida(0)).toEqual([`${URL_BASE_CRM}/morada/inversa`, [['lat', '38.707751'], ['lng', '-9.136592']]]);
+    expect(lida(1)).toEqual([`${URL_BASE_CRM}/morada/inversa`, []]);
+    expect(lida(2)).toEqual([`${URL_BASE_CRM}/morada/inversa`, [['lat', '0'], ['lng', '0']]]);
   });
 
   test('um erro do axios a sério chega normalizado às funções do módulo', async () => {

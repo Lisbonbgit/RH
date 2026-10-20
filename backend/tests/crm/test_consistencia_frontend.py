@@ -19,10 +19,11 @@ sozinho passava a verde para sempre.
 O GPS (T2.22) segue a mesma regra: o gps.js tem uma só linha
 `export const LIMITE_PRECISAO_M = <inteiro>;`, igual a geo.LIMITE_PRECISAO_M,
 e uma só linha `export const MENSAGEM_LOCALIZACAO_IMPRECISA = '<texto>';`,
-igual a geo.MENSAGEM_GPS. A mais, as duas mensagens da morada do morada.js
-(MENSAGEM_MORADA_INDISPONIVEL e MENSAGEM_MORADA_SUGERIDA_INDISPONIVEL), que o
-ecrã mostra no lugar das do 503 do servidor (crm/morada.py,
-PESQUISA_INDISPONIVEL e INVERSA_INDISPONIVEL), também numa só linha.
+igual a geo.MENSAGEM_GPS. A mais, a mensagem da morada sugerida do morada.js
+(MENSAGEM_MORADA_SUGERIDA_INDISPONIVEL), que o ecrã mostra no lugar da do 503
+do servidor (crm/morada.py, INVERSA_INDISPONIVEL), também numa só linha. A da
+pesquisa de moradas (MENSAGEM_MORADA_INDISPONIVEL) saiu do frontend na G11 do
+plano do mapa Google, com a pesquisa da Geoapify (a pesquisa é a da Google).
 """
 import re
 from pathlib import Path
@@ -205,10 +206,9 @@ def test_a_mensagem_da_localizacao_imprecisa_do_js_e_a_do_servidor():
 @pytest.mark.parametrize(
     "nome_js, mensagem_do_servidor",
     [
-        ("MENSAGEM_MORADA_INDISPONIVEL", morada.PESQUISA_INDISPONIVEL),
         ("MENSAGEM_MORADA_SUGERIDA_INDISPONIVEL", morada.INVERSA_INDISPONIVEL),
     ],
-    ids=["pesquisa", "inversa"],
+    ids=["inversa"],
 )
 def test_as_mensagens_da_morada_do_js_sao_as_do_servidor(nome_js, mensagem_do_servidor):
     textos = _textos_do_js(_ler(MORADA_JS), nome_js)

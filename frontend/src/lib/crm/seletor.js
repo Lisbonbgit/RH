@@ -36,8 +36,24 @@
 //    e entrega-a ao ecrã (`aoSugerirMorada`, que só preenche os campos vazios:
 //    `camposSugeridos`). Só o GPS a pede (nunca para um ponto da Google). Se o
 //    pino for posto noutro sítio, a morada sugerida sai (e a que chegar tarde é
-//    ignorada).
-// A pesquisa de moradas e o negócio selecionado, ambos da Google, entram na G11.
+//    ignorada);
+//  - o negócio selecionado (G11; adenda §1.2 e §6.3): tocar no ícone de um
+//    negócio do mapa abre o balão da própria Google (o código nunca o trava) e
+//    o painel "Negócio selecionado" (`criarNegocioSelecionado` do
+//    `lugarGoogle.js`, aqui dentro): o pino ainda não se move. Só quando a
+//    pessoa toca em "Pôr o pino neste negócio" (ou a nova loja chega do mapa
+//    com um negócio) se pede à Google a posição do lugar, e só ela; o pino vai
+//    para lá com a origem `google` (a regra do arrasto). Se a Google falhar, o
+//    pino vai para o ponto tocado (a reserva), com a mesma regra, e o painel
+//    diz porquê. Uma resposta que chegue depois de outra escolha (outro
+//    negócio, um toque à mão, o painel fechado, o pino noutro sítio) é
+//    ignorada. O nome e a morada do negócio nunca se pedem: escrevem-se à mão;
+//  - a pesquisa da Google (G11): o elemento de pesquisa da própria Google
+//    (`criarPesquisaLugar`), que o ecrã põe junto ao mapa (fora da caixa dele);
+//    prefere a zona à vista (`limitesDoMapa`). Escolher uma morada põe lá o pino (origem
+//    `google`, com o identificador do lugar), mostra "Morada sugerida: <a
+//    morada da Google>" e entrega-a ao ecrã (`aoEscolherMorada`, para os campos
+//    da morada). Nunca se pede a inversa da Geoapify para um ponto da Google.
 //
 // Estados: 'vazio' (sem pino) → 'por_confirmar' (pino solto, arrastável) →
 // 'confirmado' (pino fixo; "Alterar localização" solta-o outra vez). Só a
@@ -60,6 +76,9 @@ import {
   MENSAGEM_LOCALIZACAO_IMPRECISA, obterPosicao, traduzirErroGps, limitesDoCirculo,
 } from './gps';
 import { pontoDeBias, MENSAGEM_MORADA_SUGERIDA_INDISPONIVEL } from './morada';
+import {
+  criarNegocioSelecionado, criarPesquisaLugar, posicaoDoLugar, TEXTO_LUGAR_INDISPONIVEL,
+} from './lugarGoogle';
 
 export const TEXTO_TOCAR_NO_MAPA = 'Toque no mapa no sítio da loja.';
 export const TEXTO_ARRASTAR = 'Arraste o pino para o sítio exato e confirme.';
@@ -96,6 +115,8 @@ export const ESTILO_CIRCULO = Object.freeze({
 const INDICE_PINO = 1000;
 
 const numero = (valor) => typeof valor === 'number' && Number.isFinite(valor);
+// Um identificador de lugar da Google só conta se for um texto com algo além de espaços (o formato não é documentado).
+const idDeLugar = (valor) => typeof valor === 'string' && valor.trim() !== '';
 
 // A Google com o que o seletor usa: o mapa (biblioteca `maps`) e o marcador avançado (biblioteca `marker`).
 const temGoogle = (google) => typeof google?.maps?.Map === 'function'
@@ -119,13 +140,17 @@ export const textosSeletor = (textos = {}) => Object.freeze({ ...TEXTOS_LOJA, ..
 const parte = (texto, url = null) => Object.freeze({ texto, url });
 
 // "Morada sugerida: <rótulo> · Powered by Geoapify" (a morada do ponto do GPS): o rótulo é uma parte de texto
-// e a atribuição sai só das constantes de atribuicoes.js (com a ligação), como no autónomo. O componente
-// desenha cada parte como texto ou, com `url`, como uma ligação.
-export const partesMoradaSugerida = (rotulo) => Object.freeze([
+// e a atribuição sai só das constantes de atribuicoes.js (com a ligação), como no autónomo. Com
+// {fonte: 'google'} (a morada escolhida na pesquisa da Google), só "Morada sugerida: <rótulo>": a atribuição é
+// a do próprio mapa da Google, ao lado. O componente desenha cada parte como texto ou, com `url`, como uma
+// ligação.
+export const partesMoradaSugerida = (rotulo, { fonte } = {}) => Object.freeze([
   parte(TEXTO_MORADA_SUGERIDA),
   parte(String(rotulo)),
-  parte(SEPARADOR_ATRIBUICAO),
-  ...ATRIBUICOES.geoapify.partes.map((p) => parte(p.texto, p.url)),
+  ...(fonte === 'google' ? [] : [
+    parte(SEPARADOR_ATRIBUICAO),
+    ...ATRIBUICOES.geoapify.partes.map((p) => parte(p.texto, p.url)),
+  ]),
 ]);
 
 const MORADA_A_PROCURAR = Object.freeze({ tipo: null, partes: Object.freeze([parte(TEXTO_A_PROCURAR_MORADA)]) });
@@ -134,12 +159,13 @@ const MORADA_INDISPONIVEL = Object.freeze({
   partes: Object.freeze([parte(MENSAGEM_MORADA_SUGERIDA_INDISPONIVEL)]),
 });
 
-// criarSeletor({google, documento, configuracao, textos?, api?, geolocation?, aoMudar?, aoSugerirMorada?,
-//               aoMudarVista?, aoFocar?})
+// criarSeletor({google, documento, configuracao, textos?, api?, geolocation?, aoMudar?, aoEscolherMorada?,
+//               aoSugerirMorada?, aoMudarVista?, aoFocar?})
 //   → {vista, localizacao, mapa, iniciar, colocar, confirmar, alterar, estouNestaLoja, desconfirmar,
-//      mostrarErro, limparErro, focar, redimensionar, destruir}
+//      mostrarErro, limparErro, focar, redimensionar, escolherNegocio, usarNegocio, fecharNegocio,
+//      limitesDoMapa, destruir}
 //  - google: o `window.google` com as bibliotecas `maps` e `marker` já carregadas (sem elas, o seletor diz
-//    que não há mapa);
+//    que não há mapa) e, para a pesquisa e o negócio selecionado, a `places` (sem ela, não há pesquisa);
 //  - configuracao: a do GET /api/crm/config, {google: {chave, map_id} | null, centro} (pode ser null ou
 //    inválida: o seletor diz que não há mapa; com `google: null`, que o mapa não está configurado);
 //  - textos: {titulo?, tocar?, mapa?, pino?} (ver TEXTOS_LOJA);
@@ -147,6 +173,8 @@ const MORADA_INDISPONIVEL = Object.freeze({
 //  - geolocation: o navigator.geolocation do browser; com ele, "Estou nesta loja";
 //  - aoMudar(localizacao): a localização confirmada mudou — {lat, lng, origem_coords, precisao_m,
 //    google_place_id}, ou null quando deixa de haver (o pino voltou a soltar-se);
+//  - aoEscolherMorada(morada): escolheram uma morada na pesquisa da Google e o pino já lá está —
+//    {rotulo, morada, codigo_postal, localidade, lat, lng} (a forma da morada sugerida, para os campos);
 //  - aoSugerirMorada(sugestao): a morada do ponto do GPS ({rotulo, morada, codigo_postal, localidade, lat,
 //    lng}), para os campos vazios;
 //  - aoMudarVista(vista): a vista mudou (a mesma de `vista`);
@@ -155,11 +183,15 @@ const MORADA_INDISPONIVEL = Object.freeze({
 // vista: {estado, dica, aviso: 'imprecisa'|'arrastar'|null, erro: texto|null, semMapa, confirmarAtivo,
 //         gps: null | {texto, ocupado, mensagem: null | {texto, tipo: 'erro'}},
 //         moradaSugerida: null | {tipo: null|'erro', partes: [{texto, url}]},
-//         pesquisa: null (a pesquisa da Google entra na G11)}
+//         pesquisa: {ativa, elemento} (o elemento de pesquisa da Google, que o ecrã põe na página; null e
+//                   inativa sem mapa ou sem a biblioteca `places`),
+//         negocio: a vista do painel do negócio selecionado ({placeId, reserva, estado, mensagem}, do
+//                  `criarNegocioSelecionado`: nenhum dado da Google)}
 // Cada mudança traz um objeto novo, congelado. Sem mapa, o GPS não aparece (null). Depois de `destruir`,
 // nada muda nem avisa.
 export function criarSeletor({
-  google, documento, configuracao, textos, api, geolocation, aoMudar, aoSugerirMorada, aoMudarVista, aoFocar,
+  google, documento, configuracao, textos, api, geolocation, aoMudar, aoEscolherMorada, aoSugerirMorada,
+  aoMudarVista, aoFocar,
 }) {
   const rotulos = textosSeletor(textos);
   const temGps = typeof geolocation?.getCurrentPosition === 'function';
@@ -182,7 +214,14 @@ export function criarSeletor({
   let moradaSugerida = null;
   // Cada morada sugerida pedida (e cada mudança do pino) muda a sequência: só conta a resposta mais recente.
   let pedidoMorada = 0;
+  let pesquisa = null; // a pesquisa da Google ({elemento, destruir}), criada com o mapa
+  // Cada escolha de negócio, cada fecho do painel e cada mudança do pino mudam a sequência: a posição de um
+  // negócio que chegue depois já não conta.
+  let pedidoNegocio = 0;
+  let posicionando = null; // {placeId, promessa}: o usarNegocio a decorrer
   let vista = null;
+  // O painel do negócio selecionado; avisa o seletor, que junta a vista dele à sua.
+  const painel = criarNegocioSelecionado({ aoMudarVista: () => atualizar() });
 
   const confirmavel = () => posicao !== null
     && podeConfirmar({ origem: posicao.origem, precisao_m: posicao.precisao_m, arrastado });
@@ -218,7 +257,9 @@ export function criarSeletor({
         })
         : null,
       moradaSugerida,
-      pesquisa: null,
+      // A pesquisa nasce com o mapa (iniciar) e sai com ele (destruir).
+      pesquisa: Object.freeze({ ativa: Boolean(pesquisa?.elemento), elemento: pesquisa?.elemento ?? null }),
+      negocio: painel.vista,
     });
   }
 
@@ -276,10 +317,11 @@ export function criarSeletor({
   // Põe o pino na posição {lat, lng, origem, precisao_m?, google_place_id?} (origem: 'pin_manual' | 'gps' |
   // 'geocoder' | 'google'), solto e por confirmar; o `google_place_id` é o dessa posição (sem ele, null: o de um
   // pino anterior nunca passa para o novo). Com {zoom}, o mapa mostra o pino nesse zoom. false se não há mapa
-  // ou a posição não é válida.
-  function colocar(nova, { zoom } = {}) {
+  // ou a posição não é válida. Não mexe no painel do negócio (o `colocar` público fecha-o).
+  function porPino(nova, { zoom } = {}) {
     if (!criado || !numero(nova?.lat) || !numero(nova?.lng)) return false;
     versaoPino += 1;
+    pedidoNegocio += 1;
     esquecerGps();
     posicao = {
       lat: nova.lat,
@@ -297,6 +339,104 @@ export function criarSeletor({
     erro = null;
     soltar();
     return true;
+  }
+
+  // O pino noutro sítio por outra via (um toque à mão, o GPS, a pesquisa, o ecrã): o painel do negócio fecha
+  // (e uma posição do negócio a caminho já não conta).
+  function colocar(nova, opcoes) {
+    if (!porPino(nova, opcoes)) return false;
+    painel.fechar();
+    return true;
+  }
+
+  // --- O negócio selecionado ---
+
+  // Tocaram num negócio do mapa (o balão da Google abre sozinho): o painel abre, o pino fica onde está.
+  function escolherNegocio(placeId, { reserva } = {}) {
+    if (!criado || !idDeLugar(placeId)) return;
+    pedidoNegocio += 1;
+    painel.abrir(placeId, { reserva });
+  }
+
+  // "Pôr o pino neste negócio" (ou a nova loja que chega do mapa com um negócio): pede à Google só a posição
+  // do lugar e põe lá o pino (origem google, por arrastar); se a Google falhar, põe-no na reserva (o ponto
+  // tocado), com a mesma regra, e o painel diz porquê; sem reserva, só a mensagem. Devolve uma promessa que
+  // nunca rejeita: true se o pino foi para a posição do lugar. Dois toques seguidos na ação fazem um só pedido.
+  function usarNegocio(placeId = painel.vista.placeId, { reserva = painel.vista.reserva } = {}) {
+    if (!criado || !idDeLugar(placeId)) return Promise.resolve(false);
+    // O painel só fica "a posicionar" enquanto o pedido dele é o que vale (qualquer outra escolha muda-o).
+    if (painel.vista.estado === 'a_posicionar' && posicionando?.placeId === placeId) return posicionando.promessa;
+    pedidoNegocio += 1;
+    const meu = pedidoNegocio;
+    painel.abrir(placeId, { reserva });
+    painel.aPosicionar();
+    const promessa = posicaoDoLugar(google, placeId).then(
+      (lugar) => {
+        if (meu !== pedidoNegocio) return false;
+        // O colocar fecha o painel.
+        colocar({ lat: lugar.lat, lng: lugar.lng, origem: 'google', google_place_id: placeId }, { zoom: ZOOM_MORADA });
+        return true;
+      },
+      () => {
+        if (meu !== pedidoNegocio) return false;
+        const ponto = painel.vista.reserva;
+        if (ponto) porPino({ ...ponto, origem: 'google', google_place_id: placeId }, { zoom: ZOOM_MORADA });
+        painel.falhou(TEXTO_LUGAR_INDISPONIVEL);
+        return false;
+      },
+    );
+    posicionando = { placeId, promessa };
+    return promessa;
+  }
+
+  // "Fechar": o painel fecha e o pino fica (uma posição a caminho já não conta).
+  function fecharNegocio() {
+    pedidoNegocio += 1;
+    painel.fechar();
+  }
+
+  // --- A pesquisa da Google ---
+
+  // Os limites do mapa à vista (as sugestões da pesquisa preferem esta zona), ou null sem mapa (ou antes de a
+  // Google os ter).
+  function limitesDoMapa() {
+    return criado?.mapa.getBounds() ?? null;
+  }
+
+  // Escolheram uma morada na pesquisa: o pino vai para lá (origem google, com o identificador do lugar), a
+  // morada da Google aparece como sugerida e o ecrã recebe-a (sem nunca pedir a inversa da Geoapify).
+  // A morada chega do `lugarDaPesquisa` ({rotulo, morada, codigo_postal, localidade}, cada um texto ou null) e
+  // passa ao ecrã campo a campo: nada mais do lugar sai daqui.
+  function aoEscolherNaPesquisa({ id, lat, lng, morada: daGoogle }) {
+    if (!colocar({ lat, lng, origem: 'google', google_place_id: id }, { zoom: ZOOM_MORADA })) return;
+    if (daGoogle.rotulo) {
+      moradaSugerida = Object.freeze({ tipo: null, partes: partesMoradaSugerida(daGoogle.rotulo, { fonte: 'google' }) });
+      atualizar();
+    }
+    aoEscolherMorada?.({
+      rotulo: daGoogle.rotulo,
+      morada: daGoogle.morada,
+      codigo_postal: daGoogle.codigo_postal,
+      localidade: daGoogle.localidade,
+      lat,
+      lng,
+    });
+  }
+
+  // A Google não deu o lugar escolhido (ou não conseguiu sugerir): o pino fica e o erro diz porquê.
+  function aoFalharNaPesquisa() {
+    erro = TEXTO_LUGAR_INDISPONIVEL;
+    atualizar();
+  }
+
+  function criarPesquisa() {
+    try {
+      return criarPesquisaLugar({
+        google, documento, aoEscolher: aoEscolherNaPesquisa, aoFalhar: aoFalharNaPesquisa, obterLimites: limitesDoMapa,
+      });
+    } catch {
+      return null; // a Google recusou o elemento: o mapa fica, sem pesquisa
+    }
   }
 
   // A morada do ponto do GPS (geocodificação inversa), só como sugestão.
@@ -419,9 +559,14 @@ export function criarSeletor({
           documento,
           elemento,
           configuracao,
-          // Um toque à mão põe o pino sem lugar da Google (o de antes sai).
+          // Um toque à mão põe o pino sem lugar da Google (o de antes sai) e fecha o painel do negócio.
           aoTocarNoMapa(ponto) {
             if (ponto && estado !== 'confirmado') colocar({ ...ponto, origem: 'pin_manual' });
+          },
+          // Um toque no ícone de um negócio: o painel abre (com o ponto tocado como reserva); confirmado, o pino
+          // fica fixo e o painel não abre (o balão da Google abre na mesma).
+          aoTocarNumLugar({ placeId, lat, lng }) {
+            if (estado !== 'confirmado') escolherNegocio(placeId, { reserva: { lat, lng } });
           },
         });
       } catch {
@@ -429,6 +574,7 @@ export function criarSeletor({
         semMapa(MENSAGEM_SEM_MAPA);
         return false;
       }
+      pesquisa = criarPesquisa();
       if (inicial) colocar(inicial, { zoom: ZOOM_MORADA });
       atualizar();
       return true;
@@ -474,11 +620,18 @@ export function criarSeletor({
     redimensionar() {
       criado?.redimensionar();
     },
-    // O pino e o círculo saem do mapa e o mapa é destruído; o GPS e a morada sugerida que chegarem depois são
-    // ignorados, e nada mais muda nem avisa. Uma segunda chamada já não encontra nada para tirar.
+    escolherNegocio,
+    usarNegocio,
+    fecharNegocio,
+    limitesDoMapa,
+    // O pino e o círculo saem do mapa, a pesquisa sai da página e o mapa é destruído; o GPS, a morada
+    // sugerida, a posição de um negócio e a escolha da pesquisa que chegarem depois são ignorados, e nada mais
+    // muda nem avisa. Uma segunda chamada já não encontra nada para tirar.
     destruir() {
       destruido = true;
       pedidoMorada += 1;
+      pedidoNegocio += 1;
+      pesquisa?.destruir();
       if (marcador) marcador.map = null;
       circulo?.setMap(null);
       criado?.destruir();

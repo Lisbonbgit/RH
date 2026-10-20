@@ -11,11 +11,16 @@
  * pela inversa do GPS, do foco, da vista nova e congelada, de nada depois de
  * destruir, do `redimensionar`, dos textos e dos da fábrica; saem os da
  * biblioteca do mapa antigo a correr no jsdom e os da pesquisa de morada da
- * Geoapify (a G11 traz os da pesquisa e do negócio da Google); entram os da
- * regra do arrasto (um pino vindo da Google só se confirma depois de
- * arrastado, e vai como `pin_manual` com o `google_place_id`), os do
- * `AdvancedMarkerElement` (`gmpDraggable` ligado e desligado), os do
- * `google.maps.Circle` e os da configuração `{google: {chave, map_id}}`.
+ * Geoapify; entram os da regra do arrasto (um pino vindo da Google só se
+ * confirma depois de arrastado, e vai como `pin_manual` com o
+ * `google_place_id`), os do `AdvancedMarkerElement` (`gmpDraggable` ligado e
+ * desligado), os do `google.maps.Circle` e os da configuração
+ * `{google: {chave, map_id}}`. A G11 junta os do negócio selecionado (um
+ * negócio tocado no mapa pequeno abre o painel; "Pôr o pino neste negócio"
+ * pede à Google só a posição) e os da pesquisa da Google (a morada escolhida
+ * põe o pino e preenche os campos, sem nunca pedir a inversa da Geoapify),
+ * com o `registo.camposPedidos` do Google falso e um lugar com sentinelas
+ * (dados de negócio que nunca podem chegar à vista, ao ecrã nem à API).
  *
  * O que no autónomo se via no DOM vê-se aqui na `vista`: a dica, o aviso, o
  * erro, o Confirmar ativo, o botão e a mensagem do GPS e a morada sugerida (em
@@ -48,6 +53,7 @@ import {
   MARGEM_GPS,
   ESTILO_CIRCULO,
 } from './seletor';
+import { TEXTO_A_POSICIONAR, TEXTO_LUGAR_INDISPONIVEL } from './lugarGoogle';
 import { MENSAGEM_SEM_MAPA, MENSAGEM_MAPA_NAO_CONFIGURADO, ZOOM_SEM_LOJAS } from './mapa';
 import {
   MENSAGEM_LOCALIZACAO_IMPRECISA, MENSAGEM_PERMISSAO_NEGADA, OPCOES_GPS, limitesDoCirculo,
@@ -125,6 +131,7 @@ function preparar({
   const focos = [];
   const vistas = [];
   const sugeridas = [];
+  const escolhidas = [];
   const seletor = criarSeletor({
     google: ajustarGoogle(google),
     documento,
@@ -137,12 +144,14 @@ function preparar({
       confirmadas.push(localizacao);
     },
     aoSugerirMorada: (sugestao) => sugeridas.push(sugestao),
+    aoEscolherMorada: (morada) => escolhidas.push(morada),
     aoFocar: (alvo) => focos.push(alvo),
     aoMudarVista: (vista) => vistas.push(vista),
   });
   const iniciado = iniciar ? seletor.iniciar(elemento, inicial === undefined ? undefined : { inicial }) : null;
   return {
-    documento, elemento, google, registo, seletor, mudancas, focos, vistas, sugeridas, geo, pedidos, iniciado,
+    documento, elemento, google, registo, seletor, mudancas, focos, vistas, sugeridas, escolhidas, geo, pedidos,
+    iniciado,
     mapa: () => registo.mapas[0],
   };
 }
@@ -155,6 +164,73 @@ const pino = (mapa) => {
 const texto = (partes) => partes.map((p) => p.texto).join('');
 const moradaSugerida = (seletor) => (seletor.vista.moradaSugerida ? texto(seletor.vista.moradaSugerida.partes) : '');
 const inversas = (m) => m.pedidos.filter((p) => p.caminho === 'inversa');
+
+// Deixa correr os pedidos à Google (o Google falso responde de forma assíncrona).
+const esperar = () => new Promise((resolver) => {
+  setTimeout(resolver, 0);
+});
+
+// Atrasa o pedido dos campos do lugar `id` até se chamar a função devolvida.
+function atrasar(google, id) {
+  const original = google.maps.places.Place.prototype.fetchFields;
+  let soltar;
+  const porta = new Promise((resolver) => {
+    soltar = resolver;
+  });
+  google.maps.places.Place.prototype.fetchFields = async function atrasado(pedido) {
+    if (this.id === id) await porta;
+    return original.call(this, pedido);
+  };
+  return () => soltar();
+}
+
+// Um negócio tocado no mapa pequeno: o identificador, o ponto do toque (a reserva) e a posição da Google.
+const NEGOCIO = 'ChIJ-teste-negocio';
+const TOQUE = Object.freeze({ lat: 38.71012, lng: -9.14021 });
+const POSICAO_NEGOCIO = Object.freeze({ lat: 38.71034, lng: -9.14047 });
+
+// Uma morada escolhida na pesquisa da Google (os componentes como a Google os dá).
+const PESQUISADO = 'EiJ-teste-rua-augusta';
+const POSICAO_AUGUSTA = Object.freeze({ lat: 38.71021, lng: -9.13695 });
+const ROTULO_AUGUSTA = 'R. Augusta 24, 1100-048 Lisboa, Portugal';
+const COMPONENTES_AUGUSTA = Object.freeze([
+  { types: ['street_number'], longText: '24', shortText: '24' },
+  { types: ['route'], longText: 'Rua Augusta', shortText: 'R. Augusta' },
+  { types: ['locality', 'political'], longText: 'Lisboa', shortText: 'Lisboa' },
+  { types: ['country', 'political'], longText: 'Portugal', shortText: 'PT' },
+  { types: ['postal_code'], longText: '1100-048', shortText: '1100-048' },
+]);
+// O que o ecrã recebe ao escolher essa morada (aoEscolherMorada): a morada da Google e o ponto.
+const MORADA_AUGUSTA = Object.freeze({
+  rotulo: ROTULO_AUGUSTA,
+  morada: 'Rua Augusta 24',
+  codigo_postal: '1100-048',
+  localidade: 'Lisboa',
+  ...POSICAO_AUGUSTA,
+});
+
+// Dados de negócio que a Google tem e que o seletor nunca pede nem mostra (os valores são sentinelas).
+const SENTINELAS = Object.freeze({
+  displayName: 'CANÁRIO-NOME',
+  nationalPhoneNumber: 'CANÁRIO-TELEFONE',
+  websiteUri: 'CANÁRIO-SITE',
+});
+
+// Os lugares que a Google falsa conhece: o negócio (com a morada dele, que só viria se fosse pedida) e a
+// morada da pesquisa, os dois com as sentinelas.
+function lugares(registo) {
+  registo.lugares[NEGOCIO] = { ...POSICAO_NEGOCIO, formattedAddress: 'CANÁRIO-MORADA-DO-NEGÓCIO', ...SENTINELAS };
+  registo.lugares[PESQUISADO] = {
+    ...POSICAO_AUGUSTA, formattedAddress: ROTULO_AUGUSTA, addressComponents: COMPONENTES_AUGUSTA, ...SENTINELAS,
+  };
+}
+
+// A vista leva o elemento de pesquisa da Google (um nó do documento, com ciclos): no texto conta só se existe.
+const emTexto = (valor) => JSON.stringify(valor, (chave, v) => (chave === 'elemento' ? v !== null : v)) ?? '';
+const semSentinelas = (valor) => !emTexto(valor).includes('CANÁRIO');
+
+const posicoesDosPinos = (mapa) => mapa.marcadores.map((marcador) => marcador.posicao());
+const pesquisa = (m) => m.seletor.vista.pesquisa.elemento;
 
 // Toca em "Estou nesta loja" e o browser responde com a posição.
 async function gps(m, latitude, longitude, accuracy) {
@@ -179,12 +255,17 @@ test('antes de iniciar: a dica para tocar no mapa, "Confirmar localização" des
   expect(registo.mapas.length).toBe(0); // o mapa só se cria em iniciar(), com a área já na página
 });
 
-test('a vista tem exatamente estas chaves (a pesquisa da Google entra na G11: até lá, null)', () => {
-  const { seletor } = preparar({ gps: true });
+test('a vista tem exatamente estas chaves (com a pesquisa da Google e o painel do negócio, congelados)', () => {
+  const { seletor, registo } = preparar({ gps: true });
   expect(Object.keys(seletor.vista)).toEqual([
-    'estado', 'dica', 'aviso', 'erro', 'semMapa', 'confirmarAtivo', 'gps', 'moradaSugerida', 'pesquisa',
+    'estado', 'dica', 'aviso', 'erro', 'semMapa', 'confirmarAtivo', 'gps', 'moradaSugerida', 'pesquisa', 'negocio',
   ]);
-  expect(seletor.vista.pesquisa).toBeNull();
+  expect(Object.keys(seletor.vista.pesquisa)).toEqual(['ativa', 'elemento']);
+  expect(seletor.vista.pesquisa.ativa).toBe(true);
+  expect(seletor.vista.pesquisa.elemento).toBe(registo.pesquisas[0]);
+  expect(Object.isFrozen(seletor.vista.pesquisa)).toBe(true);
+  expect(seletor.vista.negocio).toEqual({ placeId: null, reserva: null, estado: 'fechado', mensagem: null });
+  expect(Object.isFrozen(seletor.vista.negocio)).toBe(true);
   expect(seletor.pesquisa).toBeUndefined(); // o campo da pesquisa da Geoapify saiu
 });
 
@@ -424,14 +505,20 @@ test('um toque no mapa sem ponto não faz nada', () => {
   expect(seletor.vista.confirmarAtivo).toBe(false);
 });
 
-test('tocar num negócio do mapa: o balão é o da Google (sem stop(), nenhum balão nosso) e nada se pede à Google', () => {
-  const { mapa, registo } = preparar();
-  const evento = eventoDeToque({ lat: 38.7101, lng: -9.1402, placeId: 'ChIJ-negocio' });
-  mapa().fire('click', evento);
-  expect(evento.parado).toBe(false);
-  expect(registo.baloesDaGoogle).toBe(1);
-  expect(registo.infoWindowsNossas).toBe(0);
-  expect(registo.camposPedidos).toEqual([]);
+test('tocar num negócio do mapa: abre o painel com o ponto tocado; o pino não se move, o balão é o da Google e nada se pede', () => {
+  for (const comPino of [false, true]) {
+    const { seletor, mapa, registo } = preparar();
+    if (comPino) tocar(mapa(), 38.7, -9.15);
+    const evento = eventoDeToque({ ...TOQUE, placeId: NEGOCIO });
+    mapa().fire('click', evento);
+    expect(seletor.vista.negocio).toEqual({ placeId: NEGOCIO, reserva: TOQUE, estado: 'aberto', mensagem: null });
+    expect(mapa().marcadores.map((m) => m.posicao())).toEqual(comPino ? [{ lat: 38.7, lng: -9.15 }] : []);
+    expect(seletor.vista.estado).toBe(comPino ? 'por_confirmar' : 'vazio');
+    expect(evento.parado).toBe(false);
+    expect(registo.baloesDaGoogle).toBe(1);
+    expect(registo.infoWindowsNossas).toBe(0);
+    expect(registo.camposPedidos).toEqual([]);
+  }
 });
 
 test('Confirmar: fixa o pino (deixa de se arrastar), avisa com a localização (pin_manual) e o foco passa a "Alterar"', () => {
@@ -761,8 +848,9 @@ test('destruir tira o pino e o círculo do mapa e destrói o mapa (ouvintes e o 
   expect(m.mapa().limpezas).toBe(1);
 });
 
-test('depois de destruir nada muda nem avisa (iniciar, colocar, confirmar, alterar, GPS, erros, foco)', async () => {
+test('depois de destruir nada muda nem avisa (iniciar, colocar, confirmar, alterar, GPS, erros, foco, negócio)', async () => {
   const m = preparar({ gps: true });
+  lugares(m.registo);
   tocar(m.mapa(), 38.71, -9.14);
   m.seletor.confirmar();
   m.seletor.destruir();
@@ -770,6 +858,10 @@ test('depois de destruir nada muda nem avisa (iniciar, colocar, confirmar, alter
   const vistas = m.vistas.length;
   expect(m.seletor.iniciar(m.elemento)).toBe(false);
   expect(m.seletor.colocar({ lat: 38.72, lng: -9.15, origem: 'pin_manual' })).toBe(false);
+  m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+  await expect(m.seletor.usarNegocio(NEGOCIO, { reserva: TOQUE })).resolves.toBe(false);
+  m.seletor.fecharNegocio();
+  expect(m.registo.camposPedidos).toEqual([]);
   m.seletor.alterar();
   m.seletor.desconfirmar();
   m.seletor.confirmar();
@@ -1205,6 +1297,476 @@ test('sem api: o GPS põe o pino sem pedir a morada', async () => {
   await gps(m, 38.7075, -9.1364, 12);
   expect(m.mapa().marcadores.length).toBe(1);
   expect(m.seletor.vista.moradaSugerida).toBeNull();
+});
+
+// --- O negócio selecionado: um negócio tocado no mapa pequeno (G11) ---------------------------------
+
+test('escolherNegocio(placeId, {reserva}) abre o painel; outro negócio substitui-o; um id que não seja texto não abre nada', () => {
+  const { seletor, registo } = preparar();
+  seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+  expect(seletor.vista.negocio).toEqual({ placeId: NEGOCIO, reserva: TOQUE, estado: 'aberto', mensagem: null });
+  seletor.escolherNegocio('ChIJ-outro', { reserva: { lat: 38.72, lng: -9.13 } });
+  expect(seletor.vista.negocio).toEqual({
+    placeId: 'ChIJ-outro', reserva: { lat: 38.72, lng: -9.13 }, estado: 'aberto', mensagem: null,
+  });
+  for (const id of [undefined, null, '', '   ', 42, { id: NEGOCIO }]) {
+    seletor.fecharNegocio();
+    seletor.escolherNegocio(id, { reserva: TOQUE });
+    expect(seletor.vista.negocio.estado).toBe('fechado');
+  }
+  expect(registo.camposPedidos).toEqual([]);
+  expect(registo.marcadores.length).toBe(0);
+});
+
+test('com a localização confirmada, tocar num negócio não abre o painel nem mexe no pino (o balão da Google abre)', () => {
+  const { seletor, mapa, registo } = preparar();
+  tocar(mapa(), 38.7, -9.15);
+  seletor.confirmar();
+  mapa().fire('click', eventoDeToque({ ...TOQUE, placeId: NEGOCIO }));
+  expect(seletor.vista.negocio.estado).toBe('fechado');
+  expect(seletor.vista.estado).toBe('confirmado');
+  expect(posicoesDosPinos(mapa())).toEqual([{ lat: 38.7, lng: -9.15 }]);
+  expect(registo.baloesDaGoogle).toBe(1);
+});
+
+test('fecharNegocio fecha o painel e deixa o pino onde estava', () => {
+  const { seletor, mapa } = preparar();
+  tocar(mapa(), 38.7, -9.15);
+  mapa().fire('click', eventoDeToque({ ...TOQUE, placeId: NEGOCIO }));
+  seletor.fecharNegocio();
+  expect(seletor.vista.negocio).toEqual({ placeId: null, reserva: null, estado: 'fechado', mensagem: null });
+  expect(posicoesDosPinos(mapa())).toEqual([{ lat: 38.7, lng: -9.15 }]);
+  expect(seletor.vista.confirmarAtivo).toBe(true);
+});
+
+test('um toque à mão no mapa fecha o painel e põe o pino nesse ponto, sem lugar da Google', () => {
+  const { seletor, mapa } = preparar();
+  mapa().fire('click', eventoDeToque({ ...TOQUE, placeId: NEGOCIO }));
+  tocar(mapa(), 38.7, -9.15);
+  expect(seletor.vista.negocio.estado).toBe('fechado');
+  seletor.confirmar();
+  expect(seletor.localizacao).toEqual({
+    lat: 38.7, lng: -9.15, origem_coords: 'pin_manual', precisao_m: null, google_place_id: null,
+  });
+});
+
+test('usarNegocio (a ação do painel): "A posicionar o pino…", só a location, e o pino solto no negócio; o painel fecha', async () => {
+  const m = preparar();
+  lugares(m.registo);
+  m.mapa().fire('click', eventoDeToque({ ...TOQUE, placeId: NEGOCIO }));
+  const promessa = m.seletor.usarNegocio();
+  expect(m.seletor.vista.negocio).toEqual({
+    placeId: NEGOCIO, reserva: TOQUE, estado: 'a_posicionar', mensagem: TEXTO_A_POSICIONAR,
+  });
+  expect(m.mapa().marcadores.length).toBe(0); // ainda não: a posição vem da Google
+  await expect(promessa).resolves.toBe(true);
+  expect(m.registo.camposPedidos).toEqual([{ id: NEGOCIO, fields: ['location'] }]);
+  expect(posicoesDosPinos(m.mapa())).toEqual([POSICAO_NEGOCIO]);
+  expect(pino(m.mapa()).gmpDraggable).toBe(true);
+  expect(m.mapa().centro).toEqual(POSICAO_NEGOCIO);
+  expect(m.mapa().zoom).toBe(ZOOM_MORADA);
+  expect(m.seletor.vista.negocio).toEqual({ placeId: null, reserva: null, estado: 'fechado', mensagem: null });
+  // A regra do arrasto: um pino da Google só se confirma depois de arrastado até à porta.
+  expect(m.seletor.vista.estado).toBe('por_confirmar');
+  expect(m.seletor.vista.dica).toBe(TEXTO_ARRASTAR_LUGAR);
+  expect(m.seletor.vista.aviso).toBe('arrastar');
+  expect(m.seletor.vista.confirmarAtivo).toBe(false);
+  m.seletor.confirmar();
+  expect(m.seletor.localizacao).toBeNull();
+  // A morada de um negócio não se preenche (nem a inversa da Geoapify) e nenhum balão é nosso.
+  expect(m.seletor.vista.moradaSugerida).toBeNull();
+  expect(m.escolhidas).toEqual([]);
+  expect(m.sugeridas).toEqual([]);
+  expect(inversas(m).length).toBe(0);
+  expect(m.registo.baloesDaGoogle).toBe(1);
+  expect(m.registo.infoWindowsNossas).toBe(0);
+});
+
+test('o pino de um negócio, arrastado até à porta: confirma como pin_manual com o google_place_id do negócio', async () => {
+  const m = preparar();
+  lugares(m.registo);
+  m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+  await m.seletor.usarNegocio();
+  pino(m.mapa()).arrastarPara(38.71036, -9.14049);
+  expect(m.seletor.vista.confirmarAtivo).toBe(true);
+  m.seletor.confirmar();
+  expect(m.seletor.localizacao).toEqual({
+    lat: 38.71036, lng: -9.14049, origem_coords: 'pin_manual', precisao_m: null, google_place_id: NEGOCIO,
+  });
+  expect(m.mudancas).toEqual([m.seletor.localizacao]);
+});
+
+test('usarNegocio ao chegar do mapa (nova loja): com o painel fechado, abre-o a posicionar e põe o pino', async () => {
+  const m = preparar();
+  lugares(m.registo);
+  const promessa = m.seletor.usarNegocio(NEGOCIO, { reserva: TOQUE });
+  expect(m.seletor.vista.negocio).toEqual({
+    placeId: NEGOCIO, reserva: TOQUE, estado: 'a_posicionar', mensagem: TEXTO_A_POSICIONAR,
+  });
+  await expect(promessa).resolves.toBe(true);
+  expect(posicoesDosPinos(m.mapa())).toEqual([POSICAO_NEGOCIO]);
+  expect(m.seletor.vista.negocio.estado).toBe('fechado');
+  expect(m.seletor.vista.dica).toBe(TEXTO_ARRASTAR_LUGAR);
+  expect(m.registo.camposPedidos).toEqual([{ id: NEGOCIO, fields: ['location'] }]);
+});
+
+test('usarNegocio: a Google falha com reserva → o pino no ponto tocado (google, o mesmo id, por arrastar) e o painel diz porquê', async () => {
+  // O lugar não existe (NOT_FOUND), a Google falha, ou o lugar vem sem posição.
+  for (const lugar of [undefined, { ...POSICAO_NEGOCIO, falha: true }, { lat: null, lng: null }]) {
+    const m = preparar();
+    if (lugar) m.registo.lugares[NEGOCIO] = lugar;
+    m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+    await expect(m.seletor.usarNegocio()).resolves.toBe(false);
+    expect(m.registo.camposPedidos).toEqual([{ id: NEGOCIO, fields: ['location'] }]);
+    expect(posicoesDosPinos(m.mapa())).toEqual([TOQUE]);
+    expect(m.mapa().zoom).toBe(ZOOM_MORADA);
+    expect(m.seletor.vista.negocio).toEqual({
+      placeId: NEGOCIO, reserva: TOQUE, estado: 'erro', mensagem: TEXTO_LUGAR_INDISPONIVEL,
+    });
+    expect(m.seletor.vista.confirmarAtivo).toBe(false);
+    expect(m.seletor.vista.dica).toBe(TEXTO_ARRASTAR_LUGAR);
+    m.seletor.confirmar();
+    expect(m.seletor.localizacao).toBeNull();
+    pino(m.mapa()).arrastarPara(38.71015, -9.14025);
+    m.seletor.confirmar();
+    expect(m.seletor.localizacao).toEqual({
+      lat: 38.71015, lng: -9.14025, origem_coords: 'pin_manual', precisao_m: null, google_place_id: NEGOCIO,
+    });
+  }
+});
+
+test('usarNegocio: a Google falha sem reserva → só a mensagem (o pino fica); tocar outra vez na ação volta a pedir', async () => {
+  const m = preparar();
+  tocar(m.mapa(), 38.7, -9.15);
+  // Um toque num negócio sem ponto legível: o painel abre sem reserva.
+  m.seletor.escolherNegocio(NEGOCIO, { reserva: { lat: null, lng: null } });
+  await expect(m.seletor.usarNegocio()).resolves.toBe(false);
+  expect(m.seletor.vista.negocio).toEqual({
+    placeId: NEGOCIO, reserva: null, estado: 'erro', mensagem: TEXTO_LUGAR_INDISPONIVEL,
+  });
+  expect(posicoesDosPinos(m.mapa())).toEqual([{ lat: 38.7, lng: -9.15 }]);
+  expect(m.seletor.vista.dica).toBe(TEXTO_ARRASTAR);
+  expect(m.seletor.vista.confirmarAtivo).toBe(true);
+  // Do erro volta-se a posicionar: agora a Google responde.
+  lugares(m.registo);
+  const promessa = m.seletor.usarNegocio();
+  expect(m.seletor.vista.negocio.estado).toBe('a_posicionar');
+  await expect(promessa).resolves.toBe(true);
+  expect(posicoesDosPinos(m.mapa())).toEqual([POSICAO_NEGOCIO]);
+  expect(m.registo.camposPedidos.length).toBe(2);
+  // Sem pino nenhum antes e sem reserva: continua sem pino.
+  const sem = preparar();
+  await expect(sem.seletor.usarNegocio(NEGOCIO)).resolves.toBe(false);
+  expect(sem.mapa().marcadores.length).toBe(0);
+  expect(sem.seletor.vista.negocio.estado).toBe('erro');
+});
+
+test('um usarNegocio tardio é ignorado: outro negócio, um toque à mão, o painel fechado ou o pino noutro sítio entretanto', async () => {
+  const casos = {
+    'outro negócio tocado': (m) => m.mapa().fire('click', eventoDeToque({ lat: 38.72, lng: -9.13, placeId: 'ChIJ-outro' })),
+    'um toque à mão': (m) => tocar(m.mapa(), 38.7, -9.15),
+    'o painel fechado': (m) => m.seletor.fecharNegocio(),
+    'outro sítio (colocar)': (m) => m.seletor.colocar({ lat: 38.7, lng: -9.15, origem: 'geocoder' }),
+  };
+  for (const [caso, entretanto] of Object.entries(casos)) {
+    // Tanto a resposta boa como a falha (que poria o pino na reserva) chegam tarde.
+    for (const conhecido of [true, false]) {
+      const m = preparar();
+      if (conhecido) lugares(m.registo);
+      const soltar = atrasar(m.google, NEGOCIO);
+      m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+      const promessa = m.seletor.usarNegocio();
+      entretanto(m);
+      const pinos = posicoesDosPinos(m.mapa());
+      const { negocio } = m.seletor.vista;
+      soltar();
+      await expect(promessa).resolves.toBe(false);
+      expect([caso, posicoesDosPinos(m.mapa())]).toEqual([caso, pinos]);
+      expect([caso, m.seletor.vista.negocio]).toEqual([caso, negocio]);
+    }
+  }
+});
+
+test('dois toques seguidos na ação do painel: um só pedido à Google', async () => {
+  const m = preparar();
+  lugares(m.registo);
+  m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+  const primeira = m.seletor.usarNegocio();
+  const segunda = m.seletor.usarNegocio();
+  expect(segunda).toBe(primeira);
+  await primeira;
+  expect(m.registo.camposPedidos).toEqual([{ id: NEGOCIO, fields: ['location'] }]);
+  // Depois de posto, o painel fechou: sem negócio, nada se pede.
+  await expect(m.seletor.usarNegocio()).resolves.toBe(false);
+  expect(m.registo.camposPedidos.length).toBe(1);
+});
+
+test('usarNegocio com um identificador que não seja texto não vazio: nada se pede nem muda', async () => {
+  const m = preparar();
+  for (const id of [undefined, null, '', '   ', 42, { id: NEGOCIO }]) {
+    await expect(m.seletor.usarNegocio(id, { reserva: TOQUE })).resolves.toBe(false);
+  }
+  expect(m.seletor.vista.negocio.estado).toBe('fechado');
+  expect(m.registo.camposPedidos).toEqual([]);
+  expect(m.mapa().marcadores.length).toBe(0);
+});
+
+test('um id que não seja texto (escolherNegocio ou usarNegocio) não estraga o pedido de outro negócio a caminho', async () => {
+  const m = preparar();
+  lugares(m.registo);
+  const soltar = atrasar(m.google, NEGOCIO);
+  m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+  const promessa = m.seletor.usarNegocio();
+  for (const id of [null, '', '   ', 42, { id: 'ChIJ-outro' }]) {
+    m.seletor.escolherNegocio(id, { reserva: { lat: 38.72, lng: -9.13 } });
+    await expect(m.seletor.usarNegocio(id, { reserva: TOQUE })).resolves.toBe(false);
+  }
+  expect(m.seletor.vista.negocio.estado).toBe('a_posicionar');
+  soltar();
+  await expect(promessa).resolves.toBe(true);
+  expect(posicoesDosPinos(m.mapa())).toEqual([POSICAO_NEGOCIO]);
+  expect(m.registo.camposPedidos).toEqual([{ id: NEGOCIO, fields: ['location'] }]);
+});
+
+test('sem mapa (antes de iniciar, ou sem Google): o painel não abre e nada se pede à Google', async () => {
+  for (const opcoes of [{ iniciar: false }, { configuracao: null }, { configuracao: { google: null, centro: CENTRO } }]) {
+    const { seletor, registo } = preparar(opcoes);
+    lugares(registo);
+    seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+    await expect(seletor.usarNegocio(NEGOCIO, { reserva: TOQUE })).resolves.toBe(false);
+    expect(seletor.vista.negocio.estado).toBe('fechado');
+    expect(registo.camposPedidos).toEqual([]);
+    expect(registo.marcadores.length).toBe(0);
+  }
+});
+
+test('destruir com a posição do negócio a caminho: a resposta não põe o pino nem muda nada', async () => {
+  for (const conhecido of [true, false]) {
+    const m = preparar();
+    if (conhecido) lugares(m.registo);
+    const soltar = atrasar(m.google, NEGOCIO);
+    m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+    const promessa = m.seletor.usarNegocio();
+    m.seletor.destruir();
+    const vista = m.seletor.vista;
+    const vistas = m.vistas.length;
+    soltar();
+    await expect(promessa).resolves.toBe(false);
+    expect(m.seletor.vista).toBe(vista);
+    expect(m.vistas.length).toBe(vistas);
+    expect(m.registo.marcadores.length).toBe(0);
+  }
+});
+
+test('nenhum dado do negócio (nem a morada da Google dele) chega à vista, ao ecrã ou à localização confirmada', async () => {
+  const m = preparar({ gps: true });
+  lugares(m.registo);
+  m.mapa().fire('click', eventoDeToque({ ...TOQUE, placeId: NEGOCIO }));
+  await m.seletor.usarNegocio();
+  pino(m.mapa()).arrastarPara(38.71036, -9.14049);
+  m.seletor.confirmar();
+  // E a pesquisa: só a morada (as sentinelas do lugar pesquisado também não).
+  m.seletor.alterar();
+  pesquisa(m).escolher(PESQUISADO);
+  await esperar();
+  pino(m.mapa()).arrastarPara(38.71023, -9.13697);
+  m.seletor.confirmar();
+  expect(m.vistas.length).toBeGreaterThan(5);
+  for (const vista of m.vistas) expect(semSentinelas(vista)).toBe(true);
+  expect(semSentinelas(m.mudancas)).toBe(true);
+  expect(semSentinelas(m.escolhidas)).toBe(true);
+  expect(m.mudancas.filter(Boolean).map((l) => l.google_place_id)).toEqual([NEGOCIO, PESQUISADO]);
+  for (const { fields } of m.registo.camposPedidos) {
+    for (const campo of fields) expect(['id', 'location', 'formattedAddress', 'addressComponents']).toContain(campo);
+  }
+});
+
+// --- A pesquisa da Google (G11) ---------------------------------------------------------------------
+
+test('iniciar cria a pesquisa da Google, só com lugares de Portugal, e a vista mostra-a ({ativa, elemento})', () => {
+  const { seletor, registo, elemento } = preparar({ iniciar: false });
+  expect(seletor.vista.pesquisa).toEqual({ ativa: false, elemento: null });
+  expect(registo.pesquisas.length).toBe(0); // a pesquisa nasce com o mapa
+  seletor.iniciar(elemento);
+  expect(registo.pesquisas.length).toBe(1);
+  const [criada] = registo.pesquisas;
+  expect(seletor.vista.pesquisa.ativa).toBe(true);
+  expect(seletor.vista.pesquisa.elemento).toBe(criada);
+  expect(criada.opcoes).toEqual({ includedRegionCodes: ['pt'] });
+  seletor.iniciar(elemento); // já iniciado: a mesma
+  expect(registo.pesquisas.length).toBe(1);
+});
+
+test('sem mapa, sem a biblioteca places, ou se a Google rebentar ao criar a pesquisa: não há pesquisa (o mapa fica)', () => {
+  const semMapa = preparar({ configuracao: null });
+  expect(semMapa.seletor.vista.pesquisa).toEqual({ ativa: false, elemento: null });
+  expect(semMapa.registo.pesquisas.length).toBe(0);
+  const casos = [
+    (google) => ({ maps: { ...google.maps, places: undefined } }),
+    (google) => ({
+      maps: {
+        ...google.maps,
+        places: {
+          ...google.maps.places,
+          PlaceAutocompleteElement: function PesquisaQueRebenta() {
+            throw new Error('a Google recusou a pesquisa');
+          },
+        },
+      },
+    }),
+  ];
+  for (const ajustarGoogle of casos) {
+    const { seletor, mapa, iniciado } = preparar({ ajustarGoogle });
+    expect(iniciado).toBe(true);
+    expect(seletor.vista.semMapa).toBe(false);
+    expect(seletor.vista.pesquisa).toEqual({ ativa: false, elemento: null });
+    tocar(mapa(), 38.71, -9.14);
+    expect(seletor.vista.confirmarAtivo).toBe(true);
+  }
+});
+
+test('escolher uma sugestão: o pino solto na morada (google, o id, zoom da rua), "Morada sugerida: …" e o ecrã recebe a morada', async () => {
+  const m = preparar({ gps: true });
+  lugares(m.registo);
+  pesquisa(m).escolher(PESQUISADO);
+  await esperar();
+  expect(m.registo.camposPedidos).toEqual([
+    { id: PESQUISADO, fields: ['location', 'formattedAddress', 'addressComponents'] },
+  ]);
+  expect(posicoesDosPinos(m.mapa())).toEqual([POSICAO_AUGUSTA]);
+  expect(m.mapa().centro).toEqual(POSICAO_AUGUSTA);
+  expect(m.mapa().zoom).toBe(ZOOM_MORADA);
+  // A morada da Google, sem a atribuição da Geoapify (o mapa à volta é o da Google).
+  expect(moradaSugerida(m.seletor)).toBe(`Morada sugerida: ${ROTULO_AUGUSTA}`);
+  expect(m.seletor.vista.moradaSugerida.tipo).toBeNull();
+  expect(m.seletor.vista.moradaSugerida.partes.every((p) => p.url === null)).toBe(true);
+  expect(m.escolhidas).toEqual([MORADA_AUGUSTA]);
+  expect(Object.keys(m.escolhidas[0])).toEqual(['rotulo', 'morada', 'codigo_postal', 'localidade', 'lat', 'lng']);
+  // Nunca a inversa da Geoapify para um ponto da Google (nem a morada sugerida do GPS).
+  expect(inversas(m).length).toBe(0);
+  expect(m.sugeridas).toEqual([]);
+  // A regra do arrasto.
+  expect(m.seletor.vista.estado).toBe('por_confirmar');
+  expect(m.seletor.vista.dica).toBe(TEXTO_ARRASTAR_LUGAR);
+  expect(m.seletor.vista.aviso).toBe('arrastar');
+  expect(m.seletor.vista.confirmarAtivo).toBe(false);
+  m.seletor.confirmar();
+  expect(m.seletor.localizacao).toBeNull();
+});
+
+test('a morada escolhida, arrastada até à porta: confirma como pin_manual com o google_place_id; a morada sugerida fica', async () => {
+  const m = preparar();
+  lugares(m.registo);
+  pesquisa(m).escolher(PESQUISADO);
+  await esperar();
+  pino(m.mapa()).arrastarPara(38.71023, -9.13697);
+  expect(moradaSugerida(m.seletor)).toBe(`Morada sugerida: ${ROTULO_AUGUSTA}`);
+  expect(m.seletor.vista.confirmarAtivo).toBe(true);
+  m.seletor.confirmar();
+  expect(m.seletor.localizacao).toEqual({
+    lat: 38.71023, lng: -9.13697, origem_coords: 'pin_manual', precisao_m: null, google_place_id: PESQUISADO,
+  });
+  // Um toque à mão depois: a morada sugerida e o id saem.
+  m.seletor.alterar();
+  tocar(m.mapa(), 38.7, -9.15);
+  expect(m.seletor.vista.moradaSugerida).toBeNull();
+  m.seletor.confirmar();
+  expect(m.seletor.localizacao.google_place_id).toBeNull();
+});
+
+test('escolher uma sugestão com a localização confirmada ou com o painel do negócio aberto: o pino vai para a morada', async () => {
+  const m = preparar();
+  lugares(m.registo);
+  tocar(m.mapa(), 38.7, -9.15);
+  m.seletor.confirmar();
+  pesquisa(m).escolher(PESQUISADO);
+  await esperar();
+  expect(m.seletor.vista.estado).toBe('por_confirmar');
+  expect(m.seletor.localizacao).toBeNull();
+  expect(posicoesDosPinos(m.mapa())).toEqual([POSICAO_AUGUSTA]);
+  m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+  pesquisa(m).escolher(PESQUISADO);
+  await esperar();
+  expect(m.seletor.vista.negocio.estado).toBe('fechado');
+  expect(m.escolhidas.length).toBe(2);
+});
+
+test('uma sugestão sem morada por extenso: o pino na mesma, sem morada sugerida, e o ecrã recebe o que houver', async () => {
+  const m = preparar();
+  m.registo.lugares['EiJ-so-o-ponto'] = { lat: 38.7, lng: -9.15 };
+  pesquisa(m).escolher('EiJ-so-o-ponto');
+  await esperar();
+  expect(posicoesDosPinos(m.mapa())).toEqual([{ lat: 38.7, lng: -9.15 }]);
+  expect(m.seletor.vista.moradaSugerida).toBeNull();
+  expect(m.escolhidas).toEqual([{ rotulo: null, morada: null, codigo_postal: null, localidade: null, lat: 38.7, lng: -9.15 }]);
+});
+
+test('a pesquisa falha (a Google não dá o lugar, ou o gmp-error): o erro do seletor diz porquê e o pino fica', async () => {
+  for (const falhar of [(el) => el.escolher('EiJ-inexistente'), (el) => el.falhar()]) {
+    const m = preparar();
+    lugares(m.registo);
+    tocar(m.mapa(), 38.7, -9.15);
+    falhar(pesquisa(m));
+    await esperar();
+    expect(m.seletor.vista.erro).toBe(TEXTO_LUGAR_INDISPONIVEL);
+    expect(posicoesDosPinos(m.mapa())).toEqual([{ lat: 38.7, lng: -9.15 }]);
+    expect(m.seletor.vista.confirmarAtivo).toBe(true);
+    expect(m.seletor.vista.moradaSugerida).toBeNull();
+    expect(m.escolhidas).toEqual([]);
+    // Pôr o pino noutro sítio limpa o erro.
+    tocar(m.mapa(), 38.71, -9.14);
+    expect(m.seletor.vista.erro).toBeNull();
+  }
+});
+
+test('limitesDoMapa: os limites que o mapa mostra (getBounds), ou null sem mapa; a pesquisa usa-os ao focar', () => {
+  const m = preparar({ iniciar: false });
+  expect(m.seletor.limitesDoMapa()).toBeNull();
+  m.seletor.iniciar(m.elemento);
+  expect(m.seletor.limitesDoMapa().toJSON()).toEqual(m.mapa().getBounds().toJSON());
+  const elemento = pesquisa(m);
+  elemento.dispatchEvent(new Event('focus'));
+  expect(elemento.locationBias.toJSON()).toEqual(m.mapa().getBounds().toJSON());
+  // O mapa mudou de sítio: ao focar outra vez, os limites novos.
+  m.seletor.colocar({ lat: 38.8, lng: -9.3, origem: 'pin_manual' }, { zoom: ZOOM_MORADA });
+  elemento.dispatchEvent(new Event('focus'));
+  expect(elemento.locationBias.contains({ lat: 38.8, lng: -9.3 })).toBe(true);
+  // A Google ainda sem limites (antes do primeiro desenho): null.
+  m.mapa().getBounds = () => undefined;
+  expect(m.seletor.limitesDoMapa()).toBeNull();
+  m.seletor.destruir();
+  expect(m.seletor.limitesDoMapa()).toBeNull();
+});
+
+test('destruir tira a pesquisa (o elemento sai de onde o ecrã o pôs); uma escolha a caminho ou depois não faz nada', async () => {
+  const m = preparar();
+  lugares(m.registo);
+  const elemento = pesquisa(m);
+  const contentor = m.documento.createElement('div');
+  contentor.appendChild(elemento);
+  const soltar = atrasar(m.google, PESQUISADO);
+  elemento.escolher(PESQUISADO);
+  m.seletor.destruir();
+  expect(contentor.childNodes.length).toBe(0);
+  const vistas = m.vistas.length;
+  soltar();
+  await esperar();
+  elemento.escolher(PESQUISADO);
+  elemento.falhar();
+  await esperar();
+  expect(m.registo.camposPedidos.length).toBe(1); // só a escolha de antes de destruir
+  expect(m.vistas.length).toBe(vistas);
+  expect(m.escolhidas).toEqual([]);
+  expect(m.registo.marcadores.length).toBe(0);
+});
+
+test('partesMoradaSugerida com a fonte google: só "Morada sugerida: <rótulo>"; sem fonte, com a atribuição da Geoapify', () => {
+  const google = partesMoradaSugerida('<b>x</b>', { fonte: 'google' });
+  expect(google).toEqual([{ texto: 'Morada sugerida: ', url: null }, { texto: '<b>x</b>', url: null }]);
+  expect(Object.isFrozen(google)).toBe(true);
+  expect(google.every((p) => Object.isFrozen(p))).toBe(true);
+  expect(texto(partesMoradaSugerida('Rua X'))).toBe('Morada sugerida: Rua X · Powered by Geoapify');
+  expect(texto(partesMoradaSugerida('Rua X', { fonte: 'geoapify' }))).toBe('Morada sugerida: Rua X · Powered by Geoapify');
 });
 
 // --- A mais: a vista, redimensionar -----------------------------------------------------------------
