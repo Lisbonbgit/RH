@@ -868,10 +868,17 @@ def test_bolso_com_a_barreira_fechada_nenhum_pedido_sai(tmp_path):
 
 _EU = '{"id": "u1", "email": "carol@lisbonb.com", "role": "admin", "name": "Carol"}'
 
-# `espera(ms)` deixa correr os efeitos e as promessas dentro do `act`.
+# `espera(ms)` deixa correr os efeitos e as promessas dentro do `act`. `esperarAte`
+# espera por uma condição (de 50 em 50 ms, até `maxMs`) em vez de um tempo fixo, que
+# numa máquina lenta acabava antes de o ecrã lá chegar. Conta voltas e não lê o
+# `Date.now`: com `_RELOGIO` o relógio está parado.
 _ESPERA = """
 const espera = (ms = 0) => act(async () => { await new Promise((r) => setTimeout(r, ms)); });
 const texto = () => document.body.textContent;
+const esperarAte = async (condicao, maxMs = 15000) => {
+  for (let i = 0; i * 50 < maxMs && !condicao(); i += 1) await espera(50);
+  if (!condicao()) throw new Error('esperarAte: a condição nunca chegou');
+};
 """
 
 # O AuthProvider VERDADEIRO, com um espião que guarda o que o contexto expõe.
@@ -907,15 +914,39 @@ console.error = (...a) => {
 
 @pytest.mark.parametrize("falha", ["[502, {}]", "'rede'"])
 def test_arranque_sem_resposta_do_servidor_e_sem_ligacao_e_nao_login(tmp_path, falha):
-    """`rede` leva ~3 s: são as três tentativas (1 s + 2 s) que já existiam."""
+    """`rede` leva ~3 s: são as três tentativas (1 s + 2 s) que já existiam. Entre elas
+    NUNCA pode haver «sem user, com ligação, sem loading»: o ProtectedRoute mandava para
+    o /login ao fim da primeira, e o «Sem ligação» nunca aparecia."""
     r = _corre(_ESPIAO + """
-      await espera(3200);
-      return estado();
+      await esperarAte(() => auth.semLigacao);
+      return { ...estado(), renders: historico };
     """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _SEM_LIGACAO_ESPERADO + r"""
       localStorage.setItem('token', 't');
       RESPOSTAS['GET /auth/me'] = %s;
     """ % falha)
+    renders = r.pop("renders")
     assert r == {"user": None, "semLigacao": True, "loading": False, "token": "t"}
+    assert renders and [None, False, False] not in renders
+
+
+def test_tentar_de_novo_sem_rede_nao_passa_pelo_login(tmp_path):
+    """O «Tentar de novo» com a rede ainda em baixo nas duas primeiras: as tentativas
+    seguintes correm com o `loading` de pé, e a terceira entra. (Com uma falha só, a
+    resposta da segunda chegava no mesmo render que o `loading` em baixo e escondia-o.)"""
+    r = _corre(_ESPIAO + """
+      RESPOSTAS['GET /auth/me'] = ['rede', 'rede', [200, %s]];
+      historico.length = 0;
+      await act(async () => { auth.tentarDeNovo(); });
+      await esperarAte(() => auth.user);
+      return { ...estado(), pedidos: PEDIDOS.length, renders: historico };
+    """ % _EU, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _SEM_LIGACAO_ESPERADO + r"""
+      localStorage.setItem('token', 't');
+      RESPOSTAS['GET /auth/me'] = [502, {}];
+    """)
+    renders = r.pop("renders")
+    assert r == {"user": "carol@lisbonb.com", "semLigacao": False, "loading": False, "token": "t",
+                 "pedidos": 4}
+    assert renders and [None, False, False] not in renders
 
 
 def test_tentar_de_novo_volta_a_perguntar_e_entra(tmp_path):

@@ -58,7 +58,9 @@ export const AuthProvider = ({ children }) => {
       }
       if (!error?.response && tentativa < 3) {
         await new Promise((r) => setTimeout(r, 1000 * tentativa));
-        return fetchUser(tentativa + 1);
+        // `await`: sem ele o `finally` desta tentativa baixava já o `loading`, sem user
+        // nem `semLigacao`, e o ProtectedRoute mandava para o /login ao fim de 1 s.
+        return await fetchUser(tentativa + 1);
       }
       console.error('Não foi possível confirmar a sessão (a sessão não foi terminada):', error);
       setSemLigacao(true);
