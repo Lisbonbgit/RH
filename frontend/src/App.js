@@ -45,6 +45,7 @@ import EstoqueEmBreve from './pages/admin/estoque/EstoqueEmBreve';
 import EstoqueVisaoGeral from './pages/admin/estoque/EstoqueVisaoGeral';
 import EstoqueCatalogo from './pages/admin/estoque/EstoqueCatalogo';
 import EstoqueCompras from './pages/admin/estoque/EstoqueCompras';
+import EstoqueComprasMakro from './pages/admin/estoque/EstoqueComprasMakro';
 import EstoqueDefinicoes from './pages/admin/estoque/EstoqueDefinicoes';
 import EstoqueUnidades from './pages/admin/estoque/EstoqueUnidades';
 import EstoqueUtilizadores from './pages/admin/estoque/EstoqueUtilizadores';
@@ -272,6 +273,7 @@ function AppRoutes() {
         <Route path="estoque/escanear" element={<EstoqueEmBreve />} />
         <Route path="estoque/lista-compras" element={<EstoqueListaCompras />} />
         <Route path="estoque/compras" element={<EstoqueCompras />} />
+        <Route path="estoque/compras-makro" element={<EstoqueComprasMakro />} />
         <Route path="estoque/transferencias" element={<EstoqueTransferencias />} />
         <Route path="estoque/fichas" element={<EstoqueFichas />} />
         <Route path="estoque/producao" element={<EstoqueProducao />} />

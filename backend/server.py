@@ -6817,6 +6817,11 @@ class EstoqueProdutoCreateIn(BaseModel):
     peso_unidade: Optional[str] = None
     fornecedor: Optional[str] = None
     ilimitado: Optional[bool] = None  # artigo infinito (ex.: água) — não conta no stock
+    de_compra: Optional[bool] = None  # artigo de compra (contagem + lista Makro)
+    pack_qtd: Optional[float] = None
+    pack_nome: Optional[str] = None
+    preco_pack: Optional[float] = None
+    cadencia: Optional[str] = None  # "semanal" | "bissemanal"
 
 
 class EstoqueProdutoUpdateIn(BaseModel):
@@ -6828,6 +6833,11 @@ class EstoqueProdutoUpdateIn(BaseModel):
     peso_unidade: Optional[str] = None
     fornecedor: Optional[str] = None
     ilimitado: Optional[bool] = None
+    de_compra: Optional[bool] = None
+    pack_qtd: Optional[float] = None
+    pack_nome: Optional[str] = None
+    preco_pack: Optional[float] = None
+    cadencia: Optional[str] = None
 
 
 class EstoqueMergeIn(BaseModel):
@@ -6891,6 +6901,12 @@ async def estoque_overview(current_user: dict = Depends(admin_required)):
 async def estoque_compras(marca: str = Query(...), current_user: dict = Depends(admin_required)):
     """Lista de compras consolidada por marca."""
     return await _estoque_get("/integ/compras", {"marca": marca})
+
+
+@api_router.get("/estoque/compras-makro")
+async def estoque_compras_makro(current_user: dict = Depends(admin_required)):
+    """Lista de compras Makro consolidada (todas as lojas, packs + custo)."""
+    return await _estoque_get("/integ/compras-makro", {})
 
 
 @api_router.get("/estoque/definicoes")

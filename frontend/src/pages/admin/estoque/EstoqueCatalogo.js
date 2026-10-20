@@ -50,6 +50,11 @@ function ProdutoDialog({ marca, produto, onClose, onSaved, onDelete }) {
   const [pesoUnidade, setPesoUnidade] = useState(produto?.peso_unidade || 'g');
   const [foto, setFoto] = useState(produto?.foto || null);
   const [ilimitado, setIlimitado] = useState(produto?.ilimitado || false);
+  const [deCompra, setDeCompra] = useState(produto?.de_compra || false);
+  const [packQtd, setPackQtd] = useState(produto?.pack_qtd != null ? String(produto.pack_qtd) : '');
+  const [packNome, setPackNome] = useState(produto?.pack_nome || '');
+  const [precoPack, setPrecoPack] = useState(produto?.preco_pack != null ? String(produto.preco_pack) : '');
+  const [cadencia, setCadencia] = useState(produto?.cadencia || 'semanal');
   const [saving, setSaving] = useState(false);
 
   async function escolherFoto(e) {
@@ -70,6 +75,15 @@ function ProdutoDialog({ marca, produto, onClose, onSaved, onDelete }) {
     if (pesoOk) { base.peso_valor = parseNum(pesoValor); base.peso_unidade = pesoUnidade; }
     else if (editar) { base.peso_valor = 0; } // limpa o peso
     base.ilimitado = ilimitado;
+    base.de_compra = deCompra;
+    base.cadencia = cadencia;
+    if (deCompra) {
+      base.pack_qtd = parseNum(packQtd) > 0 ? parseNum(packQtd) : 0;
+      base.pack_nome = packNome.trim();
+      base.preco_pack = parseNum(precoPack) > 0 ? parseNum(precoPack) : 0;
+    } else {
+      base.pack_qtd = 0; base.pack_nome = ''; base.preco_pack = 0;
+    }
     if (foto !== (produto?.foto || null)) base.foto = foto || '';
     setSaving(true);
     try {
@@ -140,6 +154,47 @@ function ProdutoDialog({ marca, produto, onClose, onSaved, onDelete }) {
             <span className="block text-[11px] text-muted-foreground">Ex.: água — entra nas receitas mas nunca falta nem se desconta.</span>
           </span>
         </label>
+
+        <div className="space-y-2 rounded-lg border p-3">
+          <label className="flex items-start gap-2 text-sm cursor-pointer">
+            <input type="checkbox" checked={deCompra} onChange={(e) => setDeCompra(e.target.checked)} className="h-4 w-4 mt-0.5" />
+            <span>
+              Artigo de compra (contagem de domingo + lista da Makro)
+              <span className="block text-[11px] text-muted-foreground">Só estes aparecem na contagem guiada e na lista de compras.</span>
+            </span>
+          </label>
+          {deCompra && (
+            <>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs">Tamanho do pack</Label>
+                  <Input inputMode="decimal" value={packQtd} onChange={(e) => setPackQtd(e.target.value)} placeholder={`ex.: 25 (${medida})`} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Nome do pack</Label>
+                  <Input value={packNome} onChange={(e) => setPackNome(e.target.value)} placeholder="saco, caixa…" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs">Preço do pack (€)</Label>
+                  <Input inputMode="decimal" value={precoPack} onChange={(e) => setPrecoPack(e.target.value)} placeholder="ex.: 20" />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Cadência</Label>
+                  <Select value={cadencia} onValueChange={setCadencia}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="semanal">Semanal</SelectItem>
+                      <SelectItem value="bissemanal">Fruta (2×/semana)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <p className="text-[11px] text-muted-foreground">Quanto comprar sai do <b>máximo por loja</b> (define-o no Stock de cada loja).</p>
+            </>
+          )}
+        </div>
 
         <div className="space-y-1.5">
           <Label>Foto (opcional)</Label>
@@ -287,6 +342,7 @@ export default function EstoqueCatalogo() {
                       </p>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
+                      {p.de_compra && <Badge>compra</Badge>}
                       {p.ilimitado && <Badge variant="secondary">ilimitado</Badge>}
                       {p.tem_receita && <Badge variant="outline">receita</Badge>}
                     </div>

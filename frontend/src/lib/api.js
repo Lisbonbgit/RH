@@ -168,6 +168,7 @@ export const setEstoqueMaximo = (produtoId, unidadeId, maximo) =>
   axios.patch(`${API_URL}/estoque/stock/${produtoId}/maximo`, { maximo }, { params: { unidade_id: unidadeId } });
 export const getEstoqueOverview = () => axios.get(`${API_URL}/estoque/overview`);
 export const getEstoqueCompras = (marca) => axios.get(`${API_URL}/estoque/compras`, { params: { marca } });
+export const getEstoqueComprasMakro = () => axios.get(`${API_URL}/estoque/compras-makro`);
 export const getEstoqueDefinicoes = () => axios.get(`${API_URL}/estoque/definicoes`);
 export const simularEstoqueDefinicao = (marca, percentagem) =>
   axios.get(`${API_URL}/estoque/definicoes/${marca}/simular`, { params: { percentagem } });
