@@ -517,6 +517,7 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
     'components/crm/GuardaCrm.js',
     'components/crm/seccaoCrm.js',
     'components/crm/MapaLojas.js',
+    'components/crm/NegocioSelecionado.js',
     'components/crm/FiltrosMapa.js',
     'components/crm/CartaoLoja.js',
     'components/crm/SeletorLocalizacao.js',
