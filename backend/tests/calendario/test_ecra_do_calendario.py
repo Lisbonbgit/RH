@@ -175,6 +175,17 @@ def test_um_401_que_chega_ao_ecra_so_faz_logout(tmp_path):
     assert r == [["logout"]]
 
 
+def test_um_401_so_da_contagem_tambem_so_faz_logout(tmp_path):
+    """O `carregarContagem` tem o seu próprio `catch`: o 401 dele não pode ser engolido."""
+    mes, _ = _servidor()
+    r = _ecra(tmp_path, "devolve(REGISTO.filter((x) => x[0] !== 'GET'));", mes, vista="contagem", antes="""
+const servidorDoMes = global.SERVIDOR;
+global.SERVIDOR = (metodo, url, ...resto) => (metodo === 'GET' && url === '/calendario/contagem'
+  ? { erro: { response: { status: 401 } } } : servidorDoMes(metodo, url, ...resto));
+""")
+    assert r == [["logout"]]
+
+
 def test_tapar_abre_com_as_horas_do_buraco_e_marcar_abre_vazio(tmp_path):
     mes, _ = _servidor()
     r = _ecra(tmp_path, """
