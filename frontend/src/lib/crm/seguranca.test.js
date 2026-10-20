@@ -1,31 +1,40 @@
 /**
- * VARRIMENTO DE SEGURANÇA DO DOM — nenhum dado do CRM entra no DOM como HTML.
+ * VARRIMENTO DE SEGURANÇA DO CRM — nenhum dado entra no DOM como HTML, e o Google Maps só se usa onde e
+ * como o plano diz.
  *
- * Regra 9 do §0 do plano (dossiê §0, regra 9), com as correções
- * "T2.23 (seguranca.test.js)" e "T2.23 (porta do mapa.test.js e
- * seguranca.test.js)". O React escapa o texto por omissão; o perigo são as vias
- * que tratam um texto como HTML:
- *   - em todo o lado: `dangerouslySetInnerHTML`, `innerHTML`, `outerHTML`,
- *     `insertAdjacentHTML` e `document.write`, nem em comentários (o `dom.js` e o
- *     `mapa.js` falam de "HTML" sem os nomear);
- *   - o Leaflet põe como HTML o conteúdo das etiquetas e balões (`bindTooltip`,
- *     `bindPopup`, `setContent`, `setTooltipContent`, `setPopupContent`), o
- *     `html` de um `divIcon` e a atribuição (`attribution:`, o `prefix` do
- *     controlo, `addAttribution`, `setPrefix`). Só o `lib/crm/mapa.js` usa o
- *     conteúdo e a atribuição, e lá o conteúdo é sempre um nó do `el(...)` e a
- *     atribuição é sempre `ATRIBUICOES[...].html`. Um `divIcon` nunca leva `html`
- *     (o pino do seletor tem a forma no CSS, `.pino-seletor`, como no autónomo);
- *   - a mais: um `tel:` só se monta no `hrefTelefone` do `dom.js` (só dígitos e
- *     `+`).
+ * Regra 9 do §0 do plano do mapa Google (`docs/superpowers/plans/2026-10-14-crm-mapa-google.md`, G8),
+ * que adapta a regra 9 da F2 (dossiê §0). O React escapa o texto por omissão; o perigo são as vias que
+ * tratam um texto como HTML e as peças da Google que trazem dados de negócio ou mudam o que se paga:
+ *   - em todo o lado: `dangerouslySetInnerHTML`, `innerHTML`, `outerHTML`, `insertAdjacentHTML` e
+ *     `document.write`, nem em comentários (o `dom.js` e o `mapa.js` falam de "HTML" sem os nomear);
+ *   - nunca um balão nosso: `InfoWindow` e `setContent` (o balão que abre ao tocar num negócio é o da
+ *     própria Google, que o código nunca cria nem trava);
+ *   - nunca `PlacesService`, `Geocoder`, o `places.Autocomplete` legado nem `AutocompleteSuggestion`; e
+ *     nunca os nomes dos dados de negócio da Google (canários: telefones, site, morada curta, horários,
+ *     estado, classificação, opiniões, fotos, resumo, preço, ligação da Google e o nome), também em
+ *     comentários — nos comentários escreve-se "nome do negócio", "morada da Google". O nome
+ *     (`displayName`) só conta como leitura ou texto: a atribuição do React
+ *     `OpcaoConta.displayName = 'OpcaoConta';` (`pages/crm/DefinicoesMembros.js`) passa;
+ *   - o lugar da Google só no `lib/crm/lugarGoogle.js` (`fetchFields`, `formattedAddress`,
+ *     `addressComponents`, `toPlace`, `Place`, `PlaceAutocompleteElement`); lá, cada `fetchFields` é
+ *     exatamente `fetchFields({ fields: CAMPOS_POSICAO })` ou `fetchFields({ fields: CAMPOS_MORADA_GOOGLE })`
+ *     (nem em comentários com outra forma), e cada lista `CAMPOS_… = Object.freeze([...])` ou
+ *     `fields: [...]` só tem `id`, `location`, `formattedAddress` e `addressComponents` (outro campo
+ *     traz dados do negócio ou muda o SKU cobrado);
+ *   - `google.maps` e `importLibrary` só em `lib/crm/{carregadorGoogle,mapa,seletor,lugarGoogle}.js` (um
+ *     componente só passa o `window.google`); o `__crmMapa` (o gancho da verificação no browser, regra 16)
+ *     só no `mapa.js`; o `content` de um marcador avançado só no `mapa.js` e no `seletor.js`, e lá é
+ *     sempre um nó do `el(...)`;
+ *   - um `tel:` só se monta no `hrefTelefone` do `dom.js` (só dígitos e `+`).
+ * As regras da biblioteca do mapa antigo (etiquetas, ícones com `html`, `attribution:` e o prefixo)
+ * saíram com ela: a atribuição do mapa é a da própria Google, que o CRM não escreve.
  *
  * Varre os `.js` e `.jsx` de `lib/crm`, `components/crm` e `pages/crm`, mais o
- * `components/layouts/CrmLayout.js` e o `hooks/useEstadoCrm.js`. Ficam de fora
- * os testes (`*.test.js`) e a pasta `testes/` (os falsos rebentam de propósito
- * com estas vias, por isso nomeiam-nas).
+ * `components/layouts/CrmLayout.js` e o `hooks/useEstadoCrm.js`. Ficam de fora os testes (`*.test.js`) e a
+ * pasta `testes/` (o `googleFalso.js` imita a Google, por isso nomeia o que aqui se recusa).
  *
- * O `procurarHtmlPerigoso` é provado primeiro com amostras (cada regra apanha a
- * sua e o código seguro passa), e a lista dos ficheiros também: um varrimento
- * que não lê nada, ou que não sabe ler, passava sempre.
+ * O `procurarViolacoes` é provado primeiro com amostras (cada regra apanha a sua e o código seguro passa),
+ * e a lista dos ficheiros também: um varrimento que não lê nada, ou que não sabe ler, passava sempre.
  */
 /* eslint-disable no-template-curly-in-string -- as amostras são código-fonte com `${…}`, em texto de propósito */
 import fs from 'fs';
@@ -36,87 +45,121 @@ const SRC = path.join(__dirname, '..', '..');
 const PASTAS = ['lib/crm', 'components/crm', 'pages/crm'];
 const FICHEIROS_SOLTOS = ['components/layouts/CrmLayout.js', 'hooks/useEstadoCrm.js'];
 
+const CARREGADOR = 'lib/crm/carregadorGoogle.js';
 const MAPA = 'lib/crm/mapa.js';
+const SELETOR = 'lib/crm/seletor.js';
+const LUGAR = 'lib/crm/lugarGoogle.js';
 const DOM = 'lib/crm/dom.js';
+// Os únicos ficheiros que falam com o `google.maps`.
+const MODULOS_GOOGLE = [CARREGADOR, MAPA, SELETOR, LUGAR];
+const COMPONENTE = 'components/crm/Exemplo.js';
 
-// As chamadas do Leaflet que põem o conteúdo de uma etiqueta ou de um balão como HTML (se for texto).
-const CONTEUDO_LEAFLET = /\b(?:bindTooltip|bindPopup|setContent|setTooltipContent|setPopupContent)\s*\(/g;
+// --- O detetor ----------------------------------------------------------------------------------
 
-// [regra, padrão, onde]: onde = 'sempre' | 'fora do mapa' | 'no mapa' | 'fora do dom'.
+const sempre = () => true;
+const so = (...ficheiros) => (ficheiro) => ficheiros.includes(ficheiro);
+const foraDe = (...ficheiros) => (ficheiro) => !ficheiros.includes(ficheiro);
+const palavra = (nome) => new RegExp(`\\b${nome}\\b`, 'g');
+
+// Os únicos campos de um lugar da Google que o CRM pede (o `CAMPOS_PERMITIDOS` do `lugarGoogle.js`).
+const CAMPOS_PERMITIDOS = ['id', 'location', 'formattedAddress', 'addressComponents'];
+// Os dados de negócio que a Google tem e o CRM nunca lê nem nomeia (o nome tem regra própria, em baixo).
+const CANARIOS = [
+  'nationalPhoneNumber',
+  'internationalPhoneNumber',
+  'websiteUri',
+  'shortFormattedAddress',
+  'regularOpeningHours',
+  'currentOpeningHours',
+  'businessStatus',
+  'rating',
+  'reviews',
+  'photos',
+  'editorialSummary',
+  'priceLevel',
+  'googleMapsURI',
+];
+// O que só o `lugarGoogle.js` pode nomear.
+const SO_NO_LUGAR = ['fetchFields', 'formattedAddress', 'addressComponents', 'toPlace', 'Place', 'PlaceAutocompleteElement'];
+
+// [regra, padrão, aplica(ficheiro)]: `ficheiro` é o caminho a partir de frontend/src (ex.: 'lib/crm/mapa.js').
 const REGRAS = [
-  ['dangerouslySetInnerHTML', /dangerouslySetInnerHTML/g, 'sempre'],
-  ['innerHTML', /\binnerHTML\b/g, 'sempre'],
-  ['outerHTML', /\bouterHTML\b/g, 'sempre'],
-  ['insertAdjacentHTML', /\binsertAdjacentHTML\b/g, 'sempre'],
+  ['dangerouslySetInnerHTML', /dangerouslySetInnerHTML/g, sempre],
+  ['innerHTML', /\binnerHTML\b/g, sempre],
+  ['outerHTML', /\bouterHTML\b/g, sempre],
+  ['insertAdjacentHTML', /\binsertAdjacentHTML\b/g, sempre],
   // document.write e writeln, também num documento recebido por parâmetro (documento.write).
-  ['document.write', /\.\s*write(?:ln)?\b/g, 'sempre'],
-  ['addAttribution/setPrefix', /\b(?:addAttribution|setPrefix)\s*\(/g, 'sempre'],
-  ['conteúdo do Leaflet fora do mapa.js', CONTEUDO_LEAFLET, 'fora do mapa'],
-  ['attribution fora do mapa.js', /\battribution['"]?\s*:/g, 'fora do mapa'],
-  // No mapa.js: o conteúdo é sempre um nó do el(...), e a atribuição sempre uma constante.
+  ['document.write', /\.\s*write(?:ln)?\b/g, sempre],
+  ['InfoWindow', /\bInfoWindow\b/g, sempre],
+  ['setContent', /\bsetContent\b/g, sempre],
+  ['PlacesService', /\bPlacesService\b/g, sempre],
+  ['Geocoder', /\bGeocoder\b/g, sempre],
+  // O legado, também tirado da biblioteca por desestruturação (`const { Autocomplete } = …`).
+  ['places.Autocomplete', /\bAutocomplete\b/g, sempre],
+  ['AutocompleteSuggestion', /\bAutocompleteSuggestion\b/g, sempre],
+  // Só a leitura ou o texto: uma atribuição (`X.displayName = 'X';`) passa; uma comparação (`===`) não.
+  ['canário displayName', /\bdisplayName\b(?!\s*=[^=])/g, sempre],
+  ...CANARIOS.map((nome) => [`canário ${nome}`, palavra(nome), sempre]),
+  ...SO_NO_LUGAR.map((nome) => [`${nome} fora do lugarGoogle.js`, palavra(nome), foraDe(LUGAR)]),
   [
-    'conteúdo do Leaflet sem el()',
-    // Os espaços ficam dentro do (?!…): fora, o \s* recuava um espaço e o "( el(" passava por perigoso.
-    /\b(?:bindTooltip|bindPopup|setContent|setTooltipContent|setPopupContent)\s*\((?!\s*el\()/g,
-    'no mapa',
+    'fetchFields sem CAMPOS_POSICAO nem CAMPOS_MORADA_GOOGLE',
+    /\bfetchFields\b(?!\s*\(\s*\{\s*fields\s*:\s*CAMPOS_(?:POSICAO|MORADA_GOOGLE)\s*,?\s*\}\s*\))/g,
+    so(LUGAR),
   ],
-  ['attribution sem ATRIBUICOES[…].html', /\battribution['"]?\s*:(?!\s*ATRIBUICOES\[[^\]\n]+\]\.html\b)/g, 'no mapa'],
+  [
+    'google.maps fora dos módulos do Google',
+    /\bgoogle\s*(?:\?\.|\.)\s*maps\b|\bgoogle\s*(?:\?\.)?\s*\[\s*['"`]maps['"`]\s*\]/g,
+    foraDe(...MODULOS_GOOGLE),
+  ],
+  ['importLibrary fora dos módulos do Google', /\bimportLibrary\b/g, foraDe(...MODULOS_GOOGLE)],
+  ['__crmMapa fora do mapa.js', /__crmMapa/g, foraDe(MAPA)],
+  // `content: …` (também entre aspas) e `x.content = …` (uma comparação, `===`, não conta).
+  ['content fora do mapa.js e do seletor.js', /\bcontent['"]?\s*:|\.\s*content\s*=(?!=)/g, foraDe(MAPA, SELETOR)],
+  // Os espaços ficam dentro do (?!…): fora, o \s* recuava um espaço e o ": el(" passava por perigoso.
+  ['content sem el()', /\bcontent['"]?\s*:(?!\s*el\()|\.\s*content\s*=(?!=)(?!\s*el\()/g, so(MAPA, SELETOR)],
   // Um texto que começa por tel: ('tel:…', "tel:…" ou `tel:…${…}`); um `tel:` num comentário passa.
-  ['tel: fora do dom.js', /['"]tel:|`tel:(?!`)/g, 'fora do dom'],
+  ['tel: fora do dom.js', /['"]tel:|`tel:(?!`)/g, foraDe(DOM)],
 ];
 
-// O texto entre os parênteses de uma chamada, a partir do que abre (sem contar os de dentro de textos:
-// basta para objetos de opções).
-function argumentos(texto, abre) {
-  let nivel = 0;
-  for (let i = abre; i < texto.length; i += 1) {
-    if (texto[i] === '(') nivel += 1;
-    else if (texto[i] === ')') {
-      nivel -= 1;
-      if (nivel === 0) return texto.slice(abre + 1, i);
-    }
-  }
-  return texto.slice(abre + 1);
+// No lugarGoogle.js, as listas de campos: `CAMPOS_… = Object.freeze([` (ou sem o freeze) e `fields: [`.
+const REGRA_CAMPOS = 'campos fora de id, location, formattedAddress e addressComponents';
+const LISTA_DE_CAMPOS = /\b(?:CAMPOS_\w+\s*=\s*(?:Object\.freeze\(\s*)?|fields['"]?\s*:\s*)\[/g;
+
+// Só textos ('…' ou "…") com um dos campos permitidos; um nome, um `...`, um comentário ou outra lista lá
+// dentro já recusam (a lista lê-se até ao primeiro `]`).
+function soCamposPermitidos(texto, depoisDoColchete) {
+  const fim = texto.indexOf(']', depoisDoColchete);
+  const conteudo = texto.slice(depoisDoColchete, fim === -1 ? texto.length : fim);
+  return conteudo
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item !== '')
+    .every((item) => {
+      const m = /^(['"])([A-Za-z]+)\1$/.exec(item);
+      return m !== null && CAMPOS_PERMITIDOS.includes(m[2]);
+    });
 }
-
-// Chamadas cujos argumentos são perigosos: um divIcon com html; o controlo de atribuição com um prefixo
-// que não seja false.
-const CHAMADAS = [
-  ['divIcon com html', /\b[dD]ivIcon\s*\(/g, (args) => /\bhtml\b/.test(args)],
-  [
-    'prefixo da atribuição',
-    /\b[aA]ttribution\s*\(/g,
-    (args) => [...args.matchAll(/\bprefix\b(\s*:\s*([^\s,}]+))?/g)].some((m) => m[2] !== 'false'),
-  ],
-];
 
 const linhaDe = (texto, indice) => texto.slice(0, indice).split('\n').length;
 
-// procurarHtmlPerigoso(texto, {ficheiro}) → [{regra, linha}], pela ordem do texto. `ficheiro` é o caminho
-// a partir de frontend/src (ex.: 'lib/crm/mapa.js'), para as exceções do mapa.js e do dom.js.
-function procurarHtmlPerigoso(texto, { ficheiro = '' } = {}) {
-  const eMapa = ficheiro === MAPA;
-  const aplica = {
-    sempre: true,
-    'fora do mapa': !eMapa,
-    'no mapa': eMapa,
-    'fora do dom': ficheiro !== DOM,
-  };
+// procurarViolacoes(texto, {ficheiro}) → [{regra, linha}], pela ordem do texto.
+function procurarViolacoes(texto, { ficheiro = '' } = {}) {
   const achados = [];
-  for (const [regra, padrao, onde] of REGRAS) {
-    if (!aplica[onde]) continue;
+  for (const [regra, padrao, aplica] of REGRAS) {
+    if (!aplica(ficheiro)) continue;
     for (const m of texto.matchAll(padrao)) achados.push({ regra, indice: m.index });
   }
-  for (const [regra, padrao, perigosa] of CHAMADAS) {
-    for (const m of texto.matchAll(padrao)) {
-      const abre = m.index + m[0].length - 1;
-      if (perigosa(argumentos(texto, abre))) achados.push({ regra, indice: m.index });
+  if (ficheiro === LUGAR) {
+    for (const m of texto.matchAll(LISTA_DE_CAMPOS)) {
+      if (!soCamposPermitidos(texto, m.index + m[0].length)) achados.push({ regra: REGRA_CAMPOS, indice: m.index });
     }
   }
   return achados
     .sort((a, b) => a.indice - b.indice)
     .map(({ regra, indice }) => ({ regra, linha: linhaDe(texto, indice) }));
 }
+
+// --- Os ficheiros -------------------------------------------------------------------------------
 
 // Os .js e .jsx, menos os testes e a pasta testes/ (caminho a partir de frontend/src, com '/').
 const deveVarrer = (relativo) =>
@@ -135,12 +178,14 @@ function listarFicheiros() {
   return [...lista, ...FICHEIROS_SOLTOS].sort();
 }
 
-const regras = (texto, ficheiro = 'components/crm/Exemplo.js') =>
-  procurarHtmlPerigoso(texto, { ficheiro }).map((v) => v.regra);
+const regras = (texto, ficheiro = COMPONENTE) => procurarViolacoes(texto, { ficheiro }).map((v) => v.regra);
+
+// Um componente, uma página, um módulo do CRM sem Google e cada um dos módulos do Google.
+const TODOS = [COMPONENTE, 'pages/crm/CrmMapa.js', 'lib/crm/ecraMapa.js', ...MODULOS_GOOGLE];
 
 // --- O detetor, provado primeiro -----------------------------------------------------------------
 
-describe('procurarHtmlPerigoso apanha cada via de HTML', () => {
+describe('procurarViolacoes apanha cada via de HTML, em qualquer ficheiro', () => {
   test.each([
     ['<div dangerouslySetInnerHTML={{ __html: loja.nome }} />', 'dangerouslySetInnerHTML'],
     ['no.innerHTML = loja.nome;', 'innerHTML'],
@@ -151,70 +196,182 @@ describe('procurarHtmlPerigoso apanha cada via de HTML', () => {
     ['document.write(loja.nome);', 'document.write'],
     ['documento.writeln(loja.nome);', 'document.write'],
   ])('%s → %s', (amostra, regra) => {
-    expect(regras(amostra)).toContain(regra);
-    // Também no mapa.js: estas não têm exceção nenhuma.
-    expect(regras(amostra, 'lib/crm/mapa.js')).toContain(regra);
+    // Também nos módulos do Google: estas não têm exceção nenhuma.
+    for (const ficheiro of TODOS) expect(regras(amostra, ficheiro)).toContain(regra);
+  });
+});
+
+describe('nunca um balão nosso nem as peças da Google que trazem dados de negócio', () => {
+  test.each([
+    ['const balao = new google.maps.InfoWindow({ content: no });', 'InfoWindow'],
+    ['const balao = new InfoWindow();', 'InfoWindow'],
+    ["const { InfoWindow } = await google.maps.importLibrary('maps');", 'InfoWindow'],
+    ['balao.setContent(no);', 'setContent'],
+    ['balao.setContent ( `<b>${loja.nome}</b>` );', 'setContent'],
+    ['const servico = new google.maps.places.PlacesService(mapa);', 'PlacesService'],
+    ['const geocoder = new google.maps.Geocoder();', 'Geocoder'],
+    ['new Geocoder().geocode({ location });', 'Geocoder'],
+    ['const campo = new google.maps.places.Autocomplete(entrada);', 'places.Autocomplete'],
+    ["const { Autocomplete } = await importLibrary('places');", 'places.Autocomplete'],
+    ['const lista = await AutocompleteSuggestion.fetchAutocompleteSuggestions(pedido);', 'AutocompleteSuggestion'],
+  ])('%s → %s', (amostra, regra) => {
+    for (const ficheiro of TODOS) expect(regras(amostra, ficheiro)).toContain(regra);
+  });
+
+  // Os nomes escritos por extenso só aqui (os testes não se varrem).
+  test.each([
+    'nationalPhoneNumber',
+    'internationalPhoneNumber',
+    'websiteUri',
+    'shortFormattedAddress',
+    'regularOpeningHours',
+    'currentOpeningHours',
+    'businessStatus',
+    'rating',
+    'reviews',
+    'photos',
+    'editorialSummary',
+    'priceLevel',
+    'googleMapsURI',
+  ])('o canário %s é recusado em todo o lado, comentários incluídos', (nome) => {
+    for (const amostra of [
+      `const valor = lugar.${nome};`,
+      `const valor = lugar['${nome}'];`,
+      `const { ${nome} } = lugar;`,
+      `const campos = ['location', '${nome}'];`,
+      `// o ${nome} do negócio não se guarda`,
+    ]) {
+      for (const ficheiro of TODOS) expect(regras(amostra, ficheiro)).toContain(`canário ${nome}`);
+    }
   });
 
   test.each([
-    ['marcador.bindTooltip(loja.nome);'],
-    ['marcador.bindPopup(`<b>${loja.nome}</b>`);'],
-    ['etiqueta.setContent(loja.nome);'],
-    ['marcador.setTooltipContent(loja.nome);'],
-    ['marcador.setPopupContent(loja.nome);'],
-    ['marcador.bindTooltip(el(document, "span", { texto: loja.nome }));'],
-  ])('fora do mapa.js, o Leaflet não recebe conteúdo: %s', (amostra) => {
-    expect(regras(amostra, 'components/crm/SeletorLocalizacao.js')).toContain('conteúdo do Leaflet fora do mapa.js');
+    ['const nome = lugar.displayName;'],
+    ["const nome = lugar['displayName'];"],
+    ["const campo = 'displayName';"],
+    ["await lugar.fetchFields({ fields: ['displayName'] });"],
+    ['if (lugar.displayName === nome) {}'],
+    ['if (lugar.displayName==nome) {}'],
+    ['const { displayName } = lugar;'],
+    ['// o displayName do negócio não se lê'],
+  ])('o nome do negócio (displayName) é recusado como leitura ou texto: %s', (amostra) => {
+    for (const ficheiro of TODOS) expect(regras(amostra, ficheiro)).toContain('canário displayName');
   });
 
   test.each([
-    ['marcador.bindTooltip(loja.nome, { permanent: true });'],
-    ['marcador.bindTooltip( `${loja.nome}` );'],
-    ['marcador.bindPopup(texto);'],
-  ])('no mapa.js, o conteúdo do Leaflet é sempre um nó do el(): %s', (amostra) => {
-    expect(regras(amostra, 'lib/crm/mapa.js')).toContain('conteúdo do Leaflet sem el()');
+    ["OpcaoConta.displayName = 'OpcaoConta';"],
+    ["Componente.displayName='Componente';"],
+  ])('a atribuição do React passa (pages/crm/DefinicoesMembros.js): %s', (amostra) => {
+    expect(regras(amostra, 'pages/crm/DefinicoesMembros.js')).toEqual([]);
+  });
+});
+
+describe('o lugar da Google só no lugarGoogle.js', () => {
+  test.each([
+    ['await lugar.fetchFields({ fields: CAMPOS_POSICAO });', 'fetchFields'],
+    ['const rotulo = lugar.formattedAddress;', 'formattedAddress'],
+    ['for (const parte of lugar.addressComponents) {}', 'addressComponents'],
+    ['const lugar = evento.placePrediction.toPlace();', 'toPlace'],
+    ['const lugar = new google.maps.places.Place({ id: placeId });', 'Place'],
+    ["const { Place } = await importLibrary('places');", 'Place'],
+    ['const campo = new google.maps.places.PlaceAutocompleteElement({});', 'PlaceAutocompleteElement'],
+  ])('%s → %s fora do lugarGoogle.js', (amostra, nome) => {
+    for (const ficheiro of TODOS.filter((f) => f !== LUGAR)) {
+      expect(regras(amostra, ficheiro)).toContain(`${nome} fora do lugarGoogle.js`);
+    }
+    expect(regras(amostra, LUGAR)).not.toContain(`${nome} fora do lugarGoogle.js`);
   });
 
   test.each([
-    ["L.divIcon({ className: 'pino-seletor', html: loja.nome });"],
-    ["L.divIcon({ html });"],
-    ["new L.DivIcon({ 'html': nome });"],
-    ["L.divIcon({\n  className: 'pino',\n  iconSize: [44, 44],\n  html: `<b>${loja.nome}</b>`,\n});"],
-  ])('um divIcon nunca leva html: %s', (amostra) => {
-    expect(regras(amostra)).toContain('divIcon com html');
-    expect(regras(amostra, 'lib/crm/mapa.js')).toContain('divIcon com html');
+    ["await lugar.fetchFields({ fields: ['location'] });"],
+    ['await lugar.fetchFields({ fields: CAMPOS });'],
+    ['await lugar.fetchFields({ fields: CAMPOS_PERMITIDOS });'],
+    ["await lugar.fetchFields({ fields: [...CAMPOS_POSICAO, 'id'] });"],
+    ['await lugar.fetchFields({ fields: CAMPOS_POSICAO, outro: 1 });'],
+    ['await lugar.fetchFields(pedido);'],
+    ["await lugar['fetchFields']({ fields: CAMPOS_POSICAO });"],
+    ['const pedir = lugar.fetchFields.bind(lugar);'],
+    ['// o fetchFields pede só a posição'],
+  ])('no lugarGoogle.js, cada fetchFields é fetchFields({ fields: CAMPOS_POSICAO | CAMPOS_MORADA_GOOGLE }): %s', (amostra) => {
+    expect(regras(amostra, LUGAR)).toContain('fetchFields sem CAMPOS_POSICAO nem CAMPOS_MORADA_GOOGLE');
   });
 
   test.each([
-    ["L.tileLayer(url, { attribution: '© ' + loja.nome });"],
-    ['const opcoes = { attribution: ATRIBUICOES.osm.html };'],
-    ["const opcoes = { 'attribution': texto };"],
-  ])('fora do mapa.js não há attribution: %s', (amostra) => {
-    expect(regras(amostra, 'components/crm/MapaLojas.js')).toContain('attribution fora do mapa.js');
+    ["export const CAMPOS_POSICAO = Object.freeze(['location', 'types']);"],
+    ['export const CAMPOS_POSICAO = Object.freeze([\n  "location",\n  "viewport",\n]);'],
+    ["const CAMPOS_EXTRA = ['location', 'plusCode'];"],
+    ['const CAMPOS_EXTRA = Object.freeze([...CAMPOS_POSICAO]);'],
+    ['const CAMPOS_EXTRA = Object.freeze([nome]);'],
+    ["const CAMPOS_EXTRA = Object.freeze([location, 'id']);"],
+    ["const CAMPOS_EXTRA = Object.freeze(['location' /* e mais */]);"],
+    ["const CAMPOS_EXTRA = Object.freeze([`location`]);"],
+    ["const pedido = { fields: ['id', 'utcOffsetMinutes'] };"],
+    ["const pedido = { 'fields': ['location', ['id']] };"],
+  ])('no lugarGoogle.js, as listas de campos só têm id, location, formattedAddress e addressComponents: %s', (amostra) => {
+    expect(regras(amostra, LUGAR)).toContain('campos fora de id, location, formattedAddress e addressComponents');
+  });
+
+  test('o nome do negócio numa lista de campos é recusado pelas três regras', () => {
+    const recusadas = regras("await lugar.fetchFields({ fields: ['location', 'displayName'] });", LUGAR);
+    expect(recusadas).toContain('fetchFields sem CAMPOS_POSICAO nem CAMPOS_MORADA_GOOGLE');
+    expect(recusadas).toContain('campos fora de id, location, formattedAddress e addressComponents');
+    expect(recusadas).toContain('canário displayName');
+    expect(regras("export const CAMPOS_POSICAO = Object.freeze(['location', 'displayName']);", LUGAR)).toEqual([
+      'campos fora de id, location, formattedAddress e addressComponents',
+      'canário displayName',
+    ]);
+  });
+
+  test('fora do lugarGoogle.js, uma lista de campos não é da Google (a do formulário passa)', () => {
+    expect(regras("export const CAMPOS_MORADA = Object.freeze(['morada', 'codigo_postal']);", 'lib/crm/morada.js')).toEqual([]);
+    expect(regras("const opcoes = { fields: ['nome', 'telefone'] };", COMPONENTE)).toEqual([]);
+  });
+});
+
+describe('google.maps, importLibrary, __crmMapa e content só onde o plano diz', () => {
+  test.each([
+    ['const mapa = new google.maps.Map(elemento, opcoes);', 'google.maps fora dos módulos do Google'],
+    ["window.google.maps.event.trigger(mapa, 'resize');", 'google.maps fora dos módulos do Google'],
+    ['const ha = Boolean(window.google?.maps);', 'google.maps fora dos módulos do Google'],
+    ["const maps = window.google['maps'];", 'google.maps fora dos módulos do Google'],
+    ['// o google . maps carrega-se no carregador', 'google.maps fora dos módulos do Google'],
+    ["await janela.google.maps.importLibrary('places');", 'importLibrary fora dos módulos do Google'],
+    ["const { importLibrary } = maps;", 'importLibrary fora dos módulos do Google'],
+  ])('%s → %s', (amostra, regra) => {
+    for (const ficheiro of [COMPONENTE, 'pages/crm/CrmMapa.js', 'lib/crm/ecraMapa.js', 'hooks/useEstadoCrm.js']) {
+      expect(regras(amostra, ficheiro)).toContain(regra);
+    }
+    for (const ficheiro of MODULOS_GOOGLE) expect(regras(amostra, ficheiro)).not.toContain(regra);
+  });
+
+  test('o __crmMapa só no mapa.js', () => {
+    const amostra = 'const mapa = elemento.__crmMapa;';
+    for (const ficheiro of TODOS.filter((f) => f !== MAPA)) {
+      expect(regras(amostra, ficheiro)).toContain('__crmMapa fora do mapa.js');
+    }
+    expect(regras(amostra, MAPA)).toEqual([]);
   });
 
   test.each([
-    ['L.tileLayer(url, { attribution: configuracao.atribuicao });'],
-    ["L.tileLayer(url, { attribution: ATRIBUICOES[chave].texto });"],
-    ["L.tileLayer(url, { attribution: '<a href=x>x</a>' });"],
-  ])('no mapa.js, a attribution é sempre ATRIBUICOES[...].html: %s', (amostra) => {
-    expect(regras(amostra, 'lib/crm/mapa.js')).toContain('attribution sem ATRIBUICOES[…].html');
+    ['new google.maps.marker.AdvancedMarkerElement({ map, content: no });'],
+    ["const pino = new AdvancedMarkerElement({ content: el(documento, 'div', {}) });"],
+    ["const opcoes = { 'content': texto };"],
+    ['marcador.content = loja.nome;'],
+  ])('o content de um marcador só no mapa.js e no seletor.js: %s', (amostra) => {
+    for (const ficheiro of [COMPONENTE, 'pages/crm/CrmMapa.js', 'lib/crm/ecraMapa.js', CARREGADOR, LUGAR]) {
+      expect(regras(amostra, ficheiro)).toContain('content fora do mapa.js e do seletor.js');
+    }
   });
 
   test.each([
-    ['L.control.attribution({ prefix: loja.nome }).addTo(mapa);'],
-    ["L.control.attribution({ prefix: '<b>x</b>' });"],
-    ['L.control.attribution({ prefix });'],
-  ])('o prefixo do controlo de atribuição só pode ser false: %s', (amostra) => {
-    expect(regras(amostra, 'lib/crm/mapa.js')).toContain('prefixo da atribuição');
-  });
-
-  test.each([
-    ['mapa.attributionControl.addAttribution(texto);'],
-    ['controlo.setPrefix(texto);'],
-  ])('a atribuição não se muda por métodos: %s', (amostra) => {
-    expect(regras(amostra)).toContain('addAttribution/setPrefix');
-    expect(regras(amostra, 'lib/crm/mapa.js')).toContain('addAttribution/setPrefix');
+    ['new AdvancedMarkerElement({ map, content: loja.nome });'],
+    ['new AdvancedMarkerElement({ content: `<b>${loja.nome}</b>` });'],
+    ['new AdvancedMarkerElement({ content: pino });'],
+    ["new AdvancedMarkerElement({ content: documento.createElement('div') });"],
+    ["const opcoes = { 'content': texto };"],
+    ['marcador.content = loja.nome;'],
+  ])('no mapa.js e no seletor.js, o content é sempre um nó do el(): %s', (amostra) => {
+    for (const ficheiro of [MAPA, SELETOR]) expect(regras(amostra, ficheiro)).toContain('content sem el()');
   });
 
   test.each([
@@ -226,53 +383,98 @@ describe('procurarHtmlPerigoso apanha cada via de HTML', () => {
   });
 });
 
-describe('procurarHtmlPerigoso deixa passar o código seguro', () => {
-  test('fora do mapa.js', () => {
+describe('procurarViolacoes deixa passar o código seguro', () => {
+  test('fora dos módulos do Google', () => {
     const seguro = [
       'no.textContent = loja.nome;',
       "const etiqueta = el(documento, 'span', { texto: loja.nome });",
       '<span>{loja.nome}</span>',
-      "const atribuicao = 'osm';",
-      'const { partes } = ATRIBUICOES.pesquisa;',
-      "const html = partes.map(ancora).join('');",
-      "export const X = Object.freeze({ html: partes.map(ancora).join('') });",
+      "const atribuicao = 'geoapify';",
+      'const { partes } = ATRIBUICOES.geoapify;',
       '<a href={hrefTelefone(loja.telefone)}>Ligar</a>',
       '// o "Ligar" leva o `tel:` do hrefTelefone',
       'navigator.clipboard.writeText(texto);',
-      '// o pino do seletor é um divIcon sem html',
-      "L.divIcon({ className: 'pino-seletor', iconSize: [44, 44], iconAnchor: [22, 38] });",
-      'const mapa = L.map(elemento, { attributionControl: false });',
+      "const { importar } = prepararGoogleMaps({ janela: window, documento: document, chave, versao: 'weekly' });",
+      "await importar('maps');",
+      "await importar('marker');",
+      'const criado = criarMapa({ google: window.google, documento: document, elemento, configuracao });',
+      "OpcaoConta.displayName = 'OpcaoConta';",
+      '// o nome do negócio e a morada da Google nunca se guardam: só o google_place_id e o pino',
+      'const dados = { google_place_id: negocio.placeId, origem_coords: "geocoder" };',
+      '<input autoComplete="off" />',
+      '<td className="md:before:content-none" />',
+      "const campos = { fields: ['nome'] };",
+      'if (marcador.content === no) {}',
     ].join('\n');
-    expect(procurarHtmlPerigoso(seguro, { ficheiro: 'components/crm/SeletorLocalizacao.js' })).toEqual([]);
+    for (const ficheiro of [COMPONENTE, 'pages/crm/CrmMapa.js', 'lib/crm/ecraMapa.js', 'hooks/useEstadoCrm.js']) {
+      expect(procurarViolacoes(seguro, { ficheiro })).toEqual([]);
+    }
   });
 
-  test('no mapa.js, as exceções certas', () => {
-    const seguro = [
-      'const mapa = L.map(elemento, { minZoom: 6, maxZoom: 19, attributionControl: false });',
-      'L.control.attribution({ prefix: false }).addTo(mapa);',
-      'const camada = L.tileLayer(url, {',
-      '  attribution: ATRIBUICOES[chave].html,',
+  // Os caminhos por extenso: as exceções são destes quatro ficheiros (regra 9), não de uma constante.
+  test('nos módulos do Google, as exceções certas', () => {
+    const doMapa = [
+      'const mapa = new google.maps.Map(elemento, { mapId, clickableIcons: negociosClicaveis });',
+      'elemento.__crmMapa = mapa;',
+      'const marcador = new google.maps.marker.AdvancedMarkerElement({',
+      "  content: el(documento, 'div', {",
+      '    classe: classePino(loja.fase),',
+      '  }),',
+      '  collisionBehavior: google.maps.CollisionBehavior.REQUIRED,',
       '});',
-      "const outra = L.tileLayer(url, { attribution: ATRIBUICOES['osm'].html });",
-      "L.divIcon({ className: classePino(loja.fase), iconSize: [44, 44], tooltipAnchor: [14, 0] });",
-      "marcador.bindTooltip(el(documento, 'span', { texto: loja.nome }), {",
-      "  permanent: true, direction: 'right', className: 'etiqueta-loja',",
-      '});',
-      "marcador.bindTooltip( el(documento, 'span', { texto: loja.nome }) );",
+      "google.maps.event.addListenerOnce(mapa, 'idle', () => {});",
+      'if (elemento.__crmMapa === mapa) delete elemento.__crmMapa;',
     ].join('\n');
-    expect(procurarHtmlPerigoso(seguro, { ficheiro: 'lib/crm/mapa.js' })).toEqual([]);
+    expect(procurarViolacoes(doMapa, { ficheiro: 'lib/crm/mapa.js' })).toEqual([]);
+
+    const doSeletor = [
+      "const pino = new google.maps.marker.AdvancedMarkerElement({ map, content: el(documento, 'div', { classe: 'pino-seletor' }), gmpDraggable: true });",
+      "pino.content = el(documento, 'div', { classe: 'pino-seletor' });",
+      'const circulo = new google.maps.Circle({ ...ESTILO_CIRCULO, center, radius: precisao, map });',
+    ].join('\n');
+    expect(procurarViolacoes(doSeletor, { ficheiro: 'lib/crm/seletor.js' })).toEqual([]);
+
+    const doCarregador = [
+      "const importar = (nome) => janela.google.maps.importLibrary(nome);",
+      "if (typeof janela.google?.maps?.importLibrary === 'function') return { importar };",
+      'maps.importLibrary = arranque;',
+    ].join('\n');
+    expect(procurarViolacoes(doCarregador, { ficheiro: 'lib/crm/carregadorGoogle.js' })).toEqual([]);
+
+    const doLugar = [
+      "export const CAMPOS_POSICAO = Object.freeze(['location']);",
+      "export const CAMPOS_MORADA_GOOGLE = Object.freeze(['location', 'formattedAddress', 'addressComponents']);",
+      'export const CAMPOS_PERMITIDOS = Object.freeze([',
+      "  'id',",
+      '  "location",',
+      "  'formattedAddress',",
+      "  'addressComponents',",
+      ']);',
+      'const lugar = new google.maps.places.Place({ id: placeId });',
+      'await lugar.fetchFields({ fields: CAMPOS_POSICAO });',
+      'const escolhido = evento.placePrediction.toPlace();',
+      'await escolhido.fetchFields({fields:CAMPOS_MORADA_GOOGLE});',
+      'await escolhido.fetchFields({\n  fields: CAMPOS_MORADA_GOOGLE,\n});',
+      'const rotulo = escolhido.formattedAddress;',
+      'const partes = escolhido.addressComponents;',
+      "const campo = new google.maps.places.PlaceAutocompleteElement({ includedRegionCodes: ['pt'] });",
+      "const { Place } = await google.maps.importLibrary('places');",
+    ].join('\n');
+    expect(procurarViolacoes(doLugar, { ficheiro: 'lib/crm/lugarGoogle.js' })).toEqual([]);
   });
 
   test('no dom.js, o tel: do hrefTelefone', () => {
-    expect(procurarHtmlPerigoso('return `tel:${mais}${digitos}`;', { ficheiro: 'lib/crm/dom.js' })).toEqual([]);
+    expect(procurarViolacoes('return `tel:${mais}${digitos}`;', { ficheiro: DOM })).toEqual([]);
   });
 });
 
-test('procurarHtmlPerigoso diz a regra e a linha de cada uma', () => {
-  const texto = "const a = 1;\nno.innerHTML = loja.nome;\n\nL.divIcon({\n  html: x,\n});\n";
-  expect(procurarHtmlPerigoso(texto, { ficheiro: 'components/crm/Exemplo.js' })).toEqual([
+test('procurarViolacoes diz a regra e a linha de cada uma, pela ordem do texto', () => {
+  const texto = 'const a = 1;\nno.innerHTML = loja.nome;\n\nconst b = new google.maps.InfoWindow({\n  content: x,\n});\n';
+  expect(procurarViolacoes(texto, { ficheiro: COMPONENTE })).toEqual([
     { regra: 'innerHTML', linha: 2 },
-    { regra: 'divIcon com html', linha: 4 },
+    { regra: 'google.maps fora dos módulos do Google', linha: 4 },
+    { regra: 'InfoWindow', linha: 4 },
+    { regra: 'content fora do mapa.js e do seletor.js', linha: 5 },
   ]);
 });
 
@@ -280,12 +482,13 @@ test('procurarHtmlPerigoso diz a regra e a linha de cada uma', () => {
 
 test.each([
   ['lib/crm/mapa.js', true],
+  ['lib/crm/carregadorGoogle.js', true],
   ['components/crm/MapaLojas.js', true],
   ['pages/crm/CrmMapa.jsx', true],
   ['components/crm/sub/Pasta.jsx', true],
   ['lib/crm/mapa.test.js', false],
   ['pages/crm/CrmMapa.test.jsx', false],
-  ['lib/crm/testes/leafletFalso.js', false],
+  ['lib/crm/testes/googleFalso.js', false],
   ['components/crm/testes/x.jsx', false],
   ['components/crm/crm.css', false],
   ['lib/crm/notas.md', false],
@@ -336,6 +539,8 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
     'lib/crm/seguranca.test.js',
     'lib/crm/dom.test.js',
     'lib/crm/mapa.test.js',
+    'lib/crm/carregadorGoogle.test.js',
+    'lib/crm/atribuicoes.test.js',
     'lib/crm/css.test.js',
     'lib/crm/ecraMapa.test.js',
     'lib/crm/seletor.test.js',
@@ -348,7 +553,7 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
     'lib/crm/regioes.test.js',
     'lib/crm/fabrica.test.js',
     'lib/crm/testes/domFalso.js',
-    'lib/crm/testes/leafletFalso.js',
+    'lib/crm/testes/googleFalso.js',
   ]) {
     expect(lista).not.toContain(relativo);
   }
@@ -356,7 +561,7 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
 
 // --- O varrimento --------------------------------------------------------------------------------
 
-test('nenhum ficheiro do CRM põe dados no DOM como HTML', () => {
+test('nenhum ficheiro do CRM põe dados no DOM como HTML nem usa a Google fora do sítio', () => {
   // Falha, e não salta, se um dos ficheiros soltos desaparecer.
   for (const relativo of FICHEIROS_SOLTOS) {
     expect(fs.existsSync(path.join(SRC, relativo))).toBe(true);
@@ -364,26 +569,35 @@ test('nenhum ficheiro do CRM põe dados no DOM como HTML', () => {
   const violacoes = [];
   for (const relativo of listarFicheiros()) {
     const texto = fs.readFileSync(path.join(SRC, relativo), 'utf8');
-    for (const { regra, linha } of procurarHtmlPerigoso(texto, { ficheiro: relativo })) {
+    for (const { regra, linha } of procurarViolacoes(texto, { ficheiro: relativo })) {
       violacoes.push(`${relativo}:${linha} ${regra}`);
     }
   }
   expect(violacoes).toEqual([]);
 });
 
-// Desde a G6 do plano do mapa Google, o mapa.js já não usa o Leaflet: enquanto estas regras existirem (a G8
-// tira-as e prova o mesmo com `google.maps` e `content:`), a precisão das exceções prova-se com o código do
-// Leaflet que o mapa.js tinha, e o mapa.js de agora não acusa nada em sítio nenhum.
-test('as exceções do mapa.js são precisas: o mesmo código noutro ficheiro seria recusado', () => {
-  const codigoLeaflet = [
-    "const camada = L.tileLayer(url, { attribution: ATRIBUICOES[chave].html });",
-    "marcador.bindTooltip(el(documento, 'span', { texto: loja.nome }), { permanent: true });",
-  ].join('\n');
-  expect(regras(codigoLeaflet, MAPA)).toEqual([]);
-  const noutroSitio = regras(codigoLeaflet, 'components/crm/MapaLojas.js');
-  expect(noutroSitio).toContain('conteúdo do Leaflet fora do mapa.js');
-  expect(noutroSitio).toContain('attribution fora do mapa.js');
-  const mapa = fs.readFileSync(path.join(SRC, MAPA), 'utf8');
-  expect(regras(mapa, MAPA)).toEqual([]);
-  expect(regras(mapa, 'components/crm/MapaLojas.js')).toEqual([]);
+// As exceções são precisas: o código verdadeiro de cada módulo do Google, posto noutro ficheiro, seria
+// recusado pelas regras de que só ele está isento.
+test('o mapa.js verdadeiro só passa por ser o mapa.js', () => {
+  const texto = fs.readFileSync(path.join(SRC, MAPA), 'utf8');
+  expect(regras(texto, MAPA)).toEqual([]);
+  const numComponente = regras(texto, COMPONENTE);
+  expect(numComponente).toContain('google.maps fora dos módulos do Google');
+  expect(numComponente).toContain('content fora do mapa.js e do seletor.js');
+  expect(numComponente).toContain('__crmMapa fora do mapa.js');
+  // No seletor.js, o google.maps e o content (sempre do el()) são permitidos; o gancho do browser não.
+  expect([...new Set(regras(texto, SELETOR))]).toEqual(['__crmMapa fora do mapa.js']);
+  // No lugarGoogle.js, o google.maps é permitido; o content dos marcadores e o gancho não.
+  expect([...new Set(regras(texto, LUGAR))].sort()).toEqual([
+    '__crmMapa fora do mapa.js',
+    'content fora do mapa.js e do seletor.js',
+  ]);
+});
+
+test('o carregadorGoogle.js verdadeiro só passa por ser um módulo do Google', () => {
+  const texto = fs.readFileSync(path.join(SRC, CARREGADOR), 'utf8');
+  for (const ficheiro of MODULOS_GOOGLE) expect(regras(texto, ficheiro)).toEqual([]);
+  const numComponente = regras(texto, COMPONENTE);
+  expect(numComponente).toContain('google.maps fora dos módulos do Google');
+  expect(numComponente).toContain('importLibrary fora dos módulos do Google');
 });

@@ -1,80 +1,54 @@
 /**
- * AS ATRIBUIÇÕES OBRIGATÓRIAS DO MAPA E DA PESQUISA DE MORADA.
+ * AS ATRIBUIÇÕES QUE O CRM ESCREVE (desenho original §9; dossiê §8).
  *
- * Porta de tests/js/atribuicoes.test.js do CRM autónomo (etiqueta
- * `referencia-standalone`), com o `node:assert` passado a `expect`.
+ * Desde o mapa Google (G8 do plano `2026-10-14-crm-mapa-google.md`), a
+ * atribuição do mapa é a da própria Google: desenha-a a API, por cima do
+ * mapa, e o CRM nunca a esconde, nunca a tapa e não a repete aqui. Saíram por
+ * isso a do OpenStreetMap (`osm`), a da pesquisa de moradas da Geoapify
+ * (`pesquisa`) e o `html` do mapa antigo. Fica só a Geoapify, de onde
+ * vem a morada sugerida de um ponto do GPS ("Powered by Geoapify", com a
+ * ligação); a F3 junta-lhe a do openrouteservice (`ors`).
  *
- * O texto visível tem de ser exatamente o destes testes (desenho original §9;
- * dossiê §8). O `html` só existe para o controlo de atribuição do Leaflet
- * (`lib/crm/mapa.js`) e sai apenas das constantes do módulo, nunca de dados.
- * Os ecrãs React usam as `partes` (texto e ligação), sem HTML.
+ * Os ecrãs montam cada parte como texto, ou, com `url`, como uma ligação: não
+ * há HTML nenhum.
  */
 import { ATRIBUICOES } from './atribuicoes';
 
-const LIGACOES_PERMITIDAS = new Set([
-  'https://www.geoapify.com/',
-  'https://openmaptiles.org/',
-  'https://www.openstreetmap.org/copyright',
-]);
-
-const semEtiquetas = (html) => html.replace(/<[^>]*>/g, '');
-const hrefs = (html) => [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]);
-
-test('textos exatos das três atribuições', () => {
-  expect(ATRIBUICOES.geoapify.texto).toBe(
-    'Powered by Geoapify | © OpenMapTiles © OpenStreetMap contributors',
-  );
-  expect(ATRIBUICOES.osm.texto).toBe('© OpenStreetMap contributors');
-  expect(ATRIBUICOES.pesquisa.texto).toBe('Powered by Geoapify');
-  expect(Object.keys(ATRIBUICOES)).toEqual(['geoapify', 'osm', 'pesquisa']);
+test('só fica a atribuição da Geoapify (a do mapa é a da Google)', () => {
+  // A F3 (planear rota) junta aqui `ors`.
+  expect(Object.keys(ATRIBUICOES)).toEqual(['geoapify']);
 });
 
-test('o HTML sem etiquetas é exatamente o texto (sem entidades)', () => {
-  for (const a of Object.values(ATRIBUICOES)) {
-    expect(semEtiquetas(a.html)).toBe(a.texto);
-    expect(a.html.includes('&')).toBe(false);
+test('"Powered by Geoapify" com a ligação para a Geoapify, numa só parte', () => {
+  expect(ATRIBUICOES.geoapify.texto).toBe('Powered by Geoapify');
+  expect(ATRIBUICOES.geoapify.partes).toEqual([{ texto: 'Powered by Geoapify', url: 'https://www.geoapify.com/' }]);
+});
+
+test('nenhuma entrada tem html: só o texto e as partes', () => {
+  for (const atribuicao of Object.values(ATRIBUICOES)) {
+    expect(Object.keys(atribuicao)).toEqual(['texto', 'partes']);
+    expect('html' in atribuicao).toBe(false);
   }
 });
 
-test('o HTML só tem ligações para os sítios dos créditos', () => {
-  expect(hrefs(ATRIBUICOES.geoapify.html)).toEqual([
-    'https://www.geoapify.com/',
-    'https://openmaptiles.org/',
-    'https://www.openstreetmap.org/copyright',
-  ]);
-  expect(hrefs(ATRIBUICOES.osm.html)).toEqual(['https://www.openstreetmap.org/copyright']);
-  expect(hrefs(ATRIBUICOES.pesquisa.html)).toEqual(['https://www.geoapify.com/']);
-});
-
-test('as ligações abrem noutra janela com rel="noopener"', () => {
-  for (const a of Object.values(ATRIBUICOES)) {
-    const ancoras = a.html.match(/<a\b[^>]*>/g) ?? [];
-    expect(ancoras.length).toBeGreaterThan(0);
-    for (const ancora of ancoras) {
-      expect(ancora).toMatch(/\btarget="_blank"/);
-      expect(ancora).toMatch(/\brel="noopener"/);
-    }
-    const etiquetas = a.html.match(/<\/?([a-z]+)/g).map((t) => t.replace(/[</]/g, ''));
-    expect(etiquetas.every((t) => t === 'a')).toBe(true);
-  }
-});
-
-test('as partes (para montar com createElement) juntam-se no texto exato', () => {
-  for (const a of Object.values(ATRIBUICOES)) {
-    expect(a.partes.map((p) => p.texto).join('')).toBe(a.texto);
-    for (const p of a.partes) {
-      if (p.url !== null) {
-        expect(LIGACOES_PERMITIDAS.has(p.url)).toBe(true);
-      }
+test('as partes juntam-se no texto exato e cada uma é só texto e ligação', () => {
+  for (const atribuicao of Object.values(ATRIBUICOES)) {
+    expect(atribuicao.partes.map((p) => p.texto).join('')).toBe(atribuicao.texto);
+    for (const parte of atribuicao.partes) {
+      expect(Object.keys(parte)).toEqual(['texto', 'url']);
+      expect(typeof parte.texto).toBe('string');
+      expect(parte.texto).not.toMatch(/[<>&]/);
+      // Sem ligação (`null`) ou uma ligação https.
+      expect(parte.url === null || /^https:\/\/[^\s<>"']+$/.test(parte.url)).toBe(true);
     }
   }
 });
 
 test('as atribuições não podem ser alteradas', () => {
   expect(Object.isFrozen(ATRIBUICOES)).toBe(true);
-  for (const a of Object.values(ATRIBUICOES)) {
-    expect(Object.isFrozen(a)).toBe(true);
-    expect(Object.isFrozen(a.partes)).toBe(true);
-    expect(a.partes.every((p) => Object.isFrozen(p))).toBe(true);
+  for (const atribuicao of Object.values(ATRIBUICOES)) {
+    expect(Object.isFrozen(atribuicao)).toBe(true);
+    expect(Object.isFrozen(atribuicao.partes)).toBe(true);
+    expect(atribuicao.partes.every((p) => Object.isFrozen(p))).toBe(true);
   }
 });

@@ -1,37 +1,27 @@
-// Atribuições obrigatórias (desenho original §9; dossiê §8). Porta de
+// Atribuições que o CRM escreve (desenho original §9; dossiê §8). Porta de
 // public/assets/js/atribuicoes.js do CRM autónomo.
 //
-// O texto visível tem de ser exatamente o de `texto`. O `html` é só para o
-// controlo de atribuição do Leaflet (`lib/crm/mapa.js`) e é montado apenas a
-// partir das constantes deste ficheiro (nunca de dados). Nos ecrãs React (ex.:
-// "Powered by Geoapify" por baixo da pesquisa de morada), usar `partes`, com o
-// texto como filho de um elemento e a `url` no `href` — nunca o `html`.
+// A atribuição do mapa é a da própria Google: desenha-a a API do Google Maps,
+// por cima do mapa, e o CRM nunca a esconde nem a tapa (nada nosso dentro do
+// `.crm-mapa`; cartões e painéis vivem fora dele) e não a repete aqui. Fica só
+// a da Geoapify, de onde vem a morada sugerida de um ponto do GPS ("Morada
+// sugerida: … · Powered by Geoapify"); a F3 junta a do openrouteservice.
+//
+// O texto visível tem de ser exatamente o de `texto`. Os ecrãs usam as
+// `partes`: cada uma é um texto, ou, com `url`, uma ligação com esse texto —
+// nunca HTML.
 
 const GEOAPIFY = 'https://www.geoapify.com/';
-const OPENMAPTILES = 'https://openmaptiles.org/';
-const OSM = 'https://www.openstreetmap.org/copyright';
 
 const parte = (texto, url = null) => Object.freeze({ texto, url });
-
-const ancora = (p) =>
-  p.url === null ? p.texto : `<a href="${p.url}" target="_blank" rel="noopener">${p.texto}</a>`;
 
 function criar(partes) {
   return Object.freeze({
     texto: partes.map((p) => p.texto).join(''),
-    html: partes.map(ancora).join(''),
     partes: Object.freeze(partes),
   });
 }
 
 export const ATRIBUICOES = Object.freeze({
-  geoapify: criar([
-    parte('Powered by Geoapify', GEOAPIFY),
-    parte(' | '),
-    parte('© OpenMapTiles', OPENMAPTILES),
-    parte(' '),
-    parte('© OpenStreetMap contributors', OSM),
-  ]),
-  osm: criar([parte('© OpenStreetMap contributors', OSM)]),
-  pesquisa: criar([parte('Powered by Geoapify', GEOAPIFY)]),
+  geoapify: criar([parte('Powered by Geoapify', GEOAPIFY)]),
 });
