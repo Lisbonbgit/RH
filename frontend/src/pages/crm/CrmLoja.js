@@ -14,9 +14,11 @@
 //    desativado fica por baixo dele.
 //  - 409 conflito → a faixa "Alterado por outra pessoa — recarregar", com o
 //    foco no Recarregar.
-//  - "Corrigir localização" monta o `SeletorLocalizacao` com o pino no sítio
-//    guardado (a `key` muda a cada abertura: o `inicial` só se lê ao criar), e
-//    um 409 duplicado abre o `DialogoDuplicado`.
+//  - "Corrigir localização" monta o `SeletorLocalizacao` (o mapa Google, com a
+//    pesquisa da Google, o negócio selecionado e "Estou nesta loja") com o
+//    pino no sítio guardado, com a origem e o `google_place_id` da loja (a
+//    `key` muda a cada abertura: o `inicial` só se lê ao criar), e um 409
+//    duplicado abre o `DialogoDuplicado`.
 //  - Apagar pergunta num `AlertDialog` (o foco na escolha que não apaga) e,
 //    apagada, volta ao mapa da mesma casa com o aviso "Loja apagada" (o toast é
 //    do mapa).

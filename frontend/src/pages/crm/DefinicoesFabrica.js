@@ -3,19 +3,23 @@
 // public/assets/js/componentes/definicoes-fabrica.js do CRM autónomo, no
 // aspeto do portal. O `CrmDefinicoes` carrega esta página à parte
 // (`React.lazy`), só quando se abre o separador: é a única das Definições com
-// o mapa (o Leaflet).
+// o mapa (o Google Maps).
 //
 // As regras estão em `lib/crm/fabrica.js` (com testes): esta página cria o
 // ecrã num `useEffect`, desenha a `vista` que ele entrega e passa-lhe o que a
 // pessoa faz.
 //  - "Mudar o ponto no mapa" monta o `SeletorLocalizacao` sem GPS, com os
 //    textos da fábrica e o pino solto no ponto atual (a `key` muda a cada
-//    abertura: o `inicial` só se lê ao criar). O botão em que se tocou
+//    abertura: o `inicial` só se lê ao criar). Tem a pesquisa da Google (a
+//    morada escolhida vai para a "Morada da fábrica") e o negócio selecionado;
+//    um pino vindo da Google só se confirma depois de arrastado, e do ponto
+//    só se guardam a latitude e a longitude. O botão em que se tocou
 //    desaparece: o foco vai para "Confirmar localização" (`focarAoIniciar`),
 //    ou, sem mapa, para "Cancelar a mudança do ponto".
 //  - A configuração do mapa pede-se uma vez (`obterConfigMapa`): `undefined`
 //    enquanto chega, `null` se falhar (o seletor diz que o mapa não está
-//    disponível; a morada guarda-se na mesma).
+//    disponível, ou, com `google: null`, que não está configurado; a morada
+//    guarda-se na mesma).
 //  - Enquanto grava, a morada e o ponto ficam desativados (`fieldset`); o
 //    porquê de Guardar estar desativado fica por baixo dele; "Dados da fábrica
 //    guardados." é um toast do sonner.
@@ -27,8 +31,8 @@ import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { IndicadorCrm } from '../../components/crm/GuardaCrm';
-// O `crm.css` antes do seletor (que traz o `leaflet.css`), pela mesma ordem das outras páginas do CRM (o
-// formulário e o cartão trazem-no primeiro). Sem isto, o build avisava "Conflicting order" entre os dois.
+// O `crm.css` antes do seletor (que também o traz), pela mesma ordem das outras páginas do CRM (o formulário e
+// o cartão trazem-no primeiro): as folhas de estilo entram no build sempre pela mesma ordem.
 import '../../components/crm/crm.css';
 import SeletorLocalizacao from '../../components/crm/SeletorLocalizacao';
 import { alterarDefinicoes, obterConfigMapa, obterDefinicoes } from '../../lib/crm/api';
@@ -46,6 +50,7 @@ import {
   TITULO_FABRICA,
   criarFabrica,
 } from '../../lib/crm/fabrica';
+import { configuracaoValida } from '../../lib/crm/mapa';
 import { criarEstadoRede } from '../../lib/crm/rede';
 
 const API = Object.freeze({
@@ -132,11 +137,13 @@ export default function DefinicoesFabrica() {
     else if (alvo === 'mudar') botaoMudar.current?.focus();
   }, [pedidosDeFoco, vista]);
 
-  // Sem mapa, o seletor não tem "Confirmar localização" que receba o foco: vai para o Cancelar, ao lado.
+  // Sem mapa (a configuração falhou, ou não traz a chave Google e o Map ID), o seletor não tem "Confirmar
+  // localização" que receba o foco: vai para o Cancelar, ao lado.
   const chaveCorrecao = vista.correcao?.chave ?? null;
+  const semMapa = configuracao !== undefined && !configuracaoValida(configuracao);
   useLayoutEffect(() => {
-    if (chaveCorrecao !== null && configuracao === null) botaoCancelar.current?.focus();
-  }, [chaveCorrecao, configuracao]);
+    if (chaveCorrecao !== null && semMapa) botaoCancelar.current?.focus();
+  }, [chaveCorrecao, semMapa]);
 
   const {
     estado, falha, correcao, guardar,

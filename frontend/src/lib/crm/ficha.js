@@ -26,12 +26,17 @@
 //  - 409 conflito (outra pessoa alterou a loja entretanto) → a faixa "Alterado
 //    por outra pessoa — recarregar", com o foco no Recarregar (pede a loja
 //    outra vez; o que se tinha mudado perde-se, para não apagar o da outra).
-//  - "Corrigir localização" abre o seletor (com a pesquisa de morada e "Estou
-//    nesta loja") com o pino no sítio guardado, solto. "Cancelar correção"
-//    fecha-o e desfaz a morada que a pesquisa ou o GPS lá puseram. Um 409
-//    duplicado mostra o diálogo da nova loja ("Já existe X aqui — é a
-//    mesma?"); um 422 da localização volta a soltar o pino, com o erro junto ao
-//    mapa.
+//  - "Corrigir localização" abre o seletor (o mapa Google, com a pesquisa da
+//    Google, o negócio selecionado e "Estou nesta loja") com o pino no sítio
+//    guardado, solto, com a origem e o `google_place_id` guardados (plano do
+//    mapa Google, G17): um pino posto à mão a partir de um lugar da Google é
+//    `pin_manual` e confirma-se sem arrastar; arrastá-lo mantém o id, um toque
+//    à mão noutro sítio tira-o, e outro negócio ou outra morada da Google só se
+//    confirma depois de arrastado (vai `pin_manual` com o id novo).
+//    "Cancelar correção" fecha-o e desfaz a morada que a pesquisa ou o GPS lá
+//    puseram. Um 409 duplicado mostra o diálogo da nova loja ("Já existe X
+//    aqui — é a mesma?"); um 422 da localização (também no `google_place_id`)
+//    volta a soltar o pino, com o erro junto ao mapa.
 //  - Apagar pede confirmação ("Apagar esta loja? Use só para enganos — …") e,
 //    apagada, volta ao mapa da mesma casa com o aviso "Loja apagada" no
 //    `state` (o mapa mostra-o num toast). Uma loja com histórico não se apaga
@@ -125,6 +130,13 @@ export function corpoAlteracao(original, atual, { confirmarDuplicado = false } =
   return corpo;
 }
 
+// O `google_place_id` guardado: só um texto não vazio, tal e qual; o resto (uma loja antiga sem a chave,
+// `null`, vazio) conta como null.
+function idDoLugarGuardado(loja) {
+  const id = loja?.google_place_id;
+  return typeof id === 'string' && id.trim() !== '' ? id : null;
+}
+
 // De onde vem o pino guardado (origem_coords), em palavras.
 export function textoLocalizacao(loja) {
   if (loja?.origem_coords === 'gps') {
@@ -134,8 +146,9 @@ export function textoLocalizacao(loja) {
   }
   if (loja?.origem_coords === 'geocoder') return 'Pino da morada escolhida na pesquisa.';
   // O pino de um lugar da Google é sempre arrastado pela pessoa (mapa Google, plano G9): fica pin_manual + id.
-  const doGoogle = typeof loja?.google_place_id === 'string' && loja.google_place_id.trim() !== '';
-  if (loja?.origem_coords === 'pin_manual' && doGoogle) return 'Pino posto à mão a partir de um lugar da Google.';
+  if (loja?.origem_coords === 'pin_manual' && idDoLugarGuardado(loja) !== null) {
+    return 'Pino posto à mão a partir de um lugar da Google.';
+  }
   return 'Pino posto à mão no mapa.';
 }
 
@@ -172,7 +185,7 @@ export function caminhoNoMapa(base, id) {
 //    formulário com erro; aoAvisar(texto): "Fase guardada" / "Alterações guardadas" (um toast).
 // vista: {estado: 'a_carregar'|'falha'|'ficha', titulo, falha: null | {mensagem, tentar, aTentar, voltar},
 //         valores, erros, opcoesRegiao, valorRegiao, resumoLocalizacao,
-//         correcao: null | {chave, inicial: {lat, lng, origem, precisao_m}}, camposDesativados,
+//         correcao: null | {chave, inicial: {lat, lng, origem, precisao_m, google_place_id}}, camposDesativados,
 //         guardar: {ativo, texto, falta}, alerta, conflito: null | {erro, aRecarregar},
 //         duplicado: null | {loja, mensagem, botoes}, apagar: {texto, ativo, erro, pergunta}}
 //   — nova a cada mudança e congelada. `correcao.chave` muda a cada abertura (a `key` do seletor: o
@@ -229,8 +242,15 @@ export function criarFicha({
     if (correcao === null || original === null) return null;
     return Object.freeze({
       chave: correcao.chave,
+      // A localização guardada, como o seletor a recebe: a origem é a da loja (nunca `google`: um pino de um
+      // lugar da Google guardou-se `pin_manual`, e confirma-se sem arrastar) e o id do lugar vai com ela, para
+      // confirmar sem mexer, ou arrastar, não o perder.
       inicial: Object.freeze({
-        lat: original.lat, lng: original.lng, origem: original.origem_coords, precisao_m: original.precisao_m,
+        lat: original.lat,
+        lng: original.lng,
+        origem: original.origem_coords,
+        precisao_m: original.precisao_m,
+        google_place_id: idDoLugarGuardado(original),
       }),
     });
   }
@@ -536,7 +556,7 @@ export function criarFicha({
       atualizar();
       aoFocar?.('corrigir');
     },
-    // A localização confirmada no seletor ({lat, lng, origem_coords, precisao_m}), ou null.
+    // A localização confirmada no seletor ({lat, lng, origem_coords, precisao_m, google_place_id}), ou null.
     mudarLocalizacao(nova) {
       const valor = nova ?? null;
       if (!ativo || correcao === null || valor === correcao.localizacao) return;

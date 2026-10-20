@@ -8,12 +8,17 @@
 // `pages/crm/DefinicoesFabrica.js` só a desenha (correção "T2.26 / T2.27 /
 // T2.29 / T2.30 (componentes Sem Jest)").
 //
-//  - "Mudar o ponto no mapa" abre o seletor das lojas (`SeletorLocalizacao`),
-//    com o pino solto no ponto atual e a pesquisa de morada ("Powered by
-//    Geoapify"), mas sem o GPS ("Estou nesta loja" é para as lojas). Escolher
-//    uma morada na pesquisa põe lá o pino e escreve-a na morada da fábrica;
-//    "Cancelar a mudança do ponto" desfaz as duas coisas (não a morada que a
-//    pessoa escreveu depois).
+//  - "Mudar o ponto no mapa" abre o seletor das lojas (`SeletorLocalizacao`,
+//    sobre o mapa Google), com o pino solto no ponto atual e a pesquisa da
+//    Google, mas sem o GPS ("Estou nesta loja" é para as lojas). Escolher uma
+//    morada na pesquisa põe lá o pino e escreve a morada da Google na morada
+//    da fábrica (sem a morada formatada, não escreve nada); "Cancelar a
+//    mudança do ponto" desfaz as duas coisas (não a morada que a pessoa
+//    escreveu depois). Um pino vindo da Google (a pesquisa, ou um negócio
+//    tocado no mapa) só se confirma depois de arrastado (a regra do arrasto,
+//    no seletor), e da localização confirmada só contam a latitude e a
+//    longitude: a fábrica nunca guarda o `google_place_id` nem a origem
+//    (plano do mapa Google, G17).
 //  - Guardar envia só o que mudou: a morada, e o ponto inteiro (latitude e
 //    longitude, com as 6 casas com que se guardam; o servidor recusa uma sem a
 //    outra). Um ponto fora de Portugal continental (422) mostra o erro no mapa
@@ -66,7 +71,8 @@ const definicoesValidas = (d) => typeof d?.fabrica_morada === 'string' && numero
 // --- Funções puras -------------------------------------------------------------------------------
 
 // O corpo do PATCH /api/crm/definicoes: só o que mudou. A morada sem espaços nas pontas; o ponto inteiro (o
-// servidor recusa a latitude sem a longitude), e só se mudar nas 6 casas com que se guarda.
+// servidor recusa a latitude sem a longitude), e só se mudar nas 6 casas com que se guarda. Do ponto só se leem
+// a latitude e a longitude (a origem e o `google_place_id` do seletor nunca vão).
 export function corpoFabrica(original, { morada, ponto }) {
   const corpo = {};
   const texto = typeof morada === 'string' ? morada.trim() : '';
@@ -307,14 +313,16 @@ export function criarFabrica({
       atualizar();
       aoFocar?.('mudar');
     },
-    // O ponto confirmado no seletor ({lat, lng, origem_coords, precisao_m}), ou null.
+    // O ponto confirmado no seletor ({lat, lng, origem_coords, precisao_m, google_place_id}), ou null. Para o
+    // corpo só contam a latitude e a longitude (`corpoFabrica`).
     mudarPonto(valor) {
       const ponto = valor ?? null;
       if (!ativo || correcao === null || ponto === correcao.ponto) return;
       correcao = { ...correcao, ponto };
       atualizar();
     },
-    // A morada escolhida na pesquisa do seletor (o pino já lá está): o rótulo vai para a morada da fábrica.
+    // A morada escolhida na pesquisa da Google do seletor (o pino já lá está): o rótulo (a morada formatada)
+    // vai para a morada da fábrica; sem ele, nada muda.
     escolherMorada(sugestao) {
       if (!ativo || correcao === null || aGuardar || !textoComConteudo(sugestao?.rotulo)) return;
       morada = sugestao.rotulo;

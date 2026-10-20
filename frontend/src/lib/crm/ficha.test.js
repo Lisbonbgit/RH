@@ -9,7 +9,7 @@
  *   - o ecrã sem o DOM (`criarFicha`), como a nova loja da T2.27: o que o
  *     autónomo escrevia no DOM é uma `vista` congelada, entregue ao
  *     `aoMudarVista`, e o `pages/crm/CrmLoja.js` só a desenha. Ficam aqui os
- *     casos do ecrã que não precisam de DOM nem de Leaflet (o seletor tem os
+ *     casos do ecrã que não precisam de DOM nem do mapa (o seletor tem os
  *     seus no `seletor.test.js`, o formulário no `formularioLoja.test.js`):
  *     carregar, Guardar, a fase num toque (um pedido de cada vez, a versão em
  *     vigor, a fase por guardar sem rede), o conflito e o Recarregar, a
@@ -30,6 +30,7 @@
  *     loja da região).
  */
 import { ErroCrm, MENSAGEM_ERRO_INESPERADO, MENSAGEM_SEM_REDE } from './api';
+import { localizacaoFinal, podeConfirmar } from './localizacao';
 import { criarEstadoRede } from './rede';
 import {
   PERGUNTA_APAGAR,
@@ -142,6 +143,24 @@ test('corpoAlteracao: só os campos alterados + o atualizado_em da loja carregad
   });
   // Sem alterações, só a versão (o servidor aceita-o e avança a versão: o ecrã não o envia).
   expect(corpoAlteracao(LOJA, { nome: LOJA.nome })).toStrictEqual({ atualizado_em: LOJA.atualizado_em });
+});
+
+test('corpoAlteracao: o google_place_id vai no bloco — o mesmo id não é alteração; outro id, ou tirá-lo, manda o bloco (plano G17)', () => {
+  const doLugar = { ...LOJA, origem_coords: 'pin_manual', precisao_m: null, google_place_id: 'ChIJa1b2c3' };
+  const noSitio = { lat: LOJA.lat, lng: LOJA.lng, origem_coords: 'pin_manual', precisao_m: null };
+  const versao = { atualizado_em: LOJA.atualizado_em };
+  // Confirmado sem mexer (o mesmo sítio e o mesmo lugar): nada a enviar.
+  expect(corpoAlteracao(doLugar, { ...noSitio, google_place_id: 'ChIJa1b2c3' })).toStrictEqual(versao);
+  // Outro lugar da Google no mesmo sítio: o bloco inteiro, com o id novo.
+  expect(corpoAlteracao(doLugar, { ...noSitio, google_place_id: 'ChIJoutro' })).toStrictEqual({ ...noSitio, google_place_id: 'ChIJoutro', ...versao });
+  // O pino posto à mão por cima (sem lugar): o bloco tira o id (null), também no mesmo sítio.
+  expect(corpoAlteracao(doLugar, { ...noSitio, google_place_id: null })).toStrictEqual({ ...noSitio, google_place_id: null, ...versao });
+  const aoLado = { lat: 38.7095, lng: -9.1374, origem_coords: 'pin_manual', precisao_m: null };
+  expect(corpoAlteracao(doLugar, { ...aoLado, google_place_id: null })).toStrictEqual({ ...aoLado, google_place_id: null, ...versao });
+  // Arrastado a partir do mesmo lugar: o bloco com o id que já tinha.
+  expect(corpoAlteracao(doLugar, { ...aoLado, google_place_id: 'ChIJa1b2c3' })).toStrictEqual({ ...aoLado, google_place_id: 'ChIJa1b2c3', ...versao });
+  // A origem nunca vai como google.
+  expect(JSON.stringify(corpoAlteracao(LOJA, { ...aoLado, google_place_id: 'ChIJoutro' }))).not.toContain('"google"');
 });
 
 test('textoLocalizacao: de onde vem o pino guardado', () => {
@@ -949,8 +968,9 @@ test('a gravação da fase limpa a mensagem de um erro anterior', async () => {
 test('"Corrigir localização" abre o seletor com o pino no sítio guardado; Guardar espera pela confirmação', async () => {
   const m = await carregada();
   m.ecra.abrirCorrecao();
-  expect(m.vista().correcao).toEqual({
-    chave: 1, inicial: { lat: LOJA.lat, lng: LOJA.lng, origem: 'gps', precisao_m: 12 },
+  // O `inicial` leva sempre o google_place_id da loja (mapa Google, plano G17): a LOJA não o tem → null.
+  expect(m.vista().correcao).toStrictEqual({
+    chave: 1, inicial: { lat: LOJA.lat, lng: LOJA.lng, origem: 'gps', precisao_m: 12, google_place_id: null },
   });
   expect(Object.isFrozen(m.vista().correcao)).toBe(true);
   expect(Object.isFrozen(m.vista().correcao.inicial)).toBe(true);
@@ -992,6 +1012,77 @@ test('o pino arrastado a partir de um lugar da Google: Guardar leva o google_pla
   pedido.resolver(copia(LOJA, { ...doGoogle, atualizado_em: VERSAO_NOVA }));
   await assentar();
   expect(m.vista().resumoLocalizacao).toBe('Pino posto à mão a partir de um lugar da Google.');
+});
+
+// Uma loja com o pino posto à mão a partir de um lugar da Google (pin_manual + google_place_id; plano G9).
+const LUGAR = 'ChIJa1b2c3';
+const LOJA_DO_LUGAR = Object.freeze({ ...LOJA, origem_coords: 'pin_manual', precisao_m: null, google_place_id: LUGAR });
+
+test('"Corrigir localização" de um pino vindo da Google: o seletor abre com o google_place_id e confirma-se sem arrastar (plano G17)', async () => {
+  const m = await carregada({}, LOJA_DO_LUGAR);
+  expect(m.vista().resumoLocalizacao).toBe('Pino posto à mão a partir de um lugar da Google.');
+  m.ecra.abrirCorrecao();
+  const { inicial } = m.vista().correcao;
+  expect(inicial).toStrictEqual({ lat: LOJA.lat, lng: LOJA.lng, origem: 'pin_manual', precisao_m: null, google_place_id: LUGAR });
+  expect(Object.keys(inicial)).toEqual(['lat', 'lng', 'origem', 'precisao_m', 'google_place_id']);
+  expect(Object.isFrozen(inicial)).toBe(true);
+  // A origem é a guardada (pin_manual, nunca google): o seletor confirma-a sem a pessoa arrastar.
+  expect(podeConfirmar({ origem: inicial.origem, precisao_m: inicial.precisao_m, arrastado: false })).toBe(true);
+  // Confirmar sem mexer devolve o mesmo bloco (com o id): não há alterações.
+  m.ecra.mudarLocalizacao(localizacaoFinal(inicial, false));
+  expect(m.vista().guardar).toEqual({ ativo: false, texto: 'Guardar', falta: 'Sem alterações por guardar.' });
+});
+
+test('o google_place_id do inicial: só um texto não vazio, tal e qual; o resto vai como null (plano G17)', async () => {
+  for (const [guardado, esperado] of [
+    [undefined, null], [null, null], ['', null], ['   ', null], [7, null], [{ id: LUGAR }, null], [LUGAR, LUGAR],
+    // Tal e qual, como o `localizacaoFinal` o devolve: confirmar sem mexer não muda o id.
+    [` ${LUGAR} `, ` ${LUGAR} `],
+  ]) {
+    const loja = { ...LOJA_DO_LUGAR, google_place_id: guardado };
+    if (guardado === undefined) delete loja.google_place_id; // documentos antigos, sem a chave
+    const m = await carregada({}, loja);
+    m.ecra.abrirCorrecao();
+    expect([guardado, m.vista().correcao.inicial.google_place_id]).toStrictEqual([guardado, esperado]);
+  }
+});
+
+test('na correção de um pino vindo da Google: arrastar mantém o id, um toque à mão tira-o, outro negócio só depois de arrastado e com o id novo (plano G17)', async () => {
+  const ALI = { lat: 38.7095, lng: -9.1374 };
+  const casos = [
+    // [o que o seletor tinha, confirma-se sem arrastar?, arrastado, o google_place_id que vai no PATCH]
+    ['arrastar o pino guardado', (inicial) => ({ ...inicial, ...ALI }), true, true, LUGAR],
+    ['um toque à mão noutro sítio', () => ({ ...ALI, origem: 'pin_manual' }), true, false, null],
+    // Um pino da Google ainda por arrastar não se confirma (a regra do arrasto, no seletor).
+    ['outro negócio, arrastado até à porta', () => ({ ...ALI, origem: 'google', google_place_id: 'ChIJoutro' }), false, true, 'ChIJoutro'],
+    ['uma morada da pesquisa da Google, arrastada', () => ({ ...ALI, origem: 'google', google_place_id: 'EiJSdWEgZG8gT3Vybw' }), false, true, 'EiJSdWEgZG8gT3Vybw'],
+  ];
+  for (const [nome, posicao, semArrastar, arrastado, id] of casos) {
+    const m = await carregada({}, LOJA_DO_LUGAR);
+    m.ecra.abrirCorrecao();
+    const pino = posicao(m.vista().correcao.inicial);
+    expect([nome, podeConfirmar({ ...pino, arrastado: false })]).toEqual([nome, semArrastar]);
+    m.ecra.mudarLocalizacao(localizacaoFinal(pino, arrastado));
+    expect([nome, m.vista().guardar.ativo]).toEqual([nome, true]);
+    const pedido = await guardar(m);
+    expect([nome, corpo(pedido)]).toStrictEqual([nome, {
+      ...ALI, origem_coords: 'pin_manual', precisao_m: null, google_place_id: id, atualizado_em: LOJA.atualizado_em,
+    }]);
+  }
+});
+
+test('422 no google_place_id durante a correção: o pino volta a soltar-se, com a mensagem no mapa (plano G17)', async () => {
+  const m = await carregada({}, LOJA_DO_LUGAR);
+  m.ecra.abrirCorrecao();
+  m.ecra.mudarLocalizacao({ ...PINO_NOVO, google_place_id: 'ChIJoutro' });
+  await guardar(m);
+  m.seletor.length = 0;
+  await falhar(m, 'alterarLoja', erroValidacao({ google_place_id: 'O identificador do lugar na Google não é válido.' }));
+  expect(m.seletor).toEqual([
+    ['desconfirmar'], ['mostrarErro', 'O identificador do lugar na Google não é válido.'], ['focar'],
+  ]);
+  expect(m.vista().guardar.falta).toBe(TEXTO_FALTA_CORRECAO);
+  expect(m.vista().erros).toEqual({});
 });
 
 test('confirmar sem mexer no pino: não há alterações', async () => {

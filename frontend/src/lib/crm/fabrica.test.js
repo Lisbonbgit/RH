@@ -101,6 +101,20 @@ test('corpoFabrica: só a longitude mudou também leva a latitude; um ponto sem 
   expect(corpoFabrica({ ...DEFINICOES, fabrica_morada: undefined }, { morada: '  ', ponto: null })).toStrictEqual({});
 });
 
+test('corpoFabrica: de um ponto vindo da Google só contam a latitude e a longitude (nunca o google_place_id nem a origem; plano G17)', () => {
+  const doNegocio = {
+    lat: 38.71234567, lng: -9.13456789, origem_coords: 'pin_manual', precisao_m: 7, google_place_id: 'ChIJ-negocio-teste',
+  };
+  const corpo = corpoFabrica(DEFINICOES, { morada: DEFINICOES.fabrica_morada, ponto: doNegocio });
+  expect(corpo).toStrictEqual({ fabrica_lat: 38.712346, fabrica_lng: -9.134568 });
+  expect(Object.keys(corpo)).toEqual(['fabrica_lat', 'fabrica_lng']);
+  // O id sozinho (o ponto no mesmo sítio) não é uma alteração.
+  expect(corpoFabrica(DEFINICOES, {
+    morada: DEFINICOES.fabrica_morada,
+    ponto: { lat: 38.7223, lng: -9.1393, origem_coords: 'pin_manual', precisao_m: null, google_place_id: 'ChIJ-outro' },
+  })).toStrictEqual({});
+});
+
 test('estadoGuardarFabrica: o botão Guardar e porque não se pode guardar', () => {
   expect(estadoGuardarFabrica({ alterada: true, aCorrigir: false, aGuardar: false })).toEqual({ ativo: true, texto: 'Guardar', falta: null });
   expect(estadoGuardarFabrica({ alterada: false, aCorrigir: false, aGuardar: false }))
@@ -414,6 +428,34 @@ test('arrastar o pino e confirmar: Guardar envia a latitude e a longitude; depoi
   // A mudança seguinte é outro seletor (outra chave), já no ponto novo.
   m.ecra.abrirCorrecao();
   expect(m.vista().correcao).toEqual({ chave: 2, inicial: { lat: 38.712346, lng: -9.134568, origem: 'pin_manual' } });
+});
+
+test('o ponto de um negócio ou da pesquisa da Google (arrastado: pin_manual + google_place_id): Guardar só manda a latitude e a longitude (plano G17)', async () => {
+  const m = await carregada();
+  m.ecra.abrirCorrecao();
+  // A fábrica abre sem GPS e sem lugar da Google: só o ponto e a origem pin_manual.
+  expect(m.vista().correcao.inicial).toStrictEqual({ lat: 38.7223, lng: -9.1393, origem: 'pin_manual' });
+  expect(m.vista().correcao.inicial).not.toHaveProperty('google_place_id');
+  m.ecra.mudarPonto({ ...PINO, google_place_id: 'ChIJ-negocio-teste' });
+  expect(m.vista().guardar).toEqual(PRONTO);
+  m.ecra.guardar();
+  expect(ultimo(m, 'alterarDefinicoes').argumentos).toStrictEqual([{ fabrica_lat: 38.712346, fabrica_lng: -9.134568 }]);
+  // Nada do lugar chega à vista (nem o id).
+  expect(JSON.stringify(m.vistas)).not.toContain('ChIJ');
+  await responder(m, 'alterarDefinicoes', { ...DEFINICOES, fabrica_lat: 38.712346, fabrica_lng: -9.134568 });
+  expect(m.vista().correcao).toBe(null);
+  expect(m.vista().resumoPonto).toBe('Latitude 38.712346 · longitude -9.134568');
+});
+
+test('a morada da pesquisa da Google sem rótulo (a Google sem a morada formatada) não mexe na morada da fábrica (plano G17)', async () => {
+  const m = await carregada();
+  m.ecra.abrirCorrecao();
+  const daGoogle = { morada: 'Rua do Ouro 3', codigo_postal: '1100-060', localidade: 'Lisboa', lat: 38.7101, lng: -9.138 };
+  m.ecra.escolherMorada({ rotulo: null, ...daGoogle });
+  expect(m.vista().morada).toBe('Rua da Fábrica 1, Lisboa');
+  expect(m.vista().guardar).toEqual(A_CONFIRMAR);
+  m.ecra.escolherMorada({ rotulo: 'Rua do Ouro 3, 1100-060 Lisboa, Portugal', ...daGoogle });
+  expect(m.vista().morada).toBe('Rua do Ouro 3, 1100-060 Lisboa, Portugal');
 });
 
 test('confirmar o ponto sem o mexer não é uma alteração; "Alterar localização" volta a esperar pela confirmação', async () => {
