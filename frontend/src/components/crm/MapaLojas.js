@@ -12,8 +12,11 @@
 //  - tocar no ícone de um negócio abre o balão da própria Google e avisa a página (`aoTocarNumLugar`, com o
 //    identificador do lugar e o ponto tocado); sem esse ouvinte, chega como um toque no mapa. Com
 //    `negociosClicaveis={false}` (o planeador da F3b) os negócios não respondem;
-//  - se a Google não carregar (rede, quota, chave recusada) ou o mapa não se criar, avisa a página
-//    (`aoFalhar`), que mostra a mensagem de sempre;
+//  - se a Google não carregar (rede, quota) ou o mapa não se criar, avisa a página (`aoFalhar`), que mostra a
+//    mensagem de sempre. Uma chave recusada (um referrer que a Google não autoriza, a app instalada, uma chave
+//    inválida) não faz o script falhar: a Google avisa depois (`aoFalharAutenticacao` do carregador, o
+//    `gm_authFailure`), com o mapa já criado ou ainda a carregar, e a página também recebe `aoFalhar` (uma vez;
+//    revisão do mapa Google, MAPA-G-1);
 //  - quando a área muda de tamanho (o cartão da loja, um aviso por cima, o telemóvel a rodar), avisa o mapa
 //    (`redimensionar`).
 //
@@ -53,16 +56,28 @@ export default function MapaLojas({
     let ativo = true;
     let criado = null;
     let observador = null;
+    // A falha já foi dada à página (a Google recusou a chave): não se cria o mapa nem se avisa outra vez.
+    let falhou = false;
+    let desligarRecusa = () => {};
+
+    // Diz porquê na consola (nunca a chave) e avisa a página, uma vez por montagem.
+    function avisarFalha(...porque) {
+      if (!ativo || falhou) return;
+      falhou = true;
+      console.error(...porque);
+      ouvintes.current.aoFalhar?.();
+    }
 
     async function montar() {
       try {
-        const { importar } = prepararGoogleMaps({
+        const { importar, aoFalharAutenticacao } = prepararGoogleMaps({
           janela: window,
           documento: document,
           chave: configuracao?.google?.chave,
         });
+        desligarRecusa = aoFalharAutenticacao(() => avisarFalha('[crm] a Google recusou a chave do mapa (referrer, chave ou API).'));
         await Promise.all(BIBLIOTECAS.map((nome) => importar(nome)));
-        if (!ativo) return;
+        if (!ativo || falhou) return;
         criado = criarMapa({
           google: window.google,
           documento: document,
@@ -79,9 +94,7 @@ export default function MapaLojas({
           },
         });
       } catch (erro) {
-        if (!ativo) return;
-        console.error('[crm] o mapa não foi criado:', erro);
-        ouvintes.current.aoFalhar?.();
+        avisarFalha('[crm] o mapa não foi criado:', erro);
         return;
       }
 
@@ -94,6 +107,7 @@ export default function MapaLojas({
 
     return () => {
       ativo = false;
+      desligarRecusa();
       if (!criado) return;
       observador?.disconnect();
       ouvintes.current.aoPronto?.(null);

@@ -37,9 +37,12 @@
 //    `negocioDoToque` do mapa; a página pede ao seletor que ponha lá o pino
 //    (`usarNegocio`: por arrastar até à porta da loja, como qualquer ponto da
 //    Google) e tira o `state`;
-//  - o nome escreve-se à mão: com a localização confirmada de um lugar da
-//    Google (`google_place_id`), a vista traz a dica do nome (`dicaNome`,
-//    `TEXTO_ESCREVA_O_NOME`), que a página põe por baixo do campo "Nome";
+//  - o nome escreve-se à mão: vinda de um negócio (`comNegocio: true`), a
+//    vista traz desde a chegada a dica do nome (`dicaNome`,
+//    `TEXTO_ESCREVA_O_NOME`), que a página põe por baixo do campo "Nome" (o
+//    painel do seletor, com a mesma dica, já fechou quando o pino chega ao
+//    negócio; revisão do mapa Google, MAPA-G-3); sem negócio, a dica aparece
+//    com a localização confirmada de um lugar da Google (`google_place_id`);
 //  - o corpo do POST leva só o bloco da localização (`CAMPOS_LOCALIZACAO`, com
 //    o `google_place_id`), nunca outras chaves que a localização traga.
 import { CAMPOS_LOCALIZACAO } from './diferencas';
@@ -102,8 +105,10 @@ export function negocioDoEstado(estado) {
   return negocioDoToque({ placeId: negocio?.id, lat: negocio?.lat, lng: negocio?.lng });
 }
 
-// A dica do campo "Nome": com a localização confirmada de um lugar da Google, o nome escreve-se à mão.
-function dicaDoNome(localizacao) {
+// A dica do campo "Nome": vinda de um negócio do mapa, ou com a localização confirmada de um lugar da Google, o
+// nome escreve-se à mão.
+function dicaDoNome(localizacao, comNegocio) {
+  if (comNegocio) return TEXTO_ESCREVA_O_NOME;
   const id = localizacao?.google_place_id;
   return typeof id === 'string' && id.trim() !== '' ? TEXTO_ESCREVA_O_NOME : null;
 }
@@ -168,21 +173,26 @@ export function caminhoDaFicha(base, id) {
 
 // --- Ecrã ----------------------------------------------------------------------------------------
 
-// criarLojaNova({api, storage, rede, base, navegar, seletor, aoMudarVista, aoFocar})
+// criarLojaNova({api, storage, rede, base, navegar, seletor, aoMudarVista, aoFocar, comNegocio})
 //   → {vista, iniciar, mudarCampo, escolherMorada, sugerirMorada, mudarLocalizacao, guardar, responder, destruir}
 //  - api: {listarRegioes, criarLoja} do lib/crm/api.js;
 //  - storage: o localStorage (pode faltar ou lançar); rede: o `criarEstadoRede(window, navigator)`;
 //  - base: a casa do CRM (`/crm` ou `/admin/crm`); navegar(caminho, opcoes?): o `navigate` do React Router;
 //  - seletor: {limparErro, desconfirmar, mostrarErro, focar} do SeletorLocalizacao (pela ref);
-//  - aoMudarVista(vista); aoFocar(campo): o foco deve ir para esse campo do formulário.
+//  - aoMudarVista(vista); aoFocar(campo): o foco deve ir para esse campo do formulário;
+//  - comNegocio: true quando a página abriu com um negócio do mapa ("Adicionar como loja"): a dica do nome
+//    aparece logo (só `true` conta).
 // vista: {valores, erros, opcoesRegiao, valorRegiao, guardar: {ativo, texto, falta}, alerta,
 //         duplicado: null | {loja, mensagem, botoes}, dicaNome: null | texto} — nova a cada mudança e
-//         congelada (`dicaNome`: a dica por baixo do "Nome" quando a localização confirmada é de um lugar da
-//         Google).
+//         congelada (`dicaNome`: a dica por baixo do "Nome" com `comNegocio`, ou quando a localização
+//         confirmada é de um lugar da Google).
 // Criar o ecrã não pede nada: `iniciar()` pede as regiões e ouve a rede; `destruir()` (o ecrã saiu) faz que
 // as respostas que chegarem depois, a rede e as respostas ao diálogo já não façam nada.
-export function criarLojaNova({ api, storage, rede, base, navegar, seletor, aoMudarVista, aoFocar }) {
+export function criarLojaNova({
+  api, storage, rede, base, navegar, seletor, aoMudarVista, aoFocar, comNegocio = false,
+}) {
   const regiaoGuardada = carregarUltimaRegiao(storage);
+  const vindaDeUmNegocio = comNegocio === true;
   let formulario = estadoInicial({ regiaoId: regiaoGuardada });
   let localizacao = null; // a confirmada no seletor
   let regioes = null; // null até chegarem
@@ -206,7 +216,7 @@ export function criarLojaNova({ api, storage, rede, base, navegar, seletor, aoMu
       guardar: Object.freeze(estadoGuardar({ nome: formulario.valores.nome, localizacao, online: online(), aGuardar })),
       alerta,
       duplicado: duplicada === null ? null : Object.freeze({ loja: duplicada, ...dialogoDuplicado(duplicada) }),
-      dicaNome: dicaDoNome(localizacao),
+      dicaNome: dicaDoNome(localizacao, vindaDeUmNegocio),
     });
   }
 

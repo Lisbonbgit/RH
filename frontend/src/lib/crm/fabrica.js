@@ -50,12 +50,17 @@ const TEXTO_FALTA_ALTERACOES = 'Sem alterações por guardar.';
 // O tamanho da morada no servidor (`backend/crm/dominio/definicoes.py::MORADA_MAXIMO`).
 export const MORADA_MAXIMO_FABRICA = 255;
 
-// Os textos do seletor do ponto (os `textos` do `SeletorLocalizacao`, no lugar dos da loja).
+// Os textos do seletor do ponto (os `textos` do `SeletorLocalizacao`, no lugar dos da loja): todos, para nenhum
+// falar da loja (revisão do mapa Google, MAPA-G-2). O painel do negócio não tem a dica do nome: a fábrica não
+// tem nome a escrever (adenda §1.2: aqui a pesquisa e o negócio servem só para pôr o pino).
 export const TEXTOS_SELETOR_FABRICA = Object.freeze({
   titulo: 'Ponto da fábrica no mapa',
   tocar: 'Toque no mapa no sítio da fábrica.',
   mapa: 'Mapa para pôr o pino da fábrica',
   pino: 'Pino da fábrica',
+  arrastarLugar: 'Arraste o pino até ao sítio exato da fábrica para confirmar',
+  lugarIndisponivel: 'Não foi possível obter a posição deste lugar — toque no mapa no sítio da fábrica.',
+  dicaNegocio: null,
 });
 
 const CAMPOS_PONTO = Object.freeze(['fabrica_lat', 'fabrica_lng']);

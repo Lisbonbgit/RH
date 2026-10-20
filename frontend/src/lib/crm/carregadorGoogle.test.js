@@ -15,7 +15,12 @@
  *   - `onerror` → `Error('O Google Maps não carregou.')` e o `importar`
  *     seguinte tenta de novo com um script novo;
  *   - o `nonce` de um `script[nonce]` existente copia-se;
- *   - a chave só aparece no `src` do script: o módulo não regista nada.
+ *   - a chave só aparece no `src` do script: o módulo não regista nada;
+ *   - a Google que recusa a chave depois de carregar (referrer não autorizado,
+ *     chave inválida: o script carrega na mesma e chama o `gm_authFailure` da
+ *     janela) avisa quem está à escuta (`aoFalharAutenticacao`), uma vez, e
+ *     quem chega depois logo; um `gm_authFailure` que já lá estava continua a
+ *     ser chamado (revisão do mapa Google, MAPA-G-1 / G-ENG-1).
  */
 import fs from 'fs';
 import path from 'path';
@@ -80,10 +85,18 @@ function observar(promessa) {
 }
 
 function preparar(opcoes = {}) {
-  const janela = janelaFalsa();
+  const janela = opcoes.janela ?? janelaFalsa();
   const documento = documentoFalso(opcoes.documento);
-  const { importar } = prepararGoogleMaps({ janela, documento, chave: CHAVE, ...opcoes.preparacao });
-  return { janela, documento, importar };
+  const { importar, aoFalharAutenticacao } = prepararGoogleMaps({ janela, documento, chave: CHAVE, ...opcoes.preparacao });
+  return { janela, documento, importar, aoFalharAutenticacao };
+}
+
+// O script chega e a Google chama o __ib__ (o mapa já se pode criar).
+async function carregar(preparado) {
+  const promessa = preparado.importar('maps');
+  await esperar();
+  carregarScript(preparado.janela);
+  await promessa;
 }
 
 afterEach(() => {
@@ -333,6 +346,8 @@ describe('a chave nunca aparece noutro sítio', () => {
     carregarScript(janela);
     await nova;
     await primeiro.importar('marker');
+    primeiro.aoFalharAutenticacao(() => {});
+    janela.gm_authFailure();
     for (const espia of espias) expect(espia).not.toHaveBeenCalled();
   });
 
@@ -355,5 +370,173 @@ describe('a chave nunca aparece noutro sítio', () => {
   test('o código do módulo não tem console nenhum', () => {
     const fonte = fs.readFileSync(path.join(__dirname, 'carregadorGoogle.js'), 'utf8');
     expect(fonte).not.toMatch(/console\s*\./);
+  });
+});
+
+describe('a Google recusa a chave depois de carregar (gm_authFailure)', () => {
+  // Com um referrer que a chave não autoriza, uma chave inválida ou uma API desligada, o script carrega na
+  // mesma (o `importar` resolve e o mapa cria-se) e a Google só avisa depois, pelo `gm_authFailure` da janela.
+  test('prepararGoogleMaps devolve também aoFalharAutenticacao; nada é avisado antes da falha', async () => {
+    const preparado = preparar();
+    expect(typeof preparado.aoFalharAutenticacao).toBe('function');
+    const aviso = jest.fn();
+    const desligar = preparado.aoFalharAutenticacao(aviso);
+    expect(typeof desligar).toBe('function');
+    await carregar(preparado);
+    expect(typeof preparado.janela.gm_authFailure).toBe('function');
+    expect(aviso).not.toHaveBeenCalled();
+  });
+
+  test('o gm_authFailure depois do __ib__ avisa quem está à escuta, uma só vez (sem argumentos)', async () => {
+    const preparado = preparar();
+    const um = jest.fn();
+    const outro = jest.fn();
+    preparado.aoFalharAutenticacao(um);
+    preparado.aoFalharAutenticacao(outro);
+    await carregar(preparado);
+    preparado.janela.gm_authFailure();
+    expect(um).toHaveBeenCalledTimes(1);
+    expect(um.mock.calls[0]).toEqual([]);
+    expect(outro).toHaveBeenCalledTimes(1);
+    // A Google pode voltar a chamá-lo (outro mapa na mesma janela): ninguém é avisado duas vezes.
+    preparado.janela.gm_authFailure();
+    expect(um).toHaveBeenCalledTimes(1);
+    expect(outro).toHaveBeenCalledTimes(1);
+  });
+
+  test('quem chega depois da falha é avisado numa microtarefa (a janela continua recusada), uma vez', async () => {
+    const preparado = preparar();
+    await carregar(preparado);
+    preparado.janela.gm_authFailure();
+    const tarde = jest.fn();
+    const desligar = preparado.aoFalharAutenticacao(tarde);
+    expect(typeof desligar).toBe('function');
+    expect(tarde).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(tarde).toHaveBeenCalledTimes(1);
+    expect(tarde.mock.calls[0]).toEqual([]);
+    desligar();
+    preparado.janela.gm_authFailure();
+    await esperar();
+    expect(tarde).toHaveBeenCalledTimes(1);
+    // Um prepararGoogleMaps novo na mesma janela (outra página do CRM) também sabe.
+    const outraPagina = prepararGoogleMaps({ janela: preparado.janela, documento: preparado.documento, chave: CHAVE });
+    const aviso = jest.fn();
+    outraPagina.aoFalharAutenticacao(aviso);
+    await esperar();
+    expect(aviso).toHaveBeenCalledTimes(1);
+  });
+
+  test('quem chega depois da falha e desliga logo (a montagem que o StrictMode desfaz) não é avisado', async () => {
+    const preparado = preparar();
+    await carregar(preparado);
+    preparado.janela.gm_authFailure();
+    const desfeita = jest.fn();
+    const ficou = jest.fn();
+    preparado.aoFalharAutenticacao(desfeita)();
+    preparado.aoFalharAutenticacao(ficou);
+    await esperar();
+    expect(desfeita).not.toHaveBeenCalled();
+    expect(ficou).toHaveBeenCalledTimes(1);
+  });
+
+  test('desligar: quem saiu (a página já desmontada) não é avisado', async () => {
+    const preparado = preparar();
+    const saiu = jest.fn();
+    const ficou = jest.fn();
+    const desligar = preparado.aoFalharAutenticacao(saiu);
+    preparado.aoFalharAutenticacao(ficou);
+    desligar();
+    desligar();
+    await carregar(preparado);
+    preparado.janela.gm_authFailure();
+    expect(saiu).not.toHaveBeenCalled();
+    expect(ficou).toHaveBeenCalledTimes(1);
+  });
+
+  test('um gm_authFailure que já estava na janela continua a ser chamado, com os mesmos argumentos', async () => {
+    const janela = janelaFalsa();
+    const anterior = jest.fn();
+    janela.gm_authFailure = anterior;
+    const preparado = preparar({ janela });
+    const aviso = jest.fn();
+    preparado.aoFalharAutenticacao(aviso);
+    await carregar(preparado);
+    janela.gm_authFailure('x');
+    expect(anterior).toHaveBeenCalledTimes(1);
+    expect(anterior).toHaveBeenCalledWith('x');
+    expect(aviso).toHaveBeenCalledTimes(1);
+  });
+
+  test('dois prepararGoogleMaps na mesma janela: o gm_authFailure instala-se uma vez e cada um é avisado uma vez', async () => {
+    const janela = janelaFalsa();
+    const anterior = jest.fn();
+    janela.gm_authFailure = anterior;
+    const documento = documentoFalso();
+    const primeiro = prepararGoogleMaps({ janela, documento, chave: CHAVE });
+    const instalado = janela.gm_authFailure;
+    const segundo = prepararGoogleMaps({ janela, documento, chave: CHAVE });
+    expect(janela.gm_authFailure).toBe(instalado);
+    const a = jest.fn();
+    const b = jest.fn();
+    primeiro.aoFalharAutenticacao(a);
+    segundo.aoFalharAutenticacao(b);
+    const promessa = primeiro.importar('maps');
+    await esperar();
+    carregarScript(janela);
+    await promessa;
+    // Já carregado: um terceiro só delega, e também não reinstala nada.
+    prepararGoogleMaps({ janela, documento, chave: CHAVE });
+    expect(janela.gm_authFailure).toBe(instalado);
+    janela.gm_authFailure();
+    expect(anterior).toHaveBeenCalledTimes(1);
+    expect(a).toHaveBeenCalledTimes(1);
+    expect(b).toHaveBeenCalledTimes(1);
+  });
+
+  test('a Google já carregada antes do CRM (importLibrary verdadeiro): também se vigia a autenticação', () => {
+    const importLibrary = jest.fn(async (nome) => ({ nome }));
+    const janela = { google: { maps: { importLibrary } } };
+    const documento = documentoFalso();
+    const { aoFalharAutenticacao } = prepararGoogleMaps({ janela, documento, chave: CHAVE });
+    const aviso = jest.fn();
+    aoFalharAutenticacao(aviso);
+    janela.gm_authFailure();
+    expect(aviso).toHaveBeenCalledTimes(1);
+    expect(janela.google.maps.importLibrary).toBe(importLibrary);
+  });
+
+  test('sem chave nada se pede: a janela fica sem gm_authFailure e o aviso nunca chega', () => {
+    for (const chave of ['', '   ', undefined, null]) {
+      const janela = janelaFalsa();
+      const { aoFalharAutenticacao } = prepararGoogleMaps({ janela, documento: documentoFalso(), chave });
+      const aviso = jest.fn();
+      const desligar = aoFalharAutenticacao(aviso);
+      expect(typeof desligar).toBe('function');
+      desligar();
+      expect(janela.gm_authFailure).toBeUndefined();
+      expect(aviso).not.toHaveBeenCalled();
+    }
+  });
+
+  test('um aviso que não seja uma função não se regista (nem rebenta na falha)', async () => {
+    const preparado = preparar();
+    for (const invalido of [undefined, null, 'x', {}]) {
+      expect(typeof preparado.aoFalharAutenticacao(invalido)).toBe('function');
+    }
+    await carregar(preparado);
+    expect(() => preparado.janela.gm_authFailure()).not.toThrow();
+    expect(typeof preparado.aoFalharAutenticacao('x')).toBe('function');
+  });
+
+  test('a chave não fica em lado nenhum do aviso (nem na janela, nem no que se entrega a quem ouve)', async () => {
+    const preparado = preparar();
+    const aviso = jest.fn();
+    preparado.aoFalharAutenticacao(aviso);
+    await carregar(preparado);
+    preparado.janela.gm_authFailure();
+    expect(JSON.stringify(preparado.janela)).not.toContain(CHAVE);
+    expect(JSON.stringify(aviso.mock.calls)).not.toContain(CHAVE);
+    expect(String(preparado.janela.gm_authFailure)).not.toContain(CHAVE);
   });
 });

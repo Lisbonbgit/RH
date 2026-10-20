@@ -359,3 +359,42 @@ test('regra de disposição (c): a barra de cima deixa passar os toques para o m
 test('guardas da atribuição: nenhum seletor toca nos elementos da Google (gm-, gmp-, "google")', () => {
   expect(seletores().filter(tocaNaGoogle)).toEqual([]);
 });
+
+// Revisão do mapa Google (MAPA-G-5): o cartão da loja e o painel do negócio vivem por baixo do mapa, encostados
+// ao fundo dele, onde estão o logótipo e a atribuição da Google. Uma sombra lançada para cima (deslocamento
+// vertical negativo) pinta-se por cima dessa faixa, e o `elementFromPoint` da G21 não a apanha.
+const PAINEIS_POR_BAIXO = ['components/crm/CartaoLoja.js', 'components/crm/NegocioSelecionado.js'];
+
+// Se alguma das sombras de um box-shadow (também a de uma classe do Tailwind, com `_` no lugar dos espaços), sem
+// `inset`, tem o deslocamento vertical (o segundo comprimento) negativo. As vírgulas de rgb()/hsl() não contam.
+function sombraParaCima(valorSombra) {
+  const sombras = valorSombra.replace(/\([^)]*\)/g, '()').split(',');
+  return sombras.some((sombra) => {
+    const partes = sombra.trim().split(/[\s_]+/);
+    if (partes.includes('inset')) return false;
+    const comprimentos = partes.filter((parte) => /^-?(?:\d*\.)?\d+(?:px|rem|em)?$/.test(parte));
+    return comprimentos.length >= 2 && parseFloat(comprimentos[1]) < 0;
+  });
+}
+
+test('sombraParaCima vê o deslocamento vertical negativo (também no Tailwind), e não o inset nem o positivo', () => {
+  expect(sombraParaCima('0 -6px 18px rgb(0 0 0 / 0.12)')).toBe(true);
+  expect(sombraParaCima('0_-6px_18px_rgb(0_0_0/0.12)')).toBe(true);
+  expect(sombraParaCima('0 2px 6px rgb(0 0 0 / 40%), 0 -1px 0 hsl(0, 0%, 0%)')).toBe(true);
+  expect(sombraParaCima('0 1px 3px rgb(0 0 0 / 45%)')).toBe(false);
+  expect(sombraParaCima('0_1px_3px_rgb(0_0_0/0.45)')).toBe(false);
+  expect(sombraParaCima('inset 0 -6px 18px rgb(0 0 0 / 0.12)')).toBe(false);
+  expect(sombraParaCima('none')).toBe(false);
+});
+
+test('regra de disposição (d): o cartão da loja e o painel do negócio, por baixo do mapa, não lançam sombra para cima', () => {
+  for (const relativo of PAINEIS_POR_BAIXO) {
+    const fonte = fs.readFileSync(path.join(__dirname, '../..', relativo), 'utf8');
+    const sombras = [...fonte.matchAll(/shadow-\[([^\]]+)\]/g)].map((achado) => achado[1]);
+    expect([relativo, sombras.filter(sombraParaCima)]).toEqual([relativo, []]);
+  }
+  const doPainel = REGRAS.filter((r) => r.seletores.some((s) => s.includes('crm-negocio')));
+  expect(doPainel.map((r) => r.cabeca)).toContain('.crm-negocio');
+  const comSombra = doPainel.filter((r) => sombraParaCima(valor(r.corpo, 'box-shadow') ?? 'none'));
+  expect(comSombra.map((r) => r.cabeca)).toEqual([]);
+});

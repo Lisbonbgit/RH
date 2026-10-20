@@ -29,7 +29,8 @@
  *     que o `negocioDoToque` do mapa e devolve uma cópia só com isso);
  *   - com a localização confirmada de um lugar da Google (`google_place_id`), a
  *     vista traz a dica do nome (`dicaNome`): o nome escreve-se à mão, nada se
- *     copia da Google;
+ *     copia da Google; vinda de um negócio do mapa (`comNegocio: true`), a dica
+ *     está lá desde a chegada (revisão do mapa Google, MAPA-G-3);
  *   - o corpo do POST leva o bloco da localização inteiro (com o
  *     `google_place_id`) e só esse bloco: nunca a origem `google`, nem chaves a
  *     mais que a localização traga.
@@ -310,7 +311,9 @@ const assentar = () => new Promise((r) => {
 });
 
 // Monta o ecrã como a página (CrmLojaNova): cria, inicia (pede as regiões e ouve a rede).
-function montar({ online = true, storage = criarArmazenamento(), base = '/crm', iniciar = true } = {}) {
+function montar({
+  online = true, storage = criarArmazenamento(), base = '/crm', iniciar = true, comNegocio,
+} = {}) {
   const api = apiFalsa();
   const janela = new EventTarget();
   const navegador = { onLine: online };
@@ -338,6 +341,7 @@ function montar({ online = true, storage = criarArmazenamento(), base = '/crm', 
     },
     aoMudarVista: (vista) => vistas.push(vista),
     aoFocar: (campo) => focos.push(campo),
+    ...(comNegocio === undefined ? {} : { comNegocio }),
   });
   if (iniciar) ecra.iniciar();
   const mudarRede = (ligado) => {
@@ -939,6 +943,34 @@ test('dicaNome: um google_place_id que não é texto (ou é texto vazio) não d�
   }
   m.ecra.mudarLocalizacao({ ...PINO, google_place_id: 'x' });
   expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+});
+
+// Revisão do mapa Google (MAPA-G-3 / G-ENG-3; adenda §1.1 e §6.1, lista 9.1 do plano): a Nova loja que
+// chega de "Adicionar como loja" mostra a dica por baixo do "Nome" logo à chegada (o painel do seletor já
+// fechou quando o pino chega ao negócio), e não só depois de confirmar a localização.
+test('comNegocio (a Nova loja vinda de um negócio do mapa): a dica do nome logo à chegada, e fica', () => {
+  const m = montar({ comNegocio: true, iniciar: false });
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+  m.ecra.iniciar();
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+  // Confirmar a localização do negócio, escrever o nome, "Alterar", ou um pino posto à mão: a dica fica.
+  m.ecra.mudarLocalizacao(PINO_DO_NEGOCIO);
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+  m.ecra.mudarCampo('nome', 'Mercearia Nova');
+  m.ecra.mudarLocalizacao(null);
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+  m.ecra.mudarLocalizacao(PINO);
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+  expect(m.vistas.every((vista) => vista.dicaNome === TEXTO_ESCREVA_O_NOME)).toBe(true);
+});
+
+test('sem comNegocio (ou com outra coisa que não true), a dica só com o google_place_id confirmado', () => {
+  for (const comNegocio of [undefined, false, null, 'sim', 1, {}]) {
+    const m = montar({ comNegocio });
+    expect([comNegocio, m.vista().dicaNome]).toEqual([comNegocio, null]);
+    m.ecra.mudarLocalizacao(PINO_DO_NEGOCIO);
+    expect([comNegocio, m.vista().dicaNome]).toEqual([comNegocio, TEXTO_ESCREVA_O_NOME]);
+  }
 });
 
 test('dicaNome antes de iniciar e depois de sair do ecrã: a vista mantém a chave', async () => {

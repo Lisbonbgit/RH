@@ -1,17 +1,19 @@
 // O painel do negócio selecionado (plano do mapa Google, G13; adenda §6.3). Abre ao lado do mapa, nunca por
 // cima dele, quando a pessoa toca no ícone de um negócio: os dados do negócio estão no balão da própria Google,
 // dentro do mapa. Este painel só tem um texto fixo, a ação ("Adicionar como loja" no mapa, "Pôr o pino neste
-// negócio" no seletor), o "Fechar" e, por baixo da ação, a dica de que o nome da loja se escreve à mão.
+// negócio" no seletor), o "Fechar" e, por baixo da ação, a dica de que o nome da loja se escreve à mão (o
+// ponto da fábrica passa `dica={null}`: a fábrica não tem nome a escrever; revisão do mapa Google, MAPA-G-2).
 //
 // Nenhum dado da Google entra aqui: o componente não recebe o identificador do lugar, nem nome, morada ou
-// fotografia (as props são só estas cinco), por isso o texto do painel é o mesmo para qualquer negócio. A
+// fotografia (as props são só estas seis), por isso o texto do painel é o mesmo para qualquer negócio. A
 // posição só se pede à Google quando a pessoa toca na ação (o `criarNegocioSelecionado` de
 // `lib/crm/lugarGoogle.js`, por quem usa o painel); enquanto chega, o estado é `a_posicionar` e a ação fica
 // desligada; se falhar, `erro`, com a mensagem num alerta, e a ação volta a ligar para tentar outra vez.
 //
 // {estado: 'aberto' | 'a_posicionar' | 'erro' | 'fechado', mensagem, acao: {texto, aoTocar}, aoFechar,
-//  refTitulo}: a `refTitulo` fica no título (focável por código, tabIndex -1), para a página lhe pôr o foco ao
-// abrir. Fechado, não desenha nada. A ação e o Fechar chamam-se sem argumentos.
+//  refTitulo, dica}: a `refTitulo` fica no título (focável por código, tabIndex -1), para a página lhe pôr o foco
+// ao abrir; a `dica` é o texto por baixo da ação (TEXTO_ESCREVA_O_NOME por omissão; null ou vazia: sem dica, e a
+// ação sem `aria-describedby`). Fechado, não desenha nada. A ação e o Fechar chamam-se sem argumentos.
 import React, { useId } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { Button } from '../ui/button';
@@ -27,10 +29,13 @@ import './crm.css';
 
 const textoPreenchido = (valor) => typeof valor === 'string' && valor.trim() !== '';
 
-export default function NegocioSelecionado({ estado, mensagem, acao, aoFechar, refTitulo }) {
+export default function NegocioSelecionado({
+  estado, mensagem, acao, aoFechar, refTitulo, dica = TEXTO_ESCREVA_O_NOME,
+}) {
   const idDica = useId();
   if (estado === 'fechado') return null;
   const aPosicionar = estado === 'a_posicionar';
+  const comDica = textoPreenchido(dica);
 
   return (
     // Um <section> com nome já é uma região (o role explícito seria redundante: jsx-a11y/no-redundant-roles).
@@ -62,7 +67,7 @@ export default function NegocioSelecionado({ estado, mensagem, acao, aoFechar, r
             type="button"
             className="h-11 flex-1 basis-48"
             disabled={aPosicionar}
-            aria-describedby={idDica}
+            aria-describedby={comDica ? idDica : undefined}
             onClick={() => acao.aoTocar()}
           >
             {acao.texto}
@@ -72,9 +77,11 @@ export default function NegocioSelecionado({ estado, mensagem, acao, aoFechar, r
             {TEXTO_FECHAR_NEGOCIO}
           </Button>
         </div>
-        <p id={idDica} className="crm-negocio__dica">
-          {TEXTO_ESCREVA_O_NOME}
-        </p>
+        {comDica && (
+          <p id={idDica} className="crm-negocio__dica">
+            {dica}
+          </p>
+        )}
       </div>
     </section>
   );

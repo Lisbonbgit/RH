@@ -11,6 +11,11 @@
 //    nada se pede e o seletor diz porquê ("Mapa não configurado…" com `google: null`, "Não foi possível
 //    carregar o mapa…" se for `null` ou inválida, ou se a Google não carregar). Tem de ser o mesmo objeto
 //    entre desenhos: um objeto novo cria outro mapa (e o pino perde-se);
+//  - se a Google recusar a chave (um referrer que ela não autoriza, a app instalada, uma chave inválida), o
+//    script carrega na mesma e só depois ela avisa (`aoFalharAutenticacao` do carregador, o `gm_authFailure`):
+//    antes de haver seletor, cria-se sem mapa; depois, `mapaFalhou()` tira o mapa, o pino, a pesquisa, o
+//    painel e o GPS, com "Não foi possível carregar o mapa…" (revisão do mapa Google, MAPA-G-1). A página
+//    recebe `aoPronto(null)`;
 //  - o seletor (e o mapa) cria-se num `useEffect` e destrói-se no cleanup. O `StrictMode` monta duas vezes em
 //    desenvolvimento: a montagem já desfeita não cria nada quando a Google chega (`ativo`). O cleanup também
 //    faz o GPS, a morada sugerida, a posição de um negócio e a escolha da pesquisa que chegarem depois não
@@ -25,8 +30,9 @@
 //    página, fora da caixa do mapa. Escolher uma morada põe lá o pino (por arrastar até à porta da loja),
 //    mostra "Morada sugerida: …" e chama `aoEscolherMorada`;
 //  - tocar no ícone de um negócio do mapa abre o balão da própria Google e, entre a dica e o mapa, o painel
-//    "Negócio selecionado" (`NegocioSelecionado`, com "Pôr o pino neste negócio" e "Fechar"; o foco vai para o
-//    título dele). Ao fechar, se o foco estava lá e se perdeu, volta ao mapa;
+//    "Negócio selecionado" (`NegocioSelecionado`, com "Pôr o pino neste negócio", "Fechar" e a dica
+//    `textos.dicaNegocio`, que a fábrica tira; o foco vai para o título dele). Ao fechar, se o foco estava lá e
+//    se perdeu, volta ao mapa;
 //  - `aoMudar(localizacao)`: a localização confirmada ({lat, lng, origem_coords, precisao_m, google_place_id},
 //    o bloco que a API recebe) ou `null`; `aoEscolherMorada(morada)` (a pesquisa da Google) e
 //    `aoSugerirMorada(sugestao)` (o GPS) deixam o ecrã preencher a morada (`camposDaMorada` /
@@ -116,6 +122,9 @@ const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
     let ativo = true;
     let criado = null;
     let observador = null;
+    // A Google recusou a chave (o `gm_authFailure`), antes ou depois de o seletor existir.
+    let recusada = false;
+    let desligarRecusa = () => {};
     const {
       inicial: ponto, comGps: gps, textos: proprios, focarAoIniciar: focar,
     } = opcoes.current;
@@ -153,13 +162,19 @@ const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
       let google;
       if (configuracaoValida(configuracao)) {
         try {
-          const { importar } = prepararGoogleMaps({
+          const { importar, aoFalharAutenticacao } = prepararGoogleMaps({
             janela: window,
             documento: document,
             chave: configuracao.google.chave,
           });
+          desligarRecusa = aoFalharAutenticacao(() => {
+            if (!ativo || recusada) return;
+            recusada = true;
+            console.error('[crm] a Google recusou a chave do mapa (referrer, chave ou API).');
+            criado?.mapaFalhou();
+          });
           await Promise.all(BIBLIOTECAS.map((nome) => importar(nome)));
-          google = window.google;
+          google = recusada ? undefined : window.google;
         } catch (erro) {
           if (!ativo) return;
           console.error('[crm] o mapa não foi criado:', erro);
@@ -171,6 +186,7 @@ const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
 
     return () => {
       ativo = false;
+      desligarRecusa();
       if (!criado) return;
       observador?.disconnect();
       setSeletor(null);
@@ -178,12 +194,14 @@ const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
     };
   }, [configuracao]);
 
-  // O seletor com mapa já está na `ref`: a página pode usá-lo (e sabe quando deixa de poder).
+  // O seletor com mapa já está na `ref`: a página pode usá-lo (e sabe quando deixa de poder, também quando a
+  // Google recusa a chave depois: a vista passa a `semMapa`).
+  const semMapa = vista.semMapa;
   useEffect(() => {
     if (!seletor?.mapa) return undefined;
     opcoes.current.aoPronto?.(seletor);
     return () => opcoes.current.aoPronto?.(null);
-  }, [seletor]);
+  }, [seletor, semMapa]);
 
   // O foco pedido pelo seletor, depois de o React mostrar o botão.
   useLayoutEffect(() => {
@@ -299,6 +317,7 @@ const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
             acao={{ texto: TEXTO_USAR_ESTE_NEGOCIO, aoTocar: () => seletor?.usarNegocio() }}
             aoFechar={() => seletor?.fecharNegocio()}
             refTitulo={tituloNegocio}
+            dica={rotulos.dicaNegocio}
           />
         </div>
       )}

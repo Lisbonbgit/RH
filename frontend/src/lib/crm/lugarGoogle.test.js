@@ -350,7 +350,7 @@ describe.each([
   ['o documento do jsdom', () => document],
   ['o documentoFalso', () => documentoFalso()],
 ])('criarPesquisaLugar, com %s', (_nome, fazerDocumento) => {
-  function montar({ obterLimites = () => null } = {}) {
+  function montar({ obterLimites = () => null, aoComecar } = {}) {
     const documento = fazerDocumento();
     const { google, registo } = googleFalso({ documento });
     registo.lugares.EiJa = {
@@ -359,9 +359,68 @@ describe.each([
     registo.lugares.EiJb = { lat: 41.1496, lng: -8.6109, formattedAddress: 'Avenida dos Aliados, Porto', addressComponents: [] };
     const aoEscolher = jest.fn();
     const aoFalhar = jest.fn();
-    const pesquisa = criarPesquisaLugar({ google, documento, aoEscolher, aoFalhar, obterLimites });
+    const pesquisa = criarPesquisaLugar({ google, documento, aoEscolher, aoFalhar, obterLimites, aoComecar });
     return { documento, google, registo, aoEscolher, aoFalhar, pesquisa };
   }
+
+  // Revisão do mapa Google (G-ENG-2): quem usa a pesquisa (o seletor) sabe quando uma escolha começa e diz,
+  // quando a resposta chega, se ela ainda vale (a pessoa pode ter posto o pino noutro sítio entretanto).
+  test('aoComecar: chamado ao escolher (antes de a resposta chegar), sem argumentos, uma vez por escolha', async () => {
+    const aoComecar = jest.fn(() => () => true);
+    const { google, aoEscolher, pesquisa } = montar({ aoComecar });
+    const soltar = atrasar(google, 'EiJa');
+    pesquisa.elemento.escolher('EiJa');
+    expect(aoComecar).toHaveBeenCalledTimes(1);
+    expect(aoComecar.mock.calls[0]).toEqual([]);
+    expect(aoEscolher).not.toHaveBeenCalled();
+    soltar();
+    await esperar();
+    expect(aoEscolher).toHaveBeenCalledTimes(1);
+    expect(aoEscolher.mock.calls[0]).toHaveLength(1);
+    pesquisa.elemento.escolher('EiJb');
+    expect(aoComecar).toHaveBeenCalledTimes(2);
+    // O gmp-error não é uma escolha.
+    pesquisa.elemento.falhar();
+    expect(aoComecar).toHaveBeenCalledTimes(2);
+  });
+
+  test('aoComecar: se a função que devolveu disser que a escolha já não vale, nem aoEscolher nem aoFalhar', async () => {
+    for (const id of ['EiJa', 'EiJnada']) {
+      let vale = true;
+      const { google, aoEscolher, aoFalhar, pesquisa } = montar({ aoComecar: () => () => vale });
+      const soltar = atrasar(google, id);
+      pesquisa.elemento.escolher(id);
+      vale = false;
+      soltar();
+      await esperar();
+      expect([id, aoEscolher.mock.calls.length, aoFalhar.mock.calls.length]).toEqual([id, 0, 0]);
+    }
+  });
+
+  test('aoComecar: a escolha que ainda vale chega como sempre (e a falha também); o gmp-error não pergunta', async () => {
+    const valeAinda = jest.fn(() => true);
+    const { aoEscolher, aoFalhar, pesquisa } = montar({ aoComecar: () => valeAinda });
+    pesquisa.elemento.escolher('EiJa');
+    await esperar();
+    expect(aoEscolher).toHaveBeenCalledTimes(1);
+    expect(valeAinda).toHaveBeenCalledTimes(1);
+    pesquisa.elemento.escolher('EiJnada');
+    await esperar();
+    expect(aoFalhar).toHaveBeenCalledTimes(1);
+    expect(aoFalhar.mock.calls[0]).toEqual([]);
+    pesquisa.elemento.falhar();
+    expect(aoFalhar).toHaveBeenCalledTimes(2);
+    expect(valeAinda).toHaveBeenCalledTimes(2);
+  });
+
+  test('aoComecar que não devolve uma função (ou que falta): a escolha vale, como antes', async () => {
+    for (const aoComecar of [undefined, () => undefined, () => true, () => 'x']) {
+      const { aoEscolher, pesquisa } = montar({ aoComecar });
+      pesquisa.elemento.escolher('EiJa');
+      await esperar();
+      expect(aoEscolher).toHaveBeenCalledTimes(1);
+    }
+  });
 
   test('o elemento é o da Google, só com a região pt', () => {
     const { registo, pesquisa } = montar();

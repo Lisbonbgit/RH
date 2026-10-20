@@ -22,7 +22,8 @@
 //    se a Google falhar) e o `state` sai do histórico (recarregar a página não
 //    o repete). O pino fica por arrastar até à porta da loja (o
 //    Confirmar só depois disso) e o nome escreve-se à mão, com a dica por
-//    baixo do campo "Nome" (`vista.dicaNome`). Sem mapa, nada se pede.
+//    baixo do campo "Nome" (`vista.dicaNome`) desde a chegada
+//    (`comNegocio`; revisão do mapa Google, MAPA-G-3). Sem mapa, nada se pede.
 // A configuração do mapa pede-se uma vez (`obterConfigMapa`): `undefined`
 // enquanto chega, `null` se falhar (o seletor diz que não há mapa) e sempre o
 // mesmo objeto entre desenhos (um objeto novo criava outro mapa).
@@ -69,14 +70,15 @@ export default function CrmLojaNova() {
   const botaoGuardar = useRef(null);
   const [configuracao, setConfiguracao] = useState(undefined);
   const [ecra, setEcra] = useState(null);
-  // A primeira vista, antes de o ecrã existir: a de um ecrã acabado de criar (não pede nada).
-  const [vista, setVista] = useState(() => criarLojaNova({ storage: armazenamento(), rede: REDE }).vista);
-  // O campo que deve receber o foco quando o ecrã já o mostrar (o primeiro com erro de um 422).
-  const focoPendente = useRef(null);
-  const [pedidosDeFoco, setPedidosDeFoco] = useState(0);
   // O negócio com que a página abriu ("Adicionar como loja" no mapa), lido uma vez; usa-se uma só vez.
   const [negocio] = useState(() => negocioDoEstado(state));
   const negocioUsado = useRef(false);
+  const comNegocio = negocio !== null;
+  // A primeira vista, antes de o ecrã existir: a de um ecrã acabado de criar (não pede nada).
+  const [vista, setVista] = useState(() => criarLojaNova({ storage: armazenamento(), rede: REDE, comNegocio }).vista);
+  // O campo que deve receber o foco quando o ecrã já o mostrar (o primeiro com erro de um 422).
+  const focoPendente = useRef(null);
+  const [pedidosDeFoco, setPedidosDeFoco] = useState(0);
 
   const navegar = useRef(navigate);
   useLayoutEffect(() => {
@@ -120,6 +122,7 @@ export default function CrmLojaNova() {
         focoPendente.current = campo;
         setPedidosDeFoco((n) => n + 1);
       },
+      comNegocio,
     });
     setEcra(criado);
     setVista(criado.vista);
@@ -128,7 +131,7 @@ export default function CrmLojaNova() {
       ativo = false;
       criado.destruir();
     };
-  }, [base]);
+  }, [base, comNegocio]);
 
   // O foco pedido pelo ecrã, depois de o React mostrar o erro do campo.
   useLayoutEffect(() => {

@@ -29,6 +29,11 @@
  * confirmada que chega ao `aoMudar` é conferida no fim (chaves exatas e nunca
  * `origem_coords: 'google'`).
  *
+ * A revisão do mapa Google junta os de `mapaFalhou` (a Google recusou a chave
+ * depois de o mapa abrir), os textos da fábrica na regra do arrasto e no lugar
+ * indisponível, e os das escolhas que se cruzam (um arrasto, a pesquisa, o GPS
+ * e um negócio: conta sempre a escolha mais recente).
+ *
  * O Jest do CRA corre com `resetMocks`: os falsos nascem em cada teste.
  */
 import fs from 'fs';
@@ -53,7 +58,7 @@ import {
   MARGEM_GPS,
   ESTILO_CIRCULO,
 } from './seletor';
-import { TEXTO_A_POSICIONAR, TEXTO_LUGAR_INDISPONIVEL } from './lugarGoogle';
+import { TEXTO_A_POSICIONAR, TEXTO_ESCREVA_O_NOME, TEXTO_LUGAR_INDISPONIVEL } from './lugarGoogle';
 import { MENSAGEM_SEM_MAPA, MENSAGEM_MAPA_NAO_CONFIGURADO, ZOOM_SEM_LOJAS } from './mapa';
 import {
   MENSAGEM_LOCALIZACAO_IMPRECISA, MENSAGEM_PERMISSAO_NEGADA, OPCOES_GPS, limitesDoCirculo,
@@ -273,7 +278,15 @@ test('os textos dos botões e os da loja (título, dica, área do mapa e pino)',
   expect(TEXTO_CONFIRMAR).toBe('Confirmar localização');
   expect(TEXTO_ALTERAR).toBe('Alterar localização');
   expect(TEXTOS_LOJA).toEqual({
-    titulo: 'Localização', tocar: TEXTO_TOCAR_NO_MAPA, mapa: 'Mapa para pôr o pino da loja', pino: 'Pino da loja',
+    titulo: 'Localização',
+    tocar: TEXTO_TOCAR_NO_MAPA,
+    mapa: 'Mapa para pôr o pino da loja',
+    pino: 'Pino da loja',
+    // Revisão do mapa Google (MAPA-G-2): a dica da regra do arrasto, o lugar indisponível e a dica do painel do
+    // negócio também se trocam (o ponto da fábrica passa os seus).
+    arrastarLugar: TEXTO_ARRASTAR_LUGAR,
+    lugarIndisponivel: TEXTO_LUGAR_INDISPONIVEL,
+    dicaNegocio: TEXTO_ESCREVA_O_NOME,
   });
   expect(textosSeletor()).toEqual(TEXTOS_LOJA);
   expect(textosSeletor({})).toEqual(TEXTOS_LOJA);
@@ -282,13 +295,43 @@ test('os textos dos botões e os da loja (título, dica, área do mapa e pino)',
 
 test('com `textos` (o ponto da fábrica): o título, a dica, o nome do mapa e o do pino são os dados', () => {
   const textos = { titulo: 'Ponto da fábrica', tocar: 'Toque no mapa no sítio da fábrica.', mapa: 'Mapa da fábrica', pino: 'Pino da fábrica' };
-  expect(textosSeletor(textos)).toEqual(textos);
+  expect(textosSeletor(textos)).toEqual({ ...TEXTOS_LOJA, ...textos });
   expect(textosSeletor({ titulo: 'Ponto da fábrica' })).toEqual({ ...TEXTOS_LOJA, titulo: 'Ponto da fábrica' });
   const { seletor, mapa, elemento } = preparar({ iniciar: false, textos });
   expect(seletor.vista.dica).toBe('Toque no mapa no sítio da fábrica.');
   seletor.iniciar(elemento, { inicial: { lat: 38.7223, lng: -9.1393, origem: 'pin_manual' } });
   expect(pino(mapa()).title).toBe('Pino da fábrica');
   expect(seletor.vista.dica).toBe(TEXTO_ARRASTAR);
+});
+
+test('com `textos` (o ponto da fábrica): a dica da regra do arrasto e o lugar indisponível (painel e pesquisa) são os dados', async () => {
+  const textos = {
+    tocar: 'Toque no mapa no sítio da fábrica.',
+    arrastarLugar: 'Arraste o pino até ao sítio exato da fábrica para confirmar',
+    lugarIndisponivel: 'Não foi possível obter a posição deste lugar — toque no mapa no sítio da fábrica.',
+    dicaNegocio: null,
+  };
+  expect(textosSeletor(textos)).toEqual({ ...TEXTOS_LOJA, ...textos });
+  const m = preparar({ textos });
+  lugares(m.registo);
+  // Um negócio: o pino da Google pede o arrasto com o texto dado.
+  m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+  await m.seletor.usarNegocio();
+  expect(m.seletor.vista.dica).toBe(textos.arrastarLugar);
+  expect(m.seletor.vista.aviso).toBe('arrastar');
+  // A Google sem a posição de outro negócio: o painel diz porquê, com o texto dado (o pino vai para a reserva).
+  m.seletor.escolherNegocio('ChIJ-inexistente', { reserva: TOQUE });
+  await m.seletor.usarNegocio();
+  expect(m.seletor.vista.negocio.mensagem).toBe(textos.lugarIndisponivel);
+  expect(m.seletor.vista.dica).toBe(textos.arrastarLugar);
+  // A pesquisa sem o lugar, ou o gmp-error: o erro do seletor também.
+  pesquisa(m).escolher('EiJ-inexistente');
+  await esperar();
+  expect(m.seletor.vista.erro).toBe(textos.lugarIndisponivel);
+  tocar(m.mapa(), 38.71, -9.14);
+  pesquisa(m).falhar();
+  expect(m.seletor.vista.erro).toBe(textos.lugarIndisponivel);
+  expect(emTexto(m.vistas)).not.toMatch(/loja/i);
 });
 
 test('sem `textos`: os da loja (o título do pino incluído)', () => {
@@ -444,6 +487,153 @@ test('sem mapa, limparErro não tira a mensagem do mapa (o ecrã limpa os erros 
   const { seletor } = preparar({ configuracao: null });
   seletor.limparErro();
   expect(seletor.vista.erro).toBe(MENSAGEM_SEM_MAPA);
+});
+
+// Revisão do mapa Google (MAPA-G-1 / G-ENG-1): com um referrer que a chave não autoriza (a app instalada, um
+// domínio a mais) ou uma chave recusada, o script da Google carrega na mesma e o mapa cria-se; a Google só
+// avisa depois (`gm_authFailure`), e o componente chama `mapaFalhou`. Fica como se a Google não tivesse
+// carregado: "Não foi possível carregar o mapa — recarregue a página." e sem pino, pesquisa, painel nem GPS.
+test('mapaFalhou (a Google recusou a chave com o mapa aberto): a mensagem de sempre e nada do mapa fica', () => {
+  const m = preparar({ gps: true });
+  lugares(m.registo);
+  const contentor = m.documento.createElement('div');
+  contentor.appendChild(pesquisa(m));
+  tocar(m.mapa(), 38.71, -9.14);
+  m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+  expect(m.seletor.vista.negocio.estado).toBe('aberto');
+  const vistas = m.vistas.length;
+  m.seletor.mapaFalhou();
+  expect(m.vistas.length).toBeGreaterThan(vistas);
+  expect(m.vistas.at(-1)).toBe(m.seletor.vista);
+  const { vista } = m.seletor;
+  expect(vista.semMapa).toBe(true);
+  expect(vista.erro).toBe(MENSAGEM_SEM_MAPA);
+  expect(vista.estado).toBe('vazio');
+  expect(vista.dica).toBe(TEXTO_TOCAR_NO_MAPA);
+  expect(vista.aviso).toBeNull();
+  expect(vista.confirmarAtivo).toBe(false);
+  expect(vista.gps).toBeNull();
+  expect(vista.moradaSugerida).toBeNull();
+  expect(vista.pesquisa).toEqual({ ativa: false, elemento: null });
+  expect(vista.negocio.estado).toBe('fechado');
+  // A pesquisa saiu de onde o ecrã a pôs; o pino e o mapa (com o DOM da Google) também.
+  expect(contentor.childNodes.length).toBe(0);
+  expect(m.registo.marcadores.length).toBe(0);
+  expect(m.seletor.mapa).toBeNull();
+  expect(m.elemento.childNodes.length).toBe(0);
+  expect(m.mapa().limpezas).toBeGreaterThan(0);
+  expect(m.seletor.limitesDoMapa()).toBeNull();
+  expect(Object.isFrozen(vista)).toBe(true);
+});
+
+test('mapaFalhou com a localização confirmada: deixa de haver localização (aoMudar(null)) e nada mais se faz', async () => {
+  const m = preparar({ gps: true });
+  lugares(m.registo);
+  await gps(m, 38.7101, -9.1402, 12);
+  m.seletor.confirmar();
+  expect(m.seletor.localizacao).not.toBeNull();
+  m.seletor.mapaFalhou();
+  expect(m.seletor.localizacao).toBeNull();
+  expect(m.mudancas.at(-1)).toBeNull();
+  expect(m.registo.circulos.length).toBe(0);
+  expect(m.seletor.vista.estado).toBe('vazio');
+  m.seletor.confirmar();
+  m.seletor.alterar();
+  m.seletor.desconfirmar();
+  m.seletor.estouNestaLoja();
+  expect(m.geo.pedidos.length).toBe(1);
+  expect(m.seletor.localizacao).toBeNull();
+  expect(m.seletor.colocar({ lat: 38.7, lng: -9.15, origem: 'pin_manual' })).toBe(false);
+  m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+  await expect(m.seletor.usarNegocio(NEGOCIO, { reserva: TOQUE })).resolves.toBe(false);
+  expect(m.registo.camposPedidos).toEqual([]);
+  expect(m.seletor.vista.negocio.estado).toBe('fechado');
+  expect(m.seletor.iniciar(m.elemento)).toBe(false);
+  expect(m.registo.mapas.length).toBe(1);
+  expect(m.registo.marcadores.length).toBe(0);
+  // A mensagem do mapa fica (o ecrã limpa os erros ao guardar).
+  m.seletor.limparErro();
+  expect(m.seletor.vista.erro).toBe(MENSAGEM_SEM_MAPA);
+});
+
+test('mapaFalhou com o GPS, a morada sugerida, a posição de um negócio ou uma escolha da pesquisa a caminho: o que chega depois não faz nada', async () => {
+  const casos = {
+    'o GPS': async (m) => {
+      m.seletor.estouNestaLoja();
+      return async () => {
+        m.geo.pedidos.at(-1).sucesso({ coords: { latitude: 38.7101, longitude: -9.1402, accuracy: 12 } });
+        await esvaziar();
+      };
+    },
+    'a morada sugerida do GPS': async (m) => {
+      await gps(m, 38.7101, -9.1402, 12);
+      return async () => {
+        inversas(m).at(-1).resolver({ rotulo: 'Rua Augusta 24, Lisboa', morada: 'Rua Augusta 24' });
+        await esvaziar();
+      };
+    },
+    'a posição de um negócio': async (m) => {
+      const soltar = atrasar(m.google, NEGOCIO);
+      m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+      const promessa = m.seletor.usarNegocio();
+      return async () => {
+        soltar();
+        await expect(promessa).resolves.toBe(false);
+      };
+    },
+    'uma escolha da pesquisa': async (m) => {
+      const soltar = atrasar(m.google, PESQUISADO);
+      pesquisa(m).escolher(PESQUISADO);
+      return async () => {
+        soltar();
+        await esperar();
+      };
+    },
+  };
+  for (const [caso, comecar] of Object.entries(casos)) {
+    const m = preparar({ gps: true });
+    lugares(m.registo);
+    const chegar = await comecar(m);
+    m.seletor.mapaFalhou();
+    const { vista } = m.seletor;
+    const vistas = m.vistas.length;
+    const sugeridas = m.sugeridas.length;
+    await chegar();
+    expect([caso, m.seletor.vista === vista, m.vistas.length]).toEqual([caso, true, vistas]);
+    expect([caso, m.registo.marcadores.length, m.registo.circulos.length]).toEqual([caso, 0, 0]);
+    expect([caso, m.escolhidas, m.sugeridas.length]).toEqual([caso, [], sugeridas]);
+  }
+});
+
+test('mapaFalhou antes de iniciar fica sem mapa; sem mapa (não configurado), outra vez ou depois de destruir, nada muda', () => {
+  const antes = preparar({ iniciar: false, gps: true });
+  antes.seletor.mapaFalhou();
+  expect(antes.seletor.vista.semMapa).toBe(true);
+  expect(antes.seletor.vista.erro).toBe(MENSAGEM_SEM_MAPA);
+  expect(antes.seletor.vista.gps).toBeNull();
+  expect(antes.seletor.iniciar(antes.elemento)).toBe(false);
+  expect(antes.registo.mapas.length).toBe(0);
+  // O servidor sem a chave: fica "Mapa não configurado".
+  const naoConfigurado = preparar({ configuracao: { google: null, centro: CENTRO } });
+  const vistasSemChave = naoConfigurado.vistas.length;
+  naoConfigurado.seletor.mapaFalhou();
+  expect(naoConfigurado.seletor.vista.erro).toBe(MENSAGEM_MAPA_NAO_CONFIGURADO);
+  expect(naoConfigurado.vistas.length).toBe(vistasSemChave);
+  // Duas vezes: a segunda não muda nem avisa nada.
+  const duas = preparar();
+  duas.seletor.mapaFalhou();
+  const vistas = duas.vistas.length;
+  const { vista } = duas.seletor;
+  duas.seletor.mapaFalhou();
+  expect(duas.vistas.length).toBe(vistas);
+  expect(duas.seletor.vista).toBe(vista);
+  // Depois de destruir.
+  const fora = preparar();
+  fora.seletor.destruir();
+  const vistasFora = fora.vistas.length;
+  fora.seletor.mapaFalhou();
+  expect(fora.vistas.length).toBe(vistasFora);
+  expect(fora.seletor.vista.semMapa).toBe(false);
 });
 
 // --- O pino: tocar, arrastar, confirmar, alterar --------------------------------------------------
@@ -1484,6 +1674,175 @@ test('um usarNegocio tardio é ignorado: outro negócio, um toque à mão, o pai
       expect([caso, posicoesDosPinos(m.mapa())]).toEqual([caso, pinos]);
       expect([caso, m.seletor.vista.negocio]).toEqual([caso, negocio]);
     }
+  }
+});
+
+// Revisão do mapa Google (MAPA-G-4 / G-ENG-2): arrastar o pino, escolher na pesquisa, "Estou nesta loja" ou
+// "Pôr o pino neste negócio" são escolhas novas — o que chegar depois de uma escolha anterior (a posição de um
+// negócio, o lugar da pesquisa, a posição do GPS) já não tira o pino do sítio da escolha mais recente.
+test('arrastar o pino enquanto a posição do negócio chega: fica o arrasto, o painel fecha e a resposta é ignorada', async () => {
+  const INICIAL = { lat: 38.70921, lng: -9.13712, origem: 'pin_manual' };
+  const ARRASTADO = { lat: 38.70925, lng: -9.13716 };
+  for (const conhecido of [true, false]) {
+    const m = preparar({ inicial: INICIAL });
+    if (conhecido) lugares(m.registo);
+    const soltar = atrasar(m.google, NEGOCIO);
+    m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+    const promessa = m.seletor.usarNegocio();
+    expect(m.seletor.vista.negocio.estado).toBe('a_posicionar');
+    pino(m.mapa()).arrastarPara(ARRASTADO.lat, ARRASTADO.lng);
+    // O painel não fica preso em "A posicionar o pino…".
+    expect(m.seletor.vista.negocio.estado).toBe('fechado');
+    soltar();
+    await expect(promessa).resolves.toBe(false);
+    expect([conhecido, posicoesDosPinos(m.mapa())]).toEqual([conhecido, [ARRASTADO]]);
+    expect(m.seletor.vista.negocio.estado).toBe('fechado');
+    expect(m.seletor.vista.confirmarAtivo).toBe(true);
+    m.seletor.confirmar();
+    expect(m.seletor.localizacao).toEqual({ ...ARRASTADO, origem_coords: 'pin_manual', precisao_m: null, google_place_id: null });
+  }
+  // Depois do arrasto, a ação volta a pedir (não fica presa no pedido ignorado).
+  const m = preparar({ inicial: INICIAL });
+  lugares(m.registo);
+  const soltar = atrasar(m.google, NEGOCIO);
+  m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+  const ignorada = m.seletor.usarNegocio();
+  pino(m.mapa()).arrastarPara(ARRASTADO.lat, ARRASTADO.lng);
+  m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+  const outra = m.seletor.usarNegocio();
+  expect(outra).not.toBe(ignorada);
+  soltar();
+  await expect(ignorada).resolves.toBe(false);
+  await expect(outra).resolves.toBe(true);
+  expect(posicoesDosPinos(m.mapa())).toEqual([POSICAO_NEGOCIO]);
+});
+
+test('arrastar o pino com o painel do negócio só aberto (sem pedido a caminho): o painel fica, com a ação', () => {
+  const m = preparar({ inicial: { lat: 38.70921, lng: -9.13712, origem: 'pin_manual' } });
+  m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+  pino(m.mapa()).arrastarPara(38.70925, -9.13716);
+  expect(m.seletor.vista.negocio).toEqual({ placeId: NEGOCIO, reserva: TOQUE, estado: 'aberto', mensagem: null });
+});
+
+test('uma morada da pesquisa que chega depois de outra escolha é ignorada: um toque à mão, um arrasto, o GPS, um negócio', async () => {
+  const casos = {
+    'um toque à mão': async (m) => tocar(m.mapa(), 38.7003, -9.1503),
+    'um arrasto': async (m) => pino(m.mapa()).arrastarPara(38.7001, -9.1501),
+    'o GPS': async (m) => gps(m, 38.7002, -9.1502, 10),
+    'um negócio': async (m) => {
+      m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+      await m.seletor.usarNegocio();
+    },
+  };
+  for (const [caso, entretanto] of Object.entries(casos)) {
+    // Também uma falha da Google que chegue tarde não mostra o erro sobre a escolha mais recente.
+    for (const conhecido of [true, false]) {
+      const m = preparar({ gps: true, comApi: false });
+      lugares(m.registo);
+      if (!conhecido) delete m.registo.lugares[PESQUISADO];
+      tocar(m.mapa(), 38.7, -9.15);
+      const soltar = atrasar(m.google, PESQUISADO);
+      pesquisa(m).escolher(PESQUISADO);
+      await entretanto(m);
+      const pinos = posicoesDosPinos(m.mapa());
+      const { vista } = m.seletor;
+      soltar();
+      await esperar();
+      expect([caso, conhecido, posicoesDosPinos(m.mapa())]).toEqual([caso, conhecido, pinos]);
+      expect([caso, conhecido, m.seletor.vista === vista]).toEqual([caso, conhecido, true]);
+      expect([caso, conhecido, m.escolhidas]).toEqual([caso, conhecido, []]);
+    }
+  }
+});
+
+test('escolher na pesquisa enquanto chegam a posição de um negócio ou o GPS: conta a pesquisa (a escolha mais recente)', async () => {
+  // A posição do negócio a caminho: o painel fecha logo e a posição que chegue depois é ignorada.
+  const n = preparar();
+  lugares(n.registo);
+  const soltarNegocio = atrasar(n.google, NEGOCIO);
+  n.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+  const promessa = n.seletor.usarNegocio();
+  pesquisa(n).escolher(PESQUISADO);
+  expect(n.seletor.vista.negocio.estado).toBe('fechado');
+  await esperar();
+  expect(posicoesDosPinos(n.mapa())).toEqual([POSICAO_AUGUSTA]);
+  soltarNegocio();
+  await expect(promessa).resolves.toBe(false);
+  expect(posicoesDosPinos(n.mapa())).toEqual([POSICAO_AUGUSTA]);
+  expect(n.escolhidas).toEqual([MORADA_AUGUSTA]);
+  // O GPS a responder: a posição que chegue depois da escolha (antes da morada da Google) é ignorada.
+  const g = preparar({ gps: true, comApi: false });
+  lugares(g.registo);
+  const soltarPesquisa = atrasar(g.google, PESQUISADO);
+  g.seletor.estouNestaLoja();
+  pesquisa(g).escolher(PESQUISADO);
+  g.geo.pedidos.at(-1).sucesso({ coords: { latitude: 38.75, longitude: -9.2, accuracy: 10 } });
+  await esvaziar();
+  expect(g.mapa().marcadores.length).toBe(0);
+  expect(g.seletor.vista.gps.texto).toBe(TEXTO_ESTOU_NESTA_LOJA);
+  soltarPesquisa();
+  await esperar();
+  expect(posicoesDosPinos(g.mapa())).toEqual([POSICAO_AUGUSTA]);
+  expect(g.mapa().circulos.length).toBe(0);
+  expect(g.escolhidas).toEqual([MORADA_AUGUSTA]);
+});
+
+test('"Estou nesta loja" enquanto chega a posição de um negócio, e um negócio enquanto o GPS responde: conta a escolha mais recente', async () => {
+  const a = preparar({ gps: true, comApi: false });
+  lugares(a.registo);
+  const soltar = atrasar(a.google, NEGOCIO);
+  a.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+  const promessa = a.seletor.usarNegocio();
+  a.seletor.estouNestaLoja();
+  expect(a.seletor.vista.negocio.estado).toBe('fechado');
+  soltar();
+  await expect(promessa).resolves.toBe(false);
+  expect(a.mapa().marcadores.length).toBe(0);
+  a.geo.pedidos.at(-1).sucesso({ coords: { latitude: 38.75, longitude: -9.2, accuracy: 10 } });
+  await esvaziar();
+  expect(posicoesDosPinos(a.mapa())).toEqual([{ lat: 38.75, lng: -9.2 }]);
+
+  const b = preparar({ gps: true, comApi: false });
+  lugares(b.registo);
+  b.seletor.estouNestaLoja();
+  b.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+  await expect(b.seletor.usarNegocio()).resolves.toBe(true);
+  b.geo.pedidos.at(-1).sucesso({ coords: { latitude: 38.75, longitude: -9.2, accuracy: 10 } });
+  await esvaziar();
+  expect(posicoesDosPinos(b.mapa())).toEqual([POSICAO_NEGOCIO]);
+  expect(b.mapa().circulos.length).toBe(0);
+  expect(b.seletor.vista.gps.texto).toBe(TEXTO_ESTOU_NESTA_LOJA);
+  expect(b.seletor.vista.gps.ocupado).toBe(false);
+});
+
+test('"Pôr o pino neste negócio" é a escolha mais recente: o GPS ou a pesquisa que respondam antes da posição do negócio são ignorados', async () => {
+  // Cada caso começa a sua escolha e devolve como ela responde (a pesquisa responde sozinha: o lugar não se atrasa).
+  const comecos = {
+    'o GPS': (m) => {
+      m.seletor.estouNestaLoja();
+      return () => m.geo.pedidos.at(-1).sucesso({ coords: { latitude: 38.75, longitude: -9.2, accuracy: 10 } });
+    },
+    'a pesquisa': (m) => {
+      pesquisa(m).escolher(PESQUISADO);
+      return () => {};
+    },
+  };
+  for (const [caso, comecar] of Object.entries(comecos)) {
+    const m = preparar({ gps: true, comApi: false });
+    lugares(m.registo);
+    const soltar = atrasar(m.google, NEGOCIO);
+    const responder = comecar(m);
+    m.seletor.escolherNegocio(NEGOCIO, { reserva: TOQUE });
+    const promessa = m.seletor.usarNegocio();
+    // O GPS ou o lugar da pesquisa chegam primeiro: já não contam.
+    responder();
+    await esperar();
+    expect([caso, m.mapa().marcadores.length, m.seletor.vista.negocio.estado]).toEqual([caso, 0, 'a_posicionar']);
+    expect([caso, m.escolhidas]).toEqual([caso, []]);
+    soltar();
+    await expect(promessa).resolves.toBe(true);
+    expect([caso, posicoesDosPinos(m.mapa())]).toEqual([caso, [POSICAO_NEGOCIO]]);
+    expect([caso, m.mapa().circulos.length, m.seletor.vista.moradaSugerida]).toEqual([caso, 0, null]);
   }
 });
 

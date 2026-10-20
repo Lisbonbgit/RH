@@ -45,15 +45,25 @@
 //    com um negócio) se pede à Google a posição do lugar, e só ela; o pino vai
 //    para lá com a origem `google` (a regra do arrasto). Se a Google falhar, o
 //    pino vai para o ponto tocado (a reserva), com a mesma regra, e o painel
-//    diz porquê. Uma resposta que chegue depois de outra escolha (outro
-//    negócio, um toque à mão, o painel fechado, o pino noutro sítio) é
-//    ignorada. O nome e a morada do negócio nunca se pedem: escrevem-se à mão;
+//    diz porquê. O nome e a morada do negócio nunca se pedem: escrevem-se à mão;
 //  - a pesquisa da Google (G11): o elemento de pesquisa da própria Google
 //    (`criarPesquisaLugar`), que o ecrã põe junto ao mapa (fora da caixa dele);
 //    prefere a zona à vista (`limitesDoMapa`). Escolher uma morada põe lá o pino (origem
 //    `google`, com o identificador do lugar), mostra "Morada sugerida: <a
 //    morada da Google>" e entrega-a ao ecrã (`aoEscolherMorada`, para os campos
-//    da morada). Nunca se pede a inversa da Geoapify para um ponto da Google.
+//    da morada). Nunca se pede a inversa da Geoapify para um ponto da Google;
+//  - as escolhas que se cruzam (revisão do mapa Google, MAPA-G-4 / G-ENG-2):
+//    um toque à mão, um arrasto, "Estou nesta loja", "Pôr o pino neste
+//    negócio" e uma sugestão da pesquisa são escolhas do sítio do pino; o que
+//    chegar depois de uma escolha mais recente (a posição do GPS, a de um
+//    negócio, o lugar da pesquisa, ou a falha de um deles) é ignorado, e um
+//    painel "A posicionar o pino…" cujo pedido deixou de contar fecha. Outro
+//    negócio tocado ou o painel fechado também tiram a validade à posição de
+//    um negócio a caminho;
+//  - a Google que recusa a chave depois de o mapa abrir (o `gm_authFailure`,
+//    que o componente ouve do carregador) → `mapaFalhou()`: fica como se a
+//    Google não tivesse carregado (MENSAGEM_SEM_MAPA; sem pino, pesquisa,
+//    painel nem GPS), e nada do que estava a caminho conta (MAPA-G-1).
 //
 // Estados: 'vazio' (sem pino) → 'por_confirmar' (pino solto, arrastável) →
 // 'confirmado' (pino fixo; "Alterar localização" solta-o outra vez). Só a
@@ -77,7 +87,7 @@ import {
 } from './gps';
 import { pontoDeBias, MENSAGEM_MORADA_SUGERIDA_INDISPONIVEL } from './morada';
 import {
-  criarNegocioSelecionado, criarPesquisaLugar, posicaoDoLugar, TEXTO_LUGAR_INDISPONIVEL,
+  criarNegocioSelecionado, criarPesquisaLugar, posicaoDoLugar, TEXTO_ESCREVA_O_NOME, TEXTO_LUGAR_INDISPONIVEL,
 } from './lugarGoogle';
 
 export const TEXTO_TOCAR_NO_MAPA = 'Toque no mapa no sítio da loja.';
@@ -127,12 +137,17 @@ const naoConfigurado = (configuracao) => configuracao !== null && typeof configu
   && configuracao.google === null;
 
 // Os textos de uma loja: o título, a dica antes de haver pino, o nome da área do mapa e o do pino (estes dois
-// para os leitores de ecrã). Outro sítio (o ponto da fábrica, T2.30) passa os seus.
+// para os leitores de ecrã), a dica da regra do arrasto, a mensagem de quando a Google não dá a posição de um
+// lugar (o painel do negócio e a pesquisa) e a dica do painel do negócio (null: sem dica). Outro sítio (o ponto
+// da fábrica, T2.30) passa os seus (revisão do mapa Google, MAPA-G-2: a fábrica não é uma loja nem tem nome).
 export const TEXTOS_LOJA = Object.freeze({
   titulo: 'Localização',
   tocar: TEXTO_TOCAR_NO_MAPA,
   mapa: 'Mapa para pôr o pino da loja',
   pino: 'Pino da loja',
+  arrastarLugar: TEXTO_ARRASTAR_LUGAR,
+  lugarIndisponivel: TEXTO_LUGAR_INDISPONIVEL,
+  dicaNegocio: TEXTO_ESCREVA_O_NOME,
 });
 
 export const textosSeletor = (textos = {}) => Object.freeze({ ...TEXTOS_LOJA, ...textos });
@@ -163,12 +178,13 @@ const MORADA_INDISPONIVEL = Object.freeze({
 //               aoSugerirMorada?, aoMudarVista?, aoFocar?})
 //   → {vista, localizacao, mapa, iniciar, colocar, confirmar, alterar, estouNestaLoja, desconfirmar,
 //      mostrarErro, limparErro, focar, redimensionar, escolherNegocio, usarNegocio, fecharNegocio,
-//      limitesDoMapa, destruir}
+//      limitesDoMapa, mapaFalhou, destruir}
 //  - google: o `window.google` com as bibliotecas `maps` e `marker` já carregadas (sem elas, o seletor diz
 //    que não há mapa) e, para a pesquisa e o negócio selecionado, a `places` (sem ela, não há pesquisa);
 //  - configuracao: a do GET /api/crm/config, {google: {chave, map_id} | null, centro} (pode ser null ou
 //    inválida: o seletor diz que não há mapa; com `google: null`, que o mapa não está configurado);
-//  - textos: {titulo?, tocar?, mapa?, pino?} (ver TEXTOS_LOJA);
+//  - textos: {titulo?, tocar?, mapa?, pino?, arrastarLugar?, lugarIndisponivel?, dicaNegocio?} (ver TEXTOS_LOJA;
+//    a `dicaNegocio` é do componente, que a põe no painel do negócio);
 //  - api: {moradaInversa} do lib/crm/api.js; com ela, a morada sugerida depois do GPS;
 //  - geolocation: o navigator.geolocation do browser; com ele, "Estou nesta loja";
 //  - aoMudar(localizacao): a localização confirmada mudou — {lat, lng, origem_coords, precisao_m,
@@ -206,7 +222,8 @@ export function criarSeletor({
   let confirmada = null;
   let estado = 'vazio';
   let erro = null;
-  // Muda sempre que o pino muda de sítio: a posição do GPS que chega depois de outra mudança é ignorada.
+  // Muda sempre que o pino muda de sítio e sempre que começa outra escolha do sítio dele (o GPS, a pesquisa, um
+  // negócio): a posição do GPS e o lugar da pesquisa que chegam depois de outra mudança são ignorados.
   let versaoPino = 0;
   let aObterGps = false;
   let mensagemGps = null;
@@ -234,7 +251,7 @@ export function criarSeletor({
     if (estado === 'confirmado') dica = TEXTO_CONFIRMADA;
     else if (posicao === null) dica = rotulos.tocar;
     else if (faltaArrastar && posicao.origem === 'google') {
-      dica = TEXTO_ARRASTAR_LUGAR;
+      dica = rotulos.arrastarLugar;
       aviso = 'arrastar';
     } else if (faltaArrastar) {
       dica = MENSAGEM_LOCALIZACAO_IMPRECISA;
@@ -284,6 +301,16 @@ export function criarSeletor({
     aoMudar?.(confirmada);
   }
 
+  // Começou outra escolha do sítio do pino (um arrasto, o GPS, a pesquisa): o que estiver a caminho de uma
+  // escolha anterior já não conta — a posição do GPS e o lugar da pesquisa (`versaoPino`) e a de um negócio
+  // (`pedidoNegocio`, e o painel que estava "A posicionar o pino…" fecha). Devolve a versão desta escolha.
+  function novaEscolha() {
+    versaoPino += 1;
+    pedidoNegocio += 1;
+    if (painel.vista.estado === 'a_posicionar') painel.fechar();
+    return versaoPino;
+  }
+
   // O pino solta-se (arrastável) e a localização deixa de estar confirmada.
   function soltar() {
     estado = 'por_confirmar';
@@ -307,8 +334,9 @@ export function criarSeletor({
       if (arrastadoPara === null) return;
       posicao = { ...posicao, lat: arrastadoPara.lat, lng: arrastadoPara.lng };
       arrastado = true;
-      // O círculo e a morada sugerida ficam (ajustar o pino é o passo seguinte ao GPS); um GPS a caminho não.
-      versaoPino += 1;
+      // O círculo e a morada sugerida ficam (ajustar o pino é o passo seguinte ao GPS); um GPS, uma posição de
+      // negócio ou um lugar da pesquisa a caminho não (o arrasto da pessoa é a escolha mais recente).
+      novaEscolha();
       atualizar();
     });
     return novo;
@@ -366,6 +394,8 @@ export function criarSeletor({
     if (!criado || !idDeLugar(placeId)) return Promise.resolve(false);
     // O painel só fica "a posicionar" enquanto o pedido dele é o que vale (qualquer outra escolha muda-o).
     if (painel.vista.estado === 'a_posicionar' && posicionando?.placeId === placeId) return posicionando.promessa;
+    // Outra escolha: o GPS e o lugar da pesquisa a caminho deixam de contar.
+    versaoPino += 1;
     pedidoNegocio += 1;
     const meu = pedidoNegocio;
     painel.abrir(placeId, { reserva });
@@ -381,7 +411,7 @@ export function criarSeletor({
         if (meu !== pedidoNegocio) return false;
         const ponto = painel.vista.reserva;
         if (ponto) porPino({ ...ponto, origem: 'google', google_place_id: placeId }, { zoom: ZOOM_MORADA });
-        painel.falhou(TEXTO_LUGAR_INDISPONIVEL);
+        painel.falhou(rotulos.lugarIndisponivel);
         return false;
       },
     );
@@ -425,14 +455,26 @@ export function criarSeletor({
 
   // A Google não deu o lugar escolhido (ou não conseguiu sugerir): o pino fica e o erro diz porquê.
   function aoFalharNaPesquisa() {
-    erro = TEXTO_LUGAR_INDISPONIVEL;
+    erro = rotulos.lugarIndisponivel;
     atualizar();
+  }
+
+  // Escolheram uma sugestão (o lugar ainda vem a caminho): é outra escolha, e a resposta só vale se o pino não
+  // tiver mudado entretanto (um toque à mão, um arrasto, o GPS, um negócio).
+  function aoComecarNaPesquisa() {
+    const versao = novaEscolha();
+    return () => versao === versaoPino;
   }
 
   function criarPesquisa() {
     try {
       return criarPesquisaLugar({
-        google, documento, aoEscolher: aoEscolherNaPesquisa, aoFalhar: aoFalharNaPesquisa, obterLimites: limitesDoMapa,
+        google,
+        documento,
+        aoEscolher: aoEscolherNaPesquisa,
+        aoFalhar: aoFalharNaPesquisa,
+        obterLimites: limitesDoMapa,
+        aoComecar: aoComecarNaPesquisa,
       });
     } catch {
       return null; // a Google recusou o elemento: o mapa fica, sem pesquisa
@@ -491,7 +533,8 @@ export function criarSeletor({
   async function estouNestaLoja() {
     if (!temGps || aObterGps || !criado) return;
     aObterGps = true;
-    const versao = versaoPino;
+    // Outra escolha: uma posição de negócio ou um lugar da pesquisa a caminho deixam de contar.
+    const versao = novaEscolha();
     mensagemGps = null;
     atualizar();
     let nova = null;
@@ -521,6 +564,33 @@ export function criarSeletor({
     indisponivel = true;
     erro = mensagem;
     atualizar();
+  }
+
+  // A Google recusou a chave (o `gm_authFailure`, com o mapa já criado ou antes disso): o pino, o círculo, a
+  // pesquisa, o painel e o mapa saem, o que estava a caminho deixa de contar, a localização confirmada deixa
+  // de existir e o seletor fica sem mapa, com a mensagem de quando a Google não carrega.
+  function mapaFalhou() {
+    if (destruido || indisponivel) return;
+    versaoPino += 1;
+    pedidoNegocio += 1;
+    pedidoMorada += 1;
+    pesquisa?.destruir();
+    pesquisa = null;
+    if (marcador) marcador.map = null;
+    marcador = null;
+    circulo?.setMap(null);
+    circulo = null;
+    criado?.destruir();
+    criado = null;
+    posicao = null;
+    arrastado = false;
+    estado = 'vazio';
+    aObterGps = false;
+    mensagemGps = null;
+    moradaSugerida = null;
+    painel.fechar();
+    semMapa(MENSAGEM_SEM_MAPA);
+    definirConfirmada(null);
   }
 
   vista = montarVista();
@@ -624,6 +694,7 @@ export function criarSeletor({
     usarNegocio,
     fecharNegocio,
     limitesDoMapa,
+    mapaFalhou,
     // O pino e o círculo saem do mapa, a pesquisa sai da página e o mapa é destruído; o GPS, a morada
     // sugerida, a posição de um negócio e a escolha da pesquisa que chegarem depois são ignorados, e nada mais
     // muda nem avisa. Uma segunda chamada já não encontra nada para tirar.

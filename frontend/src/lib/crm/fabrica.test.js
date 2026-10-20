@@ -69,10 +69,17 @@ test('os textos exatos do separador e do seletor do ponto', () => {
     tocar: 'Toque no mapa no sítio da fábrica.',
     mapa: 'Mapa para pôr o pino da fábrica',
     pino: 'Pino da fábrica',
+    // Revisão do mapa Google (MAPA-G-2): a regra do arrasto, o lugar indisponível e o painel do negócio
+    // também falam da fábrica; o painel não tem a dica do nome (a fábrica não tem nome a escrever).
+    arrastarLugar: 'Arraste o pino até ao sítio exato da fábrica para confirmar',
+    lugarIndisponivel: 'Não foi possível obter a posição deste lugar — toque no mapa no sítio da fábrica.',
+    dicaNegocio: null,
   });
   expect(Object.isFrozen(TEXTOS_SELETOR_FABRICA)).toBe(true);
-  // Os quatro textos do seletor da loja trocados todos pelos da fábrica.
+  // Os textos do seletor da loja trocados todos pelos da fábrica: nenhum fala da loja.
   expect(textosSeletor(TEXTOS_SELETOR_FABRICA)).toEqual(TEXTOS_SELETOR_FABRICA);
+  const daLoja = Object.values(textosSeletor(TEXTOS_SELETOR_FABRICA)).filter((texto) => /loja/i.test(texto ?? ''));
+  expect(daLoja).toEqual([]);
 });
 
 // --- Funções puras (as 3 do autónomo) ------------------------------------------------------------

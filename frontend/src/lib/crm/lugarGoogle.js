@@ -143,12 +143,15 @@ export async function lugarDaPesquisa(google, previsao) {
 //  - ao focar, as sugestões passam a preferir a zona à vista no mapa (`obterLimites()`, ou nenhuma);
 //  - 'gmp-select' (escolheu uma sugestão) → `lugarDaPesquisa` → `aoEscolher({id, lat, lng, morada})`;
 //    uma escolha feita enquanto outra carrega substitui-a (só a última conta, mesmo que a outra chegue
-//    depois ou falhe depois); se o pedido falhar → `aoFalhar()` e nada mais;
+//    depois ou falhe depois); se o pedido falhar → `aoFalhar()` e nada mais. Com `aoComecar`, chamado no
+//    instante da escolha (antes do pedido), a função que ele devolver diz, quando a resposta chega, se a
+//    escolha ainda vale (o seletor: a pessoa pode ter posto o pino noutro sítio entretanto); se não valer,
+//    nem `aoEscolher` nem `aoFalhar` (revisão do mapa Google, G-ENG-2);
 //  - 'gmp-error' (a Google não conseguiu sugerir) → `aoFalhar()`.
 // O elemento junta-se ao DOM pelo componente (`PesquisaLugar`, por ref). `destruir()` desliga os
 // eventos, ignora o que ainda estiver a carregar e tira o elemento de onde estiver. Sem a biblioteca
 // `places` não há pesquisa: `elemento` é null.
-export function criarPesquisaLugar({ google, aoEscolher, aoFalhar, obterLimites } = {}) {
+export function criarPesquisaLugar({ google, aoEscolher, aoFalhar, obterLimites, aoComecar } = {}) {
   const Pesquisa = google?.maps?.places?.PlaceAutocompleteElement;
   if (typeof Pesquisa !== 'function') return { elemento: null, destruir() {} };
 
@@ -165,7 +168,10 @@ export function criarPesquisaLugar({ google, aoEscolher, aoFalhar, obterLimites 
     if (!ativa) return;
     escolha += 1;
     const minha = escolha;
-    const valeAinda = () => ativa && minha === escolha;
+    // Quem usa a pesquisa (o seletor) sabe que começou outra escolha e diz depois se esta ainda vale.
+    const paraQuemUsa = aoComecar?.();
+    const valeAinda = () => ativa && minha === escolha
+      && (typeof paraQuemUsa !== 'function' || paraQuemUsa() === true);
     lugarDaPesquisa(google, evento?.placePrediction).then(
       (lugar) => {
         if (valeAinda()) aoEscolher?.(lugar);
