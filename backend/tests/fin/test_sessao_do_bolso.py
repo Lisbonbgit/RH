@@ -1502,6 +1502,8 @@ def test_a_sessao_de_outra_conta_que_volta_depois_de_5_minutos_vai_para_o_login(
 
 # Um `ProtectedRoute` em miniatura (o do App.js não se monta aqui): «Sem ligação» com o
 # botão, e com o user a Barreira VERDADEIRA à volta de um filho que pede o painel.
+_CONTA_ROSTOS = " const _rostos = () => NB.chamadas.filter((c) => c.startsWith('verifyIdentity')).length;"
+
 _ROTA_COM_SEM_LIGACAO = r"""
       const { AuthProvider, useAuth } = lib('contexts/AuthContext');
       const Barreira = lib('pages/bolso/Barreira').default;
@@ -1567,10 +1569,49 @@ def test_a_sessao_de_outra_conta_sai_ao_voltar_mesmo_sem_a_barreira_montada(tmp_
 def test_a_pagina_carregada_em_segundo_plano_nasce_com_a_barreira_fechada(tmp_path):
     """O Capacitor pode recarregar a WebView com a app escondida: mesmo a tempo (dentro
     dos 5 minutos), uma página escondida nasce fechada — a miniatura do selector não
-    mostra números. Ao mostrar, a Barreira decide como sempre (a tempo: abre)."""
-    r = _corre("return lib('lib/sessao').barreiraFechada();", tmp_path, dom=True,
-               antes=_RELOGIO + _LIGADO + _SESSAO_DA_CAROL + _VOLTOU_AGORA + "esconder(true);")
-    assert r is True
+    mostra números. O /auth/me responde com a app ainda escondida e a Barreira monta
+    escondida: não decide (não abre pelo «voltou a tempo»). Decide ao mostrar: +6 min,
+    o rosto."""
+    r = _corre(_ROTA_COM_SEM_LIGACAO + r"""
+      const s = lib('lib/sessao');
+      await esperarAte(() => texto().includes('NUMEROS'));
+      await espera(50);
+      const escondida = { modulo: s.barreiraFechada(), cortina: cortina(), painel: painel() };
+      AGORA += 6 * 60 * 1000;
+      await act(async () => { esconder(false); });
+      await espera(50);
+      return { escondida, voltou: { cortina: cortina(), painel: painel(), rostos: _rostos() } };
+    """, tmp_path, dom=True,
+        antes=_SERVIDOR + _ESPERA + _RELOGIO + _LIGADO + _SESSAO_DA_CAROL + _VOLTOU_AGORA
+        + "esconder(true); RESPOSTAS['GET /auth/me'] = [200, %s]; RESPOSTAS['GET /bolso/painel'] = [200, {}];"
+        % _EU + " NB.rosto = 'espera';" + _CONTA_ROSTOS)
+    assert r == {"escondida": {"modulo": True, "cortina": True, "painel": 0},
+                 "voltou": {"cortina": True, "painel": 0, "rostos": 1}}
+
+
+def test_esconder_no_spinner_e_o_auth_me_responder_escondido_a_barreira_nao_abre(tmp_path):
+    """Abre a tempo (barreira aberta) e esconde-se durante o spinner: o módulo fecha e
+    grava o `saiuAs`. O /auth/me responde com a app ainda escondida e a Barreira monta
+    escondida; o «voltou a tempo» (o `saiuAs` acabou de ser gravado) não a pode abrir.
+    Ao mostrar, +6 min: o rosto, e nenhum pedido do painel."""
+    r = _corre(_ROTA_COM_SEM_LIGACAO.replace(
+        "await act(async () => { raiz.render(el(AuthProvider, null, el(Rota))); });",
+        "await act(async () => { raiz.render(el(AuthProvider, null, el(Rota))); esconder(true); });",
+    ) + r"""
+      const s = lib('lib/sessao');
+      await esperarAte(() => texto().includes('NUMEROS'));
+      await espera(50);
+      const escondida = { modulo: s.barreiraFechada(), cortina: cortina(), painel: painel() };
+      AGORA += 6 * 60 * 1000;
+      await act(async () => { esconder(false); });
+      await espera(50);
+      return { escondida, voltou: { cortina: cortina(), painel: painel(), rostos: _rostos() } };
+    """, tmp_path, dom=True,
+        antes=_SERVIDOR + _ESPERA + _RELOGIO + _SEM_LIGACAO_ESPERADO + _LIGADO + _SESSAO_DA_CAROL
+        + _VOLTOU_AGORA + "RESPOSTAS['GET /auth/me'] = ['rede', [200, %s]]; RESPOSTAS['GET /bolso/painel'] = [200, {}];"
+        % _EU + " NB.rosto = 'espera';" + _CONTA_ROSTOS)
+    assert r == {"escondida": {"modulo": True, "cortina": True, "painel": 0},
+                 "voltou": {"cortina": True, "painel": 0, "rostos": 1}}
 
 
 # --- «Usar Face ID» no menu lateral ----------------------------------------------

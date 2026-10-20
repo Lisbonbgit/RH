@@ -44,8 +44,10 @@ export default function Barreira({ children }) {
   // possível (bloqueado depois de rostos errados — noutra app, até —, rosto
   // apagado, licença retirada) não há como verificar ninguém: login, como num
   // rosto falhado (desenho §5.2 e §5.3, decisão 2A). O Keychain fica.
+  // Escondida não decide: montada com a app escondida (o /auth/me respondeu em segundo
+  // plano), o «voltou a tempo» abria-a e os números saíam; decide-se ao mostrar.
   const decidir = useCallback(async () => {
-    if (!barreiraFechada()) return;
+    if (!barreiraFechada() || document.hidden) return;
     if (voltouATempo()) abrir();
     else if (await temFaceId()) entrar();
     else logout();
