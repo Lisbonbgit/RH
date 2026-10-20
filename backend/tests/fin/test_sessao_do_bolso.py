@@ -1026,3 +1026,216 @@ def test_com_senha_provisoria_nao_pergunta(tmp_path):
       RESPOSTAS['GET /auth/me'] = [200, %s];
     """ % (_EU_PROVISORIA, _EU_PROVISORIA))
     assert r == {"pergunta": False, "saiu": True, "chamadas": []}
+
+
+# --- A Barreira (pages/bolso/Barreira.js) -----------------------------------------
+
+# A Barreira VERDADEIRA dentro do AuthProvider VERDADEIRO, com um filho que, ao
+# montar, pede o painel pelo `lib/bolso.js` — como o BolsoApp faz.
+_BARREIRA = r"""
+      const { AuthProvider, useAuth } = lib('contexts/AuthContext');
+      const Barreira = lib('pages/bolso/Barreira').default;
+      const { getPainel } = lib('lib/bolso');
+      let auth = null;
+      const Filho = () => {
+        auth = useAuth();
+        React.useEffect(() => { getPainel('all').catch(() => {}); }, []);
+        return React.createElement('p', null, 'NUMEROS');
+      };
+      const raiz = createRoot(document.getElementById('raiz'));
+      await act(async () => {
+        raiz.render(React.createElement(AuthProvider, null,
+          React.createElement(Barreira, null, React.createElement(Filho))));
+      });
+      await espera(20);
+      const cortina = () => !!document.querySelector('dialog[open]');
+      const rostos = () => NB.chamadas.filter((c) => c.startsWith('verifyIdentity')).length;
+      const painel = () => PEDIDOS.filter((p) => p === 'GET /bolso/painel').length;
+"""
+
+# A sessão da Carol (a dona do Face ID), com a forma do token do servidor: desde a
+# 1A só a sessão de quem ligou o Face ID leva barreira.
+_SESSAO_VALIDA = _SESSAO_DA_CAROL + r"""
+      RESPOSTAS['GET /auth/me'] = [200, %s];
+      RESPOSTAS['GET /bolso/painel'] = [200, {}];
+""" % _EU
+_TOKEN_DA_CAROL = _token("carol@lisbonb.com")
+
+
+def test_a_barreira_tapa_e_segura_os_pedidos_ate_o_rosto_passar(tmp_path):
+    r = _corre(_BARREIRA + r"""
+      const antes = { cortina: cortina(), diz: document.querySelector('dialog').textContent,
+                      filhoMontado: texto().includes('NUMEROS'), painel: painel() };
+      await act(async () => { NB.soltar(); });
+      await espera(20);
+      return { antes, depois: { cortina: cortina(), painel: painel() } };
+    """, tmp_path, dom=True,
+        antes=_SERVIDOR + _ESPERA + _LIGADO + _SESSAO_VALIDA + "NB.rosto = 'espera';")
+    assert r["antes"]["cortina"] is True
+    assert "Entrar como carol@lisbonb.com" in r["antes"]["diz"]
+    assert r["antes"]["filhoMontado"] is True   # por baixo, montado (não perde o que se escrevia)
+    assert r["antes"]["painel"] == 0            # mas sem pedir nada
+    assert r["depois"] == {"cortina": False, "painel": 1}
+
+
+def test_a_barreira_fecha_ao_esconder_e_so_pede_o_rosto_depois_de_5_minutos(tmp_path):
+    r = _corre(_BARREIRA + r"""
+      const passos = [['arranque', cortina(), rostos()]];
+      await act(async () => { esconder(true); });
+      passos.push(['escondida', cortina(), rostos(), localStorage.getItem('saiuAs')]);
+      AGORA += 5 * 60 * 1000;
+      await act(async () => { esconder(false); });
+      await espera();
+      passos.push(['voltou aos 5 min', cortina(), rostos()]);
+      await act(async () => { esconder(true); });
+      AGORA += 5 * 60 * 1000 + 1;
+      await act(async () => { esconder(false); });
+      await espera();
+      passos.push(['voltou depois dos 5 min', cortina(), rostos()]);
+      return passos;
+    """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _RELOGIO + _LIGADO + _SESSAO_VALIDA)
+    assert r == [
+        ["arranque", False, 1],
+        ["escondida", True, 1, "1700000000000"],
+        ["voltou aos 5 min", False, 1],
+        ["voltou depois dos 5 min", False, 2],
+    ]
+
+
+def test_cancelar_o_rosto_na_barreira_sai_mas_guarda_o_keychain(tmp_path):
+    r = _corre(_BARREIRA + r"""
+      return { token: localStorage.getItem('token'), keychain: NB.keychain !== null,
+               email: localStorage.getItem('faceid_email'), painel: painel() };
+    """, tmp_path, dom=True,
+        antes=_SERVIDOR + _ESPERA + _LIGADO + _SESSAO_VALIDA + "NB.rosto = 'cancela';")
+    assert r == {"token": None, "keychain": True, "email": "carol@lisbonb.com", "painel": 0}
+
+
+def test_interrompido_pelo_sistema_fica_fechada_sem_sair(tmp_path):
+    r = _corre(_BARREIRA + r"""
+      return { cortina: cortina(), token: localStorage.getItem('token'), painel: painel() };
+    """, tmp_path, dom=True,
+        antes=_SERVIDOR + _ESPERA + _LIGADO + _SESSAO_VALIDA + "NB.rosto = 'sistema';")
+    assert r == {"cortina": True, "token": _TOKEN_DA_CAROL, "painel": 0}
+
+
+def test_ir_ao_ecra_principal_com_o_rosto_por_passar_nao_abre_a_barreira(tmp_path):
+    """Abrir a app e ir ao ecrã principal enquanto o Face ID pede o rosto: o iOS
+    interrompe (`null`) e a barreira fica. Voltar logo a seguir NÃO é «voltou dentro
+    dos 5 minutos» — ninguém passou o rosto, e a sessão nunca chegou a abrir."""
+    r = _corre(_BARREIRA + r"""
+      await act(async () => { esconder(true); });
+      await act(async () => { esconder(false); });
+      await espera();
+      return { cortina: cortina(), painel: painel(), saiu: localStorage.getItem('saiuAs') };
+    """, tmp_path, dom=True,
+        antes=_SERVIDOR + _ESPERA + _RELOGIO + _LIGADO + _SESSAO_VALIDA + "NB.rosto = 'sistema';")
+    assert r == {"cortina": True, "painel": 0, "saiu": None}
+
+
+def test_barreira_e_reentrada_logo_a_seguir_pedem_um_so_rosto(tmp_path):
+    """A barreira passa e o primeiro pedido dá 401 (as 24 h acabaram): a
+    re-entrada não volta a pedir o rosto — acabou de passar."""
+    r = _corre(_BARREIRA + r"""
+      await espera(20);
+      return { rostos: rostos(), painel: painel(), token: localStorage.getItem('token'),
+               logins: PEDIDOS.filter((p) => p === 'POST /auth/login').length };
+    """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _LIGADO + _SESSAO_DA_CAROL + r"""
+      RESPOSTAS['GET /auth/me'] = [200, %s];
+      RESPOSTAS['GET /bolso/painel'] = [[401, {}], [200, {}]];
+      RESPOSTAS['POST /auth/login'] = [200, { token: 'novo', user: %s }];
+    """ % (_EU, _EU))
+    assert r == {"rostos": 1, "painel": 2, "token": "novo", "logins": 1}
+
+
+@pytest.mark.parametrize("caso", ["sem-plugin", "face-id-indisponivel"])
+def test_sem_a_peca_nao_ha_barreira_e_sem_face_id_disponivel_sai(tmp_path, caso):
+    """Sem a peça (browser, build 2) a barreira não existe. Com a peça mas sem Face ID
+    possível (bloqueado depois de cinco rostos errados noutra app, rosto apagado,
+    licença retirada) NÃO abre sozinha — era abrir sem verificar ninguém: sai-se para
+    o login (desenho §5.2 e §5.3), sem pedir rosto e sem apagar o Keychain."""
+    r = _corre(_BARREIRA + r"""
+      const inicio = { cortina: cortina(), filho: texto().includes('NUMEROS'), painel: painel() };
+      await act(async () => { esconder(true); });
+      await act(async () => { esconder(false); });
+      await espera();
+      return { inicio, depois: cortina(), token: localStorage.getItem('token'), rostos: rostos(),
+               keychain: NB.keychain !== null };
+    """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _LIGADO + _SESSAO_VALIDA
+        + ("NB.presente = false;" if caso == "sem-plugin" else "NB.disponivel = false;"))
+    if caso == "sem-plugin":
+        assert r == {"inicio": {"cortina": False, "filho": True, "painel": 1}, "depois": False,
+                     "token": _TOKEN_DA_CAROL, "rostos": 0, "keychain": True}
+    else:
+        assert r == {"inicio": {"cortina": True, "filho": True, "painel": 0}, "depois": True,
+                     "token": None, "rostos": 0, "keychain": True}
+
+
+def test_a_sessao_de_outra_conta_que_volta_depois_de_5_minutos_vai_para_o_login(tmp_path):
+    """Decisão A do dono: sessão da Débora aberta, Face ID da Carol neste iPhone. A
+    Débora nunca leva barreira («Entrar como carol@…» por cima dela); onde a Carol a
+    teria — voltar depois de mais de 5 minutos fora — a Débora volta à senha (o
+    `logout()` apaga o token e o `ProtectedRoute` leva ao login). Aos 5 minutos
+    certos fica; o Keychain da Carol nunca se toca."""
+    r = _corre(_BARREIRA + r"""
+      const passos = [['arranque', cortina(), auth.user && auth.user.email]];
+      await act(async () => { esconder(true); });
+      AGORA += 5 * 60 * 1000;
+      await act(async () => { esconder(false); });
+      await espera();
+      passos.push(['voltou aos 5 min', cortina(), auth.user && auth.user.email]);
+      await act(async () => { esconder(true); });
+      AGORA += 5 * 60 * 1000 + 1;
+      await act(async () => { esconder(false); });
+      await espera();
+      passos.push(['voltou depois dos 5 min', cortina(), auth.user && auth.user.email]);
+      return { passos, token: localStorage.getItem('token'), rostos: rostos(),
+               keychain: NB.keychain !== null, faceid: localStorage.getItem('faceid_email') };
+    """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _RELOGIO + _LIGADO
+        + _sessao("debora@lisbonb.com") + _VOLTOU_AGORA + r"""
+      RESPOSTAS['GET /auth/me'] = [200, %s];
+      RESPOSTAS['GET /bolso/painel'] = [200, {}];
+    """ % _EU.replace("carol", "debora").replace("Carol", "Débora"))
+    assert r == {
+        "passos": [
+            ["arranque", False, "debora@lisbonb.com"],
+            ["voltou aos 5 min", False, "debora@lisbonb.com"],
+            ["voltou depois dos 5 min", False, None],
+        ],
+        "token": None, "rostos": 0, "keychain": True, "faceid": "carol@lisbonb.com",
+    }
+
+
+# --- «Usar Face ID» no menu lateral ----------------------------------------------
+
+
+@pytest.mark.parametrize("caso,mostra", [
+    ("recusou-antes", True), ("ja-ligado", False), ("sem-plugin", False),
+])
+def test_usar_face_id_no_menu(tmp_path, caso, mostra):
+    r = _corre(r"""
+      const { AuthProvider } = lib('contexts/AuthContext');
+      const { UsarFaceId } = lib('pages/bolso/Barreira');
+      const raiz = createRoot(document.getElementById('raiz'));
+      await act(async () => {
+        raiz.render(React.createElement(AuthProvider, null, React.createElement(UsarFaceId)));
+      });
+      await espera(20);
+      const botao = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Usar Face ID');
+      if (!botao) return { mostra: false };
+      await act(async () => { botao.click(); });
+      await espera();
+      return { mostra: true, token: localStorage.getItem('token'),
+               recusa: localStorage.getItem('faceid_recusado:carol@lisbonb.com') };
+    """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _SESSAO_VALIDA + r"""
+      localStorage.setItem('faceid_recusado:carol@lisbonb.com', '1');
+      const caso = %s;
+      if (caso === 'ja-ligado') localStorage.setItem('faceid_email', 'carol@lisbonb.com');
+      if (caso === 'sem-plugin') NB.presente = false;
+    """ % json.dumps(caso))
+    if mostra:
+        # Esquece o «não» e sai (sem tocar no Keychain): o login, depois da
+        # senha, volta a perguntar.
+        assert r == {"mostra": True, "token": None, "recusa": None}
+    else:
+        assert r == {"mostra": False}
