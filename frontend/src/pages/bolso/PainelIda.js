@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet';
+import { useAuth } from '@/contexts/AuthContext';
 import { apagarIda, criarIdas, mudarIda } from '@/lib/bolso';
 import {
   feriadosDoMes, mensagemDeErro, outrosDiasComBuraco, pessoasIniciais, textoDoAtalho, tituloDoDia,
@@ -26,7 +27,8 @@ import { GrelhaDoMes } from './partilhado';
 
 const MAXIMO_DE_PESSOAS = 2; // o servidor recusa mais (POST /api/bolso/calendario/idas)
 
-export default function PainelIda({ painel, dados, hoje, onFechar, onGuardado, onSemSessao }) {
+export default function PainelIda({ painel, dados, hoje, onFechar, onGuardado }) {
+  const { logout } = useAuth();
   const { modo, inicial } = painel;
   const editar = modo === 'editar';
   // O horário da loja num dia, se estiver aberta. Uma só regra para as horas da loja que vem
@@ -75,9 +77,11 @@ export default function PainelIda({ painel, dados, hoje, onFechar, onGuardado, o
     if (modo === 'marcar' && nova && porMexer) { setInicio(nova.abre); setFim(nova.fecha); }
   };
 
-  // Uma sessão expirada não é um erro do formulário: sai pela mesma porta do ecrã (login).
+  // 401: o `lib/bolso.js` já tentou a re-entrada pelo Face ID e não deu → login normal
+  // (desenho §5.4), pela mesma porta do ecrã. Mostrar o erro deixava a pessoa num painel
+  // sem sessão.
   const falhou = (e) => {
-    if (e?.response?.status === 401) { onSemSessao(); return; }
+    if (e?.response?.status === 401) { logout(); return; }
     setErro(mensagemDeErro(e));
     setAGravar(false);
     setConfirmarApagar(false);

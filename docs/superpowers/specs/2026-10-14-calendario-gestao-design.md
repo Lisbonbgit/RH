@@ -368,7 +368,19 @@ Face ID no Keychain só existe na série 8 do plugin, que exige Capacitor 8.
 6. **Terminar sessão** = `terminarSessao()` (`logout()` + apagar o Keychain). O `logout()` dos
    401 não apaga o Keychain.
 7. **Dois gestores no mesmo iPhone:** fica o último que activou o Face ID; a barreira diz sempre
-   «Entrar como <email>».
+   «Entrar como <email>» e só aparece à conta desse email. A re-entrada só usa o Keychain da
+   mesma conta cuja sessão expirou (decisão 1A, 2026-10-15). A sessão de **outra** conta volta à
+   senha onde a dona do Face ID teria a barreira: ao abrir a app e ao voltar depois de mais de 5
+   minutos (decisão A, 2026-10-17). O rosto de uma pessoa nunca abre a conta de outra.
+
+**Riscos aceites (revisão final da Fase 3; aceite pelo dono a 2026-10-20).** Os 5
+minutos contam-se com o relógio do iPhone (`saiuAs` e `Date.now()`, os dois do aparelho): quem
+tem o iPhone desbloqueado na mão e muda a hora para trás, para dentro dos 5 minutos depois de
+`saiuAs`, abre a app sem rosto. O desenho não muda por isto: esse alguém já tem o iPhone
+desbloqueado (e com o código do iPhone até pode registar o próprio rosto no Face ID), e o
+servidor continua a recusar o token ao fim das 24 h. O rosto, esse, já não sobrevive ao
+esconder: os 60 s em que um rosto vale (`JANELA_MS`) esquecem-se quando a app vai para segundo
+plano (`esquecerRosto()`, chamado pelo `fecharBarreira()`).
 
 **No servidor não muda nada.** As 24 h ficam; o formato do token não muda (a app do ponto leva o
 código congelado no bundle).

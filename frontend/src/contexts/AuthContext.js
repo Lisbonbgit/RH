@@ -1,5 +1,7 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
+import { apagar as apagarFaceId, emailGuardado, guardar as guardarFaceId } from '../lib/faceid';
+import { abrirBarreira, ligarEntrada, ligarSaida, reentrar } from '../lib/sessao';
 
 const AuthContext = createContext(null);
 
@@ -9,6 +11,10 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem('token'));
   const [loading, setLoading] = useState(true);
+  // O `/auth/me` do arranque falhou SEM ser o servidor a recusar a sessão (rede
+  // em baixo, 502 do deploy). O token fica; o `ProtectedRoute` mostra «Sem
+  // ligação — tentar de novo» em vez de mandar para o login.
+  const [semLigacao, setSemLigacao] = useState(false);
 
   useEffect(() => {
     if (token) {
@@ -30,24 +36,34 @@ export const AuthProvider = ({ children }) => {
   //
   // Por isso há duas mudanças e não uma: sem resposta **insiste-se** (três
   // tentativas, 1 s e 2 s de intervalo — um piscar de rede dura menos do que
-  // isso) e, se mesmo assim não vier resposta, o token **fica**. Aí o ecrã de
-  // entrar aparece na mesma (o `isAuthenticated` é `!!user`), mas o próximo
-  // recarregamento já recupera a sessão sozinho, sem escrever nada.
+  // isso) e, se mesmo assim não vier resposta, o token **fica** e o
+  // `ProtectedRoute` mostra «Sem ligação — tentar de novo» (`semLigacao`) em
+  // vez do ecrã de entrar: pedir a senha por um pedido sem resposta era
+  // afirmar que a sessão acabou sem o saber.
   const fetchUser = async (tentativa = 1) => {
     try {
       const response = await axios.get(`${API_URL}/auth/me`);
       setUser(response.data);
     } catch (error) {
       const status = error?.response?.status;
-      if (status === 401 || status === 403) {
+      // Sessão expirada (24 h): na casca com Face ID tenta-se a re-entrada;
+      // sem Face ID, `reentrar()` diz logo que não e fica tudo como era.
+      if (status === 401) {
+        if (!(await reentrar())) logout();
+        return;
+      }
+      if (status === 403) {
         logout();
         return;
       }
       if (!error?.response && tentativa < 3) {
         await new Promise((r) => setTimeout(r, 1000 * tentativa));
-        return fetchUser(tentativa + 1);
+        // `await`: sem ele o `finally` desta tentativa baixava já o `loading`, sem user
+        // nem `semLigacao`, e o ProtectedRoute mandava para o /login ao fim de 1 s.
+        return await fetchUser(tentativa + 1);
       }
       console.error('Não foi possível confirmar a sessão (a sessão não foi terminada):', error);
+      setSemLigacao(true);
     } finally {
       setLoading(false);
     }
@@ -60,7 +76,21 @@ export const AuthProvider = ({ children }) => {
     axios.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
     setToken(newToken);
     setUser(userData);
+    // Entrou: o servidor respondeu. Um «Sem ligação» de antes já não é verdade.
+    setSemLigacao(false);
+    // Quem acabou de entrar (senha ou Face ID) não leva com a barreira a seguir.
+    abrirBarreira();
     return userData;
+  };
+  // A re-entrada do Face ID entra por aqui, para o token, o cabeçalho e o
+  // estado ficarem iguais aos de um login com senha. Atribuição simples a cada
+  // render (o `login` só usa setters e o localStorage — nunca fica velho).
+  ligarEntrada(login);
+
+  const tentarDeNovo = () => {
+    setSemLigacao(false);
+    setLoading(true);
+    fetchUser();
   };
 
   const changePassword = async (currentPassword, newPassword) => {
@@ -79,15 +109,30 @@ export const AuthProvider = ({ children }) => {
       setUser(prev => ({ ...prev, must_change_password: false }));
     }
     
+    // Com o Face ID ligado PARA ESTA CONTA, o Keychain leva a senha nova: senão a
+    // próxima re-entrada dava 401 e o Face ID perdia-se. O de outra pessoa fica.
+    if (emailGuardado() === user?.email) await guardarFaceId(user.email, newPassword);
     return response.data;
   };
 
-  const logout = () => {
+  // Estável (useCallback): a Barreira e o BolsoApp dependem dele em efeitos.
+  // **Não apaga o Keychain** — é o que corre num 401 ou num Face ID cancelado.
+  const logout = useCallback(() => {
     localStorage.removeItem('token');
     delete axios.defaults.headers.common['Authorization'];
     setToken(null);
     setUser(null);
-  };
+    // Sem isto, quem saísse depois de um «Sem ligação» via-o outra vez em vez do login.
+    setSemLigacao(false);
+  }, []);
+  // A sessão de outra conta que volta depois de 5 minutos sai por aqui (lib/sessao).
+  ligarSaida(logout);
+
+  // O botão «Terminar sessão»: sair E esquecer o Face ID deste telemóvel.
+  const terminarSessao = useCallback(() => {
+    logout();
+    apagarFaceId();
+  }, [logout]);
 
   const isAdmin = user?.role === 'admin';
   const isEmployee = user?.role === 'colaborador';
@@ -100,6 +145,9 @@ export const AuthProvider = ({ children }) => {
       loading,
       login,
       logout,
+      terminarSessao,
+      semLigacao,
+      tentarDeNovo,
       changePassword,
       isAdmin,
       isEmployee,

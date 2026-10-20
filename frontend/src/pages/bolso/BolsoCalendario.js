@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { getCalendario, getContagem } from '@/lib/bolso';
@@ -350,7 +349,6 @@ function Contagem({ linhas, ano, mes }) {
 
 export default function BolsoCalendario() {
   useManifestoDoBolso();
-  const navigate = useNavigate();
   const { logout } = useAuth();
   const hoje = hojeIso();
   const [vista, setVista] = useState(() => lerOpcao(CHAVE_VISTA, VISTAS, 'semana'));
@@ -376,13 +374,14 @@ export default function BolsoCalendario() {
   // no que se tocou e não no que ficou da vez anterior.
   const aberturas = useRef(0);
 
-  const semSessao = useCallback(() => { logout(); navigate('/login'); }, [logout, navigate]);
-
   // Os meses que o ecrã precisa, numa chave estável: tocar noutro dia da mesma semana (ou do
   // mesmo mês) não volta a pedir nada.
   const meses = (vista === 'semana' ? mesesDaSemana(escolhido) : [{ ano, mes }])
     .map((m) => chaveDoMes(m.ano, m.mes)).join(' ');
 
+  // 401 nos pedidos de baixo: o `lib/bolso.js` já tentou a re-entrada pelo Face ID
+  // e não deu. Só `logout()`: o ProtectedRoute leva ao login COM o `state.from`, e
+  // depois de entrar volta-se a este ecrã.
   const carregar = useCallback(async () => {
     pedido.current += 1;
     const meu = pedido.current;
@@ -393,12 +392,12 @@ export default function BolsoCalendario() {
       const lidas = await Promise.all(pedidos.map((m) => getCalendario(Number(m.slice(0, 4)), Number(m.slice(5)))));
       if (meu === pedido.current) setRespostas(Object.fromEntries(pedidos.map((m, i) => [m, lidas[i].data])));
     } catch (e) {
-      if (e?.response?.status === 401) { semSessao(); return; }
+      if (e?.response?.status === 401) { logout(); return; }
       if (meu === pedido.current) setErro(mensagemDeErro(e));
     } finally {
       if (meu === pedido.current) setCarregando(false);
     }
-  }, [meses, semSessao]);
+  }, [meses, logout]);
 
   // A mesma guarda do mês, com o erro à parte: pedir de novo limpa só o da contagem.
   const carregarContagem = useCallback(async () => {
@@ -409,10 +408,10 @@ export default function BolsoCalendario() {
       const { data } = await getContagem(ano);
       if (meu === pedidoDaContagem.current) setContagem({ ano, linhas: data });
     } catch (e) {
-      if (e?.response?.status === 401) { semSessao(); return; }
+      if (e?.response?.status === 401) { logout(); return; }
       if (meu === pedidoDaContagem.current) setErroDaContagem(mensagemDeErro(e));
     }
-  }, [ano, semSessao]);
+  }, [ano, logout]);
 
   useEffect(() => { carregar(); }, [carregar]);
   useEffect(() => { if (vista === 'contagem') carregarContagem(); }, [vista, carregarContagem]);
@@ -591,7 +590,7 @@ export default function BolsoCalendario() {
       {painel && desteMes && (
         <PainelIda
           key={painel.chave} painel={painel} dados={desteMes} hoje={hoje}
-          onFechar={() => setPainel(null)} onGuardado={guardado} onSemSessao={semSessao}
+          onFechar={() => setPainel(null)} onGuardado={guardado}
         />
       )}
     </div>

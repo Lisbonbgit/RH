@@ -167,10 +167,23 @@ def test_a_vista_e_o_filtro_lembram_se_e_sem_localstorage_abre_em_semana_geral(t
     assert sem == ["true", "true"]
 
 
-def test_sessao_expirada_sai_para_o_login(tmp_path):
+def test_um_401_que_chega_ao_ecra_so_faz_logout(tmp_path):
+    """Fase 3: o `lib/bolso.js` já tentou a re-entrada pelo Face ID. Não se navega à mão:
+    o ProtectedRoute leva ao login com o `state.from` e, depois de entrar, volta-se aqui."""
     mes, _ = _servidor()
     r = _ecra(tmp_path, "devolve(REGISTO.filter((x) => x[0] !== 'GET'));", mes, falha={"response": {"status": 401}})
-    assert r == [["logout"], ["navigate", "/login"]]
+    assert r == [["logout"]]
+
+
+def test_um_401_so_da_contagem_tambem_so_faz_logout(tmp_path):
+    """O `carregarContagem` tem o seu próprio `catch`: o 401 dele não pode ser engolido."""
+    mes, _ = _servidor()
+    r = _ecra(tmp_path, "devolve(REGISTO.filter((x) => x[0] !== 'GET'));", mes, vista="contagem", antes="""
+const servidorDoMes = global.SERVIDOR;
+global.SERVIDOR = (metodo, url, ...resto) => (metodo === 'GET' && url === '/calendario/contagem'
+  ? { erro: { response: { status: 401 } } } : servidorDoMes(metodo, url, ...resto));
+""")
+    assert r == [["logout"]]
 
 
 def test_tapar_abre_com_as_horas_do_buraco_e_marcar_abre_vazio(tmp_path):
@@ -199,7 +212,9 @@ devolve({ tapar, marcar: lerPainel() });
         "marcar": {"titulo": "Marcar ida", "loja": "", "inicio": "", "fim": "", "dias": ["2026-10-27"]}}
 
 
-def test_sessao_expirada_ao_gravar_no_painel_sai_para_o_login(tmp_path):
+def test_sessao_expirada_ao_gravar_no_painel_so_faz_logout(tmp_path):
+    """Fase 3: como nos pedidos do ecrã, só `logout()`; o ProtectedRoute leva ao login com
+    o `state.from`."""
     mes, _ = _servidor()
     r = _ecra(tmp_path, """
 const oeiras = [...document.querySelectorAll('main [data-buraco]')]
@@ -210,7 +225,7 @@ await clicar(botao('Marcar 1 ida', document.querySelector('[role="dialog"]')));
 await esperar();
 devolve(REGISTO.filter((x) => x[0] === 'logout' || x[0] === 'navigate'));
 """, mes)
-    assert r == [["logout"], ["navigate", "/login"]]
+    assert r == [["logout"]]
 
 
 def test_depois_de_gravar_o_painel_fecha_e_o_mes_volta_a_ler_se(tmp_path):
@@ -272,9 +287,15 @@ def test_cada_destino_do_menu_e_uma_rota_do_app_com_os_papeis_do_bolso(tmp_path)
                          tmp_path, simulados=SESSAO_SIMULADA, dom=True)
     assert destinos == ["/bolso", "/bolso/calendario"]
     app = (SRC / "App.js").read_text(encoding="utf-8")
+    # Fase 3: as rotas do bolso passam pelo `RotaDoBolso`, que leva os papéis (e a Barreira).
+    corpo = app[app.index("const RotaDoBolso"):]
+    corpo = corpo[:corpo.index(");")]
+    assert "<ProtectedRoute allowedRoles={PAPEIS_DO_BOLSO}>" in corpo
+    # A lista vem do lib/sessao (a mesma que a `aterragem` usa para mandar para o /bolso).
+    sessao = (SRC / "lib" / "sessao.js").read_text(encoding="utf-8")
+    assert "export const PAPEIS_DO_BOLSO = ['admin', 'gerente', 'contabilista'];" in sessao
     for caminho in destinos:
-        rota = re.compile(r'<Route path="%s" element=\{\s*<ProtectedRoute allowedRoles=\{\[\'admin\', '
-                          r'\'gerente\', \'contabilista\'\]\}>' % re.escape(caminho))
+        rota = re.compile(r'<Route path="%s" element=\{\s*<RotaDoBolso>' % re.escape(caminho))
         assert rota.search(app), "O App.js não tem a rota %s com os papéis do bolso." % caminho
 
 
