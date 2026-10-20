@@ -43,3 +43,21 @@ def test_a_casca_da_build_3_leva_o_face_id_e_abre_a_producao():
 
     assert "CapgoCapacitorNativeBiometric" in (_IOS / "Podfile").read_text(encoding="utf-8")
     assert "CapgoCapacitorNativeBiometric" in (_IOS / "Podfile.lock").read_text(encoding="utf-8")
+
+
+def _corpo(swift, funcao):
+    """O texto da função `funcao` do AppDelegate (até à função seguinte)."""
+    m = re.search(r"func " + funcao + r"\(.*?\n(.*?)\n    func ", swift, re.S)
+    assert m, funcao
+    return m.group(1)
+
+
+def test_a_miniatura_do_selector_de_apps_nao_mostra_os_numeros():
+    # O iOS tira a miniatura do selector de apps DEPOIS de a app deixar de
+    # estar activa: uma vista opaca posta nesse momento é o que lá fica, em vez
+    # dos números do ecrã. Tira-se ao voltar a ficar activa.
+    swift = (_IOS / "App" / "AppDelegate.swift").read_text(encoding="utf-8")
+    sai = _corpo(swift, "applicationWillResignActive")
+    volta = _corpo(swift, "applicationDidBecomeActive")
+    assert "addSubview" in sai and "systemBackground" in sai
+    assert "removeFromSuperview" in volta
