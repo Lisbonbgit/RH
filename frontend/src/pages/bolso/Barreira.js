@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ScanFace } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
@@ -74,9 +74,16 @@ export default function Barreira({ children }) {
 
 function Cortina({ email, onEntrar }) {
   const ref = useRef(null);
-  useEffect(() => {
+  // De layout, não passivo: a cortina tem de estar aberta no PRIMEIRO frame (com um
+  // efeito passivo o primeiro paint mostrava o BolsoApp, com os nomes das empresas).
+  // O alvo é o iOS 15.0 e o `showModal` só chegou no 15.4: sem ele, `open` à mão
+  // (tapa na mesma, por estar `fixed inset-0`; perde-se só a camada de cima).
+  useLayoutEffect(() => {
     const d = ref.current;
-    if (d && !d.open) d.showModal();
+    if (d && !d.open) {
+      if (d.showModal) d.showModal();
+      else d.setAttribute('open', '');
+    }
   }, []);
   return (
     // `pointer-events-auto`: com uma janela do Radix aberta por baixo, o body

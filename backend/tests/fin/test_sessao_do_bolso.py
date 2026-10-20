@@ -218,7 +218,8 @@ def _corre(cenario: str, tmp_path: Path, dom: bool = False, antes: str = ""):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=str(_FRONTEND),
-        timeout=30,
+        # Como o `correr_js`: numa máquina carregada (a suite inteira) 30 s não chegavam.
+        timeout=180,
         # Como o `tests/bolso_js.py`: o browserslist avisa no stderr quando a base do
         # caniuse-lite faz 6 meses, e o stderr falha o teste — calado aqui.
         env={"NODE_PATH": str(_FRONTEND / "node_modules"), "PATH": "/usr/bin:/bin",
@@ -850,6 +851,24 @@ def test_bolso_sem_face_id_o_401_chega_ao_ecra_como_sempre(tmp_path):
     assert r == {"pedidos": 1, "estado": 401, "chamadas": []}
 
 
+@pytest.mark.parametrize("resposta", ["[403, {}]", "[502, {}]", "'rede'"], ids=["403", "502", "rede"])
+def test_bolso_so_o_401_tenta_a_reentrada(tmp_path, resposta):
+    """403 (sem acesso a essa empresa), 502 (deploy) e a rede em baixo não dizem nada da
+    sessão: o erro segue para o ecrã, sem pedir o rosto nem fazer login."""
+    r = _corre("""
+      const s = lib('lib/sessao');
+      s.abrirBarreira();
+      let logins = 0;
+      s.ligarEntrada(async () => { logins += 1; });
+      let falhou = false;
+      try { await lib('lib/bolso').getPainel('all'); } catch (e) { falhou = true; }
+      return { falhou, pedidos: PEDIDOS.length, logins,
+               rostos: NB.chamadas.filter((c) => c.startsWith('verifyIdentity')).length };
+    """, tmp_path, antes=_SERVIDOR + _LIGADO + _SESSAO_DA_CAROL
+       + "RESPOSTAS['GET /bolso/painel'] = %s;" % resposta)
+    assert r == {"falhou": True, "pedidos": 1, "logins": 0, "rostos": 0}
+
+
 def test_bolso_com_a_barreira_fechada_nenhum_pedido_sai(tmp_path):
     r = _corre("""
       const s = lib('lib/sessao');
@@ -1132,7 +1151,8 @@ def test_depois_da_senha_pergunta_antes_de_sair_do_login(tmp_path, resposta):
       await espera(20);
       return { pergunta, saiu: texto().includes('CALENDARIO'),
                recusa: localStorage.getItem('faceid_recusado:carol@lisbonb.com'),
-               keychain: NB.keychain, email: localStorage.getItem('faceid_email') };
+               keychain: NB.keychain, email: localStorage.getItem('faceid_email'),
+               chamadas: NB.chamadas.map((c) => c.split(':')[0]) };
     """ % json.dumps(resposta), tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _LOGIN_OK)
     assert r["pergunta"] == {"aberta": True, "jaSaiu": False}
     assert r["saiu"] is True   # e foi para o sítio de onde veio (state.from)
@@ -1143,6 +1163,9 @@ def test_depois_da_senha_pergunta_antes_de_sair_do_login(tmp_path, resposta):
         assert r["keychain"] == [{"username": "carol@lisbonb.com", "password": "segredo",
                                   "server": "gestao.lisbonb.com"}]
         assert r["email"] == "carol@lisbonb.com"
+        # O rosto ANTES de guardar: é aí que o iPhone pede a licença, e recusá-la não
+        # pode deixar uma senha guardada sem uso.
+        assert r["chamadas"].index("verifyIdentity") < r["chamadas"].index("setCredentials")
 
 
 def test_sem_plugin_o_login_nao_pergunta_nada(tmp_path):
@@ -1342,6 +1365,38 @@ def test_cancelar_o_rosto_na_barreira_sai_mas_guarda_o_keychain(tmp_path):
     """, tmp_path, dom=True,
         antes=_SERVIDOR + _ESPERA + _LIGADO + _SESSAO_VALIDA + "NB.rosto = 'cancela';")
     assert r == {"token": None, "keychain": True, "email": "carol@lisbonb.com", "painel": 0}
+
+
+def _cortina_no_primeiro_frame(sem_show_modal):
+    return r"""
+      const { AuthProvider } = lib('contexts/AuthContext');
+      const Barreira = lib('pages/bolso/Barreira').default;
+      %s
+      // Os efeitos passivos dos filhos correm DEPOIS do primeiro paint; os de layout,
+      // antes. A cortina aberta já aqui = pintada no primeiro frame.
+      let abertaNoEfeitoDoFilho = null;
+      const Filho = () => {
+        React.useEffect(() => { abertaNoEfeitoDoFilho = !!document.querySelector('dialog[open]'); }, []);
+        return React.createElement('p', null, 'NUMEROS');
+      };
+      const raiz = createRoot(document.getElementById('raiz'));
+      await act(async () => {
+        raiz.render(React.createElement(AuthProvider, null,
+          React.createElement(Barreira, null, React.createElement(Filho))));
+      });
+      await espera(20);
+      return { abertaNoEfeitoDoFilho, cortina: !!document.querySelector('dialog[open]') };
+    """ % ("delete window.HTMLDialogElement.prototype.showModal;" if sem_show_modal else "")
+
+
+@pytest.mark.parametrize("sem_show_modal", [False, True], ids=["com-showModal", "ios-15-0-sem-showModal"])
+def test_a_cortina_abre_no_primeiro_frame_e_sem_show_modal(tmp_path, sem_show_modal):
+    """O alvo é o iOS 15.0 e o `showModal` só chegou no 15.4: sem ele, `open` à mão
+    (a cortina tapa na mesma; perde-se só a camada de cima). E abre num efeito de
+    layout: com um efeito passivo o primeiro frame mostrava o BolsoApp por baixo."""
+    r = _corre(_cortina_no_primeiro_frame(sem_show_modal), tmp_path, dom=True,
+               antes=_SERVIDOR + _ESPERA + _LIGADO + _SESSAO_VALIDA + "NB.rosto = 'espera';")
+    assert r == {"abertaNoEfeitoDoFilho": True, "cortina": True}
 
 
 def test_interrompido_pelo_sistema_fica_fechada_sem_sair(tmp_path):
@@ -1551,6 +1606,37 @@ def test_usar_face_id_no_menu(tmp_path, caso, mostra):
         assert r == {"mostra": True, "token": None, "recusa": None}
     else:
         assert r == {"mostra": False}
+
+
+def test_usar_face_id_na_sessao_de_outra_conta_nao_apaga_o_face_id_da_carol(tmp_path):
+    """Sessão da Débora (JWT), Face ID da Carol neste iPhone. A Barreira não aparece à
+    Débora; o «Usar Face ID» do menu aparece (o Face ID não é dela) e sai com `logout()`,
+    nunca com o `terminarSessao()`, que apagava o Keychain e o email da Carol."""
+    r = _corre(r"""
+      const { AuthProvider } = lib('contexts/AuthContext');
+      const Barreira = lib('pages/bolso/Barreira').default;
+      const { UsarFaceId } = lib('pages/bolso/Barreira');
+      const raiz = createRoot(document.getElementById('raiz'));
+      await act(async () => {
+        raiz.render(React.createElement(AuthProvider, null,
+          React.createElement(Barreira, null, React.createElement(UsarFaceId))));
+      });
+      await espera(20);
+      const cortina = !!document.querySelector('dialog[open]');
+      const botao = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Usar Face ID');
+      await act(async () => { botao.click(); });
+      await espera();
+      return { cortina, token: localStorage.getItem('token'), keychain: NB.keychain,
+               faceid: localStorage.getItem('faceid_email'),
+               apagou: NB.chamadas.includes('deleteCredentials') };
+    """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _RELOGIO + _LIGADO
+        + _sessao("debora@lisbonb.com") + _VOLTOU_AGORA + r"""
+      RESPOSTAS['GET /auth/me'] = [200, %s];
+    """ % _EU.replace("carol", "debora").replace("Carol", "Débora"))
+    assert r == {"cortina": False, "token": None,
+                 "keychain": [{"username": "carol@lisbonb.com", "password": "segredo",
+                               "server": "gestao.lisbonb.com"}],
+                 "faceid": "carol@lisbonb.com", "apagou": False}
 
 
 # --- A montagem: App.js e os ecrãs do bolso (guardas de texto) -------------------
