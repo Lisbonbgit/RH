@@ -4,6 +4,7 @@ import { CalendarDays, Menu, Receipt, X } from 'lucide-react';
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { useAuth } from '@/contexts/AuthContext';
 import { semanasDoMes, tituloDoDia } from '@/lib/calendario';
+import { UsarFaceId } from './Barreira';
 
 // O que os ecrãs da Gestão Lisbonb (`/bolso` e `/bolso/calendario`) partilham: o manifesto,
 // a memória do `localStorage`, o segmento das calhas, o menu lateral e a grelha do mês.
@@ -93,7 +94,7 @@ export function BotaoMenu({ onClick }) {
 // tem 44px, e o conteúdo respeita a zona da notch (a casca pinta até às bordas).
 export function MenuLateral({ aberto, onFechar, actual }) {
   const navigate = useNavigate();
-  const { logout, user } = useAuth();
+  const { terminarSessao, user } = useAuth();
   const ir = (caminho) => {
     onFechar();
     if (caminho !== actual) navigate(caminho);
@@ -125,11 +126,16 @@ export function MenuLateral({ aberto, onFechar, actual }) {
                 {rotulo}
               </button>
             ))}
+            <UsarFaceId
+              className="w-full h-12 px-4 flex items-center gap-3 text-left text-[15px] font-semibold
+                         active:bg-accent/60 focus-visible:outline-none focus-visible:ring-2
+                         focus-visible:ring-ring focus-visible:ring-inset"
+            />
           </nav>
           {/* Sair é raro e irreversível: fica no fundo, e sem vermelho (no bolso o vermelho
               quer dizer outra coisa — faturação a descer, buraco por tapar). */}
           <button
-            type="button" onClick={() => { onFechar(); logout(); navigate('/login'); }}
+            type="button" onClick={() => { onFechar(); terminarSessao(); }}
             className="h-14 shrink-0 border-t px-4 flex items-center justify-between gap-3 text-left
                        active:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >

@@ -1239,3 +1239,59 @@ def test_usar_face_id_no_menu(tmp_path, caso, mostra):
         assert r == {"mostra": True, "token": None, "recusa": None}
     else:
         assert r == {"mostra": False}
+
+
+# --- A montagem: App.js e os ecrãs do bolso (guardas de texto) -------------------
+#
+# O App.js importa o portal inteiro e não se monta aqui; o que se vê nele é o
+# ensaio no browser (Tarefa 8). Estes guardas apanham as duas avarias que
+# nenhum teste de cima apanha: uma rota /bolso SEM Barreira (com o Face ID
+# ligado os pedidos esperavam por ela para sempre) e um ecrã do bolso que volte
+# a mandar para o login à mão (perdia o `state.from`) ou a sair sem esquecer o
+# Face ID.
+import re  # noqa: E402
+
+_RE_ROTA = re.compile(r'<Route\s+path="(/bolso[^"]*)"\s+element=\{\s*<(\w+)')
+
+
+def test_todas_as_rotas_do_bolso_passam_pela_barreira():
+    app = (_SRC / "App.js").read_text(encoding="utf-8")
+    rotas = _RE_ROTA.findall(app)
+    assert {"/bolso", "/bolso/calendario"} <= {caminho for caminho, _ in rotas}, rotas
+    assert all(quem == "RotaDoBolso" for _, quem in rotas), rotas
+    rota = app[app.index("const RotaDoBolso"):]
+    rota = rota[:rota.index(");")]
+    assert "<ProtectedRoute" in rota and "<Barreira>" in rota
+
+
+def test_o_protected_route_e_o_role_redirect_mostram_sem_ligacao_antes_do_login():
+    """O `ProtectedRoute` (o bolso e o portal) e o `RoleRedirect` (a rota `/`, por onde
+    o portal abre no browser): os dois mandavam para o login sem resposta do servidor."""
+    app = (_SRC / "App.js").read_text(encoding="utf-8")
+
+    def corpo(nome):
+        resto = app[app.index("const %s = " % nome):]
+        return resto[:resto.index("\n};\n")]
+
+    for nome in ("ProtectedRoute", "RoleRedirect"):
+        c = corpo(nome)
+        assert "if (!isAuthenticated && semLigacao) return <SemLigacao />;" in c, nome
+        assert c.index("<SemLigacao />") < c.index('<Navigate to="/login"'), nome
+    tela = corpo("SemLigacao")
+    assert "onClick={tentarDeNovo}" in tela and "Tentar de novo" in tela
+
+
+def test_no_bolso_ninguem_vai_ao_login_a_mao_e_sair_esquece_o_face_id():
+    pasta = _SRC / "pages" / "bolso"
+    for ficheiro in sorted(pasta.glob("*.js")):
+        texto = ficheiro.read_text(encoding="utf-8")
+        assert not re.search(r"navigate\(\s*['\"]/login['\"]", texto), ficheiro.name
+        if "Terminar sessão" in texto:
+            assert "terminarSessao" in texto, ficheiro.name
+            assert not re.search(r"logout\(\);\s*navigate", texto), ficheiro.name
+    # Os dois ecrãs: um 401 que chega ao ecrã (a re-entrada não deu) faz logout().
+    for ecra in ("BolsoApp.js", "BolsoCalendario.js"):
+        texto = (pasta / ecra).read_text(encoding="utf-8")
+        assert re.search(r"status\s*===\s*401\)\s*\{\s*logout\(\);", texto), ecra
+    menu = (pasta / "partilhado.js").read_text(encoding="utf-8")
+    assert "<UsarFaceId" in menu

@@ -3,8 +3,10 @@
 «Tapar um buraco»)."""
 import json
 
+import pytest
+
 import calendario
-from tests.bolso_js import AXIOS_FABRICADO, correr_js
+from tests.bolso_js import AXIOS_FABRICADO, SESSAO_SIMULADA, correr_js
 
 from . import dados_semana_normal as sn
 
@@ -32,11 +34,10 @@ def _painel(tmp_path, painel, cenario, resposta=None, idas=()):
         "global.SERVIDOR = () => RESPOSTA;",
         "const PainelIda = importar('pages/bolso/PainelIda').default;",
         "await montar(React.createElement(PainelIda, { painel: PAINEL, dados: DADOS, hoje: '2026-10-27',",
-        "  onFechar: () => REGISTO.push(['fechar']), onGuardado: () => REGISTO.push(['guardado']),",
-        "  onSemSessao: () => REGISTO.push(['sem-sessao']) }));",
+        "  onFechar: () => REGISTO.push(['fechar']), onGuardado: () => REGISTO.push(['guardado']) }));",
         "const dlg = document.querySelector('[role=\"dialog\"]');",
         cenario,
-    ]), tmp_path, simulados={"axios": AXIOS_FABRICADO}, dom=True)
+    ]), tmp_path, simulados=dict(SESSAO_SIMULADA, axios=AXIOS_FABRICADO), dom=True)
 
 
 def test_tapar_comeca_no_buraco_e_em_mim(tmp_path):
@@ -100,15 +101,6 @@ devolve({ alerta: alerta.textContent, aberto: !!document.querySelector('[role="d
     # 3,8:1 no claro e o `-strong` sozinho 3,0:1 no escuro.
     assert r == {"alerta": texto, "aberto": True, "activo": True, "registo": ["POST"],
                  "cor": ["text-destructive-strong", "dark:text-destructive"]}
-
-
-def test_sessao_expirada_ao_gravar_sai_pela_porta_da_sessao_e_nao_e_erro_do_formulario(tmp_path):
-    r = _painel(tmp_path, TAPAR_OEIRAS, """
-await clicar(botao('Marcar 1 ida', dlg));
-await esperar();
-devolve({ alerta: !!dlg.querySelector('[role="alert"]'), registo: REGISTO.map((x) => x[0]) });
-""", resposta={"erro": {"response": {"status": 401, "data": {"detail": "Token expirado"}}}})
-    assert r == {"alerta": False, "registo": ["POST", "sem-sessao"]}
 
 
 def test_sem_rede_diz_que_nao_houve_resposta(tmp_path):
@@ -185,3 +177,19 @@ devolve({ titulo: dlg.querySelector('h2').textContent, vazio, benfica, alfragide
         ["13:00", "22:00"], ["10:00", "23:00"], ["15:00", "23:00"])
     assert r["corpo"] == {"datas": ["2026-10-27"], "location_id": sn.OEIRAS, "user_ids": [sn.DEBORA],
                           "inicio": "15:00", "fim": "23:00"}
+
+
+@pytest.mark.parametrize("painel,botoes,verbo", [
+    (TAPAR_OEIRAS, ["Marcar 1 ida"], "POST"),
+    (IDA, ["Apagar", "Tocar de novo para apagar"], "DELETE"),
+])
+def test_um_401_ao_gravar_ou_apagar_faz_logout_sem_mostrar_erro(tmp_path, painel, botoes, verbo):
+    """Fase 3: o 401 só chega ao painel se a re-entrada pelo Face ID não deu
+    (`lib/bolso.js`) → login normal (desenho §5.4), e não um erro num painel sem sessão."""
+    r = _painel(tmp_path, painel, """
+for (const nome of %s) await clicar(botao(nome, dlg));
+await esperar();
+devolve({ registo: REGISTO.map((x) => x[0]), erroAVista: texto().includes('Sessão expirada.') });
+""" % json.dumps(botoes, ensure_ascii=False),
+        resposta={"erro": {"response": {"status": 401, "data": {"detail": "Sessão expirada."}}}})
+    assert r == {"registo": [verbo, "logout"], "erroAVista": False}

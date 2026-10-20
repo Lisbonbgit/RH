@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, ChevronRight, Loader2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
@@ -381,7 +380,6 @@ function BarraDeAmbito({ empresas, empresaActiva, onEmpresa, lojas, lojaActiva, 
 
 export default function BolsoApp() {
   useManifestoDoBolso();
-  const navigate = useNavigate();
   const { logout } = useAuth();
   const [menu, setMenu] = useState(false);
 
@@ -415,7 +413,10 @@ export default function BolsoApp() {
       }
     } catch (e) {
       const status = e?.response?.status;
-      if (status === 401) { logout(); navigate('/login'); return; }
+      // 401: o `lib/bolso.js` já tentou a re-entrada pelo Face ID e não deu.
+      // Só `logout()`: o ProtectedRoute leva ao login COM o `state.from`, e
+      // depois de entrar volta-se a este ecrã (era o `/admin/resumo`).
+      if (status === 401) { logout(); return; }
       // Sem resposta não se aprendeu nada, e o que está no ecrã continua a
       // valer — com o carimbo antigo à vista. Apagá-lo era trocar informação
       // velha, mas datada, por nenhuma.
@@ -427,7 +428,7 @@ export default function BolsoApp() {
     } finally {
       setCarregando(false);
     }
-  }, [logout, navigate]);
+  }, [logout]);
 
   useEffect(() => { carregar(empresa, unidade); }, [empresa, unidade, carregar]);
 

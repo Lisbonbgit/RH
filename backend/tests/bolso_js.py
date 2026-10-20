@@ -61,6 +61,7 @@ SESSAO_SIMULADA = {
     "react-router-dom": "(() => { const navegar = (para) => REGISTO.push(['navigate', para]);"
                         " return { useNavigate: () => navegar }; })()",
     "@/contexts/AuthContext": "(() => { const sessao = { logout: () => REGISTO.push(['logout']),"
+                              " terminarSessao: () => REGISTO.push(['terminarSessao']),"
                               " user: { name: 'Débora Ferreira' } }; return { useAuth: () => sessao }; })()",
 }
 

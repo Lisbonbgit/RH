@@ -51,13 +51,15 @@ devolve({ aberto: !!document.querySelector('[role="dialog"]'), registo: REGISTO.
     assert r == {"aberto": False, "registo": [["navigate", "/bolso/calendario"]]}
 
 
-def test_terminar_sessao_sai_e_vai_para_o_login(tmp_path):
+def test_terminar_sessao_esquece_o_face_id_e_sai(tmp_path):
+    """Fase 3: `terminarSessao()` = logout + apagar o Face ID deste telemóvel. Não se
+    navega à mão: o ProtectedRoute leva ao login com o `state.from`."""
     r = _faturacao(tmp_path, """
 await clicar(botao('Abrir menu'));
 await clicar([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent.includes('Terminar sessão')));
 devolve(REGISTO.filter((x) => x[0] !== 'GET'));
 """)
-    assert r == [["logout"], ["navigate", "/login"]]
+    assert r == [["terminarSessao"]]
 
 
 def test_a_faturacao_continua_igual_por_baixo(tmp_path):

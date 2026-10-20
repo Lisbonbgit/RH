@@ -80,6 +80,8 @@ import FatMovimentosCaixa from './pages/admin/faturacao/FatMovimentosCaixa';
 import FatReservasPresas from './pages/admin/faturacao/FatReservasPresas';
 import PosApp from './pages/pos/PosApp';
 import BolsoApp from './pages/bolso/BolsoApp';
+import Barreira from './pages/bolso/Barreira';
+import { Button } from './components/ui/button';
 import BolsoCalendario from './pages/bolso/BolsoCalendario';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeProfile from './pages/employee/EmployeeProfile';
@@ -97,9 +99,24 @@ import MarketingCalendar from './pages/admin/marketing/MarketingCalendar';
 import MarketingReviews from './pages/admin/marketing/MarketingReviews';
 import MarketingReports from './pages/admin/marketing/MarketingReports';
 
+// O arranque não conseguiu perguntar ao servidor se a sessão vale (rede em
+// baixo, 502 de um deploy). O token ficou: mandar para o login era pedir a
+// senha por causa de um pedido que nunca foi respondido. Mostrado pelo
+// `ProtectedRoute` e pelo `RoleRedirect` (a rota `/` do portal no browser).
+const SemLigacao = () => {
+  const { tentarDeNovo } = useAuth();
+  return (
+    <div className="min-h-[100dvh] flex flex-col items-center justify-center gap-2 bg-background px-6 text-center">
+      <p className="text-base font-semibold">Sem ligação</p>
+      <p className="text-sm text-muted-foreground">Não foi possível falar com o servidor.</p>
+      <Button className="mt-3 h-11 px-6" onClick={tentarDeNovo}>Tentar de novo</Button>
+    </div>
+  );
+};
+
 // Protected Route Component - checks for authentication and must_change_password
 const ProtectedRoute = ({ children, allowedRoles }) => {
-  const { user, loading, isAuthenticated, mustChangePassword } = useAuth();
+  const { user, loading, isAuthenticated, mustChangePassword, semLigacao } = useAuth();
   // De ONDE veio quem foi mandado para o login. Sem isto, quem abre a app da
   // Gestão Lisbonb (que arranca em /bolso), entra, e é despejado no
   // /admin/resumo — o portal inteiro num ecrã de telemóvel, que não é nada do
@@ -114,6 +131,8 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
     );
   }
   
+  if (!isAuthenticated && semLigacao) return <SemLigacao />;
+
   if (!isAuthenticated) {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
@@ -129,6 +148,16 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
   
   return children;
 };
+
+// As rotas da app «Gestão Lisbonb»: o login do portal e, na casca com Face ID,
+// a Barreira. **TODAS as rotas /bolso passam por aqui**: com o Face ID ligado,
+// os pedidos do `lib/bolso.js` esperam que a Barreira abra — uma rota /bolso
+// sem ela ficava à espera para sempre (guardado em test_sessao_do_bolso.py).
+const RotaDoBolso = ({ children }) => (
+  <ProtectedRoute allowedRoles={['admin', 'gerente', 'contabilista']}>
+    <Barreira>{children}</Barreira>
+  </ProtectedRoute>
+);
 
 // Change Password Route - only accessible when must_change_password is true
 const ChangePasswordRoute = ({ children }) => {
@@ -156,7 +185,9 @@ const ChangePasswordRoute = ({ children }) => {
 
 // Redirect based on role
 const RoleRedirect = () => {
-  const { user, loading, isAuthenticated, mustChangePassword } = useAuth();
+  const { user, loading, isAuthenticated, mustChangePassword, semLigacao } = useAuth();
+  // Antes do `loading` sem perigo: o `semLigacao` só fica de pé com o `loading` já em baixo.
+  if (!isAuthenticated && semLigacao) return <SemLigacao />;
   
   if (loading) {
     return (
@@ -204,18 +235,10 @@ function AppRoutes() {
           número a zero toques. Leva `ProtectedRoute` na mesma (é o login do
           portal que manda), e o que cada um vê continua a ser decidido pela
           PERTENÇA às empresas, do lado do servidor. */}
-      <Route path="/bolso" element={
-        <ProtectedRoute allowedRoles={['admin', 'gerente', 'contabilista']}>
-          <BolsoApp />
-        </ProtectedRoute>
-      } />
+      <Route path="/bolso" element={<RotaDoBolso><BolsoApp /></RotaDoBolso>} />
       {/* O calendário das lojas (onde falta gente), irmão do /bolso: mesmos papéis, mesma
           casca. O contabilista lê; quem marca é decidido pelo servidor (`pode_marcar`). */}
-      <Route path="/bolso/calendario" element={
-        <ProtectedRoute allowedRoles={['admin', 'gerente', 'contabilista']}>
-          <BolsoCalendario />
-        </ProtectedRoute>
-      } />
+      <Route path="/bolso/calendario" element={<RotaDoBolso><BolsoCalendario /></RotaDoBolso>} />
       {/* CRM Purple House: área própria só para membros (guarda no CrmLayout; rotas em pages/crm/rotasCrm.js). */}
       <Route path="/crm" element={<ProtectedRoute><CrmLayout /></ProtectedRoute>}>{filhosCrm()}</Route>
       <Route path="/alterar-senha" element={
