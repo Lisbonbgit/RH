@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 import { emailGuardado, temFaceId, verificar } from '@/lib/faceid';
 import {
-  abrirBarreira, barreiraFechada, esquecerRecusa, fecharBarreira, outraContaTemDeSair, voltouATempo,
+  abrirBarreira, barreiraFechada, esquecerRecusa, voltouATempo,
 } from '@/lib/sessao';
 
 // **A barreira do Face ID** — o ecrã opaco por cima do bolso ao abrir a app e ao
@@ -23,9 +23,9 @@ import {
 // (`null`) → fica fechada, com o botão. Sem Face ID possível → `logout()`: a
 // barreira nunca abre sem um rosto (ou sem ter voltado dentro dos 5 minutos).
 //
-// Só fecha para a dona do Face ID (`fecharBarreira` diz `false` para a sessão de
-// outra conta — decisão A do dono). Essa, ao voltar depois de 5 minutos, vai para
-// a senha: `outraContaTemDeSair()`.
+// Fechar ao esconder, e mandar para a senha a sessão de outra conta que volta depois
+// de 5 minutos (decisão A do dono), faz o `lib/sessao.js` — com qualquer ecrã
+// montado, e antes deste ouvinte. Aqui só se desenha o que ele decidiu.
 //
 // Mora DENTRO do `ProtectedRoute`: o «Sem ligação — tentar de novo» aparece no
 // lugar dela (sem user não há Barreira montada), nunca por baixo da cortina.
@@ -55,9 +55,7 @@ export default function Barreira({ children }) {
     decidir();
     const aoMudar = () => {
       if (document.hidden) {
-        if (fecharBarreira()) setFechada(true);
-      } else if (outraContaTemDeSair()) {
-        logout();
+        if (barreiraFechada()) setFechada(true);
       } else {
         decidir();
       }

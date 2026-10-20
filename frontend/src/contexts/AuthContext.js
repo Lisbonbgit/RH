@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
 import { apagar as apagarFaceId, emailGuardado, guardar as guardarFaceId } from '../lib/faceid';
-import { abrirBarreira, ligarEntrada, reentrar } from '../lib/sessao';
+import { abrirBarreira, ligarEntrada, ligarSaida, reentrar } from '../lib/sessao';
 
 const AuthContext = createContext(null);
 
@@ -123,6 +123,8 @@ export const AuthProvider = ({ children }) => {
     // Sem isto, quem saísse depois de um «Sem ligação» via-o outra vez em vez do login.
     setSemLigacao(false);
   }, []);
+  // A sessão de outra conta que volta depois de 5 minutos sai por aqui (lib/sessao).
+  ligarSaida(logout);
 
   // O botão «Terminar sessão»: sair E esquecer o Face ID deste telemóvel.
   const terminarSessao = useCallback(() => {

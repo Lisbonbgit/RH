@@ -69,7 +69,10 @@ export const voltouATempo = (agora = Date.now()) => {
 if (outraContaTemDeSair()) {
   try { localStorage.removeItem('token'); } catch (e) { /* modo privado */ }
 }
-let fechada = faceIdDestaSessao() && !voltouATempo();
+// Uma página carregada ESCONDIDA (o Capacitor recarrega a WebView em segundo plano)
+// nasce fechada mesmo a tempo: a miniatura do selector de apps não mostra números.
+const escondida = () => typeof document !== 'undefined' && document.hidden;
+let fechada = faceIdDestaSessao() && (escondida() || !voltouATempo());
 let aEspera = [];
 
 export const barreiraFechada = () => fechada;
@@ -100,6 +103,22 @@ export function fecharBarreira(agora = Date.now()) {
 export const esperarBarreira = () => (
   fechada ? new Promise((soltar) => { aEspera.push(soltar); }) : Promise.resolve()
 );
+
+// O `logout()` do AuthContext (apaga o token, não o Keychain).
+let sair = null;
+export const ligarSaida = (fn) => { sair = fn; };
+
+// **Esconder e voltar decide-se AQUI, com qualquer ecrã montado.** Na casca há ecrãs
+// sem Barreira (o spinner do arranque, o «Sem ligação», o /alterar-senha, o /login):
+// se o fecho morasse só nela, esconder num deles não fechava nem gravava o `saiuAs`.
+// Registado uma vez, ao carregar o módulo — antes do da Barreira, que corre a seguir
+// e só lê `barreiraFechada()`.
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) fecharBarreira();
+    else if (outraContaTemDeSair() && sair) sair(); // decisão A: volta à senha
+  });
+}
 
 // --- 2. A re-entrada -----------------------------------------------------------
 

@@ -1370,6 +1370,85 @@ def test_a_sessao_de_outra_conta_que_volta_depois_de_5_minutos_vai_para_o_login(
     }
 
 
+# --- O fecho ao esconder vive no lib/sessao (não só com a Barreira montada) -------
+#
+# Na casca há ecrãs sem Barreira: o spinner do arranque, o «Sem ligação», o
+# /alterar-senha, o /login. Esconder a app num deles tem de fechar a porta e gravar o
+# `saiuAs` na mesma, e a sessão de outra conta tem de sair ao voltar (decisão A).
+
+# Um `ProtectedRoute` em miniatura (o do App.js não se monta aqui): «Sem ligação» com o
+# botão, e com o user a Barreira VERDADEIRA à volta de um filho que pede o painel.
+_ROTA_COM_SEM_LIGACAO = r"""
+      const { AuthProvider, useAuth } = lib('contexts/AuthContext');
+      const Barreira = lib('pages/bolso/Barreira').default;
+      const { getPainel } = lib('lib/bolso');
+      const el = React.createElement;
+      const Filho = () => {
+        React.useEffect(() => { getPainel('all').catch(() => {}); }, []);
+        return el('p', null, 'NUMEROS');
+      };
+      const Rota = () => {
+        const a = useAuth();
+        if (a.loading) return el('p', null, 'A CARREGAR');
+        if (!a.user && a.semLigacao) return el('button', { onClick: a.tentarDeNovo }, 'Tentar de novo');
+        if (!a.user) return el('p', null, 'LOGIN');
+        return el(Barreira, null, el(Filho));
+      };
+      const raiz = createRoot(document.getElementById('raiz'));
+      await act(async () => { raiz.render(el(AuthProvider, null, el(Rota))); });
+      await espera(50);
+      const cortina = () => !!document.querySelector('dialog[open]');
+      const painel = () => PEDIDOS.filter((p) => p === 'GET /bolso/painel').length;
+      const botao = (nome) => [...document.querySelectorAll('button')].find((b) => b.textContent === nome);
+"""
+
+
+def test_sem_ligacao_esconder_mais_de_5_minutos_e_tentar_de_novo_a_barreira_nasce_fechada(tmp_path):
+    r = _corre(_ROTA_COM_SEM_LIGACAO + r"""
+      const s = lib('lib/sessao');
+      const inicio = { semLigacao: !!botao('Tentar de novo'), barreira: s.barreiraFechada() };
+      await act(async () => { esconder(true); });
+      AGORA += 6 * 60 * 1000;
+      await act(async () => { esconder(false); });
+      RESPOSTAS['GET /auth/me'] = [200, %s];
+      await act(async () => { botao('Tentar de novo').click(); });
+      await espera(50);
+      return { inicio, numeros: texto().includes('NUMEROS'), cortina: cortina(), painel: painel() };
+    """ % _EU, tmp_path, dom=True,
+        antes=_SERVIDOR + _ESPERA + _RELOGIO + _SEM_LIGACAO_ESPERADO + _LIGADO + _SESSAO_DA_CAROL
+        + _VOLTOU_AGORA + "RESPOSTAS['GET /auth/me'] = [502, {}]; RESPOSTAS['GET /bolso/painel'] = [200, {}];"
+        + " NB.rosto = 'espera';")
+    # Ao carregar voltou a tempo (aberta); o esconder no «Sem ligação» fechou-a.
+    assert r == {"inicio": {"semLigacao": True, "barreira": False},
+                 "numeros": True, "cortina": True, "painel": 0}
+
+
+def test_a_sessao_de_outra_conta_sai_ao_voltar_mesmo_sem_a_barreira_montada(tmp_path):
+    """Decisão A pelo módulo: a Débora num ecrã sem Barreira (aqui, só o AuthProvider)
+    volta depois de mais de 5 minutos e vai para a senha. O Keychain da Carol fica."""
+    r = _corre(_ESPIAO + r"""
+      const antes = estado().user;
+      await act(async () => { esconder(true); });
+      AGORA += 5 * 60 * 1000 + 1;
+      await act(async () => { esconder(false); });
+      await espera();
+      return { antes, ...estado(), keychain: NB.keychain.length, faceid: localStorage.getItem('faceid_email') };
+    """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _RELOGIO + _LIGADO + _sessao("debora@lisbonb.com")
+        + _VOLTOU_AGORA + "RESPOSTAS['GET /auth/me'] = [200, %s];"
+        % _EU.replace("carol", "debora").replace("Carol", "Débora"))
+    assert r == {"antes": "debora@lisbonb.com", "user": None, "semLigacao": False, "loading": False,
+                 "token": None, "keychain": 1, "faceid": "carol@lisbonb.com"}
+
+
+def test_a_pagina_carregada_em_segundo_plano_nasce_com_a_barreira_fechada(tmp_path):
+    """O Capacitor pode recarregar a WebView com a app escondida: mesmo a tempo (dentro
+    dos 5 minutos), uma página escondida nasce fechada — a miniatura do selector não
+    mostra números. Ao mostrar, a Barreira decide como sempre (a tempo: abre)."""
+    r = _corre("return lib('lib/sessao').barreiraFechada();", tmp_path, dom=True,
+               antes=_RELOGIO + _LIGADO + _SESSAO_DA_CAROL + _VOLTOU_AGORA + "esconder(true);")
+    assert r is True
+
+
 # --- «Usar Face ID» no menu lateral ----------------------------------------------
 
 
