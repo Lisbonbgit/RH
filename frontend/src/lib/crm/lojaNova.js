@@ -29,10 +29,24 @@
 // Adaptações ao portal: a última região é um uuid em texto, guardado em
 // `crm.ultimaRegiao` (era `phc.ultimaRegiao`); as chamadas são as do
 // `lib/crm/api.js` e os erros `ErroCrm`; os caminhos são os do React Router.
+//
+// Com o mapa da Google (plano do mapa Google, G16; adenda §1.1 e §2.1):
+//  - "Adicionar como loja" no mapa abre este ecrã com o negócio no `state` da
+//    navegação ({negocio: {id, lat, lng}}: o identificador do lugar e o ponto
+//    tocado, nada mais). `negocioDoEstado` lê-o com as regras do
+//    `negocioDoToque` do mapa; a página pede ao seletor que ponha lá o pino
+//    (`usarNegocio`: por arrastar até à porta da loja, como qualquer ponto da
+//    Google) e tira o `state`;
+//  - o nome escreve-se à mão: com a localização confirmada de um lugar da
+//    Google (`google_place_id`), a vista traz a dica do nome (`dicaNome`,
+//    `TEXTO_ESCREVA_O_NOME`), que a página põe por baixo do campo "Nome";
+//  - o corpo do POST leva só o bloco da localização (`CAMPOS_LOCALIZACAO`, com
+//    o `google_place_id`), nunca outras chaves que a localização traga.
 import { CAMPOS_LOCALIZACAO } from './diferencas';
 import { RESPOSTA_ABRIR, RESPOSTA_OUTRA, dialogoDuplicado, lojaDuplicada } from './dialogo';
-import { PARAMETRO_LOJA, textoDoErro } from './ecraMapa';
+import { PARAMETRO_LOJA, negocioDoToque, textoDoErro } from './ecraMapa';
 import { eUuid } from './ids';
+import { TEXTO_ESCREVA_O_NOME } from './lugarGoogle';
 import {
   ajustarRegiao,
   comErro,
@@ -68,11 +82,30 @@ export function estadoGuardar({ nome, localizacao, online, aGuardar }) {
   return { ativo: false, texto: TEXTO_GUARDAR, falta };
 }
 
-// O corpo do POST /api/crm/lojas: os campos do formulário e a localização confirmada.
+// O corpo do POST /api/crm/lojas: os campos do formulário e o bloco da localização confirmada (só as chaves
+// do `CAMPOS_LOCALIZACAO` que ela tem; o resto fica de fora).
 export function corpoLojaNova(valores, localizacao, { confirmarDuplicado = false } = {}) {
-  const corpo = { ...valores, ...localizacao };
+  const corpo = { ...valores };
+  for (const campo of CAMPOS_LOCALIZACAO) {
+    if (localizacao && Object.prototype.hasOwnProperty.call(localizacao, campo)) corpo[campo] = localizacao[campo];
+  }
   if (confirmarDuplicado) corpo.confirmar_duplicado = true;
   return corpo;
+}
+
+// O negócio com que a Nova loja abre (o `state` da navegação de "Adicionar como loja": {negocio: {id, lat,
+// lng}}) → {id, lat, lng}, uma cópia só com estas chaves; ou null (sem negócio, um id que não seja texto não
+// vazio, um ponto sem dois números finitos, ou o que não for um objeto). As regras são as do mapa
+// (`negocioDoToque`). Nunca rebenta.
+export function negocioDoEstado(estado) {
+  const negocio = estado?.negocio;
+  return negocioDoToque({ placeId: negocio?.id, lat: negocio?.lat, lng: negocio?.lng });
+}
+
+// A dica do campo "Nome": com a localização confirmada de um lugar da Google, o nome escreve-se à mão.
+function dicaDoNome(localizacao) {
+  const id = localizacao?.google_place_id;
+  return typeof id === 'string' && id.trim() !== '' ? TEXTO_ESCREVA_O_NOME : null;
 }
 
 // A região da última loja guardada (um uuid), ou null. O armazenamento pode faltar ou lançar.
@@ -143,7 +176,9 @@ export function caminhoDaFicha(base, id) {
 //  - seletor: {limparErro, desconfirmar, mostrarErro, focar} do SeletorLocalizacao (pela ref);
 //  - aoMudarVista(vista); aoFocar(campo): o foco deve ir para esse campo do formulário.
 // vista: {valores, erros, opcoesRegiao, valorRegiao, guardar: {ativo, texto, falta}, alerta,
-//         duplicado: null | {loja, mensagem, botoes}} — nova a cada mudança e congelada.
+//         duplicado: null | {loja, mensagem, botoes}, dicaNome: null | texto} — nova a cada mudança e
+//         congelada (`dicaNome`: a dica por baixo do "Nome" quando a localização confirmada é de um lugar da
+//         Google).
 // Criar o ecrã não pede nada: `iniciar()` pede as regiões e ouve a rede; `destruir()` (o ecrã saiu) faz que
 // as respostas que chegarem depois, a rede e as respostas ao diálogo já não façam nada.
 export function criarLojaNova({ api, storage, rede, base, navegar, seletor, aoMudarVista, aoFocar }) {
@@ -171,6 +206,7 @@ export function criarLojaNova({ api, storage, rede, base, navegar, seletor, aoMu
       guardar: Object.freeze(estadoGuardar({ nome: formulario.valores.nome, localizacao, online: online(), aGuardar })),
       alerta,
       duplicado: duplicada === null ? null : Object.freeze({ loja: duplicada, ...dialogoDuplicado(duplicada) }),
+      dicaNome: dicaDoNome(localizacao),
     });
   }
 
@@ -282,7 +318,7 @@ export function criarLojaNova({ api, storage, rede, base, navegar, seletor, aoMu
     sugerirMorada(sugestao) {
       mudarFormulario(sugerirMoradaNoFormulario(formulario, sugestao));
     },
-    // A localização confirmada no seletor ({lat, lng, origem_coords, precisao_m}), ou null.
+    // A localização confirmada no seletor ({lat, lng, origem_coords, precisao_m, google_place_id}), ou null.
     mudarLocalizacao(nova) {
       const valor = nova ?? null;
       if (!ativo || valor === localizacao) return;
