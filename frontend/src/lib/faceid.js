@@ -27,6 +27,9 @@ const CHAVE_EMAIL = 'faceid_email';
 // (arranque com a sessão expirada): um rosto vale este tempo, e não se pede outro.
 export const JANELA_MS = 60 * 1000;
 let verificadoAs = 0;
+// Ao esconder a app (o `fecharBarreira`): os 60 s não passam para quem pega no
+// iPhone a seguir.
+export const esquecerRosto = () => { verificadoAs = 0; };
 
 // Códigos do plugin (BiometricAuthError) que NÃO são a pessoa a recusar: a app
 // a perder o primeiro plano, o sistema a interromper. Não terminam a sessão.

@@ -10,7 +10,7 @@
 // Sem a peça nativa (browser, build 2, app do ponto) nada disto actua.
 import { Capacitor } from '@capacitor/core';
 import {
-  apagar, emailGuardado, faceIdLigado, guardar, ler, pluginPresente, temFaceId, verificar,
+  apagar, emailGuardado, esquecerRosto, faceIdLigado, guardar, ler, pluginPresente, temFaceId, verificar,
 } from './faceid';
 import { rotaDeAterragem } from './resumo';
 
@@ -85,6 +85,8 @@ export function abrirBarreira() {
 // Ao esconder. Sem Face ID ligado PARA ESTA SESSÃO não fecha nada: no browser,
 // esconder o separador fechava a porta e ninguém a voltava a abrir.
 export function fecharBarreira(agora = Date.now()) {
+  // O rosto de há segundos não vale para quem pega no iPhone depois de esconder.
+  esquecerRosto();
   // A sessão de outra conta não leva barreira, mas a hora de saída conta: ao voltar
   // depois de 5 minutos, `outraContaTemDeSair()` manda-a para a senha.
   if (sessaoDeOutraConta()) {

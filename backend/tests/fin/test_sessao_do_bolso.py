@@ -318,6 +318,24 @@ def test_verificar_distingue_recusa_de_interrupcao_e_um_rosto_vale_60_segundos(t
                  "aos59s": True, "aos61s": False}
 
 
+def test_esconder_a_app_esquece_o_rosto_dos_60_segundos(tmp_path):
+    """Os 60 s servem a barreira e a re-entrada logo a seguir, não quem pega no iPhone
+    depois de a app ir para segundo plano: voltar dentro desse minuto pede o rosto."""
+    r = _corre("""
+      const f = lib('lib/faceid');
+      lib('lib/sessao');
+      const passou = await f.verificar();
+      await act(async () => { esconder(true); });
+      AGORA += 10 * 1000;
+      await act(async () => { esconder(false); });
+      NB.rosto = 'cancela';
+      const lido = await f.ler();
+      return { passou, lido, rostos: NB.chamadas.filter((c) => c.startsWith('verifyIdentity')).length,
+               keychain: NB.chamadas.includes('getCredentials') };
+    """, tmp_path, dom=True, antes=_RELOGIO + _LIGADO + _SESSAO_DA_CAROL)
+    assert r == {"passou": True, "lido": None, "rostos": 2, "keychain": False}
+
+
 def test_com_o_relogio_a_recuar_o_rosto_pede_se_outra_vez(tmp_path):
     """Acerto da hora (ou mudança à mão para trás): a diferença fica negativa,
     menor que 60 s, e o rosto antigo passava a valer até o relógio o alcançar."""
