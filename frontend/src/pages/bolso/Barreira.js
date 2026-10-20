@@ -33,7 +33,7 @@ export default function Barreira({ children }) {
   const { logout } = useAuth();
   const [fechada, setFechada] = useState(barreiraFechada);
 
-  const abrir = useCallback(() => { abrirBarreira(); setFechada(false); }, []);
+  const abrir = useCallback(() => { abrirBarreira(); setFechada(barreiraFechada()); }, []);
   const entrar = useCallback(async () => {
     const r = await verificar();
     if (r === true) abrir();

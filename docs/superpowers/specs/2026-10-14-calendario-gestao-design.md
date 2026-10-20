@@ -373,7 +373,7 @@ Face ID no Keychain só existe na série 8 do plugin, que exige Capacitor 8.
    senha onde a dona do Face ID teria a barreira: ao abrir a app e ao voltar depois de mais de 5
    minutos (decisão A, 2026-10-17). O rosto de uma pessoa nunca abre a conta de outra.
 
-**Riscos aceites (revisão final da Fase 3, 2026-10-20 — o controlador leva-o ao dono).** Os 5
+**Riscos aceites (revisão final da Fase 3; aceite pelo dono a 2026-10-20).** Os 5
 minutos contam-se com o relógio do iPhone (`saiuAs` e `Date.now()`, os dois do aparelho): quem
 tem o iPhone desbloqueado na mão e muda a hora para trás, para dentro dos 5 minutos depois de
 `saiuAs`, abre a app sem rosto. O desenho não muda por isto: esse alguém já tem o iPhone

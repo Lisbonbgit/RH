@@ -77,7 +77,11 @@ let aEspera = [];
 
 export const barreiraFechada = () => fechada;
 
+// Escondida não abre: um login de re-entrada (ou um rosto) que acaba depois de a app
+// ir para segundo plano deixava passar os pedidos por baixo da cortina. Ao voltar
+// decide-se como em qualquer regresso.
 export function abrirBarreira() {
+  if (escondida()) return;
   fechada = false;
   aEspera.splice(0).forEach((soltar) => soltar());
 }

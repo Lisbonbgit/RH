@@ -176,7 +176,7 @@ const ChangePasswordRoute = ({ children }) => {
   
   // If user doesn't need to change password, redirect to appropriate dashboard
   if (!mustChangePassword) {
-    return <Navigate to={['admin', 'gerente', 'contabilista'].includes(user.role) ? '/admin' : '/colaborador'} replace />;
+    return <Navigate to={aterragem(user.role)} replace />;
   }
   
   return children;

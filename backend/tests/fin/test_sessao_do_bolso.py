@@ -337,6 +337,23 @@ def test_esconder_a_app_esquece_o_rosto_dos_60_segundos(tmp_path):
     assert r == {"passou": True, "lido": None, "rostos": 2, "keychain": False}
 
 
+def test_com_a_app_escondida_a_barreira_nao_abre(tmp_path):
+    """Um login de re-entrada (ou um rosto) que só acaba DEPOIS de a app ir para segundo
+    plano não reabre a barreira por baixo da cortina: os pedidos à espera continuam à
+    espera e, ao voltar, decide-se como em qualquer regresso (5 minutos, senão o rosto)."""
+    r = _corre("""
+      const s = lib('lib/sessao');
+      s.abrirBarreira();
+      await act(async () => { esconder(true); });
+      s.abrirBarreira();
+      const escondida = s.barreiraFechada();
+      await act(async () => { esconder(false); });
+      s.abrirBarreira();
+      return { escondida, visivel: s.barreiraFechada() };
+    """, tmp_path, dom=True, antes=_RELOGIO + _LIGADO + _SESSAO_DA_CAROL)
+    assert r == {"escondida": True, "visivel": False}
+
+
 def test_com_o_relogio_a_recuar_o_rosto_pede_se_outra_vez(tmp_path):
     """Acerto da hora (ou mudança à mão para trás): a diferença fica negativa,
     menor que 60 s, e o rosto antigo passava a valer até o relógio o alcançar."""
@@ -1744,6 +1761,11 @@ def test_o_role_redirect_e_a_rota_do_bolso_usam_a_aterragem_e_os_papeis_do_bolso
     redirect = app[app.index("const RoleRedirect = "):]
     redirect = redirect[:redirect.index("\n};\n")]
     assert "<Navigate to={aterragem(user.role)} replace />" in redirect
+    # A senha provisória mudada pelo ChangePasswordRoute também aterra pela `aterragem`
+    # (antes montava o /admin, fora da Barreira, até o navigate do ecrã levar ao /bolso).
+    troca = app[app.index("const ChangePasswordRoute = "):]
+    troca = troca[:troca.index("\n};\n")]
+    assert "<Navigate to={aterragem(user.role)} replace />" in troca
     rota = app[app.index("const RotaDoBolso"):]
     rota = rota[:rota.index(");")]
     assert "allowedRoles={PAPEIS_DO_BOLSO}" in rota
