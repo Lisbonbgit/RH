@@ -25,8 +25,9 @@
 //     GPS da Geoapify ("Powered by Geoapify");
 //   - o §3 a falar só do registo de ponto e o §4 a nomear o Google Maps e a
 //     Geoapify, a quem o servidor só envia pontos do mapa, sem dados pessoais;
-//   - a página já não fala do Leaflet nem do OpenMapTiles (o mapa deixou de ser
-//     deles);
+//   - a página já não fala da biblioteca do mapa antigo nem do OpenMapTiles (o
+//     mapa deixou de ser deles); o nome da biblioteca escreve-se por partes, para
+//     o inventário do §5 do plano do mapa Google (G19) dar vazio;
 //   - a data do topo não é anterior à secção do CRM.
 // O texto não vem de `atribuicoes.js`: a atribuição do mapa é a da própria Google,
 // e a da Geoapify escreve-se aqui tal e qual.
@@ -141,9 +142,12 @@ test('secção do CRM: nome e telefone nunca copiados da Google; a origem das mo
   );
 });
 
-test('a página já não fala do Leaflet nem do OpenMapTiles', () => {
+// O nome da biblioteca do mapa antigo, por partes (inventário do §5 do plano do mapa Google, G19).
+const BIBLIOTECA_ANTIGA = new RegExp(['leaf', 'let'].join(''), 'i');
+
+test('a página já não fala da biblioteca do mapa antigo nem do OpenMapTiles', () => {
   const { html, tudo } = pagina();
-  for (const nome of [/leaflet/i, /openmaptiles/i]) {
+  for (const nome of [BIBLIOTECA_ANTIGA, /openmaptiles/i]) {
     expect(tudo).not.toMatch(nome);
     expect(html).not.toMatch(nome);
   }

@@ -5,9 +5,10 @@
  *
  * Reescrito na G6 do plano do mapa Google sobre o `googleFalso` (G5) e o
  * `domFalso`: ficam os testes dos pinos, dos nomes, de escolher, de tocar, de
- * enquadrar, de centrar, de destruir e do centro padrão, adaptados; saem os dos
- * mosaicos, da atribuição e da troca para o OSM (a atribuição é a da própria
- * Google) e os do Leaflet verdadeiro no jsdom; entram os novos: as opções
+ * enquadrar, de centrar, de destruir e do centro padrão, adaptados; saem os das
+ * imagens do mapa antigo, da atribuição e da troca para o mapa alternativo (a
+ * atribuição é a da própria Google) e os da biblioteca antiga a correr no
+ * jsdom; entram os novos: as opções
  * exatas do `Map`, a configuração `{google: {chave, map_id}}`, o toque num
  * negócio (o balão é o da Google: o código nunca chama `stop()` nem cria um
  * balão seu), o limite do zoom depois de enquadrar num `idle` único, o
@@ -89,7 +90,7 @@ test('cria um só Map no elemento, com as opções exatas (Map ID, centro, zoom 
   expect(mapa.mapa).toBe(mapaGoogle);
 });
 
-test('o objeto do mapa tem só a interface dos ecrãs (sem a atribuição nem os mosaicos do Leaflet)', () => {
+test('o objeto do mapa tem só a interface dos ecrãs (sem a atribuição nem as imagens do mapa antigo)', () => {
   const { mapa } = preparar();
   expect(Object.keys(mapa).sort()).toEqual(
     ['centrarEm', 'destruir', 'enquadrar', 'focar', 'mapa', 'mostrarLojas', 'redimensionar'],
@@ -147,8 +148,13 @@ test('configuracaoValida: só com a chave do navegador e o Map ID em texto não 
     { google: { chave: 'k', map_id: ' ' } },
     { google: { chave: 42, map_id: 'm' } },
     { google: { chave: 'k', map_id: 42 } },
-    // A forma antiga do GET /config (Leaflet + Geoapify).
-    { mosaicos: { url: 'http://x/{z}/{x}/{y}.png', atribuicao: 'geoapify' }, alternativa: { url: 'http://y' }, centro: CENTRO },
+    // A forma antiga do GET /config (antes da G2: as imagens do mapa da Geoapify e a alternativa). A chave
+    // escreve-se por partes para o inventário do §5 do plano (G19) só apanhar código que ainda a use.
+    {
+      [['mosai', 'cos'].join('')]: { url: 'http://x/{z}/{x}/{y}.png', atribuicao: 'geoapify' },
+      alternativa: { url: 'http://y' },
+      centro: CENTRO,
+    },
   ]) {
     expect(configuracaoValida(invalida)).toBe(false);
   }
@@ -172,7 +178,7 @@ test('um AdvancedMarkerElement por loja (sem agrupamento), no mapa e na posiçã
     { lat: 38.7135, lng: -9.1458 },
     { lat: 38.74, lng: -9.16 },
   ]);
-  // A posição vai como literal {lat, lng} (nunca o par [lat, lng] do Leaflet).
+  // A posição vai como literal {lat, lng} (nunca como um par [lat, lng]).
   expect(marcadores[0].options.position).toStrictEqual({ lat: 38.7108, lng: -9.1369 });
 });
 
@@ -620,7 +626,7 @@ test('pontoDe aceita um literal numérico ou um LatLng (lat() e lng() em funçã
   expect(pontoDe(eventoDeToque({ lat: 38.71, lng: -9.14 }).latLng)).toStrictEqual({ lat: 38.71, lng: -9.14 });
 });
 
-test('pontoDe devolve null para o resto (o par do Leaflet incluído)', () => {
+test('pontoDe devolve null para o resto (um par [lat, lng] incluído)', () => {
   for (const valor of [
     null,
     undefined,

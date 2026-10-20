@@ -17,10 +17,20 @@
 //    loja do cartão é a do resumo do `GET /lojas` (a que o pino tem), por isso
 //    o resumo traz os dois campos (`CAMPOS_RESUMO` em `backend/crm/formatar.py`;
 //    o `ecraMapa.test.js` confere-o).
+// Com o mapa da Google (plano do mapa Google, G15; adenda §1.1 e §6.3):
+//  - o negócio tocado no mapa (o ícone dele): só o identificador do lugar e o
+//    ponto tocado, nada mais (`negocioDoToque`). Os dados do negócio estão no
+//    balão da própria Google; o painel "Negócio selecionado" não os mostra;
+//  - "Adicionar como loja" leva à Nova loja com o negócio no `state` da
+//    navegação (`destinoNovaLojaDoNegocio`). O mapa não pede nada à Google: a
+//    posição do lugar pede-se na Nova loja, quando o seletor está pronto;
+//  - sem mapa, a mensagem distingue o servidor sem a chave Google ("Mapa não
+//    configurado…") do mapa que não carregou (`configuracaoDoMapa`,
+//    `mensagemSemMapa`).
 
 import { MENSAGEM_ERRO_INESPERADO } from './api';
 import { aplicarFiltros } from './filtros';
-import { ZOOM_LOJA } from './mapa';
+import { MENSAGEM_MAPA_NAO_CONFIGURADO, MENSAGEM_SEM_MAPA, ZOOM_LOJA, configuracaoValida } from './mapa';
 
 // A loja a centrar no mapa: `…/mapa?loja=<id>`.
 export const PARAMETRO_LOJA = 'loja';
@@ -78,4 +88,49 @@ export function textoAviso(aviso, loja, filtros) {
   if (typeof aviso !== 'string' || aviso === '') return null;
   const escondida = temCoordenadas(loja) && aplicarFiltros([loja], filtros).length === 0;
   return escondida ? `${aviso} — ${TEXTO_ESCONDIDA_PELOS_FILTROS}` : aviso;
+}
+
+// --- O mapa da Google ---------------------------------------------------------------------------------
+
+const eObjeto = (valor) => valor !== null && typeof valor === 'object' && !Array.isArray(valor);
+// Um identificador de lugar só serve se for um texto não vazio (a Google não documenta o formato).
+const eIdDeLugar = (valor) => typeof valor === 'string' && valor.trim() !== '';
+
+// {id, lat, lng} só com estas chaves (uma cópia), ou null se o id não for texto não vazio ou o ponto não
+// tiver dois números finitos.
+function negocioValido(id, lat, lng) {
+  return eIdDeLugar(id) && numero(lat) && numero(lng) ? { id, lat, lng } : null;
+}
+
+// O negócio de um toque no ícone dele (o `aoTocarNumLugar({placeId, lat, lng})` do mapa) → {id, lat, lng},
+// ou null (sem identificador em texto, sem ponto, ou o que não for um toque). Nunca rebenta.
+export function negocioDoToque(toque) {
+  if (!eObjeto(toque)) return null;
+  return negocioValido(toque.placeId, toque.lat, toque.lng);
+}
+
+// "Adicionar como loja": a Nova loja (`<base>/lojas/nova`) com o negócio no `state` da navegação,
+// {negocio: {id, lat, lng}} e nada mais. Sem um negócio válido, a Nova loja abre vazia (estado null).
+export function destinoNovaLojaDoNegocio(base, negocio) {
+  const valido = eObjeto(negocio) ? negocioValido(negocio.id, negocio.lat, negocio.lng) : null;
+  return { caminho: `${base}/lojas/nova`, estado: valido === null ? null : { negocio: valido } };
+}
+
+// A configuração do GET /api/crm/config (null enquanto não chega, ou se o pedido falhou):
+//  - 'a_chegar': ainda não há configuração;
+//  - 'nao_configurado': o servidor não tem a chave do navegador ou o Map ID (google: null);
+//  - 'ok': a chave e o Map ID em texto (o mapa pode carregar);
+//  - 'invalida': qualquer outra forma (o mapa não carrega).
+export function configuracaoDoMapa(configuracao) {
+  if (configuracao === null || configuracao === undefined) return 'a_chegar';
+  if (configuracao.google === null) return 'nao_configurado';
+  return configuracaoValida(configuracao) ? 'ok' : 'invalida';
+}
+
+// A mensagem no lugar do mapa: "Mapa não configurado…" sem a chave no servidor; "Não foi possível carregar
+// o mapa…" com uma configuração inválida ou se a Google falhou (`falhou`); null com o mapa (ou à espera).
+export function mensagemSemMapa({ estado, falhou = false } = {}) {
+  if (estado === 'nao_configurado') return MENSAGEM_MAPA_NAO_CONFIGURADO;
+  if (estado === 'invalida' || falhou) return MENSAGEM_SEM_MAPA;
+  return null;
 }

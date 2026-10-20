@@ -7,8 +7,8 @@
 //  - Regiões (`DefinicoesRegioes.js`, T2.30): adicionar, mudar o nome,
 //    subir/descer e apagar;
 //  - Fábrica (`DefinicoesFabrica.js`, T2.30): a morada e o ponto no mapa. É a
-//    única com o mapa (o Leaflet), por isso carrega-se à parte, só quando se
-//    abre o separador.
+//    única com o mapa (o Google Maps), por isso carrega-se à parte, só quando
+//    se abre o separador.
 // Só o separador aberto existe na página: voltar a um separador pede outra
 // vez o que ele mostra.
 import React, { Suspense, lazy } from 'react';

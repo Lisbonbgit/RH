@@ -12,7 +12,10 @@
 // muda vai para `aoMudar(campo, valor)` (a região já como uuid ou null), a
 // fase também para `aoMudarFase(fase)` (a ficha grava-a logo) e os dias para
 // `aoAlternarDia(dia, marcado)`. Pela `ref`, `focar(campo)` (o primeiro campo
-// com erro de um 422).
+// com erro de um 422). `dicas` ({campo: texto}, só nos campos de texto) põe uma
+// dica por baixo do campo, ligada a ele por `aria-describedby` antes do erro
+// (a nova loja que vem de um negócio da Google: a dica do nome, plano do mapa
+// Google, G16).
 //
 // Os dados entram como texto (o React escapa-os). Os campos não aceitam o
 // preenchimento automático do browser: são os dados da loja, não os de quem
@@ -50,11 +53,13 @@ function janelasDoHorario() {
 }
 
 const FormularioLoja = forwardRef(function FormularioLoja({
-  valores, erros = {}, opcoesRegiao, valorRegiao, ficha = false, desativado = false, aoMudar, aoMudarFase, aoAlternarDia,
+  valores, erros = {}, opcoesRegiao, valorRegiao, ficha = false, desativado = false, dicas = {}, aoMudar, aoMudarFase,
+  aoAlternarDia,
 }, ref) {
   const base = useId();
   const id = (campo) => `${base}-${campo.replace(/_/g, '-')}`;
   const idErro = (campo) => `${id(campo)}-erro`;
+  const idDica = (campo) => `${id(campo)}-dica`;
   const nos = useRef({});
   const guardarNo = (campo) => (no) => {
     nos.current[campo] = no;
@@ -80,8 +85,19 @@ const FormularioLoja = forwardRef(function FormularioLoja({
     ? <p id={idErro(campo)} className={CLASSE_ERRO} data-testid={`crm-erro-${campo}`}>{erros[campo]}</p>
     : null);
 
+  // A dica de um campo de texto (em texto, não vazia), ou null.
+  const dica = (campo) => {
+    const texto = dicas?.[campo];
+    return typeof texto === 'string' && texto !== '' ? texto : null;
+  };
+
   function campoTexto(campo) {
     const def = CAMPOS[campo];
+    const textoDica = dica(campo);
+    // O leitor de ecrã lê a dica e depois o erro, se houver.
+    const descricao = [textoDica !== null ? idDica(campo) : null, erros[campo] ? idErro(campo) : null]
+      .filter((valor) => valor !== null)
+      .join(' ');
     const comuns = {
       id: id(campo),
       name: campo,
@@ -93,6 +109,7 @@ const FormularioLoja = forwardRef(function FormularioLoja({
       disabled: desativado,
       'data-testid': `crm-campo-${campo}`,
       ...comErro(campo),
+      'aria-describedby': descricao === '' ? undefined : descricao,
     };
     return (
       <div key={campo} className="space-y-1.5">
@@ -112,6 +129,11 @@ const FormularioLoja = forwardRef(function FormularioLoja({
               {...comuns}
             />
           )}
+        {textoDica !== null && (
+          <p id={idDica(campo)} className="text-sm text-muted-foreground [overflow-wrap:anywhere]" data-testid={`crm-dica-${campo}`}>
+            {textoDica}
+          </p>
+        )}
         {erro(campo)}
       </div>
     );

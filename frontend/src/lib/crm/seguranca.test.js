@@ -501,12 +501,12 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
   for (const relativo of [
     'lib/crm/mapa.js',
     'lib/crm/carregadorGoogle.js',
+    'lib/crm/lugarGoogle.js',
     'lib/crm/dom.js',
     'lib/crm/atribuicoes.js',
     'lib/crm/api.js',
     'lib/crm/ecraMapa.js',
     'lib/crm/seletor.js',
-    'lib/crm/pesquisaMorada.js',
     'lib/crm/lojaNova.js',
     'lib/crm/formularioLoja.js',
     'lib/crm/dialogo.js',
@@ -517,10 +517,12 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
     'components/crm/GuardaCrm.js',
     'components/crm/seccaoCrm.js',
     'components/crm/MapaLojas.js',
+    'components/crm/NegocioSelecionado.js',
     'components/crm/FiltrosMapa.js',
     'components/crm/CartaoLoja.js',
     'components/crm/SeletorLocalizacao.js',
-    'components/crm/PesquisaMorada.js',
+    'components/crm/PesquisaLugar.js',
+    'components/crm/Partes.js',
     'components/crm/FormularioLoja.js',
     'components/crm/DialogoDuplicado.js',
     'pages/crm/CrmMapa.js',
@@ -540,11 +542,11 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
     'lib/crm/dom.test.js',
     'lib/crm/mapa.test.js',
     'lib/crm/carregadorGoogle.test.js',
+    'lib/crm/lugarGoogle.test.js',
     'lib/crm/atribuicoes.test.js',
     'lib/crm/css.test.js',
     'lib/crm/ecraMapa.test.js',
     'lib/crm/seletor.test.js',
-    'lib/crm/pesquisaMorada.test.js',
     'lib/crm/lojaNova.test.js',
     'lib/crm/formularioLoja.test.js',
     'lib/crm/dialogo.test.js',
@@ -600,4 +602,26 @@ test('o carregadorGoogle.js verdadeiro só passa por ser um módulo do Google', 
   const numComponente = regras(texto, COMPONENTE);
   expect(numComponente).toContain('google.maps fora dos módulos do Google');
   expect(numComponente).toContain('importLibrary fora dos módulos do Google');
+});
+
+test('o lugarGoogle.js verdadeiro só passa por ser o lugarGoogle.js', () => {
+  const texto = fs.readFileSync(path.join(SRC, 'lib/crm/lugarGoogle.js'), 'utf8');
+  expect(regras(texto, 'lib/crm/lugarGoogle.js')).toEqual([]);
+  // Num componente: o google.maps e todo o lugar da Google.
+  const numComponente = new Set(regras(texto, COMPONENTE));
+  expect(numComponente).toContain('google.maps fora dos módulos do Google');
+  for (const nome of ['fetchFields', 'formattedAddress', 'addressComponents', 'toPlace', 'Place', 'PlaceAutocompleteElement']) {
+    expect(numComponente).toContain(`${nome} fora do lugarGoogle.js`);
+  }
+  // No mapa.js e no seletor.js (o google.maps é deles também): só o lugar da Google.
+  for (const ficheiro of ['lib/crm/mapa.js', 'lib/crm/seletor.js']) {
+    expect([...new Set(regras(texto, ficheiro))].sort()).toEqual([
+      'Place fora do lugarGoogle.js',
+      'PlaceAutocompleteElement fora do lugarGoogle.js',
+      'addressComponents fora do lugarGoogle.js',
+      'fetchFields fora do lugarGoogle.js',
+      'formattedAddress fora do lugarGoogle.js',
+      'toPlace fora do lugarGoogle.js',
+    ]);
+  }
 });

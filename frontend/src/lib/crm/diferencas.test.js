@@ -11,6 +11,11 @@
  * Os três últimos testes são extra: acrescentar um dia fechado (que o
  * autónomo não fixava) e a forma do portal, com ids uuid em texto
  * e as janelas planas da API (`janela1_inicio`…, plano §1 "Janelas").
+ *
+ * Mapa Google (plano G9): o `google_place_id` entrou no bloco da localização
+ * (como no `_LOCALIZACAO` do servidor). Os testes portados levam-no a null no
+ * bloco (a loja do exemplo não o tem); os do fim fixam que mudar só ele manda
+ * o bloco inteiro e que limpá-lo (`''`) vai como null.
  */
 import { camposAlterados, CAMPOS_LOCALIZACAO } from './diferencas';
 
@@ -57,7 +62,7 @@ test('limpar um campo do formulário envia null (o "sem valor" da API), não str
 test('localização: precisão vazia no formulário vai como null no bloco', () => {
   expect(
     camposAlterados(original, { ...original, lat: 38.708, origem_coords: 'pin_manual', precisao_m: '' }),
-  ).toEqual({ lat: 38.708, lng: -9.1364, origem_coords: 'pin_manual', precisao_m: null });
+  ).toEqual({ lat: 38.708, lng: -9.1364, origem_coords: 'pin_manual', precisao_m: null, google_place_id: null });
 });
 
 test('chaves que o formulário não traz são ignoradas', () => {
@@ -65,12 +70,13 @@ test('chaves que o formulário não traz são ignoradas', () => {
   expect(camposAlterados(original, { ...semMeta, nome: 'X' })).toEqual({ nome: 'X' });
 });
 
-test('localização é um bloco: mudar só lat envia lat, lng, origem_coords e precisao_m', () => {
+test('localização é um bloco: mudar só lat envia lat, lng, origem_coords, precisao_m e google_place_id', () => {
   expect(camposAlterados(original, { ...original, lat: 38.7080 })).toEqual({
     lat: 38.7080,
     lng: -9.1364,
     origem_coords: 'gps',
     precisao_m: 12,
+    google_place_id: null,
   });
 });
 
@@ -80,6 +86,7 @@ test('localização: mudar só a origem também envia o bloco inteiro', () => {
     lng: -9.1364,
     origem_coords: 'pin_manual',
     precisao_m: null,
+    google_place_id: null,
   });
 });
 
@@ -90,11 +97,13 @@ test('localização: bloco incompleto no atual completa-se com o original', () =
     lng: -9.1370,
     origem_coords: 'gps',
     precisao_m: 12,
+    google_place_id: null,
   });
 });
 
 test('CAMPOS_LOCALIZACAO lista o bloco', () => {
-  expect(CAMPOS_LOCALIZACAO).toEqual(['lat', 'lng', 'origem_coords', 'precisao_m']);
+  expect(CAMPOS_LOCALIZACAO).toEqual(['lat', 'lng', 'origem_coords', 'precisao_m', 'google_place_id']);
+  expect(Object.isFrozen(CAMPOS_LOCALIZACAO)).toBe(true);
 });
 
 test('dias_fechada compara-se por valor, não por referência', () => {
@@ -161,4 +170,63 @@ test('portal: o instagram e o site (2026-10-13) são textos simples, como o tele
   expect(camposAlterados(loja, { ...loja, instagram: '' })).toEqual({ instagram: null });
   expect(camposAlterados(loja, { ...loja, site: '' })).toEqual({});
   expect(camposAlterados({ ...loja, instagram: null }, { ...loja, instagram: '@cafe.central' })).toEqual({ instagram: '@cafe.central' });
+});
+
+// --- Mapa Google (plano G9): o google_place_id no bloco da localização --------------------------
+
+const doGoogle = { ...original, origem_coords: 'pin_manual', precisao_m: null, google_place_id: 'ChIJa1b2c3' };
+
+test('google_place_id: mudar só ele manda o bloco inteiro', () => {
+  expect(camposAlterados(original, { ...original, google_place_id: 'ChIJa1b2c3' })).toStrictEqual({
+    lat: 38.7075,
+    lng: -9.1364,
+    origem_coords: 'gps',
+    precisao_m: 12,
+    google_place_id: 'ChIJa1b2c3',
+  });
+  expect(camposAlterados(doGoogle, { ...doGoogle, google_place_id: 'ChIJoutro' })).toStrictEqual({
+    lat: 38.7075,
+    lng: -9.1364,
+    origem_coords: 'pin_manual',
+    precisao_m: null,
+    google_place_id: 'ChIJoutro',
+  });
+});
+
+test("google_place_id: limpar ('' ou null) vai como null, no bloco", () => {
+  for (const vazio of ['', null]) {
+    expect(camposAlterados(doGoogle, { ...doGoogle, google_place_id: vazio })).toStrictEqual({
+      lat: 38.7075,
+      lng: -9.1364,
+      origem_coords: 'pin_manual',
+      precisao_m: null,
+      google_place_id: null,
+    });
+  }
+});
+
+test('google_place_id: igual, ou vazio dos dois lados, não é alteração', () => {
+  expect(camposAlterados(doGoogle, { ...doGoogle })).toEqual({});
+  expect(camposAlterados({ ...original, google_place_id: null }, { ...original, google_place_id: '' })).toEqual({});
+});
+
+test('google_place_id: a localização muda sem ele no formulário → o bloco leva o guardado', () => {
+  const { google_place_id, ...semId } = doGoogle;
+  expect(camposAlterados(doGoogle, { ...semId, lat: 38.708 })).toStrictEqual({
+    lat: 38.708,
+    lng: -9.1364,
+    origem_coords: 'pin_manual',
+    precisao_m: null,
+    google_place_id: 'ChIJa1b2c3',
+  });
+});
+
+test('google_place_id: um pino posto à mão por cima do da Google limpa-o, no mesmo bloco', () => {
+  expect(camposAlterados(doGoogle, { ...doGoogle, lat: 38.708, google_place_id: null })).toStrictEqual({
+    lat: 38.708,
+    lng: -9.1364,
+    origem_coords: 'pin_manual',
+    precisao_m: null,
+    google_place_id: null,
+  });
 });

@@ -43,7 +43,7 @@ LIDAS_PELO_CRM = {
     "CRON_KEY",  # crm.auth.exigir_cron_key (já existia, partilhada com o Financeiro)
     config_mapa.VARIAVEL_CHAVE,  # chave do navegador da Google (vai ao browser)
     config_mapa.VARIAVEL_MAP_ID,  # Map ID da Google (vai ao browser, com a chave)
-    geoapify.VARIAVEL_CHAVE_SERVIDOR,  # chave da pesquisa de morada (só no servidor)
+    geoapify.VARIAVEL_CHAVE_SERVIDOR,  # chave da morada sugerida do GPS (só no servidor)
     geoapify.VARIAVEL_URL,  # opcional: por omissão https://api.geoapify.com
     ors.VARIAVEL_CHAVE,  # chave do openrouteservice (só no servidor, no cabeçalho Authorization)
     ors.VARIAVEL_URL,  # opcional: por omissão https://api.openrouteservice.org (ou o simulador local)

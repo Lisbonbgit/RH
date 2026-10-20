@@ -7,7 +7,7 @@
 // React Router só aceita `<Route>` e fragmentos como filhos.
 //
 // As páginas carregam-se à parte (`React.lazy`): o que vier a pesar (o
-// Leaflet, na F2) não entra no ficheiro principal do portal. Os caminhos
+// Google Maps) não entra no ficheiro principal do portal. Os caminhos
 // batem com `ITENS_MENU_CRM` (`lib/crm/acesso.js`): `mapa`, `lojas/nova`,
 // `definicoes`.
 import React, { Suspense, lazy } from 'react';
