@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Capacitor } from '@capacitor/core';
 import { useAuth } from '../contexts/AuthContext';
-import { rotaDeAterragem } from '../lib/resumo';
+import { aterragem } from '../lib/sessao';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -63,7 +62,7 @@ export default function ChangePasswordPage() {
       // por isso o PRIMEIRO login deles passa obrigatoriamente por aqui: sem
       // isto nenhum aterrava no Resumo, e um gerente ou contabilista levava
       // ainda o ressalto visível /colaborador -> /admin.
-      navigate(rotaDeAterragem({ nativo: Capacitor.isNativePlatform(), papel: user.role }));
+      navigate(aterragem(user.role));
     } catch (error) {
       const message = error.response?.data?.detail || 'Erro ao alterar palavra-passe';
       toast.error(message);

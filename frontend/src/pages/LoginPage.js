@@ -1,9 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
-import { Capacitor } from '@capacitor/core';
 import { useAuth } from '../contexts/AuthContext';
-import { rotaDeAterragem } from '../lib/resumo';
-import { depoisDoLoginComSenha, ligarFaceId, recusar } from '../lib/sessao';
+import { aterragem, depoisDoLoginComSenha, ligarFaceId, recusar } from '../lib/sessao';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -38,12 +36,10 @@ export default function LoginPage() {
   // Sem isto, quem abre a app "Gestão Lisbonb" — que arranca em `/bolso` —
   // fazia login e era despejado no `/admin/resumo`: o portal de gestão
   // inteiro, num ecrã de telemóvel. Nunca chegava a ver o painel que foi lá
-  // ver. `rotaDeAterragem` continua a decidir quando NÃO há sítio de onde se
+  // ver. `aterragem` decide quando NÃO há sítio de onde se
   // veio (uma entrada directa em /login, que é o caso do browser).
   const location = useLocation();
-  const paraOndeVoltar = (papel) =>
-    location.state?.from
-    || rotaDeAterragem({ nativo: Capacitor.isNativePlatform(), papel });
+  const paraOndeVoltar = (papel) => location.state?.from || aterragem(papel);
   const { login, isAuthenticated, user } = useAuth();
   const [loading, setLoading] = useState(false);
 

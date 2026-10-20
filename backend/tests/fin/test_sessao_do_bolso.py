@@ -1109,7 +1109,90 @@ def test_com_senha_provisoria_nao_pergunta(tmp_path):
     assert r == {"pergunta": False, "saiu": True, "chamadas": []}
 
 
-# --- A Barreira (pages/bolso/Barreira.js) -----------------------------------------
+# --- Para onde se vai sem `state.from`: na casca, o /bolso (dentro da Barreira) ----
+#
+# Chega-se ao login sem `state.from` pelo «Esqueci a palavra-passe» (o Link perde-o),
+# pelo catch-all e pela senha provisória. O `/admin/resumo` não tem Barreira, não fecha
+# ao esconder e não tem link para o /bolso.
+
+_ROTAS_DE_ATERRAGEM = (
+    "el(Route, { path: '/bolso', element: el('p', null, 'BOLSO') }),"
+    " el(Route, { path: '/admin/resumo', element: el('p', null, 'RESUMO') }),"
+    " el(Route, { path: '/admin', element: el('p', null, 'ADMIN') }),"
+    " el(Route, { path: '/colaborador', element: el('p', null, 'COLABORADOR') }),"
+)
+_LOGIN_SEM_FROM = _LOGIN.replace(
+    "[{ pathname: '/login', state: { from: '/bolso/calendario' } }]", "['/login']"
+).replace("el(Route, { path: '/bolso/calendario', element: el('p', null, 'CALENDARIO') })",
+          _ROTAS_DE_ATERRAGEM.rstrip(","))
+assert _LOGIN_SEM_FROM.count("'BOLSO'") == 1 and "state: { from" not in _LOGIN_SEM_FROM
+
+
+def _onde_aterrou():
+    return "['BOLSO', 'RESUMO', 'ADMIN', 'COLABORADOR'].filter((s) => texto().includes(s))"
+
+
+@pytest.mark.parametrize("presente,destino", [(True, "BOLSO"), (False, "ADMIN")],
+                         ids=["casca-com-a-peca", "browser"])
+def test_o_login_sem_de_onde_veio_aterra_no_bolso_so_na_casca(tmp_path, presente, destino):
+    r = _corre(_LOGIN_SEM_FROM + "return %s;" % _onde_aterrou(), tmp_path, dom=True,
+               antes=_SERVIDOR + _ESPERA + _LOGIN_OK
+               + "localStorage.setItem('faceid_recusado:carol@lisbonb.com', '1');"
+               + ("" if presente else "NB.presente = false;"))
+    assert r == [destino]
+
+
+@pytest.mark.parametrize("presente,destino", [(True, "BOLSO"), (False, "ADMIN")],
+                         ids=["casca-com-a-peca", "browser"])
+def test_a_senha_provisoria_trocada_aterra_no_bolso_so_na_casca(tmp_path, presente, destino):
+    r = _corre(r"""
+      const { AuthProvider } = lib('contexts/AuthContext');
+      const ChangePasswordPage = lib('pages/ChangePasswordPage').default;
+      const { MemoryRouter, Routes, Route } = require('react-router-dom');
+      const raiz = createRoot(document.getElementById('raiz'));
+      const el = React.createElement;
+      await act(async () => {
+        raiz.render(el(AuthProvider, null,
+          el(MemoryRouter, { initialEntries: ['/alterar-senha'] },
+            el(Routes, null,
+              el(Route, { path: '/alterar-senha', element: el(ChangePasswordPage) }),
+              %s))));
+      });
+      await espera(50);
+      const escrever = (id, valor) => {
+        const campo = document.getElementById(id);
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(campo, valor);
+        campo.dispatchEvent(new window.Event('input', { bubbles: true }));
+      };
+      await act(async () => {
+        escrever('current-password', 'provisoria1');
+        escrever('new-password', 'senha-nova-1');
+        escrever('confirm-password', 'senha-nova-1');
+      });
+      await act(async () => { document.querySelector('[data-testid=change-password-btn]').click(); });
+      await espera(50);
+      return %s;
+    """ % (_ROTAS_DE_ATERRAGEM.rstrip(","), _onde_aterrou()), tmp_path, dom=True,
+        antes=_SERVIDOR + _ESPERA + r"""
+      localStorage.setItem('token', 't');
+      RESPOSTAS['GET /auth/me'] = [200, %s];
+      RESPOSTAS['POST /auth/change-password'] = [200, { token: 'novo' }];
+    """ % _EU_PROVISORIA + ("" if presente else "NB.presente = false;"))
+    assert r == [destino]
+
+
+@pytest.mark.parametrize("presente,papel,destino", [
+    (True, "admin", "/bolso"), (True, "gerente", "/bolso"), (True, "contabilista", "/bolso"),
+    (True, "colaborador", "/colaborador"),           # o ponto não é o bolso
+    (False, "gerente", "/admin"), (False, "colaborador", "/colaborador"),
+])
+def test_a_aterragem_so_e_o_bolso_na_casca_e_para_os_papeis_do_bolso(tmp_path, presente, papel, destino):
+    r = _corre("return lib('lib/sessao').aterragem(%s);" % json.dumps(papel), tmp_path,
+               antes="" if presente else "NB.presente = false;")
+    assert r == destino
+
+
+# --- A Barreira (pages/bolso/Barreira.js)-----------------------------------------
 
 # A Barreira VERDADEIRA dentro do AuthProvider VERDADEIRO, com um filho que, ao
 # montar, pede o painel pelo `lib/bolso.js` — como o BolsoApp faz.
@@ -1376,3 +1459,18 @@ def test_no_bolso_ninguem_vai_ao_login_a_mao_e_sair_esquece_o_face_id():
         assert re.search(r"status\s*===\s*401\)\s*\{\s*logout\(\);", texto), ecra
     menu = (pasta / "partilhado.js").read_text(encoding="utf-8")
     assert "<UsarFaceId" in menu
+
+
+def test_o_role_redirect_e_a_rota_do_bolso_usam_a_aterragem_e_os_papeis_do_bolso():
+    """O `RoleRedirect` (a rota `/`, por onde entra o catch-all) não se monta aqui: guarda
+    de texto. E os papéis do `/bolso` vêm de UM sítio só — os do `RotaDoBolso` e os da
+    `aterragem` não podem divergir (um papel a aterrar num /bolso que o recusa)."""
+    app = (_SRC / "App.js").read_text(encoding="utf-8")
+    redirect = app[app.index("const RoleRedirect = "):]
+    redirect = redirect[:redirect.index("\n};\n")]
+    assert "<Navigate to={aterragem(user.role)} replace />" in redirect
+    rota = app[app.index("const RotaDoBolso"):]
+    rota = rota[:rota.index(");")]
+    assert "allowedRoles={PAPEIS_DO_BOLSO}" in rota
+    for ficheiro in ("App.js", "pages/LoginPage.js", "pages/ChangePasswordPage.js"):
+        assert "rotaDeAterragem(" not in (_SRC / ficheiro).read_text(encoding="utf-8"), ficheiro

@@ -3,8 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Toaster } from './components/ui/sonner';
 import { initNativeStatusBar } from './lib/statusbar';
-import { Capacitor } from '@capacitor/core';
-import { rotaDeAterragem } from './lib/resumo';
+import { aterragem, PAPEIS_DO_BOLSO } from './lib/sessao';
 
 // Pages
 import LoginPage from './pages/LoginPage';
@@ -120,7 +119,7 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
   // De ONDE veio quem foi mandado para o login. Sem isto, quem abre a app da
   // Gestão Lisbonb (que arranca em /bolso), entra, e é despejado no
   // /admin/resumo — o portal inteiro num ecrã de telemóvel, que não é nada do
-  // que ele foi lá ver. Ver `rotaDeAterragem` e o `LoginPage`.
+  // que ele foi lá ver. Ver `aterragem` (lib/sessao.js) e o `LoginPage`.
   const location = useLocation();
   
   if (loading) {
@@ -154,7 +153,7 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
 // os pedidos do `lib/bolso.js` esperam que a Barreira abra — uma rota /bolso
 // sem ela ficava à espera para sempre (guardado em test_sessao_do_bolso.py).
 const RotaDoBolso = ({ children }) => (
-  <ProtectedRoute allowedRoles={['admin', 'gerente', 'contabilista']}>
+  <ProtectedRoute allowedRoles={PAPEIS_DO_BOLSO}>
     <Barreira>{children}</Barreira>
   </ProtectedRoute>
 );
@@ -206,10 +205,9 @@ const RoleRedirect = () => {
     return <Navigate to="/alterar-senha" replace />;
   }
   
-  // Dentro da APP, um gestor aterra no Resumo; no browser, onde sempre aterrou.
-  return <Navigate to={rotaDeAterragem({
-    nativo: Capacitor.isNativePlatform(), papel: user.role,
-  })} replace />;
+  // Na casca com Face ID, um gestor aterra no /bolso (dentro da Barreira); no
+  // browser, onde sempre aterrou. Ver `aterragem` em lib/sessao.js.
+  return <Navigate to={aterragem(user.role)} replace />;
 };
 
 function AppRoutes() {

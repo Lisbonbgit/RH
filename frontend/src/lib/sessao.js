@@ -8,9 +8,11 @@
 //   3. a PERGUNTA depois de um login com senha, e o «não» lembrado por email.
 //
 // Sem a peça nativa (browser, build 2, app do ponto) nada disto actua.
+import { Capacitor } from '@capacitor/core';
 import {
-  apagar, emailGuardado, faceIdLigado, guardar, ler, temFaceId, verificar,
+  apagar, emailGuardado, faceIdLigado, guardar, ler, pluginPresente, temFaceId, verificar,
 } from './faceid';
+import { rotaDeAterragem } from './resumo';
 
 export const CINCO_MINUTOS = 5 * 60 * 1000;
 const CHAVE_SAIU = 'saiuAs';
@@ -137,6 +139,21 @@ export function reentrar() {
 }
 
 // --- 3. Depois de um login com senha -------------------------------------------
+
+// Quem entra no /bolso. UMA fonte: o `RotaDoBolso` do App.js usa esta lista, e a
+// `aterragem` também — um papel que aterrasse num /bolso que o recusa ficava a saltar.
+export const PAPEIS_DO_BOLSO = ['admin', 'gerente', 'contabilista'];
+
+// Para onde se vai depois de entrar quando não há `state.from` (o «Esqueci a
+// palavra-passe», a senha provisória, o catch-all). Na casca com a peça nativa
+// (build 3), o /bolso: é lá que está a Barreira. O `/admin/resumo` não a tem, não
+// fecha ao esconder e não tem caminho para o /bolso. No browser, na build 2 e na
+// app do ponto, a rota de sempre.
+export const aterragem = (papel) => (
+  pluginPresente() && PAPEIS_DO_BOLSO.includes(papel)
+    ? '/bolso'
+    : rotaDeAterragem({ nativo: Capacitor.isNativePlatform(), papel })
+);
 
 export const recusar = (email) => gravarLocal(CHAVE_RECUSA + email, '1');
 export const esquecerRecusa = (email) => {
