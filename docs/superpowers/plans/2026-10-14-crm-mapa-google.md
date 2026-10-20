@@ -472,7 +472,7 @@ Os agentes registam estes pontos no dossiê §14 **na G22** (pós-merge) e conti
   - **Desvios:** (1) a configuração do ESLint aponta para o `node_modules` da árvore isolada (a `t232` aponta para o da árvore principal; é o mesmo pacote); (2) a correção é num teste da G4, já fechada: vai no commit desta tarefa, que o plano prevê "só se houver correções"; (3) a linha `Co-Authored-By` leva o modelo que executa a tarefa, como nas G5–G19.
   - **Para a G21:** a pré-visualização de 3000 é a da árvore principal, com código velho (nota da G19): parar e arrancar a da árvore isolada. A árvore isolada não tem `backend/.venv` nem `backend/.env.local` (os testes correram com o `.venv` da árvore principal); `grep -c "^CRM_GOOGLE" "$RAIZ/backend/.env.local"` dá **0** — sem a Demo Key, só os pontos "sem Google" se verificam e o resto fica "não verificado em local" para a G24. O `$LOGS/build` passou a ter o build desta tarefa. Informação: o `lib/crm/api.js` (e o caminho `morada/inversa`) vai no `main.*.js` pelo `GuardaCrm`/`useEstadoCrm`, como desde a F2; nada da Google está lá. **[DONO]:** nenhum novo (a Demo Key continua a faltar: G1, falta 4).
 
-#### [ ] G21 Pré-visualização local e aceitação no browser (Playwright, 60 min)
+#### [x] G21 Pré-visualização local e aceitação no browser (Playwright, 60 min)
 - **Pré-visualização:** parar a anterior (dossiê §12.6); conferir `grep -c "^CRM_GOOGLE" "$RAIZ/backend/.env.local"` (2 = o dono pôs a Demo Key; 0 = sem chave: só se verificam os pontos marcados "sem Google" abaixo, e o resto regista-se como **"não verificado em local"** para a G24); arrancar o backend (8001) e o frontend (3000) em segundo plano.
 - **Aceitação (§9) no browser local** (`$LOGS/g21_aceitacao.py`, Playwright sem janela, computador 1280 × 800 claro e telemóvel 375 × 812 escuro, cópia `lisbonb_crm_g21_local` sem palavras-passe apagada no fim, pedidos ao backend reais com as contas de demonstração do seed — as palavras-passe nunca se imprimem; contra a Google verdadeira com a Demo Key, **poucos carregamentos**: contam na quota diária dela):
   - **sem Google:** `GET /api/crm/config` só para o escritório; sem `CRM_GOOGLE_*` no `.env.local` a página mostra "Mapa não configurado…"; `GET /morada/pesquisa` 404; o resto do CRM funciona;
@@ -485,6 +485,58 @@ Os agentes registam estes pontos no dossiê §14 **na G22** (pós-merge) e conti
   - **a app instalada não se verifica** (fora do âmbito; adenda §3.1, falta 3).
 - **Dossiê §13:** as contagens e os registos ficam para a G22 (pós-merge); aqui só se guardam em `$LOGS/g21-resultado.log`.
 - **Commit:** só se houver correções, `CRM: fecho do mapa Google verificado em local`. **Nada sai do Mac.**
+- **Feito (2026-10-20):** Árvore `crm-mapa-google` limpa em `43da327`, sem registos `g21-*` (nada a meio; `g21-partida.log`). `grep -c "^CRM_GOOGLE" "$RAIZ/backend/.env.local"` dá **0** (sem a Demo Key): verificam-se só os pontos "sem Google" e o resto fica **"não verificado em local"** para a G24 (lista em `$LOGS/g21-resultado.log`). **Sem correções:** nenhum ficheiro de código mudou, e o commit leva só esta marca.
+  - **Pré-visualização:**
+    - **A antiga parou:** era a da árvore principal em `7d8b7e5`, com código velho (backend pid 8168, `craco start` 66075/66087).
+    - **A nova corre da árvore isolada.** Backend em `127.0.0.1:8001`, com o `.venv` e o `--env-file .env.local` da árvore principal (a árvore isolada não os tem), em `nohup`; registo `g21-backend.log`, pid em `g21-backend.pid`.
+    - Frontend em `127.0.0.1:3000`: o `craco start` da árvore, com `REACT_APP_BACKEND_URL=http://127.0.0.1:8001 HOST=127.0.0.1 PORT=3000 BROWSER=none` na linha de comandos, porque a árvore não tem `.env.development.local`; registo `g21-frontend.log`.
+    - **Prova de que é o código novo:** `GET /api/crm/morada/pesquisa` dá 404.
+    - **Fica a correr para o dono.** Para parar: o `kill -TERM` do dossiê §12.6 (as duas portas) e `pkill -TERM -f 'craco start'`. O `preview_start` do dono (`/Users/brucesilva/cleide/.claude/launch.json`) continua a apontar para a árvore principal.
+  - **Como se verificou** (molde da T2.32; **nenhuma palavra-passe usada**):
+    - **Base:** `g21-verificacao/g21_base.py preparar` copiou para a `lisbonb_crm_g21_local` as contas **sem `password`** (0 contas com a chave), os membros, as regiões e as lojas.
+    - **Servidor:** `g21_servidor.py` serve o `crm.router` **da árvore isolada** (com uma asserção no caminho), com a conta pelo cabeçalho `X-Verificacao-Conta`. Corre em 8011 (`CRM_GOOGLE_*` vazias, como o `.env.local`) e em 8013 (`G21_CANARIO=1`: as duas variáveis com textos-canário, que não são chaves).
+    - **Script:** `$LOGS/g21_aceitacao.py` (Playwright 1.60, Chromium sem janela, `/usr/bin/python3`). A API por `urllib`. O browser abre o frontend de 3000 no computador (1280×800, claro) e no telemóvel (375×812, escuro); o `/api/auth/me` responde com a conta do seed e o `/api/crm/*` vai para 8011 ou 8013.
+    - **Nada sai do Mac:** `--host-resolver-rules` (nenhum nome resolve), service workers bloqueados, e tudo fora de 127.0.0.1 é abortado no próprio browser.
+    - **No fim:** 8011 e 8013 parados e a base apagada. A `lisbonb_crm_local` ficou intacta (`g21-base.log`: 24 lojas, 4 regiões, 3 membros, 5 contas).
+  - **Resultado** (`g21-aceitacao.log`, saída 0): **94 OK, 0 falhas** (mais 3 notas).
+    - **API — `/config`:** 200 com `{google: null, centro}` para o admin, o escritório e o colaborador; 403 para o gestor, para o motorista e sem sessão (em 8001). Com os canários, `google: {chave, map_id}`. Os canários aparecem em **0** linhas dos 4 registos (8011, 8013, backend, frontend).
+    - **API — morada:** `/morada/pesquisa` dá **404** para todos, também na pré-visualização. `/morada/inversa` dá **503** `morada_indisponivel` com "Morada sugerida indisponível — escreva a morada à mão." (o motorista, 403).
+    - **API — lojas:**
+      - `POST /lojas` com `origem_coords: google` → 422 em `origem_coords`;
+      - com `google_place_id` "tem espaço" → 422 "O identificador do lugar na Google não é válido.";
+      - com `pin_manual` + id → 201; a ficha traz o id e a lista não traz a chave;
+      - uma loja do seed, sem a chave na base, lê-se com `null`.
+    - **Browser, "Mapa não configurado…"** nas duas janelas: no Mapa (`/admin/crm` como escritório e `/crm` como colaborador), na Nova loja, na ficha ("Corrigir localização") e na Fábrica ("Mudar o ponto no mapa"). Em todos estes ecrãs:
+      - não há "Tentar novamente", pesquisa nem GPS;
+      - no ecrã do mapa, não há `.crm-mapa` nem `.gm-style`;
+      - Confirmar está desativado e não há rolo horizontal;
+      - **nenhum** pedido a `maps.googleapis.com`.
+    - **Browser, o resto do CRM sem mapa:**
+      - a ficha da loja com id diz "Pino posto à mão a partir de um lugar da Google.";
+      - guardar uma nota → PATCH 200 só com `{notas, atualizado_em}` e "Alterações guardadas"; a localização e o id ficam intactos;
+      - Definições: Regiões (4), Membros, Fábrica.
+    - **Browser, a Google a falhar** (com os canários; o carregador pediu `maps.googleapis.com` e o browser abortou o pedido): "Não foi possível carregar o mapa — recarregue a página." no Mapa e na Nova loja.
+    - **Pedidos abortados:** `cdn.jsdelivr.net` 30, `fonts.googleapis.com` 15 e `maps.googleapis.com` 4, estes só nas secções "Google a falhar". Os 53 erros da consola são estes pedidos abortados (`net::ERR_FAILED`) e o `[crm] o mapa não foi criado` da Google a falhar.
+    - **Controlo:** a secção "Google a falhar" é o contraditório das verificações "sem Google": a mesma página mostra a outra mensagem e os pedidos à Google deixam de ser 0.
+    - **Código** (`g21-inventario.log`): o inventário do §5 está vazio, o `node_modules/leaflet` não existe e o UI Kit dá 0. O build da G20 é do mesmo código (`git diff 43da327` vazio): `leaflet` 0, `maps.googleapis.com` só no chunk 73.
+  - **Não verificado em local** (sem a Demo Key; a lista completa está em `g21-resultado.log`):
+    - o mapa: os pinos, as etiquetas nos zooms 6 e 19, o zoom em português, o cartão, o `gmp-click` com o teclado e a ancoragem do pino;
+    - a regra de disposição com o cartão e com o painel abertos (não há `g21-atribuicao.log`);
+    - o negócio → loja pela interface, a pesquisa e o nome acessível da pesquisa;
+    - o GPS a 20 m e a 120 m, e o "Corrigir localização" com mapa;
+    - as notas da G9: o foco dentro do shadow DOM e o `locationBias` com o `getBounds()`.
+
+    A G24 cobre o essencial disto em produção (pontos 1–6). O que a G24 não lista (o nome acessível, o teclado nos pinos, a ancoragem, a regra de disposição com o painel aberto, o GPS a 120 m) fica para uma nova volta desta aceitação quando houver a Demo Key.
+  - **Desvios:**
+    1. Sem a Demo Key, a aceitação é só a parte "sem Google", como o plano prevê.
+    2. **Acrescentos ao texto:** "a Google a falhar" e "nem a chave nem o Map ID nos registos", verificados com canários e com os pedidos abortados no browser; nenhum pedido à Google saiu do Mac.
+    3. A pré-visualização da árvore isolada usa o `.venv` e o `.env.local` da árvore principal, e o ambiente do frontend vai na linha de comandos.
+    4. **Commit só da marca no plano:** o plano manda fazer commit "só se houver correções", mas sem ele a G22 encontrava a árvore suja. Por isso a mensagem é própria.
+    5. A linha `Co-Authored-By` leva o modelo que executa a tarefa, como nas G5–G20.
+  - **Para as tarefas seguintes:**
+    - **Merge:** o `crm-purple-house` (árvore principal, em `7d8b7e5`, a G8) é antepassado do `crm-mapa-google`. O bloco "Merge com a F3 — Não se aplica" está desatualizado desde a G9, porque as G9–G21 estão no `crm-mapa-google`. Antes da G22, é preciso juntar o `crm-mapa-google` ao `crm-purple-house` (`--no-ff`, nunca rebase); decide o orquestrador ou o dono ([DONO] (a) da G9). Depois do merge, a pré-visualização volta a correr da árvore principal: parar a de agora (o pid em `g21-backend.pid` e o `craco start` da árvore isolada).
+    - **G22:** no §13 do dossiê, as contagens da G20 e este resultado. No §12.6, a pré-visualização da árvore isolada. No §12.3, o `.env.local` ainda tem a linha `CRM_GEOAPIFY_CHAVE_MOSAICOS`, vazia e que já não se lê.
+    - **[DONO]:** nenhum novo. A Demo Key continua a faltar (G1, falta 4); quando existir, repetir esta aceitação com os passos da Google.
 
 #### [ ] Merge com a F3 (se a G0 criou o ramo `crm-mapa-google`; sem tarefa própria)
 > **Não se aplica (G0, 2026-10-18):** a T3.25 já estava `[x]` e a G0 ficou no `crm-purple-house`; não há merge a fazer e a G22 corre logo a seguir à G21.
