@@ -141,7 +141,8 @@ describe('o primeiro importar mete um só script com o URL certo', () => {
     for (const nome of nomes) {
       expect(['callback', 'key', 'language', 'libraries', 'loading', 'region', 'v']).toContain(nome);
     }
-    if (p.has('loading')) expect(p.get('loading')).toBe('async');
+    // Sem `loading` (null) ou `loading=async`; nada mais (sem `expect` condicional).
+    expect([null, 'async']).toContain(p.get('loading'));
   });
 
   test('as bibliotecas pedidas no mesmo instante vão juntas no mesmo script', async () => {
@@ -343,9 +344,10 @@ describe('a chave nunca aparece noutro sítio', () => {
     await promessa;
     expect(JSON.stringify(janela)).not.toContain(CHAVE);
     for (const script of documento.criados) {
-      for (const [nome, valor] of Object.entries(script)) {
-        if (nome !== 'src') expect(String(valor)).not.toContain(CHAVE);
-      }
+      const comChave = Object.entries(script)
+        .filter(([nome, valor]) => nome !== 'src' && String(valor).includes(CHAVE))
+        .map(([nome]) => nome);
+      expect(comChave).toEqual([]);
       expect(script.src).toContain(`key=${CHAVE}`);
     }
   });
