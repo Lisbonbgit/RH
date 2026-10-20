@@ -290,7 +290,10 @@ def test_cada_destino_do_menu_e_uma_rota_do_app_com_os_papeis_do_bolso(tmp_path)
     # Fase 3: as rotas do bolso passam pelo `RotaDoBolso`, que leva os papéis (e a Barreira).
     corpo = app[app.index("const RotaDoBolso"):]
     corpo = corpo[:corpo.index(");")]
-    assert "<ProtectedRoute allowedRoles={['admin', 'gerente', 'contabilista']}>" in corpo
+    assert "<ProtectedRoute allowedRoles={PAPEIS_DO_BOLSO}>" in corpo
+    # A lista vem do lib/sessao (a mesma que a `aterragem` usa para mandar para o /bolso).
+    sessao = (SRC / "lib" / "sessao.js").read_text(encoding="utf-8")
+    assert "export const PAPEIS_DO_BOLSO = ['admin', 'gerente', 'contabilista'];" in sessao
     for caminho in destinos:
         rota = re.compile(r'<Route path="%s" element=\{\s*<RotaDoBolso>' % re.escape(caminho))
         assert rota.search(app), "O App.js não tem a rota %s com os papéis do bolso." % caminho
