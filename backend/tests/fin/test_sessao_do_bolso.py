@@ -769,7 +769,10 @@ def test_com_um_atob_que_exige_o_igual_a_sessao_le_se_na_mesma(tmp_path):
 
 # Um servidor de mentira à frente do axios VERDADEIRO (o `adapter` é a última
 # peça antes da rede: os interceptores correm todos). `RESPOSTAS['GET /bolso/painel']`
-# é `[estado, corpo]`, uma fila `[[estado, corpo], …]` ou `'rede'` (sem resposta).
+# é `[estado, corpo]`, `'rede'` (sem resposta) ou uma fila delas
+# (`[[401, {}], 'rede', [200, {}]]`), gasta uma por pedido. Uma fila VAZIA rebenta
+# («fila vazia» no stderr, que falha o teste): um pedido a mais do que o teste previu
+# não pode passar por um sucesso calado.
 _SERVIDOR = r"""
 const axios = require('axios');
 global.RESPOSTAS = {};
@@ -781,7 +784,12 @@ axios.defaults.adapter = async (config) => {
   PEDIDOS.push(chave);
   CABECALHOS.push(config.headers && config.headers.Authorization || null);
   const fila = RESPOSTAS[chave];
-  const r = Array.isArray(fila) && Array.isArray(fila[0]) ? fila.shift() : fila;
+  const emFila = Array.isArray(fila) && typeof fila[0] !== 'number';
+  if (emFila && !fila.length) {
+    console.error('fila vazia: ' + chave);
+    throw new Error('fila vazia: ' + chave);
+  }
+  const r = emFila ? fila.shift() : fila;
   if (r === 'rede' || !r) { const e = new Error('Network Error'); e.config = config; throw e; }
   const [status, data] = r;
   if (status >= 400) {
@@ -790,6 +798,18 @@ axios.defaults.adapter = async (config) => {
   return { data, status, statusText: 'OK', headers: {}, config };
 };
 """
+
+
+def test_uma_fila_de_respostas_vazia_falha_o_teste(tmp_path):
+    """O ecrã apanha o erro do pedido (e não diz nada): é o stderr que falha o teste."""
+    with pytest.raises(pytest.fail.Exception, match="fila vazia: GET /bolso/painel"):
+        _corre("""
+          lib('lib/sessao').abrirBarreira();
+          const { getPainel } = lib('lib/bolso');
+          await getPainel('all');
+          await getPainel('all').catch(() => {});
+          return 'continuou';
+        """, tmp_path, antes=_SERVIDOR + "NB.presente = false; RESPOSTAS['GET /bolso/painel'] = [[200, {}]];")
 
 
 def test_bolso_401_reentra_e_repete_o_pedido_com_o_token_novo(tmp_path):
