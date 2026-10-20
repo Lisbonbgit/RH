@@ -4,7 +4,7 @@ Map ID da Google, e o centro (plano do mapa Google, G2; dossiê §6 e §8).
 Reescrita, na G2, da porta de tests/Unit/Http/ConfigMapaTest.php e de
 tests/Integration/Api/SessaoMapaTest.php do CRM autónomo (etiqueta
 `referencia-standalone`), que até à F2 entregava os mosaicos da Geoapify e a
-alternativa do OpenStreetMap ao Leaflet. Com o mapa da Google:
+alternativa do OpenStreetMap ao mapa antigo (saiu na G19). Com o mapa da Google:
 
 - A rota continua própria e do escritório (admin e utilizador do CRM). O
   motorista só entra na F4; quem não é membro recebe 403 `sem_acesso_crm`;

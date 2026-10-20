@@ -538,16 +538,68 @@ Os agentes registam estes pontos no dossiê §14 **na G22** (pós-merge) e conti
     - **G22:** no §13 do dossiê, as contagens da G20 e este resultado. No §12.6, a pré-visualização da árvore isolada. No §12.3, o `.env.local` ainda tem a linha `CRM_GEOAPIFY_CHAVE_MOSAICOS`, vazia e que já não se lê.
     - **[DONO]:** nenhum novo. A Demo Key continua a faltar (G1, falta 4); quando existir, repetir esta aceitação com os passos da Google.
 
-#### [ ] Merge com a F3 (se a G0 criou o ramo `crm-mapa-google`; sem tarefa própria)
-> **Não se aplica (G0, 2026-10-18):** a T3.25 já estava `[x]` e a G0 ficou no `crm-purple-house`; não há merge a fazer e a G22 corre logo a seguir à G21.
+#### [x] Merge com a F3 (se a G0 criou o ramo `crm-mapa-google`; sem tarefa própria)
+> **Feito na G22 (2026-10-20):** a nota da G0 abaixo ficou desatualizada na G9, quando as G9–G21 passaram para o ramo `crm-mapa-google`, numa árvore isolada (incidente da G9). O merge fez-se no `crm-purple-house` com `git merge --no-ff crm-mapa-google` (`7d8b7e5` → `1d5dd4a`), sem conflitos, e as duas baterias ficaram verdes; registado no Feito da G22.
+>
+> ~~**Não se aplica (G0, 2026-10-18):**~~ (desatualizada desde a G9) a T3.25 já estava `[x]` e a G0 ficou no `crm-purple-house`; não há merge a fazer e a G22 corre logo a seguir à G21.
 
 Quando a T3.25 estiver `[x]`: `git -C "$RAIZ" switch crm-purple-house && git -C "$RAIZ" merge --no-ff crm-mapa-google` (nunca rebase). Conflitos esperados só em `test_protecao_rotas.py` (uma linha) e nos documentos; resolver, correr as duas baterias, registar no Feito da G22.
 
-#### [ ] G22 Dossiê e plano da F3 atualizados — **primeira tarefa pós-merge** (45 min)
+#### [x] G22 Dossiê e plano da F3 atualizados — **primeira tarefa pós-merge** (45 min)
 - **Ficheiros:** `CRM_PORTING_GUIDE.md`, `docs/superpowers/plans/2026-10-11-crm-f3-planear-rota.md`. (Só agora, para não chocar com as marcas `[x]`, as notas Feito e o dossiê que a F3 escreve até à T3.25.)
 - **Dossiê:** §0 regra 9 (Google em vez de Leaflet; canários; só GA, nada do UI Kit), §2.1 (o Google não corre no jsdom: `googleFalso`), §5.15 (as proibições da adenda §2, a regra do arrasto, a regra de disposição), §7 (os ecrãs e os módulos: `carregadorGoogle`, `lugarGoogle`, `mapa`, `seletor`, `NegocioSelecionado`, `PesquisaLugar`, `Partes`; saem `mosaicos`, `pesquisaMorada`, `PesquisaMorada`; a tabela das atribuições), §8 (Google Maps Platform: chave do navegador, Map ID, Maps JS + Places (New), quotas; Geoapify só inversa do GPS; a pesquisa sai), §9 (`CRM_GOOGLE_CHAVE_NAVEGADOR`, `CRM_GOOGLE_MAP_ID`; sai `CRM_GEOAPIFY_CHAVE_MOSAICOS`), §12.3 (as linhas locais com a Demo Key, só nomes), §13 (contagens da G20/G21), §14 (pontos novos: Termos EEA se a consola pedir; tetos e orçamento; `rh.lisbonb.com` e a app instalada nos referrers; a redação da privacidade; apagar `CRM_GEOAPIFY_CHAVE_MOSAICOS` do `.env` do servidor; a prova de fumo em produção; os pontos 3 e 4 antigos passam a "só a chave do servidor"/"resolvido pelo novo ponto").
 - **Plano da F3:** acrescentar no fim um bloco **"Correções obrigatórias (mapa Google, 2026-10-18)"** com as linhas do §7 deste plano, uma por tarefa (T3.26, T3.33, T3.36, T3.38, T3.39, T3.43, a receita F3e e as duas correções antigas que deixam de se aplicar), e, no §0 regra 9 e no §1 "Mapa do planeador", uma nota a apontar para esse bloco. Não se reescrevem as tarefas.
 - **Commit:** `CRM: dossiê e plano da F3 atualizados para o mapa Google`
+- **Feito (2026-10-20):**
+  - **Partida e merge:**
+    - A primeira execução da G22 (13:12) fez o merge e parou antes dos documentos.
+      - `g22-partida.log`: `crm-purple-house` em `7d8b7e5` e `crm-mapa-google` em `d79a83c`.
+      - `git merge --no-ff crm-mapa-google` → `1d5dd4a` "CRM: junta o mapa Google (G9–G21) ao crm-purple-house", **sem conflitos** (`g22-merge.log`: 57 ficheiros, +4850/−3225). O `test_protecao_rotas.py` e os documentos juntaram-se sozinhos.
+      - Baterias depois do merge: `tests/crm` **6910 passed, 38 skipped** (`g22-merge-pytest.log`); Jest `src/lib/crm` **29 suites, 1245 testes** (`g22-merge-jest.log`).
+      - A pré-visualização da árvore isolada parou (`g22-previsualizacao.log`).
+    - Esta execução (13:35, `g22-retoma.log`) encontrou a árvore limpa em `1d5dd4a`, nada dos documentos a meio, e fez o resto.
+  - **Sem vermelho nem verde próprios:** a tarefa é só de documentos (e de uma docstring).
+    - Baterias no fim, iguais às do merge e da G20: `tests/crm` **6910 passed, 38 skipped** em 24 s (`g22-verde-pytest.log`); Jest `src/lib/crm` **29 suites, 1245 testes** (`g22-verde-jest.log`).
+    - Inventário (`g22-inventario.log`): `leaflet` 0 em `frontend/src`, `backend/crm` e `backend/tests/crm`; nem `pesquisarMorada` nem `mosaicos` no CRM.
+  - **Dossiê** (`CRM_PORTING_GUIDE.md`, +163/−78; as secções da tarefa e as do desvio 1):
+    - Cabeçalho: uma linha a dizer que, no mapa, a adenda e este plano prevalecem, e que as notas da F2 sobre o Leaflet ficam como histórico.
+    - §0: a regra 1 (a Demo Key); a regra 9 reescrita (`google.maps` só nos 4 módulos, `content` só com `el()`, nunca `InfoWindow`, `fetchFields` só no `lugarGoogle.js` com as duas listas, os canários, só GA, as regras do CSS); a regra 10 (dados de negócio, a regra do arrasto, Geoapify só no GPS, a `Referrer-Policy` pela chave do navegador).
+    - §2.1: o `googleFalso`, as verificações temporárias com o Google e as armadilhas das posições; as notas do Leaflet ficaram, marcadas "histórico".
+    - §5.15: as proibições da adenda §2, a regra do arrasto e a regra de disposição.
+    - §7: os ecrãs sobre o Google (Mapa, Nova loja, Ficha, Fábrica); os módulos `carregadorGoogle`, `lugarGoogle`, `googleFalso`, `mapa`, `seletor`, `localizacao`, `morada`, `seguranca.test.js` e `css.test.js`; `mosaicos` e `pesquisaMorada` marcados "saiu"; os componentes `NegocioSelecionado`, `PesquisaLugar` e `Partes`; a `PrivacyPolicy` da G7.
+    - §8: um bloco "Google Maps Platform" (APIs, consola, como a chave circula, SKUs e tetos, referrers, Demo Key, CSP); a Geoapify só com a inversa; a tabela das atribuições (está no §8, não no §7); o Leaflet como histórico.
+    - §9: `CRM_GOOGLE_CHAVE_NAVEGADOR` e `CRM_GOOGLE_MAP_ID`; saiu `CRM_GEOAPIFY_CHAVE_MOSAICOS`; o bloco do `.env.example` da G2.
+    - §12.3: as linhas da Demo Key (só nomes) e a linha dos mosaicos que já não se lê (nota da G21).
+    - §13: as contagens da G0, da G20, do merge e da G22, e o resumo da G20 e da G21 (94 OK e o "não verificado em local").
+    - §14:
+      - os pontos 3 ("só a chave do servidor"), 4 ("resolvido pelo ponto 16"), 7 (a redação da G7), 8 e 12 (sem objeto: não há mosaicos);
+      - novos: 14 (Termos EEA), 15 (tetos e orçamento), 16 (referrers: `rh.lisbonb.com` e a app instalada), 17 (a Demo Key e uma nova volta da G21), 18 (ao publicar: apagar `CRM_GEOAPIFY_CHAVE_MOSAICOS`, avisar o Matheus, aprovar a privacidade), 19 (a prova de fumo da G24) e 20 (o `stash@{0}` do incidente da G9, [DONO] (b) da G9).
+    - O comentário do `privacidade.test.js` que aponta para o "§14, ponto 7" continua certo: o ponto não mudou de número.
+  - **Plano da F3** (+25/−1):
+    - No fim, o bloco **"Correções obrigatórias (mapa Google, 2026-10-18)"**: as linhas do §7 deste plano, uma por tarefa (§0/§1, T3.26, T3.33, T3.36, T3.38, T3.39, T3.43, a receita F3e e as duas correções antigas — a da receita F3e "deixa de se aplicar" e a "T3.32 / T3.38" "continua a valer").
+    - No §0 regra 9 e no §1 "Mapa do planeador", uma nota a apontar para esse bloco. As tarefas não se reescreveram.
+  - **Docstring:** a do `backend/tests/crm/test_config_mapa.py` (linha 7) já não nomeia o Leaflet (nota da G18: "acertar com os comentários da G22").
+  - **Pré-visualização:** voltou a correr **da árvore principal** (nota da G21: "depois do merge…").
+    - Backend `uvicorn` em `127.0.0.1:8001` (pid em `g22-backend.pid`, registo `g22-backend.log`) e frontend `craco start` em `127.0.0.1:3000` (pid em `g22-frontend.pid`, registo `g22-frontend.log`), os dois em `nohup`.
+    - `g22-previsualizacao-arranque.log`: health e `/api/crm/saude` ok; `GET /api/crm/morada/pesquisa` 404; `/login` 200.
+    - Sem a Demo Key, os ecrãs com mapa dizem "Mapa não configurado…". Fica a correr para o dono (dossiê §12.6).
+  - **Desvios:**
+    1. **Secções a mais no dossiê:** o cabeçalho, §2 (a linha do frontend), §3 e §5.2 (o `google_place_id`), §5.3, §6 (o `/config` novo, o `/morada/pesquisa` que saiu, a loja completa), §11, §12.6 e §12.8. Sem elas, o dossiê contradizia o código num sítio que a F3 lê (o `/config` antigo e a pesquisa da Geoapify no §6).
+    2. A docstring do `test_config_mapa.py` vai neste commit, só com texto (a bateria confirma).
+    3. **Linhas a mais no bloco da F3**, marcadas "acrescento da G22":
+       - a correção do ESLint dos links externos (o molde `PesquisaMorada.js:34` saiu: passa a ser o `Partes.js`);
+       - a T3.42 e a sua correção (a privacidade da G7 e o `privacidade.test.js` reescrito);
+       - o §10 "Armadilhas" (Leaflet e coordenadas).
+       Há também um esclarecimento na correção da receita F3e: a parte dos Pointer Events da `ListaParagens` continua a valer.
+    4. O `frontend/node_modules/leaflet` da árvore principal **fica**: o `yarn install --frozen-lockfile` da nota da G18 podia ir à rede, e deixá-lo não parte nada (nenhum código o importa; o build da G20 deu `leaflet` 0). Registado no dossiê §8.
+    5. O bloco "Merge com a F3" ficou `[x]`, com a nota do merge (a da G0, "Não se aplica", estava desatualizada desde a G9).
+    6. A linha `Co-Authored-By` leva o modelo que executa a tarefa, como nas G5–G21.
+  - **Para as tarefas seguintes:**
+    - A F3d (T3.26) pode começar no `crm-purple-house`, com o bloco "Correções obrigatórias (mapa Google, 2026-10-18)" do plano da F3.
+    - A "Revisão do mapa Google (3 revisores só de leitura)" continua por fazer.
+    - A árvore isolada `$LOGS/crm-mapa-google-arvore` pode sair (`git worktree remove`; dossiê §12.6). O ramo `crm-mapa-google` está todo no `crm-purple-house`.
+    - Quando houver a Demo Key, repetir a aceitação da G21 com os passos da Google (dossiê §14, ponto 17).
+  - **[DONO]:** nada de novo além do que a G1, a G7 e a G9 já pediam, agora no dossiê §14, pontos 14–20 (e os pontos 3, 4, 7, 8 e 12 acertados). G23 e G24 continuam do dono.
 
 #### [ ] G23 [DONO] Publicação (sem ação dos agentes)
 Avisar o Matheus (`.env.example`, `PrivacyPolicy.js`, `package.json`/`yarn.lock`); confirmar no `backend/.env` do servidor `CRM_GOOGLE_CHAVE_NAVEGADOR` e `CRM_GOOGLE_MAP_ID` (já lá estão) e apagar a linha `CRM_GEOAPIFY_CHAVE_MOSAICOS` se existir; os tetos e as decisões da G1; aprovar a redação da privacidade; autorizar a junção ao `main` e o `deploy.sh`.
