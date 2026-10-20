@@ -6,7 +6,8 @@
   "dependencies": {
     "@capacitor/core": "^6.0.0",
     "@capacitor/ios": "^6.0.0",
-    "@capacitor/status-bar": "^6.0.0"
+    "@capacitor/status-bar": "^6.0.0",
+    "@capgo/capacitor-native-biometric": "6.0.4"
   },
   "devDependencies": {
     "@capacitor/cli": "^6.0.0"
