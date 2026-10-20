@@ -43,7 +43,11 @@ condicionais em `rotas_bd` (T3.17): aqui só se valida, lê, decide e responde.
   no fim (`ordem = n` ativas) com a versão + 1; uma loja retirada antes é
   reativada na mesma paragem (o mesmo `id`, pelos caminhos
   `paragens.<índice>.<campo do escritório>`, sem `$push`), com o motivo, o
-  tempo e os sinais repostos e as horas a `None`. O motivo vem do corpo ou,
+  tempo e os sinais repostos e as horas a `None`; se volta à secção "rota"
+  (não fecha nesse dia), o `calculo` gravado limpa-se na mesma escrita
+  (correção "F3-MAT-1": com o mesmo `id`, a entrada podia voltar a ser a do
+  cálculo gravado e a API dizia `atual: true` com a paragem sem hora). O
+  motivo vem do corpo ou,
   em falta, da fase da loja (`rotas.motivo_por_fase`); o tempo de serviço é
   o padrão do motivo nas definições em vigor. Pela ordem das verificações
   do plano §4: 400 → 422 (`data` e corpo, juntos) → 404 "Loja não
@@ -64,7 +68,8 @@ condicionais em `rotas_bd` (T3.17): aqui só se valida, lê, decide e responde.
   a rota completa. As definições do dia, a ordem, as paragens, retirar e
   "Guardar rota" (`estado: "planeada"`) gravam-se numa só
   `find_one_and_update` (`rotas_bd.alterar`: o filtro de guarda com a
-  `versao` recebida, o `$set` só do que muda e o `$inc` da versão). O que já
+  `versao` recebida e o cálculo lido, o `$set` só do que muda e o `$inc` da
+  versão). O que já
   está gravado com o mesmo valor não se escreve e, sem nada a mudar (também
   um PATCH só com a `versao`), responde 200 sem escrever e sem subir a
   versão. Por campo: as horas comparam-se com as guardadas
@@ -77,7 +82,9 @@ condicionais em `rotas_bd` (T3.17): aqui só se valida, lê, decide e responde.
   `ordem` nula e renumera as que ficam 0..k−1 (os ids de `retirar` saem da
   `ordem`: correção "T3.4 / T3.20"). Uma escrita que deixe a rota sem
   paragens incluídas (nenhuma na secção "rota") limpa o `calculo` na mesma
-  escrita, se havia um (correção "T3.20 / T3.27"). Pela ordem das
+  escrita, se havia um (correção "T3.20 / T3.27"), e as horas das ativas
+  que as tenham, como o recalcular e o otimizar (correção "F3-MAT-2"; as
+  retiradas não se tocam). Pela ordem das
   verificações do plano §4: 400 → 422 (`data` e corpo, juntos) → 404 "Ainda
   não há rota para este dia." (uma rota só nasce com a primeira paragem;
   também num dia passado) → 409 `rota_fechada` → 409 `rota_em_curso` → 409
@@ -98,13 +105,16 @@ condicionais em `rotas_bd` (T3.17): aqui só se valida, lê, decide e responde.
   dão as chegadas, as esperas e os avisos (`horarios.calcular_horarios`) e
   gravam-se numa só `find_one_and_update` **sem subir a versão**
   (`rotas_bd.alterar(..., subir_versao=False)`: dados derivados, com o filtro
-  da versão lida): por paragem ativa, `paragens.N.chegada_prevista|espera_min|
-  fora_de_horario` só do que muda (as excluídas ficam a `None`/`None`/`False`)
+  da versão e do cálculo lidos): por paragem ativa,
+  `paragens.N.chegada_prevista|espera_min|fora_de_horario` só do que muda
+  (as excluídas ficam a `None`/`None`/`False`)
   e o `calculo` inteiro (a assinatura da entrada, os totais, o regresso, a
   geometria e `calculado_em` de agora). Sem paragens incluídas não se chama
-  o openrouteservice: o `calculo` que havia limpa-se (`calculo: None`), e
-  sem nenhum responde-se 200 sem escrever. Pela ordem das verificações do
-  plano §4: 400 → 422 (`data` e `versao`, juntos) → 404 "Ainda não há rota
+  o openrouteservice: o `calculo` que havia limpa-se (`calculo: None`) e as
+  ativas ficam sem horas (correção "F3-MAT-2": também sem cálculo gravado),
+  e sem nada a limpar responde-se 200 sem escrever. Pela ordem das
+  verificações do plano §4: 400 → 422 (`data` e `versao`, juntos) → 404
+  "Ainda não há rota
   para este dia." → 409 `rota_fechada` → 409 `rota_em_curso` → 409
   `conflito` → 503 `calculo_indisponivel` (nada muda; `tipo` no erro:
   `sem_chave` sem pedido nenhum, `limite` no 429, `ponto_sem_estrada` num
@@ -302,7 +312,7 @@ async def adicionar_paragem(data: str, membro: Dict = Depends(ESCRITORIO), corpo
             raise erro(409, "ja_na_rota", MENSAGEM_JA_NA_ROTA)
         if len(ativas) >= rotas.LIMITE_PARAGENS:
             raise erro(409, "rota_cheia", MENSAGEM_ROTA_CHEIA)
-        depois = await _gravar_paragem(base, rota, loja, motivo, servico, len(ativas), membro_id, agora)
+        depois = await _gravar_paragem(base, rota, loja, motivo, servico, len(ativas), dia, membro_id, agora)
         if depois is not None:
             break
         if await rotas_bd.porque_falhou(base, rota["id"], rota["versao"]) == rotas_bd.EM_CURSO:
@@ -344,8 +354,10 @@ async def alterar_rota(data: str, membro: Dict = Depends(ESCRITORIO), corpo: Dic
     lojas = await rotas_bd.lojas_da_rota(base, rota)
     definicoes = await em_vigor(base)
     set_ = _alteracoes(rota, dados, definicoes, agora)
-    if set_ and rota["calculo"] is not None and not _fica_com_incluidas(rota, set_, lojas, dia):
-        set_["calculo"] = None
+    if set_:
+        paragens = _paragens_depois(rota, set_)
+        if not _com_incluidas(paragens, lojas, dia):
+            _sem_horas_nem_calculo(set_, rota, rotas.ativas(paragens))
     if not set_:
         return _resposta(rota, dia, hoje, lojas, definicoes)
     depois = await rotas_bd.alterar(base, rota, set_, membro_id=membro["user_id"], agora=agora)
@@ -382,10 +394,11 @@ async def recalcular_rota(data: str, membro: Dict = Depends(ESCRITORIO), corpo: 
     incluidas = [(paragem, loja) for paragem, loja, seccao, _ in seccoes if seccao == "rota"]
     if incluidas:
         set_ = await _horas_pelo_directions(rota, seccoes, incluidas, definicoes, agora)
-    elif rota["calculo"] is not None:
-        set_ = {"calculo": None}
     else:
-        return _resposta(rota, dia, hoje, lojas, definicoes)
+        set_ = {}
+        _sem_horas_nem_calculo(set_, rota, [paragem for paragem, _, _, _ in seccoes])
+        if not set_:
+            return _resposta(rota, dia, hoje, lojas, definicoes)
     depois = await rotas_bd.alterar(base, rota, set_, subir_versao=False, membro_id=membro["user_id"], agora=agora)
     if depois is None:
         raise await _erro_da_escrita(base, rota)
@@ -725,26 +738,50 @@ def _alteracoes(rota, dados, definicoes, agora) -> Dict:
     return set_
 
 
-def _fica_com_incluidas(rota, set_, lojas, dia) -> bool:
-    """Depois de aplicar o `set_` às paragens (em memória), fica alguma na
-    secção "rota" (`rotas.seccoes`: ativa, com loja, não fechada sem
-    "Manter" e sem `nao_cabe`)? É o que o Directions levaria; sem nenhuma,
-    o `calculo` gravado limpa-se (correção "T3.20 / T3.27")."""
+def _paragens_depois(rota, set_) -> list:
+    """As paragens da `rota` lida com o `set_` aplicado (em memória, em
+    cópias; a rota lida não muda)."""
     paragens = [dict(paragem) for paragem in rota["paragens"]]
     for caminho, valor in set_.items():
         if caminho.startswith("paragens."):
             _, i, campo = caminho.split(".")
             paragens[int(i)][campo] = valor
+    return paragens
+
+
+def _com_incluidas(paragens, lojas, dia) -> bool:
+    """Fica alguma paragem na secção "rota" (`rotas.seccoes`: ativa, com
+    loja, não fechada sem "Manter" e sem `nao_cabe`)? É o que o Directions
+    levaria; sem nenhuma, `_sem_horas_nem_calculo`."""
     lojas_por_id = {loja["id"]: loja for loja in lojas}
     return any(seccao == "rota" for _, _, seccao, _ in rotas.seccoes(paragens, lojas_por_id, dia))
 
 
-async def _gravar_paragem(base, rota, loja, motivo, servico, ordem, membro_id, agora):
+def _sem_horas_nem_calculo(set_, rota, ativas) -> None:
+    """Junta ao `set_` o que uma rota sem paragens incluídas não pode ter: as
+    horas das `ativas` (`SEM_HORAS`, só nas que as têm; correção "F3-MAT-2",
+    como o otimizar e o recalcular com incluídas) e o `calculo` gravado
+    (`None`, só se havia um; correção "T3.20 / T3.27"). As retiradas não se
+    tocam."""
+    _horas_no_set(set_, rota, ativas, {})
+    if rota["calculo"] is not None:
+        set_["calculo"] = None
+
+
+async def _gravar_paragem(base, rota, loja, motivo, servico, ordem, dia, membro_id, agora):
     """A escrita condicional da paragem na `rota` lida: a reativação de uma
     paragem retirada da mesma loja (a primeira, pela posição na lista; só há
     uma, porque adicionar outra vez reativa em vez de acrescentar) pelos
     caminhos do escritório, ou o `$push` de uma paragem nova no fim. Devolve
-    a rota como ficou, ou `None` se o filtro de guarda não casou."""
+    a rota como ficou, ou `None` se o filtro de guarda não casou.
+
+    Uma reativação que volta à secção "rota" (a loja não fecha no `dia`; os
+    sinais voltam a `False`) limpa o `calculo` gravado na mesma escrita
+    (correção "F3-MAT-1"): a paragem fica sem horas, como uma nova, mas com
+    o mesmo `id` — se a entrada voltar a ser a do cálculo gravado (retirada
+    e reposta antes de outro recálculo), a assinatura batia e a API dizia
+    `atual: true` com uma paragem da rota sem hora. Na secção "fechada" não
+    entra no Directions, e o cálculo fica."""
     paragem = documento_paragem(loja, motivo, servico, ordem, membro_id, agora)
     retirada = next(
         (i for i, p in enumerate(rota["paragens"]) if p["loja_id"] == loja["id"] and p.get("removida_em") is not None),
@@ -755,7 +792,10 @@ async def _gravar_paragem(base, rota, loja, motivo, servico, ordem, membro_id, a
     # A paragem reativada fica tal e qual uma nova, salvo o `id`, o `loja_id`
     # e o terreno, que não se tocam: só os campos do escritório.
     campos = {campo: paragem[campo] for campo in rotas.CAMPOS_DO_ESCRITORIO}
-    return await rotas_bd.alterar(base, rota, rotas.caminhos_paragem(retirada, campos), membro_id=membro_id, agora=agora)
+    set_ = rotas.caminhos_paragem(retirada, campos)
+    if rota["calculo"] is not None and not rotas.fechada_neste_dia(loja, dia):
+        set_["calculo"] = None
+    return await rotas_bd.alterar(base, rota, set_, membro_id=membro_id, agora=agora)
 
 
 def _conflito():

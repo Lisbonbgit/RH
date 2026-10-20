@@ -56,6 +56,7 @@ from crm import rotas as rotas_http
 from crm import rotas_bd
 from crm.auth import ESCRITORIO, membro_crm_atual
 from crm.dominio import rotas as dominio_rotas
+from crm.dominio.horarios import assinatura, entrada_calculo
 from crm.dominio.ids import e_uuid4
 from crm.formatar_rota import PROJECAO_LOJA_ROTA, rota_api
 from crm.pedidos import corpo_json
@@ -150,6 +151,7 @@ PROJECAO_DEFINICOES = {"_id": 0, "chave": 1, "valor": 1}
 FILTRO_DE_ESCRITA = {
     "id": "r-1",
     "versao": 3,
+    "calculo": None,
     "estado": {"$in": ["rascunho", "planeada"]},
     "paragens.estado": {"$nin": ["feita", "nao_feita"]},
 }
@@ -576,6 +578,96 @@ def test_uma_loja_retirada_antes_e_reativada_na_mesma_paragem(sessao):
     assert r.json()["paragens"][3]["chegada_prevista"] is None
 
 
+def _calculo_de(paragens, calculado_em="2026-10-12T20:00:00Z"):
+    """Um `calculo` gravado cuja assinatura é a da rota com estas `paragens`
+    (só a secção "rota", pela ordem, e a fábrica como início e fim): o
+    `rota_api` dá-o como `atual` enquanto a rota tiver essas paragens assim."""
+    rota = _rota(AMANHA, paragens)
+    lojas = {loja["id"]: _projetada(loja) for loja in _lojas()}
+    seccoes = dominio_rotas.seccoes(rota["paragens"], lojas, _dia(AMANHA))
+    incluidas = [(paragem, loja) for paragem, loja, seccao, _ in seccoes if seccao == "rota"]
+    return {
+        "assinatura": assinatura(entrada_calculo(rota, incluidas, FABRICA_PADRAO, FABRICA_PADRAO)),
+        "distancia_m": 9000, "duracao_s": 3000, "regresso_previsto": "09:50", "depois_do_limite": False,
+        "geometria": "_p~iF~ps|U_ulLnnqC_mqNvxq`@", "calculado_em": calculado_em,
+    }
+
+
+def _filtro_com(calculo):
+    """O filtro de guarda de uma rota lida com este `calculo` (correção "F3-INT-1")."""
+    filtro = {campo: valor for campo, valor in FILTRO_DE_ESCRITA.items() if campo != "calculo"}
+    return {**filtro, "calculo.assinatura": calculo["assinatura"], "calculo.calculado_em": calculo["calculado_em"]}
+
+
+def test_reativar_na_seccao_rota_limpa_o_calculo_que_a_daria_como_atual(sessao):
+    """Correção "F3-MAT-1": B, C e D foram calculadas (a D no fim, fora de
+    horário) e a D foi retirada sem novo cálculo. Voltar a pô-la deixa a
+    entrada igual à do cálculo gravado, mas a D volta sem horas: o `calculo`
+    limpa-se na mesma escrita, e a API nunca diz `atual: true` com uma
+    paragem da secção "rota" sem hora (o planeador volta a pedir as horas)."""
+    horas = {
+        "p-b": {"chegada_prevista": "08:10", "espera_min": 0},
+        "p-c": {"chegada_prevista": "08:40", "espera_min": 20},
+    }
+    reativada = _paragem("d", LOJA_D, 3, adicionada_em=AGORA_INSTANTE, adicionada_por=ZE)
+    depois = [
+        _paragem("a", LOJA_A, 2), _paragem("b", LOJA_B, 0, **horas["p-b"]), reativada,
+        _paragem("c", LOJA_C, 1, **horas["p-c"]),
+    ]
+    calculo = _calculo_de(depois)
+    antes = deepcopy(depois)
+    antes[2] = _retirada("d", LOJA_D, chegada_prevista="09:10", espera_min=0, fora_de_horario=True)
+    base = _base(rotas=[_rota(AMANHA, antes, calculo=calculo)], lojas=_lojas())
+    r = _adicionar(sessao(ZE_UTILIZADOR, base), LOJA_D)
+    assert r.status_code == 201, r.text
+    rota = _gravadas(base)[0]
+    assert (rota["paragens"], rota["calculo"], rota["versao"]) == (depois, None, 4)
+    assert r.json()["calculo"] is None
+    assert [(p["id"], p["numero"], p["chegada_prevista"], p["aviso"]) for p in r.json()["paragens"]] == [
+        ("p-b", 1, "08:10", "nenhum"), ("p-c", 2, "08:40", "nenhum"), ("p-a", None, None, "fechada_neste_dia"),
+        ("p-d", 3, None, "nenhum"),
+    ]
+    caminhos = {
+        "paragens.2.ordem": 3, "paragens.2.motivo": "angariacao", "paragens.2.tempo_servico_min": 15,
+        "paragens.2.manter_fechada": False, "paragens.2.nao_cabe": False, "paragens.2.chegada_prevista": None,
+        "paragens.2.espera_min": None, "paragens.2.fora_de_horario": False, "paragens.2.removida_em": None,
+        "paragens.2.adicionada_em": AGORA_INSTANTE, "paragens.2.adicionada_por": ZE,
+    }
+    assert _escritas(base) == [(
+        "find_one_and_update",
+        _filtro_com(calculo),
+        {"$set": {**caminhos, "calculo": None, **AUTORIA}, "$inc": {"versao": 1}},
+        SEM_ID,
+        False,
+        ReturnDocument.AFTER,
+    )]
+    assert r.json() == _api(rota, _lojas())
+
+
+def test_reativar_na_seccao_fechada_nao_toca_no_calculo(sessao):
+    """A A fecha à quarta: reativada (sem "Manter"; o motivo da fase
+    "contactada" é a amostra) fica na secção "fechada", fora do Directions.
+    O cálculo de B e C continua a valer e não se escreve."""
+    depois = [
+        _paragem("a", LOJA_A, 2, motivo="amostra", tempo_servico_min=10, adicionada_em=AGORA_INSTANTE, adicionada_por=ZE),
+        _paragem("b", LOJA_B, 0, chegada_prevista="08:10", espera_min=0),
+        _paragem("c", LOJA_C, 1, chegada_prevista="08:40", espera_min=20),
+    ]
+    calculo = _calculo_de(depois)
+    antes = deepcopy(depois)
+    antes[0] = _retirada("a", LOJA_A, manter_fechada=True, chegada_prevista="09:30", espera_min=0)
+    base = _base(rotas=[_rota(AMANHA, antes, calculo=calculo)], lojas=_lojas())
+    r = _adicionar(sessao(ZE_UTILIZADOR, base), LOJA_A)
+    assert r.status_code == 201, r.text
+    rota = _gravadas(base)[0]
+    assert (rota["paragens"], rota["calculo"]) == (depois, calculo)
+    assert "calculo" not in _escritas(base)[0][2]["$set"]
+    assert r.json()["calculo"]["atual"] is True
+    assert [(p["id"], p["seccao"], p["chegada_prevista"]) for p in r.json()["paragens"]] == [
+        ("p-b", "rota", "08:10"), ("p-c", "rota", "08:40"), ("p-a", "fechada", None),
+    ]
+
+
 def test_a_reativacao_tambem_leva_o_motivo_enviado(sessao):
     base = _base(rotas=[_rota(AMANHA, _tres_paragens())], lojas=_lojas())
     r = _adicionar(sessao(ZE_UTILIZADOR, base), LOJA_D, motivo="entrega")
@@ -920,6 +1012,44 @@ def test_o_motorista_a_registar_entre_a_leitura_e_a_escrita_da_rota_em_curso(ses
     esperada = _rota(AMANHA, _tres_paragens())
     esperada["paragens"][1]["estado"] = "feita"
     assert _gravadas(base) == [esperada]
+
+
+def _recalculo_de_outra_pessoa(base, so_uma_vez):
+    """O gancho de um recálculo de outra pessoa entre a leitura e a escrita:
+    as horas da B e um `calculo` novo, com a versão igual (correção "F3-INT-1")."""
+    def recalcula(docs):
+        docs[0]["paragens"][1].update({"chegada_prevista": "08:10", "espera_min": 0})
+        docs[0]["calculo"] = _calculo_de(docs[0]["paragens"], calculado_em="2026-10-12T23:30:00Z")
+        if so_uma_vez:
+            base.crm_rotas.antes_de("find_one_and_update", None)
+
+    base.crm_rotas.antes_de("find_one_and_update", recalcula)
+
+
+def test_sem_versao_um_recalculo_entre_a_leitura_e_a_escrita_rele_e_grava(sessao):
+    """O recálculo não sobe a versão, mas muda o cálculo lido: a 1.ª escrita
+    já não casa, a 2.ª tentativa relê (com o cálculo novo no filtro) e grava."""
+    base = _base(rotas=[_rota(AMANHA, _tres_paragens())], lojas=_lojas())
+    _recalculo_de_outra_pessoa(base, so_uma_vez=True)
+    r = _adicionar(sessao(ZE_UTILIZADOR, base), LOJA_E)
+    assert r.status_code == 201, r.text
+    assert [c[0] for c in base.crm_rotas.registo] == [
+        "find_one", "find_one_and_update", "find_one", "find_one", "find_one_and_update",
+    ]
+    escritas = [c for c in base.crm_rotas.registo if c[0] == "find_one_and_update"]
+    rota = _gravadas(base)[0]
+    assert (escritas[0][1], escritas[1][1]) == (FILTRO_DE_ESCRITA, _filtro_com(rota["calculo"]))
+    assert (rota["versao"], rota["paragens"][4]["loja_id"], rota["paragens"][1]["chegada_prevista"]) == (4, LOJA_E, "08:10")
+
+
+def test_com_versao_um_recalculo_entre_a_leitura_e_a_escrita_da_conflito(sessao):
+    base = _base(rotas=[_rota(AMANHA, _tres_paragens())], lojas=_lojas())
+    _recalculo_de_outra_pessoa(base, so_uma_vez=False)
+    r = _adicionar(sessao(ZE_UTILIZADOR, base), LOJA_E, versao=3)
+    assert (r.status_code, r.json()) == (409, CONFLITO)
+    assert [c[0] for c in base.crm_rotas.registo] == ["find_one", "find_one_and_update", "find_one"]
+    rota = _gravadas(base)[0]
+    assert (rota["versao"], len(rota["paragens"]), rota["paragens"][1]["chegada_prevista"]) == (3, 4, "08:10")
 
 
 def test_a_rota_apagada_entre_a_leitura_e_a_escrita_cria_se_de_novo_sem_versao(sessao):

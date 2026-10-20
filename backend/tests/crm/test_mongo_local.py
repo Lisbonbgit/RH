@@ -1166,6 +1166,44 @@ def test_o_set_por_indice_com_a_guarda_casa_antes_e_nao_depois_do_registo_do_mot
     assert instantes_fora_do_formato(gravada) == []
 
 
+def test_o_calculo_lido_no_filtro_de_guarda_casa_antes_e_nao_depois_de_um_recalculo(no_mongo):
+    """Correção "F3-INT-1", no Mongo verdadeiro: `calculo: None` no filtro
+    casa com o `calculo` nulo gravado; um recálculo sem subir a versão
+    (`alterar(..., subir_versao=False)`) faz falhar as escritas lidas antes —
+    a que sobe a versão e o `$push` — sem escrever, `porque_falhou` diz
+    `conflito`, e a rota relida (com `calculo.assinatura` e
+    `calculo.calculado_em` no filtro) grava."""
+
+    async def ensaio(base):
+        rotas = base[COLECOES["rotas"]]
+        lida = _rota_na_base("2026-10-12", _id(1), _id(2), id_=_id(21))
+        await rotas.insert_one(dict(lida))
+        recalculo = {"paragens.0.chegada_prevista": "08:10", "paragens.0.espera_min": 0, "calculo": dict(CALCULO_GRAVADO)}
+        recalculada = await rotas_bd.alterar(
+            base, lida, recalculo, subir_versao=False, membro_id="u-ana", agora=AGORA_DEPOIS
+        )
+        velha = await rotas_bd.alterar(base, lida, {"evitar_portagens": True}, membro_id="u-ana", agora=AGORA_DEPOIS)
+        nova = documento_paragem({"id": _id(3)}, "entrega", 10, 2, "u-ana", AGORA_DEPOIS)
+        velho_push = await rotas_bd.acrescentar_paragem(base, lida, nova, membro_id="u-ana", agora=AGORA_DEPOIS)
+        intacta = await rotas.find_one({"id": lida["id"]}, {"_id": 0})
+        motivo = await rotas_bd.porque_falhou(base, lida["id"], lida["versao"])
+        relida = await rotas_bd.alterar(
+            base, recalculada, {"evitar_portagens": True}, membro_id="u-ana", agora=AGORA_DEPOIS
+        )
+        gravada = await rotas.find_one({"id": lida["id"]}, {"_id": 0})
+        return recalculada, velha, velho_push, intacta, motivo, relida, gravada
+
+    recalculada, velha, velho_push, intacta, motivo, relida, gravada = no_mongo(ensaio)
+
+    assert (recalculada["versao"], recalculada["calculo"]) == (1, CALCULO_GRAVADO)
+    assert recalculada["paragens"][0]["chegada_prevista"] == "08:10"
+    assert (velha, velho_push, motivo) == (None, None, "conflito")
+    assert intacta == recalculada
+    assert (relida["versao"], relida["evitar_portagens"], relida["calculo"]) == (2, True, CALCULO_GRAVADO)
+    assert gravada == relida
+    assert instantes_fora_do_formato(gravada) == []
+
+
 def test_push_de_paragens_com_set_por_indice_e_o_erro_40_do_mongo_e_do_duplo(no_mongo):
     """Pela mesma operação que o código usa (`find_one_and_update`), o Mongo
     recusa `$push paragens` + `$set paragens.0.x` com `OperationFailure`

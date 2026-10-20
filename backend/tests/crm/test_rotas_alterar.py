@@ -149,6 +149,7 @@ PROJECAO_DEFINICOES = {"_id": 0, "chave": 1, "valor": 1}
 FILTRO_DE_ESCRITA = {
     "id": "r-1",
     "versao": 3,
+    "calculo": None,
     "estado": {"$in": ["rascunho", "planeada"]},
     "paragens.estado": {"$nin": ["feita", "nao_feita"]},
 }
@@ -301,12 +302,22 @@ def _caminho(id_, campo):
     return f"paragens.{INDICE[id_]}.{campo}"
 
 
-def _escrita(set_, versao=3, rota_id="r-1"):
-    """A única `find_one_and_update` esperada: o filtro de guarda, o `$set`
-    dos campos que mudam mais a autoria, e o `$inc` da versão."""
+def _guarda_do_calculo(calculo):
+    """O cálculo lido no filtro de guarda (correção "F3-INT-1"): `calculo:
+    None`, ou a assinatura e o `calculado_em` dele."""
+    if calculo is None:
+        return {"calculo": None}
+    return {"calculo.assinatura": calculo["assinatura"], "calculo.calculado_em": calculo["calculado_em"]}
+
+
+def _escrita(set_, versao=3, rota_id="r-1", calculo=None):
+    """A única `find_one_and_update` esperada: o filtro de guarda (com o
+    `calculo` lido), o `$set` dos campos que mudam mais a autoria, e o `$inc`
+    da versão."""
+    filtro = {campo: valor for campo, valor in FILTRO_DE_ESCRITA.items() if campo != "calculo"}
     return (
         "find_one_and_update",
-        {**FILTRO_DE_ESCRITA, "id": rota_id, "versao": versao},
+        {**filtro, "id": rota_id, "versao": versao, **_guarda_do_calculo(calculo)},
         {"$set": {**set_, **AUTORIA}, "$inc": {"versao": 1}},
         SEM_ID,
         False,
@@ -817,7 +828,7 @@ def test_retirar_as_incluidas_limpa_o_calculo_na_mesma_escrita(sessao):
         _caminho(PARAGEM_B, "removida_em"): AGORA_INSTANTE, _caminho(PARAGEM_B, "ordem"): None,
         _caminho(PARAGEM_C, "removida_em"): AGORA_INSTANTE, _caminho(PARAGEM_C, "ordem"): None,
         _caminho(PARAGEM_A, "ordem"): 0, "calculo": None,
-    })]
+    }, calculo=CALCULO)]
     assert r.json()["calculo"] is None
     assert [(p["id"], p["seccao"]) for p in r.json()["paragens"]] == [(PARAGEM_A, "fechada")]
 
@@ -851,7 +862,7 @@ def test_tirar_o_manter_a_unica_incluida_limpa_o_calculo(sessao):
     )
     cliente = sessao(ZE_UTILIZADOR, base)
     r, rota = _ok(cliente, paragens={PARAGEM_A: {"manter_fechada": False}})
-    assert _escritas(base) == [_escrita({_caminho(PARAGEM_A, "manter_fechada"): False, "calculo": None})]
+    assert _escritas(base) == [_escrita({_caminho(PARAGEM_A, "manter_fechada"): False, "calculo": None}, calculo=CALCULO)]
     assert rota["calculo"] is None
 
 
@@ -863,8 +874,79 @@ def test_qualquer_escrita_numa_rota_sem_incluidas_limpa_um_calculo_que_tenha_fic
     r = _alterar(cliente)
     assert (r.status_code, _escritas(base)) == (200, [])
     r, rota = _ok(cliente, evitar_portagens=True)
-    assert _escritas(base) == [_escrita({"evitar_portagens": True, "calculo": None})]
+    assert _escritas(base) == [_escrita({"evitar_portagens": True, "calculo": None}, calculo=CALCULO)]
     assert rota["calculo"] is None
+
+
+# --- Correção "F3-MAT-2": sem incluídas, as horas das ativas também se limpam ----------------------
+
+HORAS_VELHAS = {"chegada_prevista": "09:30", "espera_min": 5, "fora_de_horario": True}
+SEM_HORAS = {"chegada_prevista": None, "espera_min": None, "fora_de_horario": False}
+
+
+def _sem_horas(*ids):
+    return {_caminho(id_, campo): valor for id_ in ids for campo, valor in SEM_HORAS.items()}
+
+
+def test_tirar_o_manter_a_unica_incluida_limpa_o_calculo_e_as_horas_dela(sessao):
+    """A A (fechada à quarta, com "Manter") era a única da secção "rota" e tinha
+    horas. Sem o "Manter" passa a "fechada": o `calculo` e as horas dela
+    limpam-se na mesma escrita (como no otimizar e no recalcular), e o GET já
+    não mostra uma hora numa paragem que o Directions não leva."""
+    paragem = _paragem(PARAGEM_A, LOJA_A, 0, manter_fechada=True, **HORAS_VELHAS)
+    base = _base(rotas=[_rota(AMANHA, [paragem], calculo=deepcopy(CALCULO))], lojas=_lojas())
+    r, rota = _ok(sessao(ZE_UTILIZADOR, base), paragens={PARAGEM_A: {"manter_fechada": False}})
+    assert _escritas(base) == [_escrita(
+        {"paragens.0.manter_fechada": False, "paragens.0.chegada_prevista": None, "paragens.0.espera_min": None,
+         "paragens.0.fora_de_horario": False, "calculo": None},
+        calculo=CALCULO,
+    )]
+    assert (rota["calculo"], rota["paragens"]) == (None, [_paragem(PARAGEM_A, LOJA_A, 0)])
+    assert [(p["seccao"], p["chegada_prevista"], p["espera_min"]) for p in r.json()["paragens"]] == [
+        ("fechada", None, None),
+    ]
+
+
+def test_retirar_as_incluidas_limpa_as_horas_das_ativas_que_ficam_e_nao_toca_nas_retiradas(sessao):
+    """Ficam só a A (fechada, com horas velhas): limpam-se as dela; as das
+    retiradas B e C não se tocam (como no `_horas_no_set`)."""
+    horas = {PARAGEM_A: HORAS_VELHAS, PARAGEM_B: HORAS_VELHAS, PARAGEM_C: HORAS_VELHAS}
+    paragens = [{**p, **horas.get(p["id"], {})} for p in _tres_paragens()]
+    base = _base(rotas=[_rota(AMANHA, paragens, calculo=deepcopy(CALCULO))], lojas=_lojas())
+    r, rota = _ok(sessao(ZE_UTILIZADOR, base), retirar=[PARAGEM_B, PARAGEM_C])
+    assert _escritas(base) == [_escrita({
+        _caminho(PARAGEM_B, "removida_em"): AGORA_INSTANTE, _caminho(PARAGEM_B, "ordem"): None,
+        _caminho(PARAGEM_C, "removida_em"): AGORA_INSTANTE, _caminho(PARAGEM_C, "ordem"): None,
+        _caminho(PARAGEM_A, "ordem"): 0, **_sem_horas(PARAGEM_A), "calculo": None,
+    }, calculo=CALCULO)]
+    assert [(p["chegada_prevista"], p["espera_min"], p["fora_de_horario"]) for p in rota["paragens"]] == [
+        (None, None, False), ("09:30", 5, True), (None, None, False), ("09:30", 5, True),
+    ]
+
+
+def test_sem_calculo_e_sem_incluidas_as_horas_que_tenham_ficado_tambem_se_limpam(sessao):
+    """Sem cálculo gravado e só com a A fechada com horas velhas: qualquer
+    escrita limpa-as (o `calculo` já é nulo e não se escreve)."""
+    base = _base(rotas=[_rota(AMANHA, [_paragem(PARAGEM_A, LOJA_A, 0, **HORAS_VELHAS)])], lojas=_lojas())
+    r, rota = _ok(sessao(ZE_UTILIZADOR, base), evitar_portagens=True)
+    assert _escritas(base) == [_escrita({
+        "evitar_portagens": True, "paragens.0.chegada_prevista": None, "paragens.0.espera_min": None,
+        "paragens.0.fora_de_horario": False,
+    })]
+    assert rota["paragens"] == [_paragem(PARAGEM_A, LOJA_A, 0)]
+
+
+def test_com_incluidas_as_horas_das_outras_ativas_nao_se_tocam_no_patch(sessao):
+    """Ficando alguma incluída, o PATCH não mexe em horas: é o recalcular que
+    as acerta (o `calculo` fica velho pela assinatura)."""
+    horas = {PARAGEM_A: HORAS_VELHAS, PARAGEM_C: HORAS_VELHAS}
+    paragens = [{**p, **horas.get(p["id"], {})} for p in _tres_paragens()]
+    base = _base(rotas=[_rota(AMANHA, paragens, calculo=deepcopy(CALCULO))], lojas=_lojas())
+    _ok(sessao(ZE_UTILIZADOR, base), retirar=[PARAGEM_C])
+    assert _escritas(base) == [_escrita({
+        _caminho(PARAGEM_C, "removida_em"): AGORA_INSTANTE, _caminho(PARAGEM_C, "ordem"): None,
+        _caminho(PARAGEM_A, "ordem"): 1,
+    }, calculo=CALCULO)]
 
 
 # --- Sem nada a mudar -----------------------------------------------------------------------------
@@ -1113,6 +1195,27 @@ def test_outra_pessoa_a_gravar_entre_a_leitura_e_a_escrita_da_conflito_sem_tenta
     assert [c[0] for c in base.crm_rotas.registo] == ["find_one", "find_one_and_update", "find_one"]
     assert base.crm_rotas.registo[2][1:] == ({"id": "r-1"}, SEM_CALCULO)  # o porque_falhou
     assert _gravadas(base) == [_rota(AMANHA, _tres_paragens(), versao=4)]
+
+
+def test_um_recalculo_entre_a_leitura_e_a_escrita_da_conflito(sessao):
+    """Correção "F3-INT-1": o PATCH leu a rota sem cálculo e outra pessoa
+    recalcula entretanto (as horas e o `calculo`, a versão igual). Retirar as
+    incluídas já não casa: 409 `conflito`, e fica o recálculo tal e qual —
+    nunca um `calculo` gravado numa rota sem incluídas."""
+    base = _base_com_tres()
+
+    def outra_pessoa_recalcula(docs):
+        docs[0]["paragens"][1].update(HORAS_VELHAS)
+        docs[0]["calculo"] = deepcopy(CALCULO)
+
+    base.crm_rotas.antes_de("find_one_and_update", outra_pessoa_recalcula)
+    r = _alterar(sessao(ZE_UTILIZADOR, base), retirar=[PARAGEM_B, PARAGEM_C])
+    assert (r.status_code, r.json()) == (409, CONFLITO)
+    assert [c[0] for c in base.crm_rotas.registo] == ["find_one", "find_one_and_update", "find_one"]
+    assert base.crm_rotas.registo[1][1] == FILTRO_DE_ESCRITA
+    esperada = _rota(AMANHA, _tres_paragens(), calculo=CALCULO)
+    esperada["paragens"][1].update(HORAS_VELHAS)
+    assert _gravadas(base) == [esperada]
 
 
 def test_o_motorista_a_registar_entre_a_leitura_e_a_escrita_da_rota_em_curso(sessao):

@@ -472,7 +472,9 @@ def test_o_motorista_a_registar_entre_a_leitura_e_a_escrita_da_rota_em_curso_e_n
     assert _gravadas(base) == [_com_a_a_feita(_rota(AMANHA, _tres_paragens()))]
     assert _operacoes(base) == ["find_one", "find_one_and_update", "find_one"]
     escrita = base.crm_rotas.registo[1]
-    assert escrita[1] == {"id": "r-1", "versao": 3, "estado": {"$in": ["rascunho", "planeada"]}, **GUARDA_DO_TERRENO}
+    assert escrita[1] == {
+        "id": "r-1", "versao": 3, "calculo": None, "estado": {"$in": ["rascunho", "planeada"]}, **GUARDA_DO_TERRENO,
+    }
     assert escrita[3:] == (SEM_ID, False, ReturnDocument.AFTER)
     assert base.crm_rotas.registo[2][1:] == ({"id": "r-1"}, SEM_CALCULO), "o porque_falhou, não uma nova tentativa"
     assert ors_falso.caminhos() == caminhos, "o openrouteservice já tinha respondido; a rota não muda na mesma"

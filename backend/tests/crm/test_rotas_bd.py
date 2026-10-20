@@ -68,10 +68,12 @@ DEFINICOES = {
 }
 
 # O filtro de guarda de TODAS as escritas do escritório (plano F3 §1), para a
-# rota "r-1" lida com a versão 3.
+# rota "r-1" lida com a versão 3 e sem cálculo (correção "F3-INT-1": o
+# cálculo lido também entra no filtro).
 FILTRO_DE_ESCRITA = {
     "id": "r-1",
     "versao": 3,
+    "calculo": None,
     "estado": {"$in": ["rascunho", "planeada"]},
     "paragens.estado": {"$nin": ["feita", "nao_feita"]},
 }
@@ -570,6 +572,75 @@ def test_acrescentar_paragem_nao_mexe_na_rota_nem_na_paragem_recebidas():
     antes = (deepcopy(rota), deepcopy(nova))
     _acrescentar(_base([rota]), rota, nova)
     assert (rota, nova) == antes
+
+
+# --- Correção "F3-INT-1": o cálculo lido também guarda a escrita ----------------------------------
+#
+# O recalcular grava as horas e o `calculo` sem subir a versão, e as outras
+# escritas montam o `$set` por diferença contra a rota lida. Sem o cálculo no
+# filtro, uma escrita lida antes de um recálculo casava e deixava as horas
+# dele debaixo de outro cálculo.
+
+
+def test_o_filtro_de_guarda_leva_a_identidade_do_calculo_lido():
+    """Com cálculo: a assinatura e o `calculado_em` lidos (os caminhos com
+    ponto, sem a geometria); sem cálculo, `calculo: None`. Nas duas escritas."""
+    calculo = _calculo(assinatura="sha256:" + "1" * 64, calculado_em="2026-10-10T09:20:00Z")
+    rota = _rota([_paragem("a", LOJA_A, 0)], calculo=calculo)
+    base = _base([rota])
+    _alterar(base, rota, {"hora_saida": "09:00"}, subir_versao=False)
+    _acrescentar(base, rota, _nova_paragem())
+    com_calculo = {
+        "id": "r-1",
+        "versao": 3,
+        "calculo.assinatura": "sha256:" + "1" * 64,
+        "calculo.calculado_em": "2026-10-10T09:20:00Z",
+        "estado": {"$in": ["rascunho", "planeada"]},
+        "paragens.estado": {"$nin": ["feita", "nao_feita"]},
+    }
+    assert [chamada[1] for chamada in _rotas(base).registo] == [com_calculo, com_calculo]
+    sem = _base([_rota()])
+    _alterar(sem, _rota(), {"hora_saida": "09:00"})
+    _acrescentar(sem, _rota(), _nova_paragem())
+    assert [chamada[1] for chamada in _rotas(sem).registo] == [FILTRO_DE_ESCRITA, FILTRO_DE_ESCRITA]
+
+
+@pytest.mark.parametrize("calculo_lido", [None, _calculo()], ids=["sem-calculo", "com-calculo"])
+def test_um_recalculo_gravado_depois_da_leitura_faz_falhar_as_escritas_lidas_antes(calculo_lido):
+    """Outra pessoa recalcula entre a leitura e a escrita (as horas e um
+    `calculo` novo, a versão igual): nenhuma das escritas lidas antes casa —
+    nem as que sobem a versão nem as que não sobem — e fica o recálculo tal
+    e qual; `porque_falhou` diz `conflito`."""
+    lida = _rota([_paragem("a", LOJA_A, 0), _paragem("b", LOJA_B, 1)], calculo=deepcopy(calculo_lido))
+    base = _base([deepcopy(lida)])
+    recalculo = {
+        **caminhos_paragem(0, {"chegada_prevista": "08:20", "espera_min": 0, "fora_de_horario": True}),
+        "calculo": _calculo(assinatura="sha256:" + "2" * 64, calculado_em="2026-10-10T09:31:00Z"),
+    }
+    gravada = _alterar(base, deepcopy(lida), recalculo, subir_versao=False)
+    assert gravada["versao"] == 3
+    assert _alterar(base, lida, {"hora_saida": "09:00"}) is None
+    assert _alterar(base, lida, {**caminhos_paragem(0, {"fora_de_horario": False}), "calculo": None}, subir_versao=False) is None
+    assert _acrescentar(base, lida, _nova_paragem(LOJA_C, 2)) is None
+    assert _rotas(base).sem_id() == [gravada]
+    assert correr(porque_falhou(base, "r-1", 3)) == "conflito"
+
+
+def test_relida_depois_do_recalculo_a_escrita_casa():
+    """Quem relê a rota depois do recálculo leva o cálculo novo no filtro e grava."""
+    base = _base([_rota([_paragem("a", LOJA_A, 0)])])
+    novo = _calculo(calculado_em="2026-10-10T09:31:00Z")
+    relida = _alterar(base, _rota([_paragem("a", LOJA_A, 0)]), {"calculo": novo}, subir_versao=False)
+    depois = _alterar(base, relida, {"hora_saida": "09:00"})
+    assert (depois["versao"], depois["hora_saida"], depois["calculo"]) == (4, "09:00", novo)
+    assert _rotas(base).registo[1][1] == {
+        "id": "r-1",
+        "versao": 3,
+        "calculo.assinatura": novo["assinatura"],
+        "calculo.calculado_em": "2026-10-10T09:31:00Z",
+        "estado": {"$in": ["rascunho", "planeada"]},
+        "paragens.estado": {"$nin": ["feita", "nao_feita"]},
+    }
 
 
 # --- porque_falhou -------------------------------------------------------------------------------

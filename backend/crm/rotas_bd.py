@@ -16,13 +16,17 @@ ambiente — o `agora` e o membro chegam de quem chama.
   `alterar` (um `$set` de campos de topo e de `paragens.<índice>.<campo do
   escritório>`) e `acrescentar_paragem` (um `$push` de uma paragem nova,
   com o terreno em `pendente`/null/null). As duas gravam numa só
-  `find_one_and_update` com o filtro de guarda `{id, versao, estado ∈
-  ESTADOS_EDITAVEIS, "paragens.estado" ∉ ESTADOS_COM_REGISTO}`: a versão
-  lida tem de ser a gravada e a rota não pode ter nenhum registo do
-  motorista (§1 "O terreno ganha"). Cada gravação que muda o plano sobe a
-  `versao` e leva `atualizado_em` (`relogio.proximo_carimbo`: sempre maior
-  que o anterior) e `atualizado_por`; as horas do Directions
-  (`subir_versao=False`) são dados derivados e não mudam nada disso. As duas
+  `find_one_and_update` com o filtro de guarda `{id, versao, o cálculo
+  lido, estado ∈ ESTADOS_EDITAVEIS, "paragens.estado" ∉
+  ESTADOS_COM_REGISTO}`: a versão e o cálculo lidos têm de ser os gravados
+  e a rota não pode ter nenhum registo do motorista (§1 "O terreno ganha").
+  Cada gravação que muda o plano sobe a `versao` e leva `atualizado_em`
+  (`relogio.proximo_carimbo`: sempre maior que o anterior) e
+  `atualizado_por`; as horas do Directions (`subir_versao=False`) são dados
+  derivados e não mudam nada disso — por isso o filtro compara também o
+  cálculo lido (correção "F3-INT-1"): as escritas montam o `$set` por
+  diferença contra a rota lida, e um recálculo gravado entretanto, com a
+  mesma versão, ficava debaixo de um cálculo que não é o dele. As duas
   devolvem a rota como ficou (sem `_id`), ou `None` quando o filtro não
   casou — e aí `porque_falhou` relê a rota e diz porquê, por esta ordem
   (correção "T3.17 (porque_falhou: precedência)"): `nao_existe` → `em_curso`
@@ -136,8 +140,8 @@ async def criar(base, documento) -> bool:
 
 async def alterar(base, rota, set_, *, subir_versao=True, membro_id, agora):
     """A escrita condicional do escritório sobre a `rota` lida: um só
-    `find_one_and_update` com o filtro de guarda (a versão lida, um estado
-    editável e nenhuma paragem com registo do motorista) e o `$set` de
+    `find_one_and_update` com o filtro de guarda (a versão e o cálculo lidos,
+    um estado editável e nenhuma paragem com registo do motorista) e o `$set` de
     `set_` — campos de topo (`hora_saida`, `estado`, `calculo`…) e caminhos
     `paragens.<índice>.<campo do escritório>` (`dominio.rotas.caminhos_paragem`).
 
@@ -191,9 +195,12 @@ async def porque_falhou(base, rota_id, versao) -> str:
       ao conflito, para o planeador passar a só leitura em vez de recarregar
       e tentar outra vez;
     - `"conflito"`: a `versao` gravada já não é a que a escrita levava. Se
-      ainda for (a rota editável e sem registo: um caso que o filtro não
-      explica), fica também `conflito` — a escrita falhou e o planeador tem
-      de reler — e um aviso no registo.
+      ainda for (a rota editável e sem registo), o mais provável é um
+      recálculo entretanto — grava o `calculo` sem subir a versão, e o
+      filtro compara o cálculo lido (correção "F3-INT-1") —; fica também
+      `conflito` — a escrita falhou e o planeador tem de reler — e um aviso
+      no registo (esta releitura não traz o `calculo`, para não ler a
+      geometria).
     """
     rota = await _rotas(base).find_one({"id": rota_id}, PROJECAO_RESUMO)
     if rota is None:
@@ -229,14 +236,30 @@ def _exigir_dia(valor, nome):
 
 def _guarda(rota) -> dict:
     """O filtro de guarda de todas as escritas do escritório (plano F3 §1):
-    a rota lida, com a versão lida, num estado editável e sem nenhuma
-    paragem com registo do motorista (`$nin` numa lista: nenhum elemento)."""
+    a rota lida, com a versão lida e o cálculo lido (`_calculo_lido`), num
+    estado editável e sem nenhuma paragem com registo do motorista (`$nin`
+    numa lista: nenhum elemento)."""
     return {
         "id": rota["id"],
         "versao": rota["versao"],
+        **_calculo_lido(rota["calculo"]),
         "estado": {"$in": list(rotas.ESTADOS_EDITAVEIS)},
         "paragens.estado": {"$nin": list(rotas.ESTADOS_COM_REGISTO)},
     }
+
+
+def _calculo_lido(calculo) -> dict:
+    """O cálculo lido, no filtro de guarda (correção "F3-INT-1"): o
+    recalcular grava as horas e o `calculo` sem subir a versão, e as outras
+    escritas decidem o `$set` por diferença contra a rota lida (só o que
+    muda; o `calculo` limpo só se o lido não era nulo). Sem cálculo,
+    `calculo: None` (no Mongo também casa com o campo em falta); com ele, a
+    assinatura e o `calculado_em` — dois cálculos com as duas iguais são da
+    mesma entrada no mesmo segundo, e a geometria (dezenas de KB) nunca vai
+    no filtro."""
+    if calculo is None:
+        return {"calculo": None}
+    return {"calculo.assinatura": calculo["assinatura"], "calculo.calculado_em": calculo["calculado_em"]}
 
 
 def _autoria(rota, membro_id, agora) -> dict:

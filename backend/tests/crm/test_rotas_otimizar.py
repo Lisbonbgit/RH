@@ -212,6 +212,7 @@ PROJECAO_DEFINICOES = {"_id": 0, "chave": 1, "valor": 1}
 FILTRO_DE_ESCRITA = {
     "id": "r-1",
     "versao": 3,
+    "calculo": None,
     "estado": {"$in": ["rascunho", "planeada"]},
     "paragens.estado": {"$nin": ["feita", "nao_feita"]},
 }
@@ -388,12 +389,22 @@ def _escritas(base):
     return [c for c in base.crm_rotas.registo if c[0] in ("insert_one", "update_one", "find_one_and_update")]
 
 
-def _escrita(set_, versao=3, rota_id="r-1", autoria=AUTORIA):
-    """A única `find_one_and_update` esperada: o filtro de guarda, o `$set`
-    do que muda mais a autoria, e o `$inc` da versão (o otimizar muda o plano)."""
+def _guarda_do_calculo(calculo):
+    """O cálculo lido no filtro de guarda (correção "F3-INT-1"): `calculo:
+    None`, ou a assinatura e o `calculado_em` dele."""
+    if calculo is None:
+        return {"calculo": None}
+    return {"calculo.assinatura": calculo["assinatura"], "calculo.calculado_em": calculo["calculado_em"]}
+
+
+def _escrita(set_, versao=3, rota_id="r-1", autoria=AUTORIA, calculo=None):
+    """A única `find_one_and_update` esperada: o filtro de guarda (com o
+    `calculo` lido), o `$set` do que muda mais a autoria, e o `$inc` da versão
+    (o otimizar muda o plano)."""
+    filtro = {campo: valor for campo, valor in FILTRO_DE_ESCRITA.items() if campo != "calculo"}
     return (
         "find_one_and_update",
-        {**FILTRO_DE_ESCRITA, "id": rota_id, "versao": versao},
+        {**filtro, "id": rota_id, "versao": versao, **_guarda_do_calculo(calculo)},
         {"$set": {**set_, **autoria}, "$inc": {"versao": 1}},
         SEM_ID,
         False,
@@ -730,7 +741,7 @@ def test_uma_paragem_que_nao_cabia_volta_a_ir_ao_vroom_e_se_couber_volta_a_rota(
     assert _escritas(cliente.base) == [_escrita({
         **ORDEM_PADRAO, **HORAS_PADRAO, "paragens.3.nao_cabe": False, "paragens.3.fora_de_horario": False,
         "calculo": _calculo(rota, _lojas(), PONTOS, 6001, 2700, "09:55"),
-    })]
+    }, calculo=CALCULO_VELHO)]
     assert _resumo(r) == [(PARAGEM_C, 1, "rota", False, "08:20"), (PARAGEM_B, 2, "rota", False, "09:30"), (PARAGEM_A, None, "fechada", False, None)]
     assert r.json()["calculo"]["atual"] is True
 
@@ -844,7 +855,9 @@ def test_so_escreve_o_que_muda_e_o_calculo_escreve_se_sempre(sessao, ors_falso):
     ors_falso.vroom(_otimizacao([1, 2]))
     r, rota = _ok(cliente)
     assert ors_falso.corpos()[0] == _pedido_vroom([PARAGEM_C, PARAGEM_B])
-    assert _escritas(cliente.base) == [_escrita({"calculo": _calculo(rota, _lojas(), PONTOS, 6001, 2700, "09:55")})]
+    assert _escritas(cliente.base) == [
+        _escrita({"calculo": _calculo(rota, _lojas(), PONTOS, 6001, 2700, "09:55")}, calculo=CALCULO_VELHO)
+    ]
     assert (rota["versao"], r.json()["calculo"]["atual"]) == (4, True)
 
 
@@ -858,9 +871,9 @@ def test_duas_vezes_seguidas_a_segunda_sobe_outra_vez_a_versao(sessao, ors_falso
     r, rota = _ok(cliente, versao=4)
     assert ors_falso.caminhos() == [CAMINHO_VROOM, CAMINHO_DIRECOES] * 2
     assert ors_falso.corpos()[2] == _pedido_vroom([PARAGEM_C, PARAGEM_B])
-    assert _escritas(cliente.base)[1] == _escrita(
-        {"calculo": _calculo(rota, _lojas(), PONTOS, 6001, 2700, "09:55")}, versao=4, autoria=_autoria(1)
-    )
+    calculo = _calculo(rota, _lojas(), PONTOS, 6001, 2700, "09:55")
+    # A 2.ª leu o cálculo gravado pela 1.ª, e leva-o no filtro (correção "F3-INT-1").
+    assert _escritas(cliente.base)[1] == _escrita({"calculo": calculo}, versao=4, autoria=_autoria(1), calculo=calculo)
     assert (rota["versao"], r.json()["versao"]) == (5, 5)
 
 
@@ -970,7 +983,7 @@ def test_sem_nenhuma_atribuida_todas_ficam_nao_cabe_sem_directions_e_a_versao_so
         "paragens.1.chegada_prevista": None, "paragens.1.espera_min": None, "paragens.1.fora_de_horario": False,
         "paragens.3.espera_min": None,
         "calculo": None,
-    })]
+    }, calculo=CALCULO_VELHO)]
     assert (rota["versao"], rota["calculo"]) == (4, None)
     assert r.json() == _api(rota, _lojas())
     assert _resumo(r) == [(PARAGEM_B, None, "nao_cabe", True, None), (PARAGEM_C, None, "nao_cabe", True, None), (PARAGEM_A, None, "fechada", False, None)]
@@ -993,7 +1006,9 @@ def test_com_todas_impossiveis_nao_se_chama_o_ors_e_ficam_nao_cabe_com_a_versao_
     cliente = sessao(ZE_UTILIZADOR, _base_com_tres(lojas=lojas, calculo=deepcopy(CALCULO_VELHO)))
     r, rota = _ok(cliente)
     assert ors_falso.pedidos == []
-    assert _escritas(cliente.base) == [_escrita({"paragens.1.nao_cabe": True, "paragens.3.nao_cabe": True, "calculo": None})]
+    assert _escritas(cliente.base) == [
+        _escrita({"paragens.1.nao_cabe": True, "paragens.3.nao_cabe": True, "calculo": None}, calculo=CALCULO_VELHO)
+    ]
     assert (rota["versao"], rota["calculo"]) == (4, None)
     assert _resumo(r) == [(PARAGEM_B, None, "nao_cabe", True, None), (PARAGEM_C, None, "nao_cabe", True, None), (PARAGEM_A, None, "fechada", False, None)]
 
@@ -1024,7 +1039,7 @@ def test_sem_nada_para_o_vroom_limpa_o_calculo_que_havia_sem_chamar_o_ors(sessao
     base = _base(rotas=[_rota(AMANHA, paragens, calculo=deepcopy(CALCULO_VELHO))], lojas=_lojas())
     cliente = sessao(ZE_UTILIZADOR, base)
     r, rota = _ok(cliente)
-    assert _escritas(base) == [_escrita({"calculo": None})]
+    assert _escritas(base) == [_escrita({"calculo": None}, calculo=CALCULO_VELHO)]
     assert (rota["versao"], rota["calculo"]) == (4, None)
     assert r.json() == _api(rota, _lojas(), calculo_disponivel=False)
     assert r.json()["calculo"] is None
@@ -1481,6 +1496,29 @@ def test_outra_pessoa_a_gravar_entre_a_leitura_e_a_escrita_da_conflito(sessao, o
     assert _gravadas(base) == [_rota(AMANHA, _tres_paragens(), versao=4)]
 
 
+def test_um_recalculo_entre_a_leitura_e_a_escrita_da_conflito(sessao, ors_falso):
+    """Correção "F3-INT-1": outra pessoa recalcula enquanto o VROOM e o
+    Directions respondem (as horas da C fora de horário e um `calculo`, a
+    versão igual). O `$set` do otimizar foi montado por diferença contra a
+    rota lida e já não casa: 409 `conflito`, e fica o recálculo tal e qual —
+    nunca as horas dele debaixo do cálculo do otimizar."""
+    base = _base_com_tres()
+
+    def outra_pessoa_recalcula(docs):
+        docs[0]["paragens"][3].update(HORAS_VELHAS)
+        docs[0]["calculo"] = deepcopy(CALCULO_VELHO)
+
+    base.crm_rotas.antes_de("find_one_and_update", outra_pessoa_recalcula)
+    r = _otimizar(sessao(ZE_UTILIZADOR, base))
+    assert (r.status_code, r.json()) == (409, CONFLITO)
+    assert [c[0] for c in base.crm_rotas.registo] == ["find_one", "find_one_and_update", "find_one"]
+    assert base.crm_rotas.registo[1][1] == FILTRO_DE_ESCRITA
+    assert ors_falso.caminhos() == [CAMINHO_VROOM, CAMINHO_DIRECOES]
+    assert _gravadas(base) == [
+        _rota(AMANHA, _tres_paragens(**{PARAGEM_C: HORAS_VELHAS}), calculo=CALCULO_VELHO),
+    ]
+
+
 def test_o_motorista_a_registar_entre_a_leitura_e_a_escrita_da_rota_em_curso(sessao, ors_falso):
     base = _base_com_tres()
 
@@ -1567,7 +1605,7 @@ def test_todas_as_escritas_passam_no_terreno_e_nos_instantes(sessao, ors_falso):
     assert ors_falso.corpos()[2] == _pedido_vroom([PARAGEM_B])
     assert escritas[2] == _escrita(
         {"calculo": _calculo(rota, _lojas(), pontos, 2000, 1200, "08:35"), "paragens.1.chegada_prevista": "08:10"},
-        versao=5, autoria=_autoria(2),
+        versao=5, autoria=_autoria(2), calculo=escritas[0][2]["$set"]["calculo"],
     )
     assert instantes_fora_do_formato(_gravadas(cliente.base)) == []
     assert (rota["versao"], r.json()["calculo"]["atual"], [p["numero"] for p in r.json()["paragens"]]) == (6, True, [1, None])
