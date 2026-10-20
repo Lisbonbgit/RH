@@ -934,3 +934,95 @@ def test_mudar_a_senha_leva_a_nova_ao_keychain_so_de_quem_tem_o_face_id(tmp_path
       RESPOSTAS['POST /auth/change-password'] = [200, { token: 'novo' }];
     """ % (json.dumps(ligado_a), _EU))
     assert r == {"dono": ligado_a, "senha": fica}
+
+
+# --- LoginPage: «Usar Face ID para entrar?» -------------------------------------
+
+# O login VERDADEIRO dentro de um router, vindo de /bolso/calendario (o
+# `state.from` que o ProtectedRoute lá põe). Escreve email e senha e carrega
+# em Entrar.
+_LOGIN = r"""
+      const { AuthProvider } = lib('contexts/AuthContext');
+      const LoginPage = lib('pages/LoginPage').default;
+      const { MemoryRouter, Routes, Route } = require('react-router-dom');
+      const raiz = createRoot(document.getElementById('raiz'));
+      const el = React.createElement;
+      await act(async () => {
+        raiz.render(el(AuthProvider, null,
+          el(MemoryRouter, { initialEntries: [{ pathname: '/login', state: { from: '/bolso/calendario' } }] },
+            el(Routes, null,
+              el(Route, { path: '/login', element: el(LoginPage) }),
+              el(Route, { path: '/bolso/calendario', element: el('p', null, 'CALENDARIO') })))));
+      });
+      await espera();
+      const escrever = (id, valor) => {
+        const campo = document.getElementById(id);
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(campo, valor);
+        campo.dispatchEvent(new window.Event('input', { bubbles: true }));
+      };
+      await act(async () => { escrever('login-email', 'Carol@Lisbonb.com'); escrever('login-password', 'segredo'); });
+      await act(async () => { document.querySelector('[data-testid=login-submit-btn]').click(); });
+      await espera(20);
+      const botao = (nome) => [...document.querySelectorAll('button')].find((b) => b.textContent === nome);
+"""
+
+# O servidor devolve o email como está na conta (minúsculas): é ESSE que se guarda.
+_LOGIN_OK = r"""
+      RESPOSTAS['POST /auth/login'] = [200, { token: 'novo', user: %s }];
+      RESPOSTAS['GET /auth/me'] = [200, %s];
+""" % (_EU, _EU)
+
+
+@pytest.mark.parametrize("resposta", ["Agora não", "Usar Face ID"])
+def test_depois_da_senha_pergunta_antes_de_sair_do_login(tmp_path, resposta):
+    r = _corre(_LOGIN + r"""
+      const pergunta = { aberta: texto().includes('Usar Face ID para entrar?'),
+                         jaSaiu: texto().includes('CALENDARIO') };
+      await act(async () => { botao(%s).click(); });
+      await espera(20);
+      return { pergunta, saiu: texto().includes('CALENDARIO'),
+               recusa: localStorage.getItem('faceid_recusado:carol@lisbonb.com'),
+               keychain: NB.keychain, email: localStorage.getItem('faceid_email') };
+    """ % json.dumps(resposta), tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _LOGIN_OK)
+    assert r["pergunta"] == {"aberta": True, "jaSaiu": False}
+    assert r["saiu"] is True   # e foi para o sítio de onde veio (state.from)
+    if resposta == "Agora não":
+        assert (r["recusa"], r["keychain"], r["email"]) == ("1", None, None)
+    else:
+        assert r["recusa"] is None
+        assert r["keychain"] == {"username": "carol@lisbonb.com", "password": "segredo",
+                                 "server": "gestao.lisbonb.com"}
+        assert r["email"] == "carol@lisbonb.com"
+
+
+def test_sem_plugin_o_login_nao_pergunta_nada(tmp_path):
+    r = _corre(_LOGIN + r"""
+      return { pergunta: texto().includes('Usar Face ID para entrar?'),
+               saiu: texto().includes('CALENDARIO'), chamadas: NB.chamadas };
+    """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _LOGIN_OK + "NB.presente = false;")
+    assert r == {"pergunta": False, "saiu": True, "chamadas": []}
+
+
+def test_quem_ja_disse_que_nao_entra_sem_pergunta(tmp_path):
+    r = _corre(_LOGIN + r"""
+      return { pergunta: texto().includes('Usar Face ID para entrar?'), saiu: texto().includes('CALENDARIO') };
+    """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + _LOGIN_OK
+        + "localStorage.setItem('faceid_recusado:carol@lisbonb.com', '1');")
+    assert r == {"pergunta": False, "saiu": True}
+
+
+_EU_PROVISORIA = ('{"id": "u1", "email": "carol@lisbonb.com", "role": "admin", "name": "Carol",'
+                  ' "must_change_password": true}')
+
+
+def test_com_senha_provisoria_nao_pergunta(tmp_path):
+    """A senha provisória vai ser trocada já a seguir (/alterar-senha): guardá-la
+    deixava no Keychain uma senha morta. Nem se pergunta ao iPhone se tem Face ID."""
+    r = _corre(_LOGIN + r"""
+      return { pergunta: texto().includes('Usar Face ID para entrar?'),
+               saiu: texto().includes('CALENDARIO'), chamadas: NB.chamadas };
+    """, tmp_path, dom=True, antes=_SERVIDOR + _ESPERA + r"""
+      RESPOSTAS['POST /auth/login'] = [200, { token: 'novo', user: %s }];
+      RESPOSTAS['GET /auth/me'] = [200, %s];
+    """ % (_EU_PROVISORIA, _EU_PROVISORIA))
+    assert r == {"pergunta": False, "saiu": True, "chamadas": []}

@@ -1,12 +1,17 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { Capacitor } from '@capacitor/core';
 import { useAuth } from '../contexts/AuthContext';
 import { rotaDeAterragem } from '../lib/resumo';
+import { depoisDoLoginComSenha, ligarFaceId, recusar } from '../lib/sessao';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '../components/ui/alert-dialog';
 import { toast } from 'sonner';
 import { Lock, Mail, MapPin, CalendarCheck, FileText, Clock } from 'lucide-react';
 import { APP_VERSION } from '../version';
@@ -44,9 +49,15 @@ export default function LoginPage() {
 
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  // «Usar Face ID para entrar?» — só na casca com a peça nativa, depois de um
+  // login com senha. `{ email, senha, papel }` enquanto a pergunta está aberta.
+  const [pergunta, setPergunta] = useState(null);
+  // Enquanto o login com senha decide se pergunta, o efeito de baixo não pode
+  // levar a pessoa embora: o `login()` põe o `user` ANTES de a decisão chegar.
+  const aDecidir = useRef(false);
 
   React.useEffect(() => {
-    if (isAuthenticated && user) {
+    if (isAuthenticated && user && !aDecidir.current) {
       navigate(paraOndeVoltar(user.role));
     }
   }, [isAuthenticated, user, navigate]);
@@ -54,15 +65,38 @@ export default function LoginPage() {
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
+    aDecidir.current = true;
     try {
       const userData = await login(loginEmail, loginPassword);
       toast.success('Sessão iniciada com sucesso!');
+      // Com a senha provisória não se pergunta: vai ser trocada já a seguir
+      // (/alterar-senha) e o Keychain ficava com uma senha morta.
+      const decisao = userData.must_change_password ? 'nada' : await depoisDoLoginComSenha(userData.email, loginPassword);
+      if (decisao === 'perguntar') {
+        setPergunta({ email: userData.email, senha: loginPassword, papel: userData.role });
+        return;
+      }
+      aDecidir.current = false;
       navigate(paraOndeVoltar(userData.role));
     } catch (error) {
+      aDecidir.current = false;
       toast.error(error.response?.data?.detail || 'Erro ao iniciar sessão');
     } finally {
       setLoading(false);
     }
+  };
+
+  const responder = async (sim) => {
+    const { email, senha, papel } = pergunta;
+    if (sim) {
+      if (await ligarFaceId(email, senha)) toast.success('Face ID ligado.');
+      else toast.error('Não foi possível ligar o Face ID. Pode tentar no menu, em «Usar Face ID».');
+    } else {
+      recusar(email);
+    }
+    setPergunta(null);
+    aDecidir.current = false;
+    navigate(paraOndeVoltar(papel));
   };
 
   const features = [
@@ -215,6 +249,21 @@ export default function LoginPage() {
           <p className="text-center text-xs text-muted-foreground/70 mt-1">v{APP_VERSION}</p>
         </div>
       </div>
+
+      <AlertDialog open={!!pergunta}>
+        <AlertDialogContent className="max-w-[calc(100vw-2rem)] rounded-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Usar Face ID para entrar?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Da próxima vez entra com o rosto, sem escrever a senha.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-2">
+            <AlertDialogCancel className="h-11" onClick={() => responder(false)}>Agora não</AlertDialogCancel>
+            <AlertDialogAction className="h-11" onClick={() => responder(true)}>Usar Face ID</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
