@@ -5,57 +5,71 @@
 // Jest")", na parte do seletor da T2.24a). O
 // `components/crm/SeletorLocalizacao.js` só desenha a `vista` e liga os botões;
 // a nova loja (T2.27), a ficha (T2.28, "Corrigir localização") e a fábrica
-// (T2.30, sem GPS) usam esse componente.
+// (T2.30, sem GPS) usam esse componente. Sobre o Google Maps desde a G10 do
+// plano do mapa Google (adenda §6.1 e §6.2).
 //
-// Um mapa onde se toca para pôr o pino, que se arrasta até ao sítio exato e se
-// confirma com "Confirmar localização":
-//  - com a `api` (a do `lib/crm/api.js`), a pesquisa de morada por cima do
-//    mapa (`pesquisaMorada.js`): escolher uma sugestão põe lá o pino (origem
-//    geocoder), solto, aproxima o mapa (zoom 18) e entrega a sugestão ao ecrã
-//    (`aoEscolherMorada`), para preencher a morada, o código postal e a
-//    localidade (`camposDaMorada`);
+// Um mapa da Google (o do `mapa.js`) onde se toca para pôr o pino, que se
+// arrasta até ao sítio exato e se confirma com "Confirmar localização":
+//  - o pino é um marcador avançado da Google com `gmpDraggable`: arrasta-se
+//    enquanto está por confirmar e fica fixo depois de confirmado. O conteúdo
+//    é a `div.pino-seletor` vazia, feita com o `el()` (a gota desenha-se no
+//    `components/crm/crm.css`): nunca HTML nem texto;
+//  - a regra do arrasto (adenda §2.1, decisão 2): um pino vindo da Google (o
+//    negócio tocado no mapa ou a morada escolhida na pesquisa: a origem
+//    `google`, que só existe aqui) só se confirma depois de a pessoa o arrastar
+//    até à porta da loja, e vai como `pin_manual` com o `google_place_id` ao
+//    lado (`localizacao.js`). Arrastar mantém o identificador do lugar; um
+//    toque à mão no mapa, o GPS ou outro sítio sem identificador limpam-no.
+//    Assim nenhuma coordenada da Google se grava tal e qual;
 //  - com a `geolocation` (navigator.geolocation), "Estou nesta loja" (dossiê
 //    §5.4). O GPS só se pede quando se toca no botão (nunca seguimento
 //    contínuo); enquanto espera, o botão diz "A obter a localização…" e não
 //    volta a pedir. A posição põe lá o pino (origem gps), solto, com um círculo
-//    do tamanho da precisão, e o mapa enquadra o círculo. Com a precisão pior
-//    que 50 m: "Localização imprecisa — ajuste o pino", e só se confirma depois
-//    de arrastar (fica pin_manual). Se o pino mudar de sítio por outra via
-//    (toque no mapa, arrasto, morada escolhida) antes de o GPS responder, a
-//    posição (ou o erro) que chega depois é ignorada;
+//    da Google do tamanho da precisão (os toques passam para o mapa), e o mapa
+//    enquadra o círculo sem passar do zoom 18. Com a precisão pior que 50 m:
+//    "Localização imprecisa — ajuste o pino", e só se confirma depois de
+//    arrastar (fica pin_manual). Se o pino mudar de sítio por outra via (toque
+//    no mapa, arrasto) antes de o GPS responder, a posição (ou o erro) que
+//    chega depois é ignorada;
 //  - com a `api`, a geocodificação inversa do ponto do GPS (GET
 //    /api/crm/morada/inversa) mostra "Morada sugerida: … · Powered by Geoapify"
 //    e entrega-a ao ecrã (`aoSugerirMorada`, que só preenche os campos vazios:
-//    `camposSugeridos`). Se o pino for posto noutro sítio, a morada sugerida
-//    sai (e a que chegar tarde é ignorada).
+//    `camposSugeridos`). Só o GPS a pede (nunca para um ponto da Google). Se o
+//    pino for posto noutro sítio, a morada sugerida sai (e a que chegar tarde é
+//    ignorada).
+// A pesquisa de moradas e o negócio selecionado, ambos da Google, entram na G11.
 //
 // Estados: 'vazio' (sem pino) → 'por_confirmar' (pino solto, arrastável) →
 // 'confirmado' (pino fixo; "Alterar localização" solta-o outra vez). Só a
 // localização confirmada conta para guardar. A origem das coordenadas segue o
 // `localizacao.js`: um pino arrastado passa a pin_manual.
 //
-// O mapa é o do `mapa.js` (os mesmos mosaicos, a mesma atribuição e a troca
-// para o OSM). O Leaflet e o documento são recebidos por parâmetro. O pino não
-// leva HTML: é um `divIcon` só com a classe, e a gota desenha-se no CSS
-// (`.pino-seletor`, em `components/crm/crm.css`). O seletor não põe texto
-// nenhum no Leaflet.
+// A Google e o documento são recebidos por parâmetro: o componente passa o
+// `window.google` depois de carregar as bibliotecas do mapa e dos pinos; os
+// testes passam os falsos de `testes/`. As posições da Google leem-se sempre
+// pelo `pontoDe` do `mapa.js` (ora `LatLng`, ora literal).
 
 import { ATRIBUICOES } from './atribuicoes';
-import { criarMapa, configuracaoValida, MENSAGEM_SEM_MAPA } from './mapa';
+import { el } from './dom';
+import {
+  criarMapa, configuracaoValida, pontoDe, limitarZoomDepoisDeEnquadrar, MENSAGEM_SEM_MAPA,
+  MENSAGEM_MAPA_NAO_CONFIGURADO,
+} from './mapa';
 import { podeConfirmar, localizacaoFinal } from './localizacao';
 import {
   MENSAGEM_LOCALIZACAO_IMPRECISA, obterPosicao, traduzirErroGps, limitesDoCirculo,
 } from './gps';
 import { pontoDeBias, MENSAGEM_MORADA_SUGERIDA_INDISPONIVEL } from './morada';
-import { criarCampoPesquisaMorada } from './pesquisaMorada';
 
 export const TEXTO_TOCAR_NO_MAPA = 'Toque no mapa no sítio da loja.';
 export const TEXTO_ARRASTAR = 'Arraste o pino para o sítio exato e confirme.';
+// Um pino vindo da Google só se confirma depois de arrastado (a regra do arrasto).
+export const TEXTO_ARRASTAR_LUGAR = 'Arraste o pino até à porta da loja para confirmar';
 export const TEXTO_CONFIRMADA = 'Localização confirmada.';
 export const TEXTO_CONFIRMAR = 'Confirmar localização';
 export const TEXTO_ALTERAR = 'Alterar localização';
 
-// O zoom ao escolher uma morada: chega para se ver a rua e arrastar o pino até à porta da loja.
+// O zoom ao pôr o pino numa morada ou num lugar: chega para se ver a rua e arrastar o pino até à porta da loja.
 export const ZOOM_MORADA = 18;
 
 export const TEXTO_ESTOU_NESTA_LOJA = 'Estou nesta loja';
@@ -65,24 +79,31 @@ const TEXTO_MORADA_SUGERIDA = 'Morada sugerida: ';
 const SEPARADOR_ATRIBUICAO = ' · ';
 // Depois do GPS, o mapa enquadra o círculo da precisão, mas nunca mais perto do que ao escolher uma morada.
 export const ZOOM_GPS = ZOOM_MORADA;
-const MARGEM_GPS = [24, 24];
-// O círculo da precisão: o roxo do CRM (o mesmo da gota do pino, conferido pelo css.test.js), transparente;
-// os toques passam para o mapa.
+// Folga (px) à volta do círculo da precisão no enquadramento.
+export const MARGEM_GPS = 24;
+// O círculo da precisão (google.maps.Circle): o roxo do CRM (o mesmo da gota do pino, conferido pelo
+// css.test.js), transparente; não recebe toques (passam para o mapa).
 export const ESTILO_CIRCULO = Object.freeze({
-  className: 'circulo-precisao',
-  interactive: false,
-  color: '#6b2fa3',
-  weight: 2,
-  opacity: 0.8,
+  strokeColor: '#6b2fa3',
+  strokeOpacity: 0.8,
+  strokeWeight: 2,
   fillColor: '#6b2fa3',
   fillOpacity: 0.12,
+  clickable: false,
 });
 
-// 44 px de área de toque; a ponta da gota (CSS) fica no ponto da loja.
-const TAMANHO_PINO = 44;
-const PONTA_PINO = [22, 38];
+// O pino fica por cima de tudo o que o mapa desenhe.
+const INDICE_PINO = 1000;
 
 const numero = (valor) => typeof valor === 'number' && Number.isFinite(valor);
+
+// A Google com o que o seletor usa: o mapa (biblioteca `maps`) e o marcador avançado (biblioteca `marker`).
+const temGoogle = (google) => typeof google?.maps?.Map === 'function'
+  && typeof google.maps.marker?.AdvancedMarkerElement === 'function';
+
+// O servidor não tem a chave do navegador ou o Map ID: o GET /api/crm/config trouxe `google: null`.
+const naoConfigurado = (configuracao) => configuracao !== null && typeof configuracao === 'object'
+  && configuracao.google === null;
 
 // Os textos de uma loja: o título, a dica antes de haver pino, o nome da área do mapa e o do pino (estes dois
 // para os leitores de ecrã). Outro sítio (o ponto da fábrica, T2.30) passa os seus.
@@ -97,14 +118,14 @@ export const textosSeletor = (textos = {}) => Object.freeze({ ...TEXTOS_LOJA, ..
 
 const parte = (texto, url = null) => Object.freeze({ texto, url });
 
-// "Morada sugerida: <rótulo> · Powered by Geoapify": o rótulo é uma parte de texto e a atribuição sai só das
-// constantes de atribuicoes.js (com a ligação), como no autónomo. O componente desenha cada parte como texto
-// ou, com `url`, como uma ligação.
+// "Morada sugerida: <rótulo> · Powered by Geoapify" (a morada do ponto do GPS): o rótulo é uma parte de texto
+// e a atribuição sai só das constantes de atribuicoes.js (com a ligação), como no autónomo. O componente
+// desenha cada parte como texto ou, com `url`, como uma ligação.
 export const partesMoradaSugerida = (rotulo) => Object.freeze([
   parte(TEXTO_MORADA_SUGERIDA),
   parte(String(rotulo)),
   parte(SEPARADOR_ATRIBUICAO),
-  ...ATRIBUICOES.pesquisa.partes.map((p) => parte(p.texto, p.url)),
+  ...ATRIBUICOES.geoapify.partes.map((p) => parte(p.texto, p.url)),
 ]);
 
 const MORADA_A_PROCURAR = Object.freeze({ tipo: null, partes: Object.freeze([parte(TEXTO_A_PROCURAR_MORADA)]) });
@@ -113,39 +134,42 @@ const MORADA_INDISPONIVEL = Object.freeze({
   partes: Object.freeze([parte(MENSAGEM_MORADA_SUGERIDA_INDISPONIVEL)]),
 });
 
-// criarSeletor({L, documento, configuracao, textos?, api?, geolocation?, aoMudar?, aoEscolherMorada?,
-//               aoSugerirMorada?, aoMudarVista?, aoFocar?})
-//   → {vista, localizacao, mapa, pesquisa, iniciar, colocar, confirmar, alterar, estouNestaLoja, desconfirmar,
+// criarSeletor({google, documento, configuracao, textos?, api?, geolocation?, aoMudar?, aoSugerirMorada?,
+//               aoMudarVista?, aoFocar?})
+//   → {vista, localizacao, mapa, iniciar, colocar, confirmar, alterar, estouNestaLoja, desconfirmar,
 //      mostrarErro, limparErro, focar, redimensionar, destruir}
-//  - configuracao: a do GET /api/crm/config (pode ser null ou inválida: o seletor diz que não há mapa);
+//  - google: o `window.google` com as bibliotecas `maps` e `marker` já carregadas (sem elas, o seletor diz
+//    que não há mapa);
+//  - configuracao: a do GET /api/crm/config, {google: {chave, map_id} | null, centro} (pode ser null ou
+//    inválida: o seletor diz que não há mapa; com `google: null`, que o mapa não está configurado);
 //  - textos: {titulo?, tocar?, mapa?, pino?} (ver TEXTOS_LOJA);
-//  - api: {pesquisarMorada, moradaInversa} do lib/crm/api.js; com ela, a pesquisa de morada e a morada
-//    sugerida depois do GPS;
+//  - api: {moradaInversa} do lib/crm/api.js; com ela, a morada sugerida depois do GPS;
 //  - geolocation: o navigator.geolocation do browser; com ele, "Estou nesta loja";
-//  - aoMudar(localizacao): a localização confirmada mudou — {lat, lng, origem_coords, precisao_m}, ou null
-//    quando deixa de haver (o pino voltou a soltar-se);
-//  - aoEscolherMorada(sugestao): escolheram uma morada na pesquisa ({rotulo, morada, codigo_postal,
-//    localidade, lat, lng}) e o pino já lá está;
-//  - aoSugerirMorada(sugestao): a morada do ponto do GPS (a mesma forma), para os campos vazios;
+//  - aoMudar(localizacao): a localização confirmada mudou — {lat, lng, origem_coords, precisao_m,
+//    google_place_id}, ou null quando deixa de haver (o pino voltou a soltar-se);
+//  - aoSugerirMorada(sugestao): a morada do ponto do GPS ({rotulo, morada, codigo_postal, localidade, lat,
+//    lng}), para os campos vazios;
 //  - aoMudarVista(vista): a vista mudou (a mesma de `vista`);
 //  - aoFocar('confirmar' | 'alterar'): o foco deve ir para esse botão (o que se carregou desaparece, ou o
 //    passo seguinte é confirmar).
-// vista: {estado, dica, aviso: 'imprecisa'|null, erro: texto|null, semMapa, confirmarAtivo,
+// vista: {estado, dica, aviso: 'imprecisa'|'arrastar'|null, erro: texto|null, semMapa, confirmarAtivo,
 //         gps: null | {texto, ocupado, mensagem: null | {texto, tipo: 'erro'}},
 //         moradaSugerida: null | {tipo: null|'erro', partes: [{texto, url}]},
-//         pesquisa: null | a vista do campo (pesquisaMorada.js)}
-// Cada mudança traz um objeto novo, congelado. Sem mapa, a pesquisa e o GPS não aparecem (null).
+//         pesquisa: null (a pesquisa da Google entra na G11)}
+// Cada mudança traz um objeto novo, congelado. Sem mapa, o GPS não aparece (null). Depois de `destruir`,
+// nada muda nem avisa.
 export function criarSeletor({
-  L, documento, configuracao, textos, api, geolocation, aoMudar, aoEscolherMorada, aoSugerirMorada, aoMudarVista,
-  aoFocar,
+  google, documento, configuracao, textos, api, geolocation, aoMudar, aoSugerirMorada, aoMudarVista, aoFocar,
 }) {
   const rotulos = textosSeletor(textos);
   const temGps = typeof geolocation?.getCurrentPosition === 'function';
   const temInversa = typeof api?.moradaInversa === 'function';
   let criado = null; // o mapa de mapa.js
   let indisponivel = false;
+  let destruido = false;
   let marcador = null;
-  let posicao = null; // {lat, lng, origem, precisao_m}: onde está o pino e de onde veio
+  // {lat, lng, origem, precisao_m, google_place_id}: onde está o pino, de onde veio e de que lugar da Google.
+  let posicao = null;
   let arrastado = false;
   let confirmada = null;
   let estado = 'vazio';
@@ -160,45 +184,31 @@ export function criarSeletor({
   let pedidoMorada = 0;
   let vista = null;
 
-  // A pesquisa de morada (com a api). As funções que chama (colocar, atualizar) são declarações: já existem.
-  const pesquisa = typeof api?.pesquisarMorada === 'function'
-    ? criarCampoPesquisaMorada({
-      pesquisar: (texto, perto) => api.pesquisarMorada({ texto, ...(perto ?? {}) }),
-      // As sugestões mais perto do sítio que o mapa mostra vêm primeiro.
-      obterPerto() {
-        try {
-          return criado?.mapa.getCenter() ?? null;
-        } catch {
-          return null; // o Leaflet ainda sem vista
-        }
-      },
-      aoEscolher(sugestao) {
-        if (!colocar({ lat: sugestao.lat, lng: sugestao.lng, origem: 'geocoder' }, { zoom: ZOOM_MORADA })) return;
-        aoEscolherMorada?.(sugestao);
-        // O passo seguinte é arrastar e confirmar; no telemóvel, o teclado fecha e o mapa fica à vista.
-        aoFocar?.('confirmar');
-      },
-      aoMudarVista: () => atualizar(),
-    })
-    : null;
-
   const confirmavel = () => posicao !== null
     && podeConfirmar({ origem: posicao.origem, precisao_m: posicao.precisao_m, arrastado });
 
   function montarVista() {
-    const imprecisa = estado !== 'confirmado' && posicao !== null && !confirmavel();
-    let dica;
+    // Falta arrastar: um pino da Google ou um GPS impreciso ainda por arrastar.
+    const faltaArrastar = estado !== 'confirmado' && posicao !== null && !confirmavel();
+    let dica = TEXTO_ARRASTAR;
+    let aviso = null;
     if (estado === 'confirmado') dica = TEXTO_CONFIRMADA;
     else if (posicao === null) dica = rotulos.tocar;
-    else dica = imprecisa ? MENSAGEM_LOCALIZACAO_IMPRECISA : TEXTO_ARRASTAR;
+    else if (faltaArrastar && posicao.origem === 'google') {
+      dica = TEXTO_ARRASTAR_LUGAR;
+      aviso = 'arrastar';
+    } else if (faltaArrastar) {
+      dica = MENSAGEM_LOCALIZACAO_IMPRECISA;
+      aviso = 'imprecisa';
+    }
     return Object.freeze({
       estado,
       dica,
-      aviso: imprecisa ? 'imprecisa' : null,
+      aviso,
       erro,
       semMapa: indisponivel,
       confirmarAtivo: estado !== 'confirmado' && !indisponivel && confirmavel(),
-      // Sem mapa não há onde pôr o pino do GPS nem o da morada escolhida.
+      // Sem mapa não há onde pôr o pino do GPS.
       gps: temGps && !indisponivel
         ? Object.freeze({
           texto: aObterGps ? TEXTO_A_OBTER_LOCALIZACAO : TEXTO_ESTOU_NESTA_LOJA,
@@ -208,18 +218,19 @@ export function criarSeletor({
         })
         : null,
       moradaSugerida,
-      pesquisa: pesquisa && !indisponivel ? pesquisa.vista : null,
+      pesquisa: null,
     });
   }
 
   function atualizar() {
+    if (destruido) return;
     vista = montarVista();
     aoMudarVista?.(vista);
   }
 
   // O pino foi para outro sítio: o círculo, a mensagem do GPS e a morada sugerida do ponto anterior saem.
   function esquecerGps() {
-    circulo?.remove();
+    circulo?.setMap(null);
     circulo = null;
     pedidoMorada += 1;
     mensagemGps = null;
@@ -235,34 +246,37 @@ export function criarSeletor({
   // O pino solta-se (arrastável) e a localização deixa de estar confirmada.
   function soltar() {
     estado = 'por_confirmar';
-    marcador?.dragging?.enable();
+    if (marcador) marcador.gmpDraggable = true;
     atualizar();
     definirConfirmada(null);
   }
 
-  function criarPino(latlng) {
-    const novo = L.marker(latlng, {
-      icon: L.divIcon({ className: 'pino-seletor', iconSize: [TAMANHO_PINO, TAMANHO_PINO], iconAnchor: PONTA_PINO }),
-      draggable: true,
-      autoPan: true,
-      keyboard: true,
+  function criarPino(ponto) {
+    const novo = new google.maps.marker.AdvancedMarkerElement({
+      map: criado.mapa,
+      position: ponto,
+      content: el(documento, 'div', { classe: 'pino-seletor' }),
+      gmpDraggable: true,
       title: rotulos.pino,
-      zIndexOffset: 1000,
+      zIndex: INDICE_PINO,
     });
-    novo.on('dragend', () => {
-      const { lat, lng } = novo.getLatLng();
-      posicao = { ...posicao, lat, lng };
+    // A Google move o pino; a posição nova lê-se do próprio marcador (LatLng ou literal).
+    novo.addListener('dragend', () => {
+      const arrastadoPara = pontoDe(novo.position);
+      if (arrastadoPara === null) return;
+      posicao = { ...posicao, lat: arrastadoPara.lat, lng: arrastadoPara.lng };
       arrastado = true;
       // O círculo e a morada sugerida ficam (ajustar o pino é o passo seguinte ao GPS); um GPS a caminho não.
       versaoPino += 1;
       atualizar();
     });
-    // O arrasto do Leaflet (marker.dragging) só existe depois de o pino entrar no mapa.
-    return novo.addTo(criado.mapa);
+    return novo;
   }
 
-  // Põe o pino na posição {lat, lng, origem, precisao_m?} (origem: 'pin_manual' | 'geocoder' | 'gps'), solto e
-  // por confirmar. Com {zoom}, o mapa aproxima-se do pino. false se não há mapa ou a posição não é válida.
+  // Põe o pino na posição {lat, lng, origem, precisao_m?, google_place_id?} (origem: 'pin_manual' | 'gps' |
+  // 'geocoder' | 'google'), solto e por confirmar; o `google_place_id` é o dessa posição (sem ele, null: o de um
+  // pino anterior nunca passa para o novo). Com {zoom}, o mapa mostra o pino nesse zoom. false se não há mapa
+  // ou a posição não é válida.
   function colocar(nova, { zoom } = {}) {
     if (!criado || !numero(nova?.lat) || !numero(nova?.lng)) return false;
     versaoPino += 1;
@@ -272,12 +286,14 @@ export function criarSeletor({
       lng: nova.lng,
       origem: typeof nova.origem === 'string' ? nova.origem : 'pin_manual',
       precisao_m: numero(nova.precisao_m) ? nova.precisao_m : null,
+      // O localizacao.js só o envia se for um texto não vazio (senão vai null).
+      google_place_id: nova.google_place_id,
     };
     arrastado = false;
-    const latlng = [posicao.lat, posicao.lng];
-    if (marcador) marcador.setLatLng(latlng);
-    else marcador = criarPino(latlng);
-    if (numero(zoom)) criado.mapa.setView(latlng, zoom);
+    const ponto = { lat: posicao.lat, lng: posicao.lng };
+    if (marcador) marcador.position = ponto;
+    else marcador = criarPino(ponto);
+    if (numero(zoom)) criado.centrarEm(ponto, zoom);
     erro = null;
     soltar();
     return true;
@@ -315,14 +331,20 @@ export function criarSeletor({
   // O pino no ponto do GPS, com o círculo da precisão (se o browser a deu), e o mapa a mostrar o círculo.
   function colocarDoGps({ lat, lng, precisao_m }) {
     if (!colocar({ lat, lng, origem: 'gps', precisao_m })) return;
-    const centro = [lat, lng];
-    if (numero(precisao_m) && precisao_m > 0 && typeof L.circle === 'function') {
-      circulo = L.circle(centro, { ...ESTILO_CIRCULO, radius: precisao_m }).addTo(criado.mapa);
+    const centro = { lat, lng };
+    if (numero(precisao_m) && precisao_m > 0) {
+      circulo = new google.maps.Circle({ ...ESTILO_CIRCULO, center: centro, radius: precisao_m, map: criado.mapa });
     }
-    const limites = limitesDoCirculo({ lat, lng }, precisao_m);
-    if (limites) criado.mapa.fitBounds(limites, { maxZoom: ZOOM_GPS, padding: MARGEM_GPS });
-    else criado.mapa.setView(centro, ZOOM_GPS);
-    sugerirMorada({ lat, lng });
+    const limites = limitesDoCirculo(centro, precisao_m);
+    if (limites) {
+      const [[sul, oeste], [norte, este]] = limites;
+      criado.mapa.fitBounds(new google.maps.LatLngBounds({ lat: sul, lng: oeste }, { lat: norte, lng: este }), MARGEM_GPS);
+      // O fitBounds da Google não tem zoom máximo: um círculo pequeno não leva o mapa além do zoom 18.
+      limitarZoomDepoisDeEnquadrar(google, criado.mapa, ZOOM_GPS);
+    } else {
+      criado.centrarEm(centro, ZOOM_GPS);
+    }
+    sugerirMorada(centro);
   }
 
   // "Estou nesta loja": um toque, um pedido ao GPS (só aqui, nunca ao montar).
@@ -355,11 +377,9 @@ export function criarSeletor({
     colocarDoGps(nova);
   }
 
-  function semMapa() {
+  function semMapa(mensagem) {
     indisponivel = true;
-    // Sem mapa não há onde pôr o pino da morada escolhida nem o do GPS.
-    pesquisa?.cancelar();
-    erro = MENSAGEM_SEM_MAPA;
+    erro = mensagem;
     atualizar();
   }
 
@@ -377,84 +397,90 @@ export function criarSeletor({
     get mapa() {
       return criado;
     },
-    // O campo da pesquisa de morada (pesquisaMorada.js), ou null sem a api.
-    get pesquisa() {
-      return pesquisa;
-    },
-    // Cria o mapa no elemento (já na página: o Leaflet mede a área). false se não foi possível.
-    // Com {inicial: {lat, lng, origem, precisao_m?}} (a ficha a corrigir a localização que a loja já tem, ou o
-    // ponto da fábrica), o pino começa solto nesse sítio, à escala da rua; sem ela, o mapa mostra o centro das
-    // definições.
+    // Cria o mapa no elemento (já na página). false se não foi possível.
+    // Com {inicial: {lat, lng, origem, precisao_m?, google_place_id?}} (a ficha a corrigir a localização que a
+    // loja já tem, ou o ponto da fábrica), o pino começa solto nesse sítio, à escala da rua; sem ela, o mapa
+    // mostra o centro das definições.
     iniciar(elemento, { inicial } = {}) {
+      if (destruido) return false;
       if (criado) return true;
       if (indisponivel) return false;
-      if (typeof L?.map !== 'function' || !configuracaoValida(configuracao)) {
-        semMapa();
+      if (naoConfigurado(configuracao)) {
+        semMapa(MENSAGEM_MAPA_NAO_CONFIGURADO);
+        return false;
+      }
+      if (!temGoogle(google) || !configuracaoValida(configuracao)) {
+        semMapa(MENSAGEM_SEM_MAPA);
         return false;
       }
       try {
         criado = criarMapa({
-          L,
+          google,
           documento,
           elemento,
           configuracao,
+          // Um toque à mão põe o pino sem lugar da Google (o de antes sai).
           aoTocarNoMapa(ponto) {
-            pesquisa?.fechar();
             if (ponto && estado !== 'confirmado') colocar({ ...ponto, origem: 'pin_manual' });
           },
         });
       } catch {
         criado = null;
-        semMapa();
+        semMapa(MENSAGEM_SEM_MAPA);
         return false;
       }
-      if (!inicial || !colocar(inicial, { zoom: ZOOM_MORADA })) criado.enquadrar([]);
+      if (inicial) colocar(inicial, { zoom: ZOOM_MORADA });
       atualizar();
       return true;
     },
     colocar,
-    // "Confirmar localização": fixa o pino; o foco passa para "Alterar localização".
+    // "Confirmar localização": fixa o pino (deixa de se arrastar); o foco passa para "Alterar localização".
     confirmar() {
-      if (estado === 'confirmado' || indisponivel || !confirmavel()) return;
+      if (destruido || estado === 'confirmado' || indisponivel || !confirmavel()) return;
       estado = 'confirmado';
-      marcador?.dragging?.disable();
+      if (marcador) marcador.gmpDraggable = false;
       atualizar();
       aoFocar?.('alterar');
       definirConfirmada(localizacaoFinal(posicao, arrastado));
     },
     // "Alterar localização": solta o pino outra vez; o foco volta a "Confirmar localização".
     alterar() {
-      if (estado !== 'confirmado') return;
+      if (destruido || estado !== 'confirmado') return;
       soltar();
       aoFocar?.('confirmar');
     },
     estouNestaLoja,
     // A API recusou a localização (ex.: "Fora de Portugal"): o pino volta a soltar-se para a corrigir.
     desconfirmar() {
-      if (estado === 'confirmado') soltar();
+      if (!destruido && estado === 'confirmado') soltar();
     },
     mostrarErro(texto) {
+      if (destruido) return;
       erro = String(texto);
       atualizar();
     },
     // A mensagem do mapa que não carregou fica (sem mapa não há o que corrigir).
     limparErro() {
-      if (erro === null || indisponivel) return;
+      if (destruido || erro === null || indisponivel) return;
       erro = null;
       atualizar();
     },
     // O foco no botão que se vê (ex.: ao lado do erro que a API devolveu).
     focar() {
+      if (destruido) return;
       aoFocar?.(estado === 'confirmado' ? 'alterar' : 'confirmar');
     },
     // Depois de a área do mapa mudar de tamanho.
     redimensionar() {
       criado?.redimensionar();
     },
+    // O pino e o círculo saem do mapa e o mapa é destruído; o GPS e a morada sugerida que chegarem depois são
+    // ignorados, e nada mais muda nem avisa. Uma segunda chamada já não encontra nada para tirar.
     destruir() {
-      pesquisa?.cancelar();
-      // O mapa sai com o pino e o círculo; o GPS e a morada sugerida que chegarem depois são ignorados.
+      destruido = true;
       pedidoMorada += 1;
+      if (marcador) marcador.map = null;
+      circulo?.setMap(null);
       criado?.destruir();
       criado = null;
       marcador = null;

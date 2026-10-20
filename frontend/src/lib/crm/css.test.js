@@ -146,7 +146,7 @@ test('o pino do seletor é uma gota roxa (a cor do círculo da precisão) cuja p
   expect(area).toMatch(/background:\s*transparent;/);
   const gota = regra('.pino-seletor::before');
   expect(gota).not.toBeNull();
-  expect(gota).toMatch(new RegExp(`background:\\s*${escapar(ESTILO_CIRCULO.color)};`));
+  expect(gota).toMatch(new RegExp(`background:\\s*${escapar(ESTILO_CIRCULO.strokeColor)};`));
   expect(gota).toMatch(/border:\s*3px solid #fff;/);
   expect(gota).toMatch(/border-radius:\s*50% 50% 50% 0;/);
   expect(gota).toMatch(/transform:\s*rotate\(-45deg\);/);

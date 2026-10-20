@@ -71,11 +71,13 @@ export function obterPosicao(geolocation) {
 
 // --- O círculo da precisão no mapa (E7) ----------------------------------------------------------
 
-// Metros por grau de latitude (a mesma Terra do Leaflet: LatLng.toBounds usa 40 075 017 m de perímetro).
+// Metros por grau de latitude: 40 075 017 m de perímetro (a esfera de raio 6 378 137 m que a Google também usa).
 const METROS_POR_GRAU = 40075017 / 360;
 
-// O retângulo [[sul, oeste], [norte, este]] que contém o círculo com centro {lat, lng} e raio em metros, para o
-// mapa o enquadrar (fitBounds). null sem centro ou sem raio positivo.
+// O retângulo [[sul, oeste], [norte, este]] que contém o círculo com centro {lat, lng} e raio em metros. O
+// seletor junta os dois cantos num LatLngBounds da Google para o mapa enquadrar o círculo (fitBounds, com o
+// zoom limitado à parte); o falso dos testes calcula com ele os limites do círculo. null sem centro ou sem raio
+// positivo.
 export function limitesDoCirculo(centro, raioM) {
   const lat = centro?.lat;
   const lng = centro?.lng;
