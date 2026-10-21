@@ -1038,6 +1038,19 @@ test('destruir tira o pino e o círculo do mapa e destrói o mapa (ouvintes e o 
   expect(m.mapa().limpezas).toBe(1);
 });
 
+test('destruir não rebenta quando a Google recusou a chave e tirar o pino ou o círculo lança erro', async () => {
+  // Visto em produção (2026-10-22): com RefererNotAllowedMapError, tirar um pino do mapa lança dentro da Google.
+  const m = preparar({ gps: true });
+  await gps(m, 38.7075, -9.1364, 20);
+  const [circulo] = m.mapa().circulos;
+  const marcador = pino(m.mapa());
+  Object.defineProperty(marcador, 'map', { configurable: true, get: () => m.mapa(), set: () => { throw new TypeError('recusado'); } });
+  circulo.setMap = () => { throw new TypeError('recusado'); };
+  expect(() => m.seletor.destruir()).not.toThrow();
+  expect(m.elemento.childNodes.length).toBe(0);
+  expect(m.seletor.mapa).toBeNull();
+});
+
 test('depois de destruir nada muda nem avisa (iniciar, colocar, confirmar, alterar, GPS, erros, foco, negócio)', async () => {
   const m = preparar({ gps: true });
   lugares(m.registo);
