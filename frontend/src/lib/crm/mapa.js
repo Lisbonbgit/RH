@@ -166,8 +166,16 @@ export function criarMapa({
     return marcador;
   }
 
+  // Com a chave recusada pela Google (ex.: RefererNotAllowedMapError), `marcador.map = null` lança dentro da
+  // biblioteca; tirar os pinos nunca pode derrubar a página do CRM (visto em produção a 2026-10-22).
   function tirarPinos() {
-    for (const marcador of marcadores) marcador.map = null;
+    for (const marcador of marcadores) {
+      try {
+        marcador.map = null;
+      } catch {
+        // O mapa já não existe para a Google: não há pino para tirar.
+      }
+    }
     marcadores = [];
   }
 

@@ -205,6 +205,16 @@ const MORADA_INDISPONIVEL = Object.freeze({
 //                  `criarNegocioSelecionado`: nenhum dado da Google)}
 // Cada mudança traz um objeto novo, congelado. Sem mapa, o GPS não aparece (null). Depois de `destruir`,
 // nada muda nem avisa.
+// Com a chave recusada pela Google (ex.: RefererNotAllowedMapError), tirar um pino ou um círculo do mapa lança
+// dentro da biblioteca; isso nunca pode derrubar a página do CRM (visto em produção a 2026-10-22).
+function tirarDoMapa(acao) {
+  try {
+    acao();
+  } catch {
+    // O mapa já não existe para a Google: não há nada para tirar.
+  }
+}
+
 export function criarSeletor({
   google, documento, configuracao, textos, api, geolocation, aoMudar, aoEscolherMorada, aoSugerirMorada,
   aoMudarVista, aoFocar,
@@ -288,7 +298,7 @@ export function criarSeletor({
 
   // O pino foi para outro sítio: o círculo, a mensagem do GPS e a morada sugerida do ponto anterior saem.
   function esquecerGps() {
-    circulo?.setMap(null);
+    tirarDoMapa(() => circulo?.setMap(null));
     circulo = null;
     pedidoMorada += 1;
     mensagemGps = null;
@@ -576,9 +586,9 @@ export function criarSeletor({
     pedidoMorada += 1;
     pesquisa?.destruir();
     pesquisa = null;
-    if (marcador) marcador.map = null;
+    if (marcador) tirarDoMapa(() => { marcador.map = null; });
     marcador = null;
-    circulo?.setMap(null);
+    tirarDoMapa(() => circulo?.setMap(null));
     circulo = null;
     criado?.destruir();
     criado = null;
@@ -703,8 +713,8 @@ export function criarSeletor({
       pedidoMorada += 1;
       pedidoNegocio += 1;
       pesquisa?.destruir();
-      if (marcador) marcador.map = null;
-      circulo?.setMap(null);
+      if (marcador) tirarDoMapa(() => { marcador.map = null; });
+      tirarDoMapa(() => circulo?.setMap(null));
       criado?.destruir();
       criado = null;
       marcador = null;

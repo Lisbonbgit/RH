@@ -543,6 +543,37 @@ test('limitarZoomDepoisDeEnquadrar: devolve o ouvinte; um só por mapa; o idle l
 
 // --- Destruir ------------------------------------------------------------------------------------
 
+test('destruir não rebenta quando a Google recusou a chave e tirar um pino do mapa lança erro', () => {
+  // Visto em produção (2026-10-22): com RefererNotAllowedMapError, `marcador.map = null` lança
+  // "Cannot read properties of undefined (reading 'getRootNode')" e a página inteira do CRM fechava.
+  const { mapa, registo, mapaGoogle, elemento } = preparar(CONFIGURACAO, ouvintesDeToque());
+  mapa.mostrarLojas(LOJAS);
+  for (const marcador of registo.marcadores) {
+    Object.defineProperty(marcador, 'map', {
+      configurable: true,
+      get: () => mapaGoogle,
+      set: () => { throw new TypeError("Cannot read properties of undefined (reading 'getRootNode')"); },
+    });
+  }
+  expect(() => mapa.destruir()).not.toThrow();
+  expect(mapaGoogle.limpezas).toBe(1);
+  expect('__crmMapa' in elemento).toBe(false);
+  expect(elemento.childNodes.length).toBe(0);
+});
+
+test('mostrarLojas não rebenta quando tirar os pinos antigos lança erro (mapa recusado pela Google)', () => {
+  const { mapa, registo, mapaGoogle } = preparar(CONFIGURACAO, ouvintesDeToque());
+  mapa.mostrarLojas(LOJAS);
+  for (const marcador of registo.marcadores) {
+    Object.defineProperty(marcador, 'map', {
+      configurable: true,
+      get: () => mapaGoogle,
+      set: () => { throw new TypeError('mapa recusado'); },
+    });
+  }
+  expect(() => mapa.mostrarLojas(LOJAS)).not.toThrow();
+});
+
 test('destruir: pinos fora do mapa, ouvintes limpos, __crmMapa apagado e o elemento vazio', () => {
   const toques = ouvintesDeToque();
   const { mapa, registo, mapaGoogle, elemento } = preparar(CONFIGURACAO, { ...toques, aoEscolherLoja: () => {} });
