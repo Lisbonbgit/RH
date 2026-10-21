@@ -5,8 +5,10 @@
 // simples, como o telefone: nada aqui os conhece pelo nome.
 
 // A API exige estes campos juntos (backend/crm/dominio/validador_loja.py,
-// `alteracao`): se um muda, vão todos.
-export const CAMPOS_LOCALIZACAO = Object.freeze(['lat', 'lng', 'origem_coords', 'precisao_m']);
+// `alteracao`): se um muda, vão todos. O `google_place_id` (mapa Google, plano
+// G9) faz parte do bloco, como no `_LOCALIZACAO` do servidor: um pino posto à
+// mão por cima do de um lugar da Google leva-o a null no mesmo PATCH.
+export const CAMPOS_LOCALIZACAO = Object.freeze(['lat', 'lng', 'origem_coords', 'precisao_m', 'google_place_id']);
 
 function vazio(valor) {
   return valor === null || valor === undefined || valor === '';

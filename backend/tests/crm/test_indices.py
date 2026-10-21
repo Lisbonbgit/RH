@@ -18,7 +18,7 @@ import crm.db
 import seed_crm_local
 from crm.db import COLECOES, INDICES, criar_indices
 
-from .duplos import BaseFalsa, ColeccaoFalsa, correr
+from .duplos import BaseFalsa, ColeccaoFalsa, correr, unicos_declarados
 
 
 def _unicos_de_um_campo(indices, coleccao):
@@ -62,13 +62,19 @@ def _indices_de(coleccao):
 UNICO = {"unique": True}
 
 
-def test_as_colecoes_da_f1_e_da_f2():
+def test_a_colecao_das_rotas_chama_se_crm_rotas():
+    """T3.14: uma rota por dia (plano F3 §3)."""
+    assert COLECOES["rotas"] == "crm_rotas"
+
+
+def test_as_colecoes_da_f1_da_f2_e_da_f3():
     assert COLECOES == {
         "membros": "crm_membros",
         "regioes": "crm_regioes",
         "lojas": "crm_lojas",
         "interacoes": "crm_interacoes",
         "definicoes": "crm_definicoes",
+        "rotas": "crm_rotas",
     }
 
 
@@ -110,6 +116,19 @@ def test_crm_interacoes_tem_a_linha_do_tempo_e_client_uuid_unico_so_quando_e_tex
 
 def test_crm_definicoes_tem_so_chave_unico():
     assert _indices_de("crm_definicoes") == [([("chave", 1)], UNICO)]
+
+
+def test_crm_rotas_tem_id_unico_data_unica_e_paragens_loja_id_sem_ser_unico():
+    """Uma rota por dia (plano F3 §1 e §3): `data` único garante-o também na
+    corrida (DuplicateKeyError ao criar → voltar a ler e acrescentar, T3.19).
+    `paragens.loja_id` é multikey e NUNCA único: a mesma loja está em rotas de
+    dias diferentes, e numa paragem retirada e noutra reativada; serve o
+    `DELETE /lojas` e a pergunta "esta loja está numa rota?"."""
+    assert _indices_de("crm_rotas") == [
+        ([("id", 1)], UNICO),
+        ([("data", 1)], UNICO),
+        ([("paragens.loja_id", 1)], {}),
+    ]
 
 
 def test_toda_a_colecao_declarada_tem_indices():
@@ -185,6 +204,19 @@ def test_no_duplo_duas_interacoes_sem_client_uuid_nao_colidem():
     correr(base.crm_interacoes.insert_one({"id": "i1", "loja_id": "l1", "tipo": "mudanca_fase"}))
     correr(base.crm_interacoes.insert_one({"id": "i2", "loja_id": "l1", "tipo": "mudanca_fase"}))
     assert len(base.crm_interacoes.docs) == 2
+
+
+def test_no_duplo_os_unicos_de_crm_rotas_sao_id_e_data():
+    assert unicos_declarados("crm_rotas") == ("id", "data")
+
+
+def test_no_duplo_duas_rotas_no_mesmo_dia_colidem_e_a_mesma_loja_cabe_em_varias_paragens():
+    base = BaseFalsa()
+    correr(base.crm_rotas.insert_one({"id": "r1", "data": "2026-10-20", "paragens": [{"loja_id": "l1"}]}))
+    correr(base.crm_rotas.insert_one({"id": "r2", "data": "2026-10-21", "paragens": [{"loja_id": "l1"}, {"loja_id": "l1"}]}))
+    with pytest.raises(DuplicateKeyError):
+        correr(base.crm_rotas.insert_one({"id": "r3", "data": "2026-10-20", "paragens": []}))
+    assert [d["id"] for d in base.crm_rotas.docs] == ["r1", "r2"]
 
 
 def test_no_duplo_dois_upserts_de_definicoes_seguidos_nao_colidem():

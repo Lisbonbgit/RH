@@ -1,55 +1,73 @@
-// O seletor da localização de uma loja (desenho original §6.2; plano T2.26):
-// um mapa onde se toca para pôr o pino, que se arrasta até ao sítio exato e se
-// confirma com "Confirmar localização"; por cima, a pesquisa de morada e
-// "Estou nesta loja". Porta de
-// public/assets/js/componentes/seletor-localizacao.js do CRM autónomo, no
-// aspeto do portal. Serve a nova loja (T2.27), a ficha ("Corrigir
-// localização", T2.28) e o ponto da fábrica (T2.30, sem GPS).
+// O seletor da localização de uma loja (desenho original §6.2; plano T2.26), sobre o Google Maps desde a G14
+// do plano do mapa Google (adenda §1.2 e §6.3): um mapa onde se toca para pôr o pino, que se arrasta até ao
+// sítio exato e se confirma com "Confirmar localização"; por cima, a pesquisa da Google e "Estou nesta loja".
+// Porta de public/assets/js/componentes/seletor-localizacao.js do CRM autónomo, no aspeto do portal. Serve a
+// nova loja (T2.27), a ficha ("Corrigir localização", T2.28) e o ponto da fábrica (T2.30, sem GPS).
 //
-// As regras estão em `lib/crm/seletor.js` (com testes); aqui só se ligam ao
-// React, no molde do `MapaLojas`:
-//  - o seletor (e o mapa) cria-se num `useEffect`, com a área já na página, e
-//    destrói-se no cleanup (o `StrictMode` monta duas vezes em
-//    desenvolvimento). O cleanup também cancela a pesquisa de morada e faz o
-//    GPS e a morada sugerida que chegarem depois não mexerem em nada;
-//  - `configuracao` é a do GET /api/crm/config: `undefined` enquanto chega
-//    (sem mapa ainda), e `null` ou inválida dá "Não foi possível carregar o
-//    mapa — recarregue a página.". Tem de ser o mesmo objeto entre desenhos:
-//    um objeto novo cria outro mapa (e o pino perde-se);
-//  - `inicial` ({lat, lng, origem, precisao_m?}: a localização que a loja já
-//    tem, ou o ponto da fábrica), `comGps`, `textos` e `focarAoIniciar` leem-se
-//    ao criar. Com `focarAoIniciar` (a ficha, ao abrir "Corrigir localização":
-//    o botão em que se tocou desaparece), o foco vai para "Confirmar
+// As regras estão em `lib/crm/seletor.js` (com testes); aqui só se ligam ao React, no molde do `MapaLojas`:
+//  - `configuracao` é a do GET /api/crm/config: `undefined` enquanto chega (sem mapa ainda). Com a chave e o
+//    Map ID, a Google carrega-se primeiro pelo nosso carregador (`lib/crm/carregadorGoogle.js`: o mapa, os
+//    pinos e os lugares, pedidos no mesmo instante, num só script) e só depois se cria o seletor; sem eles,
+//    nada se pede e o seletor diz porquê ("Mapa não configurado…" com `google: null`, "Não foi possível
+//    carregar o mapa…" se for `null` ou inválida, ou se a Google não carregar). Tem de ser o mesmo objeto
+//    entre desenhos: um objeto novo cria outro mapa (e o pino perde-se);
+//  - se a Google recusar a chave (um referrer que ela não autoriza, a app instalada, uma chave inválida), o
+//    script carrega na mesma e só depois ela avisa (`aoFalharAutenticacao` do carregador, o `gm_authFailure`):
+//    antes de haver seletor, cria-se sem mapa; depois, `mapaFalhou()` tira o mapa, o pino, a pesquisa, o
+//    painel e o GPS, com "Não foi possível carregar o mapa…" (revisão do mapa Google, MAPA-G-1). A página
+//    recebe `aoPronto(null)`;
+//  - o seletor (e o mapa) cria-se num `useEffect` e destrói-se no cleanup. O `StrictMode` monta duas vezes em
+//    desenvolvimento: a montagem já desfeita não cria nada quando a Google chega (`ativo`). O cleanup também
+//    faz o GPS, a morada sugerida, a posição de um negócio e a escolha da pesquisa que chegarem depois não
+//    mexerem em nada;
+//  - `inicial` ({lat, lng, origem, precisao_m?, google_place_id?}: a localização que a loja já tem, ou o ponto
+//    da fábrica), `comGps`, `textos` e `focarAoIniciar` leem-se ao criar. Com `focarAoIniciar` (a ficha, ao
+//    abrir "Corrigir localização": o botão em que se tocou desaparece), o foco vai para "Confirmar
 //    localização" assim que o mapa existe;
-//  - o GPS só se pede ao tocar em "Estou nesta loja" (`navigator.geolocation`,
-//    nunca ao montar), e o botão fica com `aria-disabled` enquanto espera (o
-//    foco não se perde);
-//  - `aoMudar(localizacao)`: a localização confirmada ({lat, lng,
-//    origem_coords, precisao_m}, o bloco que a API recebe) ou `null`;
-//    `aoEscolherMorada(sugestao)` e `aoSugerirMorada(sugestao)` deixam o ecrã
-//    preencher a morada (`camposDaMorada` / `camposSugeridos` de `morada.js`);
-//  - pela `ref`: `mostrarErro(texto)` / `limparErro()` (ex.: o 422 "Fora de
-//    Portugal" do servidor), `desconfirmar()`, `focar()` e `colocar(ponto)`;
-//  - quando a área muda de tamanho, o Leaflet volta a medi-la.
-// O pino não leva HTML (a gota é do `crm.css`), e os textos dos dados (a
-// morada sugerida, as sugestões) entram como texto.
+//  - o GPS só se pede ao tocar em "Estou nesta loja" (`navigator.geolocation`, nunca ao montar), e o botão fica
+//    com `aria-disabled` enquanto espera (o foco não se perde);
+//  - a pesquisa da Google (`PesquisaLugar`): o seletor cria o elemento com o mapa e este componente põe-no na
+//    página, fora da caixa do mapa. Escolher uma morada põe lá o pino (por arrastar até à porta da loja),
+//    mostra "Morada sugerida: …" e chama `aoEscolherMorada`;
+//  - tocar no ícone de um negócio do mapa abre o balão da própria Google e, entre a dica e o mapa, o painel
+//    "Negócio selecionado" (`NegocioSelecionado`, com "Pôr o pino neste negócio", "Fechar" e a dica
+//    `textos.dicaNegocio`, que a fábrica tira; o foco vai para o título dele). Ao fechar, se o foco estava lá e
+//    se perdeu, volta ao mapa;
+//  - `aoMudar(localizacao)`: a localização confirmada ({lat, lng, origem_coords, precisao_m, google_place_id},
+//    o bloco que a API recebe) ou `null`; `aoEscolherMorada(morada)` (a pesquisa da Google) e
+//    `aoSugerirMorada(sugestao)` (o GPS) deixam o ecrã preencher a morada (`camposDaMorada` /
+//    `camposSugeridos` de `morada.js`);
+//  - `aoPronto(seletor | null)`: o seletor tem mapa e a `ref` já o usa (a nova loja chama daqui o
+//    `usarNegocio` do negócio com que chegou); `null` quando sai;
+//  - pela `ref`: `mostrarErro(texto)` / `limparErro()` (ex.: o 422 "Fora de Portugal" do servidor),
+//    `desconfirmar()`, `focar()`, `colocar(ponto)`, `escolherNegocio`, `usarNegocio`, `fecharNegocio`,
+//    `limitesDoMapa` e `localizacao`;
+//  - quando a área muda de tamanho, o mapa volta a medi-la.
+// O `div.crm-mapa` não tem filhos nossos (a Google enche-o com o mapa, o logótipo e a atribuição, que nada
+// nosso tapa); o pino não leva HTML (a gota é do `crm.css`), e os textos dos dados (a morada sugerida) entram
+// como texto.
 import React, {
   forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState,
 } from 'react';
-import * as L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
 import { Check, Loader2, LocateFixed, TriangleAlert } from 'lucide-react';
 import { Button } from '../ui/button';
-import PesquisaMorada, { Partes } from './PesquisaMorada';
-import { moradaInversa, pesquisarMorada } from '../../lib/crm/api';
+import NegocioSelecionado from './NegocioSelecionado';
+import { Partes } from './Partes';
+import PesquisaLugar from './PesquisaLugar';
+import { moradaInversa } from '../../lib/crm/api';
+import { prepararGoogleMaps } from '../../lib/crm/carregadorGoogle';
+import { TEXTO_USAR_ESTE_NEGOCIO } from '../../lib/crm/lugarGoogle';
+import { configuracaoValida } from '../../lib/crm/mapa';
 import {
   criarSeletor, textosSeletor, TEXTO_A_OBTER_LOCALIZACAO, TEXTO_ALTERAR, TEXTO_CONFIRMAR,
 } from '../../lib/crm/seletor';
 import './crm.css';
 
-// As chamadas da morada do portal (GET /api/crm/morada/pesquisa e /inversa).
+// As bibliotecas da Google de que o seletor precisa (a dos lugares serve a pesquisa e o negócio selecionado).
+const BIBLIOTECAS = ['maps', 'marker', 'places'];
+
+// A morada do ponto do GPS (GET /api/crm/morada/inversa).
 const API_MORADA = Object.freeze({
-  pesquisarMorada: (parametros) => pesquisarMorada(parametros),
   moradaInversa: (parametros) => moradaInversa(parametros),
 });
 
@@ -62,15 +80,18 @@ function geolocalizacao() {
   }
 }
 
-// A vista antes de haver seletor (configuração a chegar): a mesma de um seletor sem mapa ainda. Criar o
-// seletor não toca no mapa, no GPS nem na rede.
+// A vista antes de haver seletor (configuração ou Google a chegar): a mesma de um seletor sem mapa ainda.
+// Criar o seletor não toca no mapa, no GPS nem na rede.
 const vistaInicial = ({ textos, comGps }) => criarSeletor({
   configuracao: null, textos, api: API_MORADA, geolocation: comGps ? geolocalizacao() : undefined,
 }).vista;
 
+// O foco perdeu-se (o elemento que o tinha saiu da página).
+const focoPerdido = () => !document.activeElement || document.activeElement === document.body;
+
 const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
   configuracao, inicial = null, comGps = false, textos, focarAoIniciar = false, aoMudar, aoEscolherMorada,
-  aoSugerirMorada,
+  aoSugerirMorada, aoPronto,
 }, ref) {
   const id = useId();
   const idTitulo = `${id}-titulo`;
@@ -79,6 +100,7 @@ const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
   const area = useRef(null);
   const botaoConfirmar = useRef(null);
   const botaoAlterar = useRef(null);
+  const tituloNegocio = useRef(null);
   const [seletor, setSeletor] = useState(null);
   const [vista, setVista] = useState(() => vistaInicial({ textos, comGps }));
   // O botão que deve receber o foco quando o ecrã já o mostrar (o que se carregou pode ter desaparecido).
@@ -89,51 +111,97 @@ const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
   const opcoes = useRef({});
   useLayoutEffect(() => {
     opcoes.current = {
-      inicial, comGps, textos, focarAoIniciar, aoMudar, aoEscolherMorada, aoSugerirMorada,
+      inicial, comGps, textos, focarAoIniciar, aoMudar, aoEscolherMorada, aoSugerirMorada, aoPronto,
     };
   });
 
   useEffect(() => {
     if (configuracao === undefined) return undefined; // a configuração ainda não chegou
     const elemento = area.current;
+    // Falso depois do cleanup: o que chegar depois (a Google, uma falha) já não é desta montagem.
     let ativo = true;
+    let criado = null;
+    let observador = null;
+    // A Google recusou a chave (o `gm_authFailure`), antes ou depois de o seletor existir.
+    let recusada = false;
+    let desligarRecusa = () => {};
     const {
       inicial: ponto, comGps: gps, textos: proprios, focarAoIniciar: focar,
     } = opcoes.current;
-    const criado = criarSeletor({
-      L,
-      documento: document,
-      configuracao,
-      textos: proprios,
-      api: API_MORADA,
-      geolocation: gps ? geolocalizacao() : undefined,
-      aoMudar: (localizacao) => opcoes.current.aoMudar?.(localizacao),
-      aoEscolherMorada: (sugestao) => opcoes.current.aoEscolherMorada?.(sugestao),
-      aoSugerirMorada: (sugestao) => opcoes.current.aoSugerirMorada?.(sugestao),
-      aoMudarVista: (nova) => {
-        if (ativo) setVista(nova);
-      },
-      aoFocar: (alvo) => {
-        if (!ativo) return;
-        focoPendente.current = alvo;
-        setPedidosDeFoco((n) => n + 1);
-      },
-    });
-    const comMapa = criado.iniciar(elemento, { inicial: ponto ?? undefined });
-    setVista(criado.vista);
-    if (comMapa && focar) criado.focar();
-    setSeletor(criado);
 
-    const observador = typeof ResizeObserver === 'function' ? new ResizeObserver(() => criado.redimensionar()) : null;
-    observador?.observe(elemento);
+    // Sem `google` (não configurado, inválido, ou a Google não carregou), o seletor diz que não há mapa.
+    function criar(google) {
+      criado = criarSeletor({
+        google,
+        documento: document,
+        configuracao,
+        textos: proprios,
+        api: API_MORADA,
+        geolocation: gps ? geolocalizacao() : undefined,
+        aoMudar: (localizacao) => opcoes.current.aoMudar?.(localizacao),
+        aoEscolherMorada: (morada) => opcoes.current.aoEscolherMorada?.(morada),
+        aoSugerirMorada: (sugestao) => opcoes.current.aoSugerirMorada?.(sugestao),
+        aoMudarVista: (nova) => {
+          if (ativo) setVista(nova);
+        },
+        aoFocar: (alvo) => {
+          if (!ativo) return;
+          focoPendente.current = alvo;
+          setPedidosDeFoco((n) => n + 1);
+        },
+      });
+      const comMapa = criado.iniciar(elemento, { inicial: ponto ?? undefined });
+      setVista(criado.vista);
+      if (comMapa && focar) criado.focar();
+      setSeletor(criado);
+      observador = typeof ResizeObserver === 'function' ? new ResizeObserver(() => criado.redimensionar()) : null;
+      observador?.observe(elemento);
+    }
+
+    async function montar() {
+      let google;
+      if (configuracaoValida(configuracao)) {
+        try {
+          const { importar, aoFalharAutenticacao } = prepararGoogleMaps({
+            janela: window,
+            documento: document,
+            chave: configuracao.google.chave,
+          });
+          desligarRecusa = aoFalharAutenticacao(() => {
+            if (!ativo || recusada) return;
+            recusada = true;
+            console.error('[crm] a Google recusou a chave do mapa (referrer, chave ou API).');
+            criado?.mapaFalhou();
+          });
+          await Promise.all(BIBLIOTECAS.map((nome) => importar(nome)));
+          google = recusada ? undefined : window.google;
+        } catch (erro) {
+          if (!ativo) return;
+          console.error('[crm] o mapa não foi criado:', erro);
+        }
+      }
+      if (ativo) criar(google);
+    }
+    montar();
 
     return () => {
       ativo = false;
+      desligarRecusa();
+      if (!criado) return;
       observador?.disconnect();
       setSeletor(null);
       criado.destruir();
     };
   }, [configuracao]);
+
+  // O seletor com mapa já está na `ref`: a página pode usá-lo (e sabe quando deixa de poder, também quando a
+  // Google recusa a chave depois: a vista passa a `semMapa`).
+  const semMapa = vista.semMapa;
+  useEffect(() => {
+    if (!seletor?.mapa) return undefined;
+    opcoes.current.aoPronto?.(seletor);
+    return () => opcoes.current.aoPronto?.(null);
+  }, [seletor, semMapa]);
 
   // O foco pedido pelo seletor, depois de o React mostrar o botão.
   useLayoutEffect(() => {
@@ -143,19 +211,40 @@ const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
     (alvo === 'alterar' ? botaoAlterar : botaoConfirmar).current?.focus();
   }, [pedidosDeFoco, vista]);
 
+  // O painel do negócio: ao abrir (um toque num negócio do mapa), o foco vai para o título dele; ao fechar, se
+  // o foco esteve lá dentro e se perdeu com ele (a ação ou o "Fechar" saíram da página), volta ao mapa. A nova
+  // loja que chega com um negócio não mexe no foco (o painel nunca o teve).
+  const estadoNegocio = vista.negocio.estado;
+  const estadoNegocioAntes = useRef(estadoNegocio);
+  const painelTeveFoco = useRef(false);
+  useLayoutEffect(() => {
+    const antes = estadoNegocioAntes.current;
+    estadoNegocioAntes.current = estadoNegocio;
+    if (antes === 'fechado' && estadoNegocio === 'aberto') {
+      tituloNegocio.current?.focus();
+    } else if (antes !== 'fechado' && estadoNegocio === 'fechado') {
+      if (painelTeveFoco.current && focoPerdido()) seletor?.mapa?.focar();
+      painelTeveFoco.current = false;
+    }
+  }, [estadoNegocio, seletor]);
+
   useImperativeHandle(ref, () => ({
     mostrarErro: (texto) => seletor?.mostrarErro(texto),
     limparErro: () => seletor?.limparErro(),
     desconfirmar: () => seletor?.desconfirmar(),
     focar: () => seletor?.focar(),
     colocar: (ponto, opcoesColocar) => seletor?.colocar(ponto, opcoesColocar) ?? false,
+    escolherNegocio: (placeId, opcoesNegocio) => seletor?.escolherNegocio(placeId, opcoesNegocio),
+    usarNegocio: (placeId, opcoesNegocio) => seletor?.usarNegocio(placeId, opcoesNegocio) ?? Promise.resolve(false),
+    fecharNegocio: () => seletor?.fecharNegocio(),
+    limitesDoMapa: () => seletor?.limitesDoMapa() ?? null,
     get localizacao() {
       return seletor?.localizacao ?? null;
     },
   }), [seletor]);
 
   const confirmado = vista.estado === 'confirmado';
-  const { gps } = vista;
+  const { gps, pesquisa } = vista;
   let classeDica = 'text-muted-foreground';
   if (confirmado) classeDica = 'text-success-strong';
   else if (vista.aviso) classeDica = 'text-warning-strong';
@@ -169,16 +258,7 @@ const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
     >
       <h2 id={idTitulo} className="font-heading text-lg font-semibold">{rotulos.titulo}</h2>
 
-      {vista.pesquisa && (
-        <PesquisaMorada
-          id={`${id}-pesquisa`}
-          vista={vista.pesquisa}
-          desativado={!seletor}
-          aoEscrever={(valor) => seletor?.pesquisa?.escrever(valor)}
-          aoTecla={(tecla) => seletor?.pesquisa?.tecla(tecla) ?? false}
-          aoEscolher={(indice) => seletor?.pesquisa?.escolher(indice)}
-        />
-      )}
+      {pesquisa.elemento && <PesquisaLugar id={`${id}-pesquisa`} elemento={pesquisa.elemento} ativa={pesquisa.ativa} />}
 
       {gps && (
         <div className="space-y-1.5">
@@ -195,7 +275,7 @@ const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
               : <LocateFixed aria-hidden="true" />}
             {gps.texto}
           </Button>
-          {/* Sempre na página (mesmo vazias), para os leitores de ecrã lerem o que lá aparecer. */}
+          {/* Sempre na página (mesmo vazia), para os leitores de ecrã lerem o que lá aparecer. */}
           <p
             aria-live="polite"
             className={`text-sm [overflow-wrap:anywhere] ${gps.mensagem ? 'font-semibold text-destructive' : 'text-muted-foreground'}`}
@@ -203,14 +283,18 @@ const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
           >
             {gps.mensagem?.texto ?? ''}
           </p>
-          <p
-            aria-live="polite"
-            className={`text-sm [overflow-wrap:anywhere] ${vista.moradaSugerida?.tipo === 'erro' ? 'font-semibold text-destructive' : 'text-muted-foreground'}`}
-            data-testid="crm-seletor-morada-sugerida"
-          >
-            {vista.moradaSugerida && <Partes partes={vista.moradaSugerida.partes} />}
-          </p>
         </div>
+      )}
+
+      {/* A morada sugerida (do GPS ou da pesquisa): sempre na página enquanto um dos dois existe. */}
+      {(gps || pesquisa.ativa) && (
+        <p
+          aria-live="polite"
+          className={`text-sm [overflow-wrap:anywhere] ${vista.moradaSugerida?.tipo === 'erro' ? 'font-semibold text-destructive' : 'text-muted-foreground'}`}
+          data-testid="crm-seletor-morada-sugerida"
+        >
+          {vista.moradaSugerida && <Partes partes={vista.moradaSugerida.partes} />}
+        </p>
       )}
 
       <p
@@ -224,6 +308,20 @@ const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
         <span>{vista.dica}</span>
       </p>
 
+      {estadoNegocio !== 'fechado' && (
+        // Só para saber se o foco esteve no painel (o onFocus do React apanha o dos botões e o do título).
+        <div onFocus={() => { painelTeveFoco.current = true; }}>
+          <NegocioSelecionado
+            estado={estadoNegocio}
+            mensagem={vista.negocio.mensagem}
+            acao={{ texto: TEXTO_USAR_ESTE_NEGOCIO, aoTocar: () => seletor?.usarNegocio() }}
+            aoFechar={() => seletor?.fecharNegocio()}
+            refTitulo={tituloNegocio}
+            dica={rotulos.dicaNegocio}
+          />
+        </div>
+      )}
+
       <div
         className={`crm-seletor__vista rounded-md border bg-muted ${confirmado ? 'border-success ring-1 ring-success' : ''}`}
       >
@@ -233,7 +331,7 @@ const SeletorLocalizacao = forwardRef(function SeletorLocalizacao({
           role="region"
           aria-label={rotulos.mapa}
           aria-describedby={vista.erro ? idErro : undefined}
-          aria-busy={configuracao === undefined ? 'true' : undefined}
+          aria-busy={seletor ? undefined : 'true'}
         />
       </div>
 

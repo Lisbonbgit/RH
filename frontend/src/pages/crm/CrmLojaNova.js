@@ -2,7 +2,8 @@
 // public/assets/js/ecras/loja-nova.js do CRM autónomo, no aspeto do portal.
 //
 // Primeiro a localização (o `SeletorLocalizacao`: tocar no mapa, pesquisar a
-// morada ou "Estou nesta loja", e confirmar), depois os dados da loja (o
+// morada ou o lugar na Google, tocar num negócio do mapa ou "Estou nesta
+// loja", e confirmar), depois os dados da loja (o
 // `FormularioLoja`) e Guardar. As regras estão em `lib/crm/lojaNova.js` (com
 // testes): esta página cria o ecrã num `useEffect`, desenha a `vista` que ele
 // entrega e passa-lhe o que a pessoa faz.
@@ -14,6 +15,15 @@
 //    dessa loja, "Não, é outra loja" volta a enviar com `confirmar_duplicado`.
 //  - Depois de gravar, o mapa da mesma casa centrado na loja nova, com o aviso
 //    "Loja guardada" no `state` (o toast é do mapa, sem um daqui).
+//  - Vinda de "Adicionar como loja" no mapa (plano do mapa Google, G16), a
+//    página traz no `state` só o negócio ({negocio: {id, lat, lng}}, lido uma
+//    vez com `negocioDoEstado`). Quando o seletor tem mapa (`aoPronto`), o
+//    pino vai para esse negócio (`usarNegocio`, com o ponto tocado de reserva
+//    se a Google falhar) e o `state` sai do histórico (recarregar a página não
+//    o repete). O pino fica por arrastar até à porta da loja (o
+//    Confirmar só depois disso) e o nome escreve-se à mão, com a dica por
+//    baixo do campo "Nome" (`vista.dicaNome`) desde a chegada
+//    (`comNegocio`; revisão do mapa Google, MAPA-G-3). Sem mapa, nada se pede.
 // A configuração do mapa pede-se uma vez (`obterConfigMapa`): `undefined`
 // enquanto chega, `null` se falhar (o seletor diz que não há mapa) e sempre o
 // mesmo objeto entre desenhos (um objeto novo criava outro mapa).
@@ -27,7 +37,9 @@ import FormularioLoja from '../../components/crm/FormularioLoja';
 import SeletorLocalizacao from '../../components/crm/SeletorLocalizacao';
 import { baseCrm } from '../../lib/crm/acesso';
 import { criarLoja, listarRegioes, obterConfigMapa } from '../../lib/crm/api';
-import { TEXTO_A_GUARDAR, TEXTO_GUARDAR_SEM_REDE, criarLojaNova } from '../../lib/crm/lojaNova';
+import {
+  TEXTO_A_GUARDAR, TEXTO_GUARDAR_SEM_REDE, criarLojaNova, negocioDoEstado,
+} from '../../lib/crm/lojaNova';
 import { criarEstadoRede } from '../../lib/crm/rede';
 
 const API = Object.freeze({
@@ -49,7 +61,7 @@ function armazenamento() {
 }
 
 export default function CrmLojaNova() {
-  const { pathname } = useLocation();
+  const { pathname, state } = useLocation();
   const navigate = useNavigate();
   const base = baseCrm(pathname);
   const idDados = useId();
@@ -58,8 +70,12 @@ export default function CrmLojaNova() {
   const botaoGuardar = useRef(null);
   const [configuracao, setConfiguracao] = useState(undefined);
   const [ecra, setEcra] = useState(null);
+  // O negócio com que a página abriu ("Adicionar como loja" no mapa), lido uma vez; usa-se uma só vez.
+  const [negocio] = useState(() => negocioDoEstado(state));
+  const negocioUsado = useRef(false);
+  const comNegocio = negocio !== null;
   // A primeira vista, antes de o ecrã existir: a de um ecrã acabado de criar (não pede nada).
-  const [vista, setVista] = useState(() => criarLojaNova({ storage: armazenamento(), rede: REDE }).vista);
+  const [vista, setVista] = useState(() => criarLojaNova({ storage: armazenamento(), rede: REDE, comNegocio }).vista);
   // O campo que deve receber o foco quando o ecrã já o mostrar (o primeiro com erro de um 422).
   const focoPendente = useRef(null);
   const [pedidosDeFoco, setPedidosDeFoco] = useState(0);
@@ -106,6 +122,7 @@ export default function CrmLojaNova() {
         focoPendente.current = campo;
         setPedidosDeFoco((n) => n + 1);
       },
+      comNegocio,
     });
     setEcra(criado);
     setVista(criado.vista);
@@ -114,7 +131,7 @@ export default function CrmLojaNova() {
       ativo = false;
       criado.destruir();
     };
-  }, [base]);
+  }, [base, comNegocio]);
 
   // O foco pedido pelo ecrã, depois de o React mostrar o erro do campo.
   useLayoutEffect(() => {
@@ -123,6 +140,15 @@ export default function CrmLojaNova() {
     focoPendente.current = null;
     formulario.current?.focar(campo);
   }, [pedidosDeFoco, vista]);
+
+  // O seletor tem mapa (e a `ref` já o usa): o pino vai para o negócio com que a página abriu, e o `state`
+  // sai do histórico. Uma só vez, também com o StrictMode ou um seletor novo.
+  const aoPronto = (pronto) => {
+    if (!pronto || negocio === null || negocioUsado.current) return;
+    negocioUsado.current = true;
+    seletor.current?.usarNegocio(negocio.id, { reserva: { lat: negocio.lat, lng: negocio.lng } });
+    navigate({ pathname }, { replace: true, state: null });
+  };
 
   const { guardar } = vista;
   let iconeGuardar = <Save aria-hidden="true" />;
@@ -141,6 +167,7 @@ export default function CrmLojaNova() {
           aoMudar={(localizacao) => ecra?.mudarLocalizacao(localizacao)}
           aoEscolherMorada={(sugestao) => ecra?.escolherMorada(sugestao)}
           aoSugerirMorada={(sugestao) => ecra?.sugerirMorada(sugestao)}
+          aoPronto={aoPronto}
         />
       </div>
 
@@ -162,6 +189,7 @@ export default function CrmLojaNova() {
           erros={vista.erros}
           opcoesRegiao={vista.opcoesRegiao}
           valorRegiao={vista.valorRegiao}
+          dicas={{ nome: vista.dicaNome }}
           aoMudar={(campo, valor) => ecra?.mudarCampo(campo, valor)}
         />
         <div className="space-y-2">

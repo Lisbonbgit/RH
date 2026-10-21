@@ -3,7 +3,7 @@
 Porta de src/Http/Formatar.php (`loja`, `resumoLoja`) e da parte do
 `LojasRepositorio::criar` que monta a linha nova, para o modelo do portal:
 
-- **Na base** (`documento_loja`): `id` uuid4 em texto, os 20 campos do
+- **Na base** (`documento_loja`): `id` uuid4 em texto, os 21 campos do
   `validador_loja`, `lat`/`lng` em `float` e SEMPRE juntos do `loc` GeoJSON
   (`documento_localizacao`, `[lng, lat]`), as janelas numa lista `[{inicio,
   fim}]` (0 a 2, por ordem; `validador_loja.janelas_para_lista`), os dias pela
@@ -22,8 +22,9 @@ Os documentos só os escreve o `documento_loja` (e o seed, T2.18, por ele): um
 documento estragado à mão (uma janela a meio, um dia desconhecido, uma
 coordenada em texto) é `ValueError` — um 500 —, nunca uma resposta com outra
 forma, com que o frontend não contava. Um campo em falta é `KeyError`, exceto
-o `instagram` e o `site` (2026-10-13): as lojas gravadas antes não os têm,
-leem-se com `.get` e vêm a `null` — sem migração.
+o `instagram` e o `site` (2026-10-13) e o `google_place_id` (2026-10-18, mapa
+Google): as lojas gravadas antes não os têm, leem-se com `.get` e vêm a
+`null` — sem migração.
 """
 import math
 import uuid
@@ -33,10 +34,13 @@ from .dominio.campos_loja import DIAS
 from .dominio.validador_loja import campos_de_janelas, janelas_para_lista
 
 # A loja completa da API, pela ordem do plano §4 ("Loja completa (API)"), com o
-# `instagram` e o `site` (2026-10-13) a seguir à pessoa de contacto.
+# `instagram` e o `site` (2026-10-13) a seguir à pessoa de contacto e o
+# `google_place_id` (2026-10-18, mapa Google) a seguir à precisão. A lista
+# `GET /lojas` (`CAMPOS_RESUMO`) não o traz.
 CAMPOS_API = (
     "id", "nome", "fase", "fase_desde", "regiao_id", "morada", "codigo_postal", "localidade",
-    "lat", "lng", "origem_coords", "precisao_m", "telefone", "pessoa_contacto", "instagram", "site", "notas",
+    "lat", "lng", "origem_coords", "precisao_m", "google_place_id",
+    "telefone", "pessoa_contacto", "instagram", "site", "notas",
     "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim", "dias_fechada",
     "visita_pendente_motivo", "visita_pendente_desde", "ultima_interacao_em", "ultima_visita_ou_entrega_em",
     "criado_por", "criado_em", "atualizado_em",
@@ -107,7 +111,7 @@ def documento_localizacao(lat, lng) -> dict:
 def documento_loja(dados: dict, criado_por, agora) -> dict:
     """A loja nova como fica gravada em `crm_lojas`, pela ordem do plano §3.
 
-    `dados` são os 20 campos do `validador_loja.criacao` SEM erros (as janelas
+    `dados` são os 21 campos do `validador_loja.criacao` SEM erros (as janelas
     a meio são `ValueError`: nunca se gravam); `criado_por` é o `user_id` do
     portal de quem a criou; `agora` uma datetime com fuso (o `relogio.agora()`
     do pedido): `fase_desde` e `criado_em` são o `relogio.instante(agora)` e
@@ -129,6 +133,7 @@ def documento_loja(dados: dict, criado_por, agora) -> dict:
         **localizacao,
         "origem_coords": dados["origem_coords"],
         "precisao_m": dados["precisao_m"],
+        "google_place_id": dados["google_place_id"],
         "telefone": dados["telefone"],
         "pessoa_contacto": dados["pessoa_contacto"],
         "instagram": dados["instagram"],
@@ -159,6 +164,8 @@ def loja_api(doc: dict) -> dict:
         "lng": _coordenada(doc["lng"], -180.0, 180.0),
         "origem_coords": doc["origem_coords"],
         "precisao_m": _precisao(doc["precisao_m"]),
+        # Entrou em 2026-10-18 (mapa Google) sem migração: um documento de antes não o tem.
+        "google_place_id": doc.get("google_place_id"),
         "telefone": doc["telefone"],
         "pessoa_contacto": doc["pessoa_contacto"],
         # Entraram em 2026-10-13 sem migração: um documento de antes não os tem.

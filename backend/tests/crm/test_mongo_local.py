@@ -11,7 +11,15 @@ definições (correções do plano, linha "T1.2 (test_indices) / T2.8"), as
 corridas com o Motor nas rotas que dependem dos índices e, desde a T2.18, o
 seed das lojas de demonstração (`seed_crm_local.aplicar_lojas`, com o
 pymongo síncrono, na mesma base de teste): índices, rotas a ler o que gravou
-e a reposição quando o Mongo recusa uma escrita.
+e a reposição quando o Mongo recusa uma escrita. Desde a T3.25 (F3), as
+rotas em `crm_rotas`: os índices (`data` única, `paragens.loja_id` multikey),
+o `$push`/`$set` por índice com o filtro de guarda do escritório (a versão e
+nenhum registo do motorista, pelo `$nin` através da lista), o erro 40 do
+Mongo pela mesma operação que o código usa (`find_one_and_update` →
+`OperationFailure`, correção "T3.25"), as datas em texto por `$gte`/`$lte`,
+as corridas com o Motor dos `POST /paragens` (sem versão: as tentativas) e
+dos `PATCH` (a mesma versão: um 200 e um 409) e o `DELETE /lojas/{id}` de
+uma loja numa paragem.
 
 Só corre com `CRM_MONGO_TESTE_URL` (variável de shell, nunca no
 `.env.example`):
@@ -44,19 +52,25 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import MongoClient, uri_parser
-from pymongo.errors import DuplicateKeyError, WriteError
+from pymongo import MongoClient, ReturnDocument, uri_parser
+from pymongo.errors import DuplicateKeyError, OperationFailure, WriteError
 
 import crm.db as bd
 import seed_crm_local
 from crm import relogio
+from crm import rotas as rotas_http
+from crm import rotas_bd
 from crm.db import COLECOES, INDICES
 from crm.definicoes import alterar_definicoes
+from crm.dominio.datas import ler_data, somar_dias, texto_data
 from crm.dominio.geo import distancia_metros, encontrar_duplicados, filtro_candidatos
 from crm.formatar import documento_localizacao
+from crm.formatar_rota import documento_paragem, documento_rota
 from crm.dominio.texto import chave_comparacao
 from crm.lojas import (
     MENSAGEM_CONFLITO,
+    MENSAGEM_LOJA_EM_ROTA,
+    MENSAGEM_LOJA_ESTEVE_EM_ROTA,
     MENSAGEM_NAO_ENCONTRADA,
     MUDANCA_FASE,
     alterar_loja,
@@ -67,9 +81,10 @@ from crm.lojas import (
 )
 from crm.membros import MENSAGEM_JA_MEMBRO, adicionar_membro
 from crm.regioes import MENSAGEM_REPETIDA, alterar_regiao, criar_regiao, listar_regioes
+from crm.rotas import MENSAGEM_ROTA_EM_CURSO
 
-from .duplos import correr
-from .formatos import instantes_fora_do_formato
+from .duplos import BaseFalsa, correr
+from .formatos import escritas_no_terreno, instantes_fora_do_formato
 
 VARIAVEL = "CRM_MONGO_TESTE_URL"
 BASE_TESTE = "lisbonb_crm_teste"
@@ -795,8 +810,15 @@ def test_o_patch_das_definicoes_grava_uma_linha_por_chave_e_o_seguinte_substitui
 
     primeira, segunda, guardadas = no_mongo(ensaio)
 
-    assert primeira == {"fabrica_morada": "Rua das Flores 1, Porto", "fabrica_lat": 41.1496, "fabrica_lng": -8.611}
-    assert segunda == {"fabrica_morada": "Rua das Flores 1, Porto", "fabrica_lat": 37.16, "fabrica_lng": -8.12}
+    # As 6 chaves das rotas (F3, T3.5) vêm sempre, com os padrões e os minutos como inteiros.
+    rotas = {
+        "rota_hora_saida": "08:00", "rota_hora_regresso": "19:00", "servico_entrega_min": 10,
+        "servico_amostra_min": 10, "servico_acompanhamento_min": 15, "servico_angariacao_min": 15,
+    }
+    assert primeira == {
+        "fabrica_morada": "Rua das Flores 1, Porto", "fabrica_lat": 41.1496, "fabrica_lng": -8.611, **rotas,
+    }
+    assert segunda == {"fabrica_morada": "Rua das Flores 1, Porto", "fabrica_lat": 37.16, "fabrica_lng": -8.12, **rotas}
     assert [(g["chave"], g["valor"]) for g in guardadas] == [
         ("fabrica_lat", "37.160000"),
         ("fabrica_lng", "-8.120000"),
@@ -947,3 +969,435 @@ def test_se_o_repor_do_seed_falhar_no_mongo_fica_tudo_como_estava(no_mongo):
     assert erro == SEED_NADA_MUDOU
     assert [len(antes[c]) for c in coleccoes] == [1, 1, 1]
     assert depois == antes
+
+
+# --- F3: as rotas em crm_rotas (T3.25) ----------------------------------------------------------------
+#
+# As escritas do escritório (`rotas_bd`, T3.17) e as rotas HTTP (T3.19/T3.20)
+# estão provadas sobre o duplo; aqui repete-se no Mongo verdadeiro o que o
+# duplo só modela: os índices, o `$nin` através da lista no filtro de guarda,
+# o erro 40 dos caminhos em conflito, a ordem das datas em texto e as
+# corridas com o Motor. As rotas gravadas à mão seguem a forma do
+# `documento_rota`/`documento_paragem`; as das corridas nascem pelas rotas
+# HTTP, com o relógio verdadeiro (o dia é sempre amanhã em Lisboa).
+
+INDICES_DAS_ROTAS = ["_id_", "data_1", "id_1", "paragens.loja_id_1"]
+GUARDA_DO_TERRENO = {"paragens.estado": {"$nin": ["feita", "nao_feita"]}}
+DEFINICOES_DAS_ROTAS = {"rota_hora_saida": "08:00", "rota_hora_regresso": "19:00"}
+AGORA_DAS_ROTAS = datetime(2026, 10, 10, 9, 0, 0, 123456, tzinfo=timezone.utc)
+AGORA_DEPOIS = datetime(2026, 10, 10, 9, 30, 0, 0, tzinfo=timezone.utc)
+RETIRADA_EM = "2026-10-10T10:00:00Z"
+# O registo do motorista (F4) numa paragem: só os campos do terreno.
+REGISTO_FEITA = {"estado": "feita", "resultado": "interessado", "concluida_em": "2026-10-11T10:00:00Z"}
+CALCULO_GRAVADO = {
+    "assinatura": "sha256:" + "0" * 64, "distancia_m": 1234, "duracao_s": 567, "regresso_previsto": "09:30",
+    "depois_do_limite": False, "geometria": "_p~iF~ps|U", "calculado_em": "2026-10-11T10:00:00Z",
+}
+
+
+def _dia(n=1):
+    """Hoje em Lisboa mais `n` dias, em texto: as rotas HTTP leem o relógio verdadeiro."""
+    return texto_data(somar_dias(relogio.hoje(), n))
+
+
+def _loja_para_a_rota(n, lat, fase="potencial"):
+    """Uma loja gravada à mão, com o que a `PROJECAO_LOJA_ROTA` lê (pela rota
+    HTTP, as lojas de um mesmo ensaio ficavam a menos de 50 m umas das outras)."""
+    return {**_loja(n, lat), "fase": fase, "telefone": "", "janelas": [], "dias_fechada": []}
+
+
+def _rota_na_base(data, *lojas_ids, id_, versao=1):
+    """Uma rota como o `documento_rota` a grava, com uma paragem ativa por loja
+    (ordens 0..n−1), pronta para o `insert_one`."""
+    rota = documento_rota(ler_data(data), RUI_MEMBRO["user_id"], AGORA_DAS_ROTAS, DEFINICOES_DAS_ROTAS)
+    rota["id"] = id_
+    rota["versao"] = versao
+    rota["paragens"] = [
+        documento_paragem({"id": loja_id}, "angariacao", 15, ordem, RUI_MEMBRO["user_id"], AGORA_DAS_ROTAS)
+        for ordem, loja_id in enumerate(lojas_ids)
+    ]
+    return rota
+
+
+def _retirar(paragem):
+    paragem.update({"removida_em": RETIRADA_EM, "ordem": None})
+
+
+def test_crm_rotas_fica_com_exatamente_os_quatro_indices(no_mongo):
+    """O `criar_indices` verdadeiro: `_id_`, `id_1` e `data_1` únicos e
+    `paragens.loja_id_1` sem ser único (uma entrada por paragem)."""
+
+    async def ensaio(base):
+        informacao = await base[COLECOES["rotas"]].index_information()
+        return sorted(informacao), {nome: bool(indice.get("unique")) for nome, indice in informacao.items()}
+
+    nomes, unicos = no_mongo(ensaio)
+
+    assert nomes == INDICES_DAS_ROTAS
+    assert unicos == {"_id_": False, "id_1": True, "data_1": True, "paragens.loja_id_1": False}
+
+
+def test_a_mesma_data_duas_vezes_da_duplicate_key_error(no_mongo):
+    """Uma rota por dia: a segunda `insert_one` com a mesma `data` é
+    `DuplicateKeyError` pelo `data_1` (`rotas_bd.criar` → False, nada
+    gravado); outro dia grava, mesmo com a mesma loja numa paragem (o
+    `paragens.loja_id` não é único)."""
+
+    async def ensaio(base):
+        rotas = base[COLECOES["rotas"]]
+        await rotas.insert_one(_rota_na_base("2026-10-12", _id(1), id_=_id(21)))
+        with pytest.raises(DuplicateKeyError) as repetida:
+            await rotas.insert_one(_rota_na_base("2026-10-12", _id(2), id_=_id(22)))
+        criada = await rotas_bd.criar(base, _rota_na_base("2026-10-12", _id(3), id_=_id(23)))
+        outro_dia = await rotas_bd.criar(base, _rota_na_base("2026-10-13", _id(1), id_=_id(24)))
+        gravadas = await rotas.find({}, {"_id": 0, "id": 1, "data": 1}).sort("data", 1).to_list(10)
+        return repetida.value, criada, outro_dia, gravadas
+
+    repetida, criada, outro_dia, gravadas = no_mongo(ensaio)
+
+    assert repetida.details["keyPattern"] == {"data": 1}
+    assert (criada, outro_dia) == (False, True)
+    assert gravadas == [{"id": _id(21), "data": "2026-10-12"}, {"id": _id(24), "data": "2026-10-13"}]
+
+
+def test_esta_loja_esta_numa_rota_vai_pelo_indice_paragens_loja_id(no_mongo):
+    """`rotas_com_loja` (o `DELETE /lojas/{id}`): o filtro `{"paragens.loja_id"}`
+    usa o índice multikey, encontra a loja em qualquer posição da lista
+    (também retirada) e vem por `data`, sem o `calculo` nem o `_id`."""
+
+    async def ensaio(base):
+        rotas = base[COLECOES["rotas"]]
+        primeira = _rota_na_base("2026-10-12", _id(1), _id(2), id_=_id(21))  # a 2 em segundo
+        sem_a_loja = _rota_na_base("2026-10-13", _id(3), id_=_id(22))
+        depois = _rota_na_base("2026-10-14", _id(2), _id(3), id_=_id(23))  # a 2 em primeiro, retirada
+        _retirar(depois["paragens"][0])
+        depois["calculo"] = dict(CALCULO_GRAVADO)
+        await rotas.insert_many([primeira, sem_a_loja, depois])
+        plano = _plano(await rotas.find({"paragens.loja_id": _id(2)}).explain())
+        com_a_loja = await rotas_bd.rotas_com_loja(base, _id(2))
+        return plano, com_a_loja
+
+    plano, com_a_loja = no_mongo(ensaio)
+
+    assert "paragens.loja_id_1" in plano
+    assert "'isMultiKey': True" in plano
+    assert [r["id"] for r in com_a_loja] == [_id(21), _id(23)]
+    assert all("calculo" not in r and "_id" not in r for r in com_a_loja)
+
+
+def test_push_e_inc_condicionais_na_rota_verdadeira(no_mongo):
+    """`acrescentar_paragem`: `$push` + `$inc` + `$set` de topo numa só
+    `find_one_and_update`. Com a versão lida grava (versão 2, a paragem no
+    fim, o autor e o carimbo novos); com a versão que já passou não casa e
+    nada muda (`porque_falhou` → conflito)."""
+
+    async def ensaio(base):
+        rotas = base[COLECOES["rotas"]]
+        lida = _rota_na_base("2026-10-12", _id(1), id_=_id(21))
+        await rotas.insert_one(dict(lida))
+        nova = documento_paragem({"id": _id(2)}, "amostra", 10, 1, "u-ana", AGORA_DEPOIS)
+        outra = documento_paragem({"id": _id(3)}, "entrega", 10, 1, "u-ana", AGORA_DEPOIS)
+        depois = await rotas_bd.acrescentar_paragem(base, lida, nova, membro_id="u-ana", agora=AGORA_DEPOIS)
+        velha = await rotas_bd.acrescentar_paragem(base, lida, outra, membro_id="u-ana", agora=AGORA_DEPOIS)
+        motivo = await rotas_bd.porque_falhou(base, lida["id"], lida["versao"])
+        gravada = await rotas.find_one({"id": lida["id"]}, {"_id": 0})
+        return lida, depois, velha, motivo, gravada
+
+    lida, depois, velha, motivo, gravada = no_mongo(ensaio)
+
+    assert (velha, motivo) == (None, "conflito")
+    assert gravada == depois
+    assert depois["versao"] == 2
+    assert [(p["loja_id"], p["ordem"], p["motivo"]) for p in depois["paragens"]] == [
+        (_id(1), 0, "angariacao"), (_id(2), 1, "amostra"),
+    ]
+    assert depois["atualizado_em"] > lida["atualizado_em"]
+    assert depois["atualizado_por"] == "u-ana"
+    assert instantes_fora_do_formato(gravada) == []
+    assert escritas_no_terreno(gravada) == []
+
+
+def test_o_set_por_indice_com_a_guarda_casa_antes_e_nao_depois_do_registo_do_motorista(no_mongo):
+    """`alterar`: `$set paragens.N.ordem` + `$inc` com o filtro de guarda.
+    Antes casa (a ordem trocada, versão 2); depois de o motorista pôr
+    `paragens.1.estado: "feita"` (só os campos do terreno, a versão igual), o
+    `$nin` através da lista deixa de casar — nada se escreve, `porque_falhou`
+    diz `em_curso`, a rota lê-se só de leitura e o `PATCH` dá 409
+    `rota_em_curso` (o molde do `test_rotas_terreno.py`)."""
+
+    async def ensaio(base):
+        rotas = base[COLECOES["rotas"]]
+        amanha = _dia(1)
+        await base[COLECOES["lojas"]].insert_many([_loja_para_a_rota(1, LAT), _loja_para_a_rota(2, A_80_M)])
+        lida = _rota_na_base(amanha, _id(1), _id(2), id_=_id(21))
+        await rotas.insert_one(dict(lida))
+        guarda = {"id": lida["id"], "versao": 1, "estado": {"$in": ["rascunho", "planeada"]}, **GUARDA_DO_TERRENO}
+        casa_antes = await rotas.count_documents(guarda)
+        trocada = await rotas_bd.alterar(
+            base, lida, {"paragens.0.ordem": 1, "paragens.1.ordem": 0}, membro_id="u-ana", agora=AGORA_DEPOIS
+        )
+        registo = await rotas.update_one(
+            {"id": lida["id"]}, {"$set": {f"paragens.1.{campo}": valor for campo, valor in REGISTO_FEITA.items()}}
+        )
+        casa_depois = await rotas.count_documents({**guarda, "versao": 2})
+        recusada = await rotas_bd.alterar(
+            base, trocada, {"paragens.0.ordem": 0, "paragens.1.ordem": 1}, membro_id="u-ana", agora=AGORA_DEPOIS
+        )
+        motivo = await rotas_bd.porque_falhou(base, lida["id"], trocada["versao"])
+        leitura = await rotas_http.ver_rota(amanha, membro=RUI_MEMBRO)
+        with pytest.raises(HTTPException) as em_curso:
+            await rotas_http.alterar_rota(amanha, membro=RUI_MEMBRO, corpo={"versao": 2, "evitar_portagens": True})
+        gravada = await rotas.find_one({"id": lida["id"]}, {"_id": 0})
+        return casa_antes, trocada, registo.modified_count, casa_depois, recusada, motivo, leitura, em_curso.value, gravada
+
+    casa_antes, trocada, registo, casa_depois, recusada, motivo, leitura, em_curso, gravada = no_mongo(ensaio)
+
+    assert casa_antes == 1
+    assert trocada["versao"] == 2
+    assert [(p["loja_id"], p["ordem"]) for p in trocada["paragens"]] == [(_id(1), 1), (_id(2), 0)]
+    assert registo == 1
+    assert casa_depois == 0
+    assert (recusada, motivo) == (None, "em_curso")
+    assert (leitura["editavel"], leitura["versao"]) == (False, 2)
+    assert (em_curso.status_code, em_curso.detail) == (409, _erro("rota_em_curso", MENSAGEM_ROTA_EM_CURSO))
+    assert gravada["versao"] == 2 and gravada["evitar_portagens"] is False
+    assert [(p["ordem"], p["estado"]) for p in gravada["paragens"]] == [(1, "pendente"), (0, "feita")]
+    assert {campo: gravada["paragens"][1][campo] for campo in REGISTO_FEITA} == REGISTO_FEITA
+    assert instantes_fora_do_formato(gravada) == []
+
+
+def test_o_calculo_lido_no_filtro_de_guarda_casa_antes_e_nao_depois_de_um_recalculo(no_mongo):
+    """Correção "F3-INT-1", no Mongo verdadeiro: `calculo: None` no filtro
+    casa com o `calculo` nulo gravado; um recálculo sem subir a versão
+    (`alterar(..., subir_versao=False)`) faz falhar as escritas lidas antes —
+    a que sobe a versão e o `$push` — sem escrever, `porque_falhou` diz
+    `conflito`, e a rota relida (com `calculo.assinatura` e
+    `calculo.calculado_em` no filtro) grava."""
+
+    async def ensaio(base):
+        rotas = base[COLECOES["rotas"]]
+        lida = _rota_na_base("2026-10-12", _id(1), _id(2), id_=_id(21))
+        await rotas.insert_one(dict(lida))
+        recalculo = {"paragens.0.chegada_prevista": "08:10", "paragens.0.espera_min": 0, "calculo": dict(CALCULO_GRAVADO)}
+        recalculada = await rotas_bd.alterar(
+            base, lida, recalculo, subir_versao=False, membro_id="u-ana", agora=AGORA_DEPOIS
+        )
+        velha = await rotas_bd.alterar(base, lida, {"evitar_portagens": True}, membro_id="u-ana", agora=AGORA_DEPOIS)
+        nova = documento_paragem({"id": _id(3)}, "entrega", 10, 2, "u-ana", AGORA_DEPOIS)
+        velho_push = await rotas_bd.acrescentar_paragem(base, lida, nova, membro_id="u-ana", agora=AGORA_DEPOIS)
+        intacta = await rotas.find_one({"id": lida["id"]}, {"_id": 0})
+        motivo = await rotas_bd.porque_falhou(base, lida["id"], lida["versao"])
+        relida = await rotas_bd.alterar(
+            base, recalculada, {"evitar_portagens": True}, membro_id="u-ana", agora=AGORA_DEPOIS
+        )
+        gravada = await rotas.find_one({"id": lida["id"]}, {"_id": 0})
+        return recalculada, velha, velho_push, intacta, motivo, relida, gravada
+
+    recalculada, velha, velho_push, intacta, motivo, relida, gravada = no_mongo(ensaio)
+
+    assert (recalculada["versao"], recalculada["calculo"]) == (1, CALCULO_GRAVADO)
+    assert recalculada["paragens"][0]["chegada_prevista"] == "08:10"
+    assert (velha, velho_push, motivo) == (None, None, "conflito")
+    assert intacta == recalculada
+    assert (relida["versao"], relida["evitar_portagens"], relida["calculo"]) == (2, True, CALCULO_GRAVADO)
+    assert gravada == relida
+    assert instantes_fora_do_formato(gravada) == []
+
+
+def test_push_de_paragens_com_set_por_indice_e_o_erro_40_do_mongo_e_do_duplo(no_mongo):
+    """Pela mesma operação que o código usa (`find_one_and_update`), o Mongo
+    recusa `$push paragens` + `$set paragens.0.x` com `OperationFailure`
+    código 40 — não `WriteError` (correção "T3.25"); o duplo levanta o mesmo
+    código com a mesma mensagem, e nada fica escrito."""
+    atualizacao = {
+        "$push": {"paragens": documento_paragem({"id": _id(2)}, "amostra", 10, 1, "u-ana", AGORA_DEPOIS)},
+        "$set": {"paragens.0.ordem": 1},
+    }
+
+    async def ensaio(base):
+        rotas = base[COLECOES["rotas"]]
+        rota = _rota_na_base("2026-10-12", _id(1), id_=_id(21))
+        await rotas.insert_one(dict(rota))
+        with pytest.raises(OperationFailure) as real:
+            await rotas.find_one_and_update(
+                {"id": rota["id"]}, atualizacao, projection={"_id": 0}, return_document=ReturnDocument.AFTER
+            )
+        duplo = BaseFalsa({COLECOES["rotas"]: [rota]})
+        with pytest.raises(OperationFailure) as falso:
+            await duplo[COLECOES["rotas"]].find_one_and_update(
+                {"id": rota["id"]}, atualizacao, projection={"_id": 0}, return_document=ReturnDocument.AFTER
+            )
+        return real.value, falso.value, await rotas.find_one({"id": rota["id"]}, {"_id": 0}), rota, duplo
+
+    real, falso, gravada, rota, duplo = no_mongo(ensaio)
+
+    assert (real.code, real.details["codeName"], isinstance(real, WriteError)) == (40, "ConflictingUpdateOperators", False)
+    assert real.details["errmsg"] == "Updating the path 'paragens.0.ordem' would create a conflict at 'paragens'"
+    assert (falso.code, str(falso)) == (real.code, real.details["errmsg"])
+    assert gravada == rota
+    assert duplo[COLECOES["rotas"]].sem_id() == [rota]
+
+
+def test_as_datas_em_texto_filtram_e_ordenam_como_o_tempo(no_mongo):
+    """`rotas_entre`: `$gte`/`$lte` sobre o texto `AAAA-MM-DD` (largura fixa) é
+    o intervalo fechado de dias, também na virada do mês e do ano; um só dia
+    é um só dia; a procura e a ordem vão pelo `data_1`."""
+    dias = ["2027-01-01", "2026-09-30", "2026-10-09", "2026-12-31", "2026-10-10", "2026-10-01"]
+
+    async def ensaio(base):
+        rotas = base[COLECOES["rotas"]]
+        await rotas.insert_many([_rota_na_base(dia, _id(n), id_=_id(20 + n)) for n, dia in enumerate(dias, 1)])
+        entre = await rotas_bd.rotas_entre(base, "2026-10-01", "2026-12-31")
+        um_dia = await rotas_bd.rotas_entre(base, "2026-10-10", "2026-10-10")
+        procura = rotas.find({"data": {"$gte": "2026-10-01", "$lte": "2026-12-31"}}, {"_id": 0, "calculo": 0})
+        plano = _plano(await procura.sort("data", 1).explain())
+        return [r["data"] for r in entre], [r["data"] for r in um_dia], plano
+
+    entre, um_dia, plano = no_mongo(ensaio)
+
+    assert entre == ["2026-10-01", "2026-10-09", "2026-10-10", "2026-12-31"]
+    assert um_dia == ["2026-10-10"]
+    assert "data_1" in plano
+
+
+def test_dois_post_de_paragens_sem_versao_ao_mesmo_tempo_ficam_as_duas_com_a_versao_3(no_mongo, monkeypatch):
+    """A corrida a sério com o Motor e a barreira: os dois leem a rota na
+    versão 1; a primeira `find_one_and_update` casa (versão 2) e a segunda
+    não — sem versão no corpo, relê e acrescenta (versão 3). Ficam as três
+    paragens, com as ordens 0, 1 e 2, cada uma com o seu autor, o seu motivo
+    e o tempo das definições; a resposta do último é igual ao GET."""
+
+    async def ensaio(base):
+        amanha = _dia(1)
+        await base[COLECOES["lojas"]].insert_many(
+            [_loja_para_a_rota(1, LAT), _loja_para_a_rota(2, A_80_M, "contactada"), _loja_para_a_rota(3, A_65_M, "cliente")]
+        )
+        primeira = await rotas_http.adicionar_paragem(amanha, membro=RUI_MEMBRO, corpo={"loja_id": _id(1)})
+        _em_corrida(monkeypatch, base, "rotas")
+        respostas = await asyncio.gather(
+            rotas_http.adicionar_paragem(amanha, membro=RUI_MEMBRO, corpo={"loja_id": _id(2)}),
+            rotas_http.adicionar_paragem(amanha, membro=ANA_MEMBRO, corpo={"loja_id": _id(3), "motivo": "entrega"}),
+            return_exceptions=True,
+        )
+        monkeypatch.setattr(bd, "obter_db", lambda: base)
+        leitura = await rotas_http.ver_rota(amanha, membro=RUI_MEMBRO)
+        rotas = base[COLECOES["rotas"]]
+        return primeira, respostas, leitura, await rotas.find_one({"data": amanha}, {"_id": 0}), await rotas.count_documents({})
+
+    primeira, respostas, leitura, gravada, quantas = no_mongo(ensaio)
+
+    gravaram, recusadas = _separar(respostas)
+    assert (len(gravaram), recusadas, quantas) == (2, [], 1)
+    assert (primeira["versao"], gravada["versao"]) == (1, 3)
+    assert sorted(r["versao"] for r in gravaram) == [2, 3]
+    assert [r for r in gravaram if r["versao"] == 3] == [leitura]
+    assert [p["ordem"] for p in gravada["paragens"]] == [0, 1, 2]
+    assert {p["loja_id"]: (p["adicionada_por"], p["motivo"], p["tempo_servico_min"]) for p in gravada["paragens"]} == {
+        _id(1): ("u-rui", "angariacao", 15), _id(2): ("u-rui", "amostra", 10), _id(3): ("u-ana", "entrega", 10),
+    }
+    assert all(p["estado"] == "pendente" and p["removida_em"] is None for p in gravada["paragens"])
+    assert instantes_fora_do_formato(gravada) == []
+    assert escritas_no_terreno(gravada) == []
+
+
+def test_duas_pessoas_a_criar_a_rota_do_mesmo_dia_no_mongo_ficam_as_duas(no_mongo, monkeypatch):
+    """Sem rota: os dois leem "sem rota" (a barreira) e inserem; a segunda
+    `insert_one` falha pelo `data_1` verdadeiro (`criar` → False), relê e
+    acrescenta. Uma rota só, com as duas paragens e a versão 2."""
+
+    async def ensaio(base):
+        amanha = _dia(1)
+        await base[COLECOES["lojas"]].insert_many([_loja_para_a_rota(1, LAT), _loja_para_a_rota(2, A_80_M)])
+        _em_corrida(monkeypatch, base, "rotas")
+        respostas = await asyncio.gather(
+            rotas_http.adicionar_paragem(amanha, membro=RUI_MEMBRO, corpo={"loja_id": _id(1)}),
+            rotas_http.adicionar_paragem(amanha, membro=ANA_MEMBRO, corpo={"loja_id": _id(2)}),
+            return_exceptions=True,
+        )
+        rotas = base[COLECOES["rotas"]]
+        return respostas, await rotas.find({}, {"_id": 0}).to_list(10)
+
+    respostas, gravadas = no_mongo(ensaio)
+
+    gravaram, recusadas = _separar(respostas)
+    assert (len(gravaram), recusadas, len(gravadas)) == (2, [], 1)
+    rota = gravadas[0]
+    assert rota["versao"] == 2
+    assert sorted(r["versao"] for r in gravaram) == [1, 2]
+    assert sorted((p["loja_id"], p["ordem"]) for p in rota["paragens"]) == [(_id(1), 0), (_id(2), 1)] or sorted(
+        (p["loja_id"], p["ordem"]) for p in rota["paragens"]
+    ) == [(_id(1), 1), (_id(2), 0)]
+    assert {p["loja_id"]: p["adicionada_por"] for p in rota["paragens"]} == {_id(1): "u-rui", _id(2): "u-ana"}
+    assert rota["criado_por"] == rota["paragens"][0]["adicionada_por"]
+    assert instantes_fora_do_formato(rota) == []
+
+
+def test_dois_patch_com_a_mesma_versao_um_200_e_um_409(no_mongo, monkeypatch):
+    """Os dois leem a versão 1 (a barreira); a `find_one_and_update` com a
+    versão no filtro deixa gravar só um (200, a versão 2 e a sua mudança), e
+    o outro dá 409 `conflito` sem nada gravado; a resposta do que gravou é
+    igual ao GET seguinte."""
+
+    async def ensaio(base):
+        amanha = _dia(1)
+        await base[COLECOES["lojas"]].insert_one(_loja_para_a_rota(1, LAT))
+        criada = await rotas_http.adicionar_paragem(amanha, membro=RUI_MEMBRO, corpo={"loja_id": _id(1)})
+        _em_corrida(monkeypatch, base, "rotas")
+        respostas = await asyncio.gather(
+            rotas_http.alterar_rota(amanha, membro=RUI_MEMBRO, corpo={"versao": 1, "hora_saida": "07:30"}),
+            rotas_http.alterar_rota(amanha, membro=ANA_MEMBRO, corpo={"versao": 1, "evitar_portagens": True}),
+            return_exceptions=True,
+        )
+        monkeypatch.setattr(bd, "obter_db", lambda: base)
+        leitura = await rotas_http.ver_rota(amanha, membro=RUI_MEMBRO)
+        return criada, respostas, leitura, await base[COLECOES["rotas"]].find_one({"data": amanha}, {"_id": 0})
+
+    criada, respostas, leitura, gravada = no_mongo(ensaio)
+
+    gravaram, recusadas = _separar(respostas)
+    assert (len(gravaram), len(recusadas)) == (1, 1)
+    assert (recusadas[0].status_code, recusadas[0].detail) == (409, _erro("conflito", MENSAGEM_CONFLITO))
+    venceu = gravaram[0]
+    assert venceu == leitura
+    assert (criada["versao"], venceu["versao"], gravada["versao"]) == (1, 2, 2)
+    mudanca = (gravada["hora_saida"], gravada["evitar_portagens"])
+    assert mudanca in (("07:30", False), ("08:00", True))
+    assert (venceu["hora_saida"], venceu["evitar_portagens"]) == mudanca
+    assert gravada["atualizado_por"] == ("u-rui" if mudanca == ("07:30", False) else "u-ana")
+    assert instantes_fora_do_formato(gravada) == []
+    assert escritas_no_terreno(gravada) == []
+
+
+def test_apagar_uma_loja_numa_paragem_da_409_loja_em_rota(no_mongo):
+    """`DELETE /lojas/{id}` pelo `paragens.loja_id` verdadeiro: a loja numa
+    paragem ativa da rota de amanhã → 409 "está numa rota"; a que só esteve
+    numa rota passada → 409 "esteve numa rota"; a que só está retirada e
+    pendente apaga-se; as rotas ficam tal e qual."""
+
+    async def ensaio(base):
+        lojas, rotas = base[COLECOES["lojas"]], base[COLECOES["rotas"]]
+        await lojas.insert_many([_loja_para_a_rota(1, LAT), _loja_para_a_rota(2, A_80_M), _loja_para_a_rota(3, A_65_M)])
+        futura = _rota_na_base(_dia(1), _id(1), _id(3), id_=_id(21))
+        _retirar(futura["paragens"][1])
+        passada = _rota_na_base(_dia(-1), _id(2), id_=_id(22))
+        await rotas.insert_many([futura, passada])
+        antes = await rotas.find({}, {"_id": 0}).sort("data", 1).to_list(10)
+        recusas = []
+        for loja_id in (_id(1), _id(2)):
+            with pytest.raises(HTTPException) as recusa:
+                await apagar_loja(loja_id, RUI_MEMBRO)
+            recusas.append((recusa.value.status_code, recusa.value.detail))
+        apagada = await apagar_loja(_id(3), RUI_MEMBRO)
+        depois = await rotas.find({}, {"_id": 0}).sort("data", 1).to_list(10)
+        restantes = sorted(loja["id"] for loja in await lojas.find({}, {"_id": 0, "id": 1}).to_list(10))
+        return recusas, apagada, antes, depois, restantes
+
+    recusas, apagada, antes, depois, restantes = no_mongo(ensaio)
+
+    assert recusas == [
+        (409, _erro("loja_em_rota", MENSAGEM_LOJA_EM_ROTA)),
+        (409, _erro("loja_em_rota", MENSAGEM_LOJA_ESTEVE_EM_ROTA)),
+    ]
+    assert apagada == {"apagada": True}
+    assert depois == antes
+    assert restantes == [_id(1), _id(2)]

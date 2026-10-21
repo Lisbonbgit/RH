@@ -57,9 +57,10 @@ export default function PrivacyPolicy() {
               Os dados <strong>não são vendidos</strong> nem partilhados para fins publicitários. São acedidos
               apenas pelo Grupo Lisbonb e pelos prestadores estritamente necessários ao funcionamento do serviço
               (alojamento e base de dados), sujeitos a confidencialidade.
-              No CRM (secção 8), o mapa e a pesquisa de morada usam a Geoapify e o OpenStreetMap: o servidor só
-              envia à Geoapify o texto pesquisado e pontos do mapa, sem dados pessoais, e as imagens do mapa são
-              pedidas pelo próprio browser, que, como em qualquer site, lhes dá a conhecer o endereço IP.
+              No CRM (secção 8), o mapa é o Google Maps (Google Ireland Limited): é o próprio browser que lhe pede
+              o mapa, a pesquisa de moradas e a posição dos lugares, dando-lhe a conhecer, como em qualquer site, o
+              endereço IP. A morada sugerida de um ponto do GPS vem da Geoapify (dados OpenStreetMap), a quem o
+              servidor só envia pontos do mapa, sem dados pessoais.
             </p>
           </section>
 
@@ -109,10 +110,18 @@ export default function PrivacyPolicy() {
                 fase e notas), o perfil de cada membro no CRM e quem registou cada loja e cada mudança de fase.
               </li>
               <li>
-                <strong>Moradas e mapas:</strong> as moradas sugeridas vêm da Geoapify (dados OpenStreetMap), com a
-                indicação Powered by Geoapify. Mapas: Powered by Geoapify | © OpenMapTiles © OpenStreetMap contributors
-                (ou só © OpenStreetMap contributors, quando o mapa usa diretamente o OpenStreetMap), desenhados com
-                o Leaflet.
+                <strong>Mapa:</strong> o mapa é o Google Maps, da Google Ireland Limited. Ao usar o mapa do CRM, o
+                membro fica sujeito aos{' '}
+                <a href="https://maps.google.com/help/terms_maps/" className="text-primary underline">Termos adicionais do Google Maps/Google Earth</a>{' '}
+                e à{' '}
+                <a href="https://policies.google.com/privacy" className="text-primary underline">Política de Privacidade da Google</a>.
+              </li>
+              <li>
+                <strong>Lojas e moradas:</strong> o nome e o telefone de uma loja são sempre escritos pelo membro e{' '}
+                <strong>nunca</strong> copiados da Google; quando a loja parte de um lugar da Google, guarda-se só o
+                identificador do lugar (place ID) e o pino confirmado pelo membro. A morada preenchida depois de uma
+                pesquisa vem da Google; a de um ponto do GPS vem da Geoapify (dados OpenStreetMap), com a indicação
+                Powered by Geoapify.
               </li>
             </ul>
           </section>

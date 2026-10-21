@@ -1,0 +1,63 @@
+{
+  "_origem": "manual — regravar",
+  "bbox": [-9.216, 38.6916, -9.1364, 38.7253],
+  "routes": [
+    {
+      "summary": {"distance": 20865.7, "duration": 2455.1},
+      "segments": [
+        {
+          "distance": 1342.6,
+          "duration": 238.4,
+          "steps": [
+            {"distance": 812.4, "duration": 141.2, "type": 11, "instruction": "Head west", "name": "-", "way_points": [0, 2]},
+            {"distance": 530.2, "duration": 97.2, "type": 5, "instruction": "Turn slight right", "name": "-", "way_points": [2, 3]},
+            {"type": 10, "instruction": "Arrive at your destination, on the right", "name": "-", "way_points": [3, 3]}
+          ]
+        },
+        {
+          "distance": 2917.3,
+          "duration": 478.9,
+          "steps": [
+            {"distance": 2917.3, "duration": 478.9, "type": 11, "instruction": "Head south", "name": "-", "way_points": [3, 8]},
+            {"type": 10, "instruction": "Arrive at your destination, on the left", "name": "-", "way_points": [8, 8]}
+          ]
+        },
+        {
+          "distance": 7963.1,
+          "duration": 835.2,
+          "steps": [
+            {"distance": 7963.1, "duration": 835.2, "type": 11, "instruction": "Head west", "name": "-", "way_points": [8, 12]},
+            {"type": 10, "instruction": "Arrive at your destination, on the left", "name": "-", "way_points": [12, 12]}
+          ]
+        },
+        {
+          "distance": 8642.7,
+          "duration": 902.6,
+          "steps": [
+            {"distance": 8642.7, "duration": 902.6, "type": 11, "instruction": "Head northeast", "name": "-", "way_points": [12, 17]},
+            {"type": 10, "instruction": "Arrive at your destination, on the right", "name": "-", "way_points": [17, 17]}
+          ]
+        }
+      ],
+      "bbox": [-9.216, 38.6916, -9.1364, 38.7253],
+      "geometry": "k}ikFr_xv@sDvVwGj\\kCvLja@_]zYcV~HcLjW{JrN{ErIrq@nPjpEve@naDn_@~iAgm@_cBgw@_|Bo}@_|B_Xw|A{@sb@",
+      "way_points": [0, 3, 8, 12, 17]
+    }
+  ],
+  "metadata": {
+    "attribution": "openrouteservice.org | OpenStreetMap contributors",
+    "service": "routing",
+    "timestamp": 1760176800000,
+    "query": {
+      "coordinates": [[-9.1393, 38.7223], [-9.15, 38.7253], [-9.1364, 38.7075], [-9.216, 38.6916], [-9.1393, 38.7223]],
+      "profile": "driving-car",
+      "profileName": "driving-car",
+      "format": "json",
+      "instructions": true,
+      "geometry": true,
+      "elevation": false,
+      "units": "m"
+    },
+    "engine": {"version": "9.1.2", "build_date": "2025-03-27T09:23:59Z", "graph_date": "2025-09-28T09:11:42Z"}
+  }
+}

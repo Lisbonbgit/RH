@@ -30,6 +30,20 @@ ESTADOS = {
     "ja_membro": 409,
     "admin_master": 409,
     "morada_indisponivel": 503,
+    # F3 (plano F3 §4; T3.19): as recusas de escrever numa rota. O
+    # `rota_em_curso` entra aqui e não na T3.20 (correção "T3.19 / T3.20").
+    "ja_na_rota": 409,
+    "rota_cheia": 409,
+    "rota_fechada": 409,
+    "rota_em_curso": 409,
+    # F3 (T3.21): o openrouteservice não deu horas — sem chave, limite de
+    # pedidos (429), um ponto longe da estrada (2010) ou uma falha; o `tipo`
+    # vai no extra e a mensagem segue-o (plano F3 §1 "Mensagens das falhas").
+    "calculo_indisponivel": 503,
+    # F3 (T3.24): apagar uma loja que está numa rota — numa paragem ativa, ou
+    # numa com registo do motorista mesmo retirada — é recusado; a mensagem
+    # distingue uma rota de hoje ou do futuro de só rotas passadas.
+    "loja_em_rota": 409,
 }
 
 MENSAGEM_VALIDACAO = "Verifique os campos assinalados."

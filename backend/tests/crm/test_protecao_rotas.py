@@ -100,8 +100,27 @@ PERFIS_POR_ROTA = {
     # Pesquisa de morada e morada sugerida (T2.15): o escritório, ao criar e
     # corrigir lojas; gastam créditos da chave do servidor, por isso nunca
     # são públicas (o motorista só ganha rotas na F4).
-    ("GET", "/api/crm/morada/pesquisa"): PERFIS_ESCRITORIO,
     ("GET", "/api/crm/morada/inversa"): PERFIS_ESCRITORIO,
+    # Rotas (F3, T3.18): a lista dos dias e a rota de um dia, para o
+    # escritório (plano F3 §4: todas as rotas novas são para o escritório; o
+    # motorista só ganha rotas na F4).
+    ("GET", "/api/crm/rotas"): PERFIS_ESCRITORIO,
+    ("GET", "/api/crm/rotas/{data}"): PERFIS_ESCRITORIO,
+    # Adicionar uma loja à rota de um dia (T3.19): o escritório, pelo cartão
+    # do mapa e pelo planeador.
+    ("POST", "/api/crm/rotas/{data}/paragens"): PERFIS_ESCRITORIO,
+    # Alterar a rota de um dia (T3.20): as definições do dia, a ordem, as
+    # paragens, retirar e "Guardar rota", pelo planeador do escritório.
+    ("PATCH", "/api/crm/rotas/{data}"): PERFIS_ESCRITORIO,
+    # Recalcular as horas da rota pelo Directions do openrouteservice (T3.21):
+    # o planeador do escritório (gasta a quota da chave do servidor).
+    ("POST", "/api/crm/rotas/{data}/recalcular"): PERFIS_ESCRITORIO,
+    # A melhor ordem pelo VROOM e as horas pelo Directions (T3.22): o
+    # planeador do escritório (gasta a quota da chave do servidor).
+    ("POST", "/api/crm/rotas/{data}/otimizar"): PERFIS_ESCRITORIO,
+    # As sugestões de lojas para aproveitar a viagem (T3.23): o planeador do
+    # escritório, só leitura (nunca chama o openrouteservice).
+    ("GET", "/api/crm/rotas/{data}/sugestoes"): PERFIS_ESCRITORIO,
 }
 
 # Os motivos de `_classificar` (os meta-testes comparam-nos tal e qual).
@@ -588,13 +607,14 @@ def _perfis_pela_regra_da_api(metodo, caminho):
     """A coluna "Família / perfis" da §4 do plano (API da F1–F2), escrita como
     uma regra por recurso e não como lista: membros e definições, só o admin;
     as regiões, o escritório lê e só o admin escreve; lojas, `/config` e
-    morada, o escritório. `None` para um recurso que a regra não conhece."""
+    morada, o escritório; as rotas (F3 §4, a partir da T3.18), o escritório.
+    `None` para um recurso que a regra não conhece."""
     recurso = caminho[len(PREFIXO):].split("/")[1]
     if recurso in ("membros", "definicoes"):
         return PERFIS_ADMIN
     if recurso == "regioes":
         return PERFIS_ESCRITORIO if metodo == "GET" else PERFIS_ADMIN
-    if recurso in ("lojas", "config", "morada"):
+    if recurso in ("lojas", "config", "morada", "rotas"):
         return PERFIS_ESCRITORIO
     return None
 

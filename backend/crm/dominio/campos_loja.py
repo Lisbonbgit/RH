@@ -14,6 +14,12 @@ o Instagram guarda-se sempre como o endereço do perfil,
 `https://www.instagram.com/<perfil>/`, venha um `@perfil`, um `perfil` ou um
 endereço. Nos dois, o que não é texto dá a mensagem do campo (como no
 telefone).
+
+`google_place_id` (2026-10-18, mapa Google; plano G3) também não tem par no
+PHP: o identificador do lugar na Google que acompanha o pino arrastado a
+partir de um negócio ou de uma morada da Google. A Google não documenta o
+formato dos *place IDs*: só se recusa o que não serve à base nem ao HTML —
+ASCII imprimível sem espaço nem `<>"'&`, 1 a `PLACE_ID_MAXIMO` caracteres.
 """
 import re
 from urllib.parse import urlsplit, urlunsplit
@@ -75,6 +81,16 @@ _INSTAGRAM_DOMINIO = r"(?:https?://)?(?:www\.|m\.)?instagram\.com"
 _INSTAGRAM_URL = re.compile(_INSTAGRAM_DOMINIO + r"/([^/?#]+)/?(?:[?#].*)?", re.IGNORECASE)
 # Só o domínio, sem perfil: é erro, e não o perfil "instagram.com".
 _INSTAGRAM_SEM_PERFIL = re.compile(_INSTAGRAM_DOMINIO + r"/?(?:[?#].*)?", re.IGNORECASE)
+
+# O identificador do lugar na Google guarda-se até aqui (os place IDs reais têm
+# ≈ 27 caracteres, mas a Google não fixa um máximo). Fica numa só linha.
+PLACE_ID_MAXIMO = 255
+
+_PLACE_ID = "O identificador do lugar na Google não é válido."
+# A classe é o ASCII imprimível (0x21–0x7E) menos `"`, `&`, `'`, `<` e `>`; o
+# espaço (0x20) fica de fora porque a classe começa no `!`. Sempre `fullmatch`
+# (plano §10).
+_PLACE_ID_FORMATO = re.compile(rf"[!#-%(-;=?-~]{{1,{PLACE_ID_MAXIMO}}}")
 
 
 def texto(valor, rotulo: str, maximo: int):
@@ -194,6 +210,24 @@ def instagram(valor):
     if _INSTAGRAM_PERFIL.fullmatch(perfil) is None:
         return None, _INSTAGRAM
     return f"https://www.instagram.com/{perfil}/", None
+
+
+def google_place_id(valor):
+    """O identificador de um lugar na Google, aparado: `(id, None)` ou `(None, erro)`.
+
+    Vazio ou `None` fica `None` (um pino sem negócio nem morada da Google).
+    Erro: um espaço no meio, `<>"'&`, um carácter fora do ASCII imprimível
+    (acentos, controlo, emoji), mais de `PLACE_ID_MAXIMO` caracteres, ou o
+    que não for texto (a mensagem do campo, como no telefone).
+    """
+    identificador, erro = _aparado(valor)
+    if erro is not None:
+        return None, _PLACE_ID
+    if identificador is None:
+        return None, None
+    if _PLACE_ID_FORMATO.fullmatch(identificador) is None:
+        return None, _PLACE_ID
+    return identificador, None
 
 
 def dias_fechada(valor):

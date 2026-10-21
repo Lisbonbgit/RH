@@ -826,8 +826,8 @@ def test_a_primeira_loja_por_inteiro():
 
     assert list(loja) == [
         "id", "nome", "fase", "fase_desde", "regiao_id", "morada", "codigo_postal", "localidade",
-        "lat", "lng", "loc", "origem_coords", "precisao_m", "telefone", "pessoa_contacto", "instagram", "site",
-        "notas", "janelas", "dias_fechada", "visita_pendente_motivo", "visita_pendente_desde",
+        "lat", "lng", "loc", "origem_coords", "precisao_m", "google_place_id", "telefone", "pessoa_contacto",
+        "instagram", "site", "notas", "janelas", "dias_fechada", "visita_pendente_motivo", "visita_pendente_desde",
         "ultima_interacao_em", "ultima_visita_ou_entrega_em", "criado_por", "criado_em", "atualizado_em",
     ]
     assert {**loja, "id": "<uuid4>"} == {
@@ -844,6 +844,7 @@ def test_a_primeira_loja_por_inteiro():
         "loc": {"type": "Point", "coordinates": [-9.1369, 38.7108]},
         "origem_coords": "pin_manual",
         "precisao_m": None,
+        "google_place_id": None,
         "telefone": "+351 000 000 001",
         "pessoa_contacto": "Ana",
         "instagram": "https://www.instagram.com/mercearia.da.baixa.demo/",

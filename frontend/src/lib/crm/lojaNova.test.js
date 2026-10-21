@@ -8,7 +8,7 @@
  *   - o ecrã sem o DOM (`criarLojaNova`), como o seletor da T2.26: o que o
  *     autónomo escrevia no DOM é uma `vista` congelada, entregue ao
  *     `aoMudarVista`, e o `pages/crm/CrmLojaNova.js` só a desenha. Ficam aqui
- *     os casos do ecrã que não precisam de DOM nem de Leaflet (o seletor tem os
+ *     os casos do ecrã que não precisam de DOM nem de mapa (o seletor tem os
  *     seus no `seletor.test.js`): Guardar, as regiões, os erros, o duplicado,
  *     a rede e o fim do ecrã.
  *
@@ -22,8 +22,24 @@
  *     "Sim, abrir X" abre `<casa>/lojas/<id>`;
  *   - o diálogo tem três botões ('Sim, abrir X', 'Não, é outra loja' e
  *     'Cancelar'), como no autónomo (correção "componentes Sem Jest").
+ *
+ * Com o mapa da Google (plano do mapa Google, G16; adenda §1.1 e §2.1):
+ *   - a Nova loja que chega de "Adicionar como loja" traz no `state` da
+ *     navegação só {negocio: {id, lat, lng}} (`negocioDoEstado` aceita o mesmo
+ *     que o `negocioDoToque` do mapa e devolve uma cópia só com isso);
+ *   - com a localização confirmada de um lugar da Google (`google_place_id`), a
+ *     vista traz a dica do nome (`dicaNome`): o nome escreve-se à mão, nada se
+ *     copia da Google; vinda de um negócio do mapa (`comNegocio: true`), a dica
+ *     está lá desde a chegada (revisão do mapa Google, MAPA-G-3);
+ *   - o corpo do POST leva o bloco da localização inteiro (com o
+ *     `google_place_id`) e só esse bloco: nunca a origem `google`, nem chaves a
+ *     mais que a localização traga.
  */
 import { ErroCrm, MENSAGEM_ERRO_INESPERADO, MENSAGEM_SEM_REDE } from './api';
+import { CAMPOS_LOCALIZACAO } from './diferencas';
+import { destinoNovaLojaDoNegocio } from './ecraMapa';
+import { localizacaoFinal } from './localizacao';
+import { TEXTO_ESCREVA_O_NOME } from './lugarGoogle';
 import { criarEstadoRede } from './rede';
 import {
   CHAVE_ULTIMA_REGIAO,
@@ -38,6 +54,7 @@ import {
   destinoDepoisDeGuardar,
   estadoGuardar,
   guardarUltimaRegiao,
+  negocioDoEstado,
   respostaAoErro,
 } from './lojaNova';
 
@@ -207,6 +224,77 @@ test('caminhoDaFicha: a ficha da loja na mesma casa, com o id num só pedaço do
   expect(caminhoDaFicha('/crm', '../x')).toBe('/crm/lojas/..%2Fx');
 });
 
+// --- Mapa Google (G16): a Nova loja a partir de um negócio ----------------------------------------
+
+const LUGAR = 'ChIJ-negocio-teste';
+const NEGOCIO = Object.freeze({ id: LUGAR, lat: 38.7101, lng: -9.1402 });
+
+test('negocioDoEstado: o negócio do state da navegação → {id, lat, lng} (uma cópia, só estas chaves)', () => {
+  const estado = { negocio: { ...NEGOCIO } };
+  const negocio = negocioDoEstado(estado);
+  expect(negocio).toStrictEqual({ id: LUGAR, lat: 38.7101, lng: -9.1402 });
+  expect(negocio).not.toBe(estado.negocio);
+  // Chaves a mais no negócio (ou no state) ficam de fora; o id vai tal e qual.
+  const comMais = { negocio: { ...NEGOCIO, nome: 'SENTINELA-NOME', morada: 'SENTINELA-MORADA' }, aviso: 'x' };
+  expect(Object.keys(negocioDoEstado(comMais))).toEqual(['id', 'lat', 'lng']);
+  expect(negocioDoEstado({ negocio: { id: ' ChIJ x ', lat: 0, lng: -0.5 } })).toStrictEqual({ id: ' ChIJ x ', lat: 0, lng: -0.5 });
+});
+
+test('negocioDoEstado aceita o state que o mapa manda ("Adicionar como loja"), também depois do JSON', () => {
+  const { estado } = destinoNovaLojaDoNegocio('/crm', NEGOCIO);
+  expect(negocioDoEstado(estado)).toStrictEqual({ ...NEGOCIO });
+  expect(negocioDoEstado(JSON.parse(JSON.stringify(estado)))).toStrictEqual({ ...NEGOCIO });
+  // Sem negócio válido, o mapa manda state null: a Nova loja abre vazia.
+  expect(negocioDoEstado(destinoNovaLojaDoNegocio('/crm', { id: '', lat: 1, lng: 2 }).estado)).toBe(null);
+});
+
+test('negocioDoEstado: o resto dá null e nunca rebenta', () => {
+  const invalidos = [
+    null, undefined, {}, '', 'texto', 7, true, [], [NEGOCIO], { negocio: null }, { negocio: 'ChIJ' },
+    { negocio: [LUGAR, 38.7, -9.1] }, { negocio: {} }, { negocio: { lat: 38.7, lng: -9.1 } },
+    { negocio: { id: '', lat: 38.7, lng: -9.1 } }, { negocio: { id: '   ', lat: 38.7, lng: -9.1 } },
+    { negocio: { id: 7, lat: 38.7, lng: -9.1 } }, { negocio: { id: LUGAR, lat: '38.7', lng: -9.1 } },
+    { negocio: { id: LUGAR, lat: 38.7 } }, { negocio: { id: LUGAR, lat: Number.NaN, lng: -9.1 } },
+    { negocio: { id: LUGAR, lat: 38.7, lng: Infinity } }, { negocio: { id: LUGAR, lat: null, lng: -9.1 } },
+    { placeId: LUGAR, lat: 38.7, lng: -9.1 }, NEGOCIO,
+  ];
+  for (const estado of invalidos) {
+    expect([estado, negocioDoEstado(estado)]).toEqual([estado, null]);
+  }
+});
+
+test('corpoLojaNova leva o bloco da localização inteiro, com o google_place_id, e nunca a origem google', () => {
+  const valores = { nome: 'Mercearia', fase: 'potencial', regiao_id: null, telefone: '', pessoa_contacto: '', morada: '', codigo_postal: '', localidade: '', notas: '' };
+  // Como o seletor a confirma: um ponto de um lugar da Google, arrastado até à porta da loja.
+  const localizacao = localizacaoFinal({ lat: 38.71012, lng: -9.14015, origem: 'google', google_place_id: LUGAR }, true);
+  const corpo = corpoLojaNova(valores, localizacao);
+  const bloco = Object.fromEntries(Object.entries(corpo).filter(([chave]) => !(chave in valores)));
+  expect(Object.keys(bloco)).toEqual(['lat', 'lng', 'origem_coords', 'precisao_m', 'google_place_id']);
+  expect(Object.keys(bloco)).toEqual([...CAMPOS_LOCALIZACAO]);
+  expect(bloco).toStrictEqual({ lat: 38.71012, lng: -9.14015, origem_coords: 'pin_manual', precisao_m: null, google_place_id: LUGAR });
+  expect(corpo.origem_coords).not.toBe('google');
+  // Um pino à mão leva o google_place_id a null (a chave vai sempre).
+  const aMao = corpoLojaNova(valores, localizacaoFinal({ lat: 38.7, lng: -9.1, origem: 'pin_manual', google_place_id: null }, false));
+  expect(aMao).toHaveProperty('google_place_id', null);
+  expect(aMao.origem_coords).toBe('pin_manual');
+  expect(corpoLojaNova(valores, localizacao, { confirmarDuplicado: true })).toStrictEqual({ ...valores, ...bloco, confirmar_duplicado: true });
+});
+
+test('corpoLojaNova (canário): uma localização com chaves a mais não as passa para o corpo', () => {
+  const valores = { nome: 'Mercearia', fase: 'potencial', regiao_id: null, telefone: '', pessoa_contacto: '', morada: '', codigo_postal: '', localidade: '', notas: '' };
+  const localizacao = {
+    lat: 38.71, lng: -9.14, origem_coords: 'pin_manual', precisao_m: null, google_place_id: LUGAR,
+    nome_do_lugar: 'SENTINELA-1', morada_do_lugar: 'SENTINELA-2', arrastado: true, confirmar_duplicado: true, nome: 'SENTINELA-3',
+  };
+  const corpo = corpoLojaNova(valores, localizacao);
+  expect(corpo).toStrictEqual({ ...valores, lat: 38.71, lng: -9.14, origem_coords: 'pin_manual', precisao_m: null, google_place_id: LUGAR });
+  expect(JSON.stringify(corpo)).not.toMatch(/SENTINELA/);
+  expect(corpo.nome).toBe('Mercearia');
+  expect(corpo).not.toHaveProperty('confirmar_duplicado');
+  // Só as chaves que a localização tem (a do formulário antigo, sem o id, continua igual).
+  expect(corpoLojaNova(valores, { lat: 1, lng: 2, origem_coords: 'gps', precisao_m: 9 })).toStrictEqual({ ...valores, lat: 1, lng: 2, origem_coords: 'gps', precisao_m: 9 });
+});
+
 // --- O ecrã --------------------------------------------------------------------------------------
 
 // Cada pedido fica pendente até o teste lhe responder (ou o fazer falhar).
@@ -223,7 +311,9 @@ const assentar = () => new Promise((r) => {
 });
 
 // Monta o ecrã como a página (CrmLojaNova): cria, inicia (pede as regiões e ouve a rede).
-function montar({ online = true, storage = criarArmazenamento(), base = '/crm', iniciar = true } = {}) {
+function montar({
+  online = true, storage = criarArmazenamento(), base = '/crm', iniciar = true, comNegocio,
+} = {}) {
   const api = apiFalsa();
   const janela = new EventTarget();
   const navegador = { onLine: online };
@@ -251,6 +341,7 @@ function montar({ online = true, storage = criarArmazenamento(), base = '/crm', 
     },
     aoMudarVista: (vista) => vistas.push(vista),
     aoFocar: (campo) => focos.push(campo),
+    ...(comNegocio === undefined ? {} : { comNegocio }),
   });
   if (iniciar) ecra.iniciar();
   const mudarRede = (ligado) => {
@@ -819,4 +910,122 @@ test('a morada que a app pôs tira os erros desses campos', async () => {
   await assentar();
   m.ecra.escolherMorada(AUGUSTA_24);
   expect(m.vista().erros).toEqual({ telefone: 'Telefone inválido.' });
+});
+
+// --- Mapa Google (G16): o ecrã com a localização de um lugar da Google -----------------------------
+
+// A localização que o seletor confirma depois de arrastar o pino de um negócio da Google.
+const PINO_DO_NEGOCIO = Object.freeze(localizacaoFinal({ lat: 38.71012, lng: -9.14015, origem: 'google', google_place_id: LUGAR }, true));
+
+test('dicaNome: null ao abrir e com um pino sem lugar da Google; a dica do nome com o google_place_id confirmado', () => {
+  const m = montar();
+  expect(m.vista()).toHaveProperty('dicaNome', null);
+  m.ecra.mudarLocalizacao(PINO);
+  expect(m.vista().dicaNome).toBe(null);
+  m.ecra.mudarLocalizacao({ ...PINO, google_place_id: null });
+  expect(m.vista().dicaNome).toBe(null);
+  m.ecra.mudarLocalizacao(PINO_DO_NEGOCIO);
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+  expect(m.vistas.at(-1).dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+  // O nome escrito não tira a dica (é a dica do campo, não um erro).
+  m.ecra.mudarCampo('nome', 'Mercearia Nova');
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+  // A localização volta a estar por confirmar (ex.: "Alterar"): a dica sai.
+  m.ecra.mudarLocalizacao(null);
+  expect(m.vista().dicaNome).toBe(null);
+});
+
+test('dicaNome: um google_place_id que não é texto (ou é texto vazio) não dá a dica', () => {
+  const m = montar();
+  for (const google_place_id of ['', '   ', 7, {}, ['ChIJ'], true, undefined]) {
+    m.ecra.mudarLocalizacao({ ...PINO, google_place_id });
+    expect([google_place_id, m.vista().dicaNome]).toEqual([google_place_id, null]);
+  }
+  m.ecra.mudarLocalizacao({ ...PINO, google_place_id: 'x' });
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+});
+
+// Revisão do mapa Google (MAPA-G-3 / G-ENG-3; adenda §1.1 e §6.1, lista 9.1 do plano): a Nova loja que
+// chega de "Adicionar como loja" mostra a dica por baixo do "Nome" logo à chegada (o painel do seletor já
+// fechou quando o pino chega ao negócio), e não só depois de confirmar a localização.
+test('comNegocio (a Nova loja vinda de um negócio do mapa): a dica do nome logo à chegada, e fica', () => {
+  const m = montar({ comNegocio: true, iniciar: false });
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+  m.ecra.iniciar();
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+  // Confirmar a localização do negócio, escrever o nome, "Alterar", ou um pino posto à mão: a dica fica.
+  m.ecra.mudarLocalizacao(PINO_DO_NEGOCIO);
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+  m.ecra.mudarCampo('nome', 'Mercearia Nova');
+  m.ecra.mudarLocalizacao(null);
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+  m.ecra.mudarLocalizacao(PINO);
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+  expect(m.vistas.every((vista) => vista.dicaNome === TEXTO_ESCREVA_O_NOME)).toBe(true);
+});
+
+test('sem comNegocio (ou com outra coisa que não true), a dica só com o google_place_id confirmado', () => {
+  for (const comNegocio of [undefined, false, null, 'sim', 1, {}]) {
+    const m = montar({ comNegocio });
+    expect([comNegocio, m.vista().dicaNome]).toEqual([comNegocio, null]);
+    m.ecra.mudarLocalizacao(PINO_DO_NEGOCIO);
+    expect([comNegocio, m.vista().dicaNome]).toEqual([comNegocio, TEXTO_ESCREVA_O_NOME]);
+  }
+});
+
+test('dicaNome antes de iniciar e depois de sair do ecrã: a vista mantém a chave', async () => {
+  const m = montar({ iniciar: false });
+  expect(m.vista().dicaNome).toBe(null);
+  m.ecra.mudarLocalizacao(PINO_DO_NEGOCIO);
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+  m.ecra.destruir();
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME);
+  m.ecra.mudarLocalizacao(null);
+  expect(m.vista().dicaNome).toBe(TEXTO_ESCREVA_O_NOME); // depois de sair, nada muda
+});
+
+test('guardar com a localização de um negócio da Google: pin_manual com o google_place_id, e o nome escrito à mão', async () => {
+  const m = montar();
+  await responderRegioes(m);
+  m.ecra.mudarLocalizacao(PINO_DO_NEGOCIO);
+  m.ecra.mudarCampo('nome', 'Mercearia Escrita à Mão');
+  const pedido = await guardar(m);
+  expect(pedido.corpo).toStrictEqual({
+    nome: 'Mercearia Escrita à Mão',
+    fase: 'potencial',
+    regiao_id: null,
+    telefone: '',
+    pessoa_contacto: '',
+    morada: '',
+    codigo_postal: '',
+    localidade: '',
+    notas: '',
+    lat: 38.71012,
+    lng: -9.14015,
+    origem_coords: 'pin_manual',
+    precisao_m: null,
+    google_place_id: LUGAR,
+  });
+  expect(Object.values(pedido.corpo)).not.toContain('google');
+  // Sucesso: o mapa com "Loja guardada", como sempre.
+  pedido.resolver({ ...LOJA_GRAVADA, google_place_id: LUGAR });
+  await assentar();
+  expect(m.navegacoes).toEqual([{ caminho: `/crm/mapa?loja=${NOVA}`, opcoes: { state: { aviso: 'Loja guardada' } } }]);
+});
+
+test('422 no google_place_id: o pino volta a soltar-se e a mensagem fica junto da localização', async () => {
+  const m = montar();
+  await responderRegioes(m);
+  m.ecra.mudarLocalizacao(PINO_DO_NEGOCIO);
+  m.ecra.mudarCampo('nome', 'Mercearia Nova');
+  const pedido = await guardar(m);
+  m.seletor.length = 0;
+  pedido.rejeitar(erroValidacao({ google_place_id: 'O identificador do lugar na Google não é válido.' }));
+  await assentar();
+  expect(m.seletor).toEqual([['desconfirmar'], ['mostrarErro', 'O identificador do lugar na Google não é válido.'], ['focar']]);
+  expect(m.focos).toEqual([]);
+  expect(m.vista().erros).toEqual({});
+  expect(m.vista().alerta).toBe('Verifique os campos assinalados.');
+  expect(m.vista().guardar.ativo).toBe(false); // falta confirmar a localização outra vez
+  expect(m.vista().dicaNome).toBe(null);
 });

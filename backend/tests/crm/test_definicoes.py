@@ -1,5 +1,5 @@
-"""`/api/crm/definicoes` — as definições da fábrica, só para o admin do CRM
-(plano T2.13; dossiê §5.9 e §6).
+"""`/api/crm/definicoes` — as definições da fábrica e (F3, T3.5) das rotas, só
+para o admin do CRM (plano T2.13; dossiê §5.9 e §6).
 
 Porta de tests/Integration/Api/DefinicoesTest.php do CRM autónomo (etiqueta
 `referencia-standalone`): todos os casos, com os nomes de lá. As regras do
@@ -58,9 +58,21 @@ AGORA = datetime(2026, 10, 10, 9, 30, 15, 987654, tzinfo=UTC)
 AGORA_CARIMBO = "2026-10-10T09:30:15.987654Z"
 AGORA_DO_RELOGIO = relogio.agora  # o verdadeiro, antes de qualquer monkeypatch
 
-# O corpo exato do `semNadaAlteradoOAdminVeOsPadroes` (lá dentro de "dados").
-PADROES_TEXTO = '{"fabrica_morada":"","fabrica_lat":38.7223,"fabrica_lng":-9.1393}'
-PADROES = {"fabrica_morada": "", "fabrica_lat": 38.7223, "fabrica_lng": -9.1393}
+# O corpo exato do `semNadaAlteradoOAdminVeOsPadroes` (lá dentro de "dados"),
+# com as 6 chaves das rotas da F3 (plano F3, T3.5: os minutos como inteiros).
+PADROES_TEXTO = (
+    '{"fabrica_morada":"","fabrica_lat":38.7223,"fabrica_lng":-9.1393,'
+    '"rota_hora_saida":"08:00","rota_hora_regresso":"19:00",'
+    '"servico_entrega_min":10,"servico_amostra_min":10,"servico_acompanhamento_min":15,"servico_angariacao_min":15}'
+)
+PADROES_ROTAS = {
+    "rota_hora_saida": "08:00", "rota_hora_regresso": "19:00", "servico_entrega_min": 10, "servico_amostra_min": 10,
+    "servico_acompanhamento_min": 15, "servico_angariacao_min": 15,
+}
+PADROES = {"fabrica_morada": "", "fabrica_lat": 38.7223, "fabrica_lng": -9.1393, **PADROES_ROTAS}
+CHAVES = list(PADROES)
+TEMPO = "O tempo de serviço é um número inteiro de minutos, de 1 a 240."
+HORA = "Indique a hora no formato HH:MM."
 FORA = "Fora de Portugal"
 
 PROJECAO_GUARDADA = {"_id": 0, "chave": 1, "valor": 1}
@@ -231,8 +243,9 @@ def test_ver_mostra_o_que_esta_guardado_por_cima_dos_padroes(sessao):
     assert r.status_code == 200
     assert list(r.json().items()) == [
         ("fabrica_morada", "Rua das Flores 1, Porto"), ("fabrica_lat", 41.1496), ("fabrica_lng", -8.611),
+        *PADROES_ROTAS.items(),
     ]
-    assert [type(v) for v in r.json().values()] == [str, float, float]
+    assert [type(v) for v in r.json().values()] == [str, float, float, str, str, int, int, int, int]
 
 
 def test_so_a_morada_guardada_e_o_ponto_fica_o_padrao(sessao):
@@ -249,10 +262,10 @@ def test_ver_pede_so_a_chave_e_o_valor(sessao):
 
 
 def test_ver_ignora_as_chaves_que_esta_versao_nao_conhece(sessao):
-    """Gravadas por uma versão mais nova (ex.: as horas da F3): não saem."""
+    """Gravadas por uma versão mais nova (ex.: uma chave de uma fase futura): não saem."""
     base = _base([_guardada("hora_saida", "08:00"), _guardada("fabrica_morada", "Rua A")])
     r = sessao(ADMIN_MASTER, base).get(DEFINICOES_URL)
-    assert list(r.json()) == ["fabrica_morada", "fabrica_lat", "fabrica_lng"]
+    assert list(r.json()) == CHAVES
     assert r.json()["fabrica_morada"] == "Rua A"
 
 
@@ -353,7 +366,7 @@ def test_sem_perfil_e_com_json_partido_da_403_e_nunca_400(sessao, utilizador, es
 def test_o_admin_guarda_a_morada_e_o_ponto_da_fabrica(sessao):
     """`oAdminGuardaAMoradaEOPontoDaFabrica`: a morada aparada, as
     coordenadas em texto com 6 casas, e o GET a seguir igual à resposta."""
-    esperado = {"fabrica_morada": "Rua das Flores 1, Porto", "fabrica_lat": 41.1496, "fabrica_lng": -8.611}
+    esperado = {**PADROES, "fabrica_morada": "Rua das Flores 1, Porto", "fabrica_lat": 41.1496, "fabrica_lng": -8.611}
     cliente = sessao(ADMIN_MASTER)
     r = cliente.patch(DEFINICOES_URL, json={
         "fabrica_morada": "  Rua das Flores 1, Porto ",
@@ -361,7 +374,7 @@ def test_o_admin_guarda_a_morada_e_o_ponto_da_fabrica(sessao):
         "fabrica_lng": -8.611,
     })
     assert (r.status_code, r.json()) == (200, esperado)
-    assert list(r.json()) == ["fabrica_morada", "fabrica_lat", "fabrica_lng"]
+    assert list(r.json()) == CHAVES
     assert _guardadas(cliente.base) == {
         "fabrica_lat": "41.149600",
         "fabrica_lng": "-8.611000",
@@ -455,7 +468,7 @@ def test_so_muda_o_que_vem_no_pedido_e_uma_segunda_alteracao_substitui_a_primeir
     r = cliente.patch(DEFINICOES_URL, json={"fabrica_morada": "Rua B"})
 
     assert (r.status_code, r.json()) == (
-        200, {"fabrica_morada": "Rua B", "fabrica_lat": 41.1496, "fabrica_lng": -8.611},
+        200, {**PADROES, "fabrica_morada": "Rua B", "fabrica_lat": 41.1496, "fabrica_lng": -8.611},
     )
     assert _guardadas(cliente.base) == {
         "fabrica_lat": "41.149600", "fabrica_lng": "-8.611000", "fabrica_morada": "Rua B",
@@ -485,7 +498,9 @@ def test_responde_com_as_definicoes_em_vigor_tambem_as_que_nao_vieram(sessao):
     na base (a resposta é o que se releu, não o pedido)."""
     cliente = sessao(ADMIN_MASTER, _base([_guardada("fabrica_morada", "Rua das Flores 1, Porto")]))
     r = cliente.patch(DEFINICOES_URL, json={"fabrica_lat": 41.1496, "fabrica_lng": -8.611})
-    assert r.json() == {"fabrica_morada": "Rua das Flores 1, Porto", "fabrica_lat": 41.1496, "fabrica_lng": -8.611}
+    assert r.json() == {
+        **PADROES, "fabrica_morada": "Rua das Flores 1, Porto", "fabrica_lat": 41.1496, "fabrica_lng": -8.611,
+    }
 
 
 class _OutroAdminMudaAMoradaDepoisDaEscrita(ColeccaoFalsa):
@@ -510,7 +525,7 @@ def test_a_resposta_e_o_que_se_releu_da_base_e_nao_o_pedido(sessao):
     r = sessao(ADMIN_MASTER, base).patch(
         DEFINICOES_URL, json={"fabrica_morada": "Rua A", "fabrica_lat": 41.1496, "fabrica_lng": -8.611}
     )
-    assert r.json() == {"fabrica_morada": "Rua do Outro", "fabrica_lat": 41.1496, "fabrica_lng": -8.611}
+    assert r.json() == {**PADROES, "fabrica_morada": "Rua do Outro", "fabrica_lat": 41.1496, "fabrica_lng": -8.611}
 
 
 def test_gravar_o_mesmo_valor_outra_vez_da_200_e_muda_a_hora(sessao):
@@ -655,7 +670,9 @@ def test_uma_falha_a_meio_responde_500_deixa_as_anteriores_e_repetir_acerta(sess
     assert _guardadas(cliente.base) == {"fabrica_morada": "Rua A"}
 
     r = cliente.patch(DEFINICOES_URL, json=corpo)
-    assert (r.status_code, r.json()) == (200, {"fabrica_morada": "Rua A", "fabrica_lat": 41.1496, "fabrica_lng": -8.611})
+    assert (r.status_code, r.json()) == (
+        200, {**PADROES, "fabrica_morada": "Rua A", "fabrica_lat": 41.1496, "fabrica_lng": -8.611},
+    )
     assert _guardadas(cliente.base) == {
         "fabrica_lat": "41.149600", "fabrica_lng": "-8.611000", "fabrica_morada": "Rua A",
     }
@@ -698,6 +715,309 @@ def test_dois_admins_a_mudar_o_ponto_ao_mesmo_tempo(monkeypatch):
     assert len(base.crm_definicoes.docs) == 2
     assert guardadas["fabrica_lat"] in ("41.149600", "37.019400")
     assert guardadas["fabrica_lng"] in ("-8.611000", "-7.930400")
+
+
+# --- F3 (T3.5): as definições das rotas ----------------------------------------------------------
+#
+# O domínio (crm/dominio/definicoes.py) passou a ter as 6 chaves das rotas, e
+# a rota usa-o tal e qual: o GET devolve as 9 chaves e o PATCH aceita as
+# novas. A coerência da saída com o regresso no PATCH é da T3.15.
+
+
+def test_o_get_devolve_as_nove_chaves_com_os_minutos_como_inteiros(sessao):
+    r = sessao(ANA_ADMIN_DO_CRM).get(DEFINICOES_URL)
+    assert r.status_code == 200
+    assert list(r.json().items()) == list(PADROES.items())
+    assert [type(v) for v in r.json().values()] == [str, float, float, str, str, int, int, int, int]
+
+
+def test_o_get_mostra_as_rotas_guardadas_por_cima_dos_padroes(sessao):
+    base = _base([
+        _guardada("servico_angariacao_min", "30"),
+        _guardada("rota_hora_saida", "07:30"),
+        _guardada("servico_entrega_min", "1"),
+    ])
+    r = sessao(ADMIN_MASTER, base).get(DEFINICOES_URL)
+    assert list(r.json().items()) == list({
+        **PADROES, "rota_hora_saida": "07:30", "servico_entrega_min": 1, "servico_angariacao_min": 30,
+    }.items())
+
+
+@pytest.mark.parametrize(
+    "chave, guardado",
+    [
+        ("rota_hora_saida", "8:00"),
+        ("rota_hora_regresso", ""),
+        ("servico_entrega_min", "0"),
+        ("servico_amostra_min", "241"),
+        ("servico_acompanhamento_min", " 10"),
+        ("servico_angariacao_min", "10.5"),
+        ("servico_entrega_min", 20),
+    ],
+    ids=["hora sem o zero", "hora vazia", "zero minutos", "241 minutos", "espaço antes", "decimal",
+         "número escrito à mão"],
+)
+def test_uma_definicao_das_rotas_estragada_na_base_fica_o_padrao_e_nao_da_500(sessao, chave, guardado):
+    base = _base([_guardada(chave, guardado)])
+    r = sessao(ADMIN_MASTER, base).get(DEFINICOES_URL)
+    assert (r.status_code, r.json()) == (200, PADROES)
+
+
+def test_o_admin_muda_a_hora_de_saida(sessao):
+    """O primeiro caso do PATCH da T3.15 (`{"rota_hora_saida": "07:30"}`
+    grava e devolve), já verde aqui."""
+    cliente = sessao(ANA_ADMIN_DO_CRM)
+    r = cliente.patch(DEFINICOES_URL, json={"rota_hora_saida": "07:30"})
+    assert (r.status_code, r.json()) == (200, {**PADROES, "rota_hora_saida": "07:30"})
+    assert cliente.base.crm_definicoes.sem_id() == [
+        {"chave": "rota_hora_saida", "valor": "07:30", "atualizado_em": AGORA_CARIMBO, "atualizado_por": "u-ana"},
+    ]
+    assert instantes_fora_do_formato(cliente.base.crm_definicoes.docs) == []
+    assert cliente.get(DEFINICOES_URL).json() == {**PADROES, "rota_hora_saida": "07:30"}
+
+
+def test_os_minutos_gravam_se_em_texto_e_voltam_como_inteiros(sessao):
+    cliente = sessao(ADMIN_MASTER)
+    r = cliente.patch(DEFINICOES_URL, json={"servico_entrega_min": 20, "servico_angariacao_min": 240})
+    assert (r.status_code, r.json()) == (200, {**PADROES, "servico_entrega_min": 20, "servico_angariacao_min": 240})
+    assert _guardadas(cliente.base) == {"servico_angariacao_min": "240", "servico_entrega_min": "20"}
+
+
+def test_as_nove_chaves_gravam_se_pela_ordem_dos_padroes(sessao):
+    cliente = sessao(ADMIN_MASTER)
+    corpo = {
+        "servico_angariacao_min": 16, "servico_acompanhamento_min": 14, "servico_amostra_min": 11,
+        "servico_entrega_min": 9, "rota_hora_regresso": "18:00", "rota_hora_saida": "07:00",
+        "fabrica_lng": -8.611, "fabrica_lat": 41.1496, "fabrica_morada": "Rua A",
+    }
+    r = cliente.patch(DEFINICOES_URL, json=corpo)
+    assert r.status_code == 200
+    assert [(c[1]["chave"], c[2]["$set"]["valor"]) for c in _escritas(cliente.base)] == [
+        ("fabrica_morada", "Rua A"), ("fabrica_lat", "41.149600"), ("fabrica_lng", "-8.611000"),
+        ("rota_hora_saida", "07:00"), ("rota_hora_regresso", "18:00"), ("servico_entrega_min", "9"),
+        ("servico_amostra_min", "11"), ("servico_acompanhamento_min", "14"), ("servico_angariacao_min", "16"),
+    ]
+    assert list(r.json().items()) == [
+        ("fabrica_morada", "Rua A"), ("fabrica_lat", 41.1496), ("fabrica_lng", -8.611),
+        ("rota_hora_saida", "07:00"), ("rota_hora_regresso", "18:00"), ("servico_entrega_min", 9),
+        ("servico_amostra_min", 11), ("servico_acompanhamento_min", 14), ("servico_angariacao_min", 16),
+    ]
+    assert instantes_fora_do_formato(cliente.base.crm_definicoes.docs) == []
+
+
+@pytest.mark.parametrize(
+    "corpo, campos",
+    [
+        ({"servico_entrega_min": 0}, {"servico_entrega_min": TEMPO}),
+        ({"servico_amostra_min": 241}, {"servico_amostra_min": TEMPO}),
+        ({"servico_acompanhamento_min": "15"}, {"servico_acompanhamento_min": TEMPO}),
+        ({"servico_angariacao_min": 15.0}, {"servico_angariacao_min": TEMPO}),
+        ({"servico_entrega_min": True}, {"servico_entrega_min": TEMPO}),
+        ({"rota_hora_saida": "7:30"}, {"rota_hora_saida": HORA}),
+        ({"rota_hora_regresso": ""}, {"rota_hora_regresso": HORA}),
+        ({"rota_hora_regresso": None}, {"rota_hora_regresso": HORA}),
+        (
+            {"servico_entrega_min": 0, "fabrica_morada": "Rua A", "rota_hora_saida": "24:00", "hora_saida": "08:00"},
+            {"rota_hora_saida": HORA, "servico_entrega_min": TEMPO, "hora_saida": "Esta definição não existe."},
+        ),
+    ],
+    ids=["zero minutos", "241 minutos", "minutos em texto", "minutos decimais", "minutos bool", "hora sem o zero",
+         "hora vazia", "hora nula", "vários erros pela ordem (e a morada válida também não se grava)"],
+)
+def test_uma_definicao_das_rotas_invalida_da_422_e_nada_se_grava(sessao, corpo, campos):
+    cliente = sessao(ADMIN_MASTER, _base([_guardada("servico_entrega_min", "12")]))
+    r = cliente.patch(DEFINICOES_URL, json=corpo)
+    assert (r.status_code, r.json()) == (422, _validacao(campos))
+    assert list(r.json()["detail"]["campos"]) == list(campos)
+    assert cliente.base.crm_definicoes.registo == []
+
+
+# --- F3 (T3.15): a coerência da saída com o regresso no PATCH ------------------------------------
+#
+# A `alteracao` não compara as horas entre si (T3.5): é a rota que, só quando
+# o pedido traz `rota_hora_saida` ou `rota_hora_regresso`, junta as definições
+# em vigor com as horas do pedido e chama `dominio.definicoes.coerencia`, antes
+# da primeira escrita (correção "T3.5 / T3.15" do plano F3). Como as janelas
+# da loja (`semMexerNasJanelasNaoSeVerificamAsGuardadas`): um PATCH só da
+# fábrica ou dos minutos nunca recebe 422 por causa das horas guardadas.
+
+COERENCIA = "A hora de regresso tem de ser depois da hora de saída."
+
+
+def _com_guardadas(guardadas):
+    return _base([_guardada(chave, valor) for chave, valor in guardadas])
+
+
+def test_o_regresso_antes_da_saida_guardada_da_422_de_coerencia_e_nada_se_grava(sessao):
+    """O vermelho da T3.15: `{"rota_hora_regresso": "07:00"}` com a saída
+    guardada às 08:00 gravava, em vez de dar 422."""
+    cliente = sessao(ANA_ADMIN_DO_CRM, _com_guardadas([("rota_hora_saida", "08:00")]))
+    r = cliente.patch(DEFINICOES_URL, json={"rota_hora_regresso": "07:00"})
+    assert (r.status_code, r.json()) == (422, _validacao({"rota_hora_regresso": COERENCIA}))
+    assert _escritas(cliente.base) == []
+    assert _guardadas(cliente.base) == {"rota_hora_saida": "08:00"}
+    assert cliente.get(DEFINICOES_URL).json() == PADROES
+
+
+@pytest.mark.parametrize(
+    "guardadas, corpo",
+    [
+        ([], {"rota_hora_regresso": "07:00"}),
+        ([("rota_hora_saida", "08:00")], {"rota_hora_regresso": "08:00"}),
+        ([("rota_hora_saida", "08:00")], {"rota_hora_regresso": "00:00"}),
+        ([("rota_hora_regresso", "17:00")], {"rota_hora_saida": "17:00"}),
+        ([("rota_hora_regresso", "17:00")], {"rota_hora_saida": "17:01"}),
+        ([], {"rota_hora_saida": "19:00"}),
+        ([], {"rota_hora_saida": "23:59"}),
+        ([("rota_hora_saida", "06:00"), ("rota_hora_regresso", "22:00")],
+         {"rota_hora_saida": "12:00", "rota_hora_regresso": "11:59"}),
+        ([("rota_hora_saida", "06:00"), ("rota_hora_regresso", "22:00")],
+         {"rota_hora_regresso": "06:00", "rota_hora_saida": "06:00"}),
+        ([("rota_hora_saida", "8:00")], {"rota_hora_regresso": "07:59"}),
+        ([("rota_hora_regresso", "")], {"rota_hora_saida": "19:00"}),
+        ([], {"fabrica_morada": "Rua A", "rota_hora_regresso": "07:00", "servico_entrega_min": 20}),
+        ([("fabrica_morada", "Rua B")], {"fabrica_lat": 41.1496, "fabrica_lng": -8.611, "rota_hora_saida": "19:30"}),
+    ],
+    ids=["regresso antes da saída por omissão", "a mesma hora da saída guardada", "regresso à meia-noite",
+         "saída igual ao regresso guardado", "saída depois do regresso guardado", "saída igual ao regresso por omissão",
+         "saída às 23:59", "as duas no pedido, trocadas (as guardadas eram coerentes)",
+         "as duas no pedido, iguais (por outra ordem)", "saída guardada estragada conta como o padrão",
+         "regresso guardado estragado conta como o padrão", "com a morada e os minutos válidos, nada se grava",
+         "com o ponto válido, nada se grava"],
+)
+def test_a_saida_e_o_regresso_incoerentes_dao_422_so_no_regresso_e_nada_se_grava(sessao, guardadas, corpo):
+    base = _com_guardadas(guardadas)
+    antes = _guardadas(base)
+    cliente = sessao(ADMIN_MASTER, base)
+    r = cliente.patch(DEFINICOES_URL, json=corpo)
+    assert (r.status_code, r.json()) == (422, _validacao({"rota_hora_regresso": COERENCIA}))
+    assert list(r.json()["detail"]["campos"]) == ["rota_hora_regresso"]
+    assert _escritas(cliente.base) == []
+    assert _guardadas(cliente.base) == antes
+
+
+def test_a_coerencia_le_as_definicoes_em_vigor_uma_vez_antes_da_primeira_escrita_e_sem_ler_o_relogio(
+    sessao, monkeypatch,
+):
+    """`em_vigor` + as horas do pedido, antes de qualquer escrita; o relógio
+    nem se lê (como os 422 da `alteracao`)."""
+    leituras = []
+    cliente = sessao(ADMIN_MASTER)
+    monkeypatch.setattr(relogio, "agora", lambda: leituras.append(1) or AGORA)
+    r = cliente.patch(DEFINICOES_URL, json={"rota_hora_regresso": "07:00"})
+    assert r.status_code == 422
+    assert cliente.base.crm_definicoes.registo == [("find", {}, PROJECAO_GUARDADA)]
+    assert leituras == []
+
+
+def test_a_coerencia_ignora_as_linhas_estragadas_como_o_em_vigor(sessao, caplog):
+    """Uma linha sem valor legível ignora-se (fica o padrão 08:00): 422 de
+    coerência, nunca 500."""
+    base = _base([{"chave": "rota_hora_saida", "valor": None}, _guardada("rota_hora_regresso", "18:00")])
+    cliente = sessao(ADMIN_MASTER, base)
+    with caplog.at_level(logging.WARNING, logger="crm.definicoes"):
+        r = cliente.patch(DEFINICOES_URL, json={"rota_hora_regresso": "07:00"})
+    assert (r.status_code, r.json()) == (422, _validacao({"rota_hora_regresso": COERENCIA}))
+    assert _escritas(cliente.base) == []
+
+
+@pytest.mark.parametrize(
+    "guardadas, corpo, resposta",
+    [
+        ([], {"rota_hora_regresso": "08:01"}, {"rota_hora_regresso": "08:01"}),
+        ([("rota_hora_saida", "09:00")], {"rota_hora_regresso": "09:01"},
+         {"rota_hora_saida": "09:00", "rota_hora_regresso": "09:01"}),
+        ([("rota_hora_regresso", "21:00")], {"rota_hora_saida": "20:59"},
+         {"rota_hora_saida": "20:59", "rota_hora_regresso": "21:00"}),
+        ([], {"rota_hora_saida": "18:59"}, {"rota_hora_saida": "18:59"}),
+        ([("rota_hora_saida", "20:00"), ("rota_hora_regresso", "19:00")],
+         {"rota_hora_saida": "06:00", "rota_hora_regresso": "06:01"},
+         {"rota_hora_saida": "06:00", "rota_hora_regresso": "06:01"}),
+        ([("rota_hora_saida", "8:00")], {"rota_hora_regresso": "08:01"}, {"rota_hora_regresso": "08:01"}),
+        ([], {"rota_hora_saida": "00:00", "rota_hora_regresso": "23:59"},
+         {"rota_hora_saida": "00:00", "rota_hora_regresso": "23:59"}),
+        ([], {"fabrica_morada": "Rua A", "rota_hora_saida": "07:30", "servico_amostra_min": 5},
+         {"fabrica_morada": "Rua A", "rota_hora_saida": "07:30", "servico_amostra_min": 5}),
+    ],
+    ids=["regresso um minuto depois da saída por omissão", "regresso depois da saída guardada",
+         "saída antes do regresso guardado", "saída antes do regresso por omissão",
+         "o pedido corrige as guardadas incoerentes", "saída guardada estragada conta como o padrão",
+         "o dia inteiro", "com a morada e os minutos"],
+)
+def test_com_o_regresso_depois_da_saida_grava_e_devolve(sessao, guardadas, corpo, resposta):
+    cliente = sessao(ANA_ADMIN_DO_CRM, _com_guardadas(guardadas))
+    r = cliente.patch(DEFINICOES_URL, json=corpo)
+    assert (r.status_code, r.json()) == (200, {**PADROES, **resposta})
+    assert _guardadas(cliente.base) == {
+        **dict(guardadas), **{chave: str(valor) if isinstance(valor, int) else valor for chave, valor in corpo.items()},
+    }
+    assert [c[0] for c in cliente.base.crm_definicoes.registo] == ["find"] + ["update_one"] * len(corpo) + ["find"]
+    assert instantes_fora_do_formato(cliente.base.crm_definicoes.docs) == []
+    assert cliente.get(DEFINICOES_URL).json() == {**PADROES, **resposta}
+
+
+@pytest.mark.parametrize(
+    "corpo, resposta",
+    [
+        ({"fabrica_morada": "Rua A"}, {"fabrica_morada": "Rua A"}),
+        ({"fabrica_lat": 41.1496, "fabrica_lng": -8.611}, {"fabrica_lat": 41.1496, "fabrica_lng": -8.611}),
+        ({"servico_entrega_min": 20, "servico_angariacao_min": 240},
+         {"servico_entrega_min": 20, "servico_angariacao_min": 240}),
+        ({}, {}),
+    ],
+    ids=["só a morada", "só o ponto", "só os minutos", "vazio"],
+)
+def test_sem_mexer_nas_horas_nao_se_verificam_as_guardadas(sessao, corpo, resposta):
+    """Como as janelas da loja (`semMexerNasJanelasNaoSeVerificamAsGuardadas`):
+    horas guardadas incoerentes (escritas à mão) não travam um PATCH da
+    fábrica nem dos minutos, e a base nem se lê antes de gravar."""
+    guardadas = [("rota_hora_saida", "20:00"), ("rota_hora_regresso", "19:00")]
+    cliente = sessao(ADMIN_MASTER, _com_guardadas(guardadas))
+    r = cliente.patch(DEFINICOES_URL, json=corpo)
+    assert (r.status_code, r.json()) == (200, {**PADROES, **dict(guardadas), **resposta})
+    assert [c[0] for c in cliente.base.crm_definicoes.registo] == ["update_one"] * len(corpo) + ["find"]
+
+
+@pytest.mark.parametrize(
+    "corpo, campos",
+    [
+        ({"rota_hora_regresso": "7:00"}, {"rota_hora_regresso": HORA}),
+        ({"rota_hora_saida": "", "rota_hora_regresso": "07:00"}, {"rota_hora_saida": HORA}),
+        ({"rota_hora_saida": "09:00", "rota_hora_regresso": None}, {"rota_hora_regresso": HORA}),
+        ({"rota_hora_regresso": "07:00", "servico_entrega_min": 0}, {"servico_entrega_min": TEMPO}),
+        ({"rota_hora_regresso": "07:00", "fabrica_lat": 41.1496}, {"fabrica_lng": "Indique também a longitude."}),
+        ({"rota_hora_regresso": "07:00", "hora_regresso": "07:00"}, {"hora_regresso": "Esta definição não existe."}),
+    ],
+    ids=["hora sem o zero", "saída vazia e regresso incoerente", "saída válida e regresso nulo",
+         "minutos a zero", "latitude sem a longitude", "chave desconhecida"],
+)
+def test_os_erros_dos_campos_vem_antes_da_coerencia_e_sem_ler_a_base(sessao, corpo, campos):
+    """Com um campo errado, o 422 é o da `alteracao` (só os seus erros) e a
+    coerência nem corre: a base não se lê."""
+    cliente = sessao(ADMIN_MASTER, _com_guardadas([("rota_hora_saida", "08:00")]))
+    r = cliente.patch(DEFINICOES_URL, json=corpo)
+    assert (r.status_code, r.json()) == (422, _validacao(campos))
+    assert cliente.base.crm_definicoes.registo == []
+
+
+def test_a_coerencia_e_a_do_dominio(sessao, monkeypatch):
+    """A rota chama `dominio.definicoes.coerencia` com as definições em vigor
+    juntas com as horas do pedido (as do pedido por cima), e devolve o que ela
+    disser."""
+    chamadas = []
+
+    def _coerencia(valores):
+        chamadas.append(dict(valores))
+        return {"rota_hora_regresso": "mensagem do domínio"}
+
+    monkeypatch.setattr(rotas_definicoes.regras, "coerencia", _coerencia)
+    cliente = sessao(ADMIN_MASTER, _com_guardadas([("rota_hora_regresso", "21:00"), ("servico_entrega_min", "30")]))
+    r = cliente.patch(DEFINICOES_URL, json={"rota_hora_saida": "09:00", "servico_entrega_min": 5})
+    assert (r.status_code, r.json()) == (422, _validacao({"rota_hora_regresso": "mensagem do domínio"}))
+    assert len(chamadas) == 1
+    assert chamadas[0]["rota_hora_saida"] == "09:00"
+    assert chamadas[0]["rota_hora_regresso"] == "21:00"
+    assert _escritas(cliente.base) == []
 
 
 # --- De ponta a ponta: a sessão verdadeira do portal ---------------------------------------------
@@ -768,7 +1088,7 @@ def test_de_ponta_a_ponta_o_admin_muda_a_fabrica_e_o_utilizador_nao(portal):
         json={"fabrica_morada": " Rua das Flores 1, Porto", "fabrica_lat": 41.1496, "fabrica_lng": -8.611},
         headers=admin,
     )
-    esperado = {"fabrica_morada": "Rua das Flores 1, Porto", "fabrica_lat": 41.1496, "fabrica_lng": -8.611}
+    esperado = {**PADROES, "fabrica_morada": "Rua das Flores 1, Porto", "fabrica_lat": 41.1496, "fabrica_lng": -8.611}
     assert (r.status_code, r.json()) == (200, esperado)
     assert portal.get(DEFINICOES_URL, headers=admin).json() == esperado
     assert {d["atualizado_por"] for d in portal.base.crm_definicoes.docs} == {"u-admin"}

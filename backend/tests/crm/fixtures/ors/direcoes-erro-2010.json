@@ -1,0 +1,11 @@
+{
+  "_origem": "manual — regravar",
+  "error": {
+    "code": 2010,
+    "message": "Could not find routable point within a radius of 350.0 meters of specified coordinate 2: -9.0350000 38.7200000."
+  },
+  "info": {
+    "engine": {"version": "9.1.2", "build_date": "2025-03-27T09:23:59Z", "graph_date": "2025-09-28T09:11:42Z"},
+    "timestamp": 1760176800000
+  }
+}

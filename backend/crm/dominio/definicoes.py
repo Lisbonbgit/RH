@@ -1,4 +1,4 @@
-"""As definições que o admin pode mudar: na F2, só as da fábrica.
+"""As definições que o admin pode mudar: a fábrica (F2) e as rotas (F3).
 
 Porta de src/Dominio/Definicoes.php do CRM autónomo (dossiê §5.9). Os padrões
 vivem aqui; a coleção `crm_definicoes` só guarda, em texto, o que o admin
@@ -6,33 +6,61 @@ alterou (`{chave, valor, atualizado_em, atualizado_por}`, upsert por `chave`,
 T2.13). São a morada da fábrica (texto livre) e o ponto, que tem de ficar em
 Portugal continental e se muda sempre com a latitude e a longitude juntas.
 
+A F3 (plano F3, T3.5; §1 "Definições do CRM") junta as chaves das rotas, que
+o autónomo não tem: a hora de saída e a de regresso por omissão ("HH:MM", hora
+de Lisboa) e o tempo de serviço de cada motivo (`servico_<motivo>_min`,
+minutos inteiros de 1 a 240, lidos pelo `rotas.servico_padrao`). Guardam-se em
+texto como as da fábrica; o `combinar` devolve os minutos como `int`.
+
 - `combinar(guardadas)`: as definições em vigor (os padrões com o que está
-  guardado por cima), com as coordenadas como números; é o que o
+  guardado por cima), com as coordenadas e os minutos como números; é o que o
   `GET /definicoes` devolve e o centro do mapa (`/config`, T2.13).
 - `alteracao(pedido)`: um PATCH → `(valores para gravar, erros)`.
+- `coerencia(valores)`: o regresso depois da saída, sobre as definições em
+  vigor juntas com os valores do pedido (a rota chama-a, T3.15).
 """
 import re
 from types import MappingProxyType
 
-from . import campos_loja
+from . import campos_loja, janelas
 from .geo import MENSAGEM_PORTUGAL, contem_latitude, contem_longitude
-from .numeros import arredondar, e_numero_json
+from .numeros import arredondar, e_inteiro_json, e_numero_json
+from .validador_rota import MENSAGEM_TEMPO_SERVICO, TEMPO_SERVICO_MAXIMO, TEMPO_SERVICO_MINIMO
 
-# Os valores por defeito, como se guardam (texto; coordenadas com 6 casas),
-# pela ordem em que aparecem no ecrã e nos erros. Só de leitura: é partilhado
-# por todos os pedidos.
+# Os valores por defeito, como se guardam (texto; coordenadas com 6 casas;
+# minutos como `str(n)`), pela ordem em que aparecem no ecrã e nos erros. Só
+# de leitura: é partilhado por todos os pedidos.
 PADROES = MappingProxyType(
     {
         "fabrica_morada": "",
         "fabrica_lat": "38.722300",
         "fabrica_lng": "-9.139300",
+        "rota_hora_saida": "08:00",
+        "rota_hora_regresso": "19:00",
+        "servico_entrega_min": "10",
+        "servico_amostra_min": "10",
+        "servico_acompanhamento_min": "15",
+        "servico_angariacao_min": "15",
     }
 )
+
+# As chaves das rotas, pela ordem dos PADROES.
+HORAS = ("rota_hora_saida", "rota_hora_regresso")
+MINUTOS = ("servico_entrega_min", "servico_amostra_min", "servico_acompanhamento_min", "servico_angariacao_min")
 
 # Igual à morada das lojas (campos_loja/validador_loja).
 MORADA_MAXIMO = 255
 
 MENSAGEM_DESCONHECIDA = "Esta definição não existe."
+# As do plano F3 §4. O tempo de serviço tem o texto (e os limites) do de cada
+# paragem (validador_rota, T3.4).
+MENSAGEM_HORA = "Indique a hora no formato HH:MM."
+MENSAGEM_COERENCIA = "A hora de regresso tem de ser depois da hora de saída."
+
+# O único texto de minutos que se lê de volta: o `str(n)` que a alteracao
+# grava (sem zeros à esquerda, sinais, espaços nem algarismos que não sejam
+# ASCII, que o int() do Python aceitava).
+_MINUTOS_GUARDADOS = re.compile(r"[1-9][0-9]{0,2}")
 
 # O número no início de um texto, como o lê o `(float)` do PHP (zend_strtod):
 # só os espaços " \t\n\r\v\f" antes, algarismos ASCII, um ponto, expoente só
@@ -51,6 +79,11 @@ def combinar(guardadas: dict) -> dict:
     `(float)` do PHP: o número no início do texto, ou 0,0 se não houver —
     nunca rebenta. Um número escrito à mão na base lê-se como o número; o que
     não for texto nem número é um erro de programação (`TypeError`).
+
+    As horas das rotas saem em texto e os minutos como `int`. Um valor das
+    rotas estragado (fora do formato que a alteracao grava, ou que nem é
+    texto) volta ao padrão dessa chave, sem rebentar: não vem do autónomo,
+    e um dia de trabalho não pode parar por uma linha mexida à mão.
     """
     valores = {**PADROES, **guardadas}
 
@@ -58,6 +91,8 @@ def combinar(guardadas: dict) -> dict:
         "fabrica_morada": valores["fabrica_morada"],
         "fabrica_lat": _float_do_php(valores["fabrica_lat"]),
         "fabrica_lng": _float_do_php(valores["fabrica_lng"]),
+        **{chave: _hora_guardada(valores[chave], PADROES[chave]) for chave in HORAS},
+        **{chave: _minutos_guardados(valores[chave], PADROES[chave]) for chave in MINUTOS},
     }
 
 
@@ -73,6 +108,12 @@ def alteracao(pedido: dict):
       casas com que se guarda (meio-para-longe-do-zero) e só depois visto
       contra Portugal continental; guarda-se em texto com 6 casas ("%.6f").
       Vão sempre juntas: conta a chave, mesmo com null.
+    - `rota_hora_saida` / `rota_hora_regresso`: "HH:MM" (`janelas.hora`),
+      nunca vazia; guarda-se tal e qual. A alteracao não as compara entre si:
+      isso é a `coerencia`, sobre os valores já juntos com os em vigor.
+    - `servico_<motivo>_min`: um inteiro do JSON de 1 a 240 (nunca bool,
+      `10.0` nem `"10"`); guarda-se em texto, `str(n)`.
+    - Com erro, o valor é "" (como as coordenadas).
     - Uma chave que não seja dos `PADROES` dá "Esta definição não existe.".
     """
     valores = {}
@@ -93,6 +134,57 @@ def alteracao(pedido: dict):
     erros = {chave: erro for chave, erro in erros.items() if erro is not None}
 
     return _ordenar(valores), _ordenar(erros)
+
+
+def coerencia(valores: dict) -> dict:
+    """`{"rota_hora_regresso": erro}` se o regresso não for depois da saída
+    (a mesma hora também é erro), senão `{}`.
+
+    Recebe as definições em vigor juntas com os valores do pedido (só lê as
+    duas horas), cada uma "HH:MM" válida: "HH:MM" tem largura fixa, por isso
+    comparar o texto é comparar a hora. O resto (uma hora em falta ou mal
+    escrita) é um erro de programação: `ValueError`.
+    """
+    saida = valores.get("rota_hora_saida")
+    regresso = valores.get("rota_hora_regresso")
+    for hora in (saida, regresso):
+        if not _e_hora(hora):
+            raise ValueError(f"A coerência compara horas já validadas (HH:MM), não {hora!r}.")
+    if regresso <= saida:
+        return {"rota_hora_regresso": MENSAGEM_COERENCIA}
+    return {}
+
+
+def _e_hora(valor) -> bool:
+    """Uma hora "HH:MM" válida e não vazia (`janelas.hora`)."""
+    return isinstance(valor, str) and janelas.hora(valor) == (valor, None)
+
+
+def _e_minutos(valor) -> bool:
+    """Um tempo de serviço válido: um inteiro do JSON de 1 a 240 (nunca um bool)."""
+    return e_inteiro_json(valor) and TEMPO_SERVICO_MINIMO <= valor <= TEMPO_SERVICO_MAXIMO
+
+
+def _hora(valor):
+    """`(hora, erro)`: a hora tal e qual, ou "" com o erro (vazia também é erro)."""
+    return (valor, None) if _e_hora(valor) else ("", MENSAGEM_HORA)
+
+
+def _minutos(valor):
+    """`(minutos em texto, erro)`: `str(n)`, ou "" com o erro."""
+    return (str(valor), None) if _e_minutos(valor) else ("", MENSAGEM_TEMPO_SERVICO)
+
+
+def _hora_guardada(valor, padrao: str) -> str:
+    """Uma hora guardada, ou o padrão se estiver estragada."""
+    return valor if _e_hora(valor) else padrao
+
+
+def _minutos_guardados(valor, padrao: str) -> int:
+    """Os minutos guardados como `int`, ou os do padrão se estiverem estragados."""
+    if isinstance(valor, str) and _MINUTOS_GUARDADOS.fullmatch(valor) and _e_minutos(int(valor)):
+        return int(valor)
+    return int(padrao)
 
 
 def _morada(valor):
@@ -121,6 +213,8 @@ _VALIDAR = {
     "fabrica_morada": _morada,
     "fabrica_lat": lambda valor: _coordenada(valor, "A latitude", contem_latitude),
     "fabrica_lng": lambda valor: _coordenada(valor, "A longitude", contem_longitude),
+    **{chave: _hora for chave in HORAS},
+    **{chave: _minutos for chave in MINUTOS},
 }
 
 

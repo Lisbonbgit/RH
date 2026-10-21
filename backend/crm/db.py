@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 # Nomes das coleções, todos com o prefixo crm_ (convenção do repositório:
 # fat_, fin_, mkt_). Cada coleção entra aqui com a tarefa que a usa: os
-# membros na F1; regiões, lojas, interações e definições na F2 (T2.8). As
-# rotas e as encomendas (F3–F5) entram com as suas tarefas.
+# membros na F1; regiões, lojas, interações e definições na F2 (T2.8); as
+# rotas na F3 (T3.14). As encomendas (F4–F5) entram com as suas tarefas.
 COLECOES = {
     # Quem entra no CRM e com que perfil (admin, utilizador, motorista). O
     # admin master do portal é admin do CRM sem precisar de linha aqui.
@@ -33,6 +33,11 @@ COLECOES = {
     # {chave, valor (texto), atualizado_em, atualizado_por}: só o que o admin
     # alterou; os padrões vivem no código (crm/dominio/definicoes.py).
     "definicoes": "crm_definicoes",
+    # Uma rota por dia (plano F3 §3): {id, data "AAAA-MM-DD" (Lisboa), estado,
+    # versao, hora_saida, hora_regresso_limite, inicio, fim, evitar_portagens,
+    # paragens embutidas (lista só de acrescentar; o terreno da F4 escreve nos
+    # seus campos de cada paragem), calculo (o último Directions)}.
+    "rotas": "crm_rotas",
 }
 
 # (coleção, chaves, opções). Declarados como dados para serem testáveis sem
@@ -69,6 +74,15 @@ INDICES = [
         {"unique": True, "partialFilterExpression": {"client_uuid": {"$type": "string"}}},
     ),
     ("crm_definicoes", [("chave", 1)], {"unique": True}),
+    ("crm_rotas", [("id", 1)], {"unique": True}),
+    # Uma rota por dia (plano F3 §1): a `data` ("AAAA-MM-DD", hora de Lisboa) é
+    # única. Na corrida de dois "Adicionar à rota" do mesmo dia, o segundo
+    # insert dá DuplicateKeyError e o código volta a ler e acrescenta (T3.19).
+    ("crm_rotas", [("data", 1)], {"unique": True}),
+    # "Esta loja está numa rota?" (DELETE /lojas, T3.24) e as rotas de uma
+    # loja. Multikey (uma entrada por paragem) e NUNCA único: a mesma loja está
+    # em rotas de dias diferentes, e numa paragem retirada e noutra reativada.
+    ("crm_rotas", [("paragens.loja_id", 1)], {}),
 ]
 
 

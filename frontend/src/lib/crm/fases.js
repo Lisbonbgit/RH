@@ -22,7 +22,8 @@ export const FASES = Object.freeze({
   cliente: Object.freeze({ id: 'cliente', rotulo: 'Cliente', cor: '#6b2fa3', contorno: null }),
 });
 
-// Classe CSS do pino (L.divIcon, sem html). Só fases conhecidas entram no nome da classe.
+// Classe CSS do pino (o conteúdo do marcador avançado, montado com o el() no mapa.js, sem html).
+// Só fases conhecidas entram no nome da classe.
 export function classePino(fase) {
   return ORDEM.includes(fase) ? `pino pino--${fase}` : 'pino';
 }

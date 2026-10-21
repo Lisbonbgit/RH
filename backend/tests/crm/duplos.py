@@ -17,8 +17,20 @@ tests/faturacao/test_fiscal.py. O que se copia do Motor, de propósito:
 - **Cada operação cede o controlo** (`await asyncio.sleep(0)`) antes de
   operar e depois opera sem mais nenhum `await` — o "verifica e escreve" é
   atómico para o ciclo de eventos, como um índice único em produção.
+- **Caminhos com pontos** (T3.14, as rotas): nos filtros, `"paragens.loja_id"`
+  atravessa a lista com a semântica do Mongo (a igualdade, `$in`, `$gt`… casam
+  se ALGUM elemento casar; `$ne`/`$nin` se NENHUM casar) e `"paragens.2.estado"`
+  entra pelo índice. Nas atualizações, `$set`/`$inc`/`$push` escrevem em
+  `"paragens.1.ordem"` e criam os subdocumentos que faltam; uma lista NUNCA
+  se estica (índice para lá do fim → NotImplementedError). Dois caminhos em
+  que um é prefixo do outro (`$push paragens` + `$set paragens.0.x`) dão o
+  erro 40 do Mongo antes de procurar o documento.
+- **`antes_de(operacao, funcao)`** corre `funcao(docs)` antes da operação:
+  simula a escrita concorrente do motorista (F4) entre a leitura e a escrita
+  do escritório.
 - **O que não está modelado rebenta** com NotImplementedError em vez de
-  mentir (operadores de filtro ou de atualização desconhecidos, `$or`, …).
+  mentir (operadores de filtro ou de atualização desconhecidos, `$or`,
+  modificadores do `$push`, comparações fora de números e textos, …).
 
 Simplificação documentada: `$geoWithin` devolve TODOS os documentos com `loc`
 (não faz geometria). A regra exata dos 50 m é provada no domínio (T2.3) e no
@@ -28,13 +40,15 @@ As corrotinas correm com `correr(coro)`, nunca com o asyncio.run (ver a sua
 docstring).
 """
 import asyncio
+import operator
 from copy import deepcopy
 
 from bson import ObjectId
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
-# As operações que o duplo conhece — e as únicas chaves aceites em `falhar`.
+# As operações que o duplo conhece — e as únicas chaves aceites em `falhar` e
+# em `antes_de`.
 OPERACOES = (
     "find_one",
     "find",
@@ -47,7 +61,10 @@ OPERACOES = (
     "create_index",
 )
 
-_OPERADORES_DE_ATUALIZACAO = ("$set", "$setOnInsert")
+_OPERADORES_DE_ATUALIZACAO = ("$set", "$setOnInsert", "$inc", "$push")
+
+# $gt/$gte/$lt/$lte: só entre números (sem booleanos) ou entre textos.
+_COMPARACOES = {"$gt": operator.gt, "$gte": operator.ge, "$lt": operator.lt, "$lte": operator.le}
 
 _EM_FALTA = object()
 
@@ -111,13 +128,47 @@ class ResultadoDelete:
 # --- Filtros, projeções e ordenação --------------------------------------------
 
 
+class _Varios(list):
+    """Os valores apanhados ao atravessar uma lista num caminho com pontos
+    (`"paragens.estado"`): um por elemento, `_EM_FALTA` nos elementos sem o
+    campo. Uma condição casa se ALGUM casar (`$ne`/`$nin`: se nenhum casar),
+    como no Mongo."""
+
+
+def _indice(parte):
+    """O índice numérico de um segmento do caminho ("2"), ou None."""
+    return int(parte) if parte.isascii() and parte.isdigit() else None
+
+
 def _obter(doc, caminho):
-    """O valor de `caminho` (com pontos para subdocumentos) ou _EM_FALTA."""
-    atual = doc
-    for parte in caminho.split("."):
-        if not isinstance(atual, dict) or parte not in atual:
+    """O valor de `caminho` (com pontos para subdocumentos; um índice numérico
+    entra numa lista, "paragens.2.estado"; sem índice, uma lista dá `_Varios`)
+    ou _EM_FALTA."""
+    return _descer(doc, caminho.split("."))
+
+
+def _descer(atual, partes):
+    for posicao, parte in enumerate(partes):
+        if isinstance(atual, dict):
+            if parte not in atual:
+                return _EM_FALTA
+            atual = atual[parte]
+        elif isinstance(atual, list):
+            indice = _indice(parte)
+            if indice is None:
+                varios = _Varios()
+                for elemento in atual:
+                    valor = _descer(elemento, partes[posicao:])
+                    if isinstance(valor, _Varios):
+                        varios.extend(valor)
+                    else:
+                        varios.append(valor)
+                return varios
+            if indice >= len(atual):
+                return _EM_FALTA
+            atual = atual[indice]
+        else:
             return _EM_FALTA
-        atual = atual[parte]
     return atual
 
 
@@ -129,13 +180,43 @@ def _iguais(a, b):
 
 
 def _valor_casa(valor, esperado):
-    """Igualdade do Mongo: null casa com campo em falta, e um valor casa com
-    uma lista que o contenha."""
+    """Igualdade do Mongo: null casa com campo em falta, um valor casa com
+    uma lista que o contenha e, através de uma lista, com algum elemento."""
     if valor is _EM_FALTA:
         return esperado is None
+    if isinstance(valor, _Varios):
+        if not valor:
+            return esperado is None
+        return any(_valor_casa(v, esperado) for v in valor)
     if isinstance(valor, list) and not isinstance(esperado, list):
         return any(_iguais(v, esperado) for v in valor)
     return _iguais(valor, esperado)
+
+
+def _existe(valor):
+    if isinstance(valor, _Varios):
+        return any(v is not _EM_FALTA for v in valor)
+    return valor is not _EM_FALTA
+
+
+def _comparavel(valor):
+    return isinstance(valor, str) or _numero(valor)
+
+
+def _numero(valor):
+    return isinstance(valor, (int, float)) and not isinstance(valor, bool)
+
+
+def _compara(valor, operador, argumento):
+    """$gt/$gte/$lt/$lte só entre números (sem booleanos) ou entre textos,
+    como a comparação por tipos do Mongo; numa lista, algum elemento."""
+    if not _comparavel(argumento):
+        raise NotImplementedError("o duplo só compara números ou textos: %s %r" % (operador, argumento))
+    if isinstance(valor, list):  # _Varios ou um campo-lista
+        return any(_compara(v, operador, argumento) for v in valor)
+    if not _comparavel(valor) or isinstance(valor, str) != isinstance(argumento, str):
+        return False
+    return _COMPARACOES[operador](valor, argumento)
 
 
 def _e_expressao(condicao):
@@ -164,7 +245,9 @@ def _condicao_casa(valor, condicao):
         elif operador == "$nin":
             ok = not any(_valor_casa(valor, a) for a in _lista(argumento, operador))
         elif operador == "$exists":
-            ok = (valor is not _EM_FALTA) == bool(argumento)
+            ok = _existe(valor) == bool(argumento)
+        elif operador in _COMPARACOES:
+            ok = _compara(valor, operador, argumento)
         elif operador == "$geoWithin":
             # Simplificação documentada no docstring do módulo.
             ok = valor is not _EM_FALTA and valor is not None
@@ -176,7 +259,8 @@ def _condicao_casa(valor, condicao):
 
 
 def corresponde(doc, filtro):
-    """O documento passa no filtro? (igualdade, $ne, $in, $nin, $exists, $geoWithin)"""
+    """O documento passa no filtro? (igualdade, $ne, $in, $nin, $exists,
+    $gt/$gte/$lt/$lte, $geoWithin; caminhos com pontos, índices e listas)"""
     for campo, condicao in (filtro or {}).items():
         if campo.startswith("$"):
             raise NotImplementedError("operador %s não suportado pelo duplo" % campo)
@@ -248,7 +332,7 @@ class CursorFalso:
 
     async def to_list(self, length=None):
         await asyncio.sleep(0)
-        self._coleccao._talvez_falhar("find")
+        self._coleccao._antes_de_operar("find")
         docs = [d for d in self._coleccao.docs if corresponde(d, self._filtro)]
         for campo, direcao in reversed(self._ordem):
             docs.sort(key=lambda d: _chave_de_ordem(_obter(d, campo)), reverse=direcao == -1)
@@ -282,6 +366,10 @@ class ColeccaoFalsa:
     - `falhar`: `{operacao: excecao}` — a operação regista a chamada e levanta
       essa exceção (ex.: `{"insert_one": DuplicateKeyError("…")}` para a
       corrida). No `find`, levanta no `to_list`.
+    - `antes_de(operacao, funcao)`: `funcao(docs)` corre antes de cada
+      `operacao` (depois de ceder ao ciclo e antes da falha injetada), sobre a
+      própria lista guardada — a escrita concorrente entre a leitura e a
+      escrita de quem chama. No `find`, corre no `to_list`.
     """
 
     def __init__(self, docs=None, unicos=("id",), falhar=None, nome=None):
@@ -293,6 +381,7 @@ class ColeccaoFalsa:
             raise ValueError("falhar com operações que o duplo não conhece: %s" % sorted(desconhecidas))
         self.registo = []
         self.docs = []
+        self._antes = {}
         for doc in docs or []:
             novo = deepcopy(doc)
             novo.setdefault("_id", ObjectId())
@@ -307,12 +396,26 @@ class ColeccaoFalsa:
         """Cópia dos documentos guardados sem o `_id` (para comparar nos testes)."""
         return [{c: deepcopy(v) for c, v in d.items() if c != "_id"} for d in self.docs]
 
+    def antes_de(self, operacao, funcao):
+        """Regista `funcao(docs)` para correr antes de cada `operacao` (ver o
+        docstring da classe). `None` retira o gancho. Uma operação que o duplo
+        não conhece é um erro do teste (ValueError)."""
+        if operacao not in OPERACOES:
+            raise ValueError("antes_de com uma operação que o duplo não conhece: %r" % (operacao,))
+        if funcao is None:
+            self._antes.pop(operacao, None)
+        else:
+            self._antes[operacao] = funcao
+
     # -- interno --
 
     def _registar(self, *chamada):
         self.registo.append(deepcopy(chamada))
 
-    def _talvez_falhar(self, operacao):
+    def _antes_de_operar(self, operacao):
+        gancho = self._antes.get(operacao)
+        if gancho is not None:
+            gancho(self.docs)
         erro = self.falhar.get(operacao)
         if erro is not None:
             raise erro
@@ -339,7 +442,7 @@ class ColeccaoFalsa:
         projecao = projecao if projecao is not None else projection
         self._registar("find_one", filtro, projecao)
         await asyncio.sleep(0)
-        self._talvez_falhar("find_one")
+        self._antes_de_operar("find_one")
         for doc in self.docs:
             if corresponde(doc, filtro):
                 return _projetar(doc, projecao)
@@ -353,7 +456,7 @@ class ColeccaoFalsa:
     async def insert_one(self, doc):
         self._registar("insert_one", doc)
         await asyncio.sleep(0)
-        self._talvez_falhar("insert_one")
+        self._antes_de_operar("insert_one")
         if "_id" not in doc:
             doc["_id"] = ObjectId()  # como o PyMongo: muda o dicionário de quem chama
         novo = deepcopy(doc)
@@ -364,7 +467,7 @@ class ColeccaoFalsa:
     async def update_one(self, filtro, atualizacao, upsert=False):
         self._registar("update_one", filtro, atualizacao, upsert)
         await asyncio.sleep(0)
-        self._talvez_falhar("update_one")
+        self._antes_de_operar("update_one")
         _validar_atualizacao(atualizacao)
         alvo = next((d for d in self.docs if corresponde(d, filtro)), None)
         if alvo is None:
@@ -375,14 +478,13 @@ class ColeccaoFalsa:
                 for campo, valor in (filtro or {}).items()
                 if not campo.startswith("$") and not _e_expressao(valor)
             }
-            _aplicar(novo, atualizacao.get("$set", {}))
-            _aplicar(novo, atualizacao.get("$setOnInsert", {}))
+            _aplicar_atualizacao(novo, atualizacao, ao_criar=True)
             novo.setdefault("_id", ObjectId())
             self._verificar_unicos(novo)
             self.docs.append(novo)
             return ResultadoUpdate(0, 0, novo["_id"])
         novo = deepcopy(alvo)
-        _aplicar(novo, atualizacao.get("$set", {}))
+        _aplicar_atualizacao(novo, atualizacao)
         if novo == alvo:
             return ResultadoUpdate(1, 0)
         self._verificar_unicos(novo, ignorar=alvo)
@@ -398,7 +500,7 @@ class ColeccaoFalsa:
         (não está modelado: rebenta em vez de mentir)."""
         self._registar("find_one_and_update", filtro, atualizacao, projection, upsert, return_document)
         await asyncio.sleep(0)
-        self._talvez_falhar("find_one_and_update")
+        self._antes_de_operar("find_one_and_update")
         if upsert:
             raise NotImplementedError("find_one_and_update com upsert não suportado pelo duplo")
         _validar_atualizacao(atualizacao)
@@ -406,7 +508,7 @@ class ColeccaoFalsa:
         if alvo is None:
             return None
         novo = deepcopy(alvo)
-        _aplicar(novo, atualizacao.get("$set", {}))
+        _aplicar_atualizacao(novo, atualizacao)
         if novo != alvo:
             self._verificar_unicos(novo, ignorar=alvo)
             posicao = next(i for i, d in enumerate(self.docs) if d is alvo)
@@ -416,7 +518,7 @@ class ColeccaoFalsa:
     async def delete_one(self, filtro):
         self._registar("delete_one", filtro)
         await asyncio.sleep(0)
-        self._talvez_falhar("delete_one")
+        self._antes_de_operar("delete_one")
         for posicao, doc in enumerate(self.docs):
             if corresponde(doc, filtro):
                 del self.docs[posicao]
@@ -426,7 +528,7 @@ class ColeccaoFalsa:
     async def delete_many(self, filtro):
         self._registar("delete_many", filtro)
         await asyncio.sleep(0)
-        self._talvez_falhar("delete_many")
+        self._antes_de_operar("delete_many")
         ficam = [d for d in self.docs if not corresponde(d, filtro)]
         apagados = len(self.docs) - len(ficam)
         self.docs[:] = ficam
@@ -435,34 +537,163 @@ class ColeccaoFalsa:
     async def count_documents(self, filtro):
         self._registar("count_documents", filtro)
         await asyncio.sleep(0)
-        self._talvez_falhar("count_documents")
+        self._antes_de_operar("count_documents")
         return sum(1 for d in self.docs if corresponde(d, filtro))
 
     async def create_index(self, chaves, **opcoes):
         self._registar("create_index", chaves, opcoes)
         await asyncio.sleep(0)
-        self._talvez_falhar("create_index")
+        self._antes_de_operar("create_index")
         if isinstance(chaves, str):
             chaves = [(chaves, 1)]
         return opcoes.get("name") or "_".join("%s_%s" % (c, d) for c, d in chaves)
 
 
+# --- Atualizações ($set, $setOnInsert, $inc, $push) --------------------------------
+
+
 def _validar_atualizacao(atualizacao):
-    """O que o PyMongo recusa (vazia, sem operadores) e o que o duplo não conhece."""
+    """O que o PyMongo recusa (vazia, sem operadores), o que o Mongo recusa ao
+    ler a atualização — antes de procurar o documento: um `$inc` que não é
+    número (14) e dois caminhos em conflito (40) — e o que o duplo não conhece."""
     if not isinstance(atualizacao, dict) or not atualizacao:
         raise ValueError("update cannot be empty")
     if not all(k.startswith("$") for k in atualizacao):
         raise ValueError("update only works with $ operators")
-    for operador in atualizacao:
+    for operador, campos in atualizacao.items():
         if operador not in _OPERADORES_DE_ATUALIZACAO:
             raise NotImplementedError("operador %s não suportado pelo duplo" % operador)
+        if not isinstance(campos, dict):
+            raise ValueError("Modifiers operate on fields but we found type %s" % type(campos).__name__)
+    for caminho, valor in atualizacao.get("$inc", {}).items():
+        if not _numero(valor):
+            raise OperationFailure("Cannot increment with non-numeric argument: {%s: %r}" % (caminho, valor), 14)
+    for caminho, valor in atualizacao.get("$push", {}).items():
+        if isinstance(valor, dict) and any(k.startswith("$") for k in valor):
+            raise NotImplementedError("o duplo não conhece os modificadores do $push ($each, $position, …): %s" % caminho)
+    _verificar_conflitos(atualizacao)
 
 
-def _aplicar(doc, campos):
-    for campo, valor in campos.items():
-        if "." in campo:
-            raise NotImplementedError("o duplo não escreve subcampos: %s" % campo)
-        doc[campo] = deepcopy(valor)
+def _prefixo(curto, longo):
+    return curto == longo or longo.startswith(curto + ".")
+
+
+def _verificar_conflitos(atualizacao):
+    """Dois caminhos iguais ou em que um é prefixo do outro, por segmentos
+    (`paragens` e `paragens.0.x`; não `paragens` e `paragensx`), em qualquer
+    operador: o erro 40 do Mongo (ConflictingUpdateOperators)."""
+    vistos = []
+    for campos in atualizacao.values():
+        for caminho in campos:
+            for anterior in vistos:
+                if _prefixo(anterior, caminho) or _prefixo(caminho, anterior):
+                    curto, longo = sorted((anterior, caminho), key=len)
+                    raise OperationFailure(
+                        "Updating the path '%s' would create a conflict at '%s'" % (longo, curto), 40
+                    )
+            vistos.append(caminho)
+
+
+def _tipo_bson(valor):
+    if valor is None:
+        return "null"
+    if isinstance(valor, bool):
+        return "bool"
+    if isinstance(valor, str):
+        return "string"
+    if isinstance(valor, list):
+        return "array"
+    if isinstance(valor, dict):
+        return "object"
+    return type(valor).__name__
+
+
+def _alcancar(doc, caminho, criar):
+    """(contentor, chave) do último segmento de `caminho`, descendo pelos
+    subdocumentos (criados quando faltam, se `criar`) e pelos índices das
+    listas. Sem `criar`, (None, None) quando falta um subdocumento pelo
+    caminho. Uma lista nunca se estica (NotImplementedError). Através de null
+    ou de um escalar, ou numa lista sem índice numérico: o erro 28 do Mongo."""
+    partes = caminho.split(".")
+    atual = doc
+    for posicao, parte in enumerate(partes):
+        ultimo = posicao == len(partes) - 1
+        if isinstance(atual, dict):
+            if ultimo:
+                return atual, parte
+            if parte not in atual:
+                if not criar:
+                    return None, None
+                atual[parte] = {}
+            atual = atual[parte]
+        elif isinstance(atual, list):
+            indice = _indice(parte)
+            if indice is None:
+                raise OperationFailure(
+                    "Cannot create field '%s' in element {%s: %r}" % (parte, partes[posicao - 1], atual), 28
+                )
+            if indice >= len(atual):
+                raise NotImplementedError(
+                    "o duplo não estica a lista: %s (índice %d, %d elementos)" % (caminho, indice, len(atual))
+                )
+            if ultimo:
+                return atual, indice
+            atual = atual[indice]
+        else:
+            raise OperationFailure(
+                "Cannot create field '%s' in element {%s: %r}" % (parte, partes[posicao - 1], atual), 28
+            )
+    raise AssertionError("caminho vazio: %r" % caminho)
+
+
+def _escrever(doc, caminho, valor):
+    contentor, chave = _alcancar(doc, caminho, criar=True)
+    contentor[chave] = valor
+
+
+def _ler_para_escrever(doc, caminho):
+    """O valor atual de `caminho` (o próprio objeto guardado) ou _EM_FALTA."""
+    contentor, chave = _alcancar(doc, caminho, criar=False)
+    if contentor is None:
+        return _EM_FALTA
+    if isinstance(contentor, dict):
+        return contentor.get(chave, _EM_FALTA)
+    return contentor[chave]
+
+
+def _aplicar_atualizacao(doc, atualizacao, *, ao_criar=False):
+    """Aplica os operadores a `doc` (já uma cópia de quem chama). O
+    `$setOnInsert` só ao criar (upsert). Como os caminhos nunca estão em
+    conflito (`_verificar_conflitos`), a ordem entre operadores não conta."""
+    for caminho, valor in atualizacao.get("$set", {}).items():
+        _escrever(doc, caminho, deepcopy(valor))
+    if ao_criar:
+        for caminho, valor in atualizacao.get("$setOnInsert", {}).items():
+            _escrever(doc, caminho, deepcopy(valor))
+    for caminho, valor in atualizacao.get("$inc", {}).items():
+        atual = _ler_para_escrever(doc, caminho)
+        if atual is _EM_FALTA:
+            _escrever(doc, caminho, valor)
+        elif not _numero(atual):
+            raise OperationFailure(
+                "Cannot apply $inc to a value of non-numeric type. {_id: %s} has the field '%s' of non-numeric type %s"
+                % (doc.get("_id"), caminho, _tipo_bson(atual)),
+                14,
+            )
+        else:
+            _escrever(doc, caminho, atual + valor)
+    for caminho, valor in atualizacao.get("$push", {}).items():
+        atual = _ler_para_escrever(doc, caminho)
+        if atual is _EM_FALTA:
+            _escrever(doc, caminho, [deepcopy(valor)])
+        elif not isinstance(atual, list):
+            raise OperationFailure(
+                "The field '%s' must be an array but is of type %s in document {_id: %s}"
+                % (caminho, _tipo_bson(atual), doc.get("_id")),
+                2,
+            )
+        else:
+            atual.append(deepcopy(valor))
 
 
 class BaseFalsa:

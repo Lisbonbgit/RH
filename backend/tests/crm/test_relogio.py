@@ -17,17 +17,23 @@ bloqueio otimista: `carimbo` é o `Formatar::instanteMicro` do autónomo,
 
 O relógio é substituível: os testes das rotas trocam `relogio.agora` com
 monkeypatch e tudo o que lê as horas passa a ver esse instante.
+
+O "hoje" das rotas (F3, T3.1) é o dia em Lisboa (`Europe/Lisbon`), venha o
+processo com o fuso que vier: os casos com outro fuso usam o fixture
+`fuso_de_toquio`, nunca `monkeypatch.setenv("TZ", …)` (correção "T3.1": o
+monkeypatch repõe a variável mas não volta a chamar o `time.tzset()`).
 """
 import os
 import random
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from crm import relogio
-from crm.relogio import carimbo, ler_carimbo, proximo_carimbo
+from crm.relogio import FUSO_LISBOA, carimbo, hoje, ler_carimbo, proximo_carimbo
 
 FORMATO = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 FORMATO_CARIMBO = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
@@ -352,3 +358,115 @@ def test_com_o_relogio_parado_os_carimbos_seguidos_sao_estritamente_crescentes()
         versoes.append(proximo_carimbo(parado, versoes[-1]))
     assert versoes == sorted(set(versoes))
     assert versoes[-1] == "2026-10-10T09:00:01.000990Z"
+
+
+# --- hoje: o dia de hoje em Lisboa (F3, T3.1) ---------------------------------------
+
+
+# (instante UTC do relógio parado, dia em Lisboa). Lisboa está a UTC+1 no
+# verão (WEST) e a UTC+0 no inverno (WET); em 2026 a hora muda a 29 de março
+# e a 25 de outubro, às 01:00 UTC.
+CASOS_DE_HOJE = [
+    (datetime(2026, 10, 10, 22, 59, 59, tzinfo=UTC), date(2026, 10, 10)),
+    (datetime(2026, 10, 10, 23, 0, 0, tzinfo=UTC), date(2026, 10, 11)),
+    (datetime(2026, 10, 25, 0, 59, 59, tzinfo=UTC), date(2026, 10, 25)),
+    (datetime(2026, 10, 25, 23, 30, 0, tzinfo=UTC), date(2026, 10, 25)),
+    (datetime(2026, 3, 29, 0, 59, 59, tzinfo=UTC), date(2026, 3, 29)),
+    (datetime(2026, 3, 29, 23, 30, 0, tzinfo=UTC), date(2026, 3, 30)),
+    (datetime(2026, 12, 31, 23, 59, 59, tzinfo=UTC), date(2026, 12, 31)),
+    (datetime(2026, 12, 31, 23, 59, 59, 999999, tzinfo=UTC), date(2026, 12, 31)),
+    (datetime(2027, 1, 1, 0, 0, 0, tzinfo=UTC), date(2027, 1, 1)),
+    (datetime(2026, 6, 30, 23, 0, 0, tzinfo=UTC), date(2026, 7, 1)),
+]
+IDS_DE_HOJE = [
+    "22:59:59Z no verão ainda é o próprio dia",
+    "23:00:00Z no verão já é o dia seguinte (WEST)",
+    "01:59:59 WEST no dia em que a hora atrasa",
+    "23:30Z depois de a hora atrasar fica no mesmo dia (WET)",
+    "00:59:59Z no dia em que a hora adianta ainda é WET",
+    "23:30Z depois de a hora adiantar já é o dia seguinte",
+    "o último segundo do ano no inverno",
+    "o último microssegundo do ano",
+    "a meia-noite do ano novo",
+    "o fim de junho já é julho em Lisboa",
+]
+
+
+def test_o_fuso_de_lisboa_e_o_europe_lisbon():
+    assert isinstance(FUSO_LISBOA, ZoneInfo)
+    assert FUSO_LISBOA.key == "Europe/Lisbon"
+    assert relogio.FUSO_LISBOA is FUSO_LISBOA
+
+
+@pytest.mark.parametrize("momento, dia", CASOS_DE_HOJE, ids=IDS_DE_HOJE)
+def test_hoje_e_o_dia_em_lisboa_do_relogio_parado(monkeypatch, momento, dia):
+    monkeypatch.setattr(relogio, "agora", lambda: momento)
+    resultado = hoje()
+    assert resultado == dia
+    assert type(resultado) is date  # um dia, nunca um datetime
+
+
+@pytest.mark.parametrize("momento, dia", CASOS_DE_HOJE, ids=IDS_DE_HOJE)
+def test_hoje_nao_depende_do_fuso_do_processo(fuso_de_toquio, monkeypatch, momento, dia):
+    # O Mac está em Lisboa e o contentor em UTC; aqui o processo está em
+    # Tóquio (UTC+9), onde 2026-10-10T22:59:59Z já é dia 11.
+    monkeypatch.setattr(relogio, "agora", lambda: momento)
+    assert time.localtime(momento.timestamp()).tm_gmtoff == 9 * 3600  # o fixture mudou mesmo o fuso
+    assert hoje() == dia
+
+
+@pytest.mark.parametrize("momento, dia", CASOS_DE_HOJE, ids=IDS_DE_HOJE)
+def test_hoje_de_um_momento_dado_nao_le_o_relogio(monkeypatch, momento, dia):
+    """`hoje(momento)` (T3.19: as rotas de escrita leem o relógio uma vez e
+    tiram-lhe o dia) dá o dia em Lisboa desse instante, sem chamar `agora`."""
+
+    def _nunca():
+        raise AssertionError("hoje(momento) leu o relógio")
+
+    monkeypatch.setattr(relogio, "agora", _nunca)
+    assert hoje(momento) == dia
+    assert type(hoje(momento)) is date
+
+
+def test_hoje_recusa_um_momento_sem_fuso():
+    with pytest.raises(ValueError):
+        hoje(datetime(2026, 10, 10, 23, 30, 0))
+
+
+def test_hoje_aceita_um_agora_com_outro_desvio(monkeypatch):
+    # O relógio devolve sempre UTC, mas o resultado só depende do instante.
+    toquio = timezone(timedelta(hours=9))
+    monkeypatch.setattr(relogio, "agora", lambda: datetime(2026, 10, 11, 7, 59, 59, tzinfo=toquio))
+    assert hoje() == date(2026, 10, 10)  # 22:59:59Z, 23:59:59 em Lisboa
+
+
+def test_hoje_recusa_um_agora_sem_fuso(monkeypatch):
+    # Uma datetime sem fuso seria lida na hora local do processo.
+    monkeypatch.setattr(relogio, "agora", lambda: datetime(2026, 10, 10, 23, 30, 0))
+    with pytest.raises(ValueError):
+        hoje()
+
+
+def test_hoje_sem_relogio_parado_e_o_dia_atual_em_lisboa():
+    antes = datetime.now(ZoneInfo("Europe/Lisbon")).date()
+    resultado = hoje()
+    depois = datetime.now(ZoneInfo("Europe/Lisbon")).date()
+    assert resultado in {antes, depois}
+
+
+def test_hoje_e_o_dia_utc_no_inverno_e_o_de_utc_mais_uma_hora_no_verao(monkeypatch):
+    """Propriedade, sem passar pelo ZoneInfo: de novembro a fevereiro Lisboa
+    está em UTC+0 (o dia é o de UTC) e de abril a setembro em UTC+1."""
+    gerador = random.Random(311)
+    inicio = datetime(2000, 1, 1, tzinfo=UTC)
+    vistos = {"inverno": 0, "verao": 0}
+    for _ in range(4000):
+        momento = inicio + timedelta(seconds=gerador.randrange(40 * 366 * 86400))
+        monkeypatch.setattr(relogio, "agora", lambda m=momento: m)
+        if momento.month in (11, 12, 1, 2):
+            assert hoje() == momento.date()
+            vistos["inverno"] += 1
+        elif 4 <= momento.month <= 9:
+            assert hoje() == (momento + timedelta(hours=1)).date()
+            vistos["verao"] += 1
+    assert min(vistos.values()) > 500

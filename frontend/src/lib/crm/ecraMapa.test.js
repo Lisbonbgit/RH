@@ -3,10 +3,11 @@
  *
  * Porta das regras de public/assets/js/ecras/mapa.js do CRM autónomo
  * (etiqueta `referencia-standalone`), com os casos de tests/js/ecra-mapa.test.js
- * que não precisam de DOM nem de Leaflet: a primeira vista (enquadrar as lojas
- * que se veem, todas se os filtros as escondem todas, o centro sem lojas ou
- * com erro, e não voltar a mexer depois de uma falha), a loja a centrar ao
- * nível da rua e o aviso "Loja guardada — os filtros escondem-na do mapa.".
+ * que não precisam de DOM nem de biblioteca de mapas: a primeira vista
+ * (enquadrar as lojas que se veem, todas se os filtros as escondem todas, o
+ * centro sem lojas ou com erro, e não voltar a mexer depois de uma falha), a
+ * loja a centrar ao nível da rua e o aviso "Loja guardada — os filtros
+ * escondem-na do mapa.".
  *
  * Adaptações ao portal (plano T2.25):
  *   - a loja a centrar vem do endereço (`?loja=<id>`) e procura-se na lista das
@@ -19,19 +20,34 @@
  *   - o cartão mostra o contacto em texto (`contactoDaLoja`: pessoa · telefone,
  *     só o que existe) em vez do botão Ligar, que saiu em 2026-10-13 a pedido
  *     do Bruce.
+ *
+ * O mapa passa a Google (plano do mapa Google, G15; adenda §1.1 e §6.3):
+ *   - tocar no ícone de um negócio abre o balão da própria Google e o painel
+ *     "Negócio selecionado": `negocioDoToque` aceita só um identificador em
+ *     texto e um ponto com números finitos, e devolve só {id, lat, lng};
+ *   - "Adicionar como loja" leva à Nova loja com o negócio no `state` da
+ *     navegação (`destinoNovaLojaDoNegocio`): só o id e o ponto tocado, sem
+ *     nada pedido à Google (a posição pede-se lá);
+ *   - sem mapa, a mensagem distingue a chave que falta no servidor
+ *     (`configuracaoDoMapa` → 'nao_configurado') do mapa que não carregou.
  */
 import fs from 'fs';
 import path from 'path';
 import { MENSAGEM_ERRO_INESPERADO } from './api';
-import { ZOOM_LOJA } from './mapa';
+import { MENSAGEM_MAPA_NAO_CONFIGURADO, MENSAGEM_SEM_MAPA, ZOOM_LOJA } from './mapa';
 import { filtrosPadrao } from './filtros';
+import { BASE_CRM, BASE_CRM_ADMIN } from './acesso';
 import {
   PARAMETRO_LOJA,
   SEPARADOR_CONTACTO,
   TEXTO_ESCONDIDA_PELOS_FILTROS,
+  configuracaoDoMapa,
   contactoDaLoja,
+  destinoNovaLojaDoNegocio,
   lerAviso,
   lojaComId,
+  mensagemSemMapa,
+  negocioDoToque,
   textoAviso,
   textoDoErro,
   vistaAoCarregar,
@@ -275,5 +291,149 @@ describe('o aviso ao voltar ao mapa (ex.: "Loja guardada")', () => {
     const loja = { ...TRES_LOJAS[2], nome: '<b>x</b>' };
     expect(textoAviso('Loja guardada', loja, filtrosPadrao())).toBe('Loja guardada');
     expect(textoAviso('Loja guardada', loja, SO_CLIENTES)).not.toMatch(/<b>|x<\/b>/);
+  });
+});
+
+// --- O mapa Google: o negócio tocado, a Nova loja a partir dele e a mensagem sem mapa (G15) -------------
+
+const LUGAR = 'ChIJ-_aZ09xyMx0RabcDEF12345';
+const TOQUE = Object.freeze({ placeId: LUGAR, lat: 38.7101, lng: -9.1402 });
+
+describe('negocioDoToque (o toque no ícone de um negócio, do aoTocarNumLugar do mapa)', () => {
+  test('devolve só {id, lat, lng}: o identificador do lugar tal e qual e o ponto tocado', () => {
+    expect(negocioDoToque(TOQUE)).toStrictEqual({ id: LUGAR, lat: 38.7101, lng: -9.1402 });
+  });
+
+  test('nada mais do toque passa (nem nome, nem morada, nem o que a Google ou outro código lá ponha)', () => {
+    const toque = { ...TOQUE, nome: 'SENTINELA-NOME', morada: 'SENTINELA-MORADA', telefone: 'SENTINELA-TEL', latLng: {} };
+    const negocio = negocioDoToque(toque);
+    expect(Object.keys(negocio).sort()).toEqual(['id', 'lat', 'lng']);
+    expect(JSON.stringify(negocio)).not.toMatch(/SENTINELA/);
+  });
+
+  test('é um objeto novo e o toque recebido não muda', () => {
+    const toque = { ...TOQUE };
+    const negocio = negocioDoToque(toque);
+    expect(negocio).not.toBe(toque);
+    expect(toque).toStrictEqual({ ...TOQUE });
+  });
+
+  test('um identificador que não é texto não vazio → null (nunca rebenta)', () => {
+    for (const placeId of [undefined, null, '', '   ', 42, 0, true, {}, ['ChIJ'], () => 'ChIJ', NaN]) {
+      expect(negocioDoToque({ ...TOQUE, placeId })).toBeNull();
+    }
+    const { placeId, ...semId } = TOQUE;
+    expect(negocioDoToque(semId)).toBeNull();
+  });
+
+  test('coordenadas que não são números finitos (o toque sem ponto chega com null) → null', () => {
+    for (const valor of [null, undefined, NaN, Infinity, -Infinity, '38.71', [38.71], {}, () => 38.71]) {
+      expect(negocioDoToque({ ...TOQUE, lat: valor })).toBeNull();
+      expect(negocioDoToque({ ...TOQUE, lng: valor })).toBeNull();
+    }
+  });
+
+  test('o que não é um toque → null (nunca rebenta)', () => {
+    for (const toque of [undefined, null, LUGAR, 42, true, [], [LUGAR, 38.71, -9.14]]) {
+      expect(negocioDoToque(toque)).toBeNull();
+    }
+  });
+});
+
+describe('destinoNovaLojaDoNegocio ("Adicionar como loja": a Nova loja com o negócio no state)', () => {
+  const NEGOCIO = Object.freeze({ id: LUGAR, lat: 38.7101, lng: -9.1402 });
+
+  test('o caminho da Nova loja na base do CRM (a do escritório e a do admin) e o negócio no estado', () => {
+    expect(destinoNovaLojaDoNegocio(BASE_CRM, NEGOCIO)).toStrictEqual({
+      caminho: '/crm/lojas/nova',
+      estado: { negocio: { id: LUGAR, lat: 38.7101, lng: -9.1402 } },
+    });
+    expect(destinoNovaLojaDoNegocio(BASE_CRM_ADMIN, NEGOCIO)).toStrictEqual({
+      caminho: '/admin/crm/lojas/nova',
+      estado: { negocio: { id: LUGAR, lat: 38.7101, lng: -9.1402 } },
+    });
+  });
+
+  test('o estado leva só o id e o ponto (as chaves a mais ficam de fora) e é uma cópia', () => {
+    const negocio = { ...NEGOCIO, nome: 'SENTINELA-NOME', morada: 'SENTINELA-MORADA', placeId: 'outro' };
+    const destino = destinoNovaLojaDoNegocio(BASE_CRM, negocio);
+    expect(Object.keys(destino).sort()).toEqual(['caminho', 'estado']);
+    expect(Object.keys(destino.estado)).toEqual(['negocio']);
+    expect(Object.keys(destino.estado.negocio).sort()).toEqual(['id', 'lat', 'lng']);
+    expect(destino.estado.negocio).not.toBe(negocio);
+    expect(JSON.stringify(destino)).not.toMatch(/SENTINELA|outro/);
+    expect(negocio.nome).toBe('SENTINELA-NOME');
+  });
+
+  test('o estado passa pelo histórico do browser tal e qual (só texto e números)', () => {
+    const { estado } = destinoNovaLojaDoNegocio(BASE_CRM, NEGOCIO);
+    expect(JSON.parse(JSON.stringify(estado))).toStrictEqual(estado);
+  });
+
+  test('o negócio do toque serve tal e qual para o destino', () => {
+    const negocio = negocioDoToque({ placeId: LUGAR, lat: 38.7101, lng: -9.1402 });
+    expect(destinoNovaLojaDoNegocio(BASE_CRM, negocio).estado.negocio).toStrictEqual(NEGOCIO);
+  });
+
+  test('sem um negócio válido a Nova loja abre vazia (estado null), sem rebentar', () => {
+    for (const negocio of [null, undefined, {}, 'ChIJ', { id: '', lat: 1, lng: 2 }, { id: LUGAR, lat: null, lng: 2 },
+      { id: LUGAR, lat: 1, lng: NaN }, { id: 42, lat: 1, lng: 2 }]) {
+      expect(destinoNovaLojaDoNegocio(BASE_CRM, negocio)).toStrictEqual({ caminho: '/crm/lojas/nova', estado: null });
+    }
+  });
+});
+
+describe('configuracaoDoMapa e mensagemSemMapa (sem mapa: a chave em falta ou o mapa que não carregou)', () => {
+  const CENTRO = { lat: 38.7223, lng: -9.1393 };
+  const CONFIG_OK = { google: { chave: 'chave-teste', map_id: 'mapa-teste' }, centro: CENTRO };
+
+  test('o GET /config ainda não chegou (ou falhou): a_chegar', () => {
+    expect(configuracaoDoMapa(null)).toBe('a_chegar');
+    expect(configuracaoDoMapa(undefined)).toBe('a_chegar');
+  });
+
+  test('o servidor sem a chave do navegador ou sem o Map ID (google: null): nao_configurado', () => {
+    expect(configuracaoDoMapa({ google: null, centro: CENTRO })).toBe('nao_configurado');
+    expect(configuracaoDoMapa({ google: null })).toBe('nao_configurado');
+  });
+
+  test('a chave e o Map ID em texto: ok', () => {
+    expect(configuracaoDoMapa(CONFIG_OK)).toBe('ok');
+    expect(configuracaoDoMapa({ google: { chave: 'k', map_id: 'm' } })).toBe('ok');
+  });
+
+  test('qualquer outra forma (incompleta, vazia, a antiga da F2, ou nem sequer um objeto): invalida', () => {
+    for (const configuracao of [
+      {},
+      { centro: CENTRO },
+      { google: undefined, centro: CENTRO },
+      { google: {}, centro: CENTRO },
+      { google: { chave: 'k' }, centro: CENTRO },
+      { google: { map_id: 'm' }, centro: CENTRO },
+      { google: { chave: '', map_id: 'm' }, centro: CENTRO },
+      { google: { chave: 'k', map_id: '   ' }, centro: CENTRO },
+      { google: { chave: 42, map_id: 'm' }, centro: CENTRO },
+      { google: 'chave', centro: CENTRO },
+      { alternativa: { url: 'http://y' }, centro: CENTRO },
+      'texto',
+      42,
+      true,
+      [],
+    ]) {
+      expect(configuracaoDoMapa(configuracao)).toBe('invalida');
+    }
+  });
+
+  test('a mensagem: "não configurado" só sem a chave no servidor; "não carregou" com a configuração inválida ou a Google a falhar', () => {
+    expect(mensagemSemMapa({ estado: 'nao_configurado', falhou: false })).toBe(MENSAGEM_MAPA_NAO_CONFIGURADO);
+    expect(mensagemSemMapa({ estado: 'invalida', falhou: false })).toBe(MENSAGEM_SEM_MAPA);
+    expect(mensagemSemMapa({ estado: 'ok', falhou: true })).toBe(MENSAGEM_SEM_MAPA);
+    expect(mensagemSemMapa({ estado: 'ok', falhou: false })).toBeNull();
+    expect(mensagemSemMapa({ estado: 'a_chegar', falhou: false })).toBeNull();
+  });
+
+  test('os textos são os da adenda (§6.3, falhas)', () => {
+    expect(MENSAGEM_MAPA_NAO_CONFIGURADO).toBe('Mapa não configurado — peça ao administrador para configurar a chave Google.');
+    expect(MENSAGEM_SEM_MAPA).toBe('Não foi possível carregar o mapa — recarregue a página.');
   });
 });

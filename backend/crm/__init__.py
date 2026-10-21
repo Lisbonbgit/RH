@@ -40,6 +40,7 @@ from .lojas import router as _lojas  # noqa: E402
 from .membros import router as _membros  # noqa: E402
 from .morada import router as _morada  # noqa: E402
 from .regioes import router as _regioes  # noqa: E402
+from .rotas import router as _rotas  # noqa: E402
 
 router.include_router(_eu)
 router.include_router(_membros)
@@ -48,6 +49,7 @@ router.include_router(_lojas)
 router.include_router(_definicoes)
 router.include_router(_config_mapa)
 router.include_router(_morada)
+router.include_router(_rotas)
 
 
 async def arrancar():

@@ -1,4 +1,4 @@
-"""As definições que o admin pode mudar: na F2, só as da fábrica (crm/dominio/definicoes.py).
+"""As definições que o admin pode mudar: a fábrica (F2) e as rotas (F3) (crm/dominio/definicoes.py).
 
 Porta de src/Dominio/Definicoes.php do CRM autónomo, com todos os casos do
 tests/Unit/Dominio/DefinicoesTest.php e os mesmos nomes nos `ids` (dossiê
@@ -8,6 +8,13 @@ padrões com o que está guardado e devolve as coordenadas como números;
 `alteracao` valida um PATCH e devolve `(valores para gravar, erros)`, ambos
 pela ordem dos `PADROES` e depois as chaves desconhecidas.
 
+A F3 (plano F3, T3.5; §1 "Definições do CRM" e §4) junta as 6 chaves das
+rotas, que o autónomo não tem: a hora de saída e a de regresso ("HH:MM") e o
+tempo de serviço de cada motivo (minutos inteiros de 1 a 240, guardados em
+texto e devolvidos pelo `combinar` como `int`). Um valor guardado estragado
+volta ao padrão sem rebentar; `coerencia` diz se o regresso vem depois da
+saída (a rota chama-a sobre as definições em vigor juntas com o pedido, T3.15).
+
 A ordem dos dicionários conta (a dos erros no ecrã), por isso compara-se
 `list(….items())`; o tipo também (o `assertSame` do PHP: as coordenadas
 guardam-se em texto com 6 casas e saem do `combinar` como `float`). Os
@@ -16,10 +23,11 @@ valores esperados das armadilhas foram conferidos no PHP 8.4.26 (`round` +
 """
 import copy
 import json
+import random
 
 import pytest
 
-from crm.dominio import definicoes
+from crm.dominio import definicoes, janelas, rotas, validador_rota
 from crm.dominio.definicoes import PADROES, alteracao, combinar
 from crm.dominio.geo import contem_latitude, contem_longitude
 
@@ -29,7 +37,38 @@ LNG = "A longitude tem de ser um número."
 DESCONHECIDA = "Esta definição não existe."
 TEXTO = "Tem de ser texto."
 
-PADROES_NA_API = [("fabrica_morada", ""), ("fabrica_lat", 38.7223), ("fabrica_lng", -9.1393)]
+# As mensagens das rotas (plano F3 §4), escritas à mão: uma mensagem trocada
+# no código fica vermelha.
+HORA = "Indique a hora no formato HH:MM."
+COERENCIA = "A hora de regresso tem de ser depois da hora de saída."
+TEMPO = "O tempo de serviço é um número inteiro de minutos, de 1 a 240."
+
+CHAVES_HORAS = ("rota_hora_saida", "rota_hora_regresso")
+CHAVES_MINUTOS = ("servico_entrega_min", "servico_amostra_min", "servico_acompanhamento_min", "servico_angariacao_min")
+
+# Os padrões como se guardam (texto) e como saem do `combinar`, pela ordem do
+# ecrã e dos erros (plano F3, T3.5).
+PADROES_GUARDADOS = [
+    ("fabrica_morada", ""),
+    ("fabrica_lat", "38.722300"),
+    ("fabrica_lng", "-9.139300"),
+    ("rota_hora_saida", "08:00"),
+    ("rota_hora_regresso", "19:00"),
+    ("servico_entrega_min", "10"),
+    ("servico_amostra_min", "10"),
+    ("servico_acompanhamento_min", "15"),
+    ("servico_angariacao_min", "15"),
+]
+ROTAS_NA_API = [
+    ("rota_hora_saida", "08:00"),
+    ("rota_hora_regresso", "19:00"),
+    ("servico_entrega_min", 10),
+    ("servico_amostra_min", 10),
+    ("servico_acompanhamento_min", 15),
+    ("servico_angariacao_min", 15),
+]
+PADROES_NA_API = [("fabrica_morada", ""), ("fabrica_lat", 38.7223), ("fabrica_lng", -9.1393), *ROTAS_NA_API]
+PADRAO_NA_API = dict(PADROES_NA_API)
 
 
 def pares(resultado):
@@ -50,10 +89,17 @@ def mesmos_pares(dicionario, esperado):
 
 
 def test_os_padroes_tem_as_chaves_da_fabrica():
-    assert list(PADROES) == ["fabrica_morada", "fabrica_lat", "fabrica_lng"]
+    assert list(PADROES)[:3] == ["fabrica_morada", "fabrica_lat", "fabrica_lng"]
     assert PADROES["fabrica_morada"] == ""
     assert PADROES["fabrica_lat"] == "38.722300"
     assert PADROES["fabrica_lng"] == "-9.139300"
+    assert all(type(valor) is str for valor in PADROES.values())
+
+
+def test_os_padroes_sao_as_nove_chaves_pela_ordem_do_ecra():
+    # Plano F3, T3.5: a fábrica e depois as rotas, todos em texto (como se
+    # guardam na coleção).
+    assert list(PADROES.items()) == PADROES_GUARDADOS
     assert all(type(valor) is str for valor in PADROES.values())
 
 
@@ -69,7 +115,9 @@ def test_os_padroes_nao_se_mudam_por_engano():
         PADROES["fabrica_lat"] = "0"
     with pytest.raises(TypeError):
         PADROES["hora_saida"] = "08:00"
-    assert list(PADROES.items()) == [("fabrica_morada", ""), ("fabrica_lat", "38.722300"), ("fabrica_lng", "-9.139300")]
+    with pytest.raises(TypeError):
+        PADROES["servico_entrega_min"] = "30"
+    assert list(PADROES.items()) == PADROES_GUARDADOS
 
 
 def test_as_mensagens_sao_as_do_contrato():
@@ -87,7 +135,10 @@ def test_sem_nada_guardado_valem_os_padroes_com_as_coordenadas_como_numeros():
 def test_o_que_esta_guardado_substitui_o_padrao():
     obtido = combinar({"fabrica_lng": "-8.611000", "fabrica_morada": "Rua das Flores 1, Porto"})
 
-    assert mesmos_pares(obtido, [("fabrica_morada", "Rua das Flores 1, Porto"), ("fabrica_lat", 38.7223), ("fabrica_lng", -8.611)])
+    assert mesmos_pares(
+        obtido,
+        [("fabrica_morada", "Rua das Flores 1, Porto"), ("fabrica_lat", 38.7223), ("fabrica_lng", -8.611), *ROTAS_NA_API],
+    )
 
 
 def test_chaves_guardadas_que_esta_versao_nao_conhece_ignoram_se():
@@ -233,10 +284,13 @@ def test_combinar_nao_muda_o_que_recebe_e_devolve_sempre_um_dicionario_novo():
     assert combinar({})["fabrica_lat"] == 38.7223
 
 
-def test_combinar_devolve_sempre_as_tres_chaves_pela_ordem_dos_padroes():
-    obtido = combinar({"fabrica_lng": "-8.0", "hora_saida": "1", "fabrica_lat": "40.0", "fabrica_morada": "Rua B"})
+def test_combinar_devolve_sempre_as_nove_chaves_pela_ordem_dos_padroes():
+    obtido = combinar({
+        "servico_angariacao_min": "20", "fabrica_lng": "-8.0", "hora_saida": "1", "rota_hora_regresso": "18:00",
+        "fabrica_lat": "40.0", "fabrica_morada": "Rua B",
+    })
 
-    assert list(obtido) == ["fabrica_morada", "fabrica_lat", "fabrica_lng"]
+    assert list(obtido) == [chave for chave, _valor in PADROES_GUARDADOS]
 
 
 # --- DefinicoesTest.php: alteracao ---
@@ -554,5 +608,410 @@ def test_o_que_a_alteracao_grava_o_combinar_le_de_volta():
     assert erros == {}
     assert mesmos_pares(
         combinar(valores),
-        [("fabrica_morada", "Rua das Flores 1"), ("fabrica_lat", 41.149601), ("fabrica_lng", -8.611001)],
+        [("fabrica_morada", "Rua das Flores 1"), ("fabrica_lat", 41.149601), ("fabrica_lng", -8.611001), *ROTAS_NA_API],
     )
+
+
+# --- F3 (T3.5): as definições das rotas ---------------------------------------------------------
+#
+# `coerencia` e as mensagens leem-se do módulo dentro de cada teste (e não no
+# import), para o vermelho ser o dos PADROES com 3 chaves e não um ImportError.
+
+
+def _em_vigor(**rotas_):
+    """As definições em vigor (como o `combinar` as devolve) com as rotas mudadas."""
+    return {**PADRAO_NA_API, **rotas_}
+
+
+def test_as_mensagens_das_rotas_sao_as_do_plano():
+    assert definicoes.MENSAGEM_HORA == HORA
+    assert definicoes.MENSAGEM_COERENCIA == COERENCIA
+    assert definicoes.MENSAGEM_TEMPO_SERVICO == TEMPO
+
+
+def test_o_tempo_de_servico_tem_a_mesma_mensagem_que_o_de_cada_paragem():
+    # O mesmo objeto (e os mesmos limites) do validador das rotas (T3.4), e
+    # não uma cópia que um dia deixava de bater certo.
+    assert definicoes.MENSAGEM_TEMPO_SERVICO is validador_rota.MENSAGEM_TEMPO_SERVICO
+    assert (validador_rota.TEMPO_SERVICO_MINIMO, validador_rota.TEMPO_SERVICO_MAXIMO) == (1, 240)
+
+
+def test_os_padroes_das_rotas_passam_nas_proprias_regras():
+    # Os padrões guardados são exatamente o que a alteracao gravaria.
+    pedido = {
+        "rota_hora_saida": "08:00", "rota_hora_regresso": "19:00", "servico_entrega_min": 10,
+        "servico_amostra_min": 10, "servico_acompanhamento_min": 15, "servico_angariacao_min": 15,
+    }
+    valores, erros = alteracao(pedido)
+
+    assert erros == {}
+    assert list(valores.items()) == PADROES_GUARDADOS[3:]
+    assert definicoes.coerencia(combinar({})) == {}
+
+
+def test_cada_motivo_tem_o_seu_tempo_de_servico_nas_definicoes():
+    # O `rotas.servico_padrao` (T3.3) lê `servico_<motivo>_min` das
+    # definições em vigor: uma chave por motivo, pela ordem dos MOTIVOS.
+    em_vigor = combinar({})
+
+    assert [f"servico_{motivo}_min" for motivo in rotas.MOTIVOS] == list(CHAVES_MINUTOS)
+    assert [rotas.servico_padrao(motivo, em_vigor) for motivo in rotas.MOTIVOS] == [10, 10, 15, 15]
+    assert all(type(rotas.servico_padrao(motivo, em_vigor)) is int for motivo in rotas.MOTIVOS)
+
+
+# --- combinar: horas em texto, minutos como inteiros, os estragados voltam ao padrão ---
+
+
+def test_sem_nada_guardado_as_horas_saem_em_texto_e_os_minutos_como_inteiros():
+    obtido = combinar({})
+
+    assert [type(obtido[chave]) for chave in CHAVES_HORAS] == [str, str]
+    assert [type(obtido[chave]) for chave in CHAVES_MINUTOS] == [int, int, int, int]
+    assert mesmos_pares(obtido, PADROES_NA_API)
+
+
+def test_o_que_esta_guardado_nas_rotas_substitui_o_padrao():
+    obtido = combinar({
+        "servico_angariacao_min": "99", "rota_hora_saida": "07:30", "servico_entrega_min": "20",
+        "rota_hora_regresso": "18:45", "servico_amostra_min": "1", "servico_acompanhamento_min": "240",
+    })
+
+    assert mesmos_pares(obtido, [
+        ("fabrica_morada", ""), ("fabrica_lat", 38.7223), ("fabrica_lng", -9.1393),
+        ("rota_hora_saida", "07:30"), ("rota_hora_regresso", "18:45"),
+        ("servico_entrega_min", 20), ("servico_amostra_min", 1),
+        ("servico_acompanhamento_min", 240), ("servico_angariacao_min", 99),
+    ])
+
+
+@pytest.mark.parametrize("guardado, minutos", [("1", 1), ("9", 9), ("10", 10), ("99", 99), ("100", 100), ("240", 240)])
+@pytest.mark.parametrize("chave", CHAVES_MINUTOS)
+def test_um_tempo_de_servico_guardado_le_se_como_inteiro(chave, guardado, minutos):
+    obtido = combinar({chave: guardado})[chave]
+
+    assert type(obtido) is int and obtido == minutos
+
+
+MINUTOS_ESTRAGADOS = [
+    "8:00", "", "abc", "0", "241", "10.5", " 10", "٣",
+    "10 ", "\t10", "10\n", "\n", "-5", "+10", "-0", "010", "00", "0240", "1000", "1e1", "10.0", "10,0",
+    "１０", "٣٠", "²", "1_0", "0x10", "nan", "inf", "10\x00",
+]
+
+
+@pytest.mark.parametrize("guardado", MINUTOS_ESTRAGADOS, ids=[repr(m) for m in MINUTOS_ESTRAGADOS])
+@pytest.mark.parametrize("chave", CHAVES_MINUTOS)
+def test_um_tempo_de_servico_guardado_estragado_volta_ao_padrao(chave, guardado):
+    # Só se lê o texto que a alteracao grava (`str(n)`, de 1 a 240): o int()
+    # do Python aceitava " 10", "+10", "010", "1_0", "١٠" e "１０".
+    obtido = combinar({chave: guardado})[chave]
+
+    assert type(obtido) is int and obtido == PADRAO_NA_API[chave]
+
+
+@pytest.mark.parametrize("guardado", ["00:00", "07:30", "12:05", "23:59"])
+@pytest.mark.parametrize("chave", CHAVES_HORAS)
+def test_uma_hora_guardada_sai_tal_e_qual(chave, guardado):
+    assert combinar({chave: guardado})[chave] == guardado
+
+
+HORAS_ESTRAGADAS = [
+    "8:00", "", "abc", "24:00", "08:60", " 08:00", "08:00 ", "08:00\n", "\n", "０８:００", "٠٨:٠٠",
+    "08h00", "0800", "8", "08:0", "08:000", "-08:00", "08.00", "08:00:00", "08:00\x00",
+]
+
+
+@pytest.mark.parametrize("guardado", HORAS_ESTRAGADAS, ids=[repr(h) for h in HORAS_ESTRAGADAS])
+@pytest.mark.parametrize("chave", CHAVES_HORAS)
+def test_uma_hora_guardada_estragada_volta_ao_padrao(chave, guardado):
+    assert combinar({chave: guardado})[chave] == PADRAO_NA_API[chave]
+
+
+@pytest.mark.parametrize(
+    "guardado",
+    [None, True, False, 0, 20, 20.0, -1, float("nan"), ["10"], {"v": "10"}, b"10"],
+    ids=["nulo", "verdadeiro", "falso", "zero", "inteiro", "decimal", "negativo", "NaN", "lista", "objeto", "bytes"],
+)
+@pytest.mark.parametrize("chave", CHAVES_HORAS + CHAVES_MINUTOS)
+def test_um_valor_das_rotas_guardado_que_nao_e_texto_volta_ao_padrao_sem_rebentar(chave, guardado):
+    # Ao contrário das coordenadas (o `(float)` do PHP), as chaves das rotas
+    # não vêm do autónomo: o CRM grava-as sempre em texto, e o resto (até um
+    # número escrito à mão, que o mongosh gravava como double) está estragado.
+    obtido = combinar({chave: guardado})[chave]
+
+    assert type(obtido) is type(PADRAO_NA_API[chave]) and obtido == PADRAO_NA_API[chave]
+
+
+def test_cada_valor_estragado_volta_ao_seu_padrao_e_os_bons_ficam():
+    obtido = combinar({
+        "rota_hora_saida": "8:00", "rota_hora_regresso": "18:00", "servico_entrega_min": "0",
+        "servico_amostra_min": "12", "servico_acompanhamento_min": "abc", "servico_angariacao_min": "30",
+    })
+
+    assert mesmos_pares(obtido, [
+        ("fabrica_morada", ""), ("fabrica_lat", 38.7223), ("fabrica_lng", -9.1393),
+        ("rota_hora_saida", "08:00"), ("rota_hora_regresso", "18:00"),
+        ("servico_entrega_min", 10), ("servico_amostra_min", 12),
+        ("servico_acompanhamento_min", 15), ("servico_angariacao_min", 30),
+    ])
+
+
+def _minutos_canonicos(texto):
+    """O texto que a alteracao gravaria para um tempo de serviço válido."""
+    return texto.isascii() and texto.isdigit() and texto == str(int(texto)) and 1 <= int(texto) <= 240
+
+
+def test_o_combinar_nunca_rebenta_e_so_aceita_o_texto_que_a_alteracao_grava():
+    # 3000 textos ao acaso (semente fixa), com muitos algarismos: o que não é
+    # o texto canónico volta ao padrão, nunca uma exceção nem outro número.
+    gerador = random.Random(20261011)
+    alfabeto = "0123456789" * 4 + ":. +-e\t\n_x٣２²"
+    aceites = {"minutos": 0, "horas": 0}
+    for _ in range(3000):
+        if gerador.random() < 0.5:
+            texto = "".join(gerador.choice(alfabeto) for _ in range(gerador.randint(0, 5)))
+        else:
+            # Parecido com uma hora: dois algarismos, um separador, dois
+            # algarismos e, às vezes, um carácter a mais.
+            texto = (
+                f"{gerador.randint(0, 29):02d}{gerador.choice('::::.h ')}{gerador.randint(0, 69):02d}"
+                + gerador.choice(["", "", "", " ", "\n", "0"])
+            )
+        obtido = combinar({chave: texto for chave in CHAVES_HORAS + CHAVES_MINUTOS})
+        for chave in CHAVES_MINUTOS:
+            esperado = int(texto) if _minutos_canonicos(texto) else PADRAO_NA_API[chave]
+            assert type(obtido[chave]) is int and obtido[chave] == esperado, (chave, texto)
+        aceites["minutos"] += _minutos_canonicos(texto)
+        for chave in CHAVES_HORAS:
+            esperado = texto if janelas.hora(texto) == (texto, None) else PADRAO_NA_API[chave]
+            assert obtido[chave] == esperado, (chave, texto)
+        aceites["horas"] += janelas.hora(texto) == (texto, None) and texto != ""
+    # O sorteio chega aos dois lados (aceites e estragados).
+    assert aceites["minutos"] > 100 and aceites["horas"] > 100
+
+
+# --- alteracao: as horas e os tempos de serviço ---
+
+
+def test_uma_alteracao_valida_das_rotas_devolve_os_valores_como_se_guardam():
+    resultado = alteracao({
+        "servico_angariacao_min": 30, "rota_hora_regresso": "18:30", "servico_entrega_min": 1,
+        "rota_hora_saida": "07:15", "servico_amostra_min": 240, "servico_acompanhamento_min": 20,
+    })
+
+    assert pares(resultado) == (
+        [
+            ("rota_hora_saida", "07:15"), ("rota_hora_regresso", "18:30"), ("servico_entrega_min", "1"),
+            ("servico_amostra_min", "240"), ("servico_acompanhamento_min", "20"), ("servico_angariacao_min", "30"),
+        ],
+        [],
+    )
+
+
+@pytest.mark.parametrize("chave", CHAVES_HORAS + CHAVES_MINUTOS)
+def test_cada_chave_das_rotas_pode_vir_sozinha(chave):
+    valor = "10:00" if chave in CHAVES_HORAS else 30
+    assert pares(alteracao({chave: valor})) == ([(chave, str(valor))], [])
+
+
+HORAS_INVALIDAS = [
+    "", None, "8:00", "24:00", "08:60", " 07:30", "07:30 ", "07:30\n", "07h30", "0730", "٠٧:٣٠", "０７:３０",
+    "07:30:00", 730, 7.5, True, False, ["07:30"], {"hora": "07:30"},
+]
+
+
+@pytest.mark.parametrize("valor", HORAS_INVALIDAS, ids=[repr(h) for h in HORAS_INVALIDAS])
+@pytest.mark.parametrize("chave", CHAVES_HORAS)
+def test_uma_hora_vazia_ou_mal_escrita_da_erro(chave, valor):
+    # Plano F3 §4: uma só mensagem para a vazia e para o formato. Com erro, o
+    # valor fica "" (como as coordenadas), e quem chama não grava nada.
+    assert pares(alteracao({chave: valor})) == ([(chave, "")], [(chave, HORA)])
+
+
+@pytest.mark.parametrize("hora", ["00:00", "08:00", "19:59", "23:59"])
+@pytest.mark.parametrize("chave", CHAVES_HORAS)
+def test_uma_hora_bem_escrita_guarda_se_tal_e_qual(chave, hora):
+    assert pares(alteracao({chave: hora})) == ([(chave, hora)], [])
+
+
+MINUTOS_INVALIDOS = [0, 241, -1, 10.0, 10.5, True, False, "10", "", None, 2**63, -(2**63) - 1, 1000,
+                     float("nan"), float("inf"), [10], {"minutos": 10}]
+
+
+@pytest.mark.parametrize("valor", MINUTOS_INVALIDOS, ids=[repr(m) for m in MINUTOS_INVALIDOS])
+@pytest.mark.parametrize("chave", CHAVES_MINUTOS)
+def test_um_tempo_de_servico_fora_das_regras_da_erro(chave, valor):
+    assert pares(alteracao({chave: valor})) == ([(chave, "")], [(chave, TEMPO)])
+
+
+@pytest.mark.parametrize("texto_json", ["1e1", "10.0", "true", "null", '"10"', "[10]", "1E400", "NaN", str(10**400)])
+def test_tempos_de_servico_lidos_pelo_json_loads_que_nao_sao_inteiros_dao_erro(texto_json):
+    # 1e1 e 10.0 são float no JSON (o `is_int` do PHP recusava-os); o json do
+    # Python lê NaN e 1E400 (inf) e inteiros sem fim.
+    valor = json.loads(texto_json)
+
+    assert list(alteracao({"servico_entrega_min": valor})[1].items()) == [("servico_entrega_min", TEMPO)]
+
+
+@pytest.mark.parametrize("chave", CHAVES_MINUTOS)
+def test_todos_os_minutos_de_1_a_240_vao_e_voltam(chave):
+    for minutos in range(1, 241):
+        valores, erros = alteracao({chave: minutos})
+        assert (valores, erros) == ({chave: str(minutos)}, {})
+        obtido = combinar(valores)[chave]
+        assert type(obtido) is int and obtido == minutos
+
+
+@pytest.mark.parametrize("chave", CHAVES_HORAS)
+def test_todas_as_horas_do_dia_vao_e_voltam(chave):
+    for hora in range(24):
+        for minuto in range(60):
+            texto = f"{hora:02d}:{minuto:02d}"
+            valores, erros = alteracao({chave: texto})
+            assert (valores, erros) == ({chave: texto}, {})
+            assert combinar(valores)[chave] == texto
+
+
+def test_a_alteracao_nao_compara_as_horas_entre_si():
+    # A coerência vê-se depois, sobre as definições em vigor juntas com o
+    # pedido (`coerencia`, chamada pela rota na T3.15).
+    assert pares(alteracao({"rota_hora_saida": "19:00", "rota_hora_regresso": "08:00"})) == (
+        [("rota_hora_saida", "19:00"), ("rota_hora_regresso", "08:00")],
+        [],
+    )
+
+
+def test_os_erros_das_rotas_vem_pela_ordem_dos_padroes_e_depois_as_desconhecidas():
+    _valores, erros = alteracao({
+        "hora_saida": "08:00", "servico_angariacao_min": 0, "rota_hora_regresso": "", "fabrica_morada": 1,
+        "servico_entrega_min": "10", "rota_hora_saida": "8:00", "servico_amostra_min": True,
+        "servico_acompanhamento_min": 241, "raio_km": 5,
+    })
+
+    assert list(erros.items()) == [
+        ("fabrica_morada", TEXTO),
+        ("rota_hora_saida", HORA),
+        ("rota_hora_regresso", HORA),
+        ("servico_entrega_min", TEMPO),
+        ("servico_amostra_min", TEMPO),
+        ("servico_acompanhamento_min", TEMPO),
+        ("servico_angariacao_min", TEMPO),
+        ("hora_saida", DESCONHECIDA),
+        ("raio_km", DESCONHECIDA),
+    ]
+
+
+@pytest.mark.parametrize(
+    "chave",
+    ["Rota_hora_saida", "rota_hora_saida ", "hora_regresso", "rota_hora_regresso_limite", "servico_entrega",
+     "servico_ENTREGA_min", "servico_visita_min", "tempo_servico_min"],
+)
+def test_chaves_parecidas_com_as_das_rotas_sao_desconhecidas(chave):
+    assert pares(alteracao({chave: 10})) == ([], [(chave, DESCONHECIDA)])
+
+
+def test_a_fabrica_e_as_rotas_mudam_no_mesmo_pedido_pela_ordem_dos_padroes():
+    resultado = alteracao({
+        "servico_entrega_min": 12, "fabrica_lng": -8.611, "rota_hora_saida": "09:00", "fabrica_lat": 41.1496,
+    })
+
+    assert pares(resultado) == (
+        [("fabrica_lat", "41.149600"), ("fabrica_lng", "-8.611000"), ("rota_hora_saida", "09:00"),
+         ("servico_entrega_min", "12")],
+        [],
+    )
+
+
+def test_os_valores_das_rotas_sao_sempre_texto_mesmo_com_erro():
+    valores, _erros = alteracao({
+        "rota_hora_saida": "07:00", "rota_hora_regresso": None, "servico_entrega_min": 20,
+        "servico_amostra_min": 0, "servico_acompanhamento_min": 240, "servico_angariacao_min": "x",
+    })
+
+    assert [type(valor) for valor in valores.values()] == [str] * 6
+
+
+def test_o_pedido_das_rotas_nao_muda_e_cada_chamada_devolve_estruturas_novas():
+    pedido = {"servico_entrega_min": [10], "rota_hora_saida": "07:00", "rota_hora_regresso": {"h": 1}}
+    antes = copy.deepcopy(pedido)
+
+    primeiro = alteracao(pedido)
+    segundo = alteracao(pedido)
+
+    assert pedido == antes
+    assert primeiro == segundo
+    assert primeiro[0] is not segundo[0] and primeiro[1] is not segundo[1]
+
+
+# --- coerencia: o regresso depois da saída ---
+
+
+@pytest.mark.parametrize(
+    "saida, regresso, erros",
+    [
+        ("08:00", "19:00", {}),
+        ("08:00", "08:01", {}),
+        ("00:00", "23:59", {}),
+        ("08:00", "08:00", {"rota_hora_regresso": COERENCIA}),
+        ("08:01", "08:00", {"rota_hora_regresso": COERENCIA}),
+        ("19:00", "07:00", {"rota_hora_regresso": COERENCIA}),
+        ("23:59", "00:00", {"rota_hora_regresso": COERENCIA}),
+    ],
+    ids=["padrões", "um minuto depois", "o dia inteiro", "a mesma hora", "um minuto antes", "ao contrário",
+         "a meia-noite não é o fim do dia"],
+)
+def test_a_coerencia_quer_o_regresso_depois_da_saida(saida, regresso, erros):
+    assert definicoes.coerencia(_em_vigor(rota_hora_saida=saida, rota_hora_regresso=regresso)) == erros
+
+
+def test_a_coerencia_do_pedido_junto_com_as_guardadas():
+    # O vermelho da T3.15: a saída guardada às 08:00 e um PATCH só com o
+    # regresso às 07:00 (a alteracao sozinha aceita-o).
+    em_vigor = combinar({"rota_hora_saida": "08:00"})
+    valores, erros = alteracao({"rota_hora_regresso": "07:00"})
+
+    assert erros == {}
+    assert definicoes.coerencia({**em_vigor, **valores}) == {"rota_hora_regresso": COERENCIA}
+    assert definicoes.coerencia({**em_vigor, **alteracao({"rota_hora_regresso": "08:30"})[0]}) == {}
+
+
+def test_a_coerencia_so_le_as_duas_horas():
+    # As outras chaves (a fábrica, os minutos, as desconhecidas) não contam.
+    so_horas = {"rota_hora_saida": "08:00", "rota_hora_regresso": "07:00"}
+
+    assert definicoes.coerencia(so_horas) == {"rota_hora_regresso": COERENCIA}
+    assert definicoes.coerencia({**so_horas, "rota_hora_regresso": "09:00", "x": None}) == {}
+
+
+@pytest.mark.parametrize(
+    "valores",
+    [
+        {"rota_hora_saida": "8:00", "rota_hora_regresso": "19:00"},
+        {"rota_hora_saida": "08:00", "rota_hora_regresso": ""},
+        {"rota_hora_saida": None, "rota_hora_regresso": "19:00"},
+        {"rota_hora_regresso": "19:00"},
+        {"rota_hora_saida": "08:00"},
+        {},
+        {"rota_hora_saida": 800, "rota_hora_regresso": 1900},
+        {"rota_hora_saida": "08:00", "rota_hora_regresso": "24:00"},
+    ],
+    ids=["saída mal escrita", "regresso vazio", "saída nula", "sem saída", "sem regresso", "nenhuma",
+         "números", "24:00"],
+)
+def test_a_coerencia_so_compara_horas_ja_validadas(valores):
+    # Quem chama passa as definições em vigor (horas sempre válidas, pelo
+    # combinar) juntas com valores sem erros: o resto é um erro de programação.
+    with pytest.raises(ValueError):
+        definicoes.coerencia(valores)
+
+
+def test_a_coerencia_nao_muda_o_que_recebe_e_devolve_um_dicionario_novo():
+    em_vigor = _em_vigor(rota_hora_saida="09:00", rota_hora_regresso="09:00")
+    antes = copy.deepcopy(em_vigor)
+
+    primeiro = definicoes.coerencia(em_vigor)
+    segundo = definicoes.coerencia(em_vigor)
+
+    assert em_vigor == antes
+    assert primeiro == segundo == {"rota_hora_regresso": COERENCIA}
+    assert primeiro is not segundo

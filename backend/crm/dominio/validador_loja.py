@@ -12,7 +12,9 @@ Normalização: textos sem espaços nas pontas (também os Unicode,
 meio-para-longe-do-zero; `precisao_m` em metros inteiros e só com origem
 `gps` (nas outras fica `None`); `dias_fechada` pela ordem da semana; o
 `instagram` como o endereço do perfil e o `site` como URL http(s)
-(`campos_loja.instagram`/`site`, 2026-10-13).
+(`campos_loja.instagram`/`site`, 2026-10-13); o `google_place_id` aparado,
+no bloco da localização e com qualquer origem válida
+(`campos_loja.google_place_id`, 2026-10-18, mapa Google).
 
 Adaptação do portal (plano T2.5): `regiao_id` é `None` ou o uuid4 em texto
 de uma região (o `str(uuid.uuid4())` com que o portal grava os ids), e não o
@@ -34,13 +36,20 @@ from .texto import aparar
 
 # Os campos da loja que a API aceita, pela ordem da tabela (dossiê §5.2): os 18
 # do autónomo mais `instagram` e `site` (2026-10-13, a pedido do dono), a
-# seguir à pessoa de contacto.
+# seguir à pessoa de contacto, e `google_place_id` (2026-10-18, mapa Google),
+# a seguir à precisão — 21 ao todo.
 CAMPOS = (
     "nome", "fase", "regiao_id", "morada", "codigo_postal", "localidade",
-    "lat", "lng", "origem_coords", "precisao_m", "telefone", "pessoa_contacto", "instagram", "site", "notas",
+    "lat", "lng", "origem_coords", "precisao_m", "google_place_id",
+    "telefone", "pessoa_contacto", "instagram", "site", "notas",
     "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim", "dias_fechada",
 )
 
+# A origem `google` do seletor do mapa é só um estado passageiro (plano do mapa
+# Google §1, "Regra do arrasto"): o pino vindo de um negócio ou de uma morada
+# da Google só se confirma depois de arrastado, e chega aqui como `pin_manual`
+# com o `google_place_id`. Não entra nesta lista: é recusada como qualquer
+# origem desconhecida (422).
 ORIGENS = ("pin_manual", "gps", "geocoder")
 
 # Tamanho da coluna `nome` do autónomo, em caracteres.
@@ -53,9 +62,11 @@ TEXTOS = {
     "pessoa_contacto": ("A pessoa de contacto", 100),
 }
 
-# Validam-se juntos (a precisão depende da origem). Numa alteração, se vier
-# um deles, têm de vir os três obrigatórios; a precisão é opcional.
-_LOCALIZACAO = ("lat", "lng", "origem_coords", "precisao_m")
+# Validam-se juntos (a precisão depende da origem; o identificador do lugar na
+# Google acompanha o pino). Numa alteração, se vier um deles, têm de vir os
+# três obrigatórios; a precisão e o identificador são opcionais (ausentes →
+# `None`: o bloco grava-se sempre completo).
+_LOCALIZACAO = ("lat", "lng", "origem_coords", "precisao_m", "google_place_id")
 _LOCALIZACAO_OBRIGATORIA = ("lat", "lng", "origem_coords")
 
 MENSAGEM_LOCALIZACAO_INCOMPLETA = "A localização tem de vir completa (lat, lng e origem_coords)."
@@ -67,7 +78,7 @@ _UUID4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 
 
 def criacao(dados: dict):
-    """Uma loja nova: `(dados, erros)`, com os 20 campos (os que faltam a `None`).
+    """Uma loja nova: `(dados, erros)`, com os 21 campos (os que faltam a `None`).
 
     Obrigatórios: nome, fase e o pino (lat, lng, origem_coords). As janelas
     só se comparam (`janelas.erros`) quando nenhuma das quatro horas tem erro.
@@ -85,9 +96,9 @@ def alteracao(parcial: dict):
 
     Limpar um opcional (`None` ou `""`) dá `None` (os dias, `[]`). Se vier
     uma das chaves da localização (basta a chave, mesmo `None`), têm de vir
-    lat, lng e origem_coords; os dados levam então as quatro. Se faltar
+    lat, lng e origem_coords; os dados levam então as cinco. Se faltar
     alguma, as que faltam têm a mensagem da localização incompleta e nenhuma
-    das quatro entra nos dados. As janelas não se comparam aqui: a coerência
+    das cinco entra nos dados. As janelas não se comparam aqui: a coerência
     depende das horas que a loja já tem, e a rota verifica-a com
     `janelas.erros` sobre a loja já alterada (T2.11).
     """
@@ -228,7 +239,8 @@ def _regiao(valor):
 
 
 def _localizacao(campos: dict):
-    """lat, lng, origem_coords e precisao_m, validados juntos (a precisão depende da origem)."""
+    """lat, lng, origem_coords, precisao_m e google_place_id, validados juntos
+    (a precisão depende da origem; o identificador só do seu formato)."""
     dados = {}
     erros = {}
     dados["lat"], erros["lat"] = _coordenada(campos.get("lat"), "A latitude", contem_latitude)
@@ -249,6 +261,10 @@ def _localizacao(campos: dict):
     gps_aceitavel = gps and precisao_aceitavel(precisao)
     dados["precisao_m"] = int(arredondar(precisao)) if gps_aceitavel else None
     erros["precisao_m"] = MENSAGEM_GPS if gps and not gps_aceitavel else None
+
+    # O identificador do lugar na Google vai com qualquer origem válida: é o
+    # negócio ou a morada de onde o pino partiu antes de ser arrastado.
+    dados["google_place_id"], erros["google_place_id"] = campos_loja.google_place_id(campos.get("google_place_id"))
 
     return dados, erros
 

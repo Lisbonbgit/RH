@@ -4,7 +4,8 @@
 // setAttribute — nunca como HTML em texto (regra 9 do plano; dossiê §0). O
 // documento é sempre recebido por parâmetro (testável com um documento falso).
 // No portal, o React já escapa o texto; isto serve onde se monta DOM à mão
-// para o Leaflet (ex.: a etiqueta permanente de cada pino, em `lib/crm/mapa.js`).
+// para o Google Maps (ex.: o conteúdo de cada pino, com a etiqueta do nome, em
+// `lib/crm/mapa.js`).
 
 const ATRIBUTOS_URL = new Set(['href', 'src', 'action', 'formaction', 'xlink:href', 'poster']);
 

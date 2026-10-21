@@ -1,0 +1,53 @@
+{
+  "_origem": "manual — não se regrava: o gravador (T3.12) só grava a lista fechada; aqui o ORS deixa de fora a distance e a duration de um troço de comprimento zero",
+  "_nota": "Duas lojas nas mesmas coordenadas (a mesma morada geocodificada): fábrica → Praça do Comércio → Praça do Comércio → fábrica. O 2.º troço só traz os steps.",
+  "bbox": [-9.1415, 38.7075, -9.1338, 38.7223],
+  "routes": [
+    {
+      "summary": {"distance": 4249.9, "duration": 741.9},
+      "segments": [
+        {
+          "distance": 2034.8,
+          "duration": 352.6,
+          "steps": [
+            {"distance": 2034.8, "duration": 352.6, "type": 11, "instruction": "Head south", "name": "-", "way_points": [0, 3]},
+            {"type": 10, "instruction": "Arrive at your destination, on the left", "name": "-", "way_points": [3, 3]}
+          ]
+        },
+        {
+          "steps": [
+            {"type": 11, "instruction": "Head south", "name": "-", "way_points": [3, 3]},
+            {"type": 10, "instruction": "Arrive at your destination, on the left", "name": "-", "way_points": [3, 3]}
+          ]
+        },
+        {
+          "distance": 2215.1,
+          "duration": 389.3,
+          "steps": [
+            {"distance": 2215.1, "duration": 389.3, "type": 11, "instruction": "Head east", "name": "-", "way_points": [3, 6]},
+            {"type": 10, "instruction": "Arrive at your destination, on the right", "name": "-", "way_points": [6, 6]}
+          ]
+        }
+      ],
+      "bbox": [-9.1415, 38.7075, -9.1338, 38.7223],
+      "geometry": "k}ikFr_xv@ni@vLja@_XrN{EcVgOcj@fTgYbL",
+      "way_points": [0, 3, 3, 6]
+    }
+  ],
+  "metadata": {
+    "attribution": "openrouteservice.org | OpenStreetMap contributors",
+    "service": "routing",
+    "timestamp": 1760176800000,
+    "query": {
+      "coordinates": [[-9.1393, 38.7223], [-9.1364, 38.7075], [-9.1364, 38.7075], [-9.1393, 38.7223]],
+      "profile": "driving-car",
+      "profileName": "driving-car",
+      "format": "json",
+      "instructions": true,
+      "geometry": true,
+      "elevation": false,
+      "units": "m"
+    },
+    "engine": {"version": "9.1.2", "build_date": "2025-03-27T09:23:59Z", "graph_date": "2025-09-28T09:11:42Z"}
+  }
+}

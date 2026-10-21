@@ -233,20 +233,17 @@ export function criarClienteCrm({ pedir = (config) => instanciaCrm.request(confi
     obterDefinicoes: () => chamar({ method: 'GET', url: '/definicoes' }),
     alterarDefinicoes: (corpo) => chamar({ method: 'PATCH', url: '/definicoes', data: corpo }),
 
-    // `{mosaicos: {url, atribuicao}, alternativa: {url}, centro: {lat, lng}}`.
+    // `{google: {chave, map_id} | null, centro: {lat, lng}}`: a chave do
+    // navegador e o Map ID do Google Maps (`null` se o servidor não tiver as
+    // duas) e o ponto da fábrica.
     obterConfigMapa: () => chamar({ method: 'GET', url: '/config' }),
 
-    // Morada (Geoapify pelo servidor). A pesquisa → até 5 `{rotulo, morada,
-    // codigo_postal, localidade, lat, lng}`; o ponto (`pontoDeBias`) só ordena
-    // as sugestões. No seletor: `api: (texto, extra) => pesquisarMorada({
-    // texto, ...(extra ?? {}) })`. A inversa → a sugestão ou `null` (422 fora
-    // de Portugal continental). Sem chave ou com a Geoapify em baixo, 503
-    // `morada_indisponivel`; sem rede, `sem_rede` (como todas).
-    pesquisarMorada: (pedido) => chamar({
-      method: 'GET',
-      url: '/morada/pesquisa',
-      params: semNulos({ texto: pedido?.texto, lat: pedido?.lat, lng: pedido?.lng }),
-    }),
+    // Morada sugerida do GPS (Geoapify pelo servidor): a inversa do ponto
+    // (`pontoDeBias`) → `{rotulo, morada, codigo_postal, localidade, lat,
+    // lng}` ou `null` (422 fora de Portugal continental). Sem chave ou com a
+    // Geoapify em baixo, 503 `morada_indisponivel`; sem rede, `sem_rede`
+    // (como todas). A pesquisa de moradas é a da própria Google, no seletor
+    // (`lugarGoogle.js`): não passa pelo servidor.
     moradaInversa: (ponto) => chamar({
       method: 'GET', url: '/morada/inversa', params: semNulos({ lat: ponto?.lat, lng: ponto?.lng }),
     }),
@@ -259,5 +256,5 @@ export const {
   obterEu, listarMembros, listarCandidatos, adicionarMembro, mudarPerfilMembro, retirarMembro,
   listarRegioes, criarRegiao, alterarRegiao, apagarRegiao,
   listarLojas, obterLoja, criarLoja, alterarLoja, apagarLoja,
-  obterDefinicoes, alterarDefinicoes, obterConfigMapa, pesquisarMorada, moradaInversa,
+  obterDefinicoes, alterarDefinicoes, obterConfigMapa, moradaInversa,
 } = clienteCrm;

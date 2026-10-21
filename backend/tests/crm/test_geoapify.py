@@ -4,8 +4,17 @@
 Porta de src/Servicos/Geoapify.php, com todos os casos de
 tests/Unit/Servicos/{GeoapifyUrlTest,GeoapifyNormalizarTest}.php do CRM
 autónomo (etiqueta `referencia-standalone`), com os nomes de lá nos docstrings
-e nos `ids`. Funções puras, sem rede: o cliente assíncrono e as rotas
-`/morada` são da T2.15.
+e nos `ids`. Funções puras, sem rede: o cliente assíncrono e a rota
+`/morada/inversa` são da T2.15.
+
+Desde a G18 do plano do mapa Google, a Geoapify fica só para a morada
+sugerida do ponto do GPS (a inversa): a pesquisa de moradas é a da própria
+Google, no browser, e os casos do URL da pesquisa saíram com o `url_pesquisa`
+e o `LIMITE_PESQUISA` (os do texto e da chave codificados passaram para a
+chave da inversa). O normalizador é o mesmo para as duas respostas e
+continua a chamar-se `normalizar_autocomplete`; a resposta gravada da
+pesquisa da Rua Augusta fica, porque prova a normalização com vários
+resultados.
 
 As respostas gravadas (tests/crm/fixtures/geoapify/*.json) vêm do autónomo,
 escritas à mão no formato `format=json` da documentação da Geoapify, com o
@@ -43,7 +52,7 @@ import pytest
 
 from crm.dominio.geo import contem_latitude, contem_longitude, distancia_metros
 from crm.servicos import geoapify
-from crm.servicos.geoapify import normalizar_autocomplete, normalizar_inversa, url_inversa, url_pesquisa
+from crm.servicos.geoapify import normalizar_autocomplete, normalizar_inversa, url_inversa
 
 BASE = "https://api.geoapify.com"
 CHAVE = "chave-teste-servidor"
@@ -116,27 +125,8 @@ def _mesmo(obtido, esperado):
 # --- GeoapifyUrlTest.php -------------------------------------------------------------------
 
 
-def test_a_pesquisa_leva_o_texto_o_filtro_de_portugal_a_lingua_o_limite_o_formato_e_a_chave():
-    """`aPesquisaLevaOTextoOFiltroDePortugalALinguaOLimiteOFormatoEAChave`."""
-    assert url_pesquisa(BASE, CHAVE, "Rua Augusta") == (
-        BASE + "/v1/geocode/autocomplete?text=Rua%20Augusta&filter=countrycode%3Apt&lang=pt&limit=5"
-        "&format=json&apiKey=chave-teste-servidor"
-    )
 
 
-def test_com_um_ponto_a_pesquisa_leva_o_bias_de_proximidade_com_a_longitude_primeiro():
-    """`comUmPontoAPesquisaLevaOBiasDeProximidadeComALongitudePrimeiro`."""
-    url = url_pesquisa(BASE, CHAVE, "Rua Augusta", {"lat": 38.7223, "lng": -9.1393})
-
-    assert _parametros(url) == [
-        ("text", "Rua Augusta"),
-        ("filter", "countrycode:pt"),
-        ("bias", "proximity:-9.1393,38.7223"),
-        ("lang", "pt"),
-        ("limit", "5"),
-        ("format", "json"),
-        ("apiKey", CHAVE),
-    ]
 
 
 def test_a_inversa_leva_o_ponto_a_lingua_o_formato_e_a_chave():
@@ -150,7 +140,6 @@ def test_usa_o_url_base_da_configuracao_com_ou_sem_barra_no_fim():
     """`usaOUrlBaseDaConfiguracaoComOuSemBarraNoFim`."""
     base = "http://127.0.0.1:8099/geoapify/"
 
-    assert url_pesquisa(base, CHAVE, "Rua Augusta").startswith("http://127.0.0.1:8099/geoapify/v1/geocode/autocomplete?")
     assert url_inversa(base, CHAVE, 38.7075, -9.1364).startswith("http://127.0.0.1:8099/geoapify/v1/geocode/reverse?")
 
 
@@ -161,21 +150,19 @@ def test_usa_o_url_base_da_configuracao_com_ou_sem_barra_no_fim():
 )
 def test_o_url_base_perde_todas_as_barras_do_fim(base):
     """Conferido com o PHP: o `rtrim($urlBase, '/')` tira todas."""
-    assert url_pesquisa(base, "k", "Rua") == (
-        "http://127.0.0.1:8099/geoapify/v1/geocode/autocomplete?text=Rua&filter=countrycode%3Apt&lang=pt&limit=5"
-        "&format=json&apiKey=k"
+    assert url_inversa(base, "k", 38.7075, -9.1364) == (
+        "http://127.0.0.1:8099/geoapify/v1/geocode/reverse?lat=38.7075&lon=-9.1364&lang=pt&format=json&apiKey=k"
     )
 
 
-def test_o_texto_e_a_chave_vao_codificados_no_url():
-    """`oTextoEAChaveVaoCodificadosNoUrl`."""
-    texto = "Largo do Chafariz de Dentro 1º Esq. & Cª #2 ?x=1"
-    chave = "a&b=c d"
+def test_a_chave_vai_codificada_no_url():
+    """`oTextoEAChaveVaoCodificadosNoUrl`, só com a chave: o texto era o da
+    pesquisa, que saiu na G18 (os caracteres dele vão aqui na chave)."""
+    chave = "a&b=c d 1º Esq. & Cª #2 ?x=1"
 
-    url = url_pesquisa(BASE, chave, texto)
+    url = url_inversa(BASE, chave, 38.7075, -9.1364)
 
-    parametros = dict(_parametros(url))
-    assert {"text": parametros["text"], "apiKey": parametros["apiKey"]} == {"text": texto, "apiKey": chave}
+    assert dict(_parametros(url))["apiKey"] == chave
     assert " " not in url
     assert "#" not in url
 
@@ -183,28 +170,28 @@ def test_o_texto_e_a_chave_vao_codificados_no_url():
 def test_a_codificacao_e_a_do_rawurlencode_do_php():
     """Conferido com o PHP: espaço → `%20` (nunca `+`), só `A-Za-z0-9-_.~`
     ficam, a barra e o `+` codificam-se, e o UTF-8 vai byte a byte em
-    maiúsculas."""
-    url = url_pesquisa(BASE, "chave/+~ é", "Praça do Comércio ~/+*'()!$,;:@[]")
+    maiúsculas. Os mesmos caracteres que se conferiram no texto da pesquisa
+    (que saiu na G18) e na chave, agora todos na chave."""
+    url = url_inversa(BASE, "Praça do Comércio ~/+*'()!$,;:@[] chave/+~ é", 38.7075, -9.1364)
 
     assert url == (
-        BASE + "/v1/geocode/autocomplete?text=Pra%C3%A7a%20do%20Com%C3%A9rcio%20~%2F%2B%2A%27%28%29%21%24%2C%3B%3A"
-        "%40%5B%5D&filter=countrycode%3Apt&lang=pt&limit=5&format=json&apiKey=chave%2F%2B~%20%C3%A9"
+        BASE + "/v1/geocode/reverse?lat=38.7075&lon=-9.1364&lang=pt&format=json"
+        "&apiKey=Pra%C3%A7a%20do%20Com%C3%A9rcio%20~%2F%2B%2A%27%28%29%21%24%2C%3B%3A%40%5B%5D"
+        "%20chave%2F%2B~%20%C3%A9"
     )
 
 
-def test_o_texto_vai_tal_e_qual_e_uma_chave_com_bytes_que_nao_sao_utf8_vai_byte_a_byte():
-    """Conferido com o PHP: quem apara o texto é a rota (T2.15), não o URL; o
-    byte 0xFF de uma variável de ambiente chega ao Python como `\\udcff`
-    (surrogateescape) e vai como `%FF`, sem rebentar."""
-    assert url_pesquisa(BASE, "\udcff", "  Rua  ") == (
-        BASE + "/v1/geocode/autocomplete?text=%20%20Rua%20%20&filter=countrycode%3Apt&lang=pt&limit=5"
-        "&format=json&apiKey=%FF"
+def test_uma_chave_com_bytes_que_nao_sao_utf8_vai_byte_a_byte():
+    """Conferido com o PHP: o byte 0xFF de uma variável de ambiente chega ao
+    Python como `\\udcff` (surrogateescape) e vai como `%FF`, sem rebentar."""
+    assert url_inversa(BASE, "\udcff", 38.7075, -9.1364) == (
+        BASE + "/v1/geocode/reverse?lat=38.7075&lon=-9.1364&lang=pt&format=json&apiKey=%FF"
     )
 
 
 def test_sem_chave_o_url_leva_a_chave_vazia():
     """Conferido com o PHP. A rota (T2.15) nem chega a pedir sem chave: dá 503."""
-    assert url_pesquisa(BASE, "", "Rua").endswith("&format=json&apiKey=")
+    assert url_inversa(BASE, "", 38.7075, -9.1364).endswith("&format=json&apiKey=")
 
 
 @pytest.mark.parametrize(
@@ -222,10 +209,8 @@ def test_sem_chave_o_url_leva_a_chave_vazia():
 def test_as_coordenadas_vao_com_ate_6_casas_decimais_sem_zeros_no_fim(valor, esperado):
     """`asCoordenadasVaoComAte6CasasDecimaisSemZerosNoFim`."""
     inversa = dict(_parametros(url_inversa(BASE, CHAVE, valor, valor)))
-    pesquisa = dict(_parametros(url_pesquisa(BASE, CHAVE, "Rua", {"lat": valor, "lng": valor})))
 
     assert [inversa["lat"], inversa["lon"]] == [esperado, esperado]
-    assert pesquisa["bias"] == f"proximity:{esperado},{esperado}"
 
 
 @pytest.mark.parametrize(
@@ -271,10 +256,8 @@ def test_as_coordenadas_seguem_o_number_format_do_php(valor, esperado):
     """Conferidos com o PHP: o `number_format` arredonda meio-para-longe-do-zero
     e, desde o PHP 8.0, nunca escreve "-0"."""
     inversa = dict(_parametros(url_inversa(BASE, CHAVE, valor, valor)))
-    pesquisa = dict(_parametros(url_pesquisa(BASE, CHAVE, "Rua", {"lat": valor, "lng": valor})))
 
     assert [inversa["lat"], inversa["lon"]] == [esperado, esperado]
-    assert pesquisa["bias"] == f"proximity:{esperado},{esperado}"
 
 
 def test_a_inversa_leva_a_latitude_e_a_longitude_cada_uma_no_seu_parametro():
@@ -729,9 +712,37 @@ def test_a_normalizacao_nao_mexe_na_resposta():
 
 
 def test_sem_limite_proprio_a_lista_e_a_que_a_geoapify_manda():
-    """Como no autónomo: o limite de 5 vai no pedido (`limit=5`), a
-    normalização não corta."""
+    """Como no autónomo: a normalização não corta (o limite de 5 ia no pedido
+    da pesquisa, que saiu na G18; a inversa fica com o primeiro válido)."""
     resposta = _resposta(*[_resultado(housenumber=str(n)) for n in range(1, 8)])
 
     assert [n["morada"] for n in normalizar_autocomplete(resposta)] == [f"Rua Augusta {n}" for n in range(1, 8)]
-    assert geoapify.LIMITE_PESQUISA == 5
+    assert normalizar_inversa(resposta)["morada"] == "Rua Augusta 1"
+
+
+# --- G18 do plano do mapa Google: a Geoapify fica só para a morada inversa ------------------
+
+
+def test_a_pesquisa_saiu_do_servico_e_fica_a_inversa():
+    """A pesquisa de moradas é a da Google, no browser: o URL do autocomplete
+    e o limite de 5 saíram. Ficam o URL da inversa, os dois normalizadores (o
+    da inversa assenta no `normalizar_autocomplete`, que não muda de nome), o
+    cliente e o silêncio dos registos."""
+    for nome in ("url_pesquisa", "LIMITE_PESQUISA"):
+        assert not hasattr(geoapify, nome), nome
+    for nome in ("url_inversa", "normalizar_autocomplete", "normalizar_inversa", "obter_json", "ler_json",
+                 "chave_servidor", "url_base", "silenciar_registos", "FalhaServicoExterno"):
+        assert hasattr(geoapify, nome), nome
+
+
+def test_nenhum_codigo_do_crm_pede_o_autocomplete_da_geoapify():
+    """Nem uma chamada esquecida ao `url_pesquisa`, nem o caminho
+    `autocomplete` montado à mão: no código do CRM, a Geoapify só recebe o
+    `reverse` (a morada sugerida do ponto do GPS)."""
+    raiz = Path(geoapify.__file__).resolve().parents[1]
+    ficheiros = sorted(raiz.rglob("*.py"))
+    assert raiz / "morada.py" in ficheiros
+    for ficheiro in ficheiros:
+        codigo = ficheiro.read_text(encoding="utf-8")
+        assert "url_pesquisa" not in codigo, ficheiro
+        assert re.search(r"[\"'/]autocomplete[\"'?/]", codigo) is None, ficheiro

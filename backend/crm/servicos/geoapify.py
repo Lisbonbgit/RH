@@ -1,15 +1,16 @@
 """Os pedidos à Geoapify e as respostas no formato da API do CRM.
 
 Porta de src/Servicos/Geoapify.php do CRM autónomo (plano T2.14; dossiê §8):
-os URLs e a normalização são funções puras, sem rede. No fim do ficheiro está
-o cliente assíncrono (T2.15, porta do ClienteHttpCurl), que as rotas
-`/morada` (crm/morada.py) usam com o URL base (`CRM_GEOAPIFY_URL`) e a chave
-do servidor (`CRM_GEOAPIFY_CHAVE_SERVIDOR`), lidos a cada pedido.
+o URL e a normalização são funções puras, sem rede. No fim do ficheiro está
+o cliente assíncrono (T2.15, porta do ClienteHttpCurl), que a rota
+`/morada/inversa` (crm/morada.py) usa com o URL base (`CRM_GEOAPIFY_URL`) e
+a chave do servidor (`CRM_GEOAPIFY_CHAVE_SERVIDOR`), lidos a cada pedido.
 
-- Pesquisa (autocomplete): só Portugal, em português, até 5 resultados, em
-  `format=json`; com um ponto, os mais perto dele vêm primeiro
-  (`bias=proximity:lng,lat`).
-- Inversa: a morada de um ponto.
+Desde a G18 do plano do mapa Google, a Geoapify fica só para a morada
+sugerida do ponto do GPS: a pesquisa de moradas (o URL do autocomplete e o
+seu limite de 5) saiu, porque é a da própria Google, no browser.
+
+- Inversa: a morada de um ponto, em português, em `format=json`.
 - As coordenadas vão com até 6 casas decimais (cerca de 10 cm), sem zeros no
   fim: o `number_format($v, 6, '.', '')` do PHP, que arredonda
   meio-para-longe-do-zero e, desde o PHP 8.0, nunca escreve "-0".
@@ -17,7 +18,7 @@ do servidor (`CRM_GEOAPIFY_CHAVE_SERVIDOR`), lidos a cada pedido.
   passa pelo `rawurlencode` (espaço → `%20`, só `A-Za-z0-9-_.~` ficam).
 
 Cada resultado passa a `{rotulo, morada, codigo_postal, localidade, lat,
-lng}`, por esta ordem: o rótulo mostra-se na lista de sugestões e o resto
+lng}`, por esta ordem: o rótulo mostra-se na "Morada sugerida" e o resto
 preenche a loja.
 
 - rotulo: o `formatted`.
@@ -79,35 +80,19 @@ from crm.dominio.numeros import arredondar
 
 LOCALIDADE = ("city", "town", "village", "county")
 
-LIMITE_PESQUISA = 5
-
 # Os caracteres que o trim() do PHP tira sem segundo argumento.
 _TRIM_DO_PHP = " \t\n\r\x00\x0b"
 
 _CODIGO_POSTAL = re.compile(r"[0-9]{4}-[0-9]{3}")
 
 
-def url_pesquisa(url_base: str, chave: str, texto: str, perto: Optional[Dict] = None) -> str:
-    """O URL do autocomplete da Geoapify para o texto (que vai tal e qual:
-    quem o apara e valida é a rota).
-
-    `url_base` é o `CRM_GEOAPIFY_URL` (https://api.geoapify.com), com ou sem
-    barras no fim; `perto` é o ponto `{"lat", "lng"}` de onde se pesquisa,
-    só como bias (números já validados pela rota).
-    """
-    parametros = [("text", texto), ("filter", "countrycode:pt")]
-
-    if perto is not None:
-        parametros.append(("bias", f"proximity:{_coordenada(perto['lng'])},{_coordenada(perto['lat'])}"))
-
-    parametros += [("lang", "pt"), ("limit", str(LIMITE_PESQUISA)), ("format", "json"), ("apiKey", chave)]
-
-    return _url(url_base, "autocomplete", parametros)
-
-
 def url_inversa(url_base: str, chave: str, lat: float, lng: float) -> str:
     """O URL da geocodificação inversa da Geoapify para o ponto (números já
-    validados pela rota)."""
+    validados pela rota).
+
+    `url_base` é o `CRM_GEOAPIFY_URL` (https://api.geoapify.com), com ou sem
+    barras no fim.
+    """
     parametros = [
         ("lat", _coordenada(lat)),
         ("lon", _coordenada(lng)),
@@ -122,7 +107,12 @@ def url_inversa(url_base: str, chave: str, lat: float, lng: float) -> str:
 def normalizar_autocomplete(resposta) -> List[Dict]:
     """As sugestões válidas do JSON da Geoapify (já descodificado), pela
     ordem dela. Sem `results`, ou com um que não seja uma lista nem um
-    objeto, `[]`. Não corta a lista: o limite de 5 vai no pedido."""
+    objeto, `[]`. Não corta a lista.
+
+    Ficou com o nome da pesquisa (o `normalizarAutocomplete` do autónomo),
+    que saiu na G18: o `normalizar_inversa` assenta nele, porque o reverse da
+    Geoapify responde no mesmo formato (`format=json`, uma lista `results`)
+    que o autocomplete, e as respostas gravadas das duas provam-no."""
     resultados = resposta.get("results") if isinstance(resposta, dict) else None
 
     if isinstance(resultados, dict):
@@ -211,9 +201,9 @@ def _url(url_base: str, servico: str, parametros: Sequence[Tuple[str, str]]) -> 
 
 
 def _rawurlencode(valor: str) -> str:
-    """O `rawurlencode` do PHP (RFC 3986), como em `config_mapa._codificar`:
-    os bytes que não são UTF-8 de uma variável de ambiente chegam ao Python
-    como surrogates (surrogateescape) e voltam a ser esses bytes."""
+    """O `rawurlencode` do PHP (RFC 3986): os bytes que não são UTF-8 de uma
+    variável de ambiente (a chave) chegam ao Python como surrogates
+    (surrogateescape) e voltam a ser esses bytes."""
     return quote(valor.encode("utf-8", "surrogateescape"), safe="")
 
 

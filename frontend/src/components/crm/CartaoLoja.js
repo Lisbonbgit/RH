@@ -9,6 +9,9 @@
 // O nome, a fase e o contacto entram como texto (o React escapa-os); não se
 // monta nenhuma ligação com o telefone. O cartão não se fecha sozinho: o
 // "Fechar" avisa a página (`aoFechar`), que também volta a medir o mapa.
+// Fica encostado ao fundo do mapa, onde estão o logótipo e a atribuição da
+// Google: só o filete de cima o separa, sem sombra lançada para cima, que se
+// pintava sobre eles (revisão do mapa Google, MAPA-G-5; `css.test.js`).
 import React, { useId } from 'react';
 import { Link } from 'react-router-dom';
 import { FileText, X } from 'lucide-react';
@@ -28,7 +31,7 @@ export default function CartaoLoja({ loja, base, aoFechar, refNome }) {
     <section
       role="dialog"
       aria-labelledby={idNome}
-      className="relative z-[2] shrink-0 overflow-y-auto border-t bg-card px-4 pt-3 pb-[max(14px,env(safe-area-inset-bottom))] shadow-[0_-6px_18px_rgb(0_0_0/0.12)] md:px-6"
+      className="relative z-[2] shrink-0 overflow-y-auto border-t bg-card px-4 pt-3 pb-[max(14px,env(safe-area-inset-bottom))] md:px-6"
       data-testid="crm-cartao-loja"
     >
       <div className="mx-auto max-w-2xl">

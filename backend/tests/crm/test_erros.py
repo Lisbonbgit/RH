@@ -69,8 +69,8 @@ def test_validacao_mantem_a_ordem_dos_campos():
 
 @pytest.mark.parametrize(
     "mensagem",
-    ["Loja não encontrada.", "Região não encontrada.", "Membro não encontrado."],
-    ids=["loja", "regiao", "membro"],
+    ["Loja não encontrada.", "Região não encontrada.", "Membro não encontrado.", "Ainda não há rota para este dia."],
+    ids=["loja", "regiao", "membro", "rota"],
 )
 def test_nao_encontrado_da_404_com_a_mensagem_da_entidade(mensagem):
     e = nao_encontrado(mensagem)
@@ -96,6 +96,18 @@ def test_os_codigos_e_estados_sao_os_da_tabela_do_plano():
         "ja_membro": 409,
         "admin_master": 409,
         "morada_indisponivel": 503,
+        # F3 (T3.19; a correção "T3.19 / T3.20 (código rota_em_curso)" traz o
+        # `rota_em_curso` para aqui): as recusas de escrever numa rota.
+        "ja_na_rota": 409,
+        "rota_cheia": 409,
+        "rota_fechada": 409,
+        "rota_em_curso": 409,
+        # F3 (T3.21): o openrouteservice não deu horas (sem chave, limite,
+        # ponto sem estrada, falha); a mensagem vai pelo `tipo`.
+        "calculo_indisponivel": 503,
+        # F3 (T3.24): apagar uma loja que está numa rota (numa paragem ativa,
+        # ou com registo do motorista mesmo retirada) é recusado.
+        "loja_em_rota": 409,
     }
 
 

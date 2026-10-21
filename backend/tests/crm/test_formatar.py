@@ -46,7 +46,8 @@ UUID4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 # `instagram` e o `site` de 2026-10-13 a seguir à pessoa de contacto.
 CAMPOS_API = (
     "id", "nome", "fase", "fase_desde", "regiao_id", "morada", "codigo_postal", "localidade",
-    "lat", "lng", "origem_coords", "precisao_m", "telefone", "pessoa_contacto", "instagram", "site", "notas",
+    "lat", "lng", "origem_coords", "precisao_m", "google_place_id",
+    "telefone", "pessoa_contacto", "instagram", "site", "notas",
     "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim", "dias_fechada",
     "visita_pendente_motivo", "visita_pendente_desde", "ultima_interacao_em", "ultima_visita_ou_entrega_em",
     "criado_por", "criado_em", "atualizado_em",
@@ -55,7 +56,8 @@ CAMPOS_API = (
 # O documento de crm_lojas, pela ordem do plano §3.
 CAMPOS_BASE = (
     "id", "nome", "fase", "fase_desde", "regiao_id", "morada", "codigo_postal", "localidade",
-    "lat", "lng", "loc", "origem_coords", "precisao_m", "telefone", "pessoa_contacto", "instagram", "site", "notas",
+    "lat", "lng", "loc", "origem_coords", "precisao_m", "google_place_id",
+    "telefone", "pessoa_contacto", "instagram", "site", "notas",
     "janelas", "dias_fechada",
     "visita_pendente_motivo", "visita_pendente_desde", "ultima_interacao_em", "ultima_visita_ou_entrega_em",
     "criado_por", "criado_em", "atualizado_em",
@@ -79,6 +81,7 @@ def _doc_completo():
         "loc": {"type": "Point", "coordinates": [-9.1369, 38.7108]},
         "origem_coords": "gps",
         "precisao_m": 12,
+        "google_place_id": "ChIJN1t_tDeuEmsRUsoyG83frY4",
         "telefone": "+351 912 345 678",
         "pessoa_contacto": "Rita",
         "instagram": "https://www.instagram.com/cafe.central/",
@@ -142,6 +145,7 @@ def test_a_loja_completa_vem_com_os_tipos_da_api():
         "lng": -9.1369,
         "origem_coords": "gps",
         "precisao_m": 12,
+        "google_place_id": "ChIJN1t_tDeuEmsRUsoyG83frY4",
         "telefone": "+351 912 345 678",
         "pessoa_contacto": "Rita",
         "instagram": "https://www.instagram.com/cafe.central/",
@@ -174,7 +178,8 @@ def test_os_campos_opcionais_sem_valor_vem_a_null():
     )}
     assert list(opcionais.items()) == list({
         "regiao_id": None, "morada": None, "codigo_postal": None, "localidade": None,
-        "precisao_m": None, "telefone": None, "pessoa_contacto": None, "instagram": None, "site": None, "notas": None,
+        "precisao_m": None, "google_place_id": None,
+        "telefone": None, "pessoa_contacto": None, "instagram": None, "site": None, "notas": None,
         "janela1_inicio": None, "janela1_fim": None, "janela2_inicio": None, "janela2_fim": None,
         "dias_fechada": [],
         "visita_pendente_motivo": None, "visita_pendente_desde": None,
@@ -293,6 +298,23 @@ def test_uma_loja_gravada_antes_do_instagram_e_do_site_le_se_com_eles_a_null():
     assert "instagram" not in doc and "site" not in doc, "O documento recebido não se toca."
 
 
+def test_uma_loja_gravada_antes_do_identificador_do_lugar_le_se_com_ele_a_null():
+    """O `google_place_id` entrou com o mapa Google (2026-10-18, plano §3) sem
+    migração: um documento de antes não tem a chave e a API devolve-a a null
+    (lida com `.get`), em vez de rebentar com `KeyError`; com ela no documento
+    vem tal e qual, a seguir à precisão."""
+    doc = _doc_completo()
+    del doc["google_place_id"]
+    loja = formatar.loja_api(doc)
+    assert tuple(loja) == CAMPOS_API
+    assert loja["google_place_id"] is None
+    assert "google_place_id" not in doc, "O documento recebido não se toca."
+
+    loja = formatar.loja_api(_doc_completo())
+    assert loja["google_place_id"] == "ChIJN1t_tDeuEmsRUsoyG83frY4"
+    assert list(loja).index("google_place_id") == list(loja).index("precisao_m") + 1
+
+
 def test_a_loja_da_api_e_uma_estrutura_nova():
     doc = _doc_completo()
     copia = deepcopy(doc)
@@ -351,6 +373,14 @@ def test_o_resumo_traz_o_que_a_linha_de_contacto_do_cartao_mostra():
     (o `ecraMapa.test.js` lê a linha `CAMPOS_RESUMO = (…)` deste módulo)."""
     assert {"pessoa_contacto", "telefone"} <= set(formatar.CAMPOS_RESUMO)
     assert "instagram" not in formatar.CAMPOS_RESUMO and "site" not in formatar.CAMPOS_RESUMO
+
+
+def test_o_resumo_do_mapa_nao_traz_o_identificador_do_lugar():
+    """Plano do mapa Google §4: a lista `GET /lojas` não traz o `google_place_id`
+    (`CAMPOS_RESUMO` não muda); só a loja completa o tem."""
+    assert formatar.CAMPOS_RESUMO == ("id", "nome", "fase", "regiao_id", "lat", "lng", "telefone", "pessoa_contacto")
+    assert "google_place_id" in formatar.CAMPOS_API
+    assert "google_place_id" not in formatar.resumo_loja_api(_doc_completo())
 
 
 # --- documento_localizacao: lat, lng e loc sempre juntos --------------------------------------
@@ -414,7 +444,7 @@ def test_os_limites_do_mundo_sao_pontos_validos():
 
 
 def _dados():
-    """Os 20 campos como o `validador_loja.criacao` os devolve sem erros
+    """Os 21 campos como o `validador_loja.criacao` os devolve sem erros
     (escritos à mão)."""
     return {
         "nome": "Café Central",
@@ -427,6 +457,7 @@ def _dados():
         "lng": -9.1369,
         "origem_coords": "gps",
         "precisao_m": 12,
+        "google_place_id": "ChIJN1t_tDeuEmsRUsoyG83frY4",
         "telefone": "+351 912 345 678",
         "pessoa_contacto": "Rita",
         "instagram": "https://www.instagram.com/cafe.central/",
@@ -460,6 +491,7 @@ def test_a_loja_nova_tem_a_forma_da_base():
         "loc": {"type": "Point", "coordinates": [-9.1369, 38.7108]},
         "origem_coords": "gps",
         "precisao_m": 12,
+        "google_place_id": "ChIJN1t_tDeuEmsRUsoyG83frY4",
         "telefone": "+351 912 345 678",
         "pessoa_contacto": "Rita",
         "instagram": "https://www.instagram.com/cafe.central/",
@@ -518,6 +550,13 @@ def test_sem_janelas_nem_dias_a_loja_nova_guarda_listas_vazias():
     assert (doc["janelas"], doc["dias_fechada"], doc["criado_por"]) == ([], [], None)
 
 
+def test_a_loja_nova_sem_identificador_do_lugar_grava_null_a_seguir_a_precisao():
+    doc = formatar.documento_loja({**_dados(), "google_place_id": None}, "u-rui", AGORA)
+    assert "google_place_id" in doc and doc["google_place_id"] is None
+    assert list(doc).index("google_place_id") == list(doc).index("precisao_m") + 1
+    assert tuple(doc) == CAMPOS_BASE
+
+
 def test_janelas_por_validar_nunca_se_gravam():
     """O `janelas_para_lista` (T2.6) recusa uma janela a meio: nunca se grava."""
     with pytest.raises(ValueError):
@@ -538,13 +577,14 @@ def test_a_loja_nova_a_partir_do_validador():
     """O corpo do `criarDevolve201ComALojaCompleta`, pelo validador da T2.5."""
     dados, erros = validador_loja.criacao({
         "nome": "  Café Central ", "fase": "amostra", "lat": 38.7108004, "lng": -9.1369,
-        "origem_coords": "gps", "precisao_m": 12.4, "telefone": "+351  912 345 678",
+        "origem_coords": "gps", "precisao_m": 12.4, "google_place_id": " ChIJN1t_tDeuEmsRUsoyG83frY4 ",
+        "telefone": "+351  912 345 678",
         "janela1_inicio": "09:30", "janela1_fim": "12:00", "dias_fechada": ["dom", "seg"],
     })
     assert erros == {}
     doc = formatar.documento_loja(dados, "u-rui", AGORA)
-    assert (doc["nome"], doc["lat"], doc["lng"], doc["precisao_m"], doc["telefone"]) == (
-        "Café Central", 38.7108, -9.1369, 12, "+351 912 345 678",
+    assert (doc["nome"], doc["lat"], doc["lng"], doc["precisao_m"], doc["google_place_id"], doc["telefone"]) == (
+        "Café Central", 38.7108, -9.1369, 12, "ChIJN1t_tDeuEmsRUsoyG83frY4", "+351 912 345 678",
     )
     assert doc["loc"] == {"type": "Point", "coordinates": [-9.1369, 38.7108]}
     assert doc["janelas"] == [{"inicio": "09:30", "fim": "12:00"}]
