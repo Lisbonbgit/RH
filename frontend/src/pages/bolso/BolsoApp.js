@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, ChevronRight, Loader2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { euros, getPainel, percentagem, quandoFoi, TIMEOUT_MS } from '@/lib/bolso';
+import { BotaoMenu, Calha, MenuLateral, Segmento, guardar, ler, useManifestoDoBolso } from './partilhado';
 
 // **Gestão Lisbonb** — a faturação do grupo no telemóvel do gestor.
 //
@@ -62,16 +62,6 @@ const CHAVE_UNIDADE = 'bolso_unidade';
 const CHAVE_IVA = 'bolso_com_iva';
 const CHAVE_EMPRESAS = 'bolso_empresas';
 
-const ler = (chave, omissao) => {
-  try { return localStorage.getItem(chave) ?? omissao; } catch (e) { return omissao; }
-};
-const guardar = (chave, valor) => {
-  try {
-    if (valor === null) localStorage.removeItem(chave);
-    else localStorage.setItem(chave, valor);
-  } catch (e) { /* modo privado */ }
-};
-
 // **A lista das empresas tem de ser guardada, e não é uma optimização.**
 //
 // O servidor devolve em `ambito.somadas` as empresas que SOMOU — logo, com uma
@@ -96,32 +86,6 @@ const lerEmpresas = () => {
 // ponytail: a primeira palavra chega para estas três; se duas colidirem, passa
 // a nome completo com truncate.
 const primeiraPalavra = (nome) => (nome || '').trim().split(/\s+/)[0] || nome;
-
-// O manifesto do portal aponta para o POS (`start_url: /faturacao/pos`). Sem
-// esta troca, "Adicionar ao Ecrã Principal" a partir daqui instalava um ícone
-// que **abre o balcão da loja** — o manifesto é que manda, não o endereço que
-// está à frente.
-function useManifestoDoBolso() {
-  useEffect(() => {
-    const link = document.querySelector('link[rel="manifest"]');
-    const anterior = link ? link.getAttribute('href') : null;
-    if (link) link.setAttribute('href', '/bolso-manifest.json');
-
-    // O iPhone ignora o `icons` do manifesto e usa o `apple-touch-icon`.
-    const apple = document.createElement('link');
-    apple.rel = 'apple-touch-icon';
-    apple.href = '/icones/bolso-180.png';
-    document.head.appendChild(apple);
-
-    const titulo = document.title;
-    document.title = 'Gestão Lisbonb';
-    return () => {
-      if (link && anterior) link.setAttribute('href', anterior);
-      apple.remove();
-      document.title = titulo;
-    };
-  }, []);
-}
 
 // --- Peças -------------------------------------------------------------------
 
@@ -370,19 +334,6 @@ function Linha30Dias({ pontos, aCarregar }) {
 // escuro isso dava 3,4:1, e uma empresa por escolher não é texto secundário —
 // é a próxima coisa em que se vai tocar.
 function BarraDeAmbito({ empresas, empresaActiva, onEmpresa, lojas, lojaActiva, onLoja }) {
-  const Segmento = ({ activo, onClick, children }) => (
-    <button
-      type="button" onClick={onClick} aria-pressed={activo}
-      className={`flex-1 min-w-0 h-full rounded-lg px-1 text-[13px] font-semibold truncate
-                  transition-colors duration-150
-                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${
-        activo ? 'bg-primary text-primary-foreground dark:text-background' : 'text-foreground'
-      }`}
-    >
-      {children}
-    </button>
-  );
-
   // Caixa normal e `whitespace-nowrap`, sem truncate: acabam os "PURPLE HO…".
   // A fila desliza, e uma pastilha meia-cortada na margem diz "há mais" melhor
   // do que reticências.
@@ -412,17 +363,14 @@ function BarraDeAmbito({ empresas, empresaActiva, onEmpresa, lojas, lojaActiva, 
         </div>
       )}
       <div className="px-3 py-1.5">
-        {/* `h-12` com `p-0.5`: a calha tem 48px e o enchimento come 4, o que
-            deixa cada segmento com 44 — o mínimo do iOS, medido no ecrã. Com
-            `h-11 p-[3px]` ficavam em 38 e nenhum teste apanhava isso. */}
-        <div className="flex bg-muted rounded-xl p-0.5 h-12">
+        <Calha>
           <Segmento activo={empresaActiva === 'all'} onClick={() => onEmpresa('all')}>Grupo</Segmento>
           {empresas.map((c) => (
             <Segmento key={c.id} activo={empresaActiva === c.id} onClick={() => onEmpresa(c.id)}>
               {primeiraPalavra(c.nome)}
             </Segmento>
           ))}
-        </div>
+        </Calha>
       </div>
     </nav>
   );
@@ -432,8 +380,8 @@ function BarraDeAmbito({ empresas, empresaActiva, onEmpresa, lojas, lojaActiva, 
 
 export default function BolsoApp() {
   useManifestoDoBolso();
-  const navigate = useNavigate();
-  const { logout, user } = useAuth();
+  const { logout } = useAuth();
+  const [menu, setMenu] = useState(false);
 
   const [empresa, setEmpresa] = useState(() => ler(CHAVE_EMPRESA, 'all'));
   const [unidade, setUnidade] = useState(() => ler(CHAVE_UNIDADE, null) || null);
@@ -465,7 +413,10 @@ export default function BolsoApp() {
       }
     } catch (e) {
       const status = e?.response?.status;
-      if (status === 401) { logout(); navigate('/login'); return; }
+      // 401: o `lib/bolso.js` já tentou a re-entrada pelo Face ID e não deu.
+      // Só `logout()`: o ProtectedRoute leva ao login COM o `state.from`, e
+      // depois de entrar volta-se a este ecrã (era o `/admin/resumo`).
+      if (status === 401) { logout(); return; }
       // Sem resposta não se aprendeu nada, e o que está no ecrã continua a
       // valer — com o carimbo antigo à vista. Apagá-lo era trocar informação
       // velha, mas datada, por nenhuma.
@@ -477,7 +428,7 @@ export default function BolsoApp() {
     } finally {
       setCarregando(false);
     }
-  }, [logout, navigate]);
+  }, [logout]);
 
   useEffect(() => { carregar(empresa, unidade); }, [empresa, unidade, carregar]);
 
@@ -543,7 +494,8 @@ export default function BolsoApp() {
           âmbito e a hora da leitura estão lá desde o primeiro pixel. Saber o
           que se está a ver não pode depender de se ter rolado. */}
       <header className="sticky top-0 z-20 bg-card border-b safe-area-inset-top">
-        <div className="flex items-center gap-1 px-3 h-14">
+        <div className="flex items-center gap-1 pl-1 pr-3 h-14">
+          <BotaoMenu onClick={() => setMenu(true)} />
           <div className="min-w-0 flex-1">
             <h1 className="font-heading font-bold text-base leading-tight truncate">{nomeDoAmbito}</h1>
             <p className="text-[11px] text-muted-foreground leading-tight truncate">
@@ -701,22 +653,6 @@ export default function BolsoApp() {
             )}
           </section>
         )}
-
-        {/* Sair é raro e é irreversível. Rolar até ao fim é a barreira certa —
-            e liberta no cabeçalho os 44px de que o nome do âmbito precisava. */}
-        <button
-          type="button"
-          onClick={() => { logout(); navigate('/login'); }}
-          className="mt-4 w-full h-12 rounded-2xl border bg-card px-4 flex items-center justify-between
-                     active:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <span className="text-[13px] text-muted-foreground truncate">{user?.name || ''}</span>
-          {/* **Sem vermelho.** Dava 4,03:1 no claro e 4,41:1 no escuro — abaixo
-              do mínimo nos dois — e, pior, neste ecrã o vermelho já significa
-              uma coisa: faturação a descer. Gastá-lo num botão de sair era
-              tirar-lhe o significado que interessa. */}
-          <span className="text-[15px] font-semibold shrink-0">Terminar sessão</span>
-        </button>
       </main>
 
       <BarraDeAmbito
@@ -727,6 +663,8 @@ export default function BolsoApp() {
         lojaActiva={unidade}
         onLoja={escolherUnidade}
       />
+
+      <MenuLateral aberto={menu} onFechar={() => setMenu(false)} actual="/bolso" />
     </div>
   );
 }

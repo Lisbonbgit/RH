@@ -4,10 +4,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, EmailStr, field_validator
+from pydantic import BaseModel, Field, EmailStr, field_validator, model_validator
 from typing import List, Optional
 import uuid
 from datetime import datetime, timezone, timedelta, date
@@ -42,6 +43,7 @@ except ImportError:
     HTTPX_AVAILABLE = False
 
 import bolso
+import calendario
 import fin_faturacao
 
 ROOT_DIR = Path(__file__).parent
@@ -483,6 +485,76 @@ class CompanyResponse(BaseModel):
     description: Optional[str] = None
     created_at: str
 
+# ---- Calendário das lojas: horário de cada loja (desenho 2026-10-14, «1. Os dados») ----
+# Dias: 0 = segunda … 6 = domingo, como o `work_days` das escalas.
+# Sempre com `fullmatch`: o `$` de um `match` aceita uma quebra de linha no fim («13:00\n»).
+_RE_HORA = re.compile(r'([01]\d|2[0-3]):[0-5]\d')
+
+
+def _hora(v):
+    if not isinstance(v, str) or not _RE_HORA.fullmatch(v):
+        raise ValueError("Hora inválida. Use o formato HH:MM")
+    return v
+
+
+def _dia_da_semana(v):
+    if v not in range(0, 7):
+        raise ValueError("Dia inválido: use 0 (segunda) a 6 (domingo)")
+    return v
+
+
+class _Horas(BaseModel):
+    abre: str
+    fecha: str
+
+    @field_validator('abre', 'fecha')
+    @classmethod
+    def _valida_hora(cls, v):
+        return _hora(v)
+
+    @model_validator(mode='after')
+    def _abre_antes_de_fechar(self):
+        # "HH:MM" com zeros à esquerda compara-se como texto. Horários que passam da
+        # meia-noite ficam de fora de propósito (desenho, «Fora de âmbito»).
+        if self.abre >= self.fecha:
+            raise ValueError(f"A loja tem de abrir antes de fechar ({self.abre}–{self.fecha})")
+        return self
+
+
+class HorarioDoDia(_Horas):
+    """Uma exceção ao horário geral (ex.: o domingo de Belém, até às 20h)."""
+    dia: int
+
+    @field_validator('dia')
+    @classmethod
+    def _valida_dia(cls, v):
+        return _dia_da_semana(v)
+
+
+class HorarioLoja(_Horas):
+    """O horário de uma loja: o geral, as exceções por dia e os dias em que fecha."""
+    excecoes: List[HorarioDoDia] = []
+    fechada: List[int] = []
+
+    @field_validator('fechada')
+    @classmethod
+    def _valida_fechada(cls, v):
+        for dia in v:
+            _dia_da_semana(dia)
+        if len(set(v)) != len(v):
+            raise ValueError("Dia repetido nos dias em que fecha")
+        return sorted(v)
+
+    @model_validator(mode='after')
+    def _dias_sem_choques(self):
+        dias = [e.dia for e in self.excecoes]
+        if len(set(dias)) != len(dias):
+            raise ValueError("Dia repetido nas exceções")
+        if set(dias) & set(self.fechada):
+            raise ValueError("Um dia não pode ter outro horário e estar fechado")
+        return self
+
+
 class LocationCreate(BaseModel):
     name: str
     company_id: str
@@ -494,6 +566,15 @@ class LocationCreate(BaseModel):
     geofence_radius: Optional[int] = None
     # ID do local no Google (Place ID) — usado para puxar avaliações no Marketing.
     google_place_id: Optional[str] = None
+    # Calendário das lojas: só as lojas com horário entram no calendário;
+    # `aberta_desde` esconde uma loja antes de abrir.
+    horario: Optional[HorarioLoja] = None
+    aberta_desde: Optional[date] = None
+
+    @field_validator('aberta_desde', mode='before')
+    @classmethod
+    def _aberta_desde_vazia(cls, v):
+        return None if v == "" else v
 
 class LocationResponse(BaseModel):
     id: str
@@ -505,6 +586,10 @@ class LocationResponse(BaseModel):
     longitude: Optional[float] = None
     geofence_radius: Optional[int] = None
     google_place_id: Optional[str] = None
+    # dict/str e não os modelos: a lista de Locais alimenta o portal inteiro, e um
+    # documento estranho na base não a pode deitar abaixo com um 500.
+    horario: Optional[dict] = None
+    aberta_desde: Optional[str] = None
 
 class EmployeeCreate(BaseModel):
     name: str
@@ -631,11 +716,48 @@ class AdminLeaveCreate(BaseModel):
             raise ValueError("Tipo inválido. Use 'ferias' ou 'ausencia'")
         return v
 
+class DiaDaEscala(BaseModel):
+    """Onde e a que horas a pessoa trabalha num dia da semana.
+
+    `location_id` vazio = a loja da ficha do colaborador; `inicio`/`fim` vazios = o
+    horário da loja nesse dia. As duas horas vêm juntas ou nenhuma."""
+    dia: int
+    location_id: Optional[str] = None
+    inicio: Optional[str] = None
+    fim: Optional[str] = None
+
+    @field_validator('location_id', 'inicio', 'fim', mode='before')
+    @classmethod
+    def _vazio_e_nada(cls, v):
+        return None if v == "" else v
+
+    @field_validator('dia')
+    @classmethod
+    def _valida_dia(cls, v):
+        return _dia_da_semana(v)
+
+    @field_validator('inicio', 'fim')
+    @classmethod
+    def _valida_hora(cls, v):
+        return v if v is None else _hora(v)
+
+    @model_validator(mode='after')
+    def _horas_juntas(self):
+        if (self.inicio is None) != (self.fim is None):
+            raise ValueError("As horas de um dia escrevem-se as duas (entrada e saída) ou nenhuma")
+        if self.inicio is not None and self.inicio >= self.fim:
+            raise ValueError(f"A entrada tem de ser antes da saída ({self.inicio}–{self.fim})")
+        return self
+
+
 class WorkScheduleTemplateCreate(BaseModel):
     name: str
     work_days: List[int] = Field(alias="workDays")
     # Hora de início do turno (HH:MM). Usada para lembrar o colaborador no app.
     start_time: Optional[str] = Field(default=None, alias="startTime")
+    # Loja e horas por dia (calendário das lojas). Quando vem, o servidor deriva o
+    # work_days daqui — ver _dias_de_trabalho.
+    dias: Optional[List[DiaDaEscala]] = None
 
     model_config = {"populate_by_name": True}
 
@@ -659,11 +781,20 @@ class WorkScheduleTemplateCreate(BaseModel):
             raise ValueError("Hora inválida. Use o formato HH:MM")
         return v
 
+    @field_validator('dias')
+    @classmethod
+    def validate_dias(cls, v):
+        if v is not None and len({d.dia for d in v}) != len(v):
+            raise ValueError("Dia repetido na escala")
+        return v
+
 class WorkScheduleTemplateResponse(BaseModel):
     id: str
     name: str
     work_days: List[int]
     start_time: Optional[str] = None
+    # dict e não DiaDaEscala, pela mesma razão do LocationResponse.horario.
+    dias: Optional[List[dict]] = None
     created_at: str
 
 class WorkScheduleAssignmentCreate(BaseModel):
@@ -1449,6 +1580,13 @@ async def delete_company(company_id: str, current_user: dict = Depends(admin_req
 
 # ==================== LOCATION ROUTES ====================
 
+def _horario_para_gravar(location: LocationCreate) -> dict:
+    """Os dois campos do calendário, na forma em que ficam no Mongo."""
+    return {
+        "horario": location.horario.model_dump() if location.horario else None,
+        "aberta_desde": location.aberta_desde.isoformat() if location.aberta_desde else None,
+    }
+
 @api_router.post("/locations", response_model=LocationResponse)
 async def create_location(location: LocationCreate, current_user: dict = Depends(admin_required)):
     # Verify company exists
@@ -1466,6 +1604,7 @@ async def create_location(location: LocationCreate, current_user: dict = Depends
         "longitude": location.longitude,
         "geofence_radius": location.geofence_radius,
         "google_place_id": location.google_place_id,
+        **_horario_para_gravar(location),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.locations.insert_one(location_doc)
@@ -1488,18 +1627,20 @@ async def get_locations(company_id: Optional[str] = None, current_user: dict = D
 
 @api_router.put("/locations/{location_id}", response_model=LocationResponse)
 async def update_location(location_id: str, location: LocationCreate, current_user: dict = Depends(admin_required)):
-    result = await db.locations.update_one(
-        {"id": location_id},
-        {"$set": {
-            "name": location.name,
-            "company_id": location.company_id,
-            "address": location.address,
-            "latitude": location.latitude,
-            "longitude": location.longitude,
-            "geofence_radius": location.geofence_radius,
-            "google_place_id": location.google_place_id,
-        }}
-    )
+    campos = {
+        "name": location.name,
+        "company_id": location.company_id,
+        "address": location.address,
+        "latitude": location.latitude,
+        "longitude": location.longitude,
+        "geofence_radius": location.geofence_radius,
+        "google_place_id": location.google_place_id,
+    }
+    # O horário e a data de abertura só se escrevem se vierem no corpo: um browser com
+    # a página antiga em cache manda o formulário sem eles, e um $set com None apagava
+    # o horário da loja. O formulário novo manda-os sempre (também para os tirar).
+    campos.update({k: v for k, v in _horario_para_gravar(location).items() if k in location.model_fields_set})
+    result = await db.locations.update_one({"id": location_id}, {"$set": campos})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Local não encontrado")
     updated = await db.locations.find_one({"id": location_id}, {"_id": 0})
@@ -2109,14 +2250,29 @@ async def vacation_balance_report(
 
 # ==================== WORK SCHEDULE ROUTES ====================
 
+def _dias_de_trabalho(template: WorkScheduleTemplateCreate) -> List[int]:
+    """Os dias em que a pessoa trabalha. Com `dias`, saem deles (ordenados): é isto
+    que mantém o saldo de férias, o «Em falta» do painel e o lembrete do ponto a ler
+    um `work_days` que continua a querer dizer o mesmo."""
+    if template.dias:
+        return sorted(d.dia for d in template.dias)
+    return template.work_days
+
+
+def _dias_para_gravar(template: WorkScheduleTemplateCreate) -> Optional[List[dict]]:
+    if template.dias is None:
+        return None
+    return [d.model_dump() for d in sorted(template.dias, key=lambda d: d.dia)]
+
 @api_router.post("/schedules", response_model=WorkScheduleTemplateResponse)
 async def create_schedule_template(template: WorkScheduleTemplateCreate, current_user: dict = Depends(admin_manager_required)):
     template_id = str(uuid.uuid4())
     template_doc = {
         "id": template_id,
         "name": template.name,
-        "work_days": template.work_days,
+        "work_days": _dias_de_trabalho(template),
         "start_time": template.start_time,
+        "dias": _dias_para_gravar(template),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.work_schedule_templates.insert_one(template_doc)
@@ -2234,16 +2390,19 @@ async def get_schedule_assignments(employee_id: Optional[str] = None, current_us
 
 @api_router.put("/schedules/{template_id}", response_model=WorkScheduleTemplateResponse)
 async def update_schedule_template(template_id: str, template: WorkScheduleTemplateCreate, current_user: dict = Depends(admin_manager_required)):
-    result = await db.work_schedule_templates.update_one(
-        {"id": template_id},
-        {"$set": {"name": template.name, "work_days": template.work_days, "start_time": template.start_time}}
-    )
+    # Calculado UMA vez: o mesmo valor vai para o modelo e para a cópia das atribuições.
+    work_days = _dias_de_trabalho(template)
+    campos = {"name": template.name, "work_days": work_days, "start_time": template.start_time}
+    # A página antiga (em cache no browser) não manda `dias`; sem esta guarda, apagava-os.
+    if "dias" in template.model_fields_set:
+        campos["dias"] = _dias_para_gravar(template)
+    result = await db.work_schedule_templates.update_one({"id": template_id}, {"$set": campos})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Escala não encontrada")
     # Manter os dias coerentes nas atribuições que usam esta escala
     await db.work_schedule_assignments.update_many(
         {"template_id": template_id},
-        {"$set": {"work_days": template.work_days}}
+        {"$set": {"work_days": work_days}}
     )
     updated = await db.work_schedule_templates.find_one({"id": template_id}, {"_id": 0})
     return WorkScheduleTemplateResponse(**updated)
@@ -6658,6 +6817,11 @@ class EstoqueProdutoCreateIn(BaseModel):
     peso_unidade: Optional[str] = None
     fornecedor: Optional[str] = None
     ilimitado: Optional[bool] = None  # artigo infinito (ex.: água) — não conta no stock
+    de_compra: Optional[bool] = None  # artigo de compra (contagem + lista Makro)
+    pack_qtd: Optional[float] = None
+    pack_nome: Optional[str] = None
+    preco_pack: Optional[float] = None
+    cadencia: Optional[str] = None  # "semanal" | "bissemanal"
 
 
 class EstoqueProdutoUpdateIn(BaseModel):
@@ -6669,6 +6833,11 @@ class EstoqueProdutoUpdateIn(BaseModel):
     peso_unidade: Optional[str] = None
     fornecedor: Optional[str] = None
     ilimitado: Optional[bool] = None
+    de_compra: Optional[bool] = None
+    pack_qtd: Optional[float] = None
+    pack_nome: Optional[str] = None
+    preco_pack: Optional[float] = None
+    cadencia: Optional[str] = None
 
 
 class EstoqueMergeIn(BaseModel):
@@ -6732,6 +6901,12 @@ async def estoque_overview(current_user: dict = Depends(admin_required)):
 async def estoque_compras(marca: str = Query(...), current_user: dict = Depends(admin_required)):
     """Lista de compras consolidada por marca."""
     return await _estoque_get("/integ/compras", {"marca": marca})
+
+
+@api_router.get("/estoque/compras-makro")
+async def estoque_compras_makro(current_user: dict = Depends(admin_required)):
+    """Lista de compras Makro consolidada (todas as lojas, packs + custo)."""
+    return await _estoque_get("/integ/compras-makro", {})
 
 
 @api_router.get("/estoque/definicoes")
@@ -8654,6 +8829,210 @@ async def bolso_painel(
     }
 
 
+# ====================================================================
+# ===== CALENDÁRIO DAS LOJAS — onde falta gente, no telemóvel =====
+# ====================================================================
+# O cálculo é todo do módulo `calendario` (puro, testável sem Mongo); aqui ficam as
+# leituras e as guardas. Os buracos NÃO se guardam: calculam-se a cada pedido, a partir
+# do horário das lojas, da escala de cada pessoa, das ausências aprovadas e das idas
+# (`bolso_idas`) — por isso nunca ficam desactualizados.
+# Desenho: docs/superpowers/specs/2026-10-14-calendario-gestao-design.md, secção 3.
+
+_BOLSO_CAMPOS_DA_LOJA = {"_id": 0, "id": 1, "name": 1, "company_id": 1, "horario": 1, "aberta_desde": 1}
+
+
+async def _bolso_criar_indices():
+    """O índice único apanha a MESMA ida gravada duas vezes (duas gestoras no mesmo
+    segundo) — é com ele que o «tudo ou nada» do POST se compensa; o de `data` serve a
+    leitura do mês. `create_index` é idempotente."""
+    await db.bolso_idas.create_index(
+        [("data", 1), ("user_id", 1), ("location_id", 1), ("inicio", 1)], unique=True)
+    await db.bolso_idas.create_index([("data", 1)])
+
+
+@api_router.get("/bolso/calendario")
+async def bolso_calendario(
+    ano: int = Query(..., ge=2020, le=2100),
+    mes: int = Query(..., ge=1, le=12),
+    current_user: dict = Depends(admin_manager_required),
+):
+    """O mês inteiro num pedido (forma em `calendario.resposta_do_mes`).
+
+    Consultas fixas e sem ciclos — o `GET /calendar/leaves` faz uma consulta por ausência e
+    é exactamente o que aqui não se copia. O contabilista lê (`pode_marcar: false`)."""
+    inicio, fim = calendario.limites_do_mes(ano, mes)
+    dados = {
+        "lojas": await db.locations.find({}, _BOLSO_CAMPOS_DA_LOJA).to_list(1000),
+        "empregados": await db.employees.find(
+            {}, {"_id": 0, "id": 1, "name": 1, "location_id": 1, "company_id": 1}).to_list(5000),
+        "atribuicoes": await db.work_schedule_assignments.find(
+            {"start_date": {"$lte": fim}}, {"_id": 0}).to_list(20000),
+        "modelos": await db.work_schedule_templates.find(
+            {}, {"_id": 0, "id": 1, "work_days": 1, "dias": 1}).to_list(5000),
+        "ausencias": await db.leave_requests.find(
+            {"status": "aprovado", "start_date": {"$lte": fim}, "end_date": {"$gte": inicio}},
+            {"_id": 0, "employee_id": 1, "leave_type": 1, "start_date": 1, "end_date": 1, "status": 1},
+        ).to_list(5000),
+        "idas": await db.bolso_idas.find({"data": {"$gte": inicio, "$lte": fim}}, {"_id": 0}).to_list(20000),
+        "utilizadores": await db.users.find(
+            {}, {"_id": 0, "id": 1, "name": 1, "role": 1, "employee_id": 1}).to_list(5000),
+        "feriados": await db.holidays.find(
+            {}, {"_id": 0, "name": 1, "month": 1, "day": 1, "company_id": 1, "location_id": 1}).to_list(500),
+    }
+    return calendario.resposta_do_mes(
+        ano, mes, dados, current_user.get("user_id"), current_user.get("role") in calendario.GESTORES)
+
+
+@api_router.get("/bolso/calendario/contagem")
+async def bolso_calendario_contagem(
+    ano: int = Query(..., ge=2020, le=2100),
+    current_user: dict = Depends(admin_manager_required),
+):
+    """Quantos dias cada pessoa fez no ano — as idas marcadas, futuras incluídas (é o que
+    as gestoras usam para se equilibrarem)."""
+    idas = await db.bolso_idas.find(
+        {"data": {"$gte": "%d-01-01" % ano, "$lte": "%d-12-31" % ano}},
+        {"_id": 0, "data": 1, "user_id": 1, "location_id": 1, "inicio": 1, "fim": 1},
+    ).to_list(50000)
+    lojas = {l["id"]: l for l in await db.locations.find({}, _BOLSO_CAMPOS_DA_LOJA).to_list(1000)}
+    utilizadores = await db.users.find(
+        {"id": {"$in": sorted({i["user_id"] for i in idas})}}, {"_id": 0, "id": 1, "name": 1}
+    ).to_list(5000)
+    return calendario.contagem(idas, lojas, {u["id"]: u.get("name") for u in utilizadores})
+
+
+class BolsoIdasIn(BaseModel):
+    datas: List[date]
+    location_id: str
+    user_ids: List[str]
+    inicio: str
+    fim: str
+
+
+class BolsoIdaIn(BaseModel):
+    data: date
+    location_id: str
+    user_id: str
+    inicio: str
+    fim: str
+
+
+async def bolso_quem_marca(current_user: dict = Depends(admin_manager_required)):
+    """Escrever no calendário: administradores e gestores. O contabilista lê e não marca."""
+    if current_user.get("role") not in calendario.GESTORES:
+        raise HTTPException(status_code=403, detail="Só os gestores marcam idas.")
+    return current_user
+
+
+async def _bolso_validar_idas(novas: List[dict], ignorar_id: Optional[str] = None) -> None:
+    """As regras de uma ida, para todas as do pedido de uma vez: levanta 400/409 com a
+    lista dos problemas, ou não levanta nada. Não grava."""
+    lojas = {l["id"]: l for l in await db.locations.find(
+        {"id": {"$in": sorted({n["location_id"] for n in novas})}}, _BOLSO_CAMPOS_DA_LOJA).to_list(100)}
+    erros = []
+    for nova in novas:
+        erro = calendario.validar_ida(
+            date.fromisoformat(nova["data"]), lojas.get(nova["location_id"]), nova["inicio"], nova["fim"])
+        if erro and erro not in erros:
+            erros.append(erro)
+    if erros:
+        raise HTTPException(status_code=400, detail="\n".join(erros))
+
+    ids = sorted({n["user_id"] for n in novas})
+    pessoas = {u["id"]: u for u in await db.users.find(
+        {"id": {"$in": ids}}, {"_id": 0, "id": 1, "name": 1, "role": 1, "employee_id": 1}).to_list(100)}
+    if any((pessoas.get(i) or {}).get("role") not in calendario.ESCALAVEIS for i in ids):
+        raise HTTPException(
+            status_code=400, detail="Só administradores, gestores e colaboradores podem ser escalados.")
+
+    datas = sorted({n["data"] for n in novas})
+    fichas = [u["employee_id"] for u in pessoas.values() if u.get("role") == "colaborador" and u.get("employee_id")]
+    if fichas:
+        ausencias = await db.leave_requests.find(
+            {"employee_id": {"$in": fichas}, "status": "aprovado",
+             "start_date": {"$lte": datas[-1]}, "end_date": {"$gte": datas[0]}},
+            {"_id": 0, "employee_id": 1, "leave_type": 1, "start_date": 1, "end_date": 1, "status": 1},
+        ).to_list(1000)
+        impedidas = calendario.ausencias_que_impedem(novas, pessoas, ausencias)
+        if impedidas:
+            raise HTTPException(status_code=409, detail="\n".join(impedidas + ["Escolha outra pessoa ou outro dia."]))
+
+    # A sobreposição verifica-se com UMA consulta e compara-se em memória.
+    existentes = await db.bolso_idas.find({"user_id": {"$in": ids}, "data": {"$in": datas}}, {"_id": 0}).to_list(1000)
+    pares = calendario.choques(novas, existentes, ignorar_id)
+    if pares:
+        nomes = {l["id"]: l.get("name") for l in await db.locations.find(
+            {"id": {"$in": sorted({outra["location_id"] for _, outra in pares})}},
+            {"_id": 0, "id": 1, "name": 1}).to_list(100)}
+        linhas = []
+        for nova, outra in pares:
+            linha = calendario.mensagem_de_choque(nova, outra, pessoas, nomes)
+            if linha not in linhas:
+                linhas.append(linha)
+        raise HTTPException(status_code=409, detail="\n".join(linhas + ["Mude as horas ou apague primeiro a outra ida."]))
+
+
+@api_router.post("/bolso/calendario/idas")
+async def bolso_criar_idas(corpo: BolsoIdasIn, current_user: dict = Depends(bolso_quem_marca)):
+    """Uma ida por data e por pessoa — tudo ou nada."""
+    datas = [d.isoformat() for d in corpo.datas]
+    erro = calendario.validar_pedido(datas, corpo.user_ids)
+    if erro:
+        raise HTTPException(status_code=400, detail=erro)
+    agora = datetime.now(timezone.utc).isoformat()
+    novas = [
+        {"id": str(uuid.uuid4()), "data": d, "location_id": corpo.location_id, "user_id": u,
+         "inicio": corpo.inicio, "fim": corpo.fim,
+         "criado_por": current_user.get("user_id"), "criado_em": agora,
+         "alterado_por": None, "alterado_em": None}
+        for d in sorted(datas) for u in corpo.user_ids
+    ]
+    await _bolso_validar_idas(novas)
+    gravadas = []
+    try:
+        for nova in novas:
+            await db.bolso_idas.insert_one(dict(nova))  # cópia: o insert_one mete o _id no dicionário
+            gravadas.append(nova["id"])
+    except DuplicateKeyError:
+        # Tudo ou nada SEM transacções (o Atlas tem, o mongod dos testes não): apaga-se o
+        # que ESTE pedido já gravou.
+        # ponytail: entre verificar e gravar fica uma janela para idas sobrepostas mas não
+        # iguais, marcadas por duas gestoras no mesmo segundo — o índice único só apanha a
+        # igual. Aceite no desenho; uma transacção fecha-a se algum dia acontecer.
+        if gravadas:
+            await db.bolso_idas.delete_many({"id": {"$in": gravadas}})
+        raise HTTPException(
+            status_code=409,
+            detail="Alguém marcou uma destas idas ao mesmo tempo. Nada foi gravado — volte a abrir o dia.")
+    return {"criadas": len(gravadas), "ids": gravadas}
+
+
+@api_router.put("/bolso/calendario/idas/{ida_id}")
+async def bolso_mudar_ida(ida_id: str, corpo: BolsoIdaIn, current_user: dict = Depends(bolso_quem_marca)):
+    """Muda dia, loja, pessoa ou horas de UMA ida; 409 se chocar (consigo própria não choca)."""
+    actual = await db.bolso_idas.find_one({"id": ida_id}, {"_id": 0})
+    if not actual:
+        raise HTTPException(status_code=404, detail="Esta ida já não existe — volte a abrir o dia.")
+    mudancas = {"data": corpo.data.isoformat(), "location_id": corpo.location_id,
+                "user_id": corpo.user_id, "inicio": corpo.inicio, "fim": corpo.fim}
+    await _bolso_validar_idas([dict(actual, **mudancas)], ignorar_id=ida_id)
+    mudancas.update(alterado_por=current_user.get("user_id"), alterado_em=datetime.now(timezone.utc).isoformat())
+    try:
+        await db.bolso_idas.update_one({"id": ida_id}, {"$set": mudancas})
+    except DuplicateKeyError:
+        raise HTTPException(
+            status_code=409, detail="Alguém marcou esta mesma ida ao mesmo tempo — volte a abrir o dia.")
+    return dict(actual, **mudancas)
+
+
+@api_router.delete("/bolso/calendario/idas/{ida_id}")
+async def bolso_apagar_ida(ida_id: str, current_user: dict = Depends(bolso_quem_marca)):
+    resultado = await db.bolso_idas.delete_one({"id": ida_id})
+    if resultado.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Esta ida já não existe — volte a abrir o dia.")
+    return {"apagada": ida_id}
+
+
 @api_router.post("/fin/cron/faturacao")
 async def fin_cron_faturacao(
     key: str = Query(...),
@@ -9746,6 +10125,13 @@ async def startup_event():
         await db.fin_movements.create_index([("invoice_id", 1)])
     except Exception:  # noqa: BLE001
         logger.warning("[fin] não foi possível criar os índices de fin_sales/bol_leituras")
+
+    # O índice único das idas é o que torna o «tudo ou nada» do calendário possível sem
+    # transacções. À parte do de cima: uma falha num não pode deixar o outro por criar.
+    try:
+        await _bolso_criar_indices()
+    except Exception:  # noqa: BLE001
+        logger.warning("[bolso] não foi possível criar os índices de bolso_idas")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

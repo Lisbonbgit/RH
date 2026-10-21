@@ -229,6 +229,7 @@ export const mudarEstado = (id, ativo) => api.put(`${API_URL}/faturacao/utilizad
 export const getDispositivosPos = () => api.get(`${API_URL}/faturacao/dispositivos-pos`);
 export const gerarCodigoDispositivo = (data) => api.post(`${API_URL}/faturacao/dispositivos-pos`, data);
 export const revogarDispositivo = (id) => api.delete(`${API_URL}/faturacao/dispositivos-pos/${id}`);
+export const apagarDispositivo = (id) => api.post(`${API_URL}/faturacao/dispositivos-pos/${id}/apagar`);
 
 // Motivos de Nota de Crédito
 export const getMotivos = () => api.get(`${API_URL}/faturacao/motivos-nc`);

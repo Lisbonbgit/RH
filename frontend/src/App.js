@@ -3,8 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Toaster } from './components/ui/sonner';
 import { initNativeStatusBar } from './lib/statusbar';
-import { Capacitor } from '@capacitor/core';
-import { rotaDeAterragem } from './lib/resumo';
+import { aterragem, PAPEIS_DO_BOLSO } from './lib/sessao';
 
 // Pages
 import LoginPage from './pages/LoginPage';
@@ -45,6 +44,7 @@ import EstoqueEmBreve from './pages/admin/estoque/EstoqueEmBreve';
 import EstoqueVisaoGeral from './pages/admin/estoque/EstoqueVisaoGeral';
 import EstoqueCatalogo from './pages/admin/estoque/EstoqueCatalogo';
 import EstoqueCompras from './pages/admin/estoque/EstoqueCompras';
+import EstoqueComprasMakro from './pages/admin/estoque/EstoqueComprasMakro';
 import EstoqueDefinicoes from './pages/admin/estoque/EstoqueDefinicoes';
 import EstoqueUnidades from './pages/admin/estoque/EstoqueUnidades';
 import EstoqueUtilizadores from './pages/admin/estoque/EstoqueUtilizadores';
@@ -80,6 +80,9 @@ import FatMovimentosCaixa from './pages/admin/faturacao/FatMovimentosCaixa';
 import FatReservasPresas from './pages/admin/faturacao/FatReservasPresas';
 import PosApp from './pages/pos/PosApp';
 import BolsoApp from './pages/bolso/BolsoApp';
+import Barreira from './pages/bolso/Barreira';
+import { Button } from './components/ui/button';
+import BolsoCalendario from './pages/bolso/BolsoCalendario';
 import EmployeeDashboard from './pages/employee/EmployeeDashboard';
 import EmployeeProfile from './pages/employee/EmployeeProfile';
 import EmployeeTimeRecord from './pages/employee/EmployeeTimeRecord';
@@ -96,13 +99,28 @@ import MarketingCalendar from './pages/admin/marketing/MarketingCalendar';
 import MarketingReviews from './pages/admin/marketing/MarketingReviews';
 import MarketingReports from './pages/admin/marketing/MarketingReports';
 
+// O arranque não conseguiu perguntar ao servidor se a sessão vale (rede em
+// baixo, 502 de um deploy). O token ficou: mandar para o login era pedir a
+// senha por causa de um pedido que nunca foi respondido. Mostrado pelo
+// `ProtectedRoute` e pelo `RoleRedirect` (a rota `/` do portal no browser).
+const SemLigacao = () => {
+  const { tentarDeNovo } = useAuth();
+  return (
+    <div className="min-h-[100dvh] flex flex-col items-center justify-center gap-2 bg-background px-6 text-center">
+      <p className="text-base font-semibold">Sem ligação</p>
+      <p className="text-sm text-muted-foreground">Não foi possível falar com o servidor.</p>
+      <Button className="mt-3 h-11 px-6" onClick={tentarDeNovo}>Tentar de novo</Button>
+    </div>
+  );
+};
+
 // Protected Route Component - checks for authentication and must_change_password
 const ProtectedRoute = ({ children, allowedRoles }) => {
-  const { user, loading, isAuthenticated, mustChangePassword } = useAuth();
+  const { user, loading, isAuthenticated, mustChangePassword, semLigacao } = useAuth();
   // De ONDE veio quem foi mandado para o login. Sem isto, quem abre a app da
   // Gestão Lisbonb (que arranca em /bolso), entra, e é despejado no
   // /admin/resumo — o portal inteiro num ecrã de telemóvel, que não é nada do
-  // que ele foi lá ver. Ver `rotaDeAterragem` e o `LoginPage`.
+  // que ele foi lá ver. Ver `aterragem` (lib/sessao.js) e o `LoginPage`.
   const location = useLocation();
   
   if (loading) {
@@ -113,6 +131,8 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
     );
   }
   
+  if (!isAuthenticated && semLigacao) return <SemLigacao />;
+
   if (!isAuthenticated) {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
@@ -128,6 +148,16 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
   
   return children;
 };
+
+// As rotas da app «Gestão Lisbonb»: o login do portal e, na casca com Face ID,
+// a Barreira. **TODAS as rotas /bolso passam por aqui**: com o Face ID ligado,
+// os pedidos do `lib/bolso.js` esperam que a Barreira abra — uma rota /bolso
+// sem ela ficava à espera para sempre (guardado em test_sessao_do_bolso.py).
+const RotaDoBolso = ({ children }) => (
+  <ProtectedRoute allowedRoles={PAPEIS_DO_BOLSO}>
+    <Barreira>{children}</Barreira>
+  </ProtectedRoute>
+);
 
 // Change Password Route - only accessible when must_change_password is true
 const ChangePasswordRoute = ({ children }) => {
@@ -147,7 +177,7 @@ const ChangePasswordRoute = ({ children }) => {
   
   // If user doesn't need to change password, redirect to appropriate dashboard
   if (!mustChangePassword) {
-    return <Navigate to={['admin', 'gerente', 'contabilista'].includes(user.role) ? '/admin' : '/colaborador'} replace />;
+    return <Navigate to={aterragem(user.role)} replace />;
   }
   
   return children;
@@ -155,7 +185,9 @@ const ChangePasswordRoute = ({ children }) => {
 
 // Redirect based on role
 const RoleRedirect = () => {
-  const { user, loading, isAuthenticated, mustChangePassword } = useAuth();
+  const { user, loading, isAuthenticated, mustChangePassword, semLigacao } = useAuth();
+  // Antes do `loading` sem perigo: o `semLigacao` só fica de pé com o `loading` já em baixo.
+  if (!isAuthenticated && semLigacao) return <SemLigacao />;
   
   if (loading) {
     return (
@@ -174,10 +206,9 @@ const RoleRedirect = () => {
     return <Navigate to="/alterar-senha" replace />;
   }
   
-  // Dentro da APP, um gestor aterra no Resumo; no browser, onde sempre aterrou.
-  return <Navigate to={rotaDeAterragem({
-    nativo: Capacitor.isNativePlatform(), papel: user.role,
-  })} replace />;
+  // Na casca com Face ID, um gestor aterra no /bolso (dentro da Barreira); no
+  // browser, onde sempre aterrou. Ver `aterragem` em lib/sessao.js.
+  return <Navigate to={aterragem(user.role)} replace />;
 };
 
 function AppRoutes() {
@@ -203,11 +234,10 @@ function AppRoutes() {
           número a zero toques. Leva `ProtectedRoute` na mesma (é o login do
           portal que manda), e o que cada um vê continua a ser decidido pela
           PERTENÇA às empresas, do lado do servidor. */}
-      <Route path="/bolso" element={
-        <ProtectedRoute allowedRoles={['admin', 'gerente', 'contabilista']}>
-          <BolsoApp />
-        </ProtectedRoute>
-      } />
+      <Route path="/bolso" element={<RotaDoBolso><BolsoApp /></RotaDoBolso>} />
+      {/* O calendário das lojas (onde falta gente), irmão do /bolso: mesmos papéis, mesma
+          casca. O contabilista lê; quem marca é decidido pelo servidor (`pode_marcar`). */}
+      <Route path="/bolso/calendario" element={<RotaDoBolso><BolsoCalendario /></RotaDoBolso>} />
       {/* CRM Purple House: área própria só para membros (guarda no CrmLayout; rotas em pages/crm/rotasCrm.js). */}
       <Route path="/crm" element={<ProtectedRoute><CrmLayout /></ProtectedRoute>}>{filhosCrm()}</Route>
       <Route path="/alterar-senha" element={
@@ -264,6 +294,7 @@ function AppRoutes() {
         <Route path="estoque/escanear" element={<EstoqueEmBreve />} />
         <Route path="estoque/lista-compras" element={<EstoqueListaCompras />} />
         <Route path="estoque/compras" element={<EstoqueCompras />} />
+        <Route path="estoque/compras-makro" element={<EstoqueComprasMakro />} />
         <Route path="estoque/transferencias" element={<EstoqueTransferencias />} />
         <Route path="estoque/fichas" element={<EstoqueFichas />} />
         <Route path="estoque/producao" element={<EstoqueProducao />} />

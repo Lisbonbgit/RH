@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { getEmployees, getSchedules, createSchedule, updateSchedule, deleteSchedule, getScheduleAssignments, assignSchedule, deleteScheduleAssignment } from '../../lib/api';
+import { getEmployees, getLocations, getSchedules, createSchedule, updateSchedule, deleteSchedule, getScheduleAssignments, assignSchedule, deleteScheduleAssignment } from '../../lib/api';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -17,6 +17,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { CalendarDays, Plus, Pencil, Trash2, X } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import { toast } from 'sonner';
+import { formularioParaDias, diasParaFormulario, resumoDosDias } from '../../lib/horarios';
+import { detalhesErro } from '../../lib/faturacao';
 
 const weekDays = [
   { value: 0, label: 'Seg' },
@@ -41,6 +43,7 @@ export default function AdminSchedules() {
   const [templates, setTemplates] = useState([]);
   const [assignments, setAssignments] = useState([]);
   const [employees, setEmployees] = useState([]);
+  const [locations, setLocations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [savingAssignment, setSavingAssignment] = useState(false);
@@ -48,7 +51,8 @@ export default function AdminSchedules() {
   const [templateForm, setTemplateForm] = useState({
     name: '',
     workDays: [0, 1, 2, 3, 4],
-    startTime: ''
+    startTime: '',
+    porDia: {},
   });
   const [editingTemplate, setEditingTemplate] = useState(null);
 
@@ -66,14 +70,17 @@ export default function AdminSchedules() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [templatesRes, assignmentsRes, employeesRes] = await Promise.all([
+      const [templatesRes, assignmentsRes, employeesRes, locationsRes] = await Promise.all([
         getSchedules(),
         getScheduleAssignments(),
-        getEmployees({ company_id: selectedCompany?.id })
+        getEmployees({ company_id: selectedCompany?.id }),
+        // Todas as lojas, de todas as empresas: a mesma pessoa pode estar em lojas de empresas diferentes.
+        getLocations()
       ]);
       setTemplates(templatesRes.data);
       setAssignments(assignmentsRes.data);
       setEmployees(employeesRes.data);
+      setLocations(locationsRes.data);
     } catch (error) {
       toast.error('Erro ao carregar escalas');
     } finally {
@@ -93,13 +100,28 @@ export default function AdminSchedules() {
 
   const handleEditTemplate = (template) => {
     setEditingTemplate(template);
-    setTemplateForm({ name: template.name, workDays: [...(template.work_days || [])], startTime: template.start_time || '' });
+    setTemplateForm({
+      name: template.name,
+      workDays: [...(template.work_days || [])],
+      startTime: template.start_time || '',
+      porDia: diasParaFormulario(template.dias),
+    });
   };
 
   const handleCancelEdit = () => {
     setEditingTemplate(null);
-    setTemplateForm({ name: '', workDays: [0, 1, 2, 3, 4], startTime: '' });
+    setTemplateForm({ name: '', workDays: [0, 1, 2, 3, 4], startTime: '', porDia: {} });
   };
+
+  // Loja e horas de um dia da escala; o que esse dia ainda não tinha começa vazio.
+  const handleChangeDia = (dia, mudanca) =>
+    setTemplateForm((prev) => ({
+      ...prev,
+      porDia: {
+        ...prev.porDia,
+        [dia]: { location_id: '', inicio: '', fim: '', ...prev.porDia[dia], ...mudanca },
+      },
+    }));
 
   const handleSubmitTemplate = async (e) => {
     e.preventDefault();
@@ -111,29 +133,29 @@ export default function AdminSchedules() {
       toast.error('Selecione pelo menos um dia de trabalho');
       return;
     }
+    // O mesmo corpo no criar e no editar. `dias` leva uma entrada por dia marcado
+    // (loja e horas); o servidor deriva o work_days daqui, e o workDays vai igual.
+    const corpo = {
+      name: templateForm.name,
+      workDays: templateForm.workDays,
+      startTime: templateForm.startTime || null,
+      dias: formularioParaDias(templateForm.workDays, templateForm.porDia),
+    };
     setSavingTemplate(true);
     try {
       if (editingTemplate) {
-        await updateSchedule(editingTemplate.id, {
-          name: templateForm.name,
-          workDays: templateForm.workDays,
-          startTime: templateForm.startTime || null
-        });
+        await updateSchedule(editingTemplate.id, corpo);
         toast.success('Escala atualizada com sucesso');
         handleCancelEdit();
       } else {
-        const response = await createSchedule({
-          name: templateForm.name,
-          workDays: templateForm.workDays,
-          startTime: templateForm.startTime || null
-        });
+        const response = await createSchedule(corpo);
         toast.success('Escala criada com sucesso');
         setTemplates((prev) => [response.data, ...prev]);
-        setTemplateForm({ name: '', workDays: templateForm.workDays, startTime: templateForm.startTime });
+        setTemplateForm({ ...templateForm, name: '' });
       }
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Erro ao guardar escala');
+      toast.error(detalhesErro(error, 'Erro ao guardar escala').mensagem);
     } finally {
       setSavingTemplate(false);
     }
@@ -200,6 +222,8 @@ export default function AdminSchedules() {
     }
   };
 
+  const nomeDaLoja = (id) => locations.find((loc) => loc.id === id)?.name;
+
   const assignmentRows = useMemo(() => {
     if (!selectedCompany) return assignments;
     const employeeIds = new Set(employees.map((emp) => emp.id));
@@ -221,7 +245,7 @@ export default function AdminSchedules() {
               <CalendarDays className="h-5 w-5" />
               {editingTemplate ? 'Editar Escala' : 'Criar Escala'}
             </CardTitle>
-            <CardDescription>Defina os dias trabalhados no ciclo semanal.</CardDescription>
+            <CardDescription>Defina os dias trabalhados no ciclo semanal e, em cada dia, a loja e as horas.</CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmitTemplate} className="space-y-4" data-testid="schedule-create-form">
@@ -251,6 +275,53 @@ export default function AdminSchedules() {
                   ))}
                 </div>
               </div>
+              {templateForm.workDays.length > 0 && (
+                <div className="space-y-2" data-testid="schedule-days-detail">
+                  <Label>Loja e horas de cada dia</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Loja da ficha = a loja da ficha do colaborador. Horas vazias = o horário da loja nesse dia.
+                  </p>
+                  {[...templateForm.workDays].sort((a, b) => a - b).map((dia) => {
+                    const d = templateForm.porDia[dia] || { location_id: '', inicio: '', fim: '' };
+                    const nome = weekDays[dia].label;
+                    return (
+                      <div key={dia} className="flex flex-wrap items-center gap-2" data-testid={`schedule-day-detail-${dia}`}>
+                        <span className="w-10 text-sm font-medium">{nome}</span>
+                        <select
+                          value={d.location_id}
+                          onChange={(e) => handleChangeDia(dia, { location_id: e.target.value })}
+                          className="h-9 min-w-[10rem] flex-1 rounded-md border border-input bg-background px-2 text-sm"
+                          aria-label={`Loja de ${nome}`}
+                          data-testid={`schedule-day-loja-${dia}`}
+                        >
+                          <option value="">Loja da ficha</option>
+                          {/* Só lojas com horário: numa loja sem horário (Pizzaria, escritórios) a
+                              entrada não conta no calendário. A já escolhida fica, para não se perder. */}
+                          {locations.filter((loc) => loc.horario || loc.id === d.location_id).map((loc) => (
+                            <option key={loc.id} value={loc.id}>{loc.name}</option>
+                          ))}
+                        </select>
+                        <Input
+                          type="time"
+                          value={d.inicio}
+                          onChange={(e) => handleChangeDia(dia, { inicio: e.target.value })}
+                          className="w-28"
+                          aria-label={`${nome}: entra`}
+                          data-testid={`schedule-day-inicio-${dia}`}
+                        />
+                        <Input
+                          type="time"
+                          value={d.fim}
+                          onChange={(e) => handleChangeDia(dia, { fim: e.target.value })}
+                          className="w-28"
+                          aria-label={`${nome}: sai`}
+                          data-testid={`schedule-day-fim-${dia}`}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               <div className="space-y-2">
                 <Label htmlFor="schedule-start-time">Hora de início (opcional)</Label>
                 <Input
@@ -389,6 +460,11 @@ export default function AdminSchedules() {
                       <TableCell data-testid={`schedule-days-${template.id}`}>
                         {formatWorkDays(template.work_days)}
                         {template.start_time ? ` · início ${template.start_time}` : ''}
+                        {template.dias?.length > 0 && (
+                          <div className="text-xs text-muted-foreground" data-testid={`schedule-dias-${template.id}`}>
+                            {resumoDosDias(template.dias, nomeDaLoja)}
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">

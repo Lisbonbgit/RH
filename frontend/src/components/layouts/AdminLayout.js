@@ -63,7 +63,8 @@ import {
   Boxes,
   UserRound,
   Smartphone,
-  Bike
+  Bike,
+  ShoppingBag
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Capacitor } from '@capacitor/core';
@@ -130,6 +131,7 @@ const sections = [
       { path: '/admin/estoque/catalogo', label: 'Catálogo', icon: Boxes },
       { path: '/admin/estoque/lista-compras', label: 'Lista de compras', icon: ShoppingCart },
       { path: '/admin/estoque/compras', label: 'Compras', icon: Truck },
+      { path: '/admin/estoque/compras-makro', label: 'Compras Makro', icon: ShoppingBag },
       { path: '/admin/estoque/transferencias', label: 'Transferências', icon: ArrowLeftRight },
       { path: '/admin/estoque/fichas', label: 'Fichas técnicas', icon: ClipboardList },
       { path: '/admin/estoque/producao', label: 'Produção', icon: Factory },

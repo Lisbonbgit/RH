@@ -11,6 +11,7 @@
 // quem entra com outra conta a meio da sessão do browser tem de ver o pedido
 // seguinte a viajar com o token novo.
 import axios from 'axios';
+import { esperarBarreira, reentrar } from './sessao';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL + '/api/bolso';
 
@@ -31,12 +32,25 @@ const api = axios.create({
   headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
 });
 
-api.interceptors.request.use((config) => {
+api.interceptors.request.use(async (config) => {
+  // Com a barreira do Face ID fechada, nenhum pedido sai (ver lib/sessao.js).
+  await esperarBarreira();
   let token = null;
   try { token = localStorage.getItem('token'); } catch (e) { /* modo privado */ }
   config.headers = config.headers || {};
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
+});
+
+// **401 → uma re-entrada pelo Face ID e o MESMO pedido mais uma vez.** Aqui, e
+// não em cada ecrã: todas as chamadas do bolso passam por esta instância.
+// Sem Face ID (browser, build 2) a re-entrada diz logo «não» e o 401 segue
+// para o ecrã como sempre seguiu.
+api.interceptors.response.use(undefined, async (erro) => {
+  const pedido = erro?.config;
+  if (erro?.response?.status !== 401 || !pedido || pedido.repetido) throw erro;
+  if (!(await reentrar())) throw erro;
+  return api({ ...pedido, repetido: true });
 });
 
 // `empresa` é o id de uma empresa ou 'all' (o grupo); `unidade` é a loja, o
@@ -48,6 +62,18 @@ api.interceptors.request.use((config) => {
 // a resposta diz sempre QUAIS foram somadas.
 export const getPainel = (empresa = 'all', unidade = null) =>
   api.get('/painel', { params: unidade ? { empresa, unidade } : { empresa } });
+
+// --- Calendário das lojas (`/api/bolso/calendario`) --------------------------------------
+// Caminhos por extenso, sempre: o `tests/fin/test_caminhos_do_bolso.py` lê-os daqui e
+// confronta-os com as rotas do servidor (o POS já esteve morto em produção com a suite
+// verde por um prefixo errado).
+export const getCalendario = (ano, mes) => api.get('/calendario', { params: { ano, mes } });
+export const getContagem = (ano) => api.get('/calendario/contagem', { params: { ano } });
+// corpo: { datas: ['AAAA-MM-DD', …], location_id, user_ids: [uma ou duas], inicio: 'HH:MM', fim: 'HH:MM' }
+export const criarIdas = (corpo) => api.post('/calendario/idas', corpo);
+// corpo: { data, location_id, user_id, inicio, fim }
+export const mudarIda = (id, corpo) => api.put(`/calendario/idas/${id}`, corpo);
+export const apagarIda = (id) => api.delete(`/calendario/idas/${id}`);
 
 // O dinheiro escreve-se sempre com duas casas e o símbolo à frente, como no
 // resto do portal. **`null` não é zero**: um valor que o servidor não soube

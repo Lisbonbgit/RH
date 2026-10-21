@@ -1,0 +1,205 @@
+// A sessão da app «Gestão Lisbonb» com Face ID — as decisões, fora do React.
+//
+// Três peças, todas testadas em Node (backend/tests/fin/test_sessao_do_bolso.py):
+//   1. a BARREIRA: um ecrã opaco depois de mais de 5 minutos fora; enquanto está
+//      fechada, os pedidos do `lib/bolso.js` esperam (`esperarBarreira`);
+//   2. a RE-ENTRADA: a sessão de 24 h expirou → Face ID → Keychain → login,
+//      UMA só para todos os pedidos que deram 401 ao mesmo tempo;
+//   3. a PERGUNTA depois de um login com senha, e o «não» lembrado por email.
+//
+// Sem a peça nativa (browser, build 2, app do ponto) nada disto actua.
+import { Capacitor } from '@capacitor/core';
+import {
+  apagar, emailGuardado, esquecerRosto, faceIdLigado, guardar, ler, pluginPresente, temFaceId, verificar,
+} from './faceid';
+import { rotaDeAterragem } from './resumo';
+
+export const CINCO_MINUTOS = 5 * 60 * 1000;
+const CHAVE_SAIU = 'saiuAs';
+const CHAVE_RECUSA = 'faceid_recusado:';
+
+const lerLocal = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const gravarLocal = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* modo privado */ } };
+
+// O email da sessão aberta, lido do próprio token (o `create_token` do servidor
+// põe-no lá; a assinatura não se confere aqui, só se lê). É a única fonte que
+// serve no arranque: com a sessão expirada o `/auth/me` dá 401 e o `user` nunca
+// chega. Sem token, ou ilegível: null.
+const emailDaSessao = () => {
+  try {
+    const b64 = lerLocal('token').split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    // O `=` em falta, como faz o jwt-decode: há `atob` que o exigem.
+    return JSON.parse(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4))).email || null;
+  } catch (e) {
+    return null;
+  }
+};
+
+// Decisão 1A do dono (2026-10-15): o Face ID só actua sobre a conta que o ligou.
+// Dois gestores no mesmo iPhone, sessão da Débora aberta, Face ID da Carol (a
+// última que o ligou): nunca há barreira «Entrar como carol@…» por cima da Débora,
+// e a re-entrada não troca a sessão da Débora pela da Carol.
+const faceIdDestaSessao = () => faceIdLigado() && emailGuardado() === emailDaSessao();
+
+// Decisão A do dono (2026-10-17): a sessão aberta é de OUTRA conta. O Face ID deste
+// iPhone não serve para ela, por isso onde a Carol teria a barreira (ao abrir, ou
+// ao voltar depois de 5 minutos) a Débora volta à senha.
+export const sessaoDeOutraConta = () => (
+  faceIdLigado() && emailDaSessao() !== null && !faceIdDestaSessao()
+);
+export const outraContaTemDeSair = (agora = Date.now()) => (
+  sessaoDeOutraConta() && !voltouATempo(agora)
+);
+
+// --- 1. A barreira -------------------------------------------------------------
+
+// Saiu há 5 minutos ou menos? Sem `saiuAs` conta como arranque (→ não).
+// `d >= 0`: com o relógio a recuar a diferença fica negativa e abria sem rosto.
+export const voltouATempo = (agora = Date.now()) => {
+  const saiu = Number(lerLocal(CHAVE_SAIU));
+  const d = agora - saiu;
+  return saiu > 0 && d >= 0 && d <= CINCO_MINUTOS;
+};
+
+// Decide-se ao carregar a página, antes de qualquer ecrã montar: os efeitos dos
+// filhos correm ANTES dos do pai, e o primeiro pedido do painel não pode sair
+// à frente da barreira.
+// A sessão de outra conta acaba aqui, antes de o AuthContext ler o token: sem ele,
+// abre o login (decisão A).
+if (outraContaTemDeSair()) {
+  try { localStorage.removeItem('token'); } catch (e) { /* modo privado */ }
+}
+// Uma página carregada ESCONDIDA (o Capacitor recarrega a WebView em segundo plano)
+// nasce fechada mesmo a tempo: a miniatura do selector de apps não mostra números.
+const escondida = () => typeof document !== 'undefined' && document.hidden;
+let fechada = faceIdDestaSessao() && (escondida() || !voltouATempo());
+let aEspera = [];
+
+export const barreiraFechada = () => fechada;
+
+// Escondida não abre: um login de re-entrada (ou um rosto) que acaba depois de a app
+// ir para segundo plano deixava passar os pedidos por baixo da cortina. Ao voltar
+// decide-se como em qualquer regresso.
+export function abrirBarreira() {
+  if (escondida()) return;
+  fechada = false;
+  aEspera.splice(0).forEach((soltar) => soltar());
+}
+
+// Ao esconder. Sem Face ID ligado PARA ESTA SESSÃO não fecha nada: no browser,
+// esconder o separador fechava a porta e ninguém a voltava a abrir.
+export function fecharBarreira(agora = Date.now()) {
+  // O rosto de há segundos não vale para quem pega no iPhone depois de esconder.
+  esquecerRosto();
+  // A sessão de outra conta não leva barreira, mas a hora de saída conta: ao voltar
+  // depois de 5 minutos, `outraContaTemDeSair()` manda-a para a senha.
+  if (sessaoDeOutraConta()) {
+    gravarLocal(CHAVE_SAIU, String(agora));
+    return false;
+  }
+  if (!faceIdDestaSessao()) return false;
+  // `saiuAs` = a hora a que se saiu de uma sessão ABERTA. Com a barreira ainda
+  // fechada (ir ao ecrã principal enquanto o Face ID pede o rosto) não se grava:
+  // senão, ao voltar logo, contava como «voltou a tempo» e abria sem rosto.
+  if (!fechada) gravarLocal(CHAVE_SAIU, String(agora));
+  fechada = true;
+  return true;
+}
+
+export const esperarBarreira = () => (
+  fechada ? new Promise((soltar) => { aEspera.push(soltar); }) : Promise.resolve()
+);
+
+// O `logout()` do AuthContext (apaga o token, não o Keychain).
+let sair = null;
+export const ligarSaida = (fn) => { sair = fn; };
+
+// **Esconder e voltar decide-se AQUI, com qualquer ecrã montado.** Na casca há ecrãs
+// sem Barreira (o spinner do arranque, o «Sem ligação», o /alterar-senha, o /login):
+// se o fecho morasse só nela, esconder num deles não fechava nem gravava o `saiuAs`.
+// Registado uma vez, ao carregar o módulo — antes do da Barreira, que corre a seguir
+// e só lê `barreiraFechada()`.
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) fecharBarreira();
+    else if (outraContaTemDeSair() && sair) sair(); // decisão A: volta à senha
+  });
+}
+
+// --- 2. A re-entrada -----------------------------------------------------------
+
+// O `login(email, senha)` do AuthContext: grava o token, o cabeçalho e o estado.
+let entrar = null;
+export const ligarEntrada = (fn) => { entrar = fn; };
+
+async function tentarReentrar() {
+  // Só com o Keychain da MESMA conta cuja sessão expirou (decisão 1A); senão
+  // login normal — e nem se pede o rosto.
+  if (!entrar || !faceIdDestaSessao()) return false;
+  const credenciais = await ler(); // pede o Face ID, salvo se acabou de passar
+  // O Keychain pode ter a senha de outra pessoa (o iOS guarda um item por email):
+  // só serve a da conta cuja sessão expirou.
+  if (!credenciais || credenciais.email !== emailDaSessao()) return false;
+  try {
+    await entrar(credenciais.email, credenciais.senha);
+    return true;
+  } catch (e) {
+    // **Só o 401 do login apaga o Keychain**: a senha guardada já não é a certa.
+    // Um 429 (limite de tentativas) ou a rede em baixo não dizem nada da senha.
+    if (e?.response?.status === 401) await apagar();
+    return false;
+  }
+}
+
+// Dois pedidos com 401 ao mesmo tempo → uma só re-entrada (um só Face ID, um
+// só login). Limpa-se DEPOIS de acabar, para a próxima expiração tentar de novo.
+let emCurso = null;
+export function reentrar() {
+  if (!emCurso) {
+    emCurso = tentarReentrar()
+      .catch(() => false)
+      .finally(() => { emCurso = null; });
+  }
+  return emCurso;
+}
+
+// --- 3. Depois de um login com senha -------------------------------------------
+
+// Quem entra no /bolso. UMA fonte: o `RotaDoBolso` do App.js usa esta lista, e a
+// `aterragem` também — um papel que aterrasse num /bolso que o recusa ficava a saltar.
+export const PAPEIS_DO_BOLSO = ['admin', 'gerente', 'contabilista'];
+
+// Para onde se vai depois de entrar quando não há `state.from` (o «Esqueci a
+// palavra-passe», a senha provisória, o catch-all). Na casca com a peça nativa
+// (build 3), o /bolso: é lá que está a Barreira. O `/admin/resumo` não a tem, não
+// fecha ao esconder e não tem caminho para o /bolso. No browser, na build 2 e na
+// app do ponto, a rota de sempre.
+export const aterragem = (papel) => (
+  pluginPresente() && PAPEIS_DO_BOLSO.includes(papel)
+    ? '/bolso'
+    : rotaDeAterragem({ nativo: Capacitor.isNativePlatform(), papel })
+);
+
+export const recusar = (email) => gravarLocal(CHAVE_RECUSA + email, '1');
+export const esquecerRecusa = (email) => {
+  try { localStorage.removeItem(CHAVE_RECUSA + email); } catch (e) { /* modo privado */ }
+};
+
+// 'perguntar' ou 'nada'. Quem já tem o Face ID ligado com este email não é
+// perguntado: a senha que acabou de escrever substitui a guardada (é assim
+// que uma senha trocada se cura sozinha).
+export async function depoisDoLoginComSenha(email, senha) {
+  if (!(await temFaceId())) return 'nada';
+  if (emailGuardado() === email) {
+    await guardar(email, senha);
+    return 'nada';
+  }
+  return lerLocal(CHAVE_RECUSA + email) ? 'nada' : 'perguntar';
+}
+
+// O «Sim»: o Face ID passa primeiro (é aqui que o iPhone pede a licença), só
+// depois se guarda. Recusar a licença não deixa uma senha guardada sem uso.
+export async function ligarFaceId(email, senha) {
+  if ((await verificar()) !== true) return false;
+  return guardar(email, senha);
+}
