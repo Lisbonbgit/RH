@@ -24,6 +24,13 @@ igual a geo.MENSAGEM_GPS. A mais, a mensagem da morada sugerida do morada.js
 do servidor (crm/morada.py, INVERSA_INDISPONIVEL), também numa só linha. A da
 pesquisa de moradas (MENSAGEM_MORADA_INDISPONIVEL) saiu do frontend na G11 do
 plano do mapa Google, com a pesquisa da Geoapify (a pesquisa é a da Google).
+
+As rotas (F3 / T3.27) também: o rota.js tem uma só linha
+`export const MOTIVOS = Object.freeze([...]);`, igual a dominio.rotas.MOTIVOS;
+uma só linha `export const MOTIVO_POR_FASE = Object.freeze({ fase: 'motivo', … });`,
+igual a dominio.rotas.MOTIVO_POR_FASE (também pela ordem); e uma só linha
+`export const LIMITE_PARAGENS = <inteiro>;`, igual a dominio.rotas.LIMITE_PARAGENS.
+O rota.test.js faz a mesma comparação no outro sentido (lê o rotas.py).
 """
 import re
 from pathlib import Path
@@ -31,7 +38,7 @@ from pathlib import Path
 import pytest
 
 from crm import morada
-from crm.dominio import geo
+from crm.dominio import geo, rotas
 from crm.dominio.fases import ORDEM
 
 # backend/tests/crm/este_ficheiro.py -> raiz do repositório
@@ -40,10 +47,14 @@ _LIB_CRM = _RAIZ / "frontend" / "src" / "lib" / "crm"
 FASES_JS = _LIB_CRM / "fases.js"
 GPS_JS = _LIB_CRM / "gps.js"
 MORADA_JS = _LIB_CRM / "morada.js"
+ROTA_JS = _LIB_CRM / "rota.js"
 
 _RE_LINHA_ORDEM = re.compile(r"^export const ORDEM = Object\.freeze\(\[([^\]\n]*)\]\);$", re.M)
 _RE_NOME = re.compile(r"'([^']*)'")
 _RE_CHAVE_FASES = re.compile(r"^\s*([a-z]+): Object\.freeze\(\{ id: ", re.M)
+# Um item de uma lista ou de um mapa de uma linha: só um texto entre plicas, sem escapes.
+_RE_ITEM_TEXTO = re.compile(r"'([a-z_]+)'")
+_RE_ITEM_PAR = re.compile(r"([a-z_]+): '([a-z_]+)'")
 
 
 def _ler(caminho: Path) -> str:
@@ -71,6 +82,30 @@ def _textos_do_js(texto: str, nome: str) -> list:
         r"""^export const %s = (?:'([^'\\\n]*)'|"([^"\\\n]*)");$""" % re.escape(nome), re.M
     )
     return [m.group(1) if m.group(1) is not None else m.group(2) for m in padrao.finditer(texto)]
+
+
+def _itens(conteudo: str, padrao):
+    """Os itens de `a, b, c` que casam por inteiro com `padrao`, ou `None` se
+    algum não casar (um nome, um número, aspas duplas, um comentário)."""
+    itens = [item.strip() for item in conteudo.split(",")]
+    casados = [padrao.fullmatch(item) for item in itens]
+    if any(casado is None for casado in casados):
+        return None
+    return tuple(casado.groups() if casado.re.groups > 1 else casado.group(1) for casado in casados)
+
+
+def _listas_do_js(texto: str, nome: str) -> list:
+    """Os textos de cada linha `export const <nome> = Object.freeze(['a', 'b']);`
+    (`None` numa linha com outra coisa entre os parênteses retos)."""
+    padrao = re.compile(r"^export const %s = Object\.freeze\(\[([^\]\n]*)\]\);$" % re.escape(nome), re.M)
+    return [_itens(m.group(1), _RE_ITEM_TEXTO) for m in padrao.finditer(texto)]
+
+
+def _mapas_do_js(texto: str, nome: str) -> list:
+    """Os pares de cada linha `export const <nome> = Object.freeze({ a: 'x', b: 'y' });`,
+    pela ordem (`None` numa linha com outra coisa entre as chavetas)."""
+    padrao = re.compile(r"^export const %s = Object\.freeze\(\{ ([^{}\n]*) \}\);$" % re.escape(nome), re.M)
+    return [_itens(m.group(1), _RE_ITEM_PAR) for m in padrao.finditer(texto)]
 
 
 # --- O leitor (provado primeiro, para um verde nunca vir de um regex cego) ---
@@ -159,6 +194,75 @@ def test_o_leitor_de_textos_nao_aceita_outra_forma_da_linha(texto):
     assert _textos_do_js(texto, "MENSAGEM") == []
 
 
+def test_o_leitor_encontra_uma_lista_de_textos_numa_so_linha():
+    texto = "// x\nexport const MOTIVOS = Object.freeze(['a', 'b_c']);\nexport const MOTIVOS_B = Object.freeze(['z']);\n"
+    assert _listas_do_js(texto, "MOTIVOS") == [("a", "b_c")]
+
+
+@pytest.mark.parametrize(
+    "texto, esperado",
+    [
+        ("export const MOTIVOS = Object.freeze([\n  'a',\n  'b',\n]);\n", []),
+        ("export const MOTIVOS = ['a', 'b'];\n", []),
+        ("  export const MOTIVOS = Object.freeze(['a', 'b']);\n", []),
+        ("export const MOTIVOS = Object.freeze(['a', 'b']); // fim\n", []),
+        ("export const MOTIVOS = Object.freeze(['a', B, 'c']);\n", [None]),
+        ("export const MOTIVOS = Object.freeze(['a', \"b\"]);\n", [None]),
+        ("export const MOTIVOS = Object.freeze(['a', 'b',]);\n", [None]),
+        ("export const MOTIVOS = Object.freeze(['a', ...B]);\n", [None]),
+    ],
+    ids=[
+        "partida em varias linhas",
+        "sem freeze",
+        "indentada",
+        "com comentario no fim",
+        "com um nome",
+        "com aspas duplas",
+        "com virgula no fim",
+        "com espalhamento",
+    ],
+)
+def test_o_leitor_de_listas_nao_aceita_outra_forma(texto, esperado):
+    assert _listas_do_js(texto, "MOTIVOS") == esperado
+
+
+def test_o_leitor_encontra_um_mapa_numa_so_linha_pela_ordem():
+    texto = (
+        "// x\nexport const MOTIVO_POR_FASE = Object.freeze({ b: 'x', a: 'y_z' });\n"
+        "export const MOTIVO_POR_FASE_B = Object.freeze({ c: 'w' });\n"
+    )
+    assert _mapas_do_js(texto, "MOTIVO_POR_FASE") == [(("b", "x"), ("a", "y_z"))]
+
+
+@pytest.mark.parametrize(
+    "texto, esperado",
+    [
+        ("export const M = Object.freeze({\n  a: 'x',\n});\n", []),
+        ("export const M = { a: 'x' };\n", []),
+        ("export const M = Object.freeze({a: 'x'});\n", []),
+        ("  export const M = Object.freeze({ a: 'x' });\n", []),
+        ("export const M = Object.freeze({ a: 'x' }); // fim\n", []),
+        ("export const M = Object.freeze({ a: 'x', b: Y });\n", [None]),
+        ("export const M = Object.freeze({ a: 'x', 'b': 'y' });\n", [None]),
+        ("export const M = Object.freeze({ a: \"x\" });\n", [None]),
+        ("export const M = Object.freeze({ a: 'x', ...B });\n", [None]),
+    ],
+    ids=[
+        "partida em varias linhas",
+        "sem freeze",
+        "sem espacos dentro das chavetas",
+        "indentada",
+        "com comentario no fim",
+        "com um nome",
+        "com chave entre plicas",
+        "com aspas duplas",
+        "com espalhamento",
+    ],
+)
+def test_o_leitor_de_mapas_nao_aceita_outra_forma(texto, esperado):
+    assert _mapas_do_js(texto, "M") == esperado
+
+
 # --- As fases ---
 
 
@@ -214,3 +318,28 @@ def test_as_mensagens_da_morada_do_js_sao_as_do_servidor(nome_js, mensagem_do_se
     textos = _textos_do_js(_ler(MORADA_JS), nome_js)
     assert len(textos) == 1, "morada.js tem de ter uma só linha \"export const %s = '<texto>';\"" % nome_js
     assert textos[0] == mensagem_do_servidor
+
+
+# --- As rotas (F3 / T3.27) ---
+
+
+def test_os_motivos_do_js_sao_os_do_servidor():
+    listas = _listas_do_js(_ler(ROTA_JS), "MOTIVOS")
+    assert len(listas) == 1, 'rota.js tem de ter uma só linha "export const MOTIVOS = Object.freeze([...]);"'
+    assert listas[0] == rotas.MOTIVOS
+
+
+def test_o_motivo_por_fase_do_js_e_o_do_servidor_pela_mesma_ordem():
+    mapas = _mapas_do_js(_ler(ROTA_JS), "MOTIVO_POR_FASE")
+    assert len(mapas) == 1, (
+        "rota.js tem de ter uma só linha \"export const MOTIVO_POR_FASE = Object.freeze({ fase: 'motivo', … });\""
+    )
+    assert mapas[0] == tuple(rotas.MOTIVO_POR_FASE.items())
+    # As fases são as do servidor, pela ordem delas (o MOTIVO_POR_FASE cobre-as todas).
+    assert tuple(fase for fase, _ in mapas[0]) == ORDEM
+
+
+def test_o_limite_de_paragens_do_js_e_o_do_servidor():
+    valores = _inteiros_do_js(_ler(ROTA_JS), "LIMITE_PARAGENS")
+    assert len(valores) == 1, 'rota.js tem de ter uma só linha "export const LIMITE_PARAGENS = <n>;"'
+    assert valores[0] == rotas.LIMITE_PARAGENS
