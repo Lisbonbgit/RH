@@ -53,6 +53,17 @@ devolve([forma(linhaDe('Alfragide', 'Emily')), forma(linhaDe('Algueirão', 'Wali
     assert _abrir(eu=sn.GERENTE, pode_trocar=False) == [["DIV", None], ["DIV", None]]
 
 
+# Ser botão não chega: o toque tem de abrir o painel nas duas vistas (na Semana o `Dia` recebe o
+# seu próprio `onTrocar`).
+@pytest.mark.parametrize("vista", [None, "mes"])
+def test_tocar_na_linha_da_escala_abre_o_painel_da_troca(tmp_path, vista):
+    ler = AJUDAS + """
+await clicar(linhaDe('Alfragide', 'Emily'));
+devolve(dlg() && dlg().querySelector('h2').textContent);
+"""
+    assert _ecra(tmp_path, ler, _mes(), novembro=_mes(mes=11), vista=vista) == "Trocar Emily"
+
+
 def test_outra_pessoa_avisa_quem_esta_na_escala_noutra_loja_e_envia_a_troca(tmp_path):
     mes = _mes()
     r = _ecra(tmp_path, AJUDAS + """
