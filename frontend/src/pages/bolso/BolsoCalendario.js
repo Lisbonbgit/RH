@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, ChevronLeft, ChevronRight, Plus } from 'lucide-react';
+import { AlertTriangle, ChevronLeft, ChevronRight, History, Plus } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { getCalendario, getContagem } from '@/lib/bolso';
 import {
@@ -11,6 +11,7 @@ import {
 import {
   BotaoMenu, Calha, GrelhaDoMes, MenuLateral, Segmento, guardar, ler, useManifestoDoBolso,
 } from './partilhado';
+import PainelHistorico from './PainelHistorico';
 import PainelIda from './PainelIda';
 import PainelTroca from './PainelTroca';
 
@@ -26,6 +27,7 @@ import PainelTroca from './PainelTroca';
 // Há um só dia escolhido para todas as vistas, e o mês à vista é sempre o dele. «Tapar» e
 // «Marcar ida» só existem para quem pode marcar (o servidor diz `pode_marcar`; o contabilista
 // só lê).
+// O relógio, entre o título e as setas, abre o histórico do mês do dia escolhido (PainelHistorico).
 
 const CHAVE_VISTA = 'bolso_cal_vista';
 const CHAVE_FILTRO = 'bolso_cal_filtro';
@@ -393,6 +395,7 @@ export default function BolsoCalendario() {
   const [erroDaContagem, setErroDaContagem] = useState(null);
   const [menu, setMenu] = useState(false);
   const [painel, setPainel] = useState(null);
+  const [historico, setHistorico] = useState(false);
   // Cada pedido leva um número; só o último escreve no ecrã. Sem isto, tocar ‹ › depressa
   // deixava a resposta de um mês antigo chegar por último e ficar.
   const pedido = useRef(0);
@@ -545,6 +548,9 @@ export default function BolsoCalendario() {
               {erroVisivel && <span className="text-destructive"> · falhou</span>}
             </p>
           </div>
+          <button type="button" aria-label="Histórico" onClick={() => setHistorico(true)} className={seta}>
+            <History className="h-5 w-5" />
+          </button>
           <button type="button" aria-label={vista === 'semana' ? 'Semana anterior' : 'Mês anterior'} onClick={() => irPara(-1)} className={seta}>
             <ChevronLeft className="h-5 w-5" />
           </button>
@@ -630,6 +636,7 @@ export default function BolsoCalendario() {
       )}
 
       <MenuLateral aberto={menu} onFechar={() => setMenu(false)} actual="/bolso/calendario" />
+      {historico && <PainelHistorico ano={ano} mes={mes} onFechar={() => setHistorico(false)} />}
       {painel && desteMes && (['trocar', 'desfazer'].includes(painel.modo) ? (
         <PainelTroca
           key={painel.chave} painel={painel} dados={desteMes} onFechar={() => setPainel(null)} onGuardado={guardado}
