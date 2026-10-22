@@ -9054,9 +9054,10 @@ async def _bolso_gravar(novas: List[dict]) -> List[str]:
         for nova in novas:
             await db.bolso_idas.insert_one(dict(nova))  # cópia: o insert_one mete o _id no dicionário
             gravadas.append(nova["id"])
-    except DuplicateKeyError:
-        # Tudo ou nada SEM transacções (o Atlas tem, o mongod dos testes não): apaga-se o
-        # que ESTE pedido já gravou.
+    except Exception as erro:
+        # Tudo ou nada SEM transacções (o Atlas tem, o mongod dos testes não): com QUALQUER
+        # falha (o índice único, a rede) apaga-se o que ESTE pedido já gravou, e só depois se
+        # decide o que dizer.
         # ponytail: entre verificar e gravar fica uma janela para idas sobrepostas mas não
         # iguais, marcadas por duas gestoras no mesmo segundo — o índice único só apanha a
         # igual. O mesmo para duas admins a trocar a MESMA pessoa no mesmo segundo: nenhum
@@ -9064,9 +9065,11 @@ async def _bolso_gravar(novas: List[dict]) -> List[str]:
         # fecha-a se algum dia acontecer.
         if gravadas:
             await db.bolso_idas.delete_many({"id": {"$in": gravadas}})
-        raise HTTPException(
-            status_code=409,
-            detail="Alguém marcou uma destas idas ao mesmo tempo. Nada foi gravado — volte a abrir o dia.")
+        if isinstance(erro, DuplicateKeyError):
+            raise HTTPException(
+                status_code=409,
+                detail="Alguém marcou uma destas idas ao mesmo tempo. Nada foi gravado — volte a abrir o dia.")
+        raise
     return gravadas
 
 
@@ -9094,10 +9097,12 @@ async def bolso_mudar_ida(ida_id: str, corpo: BolsoIdaIn, current_user: dict = D
     mudou = any(actual.get(k) != v for k, v in mudancas.items())
     mudancas.update(alterado_por=current_user.get("user_id"), alterado_em=datetime.now(timezone.utc).isoformat())
     try:
-        await db.bolso_idas.update_one({"id": ida_id}, {"$set": mudancas})
+        resultado = await db.bolso_idas.update_one({"id": ida_id}, {"$set": mudancas})
     except DuplicateKeyError:
         raise HTTPException(
             status_code=409, detail="Alguém marcou esta mesma ida ao mesmo tempo — volte a abrir o dia.")
+    if resultado.matched_count == 0:  # apagada entre a leitura e aqui: nada mudou, nada se regista
+        raise HTTPException(status_code=404, detail=_BOLSO_IDA_NAO_EXISTE)
     if mudou:
         await _bolso_registar(current_user, "alterou", [actual], [dict(actual, **mudancas)])
     return dict(actual, **mudancas)

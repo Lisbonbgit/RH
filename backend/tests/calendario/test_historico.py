@@ -11,6 +11,8 @@ os.environ.setdefault("POS_JWT_SECRET", "segredo-de-teste-pos")
 
 import logging  # noqa: E402
 
+import pytest  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 from motor.motor_asyncio import AsyncIOMotorCollection  # noqa: E402
 
 import server  # noqa: E402
@@ -77,6 +79,24 @@ def test_mudar_sem_diferencas_nao_deixa_entrada(semana):
     [ida_id] = _criar(datas=["2026-10-27"], location_id=sn.ALFRAGIDE, user_ids=[sn.DEBORA],
                       inicio="10:00", fim="14:00")["ids"]
     _mudar(ida_id, data="2026-10-27", location_id=sn.ALFRAGIDE, user_id=sn.DEBORA, inicio="10:00", fim="14:00")
+    assert [e["acao"] for e in _entradas(semana)] == ["marcou"]
+
+
+def test_mudar_uma_ida_apagada_entretanto_da_404_e_nao_deixa_entrada(semana, monkeypatch):
+    """Outra gestora apaga a ida entre a leitura e o `update_one` do PUT: o update não casa com
+    nada, e um «alterou» de uma ida que já não existe seria mentira."""
+    [ida_id] = _criar(datas=["2026-10-27"], location_id=sn.ALFRAGIDE, user_ids=[sn.DEBORA],
+                      inicio="10:00", fim="14:00")["ids"]
+    validar = server._bolso_validar_idas
+
+    async def _valida_e_outra_apaga(*args, **kwargs):
+        await validar(*args, **kwargs)
+        await semana.bolso_idas.delete_one({"id": ida_id})
+
+    monkeypatch.setattr(server, "_bolso_validar_idas", _valida_e_outra_apaga)
+    with pytest.raises(HTTPException) as erro:
+        _mudar(ida_id, data="2026-10-27", location_id=sn.ALFRAGIDE, user_id=sn.DEBORA, inicio="11:00", fim="14:00")
+    assert (erro.value.status_code, erro.value.detail) == (404, "Esta ida já não existe — volte a abrir o dia.")
     assert [e["acao"] for e in _entradas(semana)] == ["marcou"]
 
 

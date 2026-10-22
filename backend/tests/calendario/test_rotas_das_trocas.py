@@ -11,6 +11,7 @@ os.environ.setdefault("POS_JWT_SECRET", "segredo-de-teste-pos")
 
 import pytest  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
+from motor.motor_asyncio import AsyncIOMotorCollection  # noqa: E402
 
 import calendario  # noqa: E402
 import server  # noqa: E402
@@ -190,6 +191,26 @@ def test_a_troca_entre_si_e_tudo_ou_nada(semana, monkeypatch):
     assert estado == 409
     assert "Nada foi gravado" in texto
     assert [i["id"] for i in _idas(semana)] == ["da-outra-admin"]
+
+
+def test_qualquer_falha_ao_gravar_a_segunda_ida_apaga_a_primeira(semana, monkeypatch):
+    """Não só o índice único: uma falha qualquer (rede, servidor) no 2.º insert de uma troca entre
+    si não pode deixar meia troca gravada. O erro segue para cima, como era."""
+    original = AsyncIOMotorCollection.insert_one
+    vezes = []
+
+    def _rebenta_a_segunda(self, *args, **kwargs):
+        if self.name == "bolso_idas":
+            vezes.append(1)
+            if len(vezes) == 2:
+                raise RuntimeError("a rede caiu")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncIOMotorCollection, "insert_one", _rebenta_a_segunda)
+    with pytest.raises(RuntimeError, match="a rede caiu"):
+        _entre_si(data=TERCA, uma=EMILY, outra=JOANA)
+    assert len(vezes) == 2
+    assert _idas(semana) == []
 
 
 # --- Mudar e desfazer --------------------------------------------------------------------------
