@@ -704,6 +704,18 @@ test('a partir de 1024 px, o painel (até 440 px) e o mapa lado a lado; só o pa
   ]);
 });
 
+test('o planeador e o painel (os que deslocam) contêm o que é absoluto lá dentro: os textos só para leitores de ecrã não fazem a página deslocar', () => {
+  // T3.38: sem um antepassado posicionado, o `sr-only` (absoluto) da ListaParagens escapava ao deslocamento e
+  // alongava a página no telemóvel (o `main` do ecrã cheio já não desloca).
+  expect(valor(corpoEm(SOLTAS, '.crm-planeador'), 'position')).toBe('relative');
+  expect(valor(corpoEm(SOLTAS, '.crm-planeador__painel'), 'position')).toBe('relative');
+  // A área do mapa já o era (o .crm-mapa é absoluto dentro dela), e nenhum @media o muda.
+  expect(valor(corpoEm(SOLTAS, '.crm-planeador__mapa'), 'position')).toBe('relative');
+  for (const r of NO_DESKTOP.filter((regra) => regra.seletores.some((s) => s.includes('crm-planeador')))) {
+    expect([r.cabeca, valor(r.corpo, 'position')]).toEqual([r.cabeca, null]);
+  }
+});
+
 test('o painel, a lista e a pega vivem fora do mapa: nada deles é absoluto, fixo nem pegajoso', () => {
   const doPlaneador = REGRAS.filter((r) => r.seletores.some((s) => /crm-planeador|crm-lista-paragens|crm-paragem|crm-pega/.test(s)));
   expect(doPlaneador.length).toBeGreaterThanOrEqual(6);

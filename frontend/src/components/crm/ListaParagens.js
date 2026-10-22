@@ -25,6 +25,7 @@
 // (correção "T3.36 / T3.38 / receita F3e"); com "Evitar portagens" ligado, junto do Waze, o
 // `TEXTO_WAZE_PORTAGENS` (correção "T3.10"). Em leitura só não há pega nem botões: só o que se vê e os links.
 // Com `desligada` (sem rede, conflito), os controlos aparecem desligados.
+// Cada linha leva o id da paragem em `data-paragem`: o toque num pino do mapa leva a página à linha (T3.38).
 //
 // Os nomes das lojas entram como texto (o React escapa-os).
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
@@ -607,6 +608,7 @@ function LinhaParagem({
       ref={refLinha}
       className={movida ? 'crm-paragem crm-paragem--arrastada' : 'crm-paragem'}
       style={estilo}
+      data-paragem={linha.id}
       data-testid="crm-paragem"
     >
       <Collapsible open={aberta} onOpenChange={setAberta}>

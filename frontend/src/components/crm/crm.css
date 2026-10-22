@@ -288,8 +288,11 @@
    desloca). Abaixo de 1024 px, numa só coluna, o mapa com altura fixa em cima e o painel por baixo, e é o
    planeador que se desloca: a lista chega à última paragem, também a arrastar com o dedo. A partir de 1024 px,
    o painel (até 440 px) ao lado do mapa, e só o painel se desloca. O painel, a lista, a pega e o rodapé do ORS
-   vivem fora do .crm-mapa e encolhem-no (a regra de disposição): nada deles é absoluto sobre o mapa. */
+   vivem fora do .crm-mapa e encolhem-no (a regra de disposição): nada deles é absoluto sobre o mapa. O planeador e o
+   painel, os que deslocam, são posicionados: o que é absoluto lá dentro (os textos só para leitores de ecrã da
+   ListaParagens) desloca-se com eles e não alonga a página (T3.38). */
 .crm-planeador {
+  position: relative;
   display: grid;
   grid-template-areas: "mapa" "painel";
   grid-template-columns: minmax(0, 1fr);
@@ -306,6 +309,7 @@
 }
 
 .crm-planeador__painel {
+  position: relative;
   grid-area: painel;
   min-width: 0;
 }
