@@ -96,5 +96,8 @@ def test_o_guarda_ve_as_chamadas_do_calendario():
     vistas = {(v.upper(), _normaliza(prefixo + c)) for v, _aspas, c in _RE_CHAMADA.findall(conteudo)}
     for esperada in [("GET", "/api/bolso/calendario"), ("GET", "/api/bolso/calendario/contagem"),
                      ("POST", "/api/bolso/calendario/idas"), ("PUT", "/api/bolso/calendario/idas/{}"),
-                     ("DELETE", "/api/bolso/calendario/idas/{}")]:
+                     ("DELETE", "/api/bolso/calendario/idas/{}"),
+                     # As trocas e o histórico (2026-10-22).
+                     ("POST", "/api/bolso/calendario/trocas"), ("POST", "/api/bolso/calendario/trocas/entre-si"),
+                     ("DELETE", "/api/bolso/calendario/trocas/{}"), ("GET", "/api/bolso/calendario/historico")]:
         assert esperada in vistas, "%s %s não aparece em lib/bolso.js" % esperada

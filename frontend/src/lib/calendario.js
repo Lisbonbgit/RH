@@ -1,9 +1,12 @@
-// Calendário das lojas na Gestão Lisbonb — as contas do ecrã, sem React e sem rede.
+// Calendário das lojas na Gestão Lisbonb — as contas do ecrã, sem React e sem pedidos (do
+// `./bolso` só vem o `quandoFoi`, que formata uma data).
 //
 // O servidor manda o mês inteiro num pedido (`GET /api/bolso/calendario`, montado por
 // `backend/calendario.py::resposta_do_mes`); daqui sai o que o ecrã desenha: a grelha, os
 // pontos, a Semana, a Lista, a Contagem, o filtro de loja e o atalho das outras terças. Tudo
 // puro, corrido em Node a partir da suite do backend (`backend/tests/calendario/test_lib_calendario.py`).
+
+import { quandoFoi } from './bolso';
 
 export const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
   'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
@@ -201,6 +204,69 @@ export const pessoasIniciais = (dados) => (
 // «Débora · outubro 18 dias · 2026 60 dias»
 export const linhaDaContagem = (linha, ano, mes) => (
   `${primeiroNome(linha.nome)} · ${MESES[mes - 1]} ${quantosDias(linha.meses[mes - 1])} · ${ano} ${quantosDias(linha.total)}`);
+
+// Quem está na escala nesse dia (todas as lojas: chama-se com o mês SEM o filtro de loja),
+// para o «Trocar com…»: sem quem sai, sem quem não tem conta no RH (não se troca), uma linha
+// por pessoa (a primeira, se uma ida lhe partiu a escala), por nome. `turno_inteiro` vem do
+// servidor: só quem o tem entra em «Trocar turnos».
+export function escaladosDoDia(dados, iso, saiUserId) {
+  const dia = (dados?.dias || []).find((d) => d.data === iso);
+  const vistos = new Set();
+  const escalados = [];
+  for (const loja of dia?.lojas || []) {
+    for (const p of loja.pessoas || []) {
+      if (p.origem !== 'escala' || !p.user_id || p.user_id === saiUserId || vistos.has(p.user_id)) continue;
+      vistos.add(p.user_id);
+      escalados.push({ user_id: p.user_id, nome: p.nome, location_id: loja.location_id, loja: loja.nome,
+        inicio: p.inicio, fim: p.fim, turno_inteiro: p.turno_inteiro });
+    }
+  }
+  return escalados.sort((a, b) => (a.nome || '').localeCompare(b.nome || '', 'pt'));
+}
+
+// Uma entrada do histórico (`GET /api/bolso/calendario/historico`, retratos com os nomes já
+// escritos) numa linha: «20/10 às 14:32 · Carol · trocou Emily por Beatrice em Alfragide,
+// 14h–23h · 27/10». O «(conta removida)» do servidor fica inteiro.
+const diaEMes = (iso) => `${Number(iso.slice(8))}/${iso.slice(5, 7)}`;
+export const nomeCurto = (nome) => (String(nome || '').startsWith('(') ? nome : primeiroNome(nome));
+const lojaEHoras = (r) => `${nomeCurtoDaLoja(r.loja)}, ${intervaloCurto(r.inicio, r.fim)}`;
+const ondeEQuando = (r) => `${nomeCurtoDaLoja(r.loja)} ${intervaloCurto(r.inicio, r.fim)}, ${diaEMes(r.data)}`;
+// Na troca entre si cada pessoa vai para a loja da outra: a loja de origem de uma é a da ida da outra.
+const entreSi = ([a, b]) => (
+  `${nomeCurto(a.nome)} (${nomeCurtoDaLoja(b.loja)}) com ${nomeCurto(b.nome)} (${nomeCurtoDaLoja(a.loja)})`);
+
+function oQueFez(acao, antes, depois) {
+  const [a] = antes;
+  const [d] = depois;
+  switch (acao) {
+    case 'marcou':
+      // Os repetidos tiram-se pelo nome completo: Ana Silva e Ana Costa não viram uma «Ana».
+      return `marcou ${[...new Set(depois.map((r) => r.nome))].map(nomeCurto).join(' e ')} em ${lojaEHoras(d)}`;
+    case 'alterou':
+      return `alterou a ida de ${nomeCurto(a.nome)}: ${ondeEQuando(a)} → ${
+        d.nome !== a.nome ? `${nomeCurto(d.nome)} em ` : ''}${ondeEQuando(d)}`;
+    case 'apagou':
+      return `apagou a ida de ${nomeCurto(a.nome)} em ${lojaEHoras(a)}`;
+    case 'trocou':
+      return `trocou ${nomeCurto(d.no_lugar_de)} por ${nomeCurto(d.nome)} em ${lojaEHoras(d)}`;
+    case 'trocou entre si':
+      return `trocou ${entreSi(depois)}`;
+    case 'desfez a troca':
+      return antes.length > 1 ? `desfez a troca de ${entreSi(antes)}`
+        : `desfez a troca de ${nomeCurto(a.no_lugar_de)} por ${nomeCurto(a.nome)} em ${nomeCurtoDaLoja(a.loja)}`;
+    default:
+      return acao;
+  }
+}
+
+export function linhaDoHistorico(entrada) {
+  const { acao } = entrada;
+  const datas = entrada.datas || [];
+  const dias = datas.slice(0, 3).map(diaEMes).join(', ') + (datas.length > 3 ? ` e mais ${datas.length - 3}` : '');
+  return [quandoFoi(entrada.quando), nomeCurto(entrada.quem_nome),
+    oQueFez(acao, entrada.antes || [], entrada.depois || []),
+    acao === 'alterou' ? '' : dias].filter(Boolean).join(' · ');
+}
 
 // O texto de um erro do servidor tal como ele o escreveu (as regras do calendário já dizem o
 // que aconteceu e o que fazer). Sem resposta não se sabe nada — e diz-se isso.

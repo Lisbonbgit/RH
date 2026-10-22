@@ -51,7 +51,8 @@ def test_a_carol_tapa_a_amadora_a_22_23_e_25():
         ["14:00-23:00"], [], [], ["14:00-23:00"], []]
     assert _loja(dias, "2026-10-22", "Amadora")["pessoas"] == [{
         "user_id": sn.CAROL, "nome": "Carol Santos", "inicio": "14:00", "fim": "23:00",
-        "origem": "ida", "extra": False, "ida_id": dados["idas"][0]["id"]}]
+        "origem": "ida", "extra": False, "ida_id": dados["idas"][0]["id"], "troca_id": None, "no_lugar_de": None,
+        "turno_inteiro": None}]
 
 
 def test_a_joana_em_benfica_numa_quarta_abre_oeiras():
