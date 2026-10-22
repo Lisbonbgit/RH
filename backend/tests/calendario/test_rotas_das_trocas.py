@@ -213,6 +213,28 @@ def test_qualquer_falha_ao_gravar_a_segunda_ida_apaga_a_primeira(semana, monkeyp
     assert _idas(semana) == []
 
 
+def test_a_segunda_ida_gravada_com_a_resposta_perdida_tambem_se_apaga(semana, monkeypatch):
+    """A lição do Vendus 503: o servidor pode gravar e a resposta perder-se (a rede depois da
+    repetição do driver, um timeout de w:majority com o documento já no primário). Essa ida não
+    entrou nos `gravadas`, mas é deste pedido: também tem de sair, senão fica meia troca."""
+    original = AsyncIOMotorCollection.insert_one
+    vezes = []
+
+    async def _grava_e_rebenta_a_segunda(self, *args, **kwargs):
+        resultado = await original(self, *args, **kwargs)
+        if self.name == "bolso_idas":
+            vezes.append(1)
+            if len(vezes) == 2:
+                raise RuntimeError("a resposta perdeu-se")
+        return resultado
+
+    monkeypatch.setattr(AsyncIOMotorCollection, "insert_one", _grava_e_rebenta_a_segunda)
+    with pytest.raises(RuntimeError, match="a resposta perdeu-se"):
+        _entre_si(data=TERCA, uma=EMILY, outra=JOANA)
+    assert len(vezes) == 2
+    assert _idas(semana) == []
+
+
 # --- Mudar e desfazer --------------------------------------------------------------------------
 
 

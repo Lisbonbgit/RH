@@ -9064,8 +9064,10 @@ async def _bolso_gravar(novas: List[dict]) -> List[str]:
         # igual. O mesmo para duas admins a trocar a MESMA pessoa no mesmo segundo: nenhum
         # índice cobre «quem sai», e passam as duas. Aceite no desenho; uma transacção
         # fecha-a se algum dia acontecer.
-        if gravadas:
-            await db.bolso_idas.delete_many({"id": {"$in": gravadas}})
+        # Pelos ids de TODAS as idas do pedido, não só as que voltaram bem: um insert pode gravar
+        # e a resposta perder-se (a lição do Vendus 503). Os ids são uuid4 novos deste pedido, por
+        # isso não apagam nada de outro; o duplicado choca no índice, não no id.
+        await db.bolso_idas.delete_many({"id": {"$in": [n["id"] for n in novas]}})
         if isinstance(erro, DuplicateKeyError):
             raise HTTPException(
                 status_code=409,

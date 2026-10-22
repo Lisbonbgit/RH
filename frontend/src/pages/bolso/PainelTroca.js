@@ -122,7 +122,7 @@ export default function PainelTroca({ painel, dados, onFechar, onGuardado }) {
               {turnos ? (
                 <fieldset>
                   <legend className={rotulo}>Com quem está na escala</legend>
-                  {paraTurnos.length === 0 && <p className="mt-1 text-[14px] text-muted-foreground">Mais ninguém na escala neste dia.</p>}
+                  {paraTurnos.length === 0 && <p className="mt-1 text-[14px] text-muted-foreground">Ninguém com quem trocar turnos neste dia.</p>}
                   <div className="mt-1 flex flex-wrap gap-2">
                     {paraTurnos.map((e) => (
                       <button
