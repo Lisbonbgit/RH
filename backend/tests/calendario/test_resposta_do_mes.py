@@ -22,7 +22,7 @@ def _resposta(eu=sn.DEBORA, pode_marcar=True):
 
 def test_o_cabecalho_e_os_dias_do_mes():
     r = _resposta()
-    assert (r["ano"], r["mes"], r["eu"], r["pode_marcar"]) == (2026, 10, sn.DEBORA, True)
+    assert (r["ano"], r["mes"], r["eu"], r["pode_marcar"], r["pode_trocar"]) == (2026, 10, sn.DEBORA, True, False)
     assert len(r["dias"]) == 31 and r["dias"][0]["data"] == "2026-10-01"
     assert calendario.limites_do_mes(2026, 2) == ("2026-02-01", "2026-02-28")
 
@@ -34,7 +34,9 @@ def test_as_idas_do_mes_com_os_nomes_e_o_recurso_para_o_que_foi_apagado():
         ("2026-10-06", "Carol Santos", "(loja removida)"),
         ("2026-10-27", "Débora Ferreira", "Oeiras"),
     ]
-    assert set(idas[2]) == {"id", "data", "location_id", "user_id", "inicio", "fim", "nome", "loja"}
+    assert set(idas[2]) == {"id", "data", "location_id", "user_id", "inicio", "fim", "nome", "loja",
+                            "troca_id", "no_lugar_de"}
+    assert (idas[2]["troca_id"], idas[2]["no_lugar_de"]) == (None, None)
 
 
 def test_as_ausencias_sao_so_as_aprovadas_que_tocam_o_mes():

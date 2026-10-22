@@ -180,6 +180,12 @@ def feriados_da_loja(dia: date, personalizados: List[Dict], loja: Dict) -> List[
                 or (h.get("location_id") and h.get("location_id") == loja.get("id")))]
 
 
+def escala_vazia_no_feriado(dia: date, personalizados: List[Dict], loja: Dict) -> bool:
+    """Num feriado DA LOJA (nacional, do grupo, da empresa ou dela) a escala não põe lá ninguém:
+    coloca-se à mão (decisão do dono, 2026-10-16). Uma regra só, para o cálculo e o `escala_de`."""
+    return bool(feriados_do_dia(dia, personalizados) or feriados_da_loja(dia, personalizados, loja))
+
+
 # --- A escala: quem está em cada loja, num dia, pela escala fixa do RH ----------------------
 
 
@@ -261,9 +267,28 @@ def ausentes(dia: date, ausencias: List[Dict]) -> Set[str]:
     return {a.get("employee_id") for a in ausencias if _aprovada_entre(a, iso, iso)}
 
 
-def _pessoa(user_id, nome, horas: Intervalo, origem: str, extra: bool = False, ida_id=None) -> Dict:
+def escala_de(dia: date, dados: Dict, emp_id: str, p: Optional[Dict] = None) -> Optional[Tuple[str, Intervalo]]:
+    """`(location_id, horas)` da escala dessa ficha nesse dia, depois das ausências aprovadas e
+    do feriado da loja; `None` se não está na escala (folga, ausência, feriado)."""
+    p = p or _preparar(dados)
+    minha = _escala(dia, p).get(emp_id)
+    if not minha or emp_id in ausentes(dia, dados.get("ausencias", [])):
+        return None
+    if escala_vazia_no_feriado(dia, dados.get("feriados", []), p["lojas"][minha[0]]):
+        return None
+    return minha
+
+
+def _pessoa(user_id, nome, horas: Intervalo, origem: str, extra: bool = False, ida_id=None,
+            troca_id=None, no_lugar_de=None) -> Dict:
     return {"user_id": user_id, "nome": nome, "inicio": hhmm(horas[0]), "fim": hhmm(horas[1]),
-            "origem": origem, "extra": extra, "ida_id": ida_id}
+            "origem": origem, "extra": extra, "ida_id": ida_id, "troca_id": troca_id, "no_lugar_de": no_lugar_de}
+
+
+def _quem_sai(ida: Dict, nome_do_emp: Dict[str, str]) -> Optional[str]:
+    """O nome de quem sai numa troca (o da ficha, como na linha da escala); `None` fora das trocas."""
+    sai = ida.get("no_lugar_de_emp")
+    return (nome_do_emp.get(sai) or NOME_SEM_CONTA) if sai else None
 
 
 def _loja_do_dia(loja: Dict, dia: date, pessoas: List[Dict], personalizados: List[Dict]) -> Dict:
@@ -290,8 +315,9 @@ def dia_do_calendario(dia: date, dados: Dict, p: Optional[Dict] = None) -> Dict:
     as idas — a de um gestor soma-se à loja; a de um colaborador TIRA à escala dele as horas da ida (a Joana
     13h–15h em Benfica numa quarta deixa Oeiras com buraco só das 13h às 15h), e as horas da
     ida (recortadas ao horário) que não estavam na escala dele são «extra» (numa folga, a ida
-    toda); 4. buracos = horário menos a união das horas de quem lá está («ninguém» = um
-    buraco igual a abre–fecha).
+    toda); uma troca (`no_lugar_de_emp`, de gestor ou colaborador) tira também as horas à escala
+    de quem sai, se ela é na loja da troca; 4. buracos = horário menos a união das horas de quem
+    lá está («ninguém» = um buraco igual a abre–fecha).
     Uma ida numa loja sem horário, fechada ou por abrir não entra aqui (continua na lista das
     idas do mês). A de um colaborador com ausência aprovada DEPOIS de a ida existir (marcá-la
     já de férias dá 409) entra como as outras até um gestor a apagar — decisão do dono; a
@@ -317,14 +343,23 @@ def dia_do_calendario(dia: date, dados: Dict, p: Optional[Dict] = None) -> Dict:
             minha = escala.get(emp_id)
             # Com as horas recortadas: chegar meia hora antes de abrir não é «extra».
             extra = bool(subtrair([dentro or horas], [minha[1]] if minha else []))
+        # Uma troca tira as horas à escala de quem sai só se ela é NA LOJA DA TROCA: se a escala
+        # dele mudou depois de loja, a troca fica uma ida à vista e não abre um buraco noutra loja.
+        sai = ida.get("no_lugar_de_emp")
+        if sai and (escala.get(sai) or (None,))[0] == ida.get("location_id"):
+            tirado.setdefault(sai, []).append(horas)
+        if ida.get("troca_id"):
+            # O «no lugar de» já diz o que se passou: numa troca, «extra» é só quem entra com
+            # ausência aprovada nesse dia (regra B: a troca fica até uma admin a desfazer).
+            extra = bool(emp_id) and emp_id in fora
         if dentro:
             presentes.setdefault(ida["location_id"], []).append(_pessoa(
-                ida.get("user_id"), user.get("name") or NOME_SEM_CONTA, dentro, "ida", extra, ida.get("id")))
+                ida.get("user_id"), user.get("name") or NOME_SEM_CONTA, dentro, "ida", extra, ida.get("id"),
+                ida.get("troca_id"), _quem_sai(ida, p["nome_do_emp"])))
     personalizados = dados.get("feriados", [])
     do_dia = feriados_do_dia(dia, personalizados)
     for emp_id, (loja_id, horas) in escala.items():
-        # No feriado da loja a escala não põe ninguém: coloca-se à mão (decisão do dono, 2026-10-16).
-        if do_dia or feriados_da_loja(dia, personalizados, p["lojas"][loja_id]):
+        if escala_vazia_no_feriado(dia, personalizados, p["lojas"][loja_id]):
             continue
         for pedaco in subtrair([horas], tirado.get(emp_id, [])):
             presentes.setdefault(loja_id, []).append(_pessoa(
@@ -358,11 +393,15 @@ def valor_da_ida(ida: Dict, loja: Optional[Dict]) -> float:
     return 1.0 if feitas * 2 >= janela[1] - janela[0] else 0.5
 
 
-def contagem(idas: List[Dict], lojas: Dict[str, Dict], nomes: Dict[str, str]) -> List[Dict]:
+def contagem(idas: List[Dict], lojas: Dict[str, Dict], nomes: Dict[str, str],
+             papeis: Optional[Dict[str, str]] = None) -> List[Dict]:
     """`[{user_id, nome, meses: [12], total}]`, do total maior para o menor. Por pessoa e por
-    dia soma-se e corta-se em 1 (duas meias no mesmo dia = 1; nunca mais de 1)."""
+    dia soma-se e corta-se em 1 (duas meias no mesmo dia = 1; nunca mais de 1). Com `papeis`
+    (`{user_id: role}`), uma troca só conta quando quem entra é gestor (decisão do dono)."""
     por_dia = {}  # type: Dict[Tuple[str, str], float]
     for ida in idas:
+        if papeis is not None and ida.get("troca_id") and papeis.get(ida["user_id"]) not in GESTORES:
+            continue
         chave = (ida["user_id"], ida["data"])
         por_dia[chave] = min(1.0, por_dia.get(chave, 0.0) + valor_da_ida(ida, lojas.get(ida.get("location_id"))))
     meses = {}  # type: Dict[str, List[float]]
@@ -467,6 +506,82 @@ def ausencias_que_impedem(novas: List[Dict], utilizadores: Dict[str, Dict], ause
     return linhas
 
 
+# --- As regras de uma troca (desenho das trocas, «Recusas»; as rotas levantam 400/409) ------
+
+ESCOLHA_OUTRA = "Escolha outra pessoa."
+
+
+def _troca_de(emp_id: str, idas: List[Dict], iso: str, horas: Optional[Intervalo] = None) -> Optional[Dict]:
+    """A ida de uma troca já feita no lugar dessa ficha nesse dia (com `horas`, só se se sobrepõem)."""
+    for ida in idas:
+        if ida.get("no_lugar_de_emp") == emp_id and ida.get("data") == iso and (
+                horas is None or recortar(horas, (minutos(ida["inicio"]), minutos(ida["fim"])))):
+            return ida
+    return None
+
+
+def _ja_ha_troca(nome: str, ida: Dict, p: Dict) -> str:
+    return "Já há uma troca para %s a %s (%s)." % (
+        nome, data_curta(ida["data"]),
+        primeiro_nome((p["utilizadores"].get(ida.get("user_id")) or {}).get("name")) or NOME_SEM_CONTA)
+
+
+def _fora_da_escala(nome: str, dia: date) -> str:
+    return "%s não está na escala a %s." % (nome, data_curta(dia.isoformat()))
+
+
+def recusa_da_troca(dia: date, dados: Dict, sai_emp: str, sai_nome: Optional[str], entra_user: str,
+                    inicio, fim, idas_do_dia: List[Dict]) -> Optional[Tuple[int, str]]:
+    """A troca simples: `(400|409, frase)` ou `None`. O papel e a ausência de quem entra (e o
+    choque com outra ida dele) são do servidor, com as regras das idas."""
+    p = _preparar(dados)
+    if sai_emp and (p["utilizadores"].get(entra_user) or {}).get("employee_id") == sai_emp:
+        return 400, ESCOLHA_OUTRA
+    erro = validar_horas(inicio, fim)
+    if erro:
+        return 400, erro
+    nome = primeiro_nome(sai_nome) or "Esta pessoa"
+    minha = escala_de(dia, dados, sai_emp, p)
+    if not minha:
+        return 409, _fora_da_escala(nome, dia)
+    horas = (minutos(inicio), minutos(fim))
+    if horas[0] < minha[1][0] or horas[1] > minha[1][1]:
+        return 409, "As horas da troca têm de estar dentro das de %s (%s–%s)." % (
+            nome, hora_curta(hhmm(minha[1][0])), hora_curta(hhmm(minha[1][1])))
+    outra = _troca_de(sai_emp, idas_do_dia, dia.isoformat(), horas)
+    if outra:
+        return 409, _ja_ha_troca(nome, outra, p)
+    return None
+
+
+def turnos_da_troca_entre_si(dia: date, dados: Dict, emp_a: str, emp_b: str) -> Tuple:
+    """`(ida_a, ida_b)` — cada pessoa vai para a loja e as horas da outra, turnos inteiros, «no
+    lugar» dela — ou a recusa `(400|409, frase)`. As idas da troca vêm de `dados["idas"]`."""
+    if emp_a == emp_b:
+        return 400, ESCOLHA_OUTRA
+    p = _preparar(dados)
+    iso = dia.isoformat()
+    nomes = {e: primeiro_nome(p["nome_do_emp"].get(e)) or "Esta pessoa" for e in (emp_a, emp_b)}
+    turnos = {}
+    for emp_id in (emp_a, emp_b):
+        turnos[emp_id] = escala_de(dia, dados, emp_id, p)
+        if not turnos[emp_id]:
+            return 409, _fora_da_escala(nomes[emp_id], dia)
+    if turnos[emp_a] == turnos[emp_b]:
+        return 400, ESCOLHA_OUTRA
+    for emp_id in (emp_a, emp_b):
+        outra = _troca_de(emp_id, dados.get("idas", []), iso)
+        if outra:
+            return 409, _ja_ha_troca(nomes[emp_id], outra, p)
+
+    def _ida(quem, de):
+        loja_id, (inicio, fim) = turnos[de]
+        return {"data": iso, "location_id": loja_id, "user_id": p["user_do_emp"].get(quem),
+                "inicio": hhmm(inicio), "fim": hhmm(fim), "no_lugar_de_emp": de}
+
+    return _ida(emp_a, emp_b), _ida(emp_b, emp_a)
+
+
 # --- A resposta do mês (GET /api/bolso/calendario) -----------------------------------------
 
 
@@ -480,7 +595,8 @@ def pessoas_escalaveis(utilizadores: List[Dict], fichas: Set[str]) -> List[Dict]
              "tipo": "gestor" if u.get("role") in GESTORES else "colaborador"} for u in escolhidas]
 
 
-def resposta_do_mes(ano: int, mes: int, dados: Dict, eu: Optional[str], pode_marcar: bool) -> Dict:
+def resposta_do_mes(ano: int, mes: int, dados: Dict, eu: Optional[str], pode_marcar: bool,
+                    pode_trocar: bool = False) -> Dict:
     """O mês inteiro, como o ecrã o lê. `idas[]` leva as idas do mês com os nomes — é daqui
     que se montam a vista Pessoal e as idas da Lista (uma ida numa loja que entretanto perdeu
     o horário continua a aparecer aqui, e não em `dias`)."""
@@ -488,6 +604,7 @@ def resposta_do_mes(ano: int, mes: int, dados: Dict, eu: Optional[str], pode_mar
     lojas = {l["id"]: l for l in dados.get("lojas", [])}
     utilizadores = {u["id"]: u for u in dados.get("utilizadores", [])}
     empregados = {e["id"]: e for e in dados.get("empregados", [])}
+    nome_do_emp = {e_id: e.get("name") for e_id, e in empregados.items()}
     idas = sorted((i for i in dados.get("idas", []) if inicio <= i["data"] <= fim),
                   key=lambda i: (i["data"], i["inicio"]))
     # O grupo tem empresas sem calendário (a pizzaria, com uma «Loja Alfragide» homónima): as
@@ -504,12 +621,13 @@ def resposta_do_mes(ano: int, mes: int, dados: Dict, eu: Optional[str], pode_mar
                        key=lambda a: a.get("start_date") or "")
 
     return {
-        "ano": ano, "mes": mes, "eu": eu, "pode_marcar": pode_marcar,
+        "ano": ano, "mes": mes, "eu": eu, "pode_marcar": pode_marcar, "pode_trocar": pode_trocar,
         "dias": calendario_do_mes(ano, mes, dados),
         "idas": [{"id": i.get("id"), "data": i["data"], "location_id": i.get("location_id"),
                   "user_id": i.get("user_id"), "inicio": i["inicio"], "fim": i["fim"],
                   "nome": (utilizadores.get(i.get("user_id")) or {}).get("name") or NOME_SEM_CONTA,
-                  "loja": (lojas.get(i.get("location_id")) or {}).get("name") or NOME_SEM_LOJA}
+                  "loja": (lojas.get(i.get("location_id")) or {}).get("name") or NOME_SEM_LOJA,
+                  "troca_id": i.get("troca_id"), "no_lugar_de": _quem_sai(i, nome_do_emp)}
                  for i in idas],
         "ausencias": [{"nome": _ficha(a).get("name") or NOME_SEM_CONTA, "tipo": a.get("leave_type"),
                        "inicio": (a.get("start_date") or "")[:10], "fim": (a.get("end_date") or "")[:10],
