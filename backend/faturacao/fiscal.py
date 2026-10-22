@@ -122,6 +122,11 @@ _MSG_TIPO_PAGAMENTO_SEM_VENDUS = (
     "Este tipo de pagamento não tem um método do Vendus associado — "
     "não pode ser usado para emitir uma fatura real."
 )
+_MSG_CONTA_ZERO_SEM_DINHEIRO = (
+    "Uma conta a 0,00 € sai no Vendus como pagamento de 0,00 € em Dinheiro, "
+    "e não há nenhum tipo de pagamento Dinheiro activo e ligado ao Vendus. "
+    "Não saiu nenhum documento — peça ao gestor para o configurar."
+)
 _MSG_SESSAO_NAO_ABERTA = (
     "A sessão de caixa desta venda já não está aberta — não é possível "
     "emitir fatura para uma venda de um turno já fechado."
@@ -2164,6 +2169,27 @@ async def finalizar(
             "valor": p.valor,
         })
         pagamentos_vendus.append({"id": tipo["vendus_payment_method_id"], "amount": p.valor})
+
+    # **A conta a zero leva um pagamento de 0,00 € — mas SÓ para o Vendus.**
+    # Sem `payments` o Vendus recusa a FS com `A001 Missing payment ID` (medido
+    # em produção a 2026-10-22, conta de 7,20 € oferecida por inteiro). A app
+    # L'Açaí emite as dela a zero exactamente assim (`amount: 0` com o id do
+    # método) e a FS 06P2026/1081 saiu. Dinheiro porque 0,00 € em numerário não
+    # mexe em nada: a reconciliação do fecho soma 0 e a app só recusa pontos por
+    # ids de plataformas. Do nosso lado a venda continua SEM pagamentos
+    # (`pagamentos_venda` vazio) — é a verdade: ninguém pagou nada.
+    if not pagamentos_vendus:
+        tipos_dinheiro = await db[COLECOES["tipos_pagamento"]].find(
+            {"tipo_fiscal": "NU"}
+        ).to_list(200)
+        prontos = [
+            t for t in tipos_dinheiro
+            if t.get("ativo", True) and t.get("vendus_payment_method_id")
+        ]
+        if not prontos:
+            raise HTTPException(status_code=422, detail=_MSG_CONTA_ZERO_SEM_DINHEIRO)
+        dinheiro = min(prontos, key=lambda t: t.get("ordem") or 0)
+        pagamentos_vendus.append({"id": dinheiro["vendus_payment_method_id"], "amount": 0.0})
 
     conta = obter_conta(_nif_configurado())
     if conta is None:
