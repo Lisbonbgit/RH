@@ -37,7 +37,12 @@ const lerOpcao = (chave, opcoes, omissao) => {
   const v = ler(chave, omissao);
   return opcoes.includes(v) ? v : omissao;
 };
-const etiqueta = (p) => (p.origem === 'escala' ? 'escala' : p.troca_id ? 'troca' : p.extra ? 'extra' : 'ida');
+// Numa troca, «extra» é quem entra com ausência aprovada depois dela (regra B): diz-se as duas.
+const etiqueta = (p) => {
+  if (p.origem === 'escala') return 'escala';
+  if (p.troca_id) return p.extra ? 'troca · extra' : 'troca';
+  return p.extra ? 'extra' : 'ida';
+};
 // Uma ida abre-se a quem marca; uma troca só a quem troca (para o gerente é texto).
 const abreIda = (dados, ida) => (ida.troca_id ? dados.pode_trocar : dados.pode_marcar);
 const chaveDoMes = (ano, mes) => isoDe(ano, mes, 1).slice(0, 7);

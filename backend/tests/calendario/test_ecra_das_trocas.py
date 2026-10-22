@@ -210,3 +210,13 @@ def test_sessao_expirada_ao_trocar_so_faz_logout(tmp_path):
 devolve(REGISTO.filter((x) => x[0] === 'logout' || x[0] === 'navigate'));
 """, _mes(), antes=RECUSAR_A_TROCA % json.dumps({"response": {"status": 401}}))
     assert r == [["logout"]]
+
+
+def test_quem_entra_com_ausencia_aprovada_depois_da_troca_diz_troca_e_extra(tmp_path):
+    # Regra B: a troca fica até uma admin a desfazer, mas a loja não pode parecer coberta por
+    # alguém de férias — a etiqueta diz as duas coisas.
+    dados = sn.semana_normal()
+    dados["ausencias"].append(sn.ausencia("Beatrice", "2026-10-27", "2026-10-27"))
+    r = _ecra(tmp_path, AJUDAS + "devolve(linhaDe('Alfragide', 'Beatrice').textContent);",
+              _mes(dados=dados, idas=[troca(BEATRICE, sn.ALFRAGIDE, "Emily", "t-1")]))
+    assert r == "Beatriceno lugar de Emily14h–23htroca · extra"
