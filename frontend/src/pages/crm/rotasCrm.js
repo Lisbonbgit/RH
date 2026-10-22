@@ -8,8 +8,10 @@
 //
 // As páginas carregam-se à parte (`React.lazy`): o que vier a pesar (o
 // Google Maps) não entra no ficheiro principal do portal. Os caminhos
-// batem com `ITENS_MENU_CRM` (`lib/crm/acesso.js`): `mapa`, `lojas/nova`,
-// `definicoes`.
+// batem com `ITENS_MENU_CRM` (`lib/crm/acesso.js`): `mapa`, `rotas`,
+// `lojas/nova`, `definicoes` (o `acesso.test.js` lê este ficheiro). O
+// planeador de um dia fica em `rotas/:data` (`AAAA-MM-DD`; um dia que não
+// existe é a página a dizer "Dia inválido", não o mapa).
 import React, { Suspense, lazy } from 'react';
 import { Navigate, Route, useLocation } from 'react-router-dom';
 import { Button } from '../../components/ui/button';
@@ -20,6 +22,8 @@ const CrmMapa = lazy(() => import('./CrmMapa'));
 const CrmLojaNova = lazy(() => import('./CrmLojaNova'));
 const CrmLoja = lazy(() => import('./CrmLoja'));
 const CrmDefinicoes = lazy(() => import('./CrmDefinicoes'));
+const CrmRotas = lazy(() => import('./CrmRotas'));
+const CrmRota = lazy(() => import('./CrmRota'));
 
 export const MENSAGEM_PAGINA_FALHOU =
   'Não foi possível abrir esta página do CRM. Verifique a ligação e recarregue.';
@@ -79,6 +83,8 @@ export function filhosCrm() {
     <>
       <Route index element={<Navigate to="mapa" replace />} />
       <Route path="mapa" element={pagina('mapa', CrmMapa)} />
+      <Route path="rotas" element={pagina('rotas', CrmRotas)} />
+      <Route path="rotas/:data" element={pagina('rota', CrmRota)} />
       <Route path="lojas/nova" element={pagina('loja-nova', CrmLojaNova)} />
       <Route path="lojas/:lojaId" element={pagina('loja', CrmLoja)} />
       <Route element={<SoAdminCrm />}>
