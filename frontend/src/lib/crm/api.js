@@ -118,6 +118,12 @@ export function erroCrm(e) {
 // que desiste aos 5 s (`servicos/geoapify.py`) e responde 503. Sem `timeout`,
 // o axios espera para sempre.
 export const TIMEOUT_CRM_MS = 30000;
+// 35 s: o tecto das duas chamadas que esperam pelo openrouteservice no
+// servidor (`recalcular` e `otimizar`, F3). O servidor desiste aos 15 s na
+// otimização e aos 10 s no Directions (`servicos/ors.py`); o `otimizar` faz
+// os dois e fica abaixo dos 25 s (plano F3 §1). Com os 30 s da instância, a
+// folga era curta; o `api.test.js` confere a conta com o `ors.py`.
+export const TIMEOUT_CALCULO_MS = 35000;
 export const URL_BASE_CRM = `${process.env.REACT_APP_BACKEND_URL}/api/crm`;
 
 // **O JWT lido A CADA PEDIDO**, de onde o `AuthContext` o põe (e de onde o
@@ -164,6 +170,18 @@ function semNulos(parametros) {
   const limpos = {};
   for (const [nome, valor] of Object.entries(parametros)) {
     if (valor !== null && valor !== undefined) limpos[nome] = valor;
+  }
+  return limpos;
+}
+
+// Um corpo sem as chaves com `undefined`; o `null` fica. No POST das paragens
+// a chave `versao` em falta e a `versao: null` dizem coisas diferentes ao
+// servidor (`validador_rota.adicao`): sem chave, «não sei a versão» (o cartão
+// do mapa); com `null`, «julgo que ainda não há rota».
+function semIndefinidos(campos) {
+  const limpos = {};
+  for (const [nome, valor] of Object.entries(campos)) {
+    if (valor !== undefined) limpos[nome] = valor;
   }
   return limpos;
 }
@@ -247,6 +265,52 @@ export function criarClienteCrm({ pedir = (config) => instanciaCrm.request(confi
     moradaInversa: (ponto) => chamar({
       method: 'GET', url: '/morada/inversa', params: semNulos({ lat: ponto?.lat, lng: ponto?.lng }),
     }),
+
+    // --- F3 -------------------------------------------------------------------
+    // As rotas de um dia (plano F3 §4). Só o escritório; o motorista dá 403.
+    // A data (`AAAA-MM-DD`, o dia em Lisboa) vai num só pedaço do caminho,
+    // como os ids: o servidor valida-a (422 `data`). As rotas devolvem a
+    // **Rota** completa (`formatar_rota.rota_api`, com a `versao` em vigor);
+    // as escritas levam a versão recebida e dão 409 `conflito` se outra pessoa
+    // gravou, `rota_fechada` num dia passado e `rota_em_curso` com registos
+    // do motorista.
+
+    // `{hoje, de, ate, rotas: [{id, data, estado, estado_efetivo, paragens}]}`.
+    // Só o `de` e o `ate` vão, sem os nulos; sem eles, o servidor usa
+    // hoje − 14 e hoje + 60.
+    listarRotas: (intervalo) => chamar({
+      method: 'GET', url: '/rotas', params: semNulos({ de: intervalo?.de, ate: intervalo?.ate }),
+    }),
+    // A Rota do dia; um dia sem rota dá a virtual (`existe: false`, `versao: null`).
+    obterRota: async (data) => chamar({ method: 'GET', url: caminhoComId('/rotas', data) }),
+    // `{sem_paragens, no_caminho, grupos: [{fase, lojas, mais}]}`.
+    obterSugestoes: async (data) => chamar({ method: 'GET', url: `${caminhoComId('/rotas', data)}/sugestoes` }),
+    // 201 com a Rota (cria-a em rascunho se não houver). Só o `loja_id`, o
+    // `motivo` (em falta ou `null`: o servidor escolhe-o pela fase) e a
+    // `versao` vão no corpo, e uma chave `undefined` não vai: sem `versao`
+    // (o cartão do mapa) o servidor lê, grava condicionado e tenta de novo;
+    // `versao: null` (o planeador numa rota virtual) quer dizer «julgo que
+    // ainda não há rota». 409 `ja_na_rota`/`rota_cheia`, 404 da loja.
+    adicionarParagem: async (data, pedido) => chamar({
+      method: 'POST',
+      url: `${caminhoComId('/rotas', data)}/paragens`,
+      data: semIndefinidos({ loja_id: pedido?.loja_id, motivo: pedido?.motivo, versao: pedido?.versao }),
+    }),
+    // `{versao, …}` tal como a fila o juntou (`filaRota.juntarAlteracoes`):
+    // as definições do dia, a ordem, as paragens, retirar e o "Guardar rota".
+    // 404 "Ainda não há rota para este dia." numa rota virtual.
+    alterarRota: async (data, corpo) => chamar({ method: 'PATCH', url: caminhoComId('/rotas', data), data: corpo }),
+    // As horas pelo Directions (a versão não muda) e a melhor ordem pelo VROOM
+    // e o Directions (a versão + 1): só `{versao}` e o tecto do cálculo. Uma
+    // falha do openrouteservice é o 503 `calculo_indisponivel`, com
+    // `extra.tipo` (`sem_chave`, `indisponivel`, `limite`, `ponto_sem_estrada`)
+    // e a mensagem do servidor; nada muda.
+    recalcularHoras: async (data, versao) => chamar({
+      method: 'POST', url: `${caminhoComId('/rotas', data)}/recalcular`, data: { versao }, timeout: TIMEOUT_CALCULO_MS,
+    }),
+    otimizarRota: async (data, versao) => chamar({
+      method: 'POST', url: `${caminhoComId('/rotas', data)}/otimizar`, data: { versao }, timeout: TIMEOUT_CALCULO_MS,
+    }),
   };
 }
 
@@ -257,4 +321,5 @@ export const {
   listarRegioes, criarRegiao, alterarRegiao, apagarRegiao,
   listarLojas, obterLoja, criarLoja, alterarLoja, apagarLoja,
   obterDefinicoes, alterarDefinicoes, obterConfigMapa, moradaInversa,
+  listarRotas, obterRota, obterSugestoes, adicionarParagem, alterarRota, recalcularHoras, otimizarRota,
 } = clienteCrm;
