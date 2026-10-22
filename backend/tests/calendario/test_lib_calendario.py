@@ -251,11 +251,11 @@ def test_quem_esta_na_escala_no_dia_sem_quem_sai_sem_repetidos_e_sem_quem_nao_te
         tmp_path, "[cal.escaladosDoDia(D, '2026-10-27', null), cal.escaladosDoDia(D, '2026-10-27', 'u-emily'), "
                   "cal.escaladosDoDia(D, '2026-12-01', null)]", mes)
     emily = {"user_id": "u-emily", "nome": "Emily", "location_id": sn.ALFRAGIDE, "loja": "Alfragide",
-             "inicio": "14:00", "fim": "17:00"}
+             "inicio": "14:00", "fim": "17:00", "turno_inteiro": False}
     joana = {"user_id": "u-joana", "nome": "Joana", "location_id": sn.AMADORA, "loja": "Amadora",
-             "inicio": "14:00", "fim": "23:00"}
+             "inicio": "14:00", "fim": "23:00", "turno_inteiro": True}
     walisson = {"user_id": "u-walisson", "nome": "Walisson", "location_id": sn.ALGUEIRAO, "loja": "Algueirão",
-                "inicio": "13:00", "fim": "22:00"}
+                "inicio": "13:00", "fim": "22:00", "turno_inteiro": True}
     assert todos == [emily, joana, walisson]
     assert sem_emily == [joana, walisson]
     assert fora == []

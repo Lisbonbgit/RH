@@ -42,6 +42,10 @@ export default function PainelTroca({ painel, dados, onFechar, onGuardado }) {
   const grupos = [['Gestores', outras.filter((p) => p.tipo === 'gestor')],
     ['Colaboradores', outras.filter((p) => p.tipo !== 'gestor')]];
   const turnos = opcao === 'turnos' && painel.turnoInteiro;
+  // Para trocar turnos, só quem tem o turno inteiro (senão 409) e não está na mesma loja com as
+  // mesmas horas de quem sai (a troca não mudava nada: 400).
+  const paraTurnos = escalados.filter((e) => e.turno_inteiro
+    && !(e.location_id === painel.location_id && e.inicio === sai.inicio && e.fim === sai.fim));
 
   const escolherOpcao = (o) => { setOpcao(o); setEscolhida(null); setErro(null); };
 
@@ -118,9 +122,9 @@ export default function PainelTroca({ painel, dados, onFechar, onGuardado }) {
               {turnos ? (
                 <fieldset>
                   <legend className={rotulo}>Com quem está na escala</legend>
-                  {escalados.length === 0 && <p className="mt-1 text-[14px] text-muted-foreground">Mais ninguém na escala neste dia.</p>}
+                  {paraTurnos.length === 0 && <p className="mt-1 text-[14px] text-muted-foreground">Mais ninguém na escala neste dia.</p>}
                   <div className="mt-1 flex flex-wrap gap-2">
-                    {escalados.map((e) => (
+                    {paraTurnos.map((e) => (
                       <button
                         key={e.user_id} type="button" aria-pressed={escolhida === e.user_id}
                         onClick={() => setEscolhida(e.user_id)} className={pastilha(escolhida === e.user_id)}

@@ -220,3 +220,32 @@ def test_quem_entra_com_ausencia_aprovada_depois_da_troca_diz_troca_e_extra(tmp_
     r = _ecra(tmp_path, AJUDAS + "devolve(linhaDe('Alfragide', 'Beatrice').textContent);",
               _mes(dados=dados, idas=[troca(BEATRICE, sn.ALFRAGIDE, "Emily", "t-1")]))
     assert r == "Beatriceno lugar de Emily14h–23htroca · extra"
+
+
+def test_a_metade_que_sobra_de_uma_troca_nao_mostra_trocar_turnos(tmp_path):
+    # A Beatrice no lugar da Emily das 14h às 18h: a Emily fica das 18h às 23h, que não é o
+    # turno inteiro dela (o servidor recusava os turnos com 409). Outra pessoa continua.
+    r = _ecra(tmp_path, AJUDAS + """
+await clicar(linhaDe('Alfragide', 'Emily'));
+devolve({ titulo: dlg().querySelector('h2').textContent, turnos: botoes('Trocar turnos').length,
+          horas: [dlg().querySelector('[aria-label="Hora de início"]').value, dlg().querySelector('[aria-label="Hora de fim"]').value] });
+""", _mes(idas=[troca(BEATRICE, sn.ALFRAGIDE, "Emily", "t-1", "14:00", "18:00")]))
+    assert r == {"titulo": "Trocar Emily", "turnos": 0, "horas": ["18:00", "23:00"]}
+
+
+def test_trocar_turnos_nao_lista_o_colega_igual_nem_quem_tem_o_turno_partido(tmp_path):
+    # Sexta, 30/10, a Emily em Alfragide 14h–23h. A Joana passa para Alfragide 14h–23h (a mesma
+    # loja e as mesmas horas: a troca não mudava nada, 400) e a Carol fica no lugar do Weber na
+    # Amadora das 14h às 18h (o Weber fica com 18h–23h, que não é o turno inteiro dele, 409). A
+    # Beatrice está na mesma loja com outras horas: essa troca-se.
+    dados = sn.semana_normal()
+    sexta_joana = next(d for d in next(m for m in dados["modelos"] if m["id"] == "m-joana")["dias"] if d["dia"] == 4)
+    sexta_joana.update(location_id=sn.ALFRAGIDE, inicio="14:00", fim="23:00")
+    carol = dict(sn.ida("2026-10-30", sn.AMADORA, sn.CAROL, "14:00", "18:00"), troca_id="t-1", no_lugar_de_emp=sn.emp("Weber"))
+    r = _ecra(tmp_path, AJUDAS + """
+await clicar(document.querySelector('[data-dia="2026-10-30"]'));
+await clicar(linhaDe('Alfragide', 'Emily'));
+await clicar(botoes('Trocar turnos')[0]);
+devolve([...dlg().querySelectorAll('fieldset button')].map((b) => b.textContent));
+""", _mes(dados=dados, idas=[carol]))
+    assert r == ["BeatriceAlfragide 10h–19h", "EmanuelaOeiras 13h–22h", "RafaelaBelém 11h30–19h"]

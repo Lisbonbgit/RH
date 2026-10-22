@@ -280,9 +280,12 @@ def escala_de(dia: date, dados: Dict, emp_id: str, p: Optional[Dict] = None) -> 
 
 
 def _pessoa(user_id, nome, horas: Intervalo, origem: str, extra: bool = False, ida_id=None,
-            troca_id=None, no_lugar_de=None) -> Dict:
+            troca_id=None, no_lugar_de=None, turno_inteiro=None) -> Dict:
+    """`turno_inteiro`: na escala, se a linha é o turno inteiro da pessoa nesse dia (só esse se
+    troca por turnos); `None` fora da escala."""
     return {"user_id": user_id, "nome": nome, "inicio": hhmm(horas[0]), "fim": hhmm(horas[1]),
-            "origem": origem, "extra": extra, "ida_id": ida_id, "troca_id": troca_id, "no_lugar_de": no_lugar_de}
+            "origem": origem, "extra": extra, "ida_id": ida_id, "troca_id": troca_id, "no_lugar_de": no_lugar_de,
+            "turno_inteiro": turno_inteiro}
 
 
 def quem_sai(ida: Dict, nome_do_emp: Dict[str, str]) -> Optional[str]:
@@ -363,7 +366,8 @@ def dia_do_calendario(dia: date, dados: Dict, p: Optional[Dict] = None) -> Dict:
             continue
         for pedaco in subtrair([horas], tirado.get(emp_id, [])):
             presentes.setdefault(loja_id, []).append(_pessoa(
-                p["user_do_emp"].get(emp_id), p["nome_do_emp"].get(emp_id), pedaco, "escala"))
+                p["user_do_emp"].get(emp_id), p["nome_do_emp"].get(emp_id), pedaco, "escala",
+                turno_inteiro=pedaco == horas))
     return {
         "data": iso,
         "feriados": do_dia,

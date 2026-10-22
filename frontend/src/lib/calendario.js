@@ -206,7 +206,8 @@ export const linhaDaContagem = (linha, ano, mes) => (
 
 // Quem está na escala nesse dia (todas as lojas: chama-se com o mês SEM o filtro de loja),
 // para o «Trocar com…»: sem quem sai, sem quem não tem conta no RH (não se troca), uma linha
-// por pessoa (a primeira, se uma ida lhe partiu a escala), por nome.
+// por pessoa (a primeira, se uma ida lhe partiu a escala), por nome. `turno_inteiro` vem do
+// servidor: só quem o tem entra em «Trocar turnos».
 export function escaladosDoDia(dados, iso, saiUserId) {
   const dia = (dados?.dias || []).find((d) => d.data === iso);
   const vistos = new Set();
@@ -216,7 +217,7 @@ export function escaladosDoDia(dados, iso, saiUserId) {
       if (p.origem !== 'escala' || !p.user_id || p.user_id === saiUserId || vistos.has(p.user_id)) continue;
       vistos.add(p.user_id);
       escalados.push({ user_id: p.user_id, nome: p.nome, location_id: loja.location_id, loja: loja.nome,
-        inicio: p.inicio, fim: p.fim });
+        inicio: p.inicio, fim: p.fim, turno_inteiro: p.turno_inteiro });
     }
   }
   return escalados.sort((a, b) => a.nome.localeCompare(b.nome, 'pt'));

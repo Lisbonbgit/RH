@@ -95,7 +95,7 @@ function LojaDoDia({ loja, data, dados, onTapar, onIda, onTrocar, soBuracos = fa
     if (p.ida_id) return abreIda(dados, p) ? () => onIda(p.ida_id) : null;
     if (p.origem === 'escala' && p.user_id && dados.pode_trocar) {
       return () => onTrocar({ data, location_id: loja.location_id, nomeDaLoja: loja.nome,
-        sai: { user_id: p.user_id, nome: p.nome, inicio: p.inicio, fim: p.fim } });
+        sai: { user_id: p.user_id, nome: p.nome, inicio: p.inicio, fim: p.fim }, turnoInteiro: p.turno_inteiro });
     }
     return null;
   };
@@ -523,12 +523,13 @@ export default function BolsoCalendario() {
     modo: 'marcar',
     inicial: { datas: escolhido ? [escolhido] : [], location_id: loja, inicio: '', fim: '' },
   });
-  // «Trocar turnos» só quando a linha tocada é o turno inteiro: a única linha dessa pessoa no
-  // dia, contada no mês SEM o filtro de loja (uma ida dela noutra loja também lhe parte o dia).
+  // «Trocar turnos» só quando a linha tocada é o turno inteiro (`turno_inteiro`, do servidor: a
+  // metade que sobra de uma troca não é) e é a única linha dessa pessoa no dia, contada no mês
+  // SEM o filtro de loja (uma ida dela noutra loja também lhe parte o dia).
   const trocarPessoa = (t) => {
     const linhas = (desteMes?.dias || []).find((d) => d.data === t.data)?.lojas
       .flatMap((l) => l.pessoas || []).filter((p) => p.user_id === t.sai.user_id) || [];
-    abrirPainel({ modo: 'trocar', ...t, turnoInteiro: linhas.length === 1 });
+    abrirPainel({ modo: 'trocar', ...t, turnoInteiro: Boolean(t.turnoInteiro) && linhas.length === 1 });
   };
   const guardado = () => {
     setPainel(null);

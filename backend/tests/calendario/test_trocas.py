@@ -52,6 +52,16 @@ def test_meio_dia_a_emily_fica_no_resto():
         ("Beatrice", "14:00", "18:00", "ida", False, "Emily"), ("Emily", "18:00", "23:00", "escala", False, None)]
 
 
+def test_cada_linha_diz_se_e_o_turno_inteiro_da_escala():
+    # A metade que sobra de uma troca de meio dia não é o turno inteiro (trocar os turnos dava
+    # sempre 409); uma ida não é da escala (None).
+    dados = _com(troca("2026-10-27", sn.ALFRAGIDE, BEATRICE, "14:00", "18:00", "Emily"))
+    lojas = {l["nome"]: l for l in calendario.dia_do_calendario(TERCA, dados)["lojas"]}
+    assert [(p["nome"], p["turno_inteiro"]) for p in lojas["Alfragide"]["pessoas"]] == [
+        ("Beatrice", None), ("Emily", False)]
+    assert [(p["nome"], p["turno_inteiro"]) for p in lojas["Amadora"]["pessoas"]] == [("Joana", True)]
+
+
 def test_troca_entre_si_com_lojas_diferentes():
     dados = _com(troca("2026-10-27", sn.AMADORA, EMILY, "14:00", "23:00", "Joana"),
                  troca("2026-10-27", sn.ALFRAGIDE, JOANA, "14:00", "23:00", "Emily"))
