@@ -8848,6 +8848,8 @@ async def _bolso_criar_indices():
     await db.bolso_idas.create_index(
         [("data", 1), ("user_id", 1), ("location_id", 1), ("inicio", 1)], unique=True)
     await db.bolso_idas.create_index([("data", 1)])
+    await db.bolso_historico.create_index([("datas", 1)])
+    await db.bolso_historico.create_index([("quando", -1)])
 
 
 async def _bolso_dados(inicio: str, fim: str) -> dict:
@@ -8905,6 +8907,53 @@ async def bolso_calendario_contagem(
     ).to_list(5000)
     return calendario.contagem(idas, lojas, {u["id"]: u.get("name") for u in utilizadores},
                                {u["id"]: u.get("role") for u in utilizadores})
+
+
+@api_router.get("/bolso/calendario/historico")
+async def bolso_historico(
+    ano: int = Query(..., ge=2020, le=2100),
+    mes: int = Query(..., ge=1, le=12),
+    current_user: dict = Depends(admin_manager_required),
+):
+    """As mudanças que tocam o mês, da mais recente para a mais antiga. O `$elemMatch` exige UMA
+    data dentro do mês: um `$gte`/`$lte` solto sobre o array apanhava um PUT de 30/09 para 02/11
+    em outubro."""
+    inicio, fim = calendario.limites_do_mes(ano, mes)
+    entradas = await db.bolso_historico.find(
+        {"datas": {"$elemMatch": {"$gte": inicio, "$lte": fim}}}, {"_id": 0}
+    ).sort("quando", -1).to_list(300)
+    return {"entradas": entradas}
+
+
+async def _bolso_registar(current_user: dict, acao: str, antes: List[dict], depois: List[dict]) -> None:
+    """Uma entrada do histórico (desenho, §2), com os nomes já escritos. Chama-se DEPOIS de a
+    mudança estar gravada; se falhar, a mudança fica e o erro vai só para o log."""
+    try:
+        idas = antes + depois
+        lojas = {l["id"]: l.get("name") for l in await db.locations.find(
+            {"id": {"$in": sorted({i.get("location_id") for i in idas})}}, {"_id": 0, "id": 1, "name": 1}
+        ).to_list(1000)}
+        nomes = {u["id"]: u.get("name") for u in await db.users.find(
+            {"id": {"$in": sorted({i.get("user_id") for i in idas})}}, {"_id": 0, "id": 1, "name": 1}
+        ).to_list(1000)}
+        fichas = {e["id"]: e.get("name") for e in await db.employees.find(
+            {"id": {"$in": sorted({i["no_lugar_de_emp"] for i in idas if i.get("no_lugar_de_emp")})}},
+            {"_id": 0, "id": 1, "name": 1}).to_list(1000)}
+
+        def _retrato(i):
+            sai = i.get("no_lugar_de_emp")
+            return {"data": i["data"], "loja": lojas.get(i.get("location_id")) or calendario.NOME_SEM_LOJA,
+                    "nome": nomes.get(i.get("user_id")) or calendario.NOME_SEM_CONTA,
+                    "inicio": i["inicio"], "fim": i["fim"],
+                    "no_lugar_de": (fichas.get(sai) or calendario.NOME_SEM_CONTA) if sai else None}
+
+        await db.bolso_historico.insert_one({
+            "id": str(uuid.uuid4()), "quando": datetime.now(timezone.utc).isoformat(),
+            "quem_id": current_user.get("user_id"), "quem_nome": current_user.get("name"), "acao": acao,
+            "datas": sorted({i["data"] for i in idas}),
+            "antes": [_retrato(i) for i in antes], "depois": [_retrato(i) for i in depois]})
+    except Exception:  # noqa: BLE001
+        logger.exception("[bolso] não foi possível registar «%s» no histórico", acao)
 
 
 class BolsoIdasIn(BaseModel):
@@ -8995,6 +9044,7 @@ async def bolso_criar_idas(corpo: BolsoIdasIn, current_user: dict = Depends(bols
     ]
     await _bolso_validar_idas(novas)
     gravadas = await _bolso_gravar(novas)
+    await _bolso_registar(current_user, "marcou", [], novas)
     return {"criadas": len(gravadas), "ids": gravadas}
 
 
@@ -9042,21 +9092,25 @@ async def bolso_mudar_ida(ida_id: str, corpo: BolsoIdaIn, current_user: dict = D
     mudancas = {"data": corpo.data.isoformat(), "location_id": corpo.location_id,
                 "user_id": corpo.user_id, "inicio": corpo.inicio, "fim": corpo.fim}
     await _bolso_validar_idas([dict(actual, **mudancas)], ignorar_id=ida_id)
+    mudou = any(actual.get(k) != v for k, v in mudancas.items())
     mudancas.update(alterado_por=current_user.get("user_id"), alterado_em=datetime.now(timezone.utc).isoformat())
     try:
         await db.bolso_idas.update_one({"id": ida_id}, {"$set": mudancas})
     except DuplicateKeyError:
         raise HTTPException(
             status_code=409, detail="Alguém marcou esta mesma ida ao mesmo tempo — volte a abrir o dia.")
+    if mudou:
+        await _bolso_registar(current_user, "alterou", [actual], [dict(actual, **mudancas)])
     return dict(actual, **mudancas)
 
 
 @api_router.delete("/bolso/calendario/idas/{ida_id}")
 async def bolso_apagar_ida(ida_id: str, current_user: dict = Depends(bolso_quem_marca)):
-    await _bolso_ida_que_nao_e_troca(ida_id)
+    ida = await _bolso_ida_que_nao_e_troca(ida_id)
     resultado = await db.bolso_idas.delete_one({"id": ida_id})
     if resultado.deleted_count == 0:
         raise HTTPException(status_code=404, detail=_BOLSO_IDA_NAO_EXISTE)
+    await _bolso_registar(current_user, "apagou", [ida], [])
     return {"apagada": ida_id}
 
 
@@ -9121,7 +9175,9 @@ async def bolso_trocar(corpo: BolsoTrocaIn, current_user: dict = Depends(bolso_q
     novas = _bolso_troca([{"data": iso, "location_id": loja_id, "user_id": corpo.entra, "inicio": corpo.inicio,
                            "fim": corpo.fim, "no_lugar_de_emp": sai_emp}], troca_id, current_user)
     await _bolso_validar_idas(novas)
-    return {"troca_id": troca_id, "ids": await _bolso_gravar(novas)}
+    ids = await _bolso_gravar(novas)
+    await _bolso_registar(current_user, "trocou", [], novas)
+    return {"troca_id": troca_id, "ids": ids}
 
 
 @api_router.post("/bolso/calendario/trocas/entre-si")
@@ -9137,15 +9193,19 @@ async def bolso_trocar_entre_si(corpo: BolsoTrocaEntreSiIn, current_user: dict =
     troca_id = str(uuid.uuid4())
     novas = _bolso_troca(turnos, troca_id, current_user)
     await _bolso_validar_idas(novas)
-    return {"troca_id": troca_id, "ids": await _bolso_gravar(novas)}
+    ids = await _bolso_gravar(novas)
+    await _bolso_registar(current_user, "trocou entre si", [], novas)
+    return {"troca_id": troca_id, "ids": ids}
 
 
 @api_router.delete("/bolso/calendario/trocas/{troca_id}")
 async def bolso_desfazer_troca(troca_id: str, current_user: dict = Depends(bolso_quem_troca)):
     """Apaga TODAS as idas da troca: a troca entre si nunca fica a meio."""
+    idas = await db.bolso_idas.find({"troca_id": troca_id}, {"_id": 0}).to_list(10)
     resultado = await db.bolso_idas.delete_many({"troca_id": troca_id})
     if resultado.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Esta troca já não existe — volte a abrir o dia.")
+    await _bolso_registar(current_user, "desfez a troca", idas, [])
     return {"desfeita": troca_id, "apagadas": resultado.deleted_count}
 
 
@@ -10247,7 +10307,7 @@ async def startup_event():
     try:
         await _bolso_criar_indices()
     except Exception:  # noqa: BLE001
-        logger.warning("[bolso] não foi possível criar os índices de bolso_idas")
+        logger.warning("[bolso] não foi possível criar os índices de bolso_idas/bolso_historico")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
