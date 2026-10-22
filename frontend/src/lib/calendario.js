@@ -1,4 +1,5 @@
-// Calendário das lojas na Gestão Lisbonb — as contas do ecrã, sem React e sem rede.
+// Calendário das lojas na Gestão Lisbonb — as contas do ecrã, sem React e sem pedidos (do
+// `./bolso` só vem o `quandoFoi`, que formata uma data).
 //
 // O servidor manda o mês inteiro num pedido (`GET /api/bolso/calendario`, montado por
 // `backend/calendario.py::resposta_do_mes`); daqui sai o que o ecrã desenha: a grelha, os
@@ -220,7 +221,7 @@ export function escaladosDoDia(dados, iso, saiUserId) {
         inicio: p.inicio, fim: p.fim, turno_inteiro: p.turno_inteiro });
     }
   }
-  return escalados.sort((a, b) => a.nome.localeCompare(b.nome, 'pt'));
+  return escalados.sort((a, b) => (a.nome || '').localeCompare(b.nome || '', 'pt'));
 }
 
 // Uma entrada do histórico (`GET /api/bolso/calendario/historico`, retratos com os nomes já
@@ -239,7 +240,8 @@ function oQueFez(acao, antes, depois) {
   const [d] = depois;
   switch (acao) {
     case 'marcou':
-      return `marcou ${[...new Set(depois.map((r) => nomeCurto(r.nome)))].join(' e ')} em ${lojaEHoras(d)}`;
+      // Os repetidos tiram-se pelo nome completo: Ana Silva e Ana Costa não viram uma «Ana».
+      return `marcou ${[...new Set(depois.map((r) => r.nome))].map(nomeCurto).join(' e ')} em ${lojaEHoras(d)}`;
     case 'alterou':
       return `alterou a ida de ${nomeCurto(a.nome)}: ${ondeEQuando(a)} → ${
         d.nome !== a.nome ? `${nomeCurto(d.nome)} em ` : ''}${ondeEQuando(d)}`;

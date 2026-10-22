@@ -5,6 +5,8 @@ o Walisson no Algueirão 13h–22h; a Beatrice e o Weber estão de folga.
 """
 import json
 
+import pytest
+
 import calendario
 
 from . import dados_semana_normal as sn
@@ -17,10 +19,10 @@ def troca(user_id, loja, sai, troca_id, inicio="14:00", fim="23:00"):
     return dict(sn.ida("2026-10-27", loja, user_id, inicio, fim), troca_id=troca_id, no_lugar_de_emp=sn.emp(sai))
 
 
-def _mes(eu=sn.DEBORA, pode_trocar=True, idas=(), dados=None):
+def _mes(eu=sn.DEBORA, pode_trocar=True, idas=(), dados=None, mes=10):
     dados = dados or sn.semana_normal()
     dados["idas"] = list(idas)
-    return calendario.resposta_do_mes(2026, 10, dados, eu, True, pode_trocar)
+    return calendario.resposta_do_mes(2026, mes, dados, eu, True, pode_trocar)
 
 
 # A linha de uma pessoa numa loja do dia (Mês, Geral) e o diálogo aberto.
@@ -33,16 +35,22 @@ const pessoa = (nome) => [...dlg().querySelectorAll('fieldset button')].find((b)
 """
 
 
-def test_a_linha_da_escala_so_e_botao_para_admin_e_so_com_conta(tmp_path):
+# Na Semana (a vista por omissão, `None`: nada guardado; a semana de hoje, 26/10 a 1/11, pede
+# também novembro) e no Mês: o toque na linha da escala tem de estar provado nas duas.
+@pytest.mark.parametrize("vista", [None, "mes"])
+def test_a_linha_da_escala_so_e_botao_para_admin_e_so_com_conta(tmp_path, vista):
     ler = AJUDAS + """
 const forma = (el) => [el.tagName, el.getAttribute('aria-label')];
 devolve([forma(linhaDe('Alfragide', 'Emily')), forma(linhaDe('Algueirão', 'Walisson'))]);
 """
     sem_conta = sn.semana_normal()
     sem_conta["utilizadores"] = [u for u in sem_conta["utilizadores"] if u["id"] != WALISSON]
-    assert _ecra(tmp_path, ler, _mes(dados=sem_conta)) == [["BUTTON", "Trocar Emily, 14h–23h"], ["DIV", None]]
+    def _abrir(**kw):
+        return _ecra(tmp_path, ler, _mes(**kw), novembro=_mes(mes=11, **kw), vista=vista)
+
+    assert _abrir(dados=sem_conta) == [["BUTTON", "Trocar Emily, 14h–23h"], ["DIV", None]]
     # O gerente marca idas mas não troca: a mesma linha é texto.
-    assert _ecra(tmp_path, ler, _mes(eu=sn.GERENTE, pode_trocar=False)) == [["DIV", None], ["DIV", None]]
+    assert _abrir(eu=sn.GERENTE, pode_trocar=False) == [["DIV", None], ["DIV", None]]
 
 
 def test_outra_pessoa_avisa_quem_esta_na_escala_noutra_loja_e_envia_a_troca(tmp_path):

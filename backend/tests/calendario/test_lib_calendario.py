@@ -311,3 +311,21 @@ def test_um_lote_grande_no_historico_mostra_os_primeiros_dias_e_quantos_faltam(t
                                       for d in dias for n in ("Débora Ferreira", "Carol Santos")])
     assert _cal(tmp_path, "cal.linhaDoHistorico(D)", lote) == (
         "20/10 às 14:32 · Carol · marcou Débora e Carol em Oeiras, 13h–22h · 1/10, 2/10, 3/10 e mais 28")
+
+
+def test_marcou_tira_os_repetidos_pelo_nome_completo_antes_de_cortar(tmp_path):
+    # Ana Silva e Ana Costa são duas pessoas: cortar primeiro juntava-as numa «Ana».
+    lote = _entrada("marcou", depois=[_retrato(d, "Oeiras", n, "13:00", "22:00")
+                                      for d in ("2026-10-06", "2026-10-13") for n in ("Ana Silva", "Ana Costa")])
+    assert _cal(tmp_path, "cal.linhaDoHistorico(D)", lote) == (
+        "20/10 às 14:32 · Carol · marcou Ana e Ana em Oeiras, 13h–22h · 6/10, 13/10")
+
+
+def test_escalados_do_dia_com_um_nome_vazio_nao_rebenta(tmp_path):
+    # Uma ficha sem nome dá `nome: null` na escala; o `localeCompare` sobre null rebentava o
+    # painel (e o /bolso não tem ErrorBoundary).
+    dia = {"data": "2026-10-27", "lojas": [{"location_id": sn.ALFRAGIDE, "nome": "Alfragide", "pessoas": [
+        {"origem": "escala", "user_id": "u-b", "nome": "Beatrice", "inicio": "14:00", "fim": "23:00"},
+        {"origem": "escala", "user_id": "u-x", "nome": None, "inicio": "10:00", "fim": "19:00"}]}]}
+    r = _cal(tmp_path, "cal.escaladosDoDia(D, '2026-10-27', null).map((e) => e.user_id)", {"dias": [dia]})
+    assert r == ["u-x", "u-b"]
