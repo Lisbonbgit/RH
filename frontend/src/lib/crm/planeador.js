@@ -28,8 +28,30 @@
 //  - os links de navegação (Google Maps e Waze por paragem, os blocos de 9) só passam pelo `hrefNavegacao`
 //    (regra 9; o `seguranca.test.js` recusa-os sem ele); a atribuição do openrouteservice vai sempre, com
 //    a frase `TEXTO_ROTA_DE_TERCEIROS` antes (correções do mapa Google, T3.38).
-// `recarregar()` volta a ler a rota (o "Recarregar" do conflito, T3.32) e `destruir()` faz que as respostas
-// que chegarem depois já não façam nada. As ações, as horas automáticas e os conflitos são da T3.32.
+// `recarregar()` volta a ler a rota (o "Recarregar" do conflito) e `destruir()` faz que as respostas que
+// chegarem depois já não façam nada.
+//
+// A segunda parte (T3.32) grava: cada ação grava logo (plano F3 §1 "Gravação"), pela fila da rota
+// (`filaRota.js`: um pedido de cada vez, com a versão da última resposta, as alterações seguidas juntas):
+//  - otimistas (`aplicarLocalmente` por cima da última rota do servidor, com as alterações ainda por
+//    confirmar): retirar, mover/subir/descer, o motivo, o tempo, "Manter", "Pôr na rota", as definições do
+//    dia (as horas, as portagens, o início e o fim: "Ponto no mapa" com um toque, ou "Fábrica") e "Guardar
+//    rota" (com a pergunta "N paragens não cabem — guardar mesmo assim?"). A resposta do servidor manda; um
+//    erro (422, sem rede…) desfaz a visão otimista e mostra a mensagem (`alerta`);
+//  - não otimistas: adicionar uma loja ("A adicionar…" até à resposta, das sugestões ou do cartão de uma
+//    loja esbatida no mapa), "Calcular melhor ordem" ("A calcular…") e "Recalcular horas";
+//  - as horas automáticas: quando a fila esvazia (e quando a rota chega), se faltam horas
+//    (`precisaDeHoras`), ~1,5 s sem alterações e depois um só `recalcular` (correção "T3.32": o temporizador
+//    é injetado); no máximo um por par (versão, `calculado_em`), para uma resposta com as horas ainda velhas
+//    não disparar sem fim contra o limite do openrouteservice (correção "T3.32 / T3.38"). Um cálculo que
+//    falha (503, sem rede) mostra a mensagem e deixa `falhou`: nada mais sozinho até à próxima alteração ou
+//    ao botão;
+//  - os 409 da rota inteira param a fila: `conflito` → a faixa "Alterado por outra pessoa — recarregar" (o
+//    "Recarregar" relê a rota e a fila retoma com a versão dela); `rota_em_curso`/`rota_fechada` → só de
+//    leitura, com a mensagem do servidor;
+//  - as sugestões voltam a pedir-se quando a fila esvazia depois de uma gravação que deu certo (também a de
+//    um recálculo: o corredor muda com as horas);
+//  - os avisos ("Adicionada", "Retirada", "Rota guardada como planeada") vão para o `aoAvisar`.
 
 import { MENSAGEM_ERRO_INESPERADO, MENSAGEM_SEM_REDE } from './api';
 import { ATRIBUICOES, TEXTO_ROTA_DE_TERCEIROS } from './atribuicoes';
@@ -37,9 +59,12 @@ import { eDataValida, rotuloDataLonga } from './datas';
 import { hrefNavegacao } from './dom';
 import { textoDoErro } from './ecraMapa';
 import { FASES } from './fases';
+import { CODIGOS_QUE_PARAM, criarFilaRota, enviarPelaApi } from './filaRota';
 import { descodificarPolilinha } from './polilinha';
+import { mover as moverNaLista } from './reordenar';
 import {
-  LIMITE_PARAGENS, avisosDaRota, rotuloEstado, rotuloMotivo, seccoesDaRota, textoAviso, textoDistancia, totaisDaRota,
+  LIMITE_PARAGENS, aplicarLocalmente, avisosDaRota, corpoOrdem, motivoPorFase, perguntaGuardar, precisaDeHoras,
+  rotuloEstado, rotuloMotivo, seccoesDaRota, textoAviso, textoDistancia, totaisDaRota,
 } from './rota';
 
 export const TEXTO_A_CARREGAR = 'A carregar a rota…';
@@ -80,6 +105,23 @@ export const TEXTO_HORAS_ANTIGAS = 'Horas antigas — Recalcular horas';
 export const TEXTO_HORAS_ANTIGAS_LEITURA = 'Horas antigas';
 export const TEXTO_SEM_HORAS = 'sem horas — ordene à mão';
 
+// As ações em curso e os avisos (T3.32).
+export const TEXTO_A_CALCULAR = 'A calcular…';
+export const TEXTO_A_RECALCULAR = 'A recalcular…';
+export const TEXTO_A_ADICIONAR = 'A adicionar…';
+export const TEXTO_ADICIONADA = 'Adicionada';
+export const TEXTO_RETIRADA = 'Retirada';
+export const TEXTO_GUARDADA = 'Rota guardada como planeada';
+// A faixa do 409 `conflito`: a mesma da ficha da loja (`ficha.TEXTO_CONFLITO`) e a mensagem do servidor.
+export const TEXTO_CONFLITO = 'Alterado por outra pessoa — recarregar';
+export const TEXTO_FALTA_CONFLITO = 'Recarregue a rota para ver o que a outra pessoa mudou.';
+// A faixa do "Ponto no mapa" (com "Cancelar": `escolherPonto(null)`).
+export const TEXTOS_ESCOLHER_PONTO = Object.freeze({ inicio: 'Toque no mapa no ponto de início', fim: 'Toque no mapa no ponto de fim' });
+// A espera sem alterações antes do recálculo automático (correção "T3.32").
+export const ESPERA_HORAS_MS = 1500;
+// As definições do dia que o `mudarDefinicao` grava (os campos de topo do PATCH).
+export const DEFINICOES_DO_DIA = Object.freeze(['hora_saida', 'hora_regresso_limite', 'inicio', 'fim', 'evitar_portagens']);
+
 // As sugestões.
 export const TEXTO_SUGESTOES_A_CARREGAR = 'A procurar lojas perto…';
 export const TEXTO_SUGESTOES_NENHUMA = 'Não há lojas para sugerir perto desta rota.';
@@ -92,6 +134,9 @@ const eObjeto = (valor) => valor !== null && typeof valor === 'object' && !Array
 const eNumeroFinito = (valor) => typeof valor === 'number' && Number.isFinite(valor);
 const paragensDe = (rota) => (Array.isArray(rota?.paragens) ? rota.paragens : []);
 const comCoordenadas = (ponto) => eObjeto(ponto) && eNumeroFinito(ponto.lat) && eNumeroFinito(ponto.lng);
+// Uma versão da rota: um inteiro ≥ 1 (a fila só aceita isso, ou null).
+const eVersao = (valor) => Number.isInteger(valor) && valor >= 1;
+const PONTAS = Object.freeze(['inicio', 'fim']);
 
 function congelarAFundo(valor) {
   if (valor !== null && typeof valor === 'object' && !Object.isFrozen(valor)) {
@@ -138,14 +183,21 @@ export function textoLeitura(rota) {
 }
 
 const acao = (texto, falta, extra = {}) => ({ texto, ativo: falta === null, falta, ...extra });
+// Um botão cujo pedido está a correr: desligado, sem falta a dizer (o texto já diz "A calcular…").
+const emCurso = (texto) => ({ texto, ativo: false, falta: null });
 
 // Os botões de uma rota editável: {calcular, recalcular, guardar}, cada um {texto, ativo, falta} (falta: porque
-// está desligado, ou null; o guardar leva também a `pergunta`, da T3.32). Pela ordem dos motivos: sem rede;
-// a rota ainda sem paragens ativas (a virtual também); depois os de cada ação.
-export function acoesDaRota(rota, { online = false } = {}) {
+// está desligado, ou null; o guardar leva também a `pergunta`, que o planeador preenche). Com o pedido a correr
+// (`aCalcular`: a melhor ordem; `aRecalcular`: as horas), "A calcular…"/"A recalcular…"; senão, pela ordem dos
+// motivos: o conflito; sem rede; a rota ainda sem paragens ativas (a virtual também); depois os de cada ação
+// (as horas esperam pela melhor ordem que está a correr).
+export function acoesDaRota(rota, {
+  online = false, conflito = false, aCalcular = false, aRecalcular = false,
+} = {}) {
   const { rota: naRota, naoCabem } = seccoesDaRota(rota);
   let geral = null;
-  if (online !== true) geral = MENSAGEM_SEM_REDE;
+  if (conflito === true) geral = TEXTO_FALTA_CONFLITO;
+  else if (online !== true) geral = MENSAGEM_SEM_REDE;
   else if (rota?.existe !== true || paragensDe(rota).length === 0) geral = TEXTO_PRIMEIRA_PARAGEM;
   const semChave = rota?.calculo_disponivel === true ? null : MENSAGEM_SEM_CALCULO;
 
@@ -156,11 +208,24 @@ export function acoesDaRota(rota, { online = false } = {}) {
   else if (rota.calculo?.atual === true) horas = TEXTO_HORAS_EM_DIA;
   const planeada = rota?.estado === 'rascunho' ? null : TEXTO_JA_PLANEADA;
 
+  const otimizar = aCalcular === true;
   return {
-    calcular: acao(TEXTO_CALCULAR, geral ?? semChave ?? nadaParaOtimizar),
-    recalcular: acao(TEXTO_RECALCULAR, geral ?? semChave ?? horas),
+    calcular: otimizar ? emCurso(TEXTO_A_CALCULAR) : acao(TEXTO_CALCULAR, geral ?? semChave ?? nadaParaOtimizar),
+    recalcular: aRecalcular === true
+      ? emCurso(TEXTO_A_RECALCULAR)
+      : acao(TEXTO_RECALCULAR, (otimizar ? TEXTO_A_CALCULAR : null) ?? geral ?? semChave ?? horas),
     guardar: acao(TEXTO_GUARDAR_ROTA, geral ?? planeada, { pergunta: null }),
   };
+}
+
+// A mensagem de uma gravação recusada: num 422, a do primeiro campo (a geral não diz o que está mal); senão a
+// do erro.
+function mensagemDoErro(erro) {
+  if (erro?.codigo === 'validacao' && eObjeto(erro.campos)) {
+    const doCampo = Object.values(erro.campos).find((mensagem) => typeof mensagem === 'string' && mensagem !== '');
+    if (doCampo !== undefined) return doCampo;
+  }
+  return textoDoErro(erro);
 }
 
 // O título de um grupo: o rótulo da fase (`fases.js`), ou o próprio nome se não for uma fase conhecida.
@@ -294,28 +359,47 @@ const ATRIBUICAO_ORS = Object.freeze({ aviso: TEXTO_ROTA_DE_TERCEIROS, texto: AT
 
 // --- Ecrã ----------------------------------------------------------------------------------------
 
-// criarPlaneador({api, rede, data, base, navegar, aoMudarVista, aoAvisar})
-//   → {vista, iniciar, tentarDeNovo, recarregar, voltarAsRotas, destruir}
-//  - api: {obterRota, obterConfigMapa, listarLojas, obterSugestoes} do lib/crm/api.js (a T3.32 junta as
-//    escritas); data: o `:data` da rota (`AAAA-MM-DD`);
+// O temporizador do browser (lido a cada chamada: no Jest, o relógio falso troca-o).
+const TEMPORIZADOR_DO_BROWSER = Object.freeze({
+  agendar: (funcao, ms) => setTimeout(funcao, ms),
+  cancelar: (id) => clearTimeout(id),
+});
+
+// O par de um estado da rota para o recálculo automático (correção "T3.32 / T3.38"): a versão e o
+// `calculado_em` do cálculo gravado. O recálculo não muda a versão, e o servidor não manda a assinatura.
+const parDe = (rota) => JSON.stringify([rota?.versao ?? null, rota?.calculo?.calculado_em ?? null]);
+
+// criarPlaneador({api, rede, data, base, navegar, aoMudarVista, aoAvisar, temporizador})
+//   → {vista, iniciar, tentarDeNovo, recarregar, voltarAsRotas, destruir,
+//      adicionar, retirar, mover, subir, descer, mudarMotivo, mudarTempo, manter, porNaRota, mudarDefinicao,
+//      escolherPonto, tocarNoMapa, usarFabrica, escolherLoja, calcularMelhorOrdem, recalcularHoras, guardar,
+//      responderGuardar}
+//  - api: o cliente do lib/crm/api.js (`obterRota`, `obterConfigMapa`, `listarLojas`, `obterSugestoes` e as
+//    escritas `adicionarParagem`, `alterarRota`, `recalcularHoras`, `otimizarRota`, pela fila);
+//    data: o `:data` da rota (`AAAA-MM-DD`);
 //  - rede: o `criarEstadoRede(window, navigator)`; base: a casa do CRM (`/crm` ou `/admin/crm`);
-//  - navegar(caminho, opcoes?): o `navigate` do React Router; aoMudarVista(vista); aoAvisar(texto, opcoes?):
-//    os toasts das ações (T3.32).
+//  - navegar(caminho, opcoes?): o `navigate` do React Router; aoMudarVista(vista); aoAvisar(texto): os toasts
+//    ("Adicionada", "Retirada", "Rota guardada como planeada");
+//  - temporizador: {agendar(funcao, ms) → id, cancelar(id)}, a espera das horas automáticas (por omissão o
+//    `setTimeout` do browser).
 // vista: {estado: 'a_carregar'|'falha'|'rota'|'data_invalida', titulo, somenteLeitura, textoLeitura,
-//         rotuloEstado, falha: null | {mensagem, tentar, aTentar}, conflito (T3.32), semRede,
-//         definicoes: null | {hora_saida, hora_regresso_limite, inicio, fim, evitar_portagens, ativas, mensagem},
-//         totais, horas: null | {atuais, texto}, avisos, seccoes: null | {rota, fechadas, naoCabem, semLoja},
-//         sugestoes: null | {estado, grupos, mensagem, tentar, aTentar},
+//         rotuloEstado, falha: null | {mensagem, tentar, aTentar}, conflito: null | {mensagem, aRecarregar, erro},
+//         semRede, definicoes: null | {hora_saida, hora_regresso_limite, inicio, fim, evitar_portagens, ativas,
+//         mensagem}, totais, horas: null | {atuais, texto}, avisos, seccoes: null | {rota, fechadas, naoCabem,
+//         semLoja}, sugestoes: null | {estado, grupos (cada loja com `aAdicionar`), mensagem, tentar, aTentar},
 //         mapa: {paragens, inicio, fim, linha, linhaAtual, lojasForaDaRota}, configuracao, falhaDoMapa,
-//         acoes: null | {calcular, recalcular, guardar}, calculo: null | {aCalcular, mensagem}, blocosGoogle,
-//         atribuicaoOrs, limite: null | {cheia, texto}, escolherPonto, lojaEscolhida (T3.32),
-//         recarga: {aRecarregar, erro}, caminhoRotas}
+//         acoes: null | {calcular, recalcular, guardar (com a `pergunta`)}, calculo: null | {aCalcular, mensagem},
+//         blocosGoogle, atribuicaoOrs, limite: null | {cheia, texto}, escolherPonto: null | 'inicio' | 'fim',
+//         lojaEscolhida: null | {id, nome, fase, motivo, rotuloMotivo, aAdicionar, ativo}, podeAdicionar,
+//         alerta: null | {mensagem}, recarga: {aRecarregar, erro}, caminhoRotas}
 //   — nova a cada mudança e congelada a fundo.
 // Criar o ecrã não pede nada: `iniciar()` pede e ouve a rede.
-export function criarPlaneador({ api, rede, data, base, navegar, aoMudarVista, aoAvisar }) {
+export function criarPlaneador({
+  api, rede, data, base, navegar, aoMudarVista, aoAvisar, temporizador = TEMPORIZADOR_DO_BROWSER,
+}) {
   const dataValida = eDataValida(data);
   const caminhoRotas = `${base}/rotas`;
-  let rota = null; // a rota como o servidor a mandou (a do GET, ou a do último Recarregar)
+  let rota = null; // a rota como o servidor a mandou (a do GET, a do último Recarregar ou a da última gravação)
   let falha = null; // a rota não carregou: a mensagem
   let dataRecusada = dataValida ? null : MENSAGEM_DATA_INVALIDA; // "Dia inválido": a mensagem
   let aCarregar = false;
@@ -335,6 +419,22 @@ export function criarPlaneador({ api, rede, data, base, navegar, aoMudarVista, a
   let ativo = true;
   let cancelarRede = () => {};
 
+  // As gravações (T3.32).
+  let fila = null; // criada com a primeira rota (a versão dela)
+  let conflito = false; // um 409 `conflito`: a faixa, até ao Recarregar
+  let bloqueio = null; // um 409 `rota_em_curso`/`rota_fechada`: a mensagem (só de leitura até ao Recarregar)
+  let alerta = null; // a mensagem da última gravação recusada
+  let erroCalculo = null; // a mensagem do último cálculo que falhou
+  let falhou = false; // o último cálculo falhou: nada de horas automáticas até à próxima alteração ou ao botão
+  let pontaAEscolher = null; // "Ponto no mapa": 'inicio' ou 'fim', à espera do toque
+  let lojaEscolhida = null; // o cartão de uma loja esbatida: {id, nome, fase, motivo, rotuloMotivo}
+  let perguntarGuardar = false;
+  const aAdicionar = new Set(); // os `loja_id` a adicionar
+  const paresTratados = new Set(); // os pares que já tiveram (ou já deram) um recálculo automático
+  let esperaHoras = null; // a espera das horas automáticas (o id do temporizador)
+  let respostasDaFila = 0; // quantas gravações deram certo (uma leitura que começou antes é mais velha)
+  let sugestoesPorPedir = false; // uma gravação deu certo desde o último pedido das sugestões
+
   const memoLinha = criarMemo();
   const memoLojasFora = criarMemo();
   const memoMapa = criarMemo();
@@ -343,34 +443,51 @@ export function criarPlaneador({ api, rede, data, base, navegar, aoMudarVista, a
 
   // --- A vista ---
 
-  function linhaDoMapa() {
-    const geometria = rota?.calculo?.geometria;
+  // A rota que o ecrã mostra: a do servidor com as alterações ainda por confirmar por cima (a visão
+  // otimista) e, depois de um 409 `rota_em_curso`/`rota_fechada`, só de leitura.
+  function rotaDaVista() {
+    if (rota === null) return null;
+    const fabrica = configuracao?.centro ?? null;
+    const otimista = fila.alteracoesPorConfirmar.reduce((r, corpo) => aplicarLocalmente(r, corpo, { fabrica }), rota);
+    return bloqueio === null ? otimista : { ...otimista, editavel: false };
+  }
+
+  function linhaDoMapa(r) {
+    const geometria = r?.calculo?.geometria;
     return memoLinha([geometria], () => (typeof geometria === 'string' ? congelarAFundo(descodificarPolilinha(geometria)) : SEM_LINHA));
   }
 
-  function lojasForaDoMapa() {
-    if (rota === null || lojas === null) return null;
-    const chave = JSON.stringify([...new Set(idsDasLojasNaRota(rota))].sort());
-    return memoLojasFora([lojas, chave], () => congelarAFundo(lojasForaDaRota(lojas, rota)));
+  function lojasForaDoMapa(r) {
+    if (r === null || lojas === null) return null;
+    const chave = JSON.stringify([...new Set(idsDasLojasNaRota(r))].sort());
+    return memoLojasFora([lojas, chave], () => congelarAFundo(lojasForaDaRota(lojas, r)));
   }
 
-  function mapaDaVista() {
-    const paragens = rota === null ? [] : paragensDoMapa(rota);
-    const inicio = rota === null ? null : pontaDe(rota.inicio);
-    const fim = rota === null ? null : pontaDe(rota.fim);
-    const linha = linhaDoMapa();
-    const linhaAtual = rota?.calculo?.atual === true;
-    const fora = lojasForaDoMapa();
+  function mapaDaVista(r) {
+    const paragens = r === null ? [] : paragensDoMapa(r);
+    const inicio = r === null ? null : pontaDe(r.inicio);
+    const fim = r === null ? null : pontaDe(r.fim);
+    const linha = linhaDoMapa(r);
+    const linhaAtual = r?.calculo?.atual === true;
+    const fora = lojasForaDoMapa(r);
     const chave = JSON.stringify([paragens, inicio, fim]);
     return memoMapa([chave, linha, linhaAtual, fora], () => congelarAFundo({
       paragens, inicio, fim, linha, linhaAtual, lojasForaDaRota: fora,
     }));
   }
 
-  function sugestoesDaVista() {
-    if (rota === null || rota.editavel !== true) return null;
-    if (!temLojasNasParagens(rota)) return vistaDasSugestoes({ sem_paragens: true }, []);
-    if (sugestoes !== null) return vistaDasSugestoes(sugestoes, idsDasLojasNaRota(rota));
+  // As lojas sugeridas com o "A adicionar…" de cada uma.
+  function comAAdicionar(vistaSugestoes) {
+    const grupos = vistaSugestoes.grupos.map((grupo) => ({
+      ...grupo, lojas: grupo.lojas.map((loja) => ({ ...loja, aAdicionar: aAdicionar.has(loja.id) })),
+    }));
+    return { ...vistaSugestoes, grupos };
+  }
+
+  function sugestoesDaVista(r) {
+    if (r === null || r.editavel !== true) return null;
+    if (!temLojasNasParagens(r)) return vistaDasSugestoes({ sem_paragens: true }, []);
+    if (sugestoes !== null) return comAAdicionar(vistaDasSugestoes(sugestoes, idsDasLojasNaRota(r)));
     if (erroSugestoes !== null) {
       return { estado: 'falha', grupos: [], mensagem: erroSugestoes, tentar: true, aTentar: aCarregarSugestoes };
     }
@@ -382,53 +499,87 @@ export function criarPlaneador({ api, rede, data, base, navegar, aoMudarVista, a
     return erro === null ? null : { mensagem: erro, aTentar: aCarregarConfiguracao || aCarregarLojas };
   }
 
+  // Os botões agora, com o que está na fila.
+  function acoesAgora(r) {
+    return acoesDaRota(r, {
+      online: online(), conflito, aCalcular: fila.tem('otimizar'), aRecalcular: fila.tem('recalcular'),
+    });
+  }
+
+  // O cartão da loja escolhida no mapa; sai quando a loja entra na rota.
+  function lojaEscolhidaDaVista(r, podeAdicionar) {
+    if (lojaEscolhida === null || r?.editavel !== true || idsDasLojasNaRota(r).includes(lojaEscolhida.id)) return null;
+    const emCursoAqui = aAdicionar.has(lojaEscolhida.id);
+    return { ...lojaEscolhida, aAdicionar: emCursoAqui, ativo: podeAdicionar && !emCursoAqui };
+  }
+
   function montarVista() {
+    const r = rotaDaVista();
     let estado = 'a_carregar';
     if (dataRecusada !== null) estado = 'data_invalida';
-    else if (rota !== null) estado = 'rota';
+    else if (r !== null) estado = 'rota';
     else if (falha !== null) estado = 'falha';
     const ligado = online();
     const comRota = estado === 'rota';
-    const editavel = comRota && rota.editavel === true;
-    const podeMudar = editavel && ligado;
+    const editavel = comRota && r.editavel === true;
+    const podeMudar = editavel && ligado && !conflito;
+    const limite = comRota ? limiteDaRota(r) : null;
+    const podeAdicionar = podeMudar && !limite.cheia;
 
     let falhaVista = null;
     if (estado === 'data_invalida') falhaVista = { mensagem: dataRecusada, tentar: false, aTentar: false };
     else if (estado === 'falha') falhaVista = { mensagem: falha, tentar: true, aTentar: aCarregar };
 
+    let acoes = null;
+    if (editavel) {
+      acoes = acoesAgora(r);
+      acoes.guardar.pergunta = perguntarGuardar ? perguntaGuardar(r) : null;
+    }
+
     return congelarAFundo({
       estado,
       titulo: dataRecusada === null ? `Rota de ${rotuloDataLonga(data)}` : TITULO_DIA_INVALIDO,
       somenteLeitura: comRota && !editavel,
-      textoLeitura: comRota ? textoLeitura(rota) : null,
-      rotuloEstado: comRota ? (rotuloEstado(rota.estado_efetivo) ?? TEXTO_AINDA_SEM_PARAGENS) : null,
+      textoLeitura: comRota ? (bloqueio ?? textoLeitura(r)) : null,
+      rotuloEstado: comRota ? (rotuloEstado(r.estado_efetivo) ?? TEXTO_AINDA_SEM_PARAGENS) : null,
       falha: falhaVista,
-      conflito: null,
+      conflito: conflito ? { mensagem: TEXTO_CONFLITO, aRecarregar, erro: erroRecarga } : null,
       semRede: !ligado,
       definicoes: comRota ? {
-        hora_saida: rota.hora_saida,
-        hora_regresso_limite: rota.hora_regresso_limite,
-        inicio: pontaDasDefinicoes(rota.inicio),
-        fim: pontaDasDefinicoes(rota.fim),
-        evitar_portagens: rota.evitar_portagens === true,
-        ativas: rota.existe === true && podeMudar,
-        mensagem: editavel && rota.existe !== true ? TEXTO_DEFINICOES_SEM_ROTA : null,
+        hora_saida: r.hora_saida,
+        hora_regresso_limite: r.hora_regresso_limite,
+        inicio: pontaDasDefinicoes(r.inicio),
+        fim: pontaDasDefinicoes(r.fim),
+        evitar_portagens: r.evitar_portagens === true,
+        ativas: r.existe === true && podeMudar,
+        mensagem: editavel && r.existe !== true ? TEXTO_DEFINICOES_SEM_ROTA : null,
       } : null,
-      totais: comRota ? totaisDaRota(rota) : null,
-      horas: comRota ? { atuais: rota.calculo?.atual === true, texto: textoDasHoras(rota) } : null,
-      avisos: comRota ? avisosDaRota(rota) : SEM_AVISOS,
-      seccoes: comRota ? seccoesDaVista(rota, podeMudar) : null,
-      sugestoes: comRota ? sugestoesDaVista() : null,
-      mapa: mapaDaVista(),
+      totais: comRota ? totaisDaRota(r) : null,
+      horas: comRota ? {
+        atuais: r.calculo?.atual === true,
+        // "a recalcular" só com um recálculo (ou uma otimização) na fila (correção "T3.16 / T3.21 / T3.32").
+        texto: textoDasHoras(r, { aRecalcular: fila.tem('recalcular') || fila.tem('otimizar') }),
+      } : null,
+      avisos: comRota ? avisosDaRota(r) : SEM_AVISOS,
+      seccoes: comRota ? seccoesDaVista(r, podeMudar) : null,
+      sugestoes: sugestoesDaVista(r),
+      mapa: mapaDaVista(r),
       configuracao,
       falhaDoMapa: falhaDoMapa(),
-      acoes: editavel ? acoesDaRota(rota, { online: ligado }) : null,
-      calculo: editavel ? { aCalcular: false, mensagem: rota.calculo_disponivel === true ? null : MENSAGEM_SEM_CALCULO } : null,
-      blocosGoogle: comRota ? blocosDaRota(rota) : SEM_AVISOS,
+      acoes,
+      calculo: editavel ? {
+        aCalcular: fila.tem('otimizar'),
+        // Sem a chave, só "indisponível" (mesmo que um cálculo de antes tenha falhado com outra mensagem).
+        mensagem: r.calculo_disponivel === true ? erroCalculo : MENSAGEM_SEM_CALCULO,
+      } : null,
+      blocosGoogle: comRota ? blocosDaRota(r) : SEM_AVISOS,
       atribuicaoOrs: comRota ? ATRIBUICAO_ORS : null,
-      limite: comRota ? limiteDaRota(rota) : null,
-      escolherPonto: null,
-      lojaEscolhida: null,
+      limite,
+      // (A faixa só abre numa rota que já existe: `escolherPonto`.)
+      escolherPonto: podeMudar ? pontaAEscolher : null,
+      lojaEscolhida: lojaEscolhidaDaVista(r, podeAdicionar),
+      podeAdicionar,
+      alerta: alerta === null ? null : { mensagem: alerta },
       recarga: { aRecarregar, erro: erroRecarga },
       caminhoRotas,
     });
@@ -483,11 +634,177 @@ export function criarPlaneador({ api, rede, data, base, navegar, aoMudarVista, a
     atualizar();
   }
 
-  // A rota que chegou (do GET ou do Recarregar), e as sugestões dela.
+  // --- As horas automáticas ---
+
+  // Pode pedir as horas sozinho agora? A fila vazia e a andar, com rede, a rota a precisar delas (com a
+  // chave, editável, com paragens na secção "rota", as horas velhas e sem um cálculo falhado) e um par novo.
+  function horasAutomaticas() {
+    return ativo && rota !== null && fila.vazia && !fila.parada && online()
+      && precisaDeHoras(rota, { falhou }) && !paresTratados.has(parDe(rota));
+  }
+
+  // (Cancelar uma espera que já disparou, ou nenhuma, não faz nada.)
+  function cancelarEspera() {
+    temporizador.cancelar(esperaHoras);
+    esperaHoras = null;
+  }
+
+  // ~1,5 s sem alterações e depois um só recálculo (correção "T3.32"): cada ação cancela a espera e cada
+  // vez que a fila esvazia ela recomeça.
+  function agendarHoras() {
+    cancelarEspera();
+    if (!horasAutomaticas()) return;
+    esperaHoras = temporizador.agendar(() => {
+      if (!horasAutomaticas()) return;
+      paresTratados.add(parDe(rota));
+      calcular('recalcular');
+      atualizar();
+    }, ESPERA_HORAS_MS);
+  }
+
+  // --- As gravações ---
+
+  // Um 409 da rota inteira parou a fila (os pedidos à espera foram recusados com ele). Não há espera das
+  // horas a cancelar: o pedido que parou saiu de uma ação (que a cancelou) ou da própria espera.
+  function parar(erro) {
+    pontaAEscolher = null;
+    lojaEscolhida = null;
+    perguntarGuardar = false;
+    aAdicionar.clear();
+    if (erro.codigo === 'conflito') conflito = true;
+    else bloqueio = textoDoErro(erro);
+  }
+
+  // Quando a fila esvazia (e continua a andar): a espera das horas e, se alguma gravação deu certo, as
+  // sugestões outra vez.
+  function depoisDoPedido() {
+    if (fila.vazia && !fila.parada) {
+      agendarHoras();
+      if (sugestoesPorPedir) {
+        sugestoesPorPedir = false;
+        pedirSugestoes();
+      }
+    }
+    atualizar();
+  }
+
+  // Segue a promessa de um pedido da fila: a rota da resposta (a visão otimista assenta nela), ou o erro.
+  // Todas as promessas da fila têm aqui o seu `catch`: numa paragem são todas recusadas com o mesmo erro.
+  function seguir(promessa, { aoGravar, aoFalhar }) {
+    promessa.then(
+      (lida) => {
+        if (!ativo) return;
+        if (eObjeto(lida)) rota = lida;
+        respostasDaFila += 1;
+        sugestoesPorPedir = true;
+        aoGravar?.(lida);
+        depoisDoPedido();
+      },
+      (erro) => {
+        if (!ativo) return;
+        if (CODIGOS_QUE_PARAM.includes(erro?.codigo)) parar(erro);
+        else aoFalhar(erro);
+        depoisDoPedido();
+      },
+    );
+  }
+
+  const mostrarAlerta = (erro) => {
+    alerta = mensagemDoErro(erro);
+  };
+
+  // Uma ação de quem planeia: a espera das horas recomeça depois dela, a mensagem anterior sai e as horas
+  // automáticas voltam a poder tentar.
+  function antesDeGravar() {
+    cancelarEspera();
+    alerta = null;
+    falhou = false;
+  }
+
+  // Um PATCH pela fila (otimista: a vista mostra-o já).
+  function alterar(corpo, aoGravar) {
+    antesDeGravar();
+    seguir(fila.alterar(corpo), { aoGravar, aoFalhar: mostrarAlerta });
+    atualizar();
+  }
+
+  // O recalcular (as horas) ou o otimizar (a melhor ordem e as horas). A falha fica junto ao cálculo.
+  function calcular(tipo) {
+    erroCalculo = null;
+    seguir(tipo === 'otimizar' ? fila.otimizar() : fila.recalcular(), {
+      aoGravar: (lida) => {
+        paresTratados.add(parDe(lida));
+      },
+      aoFalhar: (erro) => {
+        erroCalculo = textoDoErro(erro);
+        falhou = true;
+      },
+    });
+  }
+
+  // A rota (otimista) se agora se pode gravar nela: editável, com rede e sem conflito; senão null.
+  function rotaParaGravar() {
+    const r = rotaDaVista();
+    return ativo && r !== null && r.editavel === true && online() && !conflito ? r : null;
+  }
+
+  // …e com as definições do dia: a rota já existe (o PATCH de uma rota virtual dá 404; correção
+  // "T3.20 / T3.31 / T3.39").
+  function rotaComDefinicoes() {
+    const r = rotaParaGravar();
+    return r !== null && r.existe === true ? r : null;
+  }
+
+  const temParagem = (r, id) => paragensDe(r).some((p) => p.id === id);
+  const idsDaSeccaoRota = (r) => seccoesDaRota(r).rota.map((p) => p.id);
+
+  // A secção "rota" com a paragem `de` na posição `para` (o `mover` do reordenar.js: fora da lista não mexe,
+  // para lá das pontas encosta); sem nada a mudar, nada a gravar.
+  function moverParagem(r, de, para) {
+    const ids = idsDaSeccaoRota(r);
+    const novos = moverNaLista(ids, de, para);
+    if (novos.every((id, i) => id === ids[i])) return;
+    alterar(corpoOrdem(r, novos));
+  }
+
+  // Subir (−1) ou descer (+1) uma posição; nas pontas, ou fora da secção "rota", o `moverParagem` não muda nada.
+  function deslocar(id, passo) {
+    const r = rotaParaGravar();
+    if (r === null) return;
+    const i = idsDaSeccaoRota(r).indexOf(id);
+    moverParagem(r, i, i + passo);
+  }
+
+  function alterarParagem(id, campos) {
+    const r = rotaParaGravar();
+    if (r === null || !temParagem(r, id)) return;
+    alterar({ paragens: { [id]: campos } });
+  }
+
+  function mudarDefinicao(chave, valor) {
+    if (!DEFINICOES_DO_DIA.includes(chave) || valor === undefined) return;
+    const r = rotaComDefinicoes();
+    if (r === null) return;
+    // As horas e as portagens com o valor que já têm: nada a gravar (o início e o fim são objetos: vão sempre).
+    if (r[chave] === valor) return;
+    alterar({ [chave]: valor });
+  }
+
+  function enviarGuardar() {
+    alterar({ estado: 'planeada' }, () => aoAvisar?.(TEXTO_GUARDADA));
+  }
+
+  // A rota que chegou (do GET ou do Recarregar), e as sugestões dela. A fila nasce com a primeira; depois
+  // retoma com a versão da rota lida, só vazia (parada também está vazia): com uma gravação a correr, a
+  // versão é a da resposta dela.
   function aplicarRota(lida) {
     rota = lida;
     falha = null;
+    const versao = eVersao(lida.versao) ? lida.versao : null;
+    if (fila === null) fila = criarFilaRota({ enviar: enviarPelaApi(api, data), versao });
+    else if (fila.vazia) fila.retomar(versao);
     pedirSugestoes();
+    agendarHoras();
     atualizar();
   }
 
@@ -579,10 +896,13 @@ export function criarPlaneador({ api, rede, data, base, navegar, aoMudarVista, a
     if (pediu) atualizar();
   }
 
+  // Volta a ler a rota (o "Recarregar" do conflito e do só de leitura): a que se tinha fica até chegar a nova.
+  // Se uma gravação deu certo entretanto, a leitura é mais velha do que ela e não conta.
   async function recarregar() {
     if (!ativo || rota === null || aRecarregar) return;
     aRecarregar = true;
     erroRecarga = null;
+    const marca = respostasDaFila;
     atualizar();
     let lida;
     try {
@@ -601,6 +921,15 @@ export function criarPlaneador({ api, rede, data, base, navegar, aoMudarVista, a
       atualizar();
       return;
     }
+    if (respostasDaFila !== marca) {
+      atualizar();
+      return;
+    }
+    conflito = false;
+    bloqueio = null;
+    alerta = null;
+    erroCalculo = null;
+    falhou = false;
     aplicarRota(lida);
   }
 
@@ -611,10 +940,13 @@ export function criarPlaneador({ api, rede, data, base, navegar, aoMudarVista, a
     iniciar() {
       if (!ativo || iniciado || dataRecusada !== null) return;
       iniciado = true;
-      // Sem rede as ações desligam-se; quando volta, o que falhou pede-se outra vez. O `destruir` cancela-o.
+      // Sem rede as ações desligam-se; quando volta, as horas automáticas voltam a esperar e o que falhou
+      // pede-se outra vez. O `destruir` cancela-o.
       cancelarRede = rede?.aoMudar((ligado) => {
         atualizar();
-        if (ligado) repetirFalhas();
+        if (!ligado) return;
+        agendarHoras();
+        repetirFalhas();
       }) ?? (() => {});
       carregarRota();
       carregarConfiguracao();
@@ -623,7 +955,6 @@ export function criarPlaneador({ api, rede, data, base, navegar, aoMudarVista, a
     },
     // "Tentar novamente": a rota, a configuração do mapa, as lojas ou as sugestões que falharam.
     tentarDeNovo: repetirFalhas,
-    // Volta a ler a rota (o "Recarregar"); a que se tinha fica até chegar a nova.
     recarregar,
     // "Dia inválido" → as Rotas da mesma casa.
     voltarAsRotas() {
@@ -633,6 +964,153 @@ export function criarPlaneador({ api, rede, data, base, navegar, aoMudarVista, a
       if (!ativo) return;
       ativo = false;
       cancelarRede();
+      cancelarEspera();
+    },
+
+    // --- As ações (T3.32) ---
+
+    // Uma loja à rota (das sugestões ou do cartão do mapa), com o motivo escolhido ou, sem ele, o da fase
+    // (o servidor escolhe). Não é otimista: "A adicionar…" até à resposta.
+    adicionar(lojaId, motivo) {
+      if (typeof lojaId !== 'string' || lojaId === '' || aAdicionar.has(lojaId)) return;
+      const r = rotaParaGravar();
+      if (r === null || limiteDaRota(r).cheia || idsDasLojasNaRota(r).includes(lojaId)) return;
+      antesDeGravar();
+      aAdicionar.add(lojaId);
+      seguir(fila.adicionar({ loja_id: lojaId, motivo }), {
+        aoGravar: () => {
+          aAdicionar.delete(lojaId);
+          if (lojaEscolhida?.id === lojaId) lojaEscolhida = null;
+          aoAvisar?.(TEXTO_ADICIONADA);
+        },
+        aoFalhar: (erro) => {
+          aAdicionar.delete(lojaId);
+          mostrarAlerta(erro);
+        },
+      });
+      atualizar();
+    },
+    retirar(id) {
+      const r = rotaParaGravar();
+      if (r === null || !temParagem(r, id)) return;
+      alterar({ retirar: [id] }, () => aoAvisar?.(TEXTO_RETIRADA));
+    },
+    // Arrastar na secção "rota": da posição `de` para a `para` (as posições da secção, a contar de 0).
+    mover(de, para) {
+      const r = rotaParaGravar();
+      if (r !== null) moverParagem(r, de, para);
+    },
+    subir(id) {
+      deslocar(id, -1);
+    },
+    descer(id) {
+      deslocar(id, 1);
+    },
+    mudarMotivo(id, motivo) {
+      alterarParagem(id, { motivo });
+    },
+    // O tempo de serviço em minutos; o texto de um campo só com algarismos vai como inteiro.
+    mudarTempo(id, minutos) {
+      const texto = typeof minutos === 'string' ? minutos.trim() : null;
+      alterarParagem(id, { tempo_servico_min: texto !== null && /^\d+$/.test(texto) ? Number(texto) : minutos });
+    },
+    // "Manter" uma paragem fechada neste dia: entra no cálculo.
+    manter(id) {
+      alterarParagem(id, { manter_fechada: true });
+    },
+    // "Pôr na rota" uma que não cabe no horário.
+    porNaRota(id) {
+      alterarParagem(id, { nao_cabe: false });
+    },
+    mudarDefinicao,
+    // "Ponto no mapa": a faixa "Toque no mapa no ponto de início/fim" (`null`: "Cancelar").
+    escolherPonto(ponta) {
+      if (ponta === null) {
+        pontaAEscolher = null;
+        atualizar();
+        return;
+      }
+      if (!PONTAS.includes(ponta) || rotaComDefinicoes() === null) return;
+      pontaAEscolher = ponta;
+      lojaEscolhida = null;
+      atualizar();
+    },
+    // Um toque no mapa (fora dos pinos): o ponto escolhido, ou fecha o cartão da loja.
+    tocarNoMapa(ponto) {
+      if (pontaAEscolher === null) {
+        lojaEscolhida = null;
+        atualizar();
+        return;
+      }
+      if (!comCoordenadas(ponto) || rotaComDefinicoes() === null) return;
+      const ponta = pontaAEscolher;
+      pontaAEscolher = null;
+      alterar({ [ponta]: { lat: ponto.lat, lng: ponto.lng } });
+    },
+    // "Fábrica" no início ou no fim.
+    usarFabrica(ponta) {
+      if (!PONTAS.includes(ponta)) return;
+      const r = rotaComDefinicoes();
+      if (r === null) return;
+      if (pontaAEscolher === ponta) pontaAEscolher = null;
+      if (r[ponta]?.fabrica === true) {
+        atualizar();
+        return;
+      }
+      alterar({ [ponta]: null });
+    },
+    // Um toque numa loja esbatida: o cartão pequeno "Adicionar à rota", com o motivo da fase (`null` fecha-o).
+    escolherLoja(loja) {
+      if (loja === null) {
+        lojaEscolhida = null;
+        atualizar();
+        return;
+      }
+      if (!eObjeto(loja) || typeof loja.id !== 'string' || loja.id === '') return;
+      const r = rotaDaVista();
+      if (r?.editavel !== true || conflito || idsDasLojasNaRota(r).includes(loja.id)) return;
+      const fase = temProprio(FASES, loja.fase) ? loja.fase : null;
+      const motivo = motivoPorFase(fase);
+      lojaEscolhida = { id: loja.id, nome: typeof loja.nome === 'string' ? loja.nome : '', fase, motivo, rotuloMotivo: rotuloMotivo(motivo) };
+      pontaAEscolher = null;
+      atualizar();
+    },
+    calcularMelhorOrdem() {
+      const r = rotaParaGravar();
+      if (r === null || !acoesAgora(r).calcular.ativo) return;
+      antesDeGravar();
+      calcular('otimizar');
+      atualizar();
+    },
+    // O botão "Recalcular horas": logo, sem esperar.
+    recalcularHoras() {
+      const r = rotaParaGravar();
+      if (r === null || !acoesAgora(r).recalcular.ativo) return;
+      antesDeGravar();
+      calcular('recalcular');
+      atualizar();
+    },
+    // "Guardar rota": rascunho → planeada; com paragens que não cabem, primeiro a pergunta.
+    guardar() {
+      const r = rotaParaGravar();
+      if (r === null || !acoesAgora(r).guardar.ativo) return;
+      if (perguntaGuardar(r) === null) {
+        enviarGuardar();
+        return;
+      }
+      perguntarGuardar = true;
+      atualizar();
+    },
+    // A resposta à pergunta do "Guardar rota" (o "sim" só grava se ainda se puder).
+    responderGuardar(sim) {
+      if (!perguntarGuardar) return;
+      perguntarGuardar = false;
+      const r = sim === true ? rotaParaGravar() : null;
+      if (r !== null && acoesAgora(r).guardar.ativo) {
+        enviarGuardar();
+        return;
+      }
+      atualizar();
     },
   };
 }

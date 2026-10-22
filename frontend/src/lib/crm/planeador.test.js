@@ -15,13 +15,33 @@
  *       referência enquanto as lojas e os ids na rota não mudam;
  *   - a leitura só (dia passado, em curso, "Não houve rota neste dia."), a data inválida, a falha com
  *     "Tentar novamente", o sem rede, o `recarregar()` e o `destruir()`.
- * As ações, as horas automáticas e os conflitos são da T3.32.
+ *
+ * O PLANEADOR (2/2) — as ações, as horas automáticas, calcular, guardar e os conflitos (F3 / T3.32), no fim
+ * do ficheiro, com as correções que tocam nesta tarefa:
+ *   "T3.32" — depois de a fila esvaziar, ~1,5 s sem alterações antes do recálculo automático (o temporizador
+ *     injetado; também com o relógio falso do Jest): várias alterações seguidas dão um só recálculo;
+ *   "T3.32 / T3.38" — no máximo um recálculo automático por par (versão, `calculado_em`): uma resposta 200
+ *     que ainda traga as horas velhas não volta a disparar;
+ *   "T3.16 / T3.21 / T3.32" — "a recalcular" só com um recálculo (ou uma otimização) na fila;
+ *   "T3.20 / T3.31 / T3.39" — numa rota virtual, mudar as definições do dia não chama a API.
  */
 import { ErroCrm, MENSAGEM_ERRO_INESPERADO, MENSAGEM_SEM_REDE } from './api';
 import { ATRIBUICOES, TEXTO_ROTA_DE_TERCEIROS } from './atribuicoes';
+import { TEXTO_CONFLITO as TEXTO_CONFLITO_DA_FICHA } from './ficha';
 import { descodificarPolilinha } from './polilinha';
 import { criarEstadoRede } from './rede';
 import {
+  DEFINICOES_DO_DIA,
+  ESPERA_HORAS_MS,
+  TEXTOS_ESCOLHER_PONTO,
+  TEXTO_ADICIONADA,
+  TEXTO_A_ADICIONAR,
+  TEXTO_A_CALCULAR,
+  TEXTO_A_RECALCULAR,
+  TEXTO_CONFLITO,
+  TEXTO_FALTA_CONFLITO,
+  TEXTO_GUARDADA,
+  TEXTO_RETIRADA,
   MENSAGEM_DATA_INVALIDA,
   MENSAGEM_SEM_CALCULO,
   TEXTO_AINDA_SEM_PARAGENS,
@@ -197,18 +217,57 @@ function apiFalsa() {
     obterConfigMapa: pedir('obterConfigMapa'),
     listarLojas: pedir('listarLojas'),
     obterSugestoes: pedir('obterSugestoes'),
+    // As escritas (T3.32), pela fila (`enviarPelaApi`).
+    adicionarParagem: pedir('adicionarParagem'),
+    alterarRota: pedir('alterarRota'),
+    recalcularHoras: pedir('recalcularHoras'),
+    otimizarRota: pedir('otimizarRota'),
   };
 }
 
-const assentar = () => new Promise((r) => {
+// Com o relógio falso do Jest, o `setTimeout` também é falso: as respostas assentam só pelas microtarefas.
+let comRelogioFalso = false;
+const microtarefas = async () => {
+  for (let i = 0; i < 50; i += 1) await Promise.resolve();
+};
+const assentar = () => (comRelogioFalso ? microtarefas() : new Promise((r) => {
   setTimeout(r, 0);
-});
+}));
+
+// Um temporizador à mão (o `temporizador` injetado no planeador): guarda o que se agendou, e o teste diz
+// quando dispara.
+function temporizadorFalso() {
+  let proximo = 1;
+  const agendados = new Map();
+  return {
+    agendar: (funcao, ms) => {
+      const id = proximo;
+      proximo += 1;
+      agendados.set(id, { funcao, ms });
+      return id;
+    },
+    cancelar: (id) => {
+      agendados.delete(id);
+    },
+    // Os milissegundos de cada espera ainda por disparar.
+    get esperas() {
+      return [...agendados.values()].map((a) => a.ms);
+    },
+    disparar() {
+      const lista = [...agendados.values()];
+      agendados.clear();
+      lista.forEach((a) => a.funcao());
+    },
+  };
+}
 
 // Monta o ecrã como a página (CrmRota): cria e inicia. A `data` em falta é o DIA (um `undefined` explícito
-// fica `undefined`: o `:data` da rota que não veio).
+// fica `undefined`: o `:data` da rota que não veio). O `temporizador` em falta é o falso, à mão; um
+// `undefined` explícito deixa o do planeador (o do browser: o relógio falso do Jest).
 function montar(opcoes = {}) {
   const { online = true, base = '/crm', iniciar = true } = opcoes;
   const data = 'data' in opcoes ? opcoes.data : DIA;
+  const relogio = 'temporizador' in opcoes ? opcoes.temporizador : temporizadorFalso();
   const api = apiFalsa();
   const janela = new EventTarget();
   const navegador = { onLine: online };
@@ -223,13 +282,14 @@ function montar(opcoes = {}) {
     navegar: (caminho, opcoes) => navegacoes.push({ caminho, opcoes }),
     aoMudarVista: (vista) => vistas.push(vista),
     aoAvisar: (texto, opcoes) => avisos.push({ texto, opcoes }),
+    temporizador: relogio,
   });
   if (iniciar) planeador.iniciar();
   const mudarRede = (ligado) => {
     navegador.onLine = ligado;
     janela.dispatchEvent(new Event(ligado ? 'online' : 'offline'));
   };
-  return { api, planeador, navegacoes, avisos, vistas, mudarRede, vista: () => planeador.vista };
+  return { api, planeador, navegacoes, avisos, vistas, mudarRede, relogio, vista: () => planeador.vista };
 }
 
 const pedidos = (m, nome) => m.api.pedidos.filter((p) => p.nome === nome);
@@ -268,8 +328,8 @@ const erroServidor = (mensagem = 'O servidor falhou.') => new ErroCrm({ codigo: 
 const CHAVES_DA_VISTA = [
   'estado', 'titulo', 'somenteLeitura', 'textoLeitura', 'rotuloEstado', 'falha', 'conflito', 'semRede',
   'definicoes', 'totais', 'horas', 'avisos', 'seccoes', 'sugestoes', 'mapa', 'configuracao', 'falhaDoMapa',
-  'acoes', 'calculo', 'blocosGoogle', 'atribuicaoOrs', 'limite', 'escolherPonto', 'lojaEscolhida', 'recarga',
-  'caminhoRotas',
+  'acoes', 'calculo', 'blocosGoogle', 'atribuicaoOrs', 'limite', 'escolherPonto', 'lojaEscolhida', 'podeAdicionar',
+  'alerta', 'recarga', 'caminhoRotas',
 ];
 
 // --- Os textos -----------------------------------------------------------------------------------
@@ -630,6 +690,8 @@ test('a carregar: o título do dia e o resto vazio, congelado; cada mudança vai
     limite: null,
     escolherPonto: null,
     lojaEscolhida: null,
+    podeAdicionar: false,
+    alerta: null,
     recarga: { aRecarregar: false, erro: null },
     caminhoRotas: '/crm/rotas',
   });
@@ -1495,4 +1557,1254 @@ test('destruir com as falhas e as sugestões em curso: nada muda depois', async 
   expect(o.vistas).toHaveLength(vistasO);
   expect(o.vista().rotuloEstado).toBe('Rascunho');
   expect(pedidos(o, 'obterSugestoes')).toHaveLength(1);
+});
+
+// =================================================================================================
+// T3.32 — as ações, as horas automáticas, calcular, guardar e os conflitos
+// =================================================================================================
+
+// A rota do exemplo com as horas velhas (o cálculo já não é o da rota gravada).
+const CALCULO = rotaDoServidor().calculo;
+const comHorasVelhas = (extra = {}) => rotaDoServidor({ calculo: { ...CALCULO, atual: false }, ...extra });
+// A resposta de uma escrita: a rota do servidor com esta versão.
+const resposta = (versao, extra = {}) => copia(rotaDoServidor({ versao, ...extra }));
+const respostaVelha = (versao, extra = {}) => copia(comHorasVelhas({ versao, ...extra }));
+// O exemplo sem a D (a que não cabe): o "Guardar rota" não pergunta nada.
+const semNaoCabe = (extra = {}) => rotaDoServidor({ paragens: rotaDoServidor().paragens.filter((p) => p.id !== 'D'), ...extra });
+
+const erroDe = (codigo, mensagem, estado = 409, extra = {}) => new ErroCrm({ codigo, mensagem, estado, ...extra });
+const erroConflito = () => erroDe('conflito', 'Alterado por outra pessoa — recarregar');
+const erroEmCurso = () => erroDe('rota_em_curso', TEXTO_EM_CURSO_LEITURA);
+const erroFechada = () => erroDe('rota_fechada', 'Este dia já passou — a rota só se pode ver.');
+const MENSAGEM_LIMITE = 'Cálculo automático indisponível por agora (limite de pedidos) — espere um minuto ou ordene à mão';
+const erroCalculo = (tipo = 'limite', mensagem = MENSAGEM_LIMITE) => erroDe('calculo_indisponivel', mensagem, 503, { extra: { tipo } });
+const erroValidacao = (campos) => erroDe('validacao', 'Verifique os campos assinalados.', 422, { campos });
+
+const idsDaRota = (m) => m.vista().seccoes.rota.map((l) => l.id);
+const numerosDaRota = (m) => m.vista().seccoes.rota.map((l) => [l.id, l.numero]);
+const escritas = (m) => m.api.pedidos.filter((p) => ['adicionarParagem', 'alterarRota', 'recalcularHoras', 'otimizarRota'].includes(p.nome));
+const corpo = (m, n = -1) => pedidos(m, 'alterarRota').at(n).argumentos;
+
+test('os textos das ações (T3.32)', () => {
+  expect({
+    TEXTO_A_CALCULAR, TEXTO_A_RECALCULAR, TEXTO_A_ADICIONAR, TEXTO_ADICIONADA, TEXTO_RETIRADA, TEXTO_GUARDADA,
+    TEXTO_CONFLITO, TEXTO_FALTA_CONFLITO, TEXTOS_ESCOLHER_PONTO, ESPERA_HORAS_MS, DEFINICOES_DO_DIA,
+  }).toEqual({
+    TEXTO_A_CALCULAR: 'A calcular…',
+    TEXTO_A_RECALCULAR: 'A recalcular…',
+    TEXTO_A_ADICIONAR: 'A adicionar…',
+    // Os avisos do plano (T3.32), tal e qual.
+    TEXTO_ADICIONADA: 'Adicionada',
+    TEXTO_RETIRADA: 'Retirada',
+    TEXTO_GUARDADA: 'Rota guardada como planeada',
+    TEXTO_CONFLITO: 'Alterado por outra pessoa — recarregar',
+    TEXTO_FALTA_CONFLITO: 'Recarregue a rota para ver o que a outra pessoa mudou.',
+    TEXTOS_ESCOLHER_PONTO: { inicio: 'Toque no mapa no ponto de início', fim: 'Toque no mapa no ponto de fim' },
+    // A correção "T3.32": ~1,5 s sem alterações antes do recálculo automático.
+    ESPERA_HORAS_MS: 1500,
+    DEFINICOES_DO_DIA: ['hora_saida', 'hora_regresso_limite', 'inicio', 'fim', 'evitar_portagens'],
+  });
+  // A faixa do conflito é a da ficha da loja (e a mensagem do 409 do servidor).
+  expect(TEXTO_CONFLITO).toBe(TEXTO_CONFLITO_DA_FICHA);
+  expect(Object.isFrozen(TEXTOS_ESCOLHER_PONTO)).toBe(true);
+  expect(Object.isFrozen(DEFINICOES_DO_DIA)).toBe(true);
+});
+
+describe('acoesDaRota: o conflito e os cálculos em curso (T3.32)', () => {
+  test('o conflito desliga tudo com "Recarregue a rota…", antes do sem rede', () => {
+    const falta = 'Recarregue a rota para ver o que a outra pessoa mudou.';
+    for (const online of [true, false]) {
+      const acoes = acoesDaRota(rotaDoServidor(), { online, conflito: true });
+      expect([acoes.calcular, acoes.recalcular, acoes.guardar].map((a) => [a.ativo, a.falta])).toEqual([[false, falta], [false, falta], [false, falta]]);
+    }
+    // O conflito é o `true` e nada mais.
+    expect(acoesDaRota(rotaDoServidor(), { online: true, conflito: 1 }).calcular.ativo).toBe(true);
+  });
+
+  test('a calcular a melhor ordem: "A calcular…" desligado sem falta, e as horas esperam por ele', () => {
+    const acoes = acoesDaRota(comHorasVelhas(), { online: true, aCalcular: true });
+    expect(acoes.calcular).toEqual({ texto: 'A calcular…', ativo: false, falta: null });
+    expect(acoes.recalcular).toEqual({ texto: 'Recalcular horas', ativo: false, falta: 'A calcular…' });
+    expect(acoes.guardar).toEqual({ texto: 'Guardar rota', ativo: true, falta: null, pergunta: null });
+    // Em curso ganha a qualquer outro motivo (sem rede, horas em dia).
+    expect(acoesDaRota(rotaDoServidor(), { online: false, aCalcular: true }).calcular).toEqual({ texto: 'A calcular…', ativo: false, falta: null });
+    expect(acoesDaRota(rotaDoServidor(), { online: true, aCalcular: true }).recalcular.falta).toBe('A calcular…');
+  });
+
+  test('a recalcular as horas: "A recalcular…" desligado sem falta; calcular continua', () => {
+    const acoes = acoesDaRota(comHorasVelhas(), { online: true, aRecalcular: true });
+    expect(acoes.recalcular).toEqual({ texto: 'A recalcular…', ativo: false, falta: null });
+    expect(acoes.calcular).toEqual({ texto: 'Calcular melhor ordem', ativo: true, falta: null });
+    expect(acoesDaRota(comHorasVelhas(), { online: false, aRecalcular: true }).recalcular).toEqual({ texto: 'A recalcular…', ativo: false, falta: null });
+    // Os dois em curso.
+    const ambos = acoesDaRota(comHorasVelhas(), { online: true, aRecalcular: true, aCalcular: true });
+    expect([ambos.calcular.texto, ambos.recalcular.texto]).toEqual(['A calcular…', 'A recalcular…']);
+    // O `true` e nada mais.
+    expect(acoesDaRota(comHorasVelhas(), { online: true, aRecalcular: 'sim', aCalcular: 1 })).toMatchObject({
+      calcular: { texto: 'Calcular melhor ordem', ativo: true }, recalcular: { texto: 'Recalcular horas', ativo: true },
+    });
+  });
+});
+
+// --- Arrastar, subir e descer (otimistas) ---------------------------------------------------------
+
+test('mover: a ordem nova vai logo (otimista) e grava-se com a versão em vigor; a resposta manda', async () => {
+  const m = await comSugestoes();
+  m.planeador.mover(0, 2);
+  expect(corpo(m)).toEqual([DIA, { ordem: ['C', 'E', 'A', 'D', 'B'], versao: 3 }]);
+  // Logo, antes da resposta: os números, os pinos e as horas (já velhas).
+  expect(numerosDaRota(m)).toEqual([['C', 1], ['E', 2], ['A', 3]]);
+  expect(m.vista().mapa.paragens.filter((p) => p.numero !== null).map((p) => [p.id, p.numero])).toEqual([['C', 1], ['E', 2], ['A', 3]]);
+  expect(m.vista().horas).toEqual({ atuais: false, texto: 'Horas antigas — Recalcular horas' });
+  expect(m.vista().seccoes.rota.map((l) => [l.podeSubir, l.podeDescer])).toEqual([[false, true], [true, true], [true, false]]);
+  // A resposta do servidor substitui a visão otimista.
+  await responder(m, 'alterarRota', resposta(4, { estado: 'planeada', estado_efetivo: 'planeada' }));
+  expect(m.vista().rotuloEstado).toBe('Planeada');
+  expect(idsDaRota(m)).toEqual(['A', 'C', 'E']);
+  // A seguinte sai com a versão nova.
+  m.planeador.mover(2, 0);
+  expect(corpo(m)).toEqual([DIA, { ordem: ['E', 'A', 'C', 'D', 'B'], versao: 4 }]);
+  expect(m.avisos).toEqual([]);
+});
+
+test('mover: para o mesmo sítio, fora da lista ou sem índices não grava nada', async () => {
+  const m = await carregado();
+  m.planeador.mover(1, 1);
+  m.planeador.mover(5, 0);
+  m.planeador.mover(-1, 0);
+  m.planeador.mover(0, 'x');
+  m.planeador.mover();
+  expect(escritas(m)).toEqual([]);
+  // Para lá da ponta encosta à ponta (o `mover` do reordenar.js).
+  m.planeador.mover(0, 99);
+  expect(corpo(m)[1].ordem).toEqual(['C', 'E', 'A', 'D', 'B']);
+});
+
+test('subir e descer: uma posição na secção "rota"; nas pontas, ou fora dela, nada', async () => {
+  const m = await carregado();
+  m.planeador.subir('A');
+  m.planeador.descer('E');
+  m.planeador.subir('B');
+  m.planeador.descer('D');
+  m.planeador.subir('Z');
+  expect(escritas(m)).toEqual([]);
+  m.planeador.subir('C');
+  expect(corpo(m)).toEqual([DIA, { ordem: ['C', 'A', 'E', 'D', 'B'], versao: 3 }]);
+  expect(idsDaRota(m)).toEqual(['C', 'A', 'E']);
+  await responder(m, 'alterarRota', resposta(4));
+  // A resposta manda: a rota do servidor é A, C, E.
+  m.planeador.descer('C');
+  expect(corpo(m)).toEqual([DIA, { ordem: ['A', 'E', 'C', 'D', 'B'], versao: 4 }]);
+});
+
+test('um pedido de cada vez: as alterações seguidas juntam-se e saem com a versão da última resposta', async () => {
+  const m = await carregado();
+  m.planeador.mover(0, 2);
+  m.planeador.retirar('C');
+  m.planeador.mudarMotivo('A', 'entrega');
+  expect(pedidos(m, 'alterarRota')).toHaveLength(1);
+  // A visão otimista já tem as três.
+  expect(numerosDaRota(m)).toEqual([['E', 1], ['A', 2]]);
+  expect(m.vista().seccoes.rota[1].rotuloMotivo).toBe('Entrega');
+  await responder(m, 'alterarRota', resposta(4));
+  expect(corpo(m)).toEqual([DIA, { retirar: ['C'], paragens: { A: { motivo: 'entrega' } }, versao: 4 }]);
+  expect(pedidos(m, 'alterarRota')).toHaveLength(2);
+  // Enquanto a segunda não chega, ela continua por cima da primeira resposta.
+  expect(idsDaRota(m)).toEqual(['A', 'E']);
+  await responder(m, 'alterarRota', resposta(5));
+  expect(m.avisos.map((a) => a.texto)).toEqual(['Retirada']);
+  expect(idsDaRota(m)).toEqual(['A', 'C', 'E']);
+});
+
+// --- Retirar e as alterações de cada paragem ------------------------------------------------------
+
+test('retirar: sai logo da lista e do mapa, e "Retirada" quando o servidor confirma', async () => {
+  const m = await carregado();
+  m.planeador.retirar('C');
+  expect(corpo(m)).toEqual([DIA, { retirar: ['C'], versao: 3 }]);
+  expect(numerosDaRota(m)).toEqual([['A', 1], ['E', 2]]);
+  expect(m.vista().mapa.paragens.map((p) => p.id)).toEqual(['A', 'B', 'D', 'E']);
+  expect(m.vista().mapa.lojasForaDaRota.map((l) => l.id)).toEqual(['loja-C', 'loja-X', 'loja-Y']);
+  expect(m.vista().limite).toEqual({ cheia: false, texto: '5 de 48 paragens' });
+  expect(m.avisos).toEqual([]);
+  await responder(m, 'alterarRota', resposta(4, { paragens: rotaDoServidor().paragens.filter((p) => p.id !== 'C') }));
+  expect(m.avisos).toEqual([{ texto: 'Retirada', opcoes: undefined }]);
+  // Também as outras secções (a fechada e a da loja apagada); um id que não está na rota, nada.
+  m.planeador.retirar('F');
+  expect(corpo(m)).toEqual([DIA, { retirar: ['F'], versao: 4 }]);
+  await responder(m, 'alterarRota', resposta(5, { paragens: rotaDoServidor().paragens.filter((p) => !['C', 'F'].includes(p.id)) }));
+  m.planeador.retirar('C');
+  m.planeador.retirar();
+  expect(pedidos(m, 'alterarRota')).toHaveLength(2);
+});
+
+test('o motivo, o tempo, "Manter" e "Pôr na rota": uma paragem de cada vez, otimistas', async () => {
+  const m = await carregado();
+  m.planeador.mudarMotivo('A', 'acompanhamento');
+  expect(corpo(m)).toEqual([DIA, { paragens: { A: { motivo: 'acompanhamento' } }, versao: 3 }]);
+  expect(m.vista().seccoes.rota[0]).toMatchObject({ motivo: 'acompanhamento', rotuloMotivo: 'Acompanhamento' });
+  await responder(m, 'alterarRota', resposta(4));
+
+  // O tempo em texto (o campo do formulário) vai como inteiro; o resto vai como veio (o servidor diz o 422).
+  m.planeador.mudarTempo('C', '25');
+  expect(corpo(m)).toEqual([DIA, { paragens: { C: { tempo_servico_min: 25 } }, versao: 4 }]);
+  expect(m.vista().seccoes.rota[1].tempo).toBe(25);
+  await responder(m, 'alterarRota', resposta(5));
+  m.planeador.mudarTempo('C', 30);
+  expect(corpo(m)[1]).toEqual({ paragens: { C: { tempo_servico_min: 30 } }, versao: 5 });
+  await responder(m, 'alterarRota', resposta(6));
+  m.planeador.mudarTempo('C', '2,5');
+  expect(corpo(m)[1]).toEqual({ paragens: { C: { tempo_servico_min: '2,5' } }, versao: 6 });
+  await responder(m, 'alterarRota', resposta(7));
+
+  // "Manter" a fechada neste dia: entra logo na secção "rota".
+  m.planeador.manter('B');
+  expect(corpo(m)[1]).toEqual({ paragens: { B: { manter_fechada: true } }, versao: 7 });
+  expect(idsDaRota(m)).toEqual(['A', 'B', 'C', 'E']);
+  await responder(m, 'alterarRota', resposta(8));
+  // "Pôr na rota" a que não cabe.
+  m.planeador.porNaRota('D');
+  expect(corpo(m)[1]).toEqual({ paragens: { D: { nao_cabe: false } }, versao: 8 });
+  expect(idsDaRota(m)).toEqual(['A', 'C', 'D', 'E']);
+  await responder(m, 'alterarRota', resposta(9));
+
+  // Uma paragem que não está na rota: nada.
+  for (const acao of ['mudarMotivo', 'mudarTempo', 'manter', 'porNaRota']) m.planeador[acao]('Z', 'entrega');
+  expect(pedidos(m, 'alterarRota')).toHaveLength(6);
+  expect(m.avisos).toEqual([]);
+});
+
+// --- As definições do dia ---------------------------------------------------------------------------
+
+test('mudarDefinicao: as horas e as portagens; o mesmo valor ou outra chave não gravam nada', async () => {
+  const m = await carregado();
+  m.planeador.mudarDefinicao('hora_saida', '08:00');
+  m.planeador.mudarDefinicao('evitar_portagens', false);
+  m.planeador.mudarDefinicao('cor', 'roxo');
+  m.planeador.mudarDefinicao('hora_saida', undefined);
+  m.planeador.mudarDefinicao('versao', 9);
+  expect(escritas(m)).toEqual([]);
+  m.planeador.mudarDefinicao('hora_saida', '07:30');
+  expect(corpo(m)).toEqual([DIA, { hora_saida: '07:30', versao: 3 }]);
+  expect(m.vista().definicoes.hora_saida).toBe('07:30');
+  m.planeador.mudarDefinicao('evitar_portagens', true);
+  m.planeador.mudarDefinicao('hora_regresso_limite', '18:30');
+  await responder(m, 'alterarRota', resposta(4, { hora_saida: '07:30' }));
+  expect(corpo(m)).toEqual([DIA, { evitar_portagens: true, hora_regresso_limite: '18:30', versao: 4 }]);
+  expect(m.vista().definicoes).toMatchObject({ hora_saida: '07:30', evitar_portagens: true, hora_regresso_limite: '18:30' });
+});
+
+test('o início e o fim: "Ponto no mapa" com a faixa e o toque, "Fábrica" e "Cancelar"', async () => {
+  const m = await carregado();
+  m.planeador.escolherPonto('meio');
+  expect(m.vista().escolherPonto).toBeNull();
+  m.planeador.escolherPonto('inicio');
+  expect(m.vista().escolherPonto).toBe('inicio');
+  // Um toque sem coordenadas não serve; continua à espera.
+  m.planeador.tocarNoMapa({ lat: 'x', lng: -9 });
+  m.planeador.tocarNoMapa(null);
+  expect(escritas(m)).toEqual([]);
+  expect(m.vista().escolherPonto).toBe('inicio');
+  m.planeador.tocarNoMapa({ lat: 38.6, lng: -9.0, outra: 'coisa' });
+  expect(corpo(m)).toEqual([DIA, { inicio: { lat: 38.6, lng: -9.0 }, versao: 3 }]);
+  expect(m.vista().escolherPonto).toBeNull();
+  expect(m.vista().definicoes.inicio).toEqual({ lat: 38.6, lng: -9.0, fabrica: false, texto: 'Ponto no mapa' });
+  expect(m.vista().mapa.inicio).toEqual({ lat: 38.6, lng: -9.0, fabrica: false });
+  await responder(m, 'alterarRota', resposta(4, { inicio: { lat: 38.6, lng: -9.0, fabrica: false } }));
+
+  // Outro toque, já sem a faixa: nada.
+  m.planeador.tocarNoMapa({ lat: 38.5, lng: -9.1 });
+  expect(pedidos(m, 'alterarRota')).toHaveLength(1);
+
+  // "Fábrica" volta à fábrica (o centro do GET /config), e fecha a faixa dessa ponta.
+  m.planeador.escolherPonto('inicio');
+  m.planeador.usarFabrica('inicio');
+  expect(m.vista().escolherPonto).toBeNull();
+  expect(corpo(m)).toEqual([DIA, { inicio: null, versao: 4 }]);
+  expect(m.vista().definicoes.inicio).toEqual({ lat: 38.75, lng: -9.2, fabrica: true, texto: 'Fábrica' });
+  await responder(m, 'alterarRota', resposta(5));
+  // O fim já é a fábrica: nada a gravar (e a faixa do fim fecha-se na mesma).
+  m.planeador.escolherPonto('fim');
+  expect(m.vista().escolherPonto).toBe('fim');
+  m.planeador.usarFabrica('fim');
+  expect(m.vista().escolherPonto).toBeNull();
+  m.planeador.usarFabrica('meio');
+  expect(pedidos(m, 'alterarRota')).toHaveLength(2);
+  // A faixa de uma ponta não fecha com a fábrica da outra; "Cancelar" fecha-a.
+  m.planeador.escolherPonto('fim');
+  m.planeador.usarFabrica('inicio');
+  expect(m.vista().escolherPonto).toBe('fim');
+  m.planeador.escolherPonto(null);
+  expect(m.vista().escolherPonto).toBeNull();
+  // O fim num ponto do mapa.
+  m.planeador.escolherPonto('fim');
+  m.planeador.tocarNoMapa({ lat: 38.9, lng: -9.3 });
+  expect(corpo(m)[1]).toEqual({ fim: { lat: 38.9, lng: -9.3 }, versao: 5 });
+});
+
+test('numa rota virtual, as definições do dia não chamam a API (correção "T3.20 / T3.31 / T3.39")', async () => {
+  const m = await carregado({ rota: rotaVirtual() });
+  m.planeador.mudarDefinicao('hora_saida', '07:30');
+  m.planeador.mudarDefinicao('evitar_portagens', true);
+  m.planeador.escolherPonto('inicio');
+  expect(m.vista().escolherPonto).toBeNull();
+  m.planeador.tocarNoMapa({ lat: 38.6, lng: -9.0 });
+  m.planeador.usarFabrica('fim');
+  m.planeador.mudarDefinicao('inicio', { lat: 38.6, lng: -9.0 });
+  expect(escritas(m)).toEqual([]);
+  expect(m.vista().definicoes).toMatchObject({ hora_saida: '08:00', evitar_portagens: false, ativas: false });
+});
+
+// --- Adicionar (não é otimista) ---------------------------------------------------------------------
+
+test('adicionar: "A adicionar…" sem mudar a lista, e "Adicionada" com a rota do servidor', async () => {
+  const m = await comSugestoes();
+  expect(m.vista().podeAdicionar).toBe(true);
+  expect(m.vista().sugestoes.grupos[0].lojas[0]).toMatchObject({ id: 'loja-X', aAdicionar: false });
+  m.planeador.adicionar('loja-X');
+  expect(ultimo(m, 'adicionarParagem').argumentos).toEqual([DIA, { loja_id: 'loja-X', versao: 3 }]);
+  expect(m.vista().sugestoes.grupos[0].lojas[0]).toMatchObject({ id: 'loja-X', aAdicionar: true });
+  expect(m.vista().sugestoes.grupos[1].lojas[0]).toMatchObject({ id: 'loja-Y', aAdicionar: false });
+  // Não é otimista: a lista, o mapa e o limite ficam até à resposta.
+  expect(idsDaRota(m)).toEqual(['A', 'C', 'E']);
+  expect(m.vista().limite.texto).toBe('6 de 48 paragens');
+  expect(m.vista().mapa.lojasForaDaRota.map((l) => l.id)).toEqual(['loja-X', 'loja-Y']);
+  // A mesma loja outra vez enquanto se adiciona: nada.
+  m.planeador.adicionar('loja-X');
+  expect(pedidos(m, 'adicionarParagem')).toHaveLength(1);
+  expect(pedidos(m, 'obterSugestoes')).toHaveLength(1);
+
+  const comX = [...rotaDoServidor().paragens, paragem('X', 6, { numero: 4 })];
+  await responder(m, 'adicionarParagem', resposta(4, { paragens: comX }));
+  expect(m.avisos).toEqual([{ texto: 'Adicionada', opcoes: undefined }]);
+  expect(idsDaRota(m)).toEqual(['A', 'C', 'E', 'X']);
+  expect(m.vista().limite.texto).toBe('7 de 48 paragens');
+  expect(m.vista().mapa.lojasForaDaRota.map((l) => l.id)).toEqual(['loja-Y']);
+  // A lista antiga sem a X (já está na rota), e as sugestões pedem-se outra vez.
+  expect(m.vista().sugestoes.grupos.map((g) => g.lojas.map((l) => l.id))).toEqual([['loja-Y']]);
+  expect(pedidos(m, 'obterSugestoes')).toHaveLength(2);
+
+  // Com o motivo escolhido; uma loja que já está na rota (ou sem id) não vai.
+  m.planeador.adicionar('loja-Y', 'entrega');
+  expect(ultimo(m, 'adicionarParagem').argumentos).toEqual([DIA, { loja_id: 'loja-Y', motivo: 'entrega', versao: 4 }]);
+  await responder(m, 'adicionarParagem', resposta(5, { paragens: [...comX, paragem('Y', 7, { numero: 5 })] }));
+  // Com a fila parada, para ver que nem entram na fila.
+  m.planeador.adicionar('loja-A');
+  m.planeador.adicionar('');
+  m.planeador.adicionar();
+  m.planeador.adicionar(7);
+  expect(pedidos(m, 'adicionarParagem')).toHaveLength(2);
+});
+
+test('adicionar falha: a mensagem do servidor e o botão volta (ja_na_rota, rota_cheia, sem rede)', async () => {
+  const m = await comSugestoes();
+  m.planeador.adicionar('loja-X');
+  await falhar(m, 'adicionarParagem', erroDe('ja_na_rota', 'Esta loja já está na rota deste dia.'));
+  expect(m.vista().alerta).toEqual({ mensagem: 'Esta loja já está na rota deste dia.' });
+  expect(m.vista().sugestoes.grupos[0].lojas[0].aAdicionar).toBe(false);
+  expect(m.avisos).toEqual([]);
+  // Não pára a fila: a seguinte sai com a mesma versão, e limpa a mensagem.
+  m.planeador.adicionar('loja-Y');
+  expect(m.vista().alerta).toBeNull();
+  expect(ultimo(m, 'adicionarParagem').argumentos).toEqual([DIA, { loja_id: 'loja-Y', versao: 3 }]);
+  await falhar(m, 'adicionarParagem', erroDe('rota_cheia', 'Uma rota tem no máximo 48 paragens.'));
+  expect(m.vista().alerta).toEqual({ mensagem: 'Uma rota tem no máximo 48 paragens.' });
+  m.planeador.adicionar('loja-X');
+  await falhar(m, 'adicionarParagem', erroSemRede());
+  expect(m.vista().alerta).toEqual({ mensagem: MENSAGEM_SEM_REDE });
+  // Nada mudou: as sugestões não se voltam a pedir.
+  expect(pedidos(m, 'obterSugestoes')).toHaveLength(1);
+});
+
+test('adicionar numa rota virtual: sai com `versao: null` e a rota nasce (versão 1)', async () => {
+  const m = await carregado({ rota: rotaVirtual() });
+  expect(m.vista().sugestoes.estado).toBe('sem_paragens');
+  m.planeador.escolherPonto('inicio');
+  m.planeador.adicionar('loja-X', 'amostra');
+  expect(ultimo(m, 'adicionarParagem').argumentos).toEqual([DIA, { loja_id: 'loja-X', motivo: 'amostra', versao: null }]);
+  await responder(m, 'adicionarParagem', resposta(1, { paragens: [paragem('X', 0, { numero: 1 })], calculo: null, blocos_google: [] }));
+  expect(m.vista().definicoes.ativas).toBe(true);
+  expect(m.vista().escolherPonto).toBeNull();
+  expect(pedidos(m, 'obterSugestoes')).toHaveLength(1);
+  m.planeador.mudarDefinicao('hora_saida', '07:30');
+  expect(corpo(m)).toEqual([DIA, { hora_saida: '07:30', versao: 1 }]);
+});
+
+test('com a rota cheia (48) não se adiciona', async () => {
+  const cheias = Array.from({ length: 48 }, (_, i) => paragem(`P${i}`, i, { numero: i + 1 }));
+  const m = await carregado({ rota: rotaDoServidor({ paragens: cheias }) });
+  expect(m.vista().podeAdicionar).toBe(false);
+  m.planeador.adicionar('loja-X');
+  m.planeador.escolherLoja(LOJAS[5]);
+  expect(m.vista().lojaEscolhida).toMatchObject({ id: 'loja-X', ativo: false });
+  expect(escritas(m)).toEqual([]);
+});
+
+// --- Um toque numa loja esbatida (o cartão pequeno) ------------------------------------------------
+
+test('escolherLoja: o cartão "Adicionar à rota" com o motivo da fase; fecha ao adicionar, ao tocar no mapa ou com null', async () => {
+  const m = await carregado();
+  m.planeador.escolherLoja(LOJAS[5]);
+  expect(m.vista().lojaEscolhida).toEqual({
+    id: 'loja-X', nome: 'Loja loja-X', fase: 'potencial', motivo: 'angariacao', rotuloMotivo: 'Angariação', aAdicionar: false, ativo: true,
+  });
+  m.planeador.adicionar('loja-X', 'angariacao');
+  expect(m.vista().lojaEscolhida).toMatchObject({ aAdicionar: true, ativo: false });
+  await responder(m, 'adicionarParagem', resposta(4, { paragens: [...rotaDoServidor().paragens, paragem('X', 6, { numero: 4 })] }));
+  expect(m.vista().lojaEscolhida).toBeNull();
+
+  // Outra loja; a contactada pré-escolhe "Amostra".
+  m.planeador.escolherLoja({ id: 'loja-Y', nome: 'Café Y', fase: 'contactada' });
+  expect(m.vista().lojaEscolhida).toMatchObject({ id: 'loja-Y', nome: 'Café Y', motivo: 'amostra', rotuloMotivo: 'Amostra' });
+  m.planeador.tocarNoMapa({ lat: 38.7, lng: -9.1 });
+  expect(m.vista().lojaEscolhida).toBeNull();
+  expect(pedidos(m, 'alterarRota')).toEqual([]);
+  m.planeador.escolherLoja({ id: 'loja-Y', nome: 'Café Y', fase: 'contactada' });
+  m.planeador.escolherLoja(null);
+  expect(m.vista().lojaEscolhida).toBeNull();
+  // Escolher um ponto fecha o cartão.
+  m.planeador.escolherLoja({ id: 'loja-Y', nome: 'Café Y', fase: 'contactada' });
+  m.planeador.escolherPonto('inicio');
+  expect(m.vista().lojaEscolhida).toBeNull();
+  m.planeador.escolherPonto(null);
+
+  // Escolher uma loja fecha a faixa do ponto; uma loja da rota não troca o cartão aberto.
+  m.planeador.escolherPonto('inicio');
+  m.planeador.escolherLoja({ id: 'loja-Y', nome: 'Café Y', fase: 'contactada' });
+  expect(m.vista().escolherPonto).toBeNull();
+  m.planeador.escolherLoja(LOJAS[0]);
+  expect(m.vista().lojaEscolhida).toMatchObject({ id: 'loja-Y' });
+  m.planeador.escolherLoja(null);
+
+  // Uma loja que já está na rota, ou que não é uma loja: nada. Sem nome nem fase conhecida: "Angariação".
+  m.planeador.escolherLoja(LOJAS[0]);
+  m.planeador.escolherLoja({ nome: 'Sem id' });
+  m.planeador.escolherLoja({ id: '' });
+  m.planeador.escolherLoja('loja-Y');
+  expect(m.vista().lojaEscolhida).toBeNull();
+  m.planeador.escolherLoja({ id: 'loja-Z', nome: 3, fase: 'outra' });
+  expect(m.vista().lojaEscolhida).toMatchObject({ id: 'loja-Z', nome: '', fase: null, motivo: 'angariacao' });
+});
+
+test('escolherLoja: sem rede o cartão mostra-se desligado; só de leitura não há cartão', async () => {
+  const m = await carregado({ online: false });
+  m.planeador.escolherLoja(LOJAS[5]);
+  expect(m.vista().lojaEscolhida).toMatchObject({ id: 'loja-X', ativo: false });
+  expect(m.vista().podeAdicionar).toBe(false);
+  const n = await carregado({ rota: rotaDoServidor({ editavel: false }) });
+  n.planeador.escolherLoja(LOJAS[5]);
+  expect(n.vista().lojaEscolhida).toBeNull();
+});
+
+// --- Calcular melhor ordem e Recalcular horas -------------------------------------------------------
+
+test('calcularMelhorOrdem: "A calcular…" até à resposta, que traz a ordem e as horas', async () => {
+  const m = await comSugestoes({ rota: comHorasVelhas() });
+  m.relogio.disparar();
+  await responder(m, 'recalcularHoras', resposta(3));
+  m.planeador.calcularMelhorOrdem();
+  expect(ultimo(m, 'otimizarRota').argumentos).toEqual([DIA, 3]);
+  expect(m.vista().calculo).toEqual({ aCalcular: true, mensagem: null });
+  expect(m.vista().acoes.calcular).toEqual({ texto: 'A calcular…', ativo: false, falta: null });
+  expect(m.vista().acoes.recalcular).toMatchObject({ ativo: false, falta: 'A calcular…' });
+  // Um segundo toque não pede outra.
+  m.planeador.calcularMelhorOrdem();
+  expect(pedidos(m, 'otimizarRota')).toHaveLength(1);
+  const sugestoesAntes = pedidos(m, 'obterSugestoes').length;
+  await responder(m, 'otimizarRota', resposta(4, { estado: 'planeada', estado_efetivo: 'planeada' }));
+  expect(m.vista().calculo).toEqual({ aCalcular: false, mensagem: null });
+  expect(m.vista().rotuloEstado).toBe('Planeada');
+  expect(pedidos(m, 'obterSugestoes')).toHaveLength(sugestoesAntes + 1);
+  expect(m.avisos).toEqual([]);
+});
+
+test('calcularMelhorOrdem com as horas velhas: "a recalcular" enquanto corre', async () => {
+  const m = await carregado({ rota: comHorasVelhas() });
+  m.planeador.calcularMelhorOrdem();
+  expect(m.vista().horas).toEqual({ atuais: false, texto: 'a recalcular' });
+  // A espera do recálculo automático cancela-se: a otimização já traz as horas.
+  expect(m.relogio.esperas).toEqual([]);
+  await responder(m, 'otimizarRota', resposta(4));
+  expect(m.vista().horas).toEqual({ atuais: true, texto: null });
+  expect(m.relogio.esperas).toEqual([]);
+});
+
+test('calcularMelhorOrdem falha (503): a mensagem do servidor, nada muda e não recalcula sozinho', async () => {
+  const m = await carregado({ rota: comHorasVelhas() });
+  m.planeador.calcularMelhorOrdem();
+  await falhar(m, 'otimizarRota', erroCalculo('ponto_sem_estrada', 'A paragem 2 não fica perto de uma estrada — corrija a localização da loja'));
+  expect(m.vista().calculo).toEqual({ aCalcular: false, mensagem: 'A paragem 2 não fica perto de uma estrada — corrija a localização da loja' });
+  expect(m.vista().horas.texto).toBe('Horas antigas — Recalcular horas');
+  expect(idsDaRota(m)).toEqual(['A', 'C', 'E']);
+  expect(m.relogio.esperas).toEqual([]);
+  expect(m.vista().alerta).toBeNull();
+  // Tentar outra vez (o botão) limpa a mensagem.
+  m.planeador.calcularMelhorOrdem();
+  expect(m.vista().calculo).toEqual({ aCalcular: true, mensagem: null });
+});
+
+test('calcularMelhorOrdem e recalcularHoras desligados não pedem nada (sem chave, horas em dia, sem paragens)', async () => {
+  const semChave = await carregado({ rota: comHorasVelhas({ calculo_disponivel: false }) });
+  semChave.planeador.calcularMelhorOrdem();
+  semChave.planeador.recalcularHoras();
+  expect(escritas(semChave)).toEqual([]);
+  expect(semChave.vista().acoes.calcular.falta).toBe('Cálculo automático indisponível — ordene à mão');
+  const emDia = await carregado();
+  emDia.planeador.recalcularHoras();
+  expect(escritas(emDia)).toEqual([]);
+  const virtual = await carregado({ rota: rotaVirtual() });
+  virtual.planeador.calcularMelhorOrdem();
+  virtual.planeador.recalcularHoras();
+  virtual.planeador.guardar();
+  expect(escritas(virtual)).toEqual([]);
+});
+
+test('recalcularHoras (o botão): logo, sem esperar, e "A recalcular…"', async () => {
+  const m = await carregado({ rota: comHorasVelhas() });
+  expect(m.relogio.esperas).toEqual([1500]);
+  m.planeador.recalcularHoras();
+  expect(m.relogio.esperas).toEqual([]);
+  expect(ultimo(m, 'recalcularHoras').argumentos).toEqual([DIA, 3]);
+  expect(m.vista().acoes.recalcular).toEqual({ texto: 'A recalcular…', ativo: false, falta: null });
+  expect(m.vista().horas).toEqual({ atuais: false, texto: 'a recalcular' });
+  m.planeador.recalcularHoras();
+  expect(pedidos(m, 'recalcularHoras')).toHaveLength(1);
+  await responder(m, 'recalcularHoras', resposta(3, { calculo: { ...CALCULO, calculado_em: '2026-10-10T08:00:00.000000+00:00' } }));
+  expect(m.vista().horas).toEqual({ atuais: true, texto: null });
+  expect(m.vista().acoes.recalcular).toMatchObject({ ativo: false, falta: 'As horas estão em dia.' });
+});
+
+// --- Guardar rota -----------------------------------------------------------------------------------
+
+test('guardar: passa a planeada (otimista) e "Rota guardada como planeada"', async () => {
+  const m = await carregado({ rota: semNaoCabe() });
+  m.planeador.guardar();
+  expect(corpo(m)).toEqual([DIA, { estado: 'planeada', versao: 3 }]);
+  expect(m.vista().rotuloEstado).toBe('Planeada');
+  expect(m.vista().acoes.guardar).toMatchObject({ ativo: false, falta: 'A rota já está guardada como planeada.' });
+  m.planeador.guardar();
+  expect(pedidos(m, 'alterarRota')).toHaveLength(1);
+  await responder(m, 'alterarRota', copia(semNaoCabe({ versao: 4, estado: 'planeada', estado_efetivo: 'planeada' })));
+  expect(m.avisos).toEqual([{ texto: 'Rota guardada como planeada', opcoes: undefined }]);
+  m.planeador.guardar();
+  m.planeador.responderGuardar(true);
+  expect(pedidos(m, 'alterarRota')).toHaveLength(1);
+});
+
+test('guardar com paragens que não cabem: a pergunta, e só grava com o "sim"', async () => {
+  const m = await carregado();
+  m.planeador.responderGuardar(true);
+  expect(escritas(m)).toEqual([]);
+  m.planeador.guardar();
+  expect(escritas(m)).toEqual([]);
+  expect(m.vista().acoes.guardar).toEqual({ texto: 'Guardar rota', ativo: true, falta: null, pergunta: '1 paragem não cabe — guardar mesmo assim?' });
+  m.planeador.responderGuardar(false);
+  expect(m.vista().acoes.guardar.pergunta).toBeNull();
+  expect(escritas(m)).toEqual([]);
+  m.planeador.guardar();
+  m.planeador.responderGuardar(true);
+  expect(m.vista().acoes.guardar.pergunta).toBeNull();
+  expect(corpo(m)).toEqual([DIA, { estado: 'planeada', versao: 3 }]);
+  // Responder outra vez já não grava.
+  m.planeador.responderGuardar(true);
+  expect(pedidos(m, 'alterarRota')).toHaveLength(1);
+});
+
+test('guardar: a pergunta aberta e a rede cai — o "sim" já não grava', async () => {
+  const m = await carregado();
+  m.planeador.guardar();
+  m.mudarRede(false);
+  m.planeador.responderGuardar(true);
+  expect(escritas(m)).toEqual([]);
+  expect(m.vista().acoes.guardar.pergunta).toBeNull();
+});
+
+// --- Os erros das alterações --------------------------------------------------------------------------
+
+test('um 422 desfaz o otimista e mostra a mensagem do campo; a ação seguinte limpa-a', async () => {
+  const m = await carregado();
+  m.planeador.mudarDefinicao('hora_regresso_limite', '07:00');
+  expect(m.vista().definicoes.hora_regresso_limite).toBe('07:00');
+  await falhar(m, 'alterarRota', erroValidacao({ hora_regresso_limite: 'A hora limite de regresso tem de ser depois da hora de saída.' }));
+  expect(m.vista().definicoes.hora_regresso_limite).toBe('19:00');
+  expect(m.vista().alerta).toEqual({ mensagem: 'A hora limite de regresso tem de ser depois da hora de saída.' });
+  expect(Object.isFrozen(m.vista().alerta)).toBe(true);
+  // Não pára a fila: a seguinte sai com a mesma versão.
+  m.planeador.retirar('C');
+  expect(m.vista().alerta).toBeNull();
+  expect(corpo(m)).toEqual([DIA, { retirar: ['C'], versao: 3 }]);
+  // Sem campos (ou campos vazios), a mensagem geral do 422.
+  await falhar(m, 'alterarRota', erroValidacao({ hora_saida: '' }));
+  expect(m.vista().alerta).toEqual({ mensagem: 'Verifique os campos assinalados.' });
+  expect(idsDaRota(m)).toEqual(['A', 'C', 'E']);
+  m.planeador.retirar('C');
+  await falhar(m, 'alterarRota', new ErroCrm({ codigo: 'validacao', mensagem: 'Verifique os campos assinalados.', estado: 422, campos: null }));
+  expect(m.vista().alerta).toEqual({ mensagem: 'Verifique os campos assinalados.' });
+  // Um erro sem mensagem: a geral.
+  m.planeador.retirar('C');
+  await falhar(m, 'alterarRota', new TypeError('x'));
+  expect(m.vista().alerta).toEqual({ mensagem: MENSAGEM_ERRO_INESPERADO });
+  expect(m.avisos).toEqual([]);
+});
+
+test('sem rede (o pedido falha): a paragem volta e a mensagem do sem rede', async () => {
+  const m = await carregado();
+  m.planeador.retirar('C');
+  expect(idsDaRota(m)).toEqual(['A', 'E']);
+  await falhar(m, 'alterarRota', erroSemRede());
+  expect(idsDaRota(m)).toEqual(['A', 'C', 'E']);
+  expect(m.vista().alerta).toEqual({ mensagem: MENSAGEM_SEM_REDE });
+  expect(m.avisos).toEqual([]);
+});
+
+test('sem rede (o browser diz): as ações não pedem nada', async () => {
+  const m = await carregado({ online: false });
+  m.planeador.mover(0, 2);
+  m.planeador.subir('C');
+  m.planeador.retirar('C');
+  m.planeador.mudarMotivo('A', 'entrega');
+  m.planeador.manter('B');
+  m.planeador.mudarDefinicao('hora_saida', '07:30');
+  m.planeador.escolherPonto('inicio');
+  m.planeador.tocarNoMapa({ lat: 38.6, lng: -9 });
+  m.planeador.usarFabrica('inicio');
+  m.planeador.adicionar('loja-X');
+  m.planeador.calcularMelhorOrdem();
+  m.planeador.recalcularHoras();
+  m.planeador.guardar();
+  expect(escritas(m)).toEqual([]);
+  expect(m.vista().escolherPonto).toBeNull();
+  // A rede volta: a faixa do ponto só abre agora.
+  m.mudarRede(true);
+  m.planeador.escolherPonto('inicio');
+  expect(m.vista().escolherPonto).toBe('inicio');
+  m.mudarRede(false);
+  expect(m.vista().escolherPonto).toBeNull();
+});
+
+test('só de leitura: as ações não pedem nada', async () => {
+  const m = await carregado({ rota: rotaDoServidor({ editavel: false, estado_efetivo: 'concluida', calculo: { ...CALCULO, atual: false } }) });
+  m.planeador.mover(0, 2);
+  m.planeador.retirar('C');
+  m.planeador.mudarTempo('A', 20);
+  m.planeador.porNaRota('D');
+  m.planeador.mudarDefinicao('hora_saida', '07:30');
+  m.planeador.adicionar('loja-X');
+  m.planeador.calcularMelhorOrdem();
+  m.planeador.recalcularHoras();
+  m.planeador.guardar();
+  expect(escritas(m)).toEqual([]);
+  expect(m.relogio.esperas).toEqual([]);
+});
+
+// --- Os conflitos -----------------------------------------------------------------------------------
+
+test('409 conflito: a faixa "Alterado por outra pessoa — recarregar", tudo desligado, e o otimista desfeito', async () => {
+  const m = await comSugestoes();
+  m.planeador.mover(0, 2);
+  m.planeador.retirar('C');
+  m.planeador.escolherPonto('inicio');
+  m.planeador.guardar();
+  m.planeador.escolherLoja(LOJAS[5]);
+  expect(m.vista().acoes.guardar.pergunta).not.toBeNull();
+  await falhar(m, 'alterarRota', erroConflito());
+  const v = m.vista();
+  expect(v.conflito).toEqual({ mensagem: 'Alterado por outra pessoa — recarregar', aRecarregar: false, erro: null });
+  expect(Object.isFrozen(v.conflito)).toBe(true);
+  // A rota do servidor, sem nenhuma das duas alterações (a que estava à espera também foi recusada).
+  expect(idsDaRota(m)).toEqual(['A', 'C', 'E']);
+  expect(pedidos(m, 'alterarRota')).toHaveLength(1);
+  expect(v.alerta).toBeNull();
+  expect(v.somenteLeitura).toBe(false);
+  expect(v.acoes.calcular).toEqual({ texto: 'Calcular melhor ordem', ativo: false, falta: 'Recarregue a rota para ver o que a outra pessoa mudou.' });
+  expect(v.acoes.guardar).toMatchObject({ ativo: false, falta: 'Recarregue a rota para ver o que a outra pessoa mudou.' });
+  expect(v.definicoes.ativas).toBe(false);
+  expect(v.podeAdicionar).toBe(false);
+  expect(v.lojaEscolhida).toBeNull();
+  expect(v.seccoes.rota.map((l) => [l.podeSubir, l.podeDescer])).toEqual([[false, false], [false, false], [false, false]]);
+  expect(m.avisos).toEqual([]);
+  // Nada grava enquanto não se recarrega.
+  m.planeador.retirar('A');
+  m.planeador.adicionar('loja-X');
+  m.planeador.mudarDefinicao('hora_saida', '07:30');
+  m.planeador.calcularMelhorOrdem();
+  m.planeador.guardar();
+  m.planeador.escolherLoja(LOJAS[5]);
+  expect(m.vista().lojaEscolhida).toBeNull();
+  expect(escritas(m)).toHaveLength(1);
+  expect(m.relogio.esperas).toEqual([]);
+
+  // "Recarregar": a rota de novo, e a fila volta a andar com a versão dela.
+  m.planeador.recarregar();
+  expect(m.vista().conflito).toEqual({ mensagem: 'Alterado por outra pessoa — recarregar', aRecarregar: true, erro: null });
+  await responder(m, 'obterRota', resposta(7, { hora_saida: '09:00' }));
+  expect(m.vista().conflito).toBeNull();
+  expect(m.vista().definicoes).toMatchObject({ hora_saida: '09:00', ativas: true });
+  // A faixa do ponto, a pergunta do "Guardar" e o cartão da loja não voltam.
+  expect(m.vista()).toMatchObject({ escolherPonto: null, lojaEscolhida: null });
+  expect(m.vista().acoes.guardar.pergunta).toBeNull();
+  m.planeador.retirar('A');
+  expect(corpo(m)).toEqual([DIA, { retirar: ['A'], versao: 7 }]);
+});
+
+test('409 conflito: o "Recarregar" que falha mostra o erro na faixa e a faixa fica', async () => {
+  const m = await carregado();
+  m.planeador.retirar('C');
+  await falhar(m, 'alterarRota', erroConflito());
+  m.planeador.recarregar();
+  await falhar(m, 'obterRota', erroSemRede());
+  expect(m.vista().conflito).toEqual({ mensagem: 'Alterado por outra pessoa — recarregar', aRecarregar: false, erro: MENSAGEM_SEM_REDE });
+  m.planeador.retirar('A');
+  expect(pedidos(m, 'alterarRota')).toHaveLength(1);
+});
+
+test('409 conflito noutros pedidos: o adicionar, o recalcular e o otimizar também param', async () => {
+  for (const [acao, nome] of [['adicionar', 'adicionarParagem'], ['calcularMelhorOrdem', 'otimizarRota']]) {
+    const m = await comSugestoes({ rota: comHorasVelhas() });
+    m.planeador[acao]('loja-X');
+    await falhar(m, nome, erroConflito());
+    expect(m.vista().conflito).not.toBeNull();
+    expect(m.vista().calculo.mensagem).toBeNull();
+    expect(m.vista().alerta).toBeNull();
+    const sugeridas = m.vista().sugestoes.grupos.flatMap((g) => g.lojas);
+    expect(sugeridas.map((l) => [l.id, l.aAdicionar])).toEqual([['loja-X', false], ['loja-Y', false]]);
+  }
+  const m = await carregado({ rota: comHorasVelhas() });
+  m.relogio.disparar();
+  await falhar(m, 'recalcularHoras', erroConflito());
+  expect(m.vista().conflito).not.toBeNull();
+  expect(m.vista().calculo.mensagem).toBeNull();
+});
+
+test('409 rota_em_curso: só de leitura, com a mensagem do servidor', async () => {
+  const m = await comSugestoes();
+  m.planeador.mover(0, 2);
+  m.planeador.escolherPonto('inicio');
+  m.planeador.guardar();
+  await falhar(m, 'alterarRota', erroEmCurso());
+  const v = m.vista();
+  expect(v).toMatchObject({
+    estado: 'rota', somenteLeitura: true, textoLeitura: TEXTO_EM_CURSO_LEITURA, conflito: null, alerta: null,
+    acoes: null, calculo: null, sugestoes: null, escolherPonto: null, lojaEscolhida: null, podeAdicionar: false,
+  });
+  expect(v.definicoes).toMatchObject({ ativas: false, mensagem: null });
+  expect(idsDaRota(m)).toEqual(['A', 'C', 'E']);
+  expect(v.seccoes.rota.every((l) => !l.podeSubir && !l.podeDescer)).toBe(true);
+  m.planeador.retirar('C');
+  m.planeador.adicionar('loja-X');
+  m.planeador.escolherLoja(LOJAS[5]);
+  expect(escritas(m)).toHaveLength(1);
+  expect(m.vista().lojaEscolhida).toBeNull();
+  // O "Recarregar" traz a rota como o servidor a vê (só de leitura, com os registos).
+  m.planeador.recarregar();
+  await responder(m, 'obterRota', resposta(3, { editavel: false, estado: 'em_curso', estado_efetivo: 'em_curso' }));
+  expect(m.vista()).toMatchObject({ somenteLeitura: true, textoLeitura: TEXTO_EM_CURSO_LEITURA, rotuloEstado: 'Em curso' });
+});
+
+test('409 rota_fechada: só de leitura com "Este dia já passou…"; recarregar mostra a concluída', async () => {
+  const m = await carregado({ rota: comHorasVelhas() });
+  m.planeador.retirar('C');
+  await falhar(m, 'alterarRota', erroFechada());
+  expect(m.vista()).toMatchObject({ somenteLeitura: true, textoLeitura: 'Este dia já passou — a rota só se pode ver.', acoes: null });
+  expect(m.vista().horas).toEqual({ atuais: false, texto: 'Horas antigas' });
+  expect(m.relogio.esperas).toEqual([]);
+  m.planeador.recarregar();
+  await responder(m, 'obterRota', resposta(3, { editavel: false, estado_efetivo: 'concluida' }));
+  expect(m.vista()).toMatchObject({ somenteLeitura: true, textoLeitura: 'Concluída — só de leitura' });
+  // Se o servidor a voltar a dar como editável, volta a ser.
+  m.planeador.recarregar();
+  await responder(m, 'obterRota', resposta(3));
+  expect(m.vista()).toMatchObject({ somenteLeitura: false, textoLeitura: null });
+  m.planeador.retirar('C');
+  expect(pedidos(m, 'alterarRota')).toHaveLength(2);
+});
+
+test('recarregar enquanto uma gravação responde: a leitura (mais velha) não conta', async () => {
+  const m = await carregado();
+  m.planeador.mudarDefinicao('hora_saida', '07:30');
+  m.planeador.recarregar();
+  await responder(m, 'alterarRota', resposta(4, { hora_saida: '07:30' }));
+  await responder(m, 'obterRota', resposta(3));
+  expect(m.vista().definicoes.hora_saida).toBe('07:30');
+  expect(m.vista().recarga).toEqual({ aRecarregar: false, erro: null });
+  m.planeador.mudarDefinicao('evitar_portagens', true);
+  expect(corpo(m)).toEqual([DIA, { evitar_portagens: true, versao: 4 }]);
+});
+
+test('recarregar com uma gravação em curso: a rota lida fica, mas a versão é a da gravação', async () => {
+  const m = await carregado();
+  m.planeador.mudarDefinicao('hora_saida', '07:30');
+  m.planeador.recarregar();
+  await responder(m, 'obterRota', resposta(3, { estado: 'planeada', estado_efetivo: 'planeada' }));
+  // A alteração continua por cima da rota lida.
+  expect(m.vista()).toMatchObject({ rotuloEstado: 'Planeada', definicoes: { hora_saida: '07:30' } });
+  m.planeador.mudarDefinicao('evitar_portagens', true);
+  await responder(m, 'alterarRota', resposta(4, { hora_saida: '07:30' }));
+  expect(corpo(m)).toEqual([DIA, { evitar_portagens: true, versao: 4 }]);
+});
+
+// --- As horas automáticas (o temporizador à mão) ------------------------------------------------------
+
+test('horas automáticas: com as horas velhas, ~1,5 s depois de a rota chegar, uma só vez', async () => {
+  const m = await comSugestoes({ rota: comHorasVelhas() });
+  expect(m.relogio.esperas).toEqual([1500]);
+  expect(pedidos(m, 'recalcularHoras')).toEqual([]);
+  m.relogio.disparar();
+  expect(ultimo(m, 'recalcularHoras').argumentos).toEqual([DIA, 3]);
+  expect(m.vista().horas).toEqual({ atuais: false, texto: 'a recalcular' });
+  expect(m.vista().acoes.recalcular).toEqual({ texto: 'A recalcular…', ativo: false, falta: null });
+  await responder(m, 'recalcularHoras', resposta(3, { calculo: { ...CALCULO, calculado_em: '2026-10-10T08:00:00.000000+00:00' } }));
+  expect(m.vista().horas).toEqual({ atuais: true, texto: null });
+  expect(m.relogio.esperas).toEqual([]);
+  // Depois do recálculo as sugestões pedem-se outra vez (o corredor muda com as horas).
+  expect(pedidos(m, 'obterSugestoes')).toHaveLength(2);
+  expect(pedidos(m, 'recalcularHoras')).toHaveLength(1);
+  expect(m.avisos).toEqual([]);
+});
+
+test('horas automáticas: nunca com as horas em dia, sem a chave, só de leitura ou sem paragens na rota', async () => {
+  for (const rota of [
+    rotaDoServidor(),
+    comHorasVelhas({ calculo_disponivel: false }),
+    rotaDoServidor({ calculo: null, calculo_disponivel: false }),
+    comHorasVelhas({ editavel: false }),
+    comHorasVelhas({ paragens: [rotaDoServidor().paragens[1]] }),
+    rotaVirtual(),
+  ]) {
+    const m = await carregado({ rota });
+    expect(m.relogio.esperas).toEqual([]);
+  }
+  // Sem cálculo nenhum, mas com a chave e paragens: calcula.
+  const semCalculo = await carregado({ rota: rotaDoServidor({ calculo: null }) });
+  expect(semCalculo.relogio.esperas).toEqual([1500]);
+});
+
+test('horas automáticas depois de uma alteração: a espera só começa quando a fila esvazia, e cada ação a cancela', async () => {
+  const m = await carregado();
+  m.planeador.mover(0, 2);
+  expect(m.relogio.esperas).toEqual([]);
+  m.planeador.retirar('A');
+  await responder(m, 'alterarRota', respostaVelha(4));
+  // Ainda falta a segunda.
+  expect(m.relogio.esperas).toEqual([]);
+  await responder(m, 'alterarRota', respostaVelha(5));
+  expect(m.relogio.esperas).toEqual([1500]);
+  // Uma ação nova cancela a espera; a resposta dela arma outra.
+  m.planeador.mudarMotivo('A', 'entrega');
+  expect(m.relogio.esperas).toEqual([]);
+  await responder(m, 'alterarRota', respostaVelha(6));
+  expect(m.relogio.esperas).toEqual([1500]);
+  m.relogio.disparar();
+  expect(pedidos(m, 'recalcularHoras').map((p) => p.argumentos)).toEqual([[DIA, 6]]);
+});
+
+test('horas automáticas: com a fila ocupada não se arma a espera (o adicionar, a rede que volta, a rota relida)', async () => {
+  const m = await carregado({ rota: comHorasVelhas() });
+  expect(m.relogio.esperas).toEqual([1500]);
+  m.planeador.adicionar('loja-X');
+  expect(m.relogio.esperas).toEqual([]);
+  m.mudarRede(true);
+  expect(m.relogio.esperas).toEqual([]);
+  m.planeador.recarregar();
+  await responder(m, 'obterRota', respostaVelha(3));
+  expect(m.relogio.esperas).toEqual([]);
+  expect(pedidos(m, 'recalcularHoras')).toEqual([]);
+  await responder(m, 'adicionarParagem', respostaVelha(4, { paragens: [...rotaDoServidor().paragens, paragem('X', 6, { numero: 4 })] }));
+  expect(m.relogio.esperas).toEqual([1500]);
+});
+
+test('horas automáticas falham (503): a mensagem, `falhou`, e não tentam sozinhas até à próxima alteração ou ao botão', async () => {
+  const m = await carregado({ rota: comHorasVelhas() });
+  m.relogio.disparar();
+  await falhar(m, 'recalcularHoras', erroCalculo());
+  expect(m.vista().calculo).toEqual({ aCalcular: false, mensagem: MENSAGEM_LIMITE });
+  expect(m.vista().horas).toEqual({ atuais: false, texto: 'Horas antigas — Recalcular horas' });
+  expect(m.vista().alerta).toBeNull();
+  expect(m.relogio.esperas).toEqual([]);
+  // A rede a cair e a voltar não volta a tentar.
+  m.mudarRede(false);
+  m.mudarRede(true);
+  expect(m.relogio.esperas).toEqual([]);
+  // Uma alteração volta a ligar o automático.
+  m.planeador.mudarMotivo('A', 'entrega');
+  await responder(m, 'alterarRota', respostaVelha(4));
+  expect(m.relogio.esperas).toEqual([1500]);
+  m.relogio.disparar();
+  expect(m.vista().calculo.mensagem).toBeNull();
+  await falhar(m, 'recalcularHoras', erroCalculo('indisponivel', 'Cálculo automático indisponível — ordene à mão'));
+  expect(m.vista().calculo.mensagem).toBe('Cálculo automático indisponível — ordene à mão');
+  // O botão também.
+  m.planeador.recalcularHoras();
+  expect(pedidos(m, 'recalcularHoras')).toHaveLength(3);
+  await responder(m, 'recalcularHoras', resposta(4));
+  expect(m.vista().calculo.mensagem).toBeNull();
+});
+
+test('horas automáticas sem rede (o pedido falha, ou o cálculo passou do tecto): também `falhou`', async () => {
+  const m = await carregado({ rota: comHorasVelhas() });
+  m.relogio.disparar();
+  await falhar(m, 'recalcularHoras', erroSemRede());
+  expect(m.vista().calculo.mensagem).toBe(MENSAGEM_SEM_REDE);
+  m.mudarRede(true);
+  expect(m.relogio.esperas).toEqual([]);
+});
+
+test('horas automáticas: no máximo uma por par (versão, calculado_em) — uma resposta que ainda traz horas velhas não volta a disparar (correção "T3.32 / T3.38")', async () => {
+  const m = await carregado({ rota: comHorasVelhas() });
+  m.relogio.disparar();
+  // A fábrica mudou entre a leitura e a escrita: o servidor gravou as horas e elas já são velhas.
+  await responder(m, 'recalcularHoras', respostaVelha(3, { calculo: { ...CALCULO, atual: false, calculado_em: '2026-10-10T09:00:00.000000+00:00' } }));
+  expect(m.relogio.esperas).toEqual([]);
+  m.mudarRede(true);
+  expect(m.relogio.esperas).toEqual([]);
+  // A mesma rota relida (o mesmo par): também não.
+  m.planeador.recarregar();
+  await responder(m, 'obterRota', respostaVelha(3, { calculo: { ...CALCULO, atual: false, calculado_em: '2026-10-10T09:00:00.000000+00:00' } }));
+  expect(m.relogio.esperas).toEqual([]);
+  // A rota do início (o par que já se pediu): também não.
+  m.planeador.recarregar();
+  await responder(m, 'obterRota', respostaVelha(3));
+  expect(m.relogio.esperas).toEqual([]);
+  // Uma versão nova é outro par.
+  m.planeador.mudarMotivo('A', 'entrega');
+  await responder(m, 'alterarRota', respostaVelha(4));
+  expect(m.relogio.esperas).toEqual([1500]);
+  m.relogio.disparar();
+  expect(pedidos(m, 'recalcularHoras').map((p) => p.argumentos)).toEqual([[DIA, 3], [DIA, 4]]);
+});
+
+test('horas automáticas: o par da resposta de um recálculo pelo botão também conta', async () => {
+  const m = await carregado({ rota: comHorasVelhas() });
+  m.planeador.recalcularHoras();
+  await responder(m, 'recalcularHoras', respostaVelha(3, { calculo: { ...CALCULO, atual: false, calculado_em: '2026-10-10T09:00:00.000000+00:00' } }));
+  expect(m.relogio.esperas).toEqual([]);
+});
+
+test('horas automáticas: sem rede quando a espera acaba não pede; quando a rede volta, espera outra vez', async () => {
+  const m = await carregado({ rota: comHorasVelhas() });
+  m.mudarRede(false);
+  m.relogio.disparar();
+  expect(pedidos(m, 'recalcularHoras')).toEqual([]);
+  expect(m.relogio.esperas).toEqual([]);
+  m.mudarRede(true);
+  expect(m.relogio.esperas).toEqual([1500]);
+  m.relogio.disparar();
+  expect(pedidos(m, 'recalcularHoras')).toHaveLength(1);
+});
+
+test('horas automáticas: recarregar depois de uma falha volta a ligar o automático para uma rota nova', async () => {
+  const m = await carregado({ rota: comHorasVelhas() });
+  m.relogio.disparar();
+  await falhar(m, 'recalcularHoras', erroCalculo());
+  m.planeador.recarregar();
+  await responder(m, 'obterRota', respostaVelha(5));
+  expect(m.relogio.esperas).toEqual([1500]);
+  expect(m.vista().calculo.mensagem).toBeNull();
+});
+
+test('horas automáticas: um recálculo sem resposta válida não muda a rota', async () => {
+  const m = await carregado({ rota: comHorasVelhas() });
+  m.relogio.disparar();
+  await responder(m, 'recalcularHoras', 'estragada');
+  expect(m.vista().horas.atuais).toBe(false);
+  expect(m.vista()).toMatchObject({ estado: 'rota', rotuloEstado: 'Rascunho', somenteLeitura: false });
+});
+
+// --- As sugestões depois das gravações ---------------------------------------------------------------
+
+test('as sugestões pedem-se outra vez só quando a fila esvazia, e só se alguma gravação deu certo', async () => {
+  const m = await comSugestoes();
+  m.planeador.mover(0, 2);
+  m.planeador.adicionar('loja-X');
+  expect(pedidos(m, 'obterSugestoes')).toHaveLength(1);
+  await responder(m, 'alterarRota', resposta(4));
+  expect(pedidos(m, 'obterSugestoes')).toHaveLength(1);
+  await falhar(m, 'adicionarParagem', erroDe('ja_na_rota', 'Esta loja já está na rota deste dia.'));
+  expect(pedidos(m, 'obterSugestoes')).toHaveLength(2);
+  // Uma gravação que falha sozinha: nada mudou.
+  m.planeador.retirar('C');
+  await falhar(m, 'alterarRota', erroSemRede());
+  expect(pedidos(m, 'obterSugestoes')).toHaveLength(2);
+  // Retirar a última loja: "Adicione a primeira paragem pelo mapa.", sem pedir.
+  m.planeador.retirar('A');
+  await responder(m, 'alterarRota', resposta(5, { paragens: [] }));
+  expect(m.vista().sugestoes.estado).toBe('sem_paragens');
+  expect(pedidos(m, 'obterSugestoes')).toHaveLength(2);
+});
+
+// --- Destruir ----------------------------------------------------------------------------------------
+
+test('destruir: as respostas das gravações já não mudam nada, e a espera das horas cancela-se', async () => {
+  const armada = await carregado({ rota: comHorasVelhas() });
+  expect(armada.relogio.esperas).toEqual([1500]);
+  armada.planeador.destruir();
+  expect(armada.relogio.esperas).toEqual([]);
+  armada.mudarRede(true);
+  expect(armada.relogio.esperas).toEqual([]);
+
+  const m = await carregado({ rota: comHorasVelhas() });
+  m.planeador.retirar('C');
+  m.planeador.destruir();
+  const vistas = m.vistas.length;
+  await responder(m, 'alterarRota', respostaVelha(4));
+  expect(m.vistas).toHaveLength(vistas);
+  expect(m.avisos).toEqual([]);
+  expect(m.relogio.esperas).toEqual([]);
+  m.planeador.retirar('A');
+  m.planeador.adicionar('loja-X');
+  expect(escritas(m)).toHaveLength(1);
+
+  const n = await carregado();
+  n.planeador.retirar('C');
+  n.planeador.destruir();
+  await falhar(n, 'alterarRota', erroConflito());
+  expect(n.vista().conflito).toBeNull();
+  // A espera armada antes de destruir não pede nada se disparar.
+  const o = await carregado({ rota: comHorasVelhas() });
+  const disparar = o.relogio.disparar.bind(o.relogio);
+  o.relogio.cancelar = () => {};
+  o.planeador.destruir();
+  disparar();
+  expect(pedidos(o, 'recalcularHoras')).toEqual([]);
+});
+
+// --- Com o relógio falso do Jest (o temporizador do browser, por omissão) ------------------------------
+
+describe('o temporizador do browser, com o relógio falso do Jest (correção "T3.32")', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    comRelogioFalso = true;
+  });
+  afterEach(() => {
+    comRelogioFalso = false;
+    jest.useRealTimers();
+  });
+
+  test('várias alterações seguidas dão um só recálculo, ~1,5 s depois da última resposta', async () => {
+    const m = await carregado({ temporizador: undefined });
+    m.planeador.mover(0, 2);
+    await responder(m, 'alterarRota', respostaVelha(4));
+    jest.advanceTimersByTime(1000);
+    m.planeador.subir('C');
+    await responder(m, 'alterarRota', respostaVelha(5));
+    jest.advanceTimersByTime(1000);
+    m.planeador.mudarMotivo('A', 'entrega');
+    await responder(m, 'alterarRota', respostaVelha(6));
+    jest.advanceTimersByTime(1499);
+    expect(pedidos(m, 'recalcularHoras')).toEqual([]);
+    jest.advanceTimersByTime(1);
+    expect(pedidos(m, 'recalcularHoras').map((p) => p.argumentos)).toEqual([[DIA, 6]]);
+    jest.advanceTimersByTime(60000);
+    expect(pedidos(m, 'recalcularHoras')).toHaveLength(1);
+  });
+
+  test('destruir cancela a espera', async () => {
+    const m = await carregado({ rota: comHorasVelhas(), temporizador: undefined });
+    expect(jest.getTimerCount()).toBe(1);
+    m.planeador.destruir();
+    expect(jest.getTimerCount()).toBe(0);
+    jest.advanceTimersByTime(5000);
+    expect(pedidos(m, 'recalcularHoras')).toEqual([]);
+  });
+});
+
+// --- Os cantos -----------------------------------------------------------------------------------------
+
+test('as ações antes de a rota chegar (ou com o dia inválido) não pedem nada nem rebentam', async () => {
+  for (const m of [montar(), montar({ data: 'abc' })]) {
+    m.planeador.adicionar('loja-X');
+    m.planeador.retirar('A');
+    m.planeador.mover(0, 1);
+    m.planeador.subir('A');
+    m.planeador.descer('A');
+    m.planeador.mudarMotivo('A', 'entrega');
+    m.planeador.mudarDefinicao('hora_saida', '07:30');
+    m.planeador.escolherPonto('inicio');
+    m.planeador.tocarNoMapa({ lat: 38.6, lng: -9 });
+    m.planeador.usarFabrica('inicio');
+    m.planeador.escolherLoja(LOJAS[5]);
+    m.planeador.calcularMelhorOrdem();
+    m.planeador.recalcularHoras();
+    m.planeador.guardar();
+    m.planeador.responderGuardar(true);
+    m.mudarRede(true);
+    expect(escritas(m)).toEqual([]);
+    expect(m.vista()).toMatchObject({ escolherPonto: null, lojaEscolhida: null, podeAdicionar: false, alerta: null });
+  }
+});
+
+test('uma rota com uma versão que não serve: a primeira gravação sai com `versao: null` (o servidor diz)', async () => {
+  const m = await carregado({ rota: rotaDoServidor({ versao: 'x' }) });
+  m.planeador.retirar('C');
+  expect(corpo(m)).toEqual([DIA, { retirar: ['C'], versao: null }]);
+  const n = await carregado({ rota: rotaDoServidor({ versao: 0 }) });
+  n.planeador.retirar('C');
+  expect(corpo(n)[1].versao).toBeNull();
+});
+
+test('o tempo em texto com espaços à volta também vai como inteiro', async () => {
+  const m = await carregado();
+  m.planeador.mudarTempo('A', ' 25 ');
+  expect(corpo(m)[1]).toEqual({ paragens: { A: { tempo_servico_min: 25 } }, versao: 3 });
+});
+
+test('adicionar, retirar e voltar a adicionar a mesma loja (o cartão não volta)', async () => {
+  const m = await carregado();
+  m.planeador.escolherLoja(LOJAS[5]);
+  m.planeador.adicionar('loja-X');
+  const comX = [...rotaDoServidor().paragens, paragem('X', 6, { numero: 4 })];
+  await responder(m, 'adicionarParagem', resposta(4, { paragens: comX }));
+  m.planeador.retirar('X');
+  await responder(m, 'alterarRota', resposta(5));
+  expect(m.vista().lojaEscolhida).toBeNull();
+  m.planeador.adicionar('loja-X');
+  expect(pedidos(m, 'adicionarParagem').map((p) => p.argumentos)).toEqual([
+    [DIA, { loja_id: 'loja-X', versao: 3 }],
+    [DIA, { loja_id: 'loja-X', versao: 5 }],
+  ]);
+  expect(m.avisos.map((a) => a.texto)).toEqual(['Adicionada', 'Retirada']);
+});
+
+test('o cartão da loja sai quando a rota relida já a tem, ou passou a só de leitura', async () => {
+  const m = await carregado();
+  m.planeador.escolherLoja(LOJAS[5]);
+  m.planeador.recarregar();
+  await responder(m, 'obterRota', resposta(4, { paragens: [...rotaDoServidor().paragens, paragem('X', 6, { numero: 4 })] }));
+  expect(m.vista().lojaEscolhida).toBeNull();
+  const n = await carregado();
+  n.planeador.escolherLoja(LOJAS[5]);
+  n.planeador.recarregar();
+  await responder(n, 'obterRota', resposta(3, { editavel: false }));
+  expect(n.vista().lojaEscolhida).toBeNull();
+});
+
+test('recarregar limpa a mensagem da gravação recusada', async () => {
+  const m = await carregado();
+  m.planeador.retirar('C');
+  await falhar(m, 'alterarRota', erroSemRede());
+  expect(m.vista().alerta).not.toBeNull();
+  m.planeador.recarregar();
+  await responder(m, 'obterRota', resposta(3));
+  expect(m.vista().alerta).toBeNull();
+});
+
+test('depois de um conflito: a rede que volta não arma as horas, e uma gravação que deu certo antes não pede sugestões', async () => {
+  const m = await comSugestoes({ rota: comHorasVelhas() });
+  m.planeador.mover(0, 2);
+  m.planeador.adicionar('loja-X');
+  await responder(m, 'alterarRota', respostaVelha(4));
+  await falhar(m, 'adicionarParagem', erroConflito());
+  expect(m.vista().conflito).not.toBeNull();
+  expect(pedidos(m, 'obterSugestoes')).toHaveLength(1);
+  expect(m.relogio.esperas).toEqual([]);
+  m.mudarRede(false);
+  m.mudarRede(true);
+  expect(m.relogio.esperas).toEqual([]);
+  expect(escritas(m)).toHaveLength(2);
+});
+
+test('a rede que volta com a espera armada não arma outra (uma só espera)', async () => {
+  const m = await carregado({ rota: comHorasVelhas() });
+  m.mudarRede(true);
+  m.mudarRede(true);
+  expect(m.relogio.esperas).toEqual([1500]);
+});
+
+test('horas automáticas: outra pessoa recalculou (a mesma versão, outro calculado_em) — é um par novo', async () => {
+  const m = await carregado({ rota: comHorasVelhas() });
+  m.relogio.disparar();
+  await falhar(m, 'recalcularHoras', erroCalculo());
+  m.planeador.recarregar();
+  await responder(m, 'obterRota', respostaVelha(3, { calculo: { ...CALCULO, atual: false, calculado_em: '2026-10-10T10:00:00.000000+00:00' } }));
+  expect(m.relogio.esperas).toEqual([1500]);
+});
+
+test('recarregar com uma gravação em curso: a versão da fila fica a dela, mesmo sem versão na resposta', async () => {
+  const m = await carregado();
+  m.planeador.mudarDefinicao('hora_saida', '07:30');
+  m.planeador.recarregar();
+  await responder(m, 'obterRota', resposta(6));
+  m.planeador.mudarDefinicao('evitar_portagens', true);
+  await responder(m, 'alterarRota', 'estragada');
+  expect(corpo(m)).toEqual([DIA, { evitar_portagens: true, versao: 3 }]);
+});
+
+test('"Fábrica" com as duas pontas num ponto do mapa: a fábrica é o centro do GET /config', async () => {
+  const pontos = { inicio: { lat: 38.6, lng: -9.0, fabrica: false }, fim: { lat: 38.9, lng: -9.3, fabrica: false } };
+  const m = await carregado({ rota: rotaDoServidor(pontos), config: { ...CONFIG, centro: { lat: 38.71, lng: -9.14 } } });
+  m.planeador.usarFabrica('fim');
+  expect(corpo(m)).toEqual([DIA, { fim: null, versao: 3 }]);
+  expect(m.vista().definicoes.fim).toEqual({ lat: 38.71, lng: -9.14, fabrica: true, texto: 'Fábrica' });
+  expect(m.vista().definicoes.inicio).toEqual({ lat: 38.6, lng: -9.0, fabrica: false, texto: 'Ponto no mapa' });
+});
+
+test('adicionar outra loja (das sugestões) não fecha o cartão que está aberto', async () => {
+  const m = await carregado();
+  m.planeador.escolherLoja(LOJAS[6]);
+  m.planeador.adicionar('loja-X');
+  await responder(m, 'adicionarParagem', resposta(4, { paragens: [...rotaDoServidor().paragens, paragem('X', 6, { numero: 4 })] }));
+  expect(m.vista().lojaEscolhida).toMatchObject({ id: 'loja-Y', aAdicionar: false, ativo: true });
+});
+
+test('só de leitura, o toque numa loja não guarda o cartão para quando a rota voltar a ser editável', async () => {
+  const m = await carregado({ rota: rotaDoServidor({ editavel: false }) });
+  m.planeador.escolherLoja(LOJAS[5]);
+  m.planeador.recarregar();
+  await responder(m, 'obterRota', resposta(3));
+  expect(m.vista().lojaEscolhida).toBeNull();
+});
+
+test('a faixa do ponto aberta e a rede cai: o toque não grava; a rede volta e a faixa também', async () => {
+  const m = await carregado();
+  m.planeador.escolherPonto('inicio');
+  m.mudarRede(false);
+  expect(m.vista().escolherPonto).toBeNull();
+  m.planeador.tocarNoMapa({ lat: 38.6, lng: -9.0 });
+  expect(escritas(m)).toEqual([]);
+  m.mudarRede(true);
+  expect(m.vista().escolherPonto).toBe('inicio');
+  m.planeador.tocarNoMapa({ lat: 38.6, lng: -9.0 });
+  expect(corpo(m)).toEqual([DIA, { inicio: { lat: 38.6, lng: -9.0 }, versao: 3 }]);
+});
+
+test('o conflito fecha a faixa do ponto, e enquanto dura não se abre outra (nem depois de recarregar)', async () => {
+  const m = await carregado();
+  m.planeador.escolherPonto('inicio');
+  m.planeador.retirar('C');
+  await falhar(m, 'alterarRota', erroConflito());
+  m.planeador.escolherPonto('fim');
+  m.planeador.recarregar();
+  await responder(m, 'obterRota', resposta(4));
+  expect(m.vista().escolherPonto).toBeNull();
+});
+
+test('numa rota virtual, "Fábrica" não grava mesmo que o servidor mande uma ponta num ponto do mapa', async () => {
+  const m = await carregado({ rota: rotaVirtual({ fim: { lat: 38.9, lng: -9.3, fabrica: false } }) });
+  m.planeador.usarFabrica('fim');
+  expect(escritas(m)).toEqual([]);
+});
+
+test('a mensagem do cálculo: a falha com a chave; sem a chave (a rota nova já não a tem), "indisponível"', async () => {
+  const m = await carregado({ rota: comHorasVelhas() });
+  m.relogio.disparar();
+  await falhar(m, 'recalcularHoras', erroCalculo());
+  expect(m.vista().calculo.mensagem).toBe(MENSAGEM_LIMITE);
+  m.planeador.mudarMotivo('A', 'entrega');
+  await responder(m, 'alterarRota', respostaVelha(4, { calculo_disponivel: false }));
+  expect(m.vista().calculo).toEqual({ aCalcular: false, mensagem: 'Cálculo automático indisponível — ordene à mão' });
+});
+
+test('a rede a mudar antes de a rota chegar não rebenta (nem no ouvinte)', async () => {
+  const erros = jest.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const m = montar();
+    m.mudarRede(false);
+    m.mudarRede(true);
+    await falhar(m, 'obterRota', erroSemRede());
+    m.mudarRede(true);
+    expect(erros).not.toHaveBeenCalled();
+    expect(m.relogio.esperas).toEqual([]);
+  } finally {
+    erros.mockRestore();
+  }
 });
