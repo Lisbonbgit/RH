@@ -253,3 +253,15 @@ def test_a_troca_entre_si_recusa_quem_ja_tem_troca_nesse_dia():
     dados = _com(troca("2026-10-27", sn.ALFRAGIDE, BEATRICE, "14:00", "18:00", "Emily"))
     assert calendario.turnos_da_troca_entre_si(TERCA, dados, sn.emp("Joana"), sn.emp("Emily")) == (
         409, "Já há uma troca para Emily a 27/10 (Beatrice).")
+
+
+def test_a_troca_que_ficou_noutra_loja_nao_impede_trocar_a_escala_nova():
+    # A Beatrice no lugar da Emily em Alfragide; depois a escala de terça da Emily passa para a
+    # Amadora. O cálculo já não tira nada à linha nova (a troca fica uma ida à vista), por isso
+    # as recusas também não a podem contar: a linha nova troca-se.
+    dados = _com(troca("2026-10-27", sn.ALFRAGIDE, BEATRICE, "14:00", "23:00", "Emily"))
+    terca = next(d for d in next(m for m in dados["modelos"] if m["id"] == "m-emily")["dias"] if d["dia"] == 1)
+    terca["location_id"] = sn.AMADORA
+    assert _recusa("Emily", WEBER, "14:00", "23:00", dados) is None
+    turnos = calendario.turnos_da_troca_entre_si(TERCA, dados, sn.emp("Emily"), sn.emp("Walisson"))
+    assert [i["location_id"] if isinstance(i, dict) else i for i in turnos] == [sn.ALGUEIRAO, sn.AMADORA]

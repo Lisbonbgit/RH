@@ -515,11 +515,15 @@ def ausencias_que_impedem(novas: List[Dict], utilizadores: Dict[str, Dict], ause
 ESCOLHA_OUTRA = "Escolha outra pessoa."
 
 
-def _troca_de(emp_id: str, idas: List[Dict], iso: str, horas: Optional[Intervalo] = None) -> Optional[Dict]:
-    """A ida de uma troca já feita no lugar dessa ficha nesse dia (com `horas`, só se se sobrepõem)."""
+def _troca_de(emp_id: str, idas: List[Dict], iso: str, loja_id: str,
+              horas: Optional[Intervalo] = None) -> Optional[Dict]:
+    """A ida de uma troca já feita no lugar dessa ficha nesse dia, na loja da escala ACTUAL dela
+    (a condição do `dia_do_calendario`: uma troca que ficou noutra loja não lhe tira nada); com
+    `horas`, só se se sobrepõem."""
     for ida in idas:
-        if ida.get("no_lugar_de_emp") == emp_id and ida.get("data") == iso and (
-                horas is None or recortar(horas, (minutos(ida["inicio"]), minutos(ida["fim"])))):
+        if (ida.get("no_lugar_de_emp") == emp_id and ida.get("data") == iso
+                and ida.get("location_id") == loja_id and (
+                horas is None or recortar(horas, (minutos(ida["inicio"]), minutos(ida["fim"]))))):
             return ida
     return None
 
@@ -552,7 +556,7 @@ def recusa_da_troca(dia: date, dados: Dict, sai_emp: str, sai_nome: Optional[str
     if horas[0] < minha[1][0] or horas[1] > minha[1][1]:
         return 409, "As horas da troca têm de estar dentro das de %s (%s–%s)." % (
             nome, hora_curta(hhmm(minha[1][0])), hora_curta(hhmm(minha[1][1])))
-    outra = _troca_de(sai_emp, idas_do_dia, dia.isoformat(), horas)
+    outra = _troca_de(sai_emp, idas_do_dia, dia.isoformat(), minha[0], horas)
     if outra:
         return 409, _ja_ha_troca(nome, outra, p)
     return None
@@ -574,7 +578,7 @@ def turnos_da_troca_entre_si(dia: date, dados: Dict, emp_a: str, emp_b: str) -> 
     if turnos[emp_a] == turnos[emp_b]:
         return 400, ESCOLHA_OUTRA
     for emp_id in (emp_a, emp_b):
-        outra = _troca_de(emp_id, dados.get("idas", []), iso)
+        outra = _troca_de(emp_id, dados.get("idas", []), iso, turnos[emp_id][0])
         if outra:
             return 409, _ja_ha_troca(nomes[emp_id], outra, p)
 
