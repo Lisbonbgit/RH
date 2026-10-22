@@ -226,7 +226,7 @@ export function escaladosDoDia(dados, iso, saiUserId) {
 // escritos) numa linha: «20/10 às 14:32 · Carol · trocou Emily por Beatrice em Alfragide,
 // 14h–23h · 27/10». O «(conta removida)» do servidor fica inteiro.
 const diaEMes = (iso) => `${Number(iso.slice(8))}/${iso.slice(5, 7)}`;
-const nomeCurto = (nome) => (String(nome || '').startsWith('(') ? nome : primeiroNome(nome));
+export const nomeCurto = (nome) => (String(nome || '').startsWith('(') ? nome : primeiroNome(nome));
 const lojaEHoras = (r) => `${nomeCurtoDaLoja(r.loja)}, ${intervaloCurto(r.inicio, r.fim)}`;
 const ondeEQuando = (r) => `${nomeCurtoDaLoja(r.loja)} ${intervaloCurto(r.inicio, r.fim)}, ${diaEMes(r.data)}`;
 // Na troca entre si cada pessoa vai para a loja da outra: a loja de origem de uma é a da ida da outra.

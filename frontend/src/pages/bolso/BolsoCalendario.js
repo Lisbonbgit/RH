@@ -5,13 +5,14 @@ import { getCalendario, getContagem } from '@/lib/bolso';
 import {
   DIAS_DA_SEMANA, FILTROS, MESES, NOMES_DAS_AUSENCIAS, VISTAS, ausenciasDoDia, celulaDaSemana, dataCurta,
   diaAoLado, diasComPonto, feriadosDoMes, filtrarPorLoja, hojeIso, intervaloCurto, isoDe, juntarMeses,
-  linhaDaContagem, lista, mensagemDeErro, mesAoLado, mesesDaSemana, minhasIdas, nomeCurtoDaLoja, quantosDias,
+  linhaDaContagem, lista, mensagemDeErro, mesAoLado, mesesDaSemana, minhasIdas, nomeCurto, nomeCurtoDaLoja, quantosDias,
   semanaDe, tituloDaSemana, tituloDoDia, tituloDoMes,
 } from '@/lib/calendario';
 import {
   BotaoMenu, Calha, GrelhaDoMes, MenuLateral, Segmento, guardar, ler, useManifestoDoBolso,
 } from './partilhado';
 import PainelIda from './PainelIda';
+import PainelTroca from './PainelTroca';
 
 // **Calendário das lojas** — onde falta gente, para a Carol e a Débora taparem.
 //
@@ -34,7 +35,9 @@ const lerOpcao = (chave, opcoes, omissao) => {
   const v = ler(chave, omissao);
   return opcoes.includes(v) ? v : omissao;
 };
-const etiqueta = (p) => (p.origem === 'escala' ? 'escala' : p.extra ? 'extra' : 'ida');
+const etiqueta = (p) => (p.origem === 'escala' ? 'escala' : p.troca_id ? 'troca' : p.extra ? 'extra' : 'ida');
+// Uma ida abre-se a quem marca; uma troca só a quem troca (para o gerente é texto).
+const abreIda = (dados, ida) => (ida.troca_id ? dados.pode_trocar : dados.pode_marcar);
 const chaveDoMes = (ano, mes) => isoDe(ano, mes, 1).slice(0, 7);
 
 const Esqueleto = () => (
@@ -53,12 +56,13 @@ function Cartao({ titulo, subtitulo, children }) {
   );
 }
 
-// Uma linha que é botão quando se pode tocar (abrir a ida) e texto quando não.
-function Linha({ onClick, children }) {
+// Uma linha que é botão quando se pode tocar (abrir a ida, trocar quem está na escala) e
+// texto quando não.
+function Linha({ onClick, rotulo, children }) {
   const forma = 'w-full min-h-11 flex items-center gap-2 text-left text-[14px]';
   return onClick ? (
     <button
-      type="button" onClick={onClick}
+      type="button" onClick={onClick} aria-label={rotulo}
       className={`${forma} rounded-lg active:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
     >
       {children}
@@ -66,7 +70,28 @@ function Linha({ onClick, children }) {
   ) : <div className={forma}>{children}</div>;
 }
 
-function LojaDoDia({ loja, data, podeMarcar, onTapar, onIda, soBuracos = false }) {
+// O nome numa linha e, numa troca, «no lugar de Emily» por baixo (na mesma linha, o `truncate`
+// cortava-o a 375 px).
+function NomeDaLinha({ nome, noLugarDe }) {
+  return (
+    <span className="min-w-0 flex-1">
+      <span className="block truncate">{nome}</span>
+      {noLugarDe && <span className="block truncate text-[12px] text-muted-foreground">no lugar de {nomeCurto(noLugarDe)}</span>}
+    </span>
+  );
+}
+
+function LojaDoDia({ loja, data, dados, onTapar, onIda, onTrocar, soBuracos = false }) {
+  const podeMarcar = dados.pode_marcar;
+  // Quem está na escala com conta troca-se (só admin); uma ida abre-se pelo `abreIda`.
+  const tocar = (p) => {
+    if (p.ida_id) return abreIda(dados, p) ? () => onIda(p.ida_id) : null;
+    if (p.origem === 'escala' && p.user_id && dados.pode_trocar) {
+      return () => onTrocar({ data, location_id: loja.location_id, nomeDaLoja: loja.nome,
+        sai: { user_id: p.user_id, nome: p.nome, inicio: p.inicio, fim: p.fim } });
+    }
+    return null;
+  };
   if (loja.estado === 'fechada') {
     return (
       <li className="px-4 py-3 flex items-baseline justify-between gap-2 text-muted-foreground">
@@ -84,8 +109,11 @@ function LojaDoDia({ loja, data, podeMarcar, onTapar, onIda, soBuracos = false }
       </div>
       {loja.feriados.length > 0 && <p className="text-[12px] text-warning-strong">{loja.feriados.join(' · ')}</p>}
       {!soBuracos && loja.pessoas.map((p) => (
-        <Linha key={`${p.origem}-${p.ida_id || p.user_id || p.nome}-${p.inicio}`} onClick={p.ida_id && podeMarcar ? () => onIda(p.ida_id) : null}>
-          <span className="min-w-0 flex-1 truncate">{p.nome}</span>
+        <Linha
+          key={`${p.origem}-${p.ida_id || p.user_id || p.nome}-${p.inicio}`} onClick={tocar(p)}
+          rotulo={p.origem === 'escala' ? `Trocar ${p.nome}, ${intervaloCurto(p.inicio, p.fim)}` : undefined}
+        >
+          <NomeDaLinha nome={p.nome} noLugarDe={p.no_lugar_de} />
           <span className="tabular-nums text-muted-foreground">{intervaloCurto(p.inicio, p.fim)}</span>
           <span className={`text-[12px] font-semibold ${p.origem === 'escala' ? 'text-muted-foreground' : 'text-primary'}`}>
             {etiqueta(p)}
@@ -120,11 +148,12 @@ function LojaDoDia({ loja, data, podeMarcar, onTapar, onIda, soBuracos = false }
   );
 }
 
-function IdaLinha({ ida, comNome, onIda }) {
+function IdaLinha({ ida, comNome, dados, onIda }) {
   return (
-    <Linha onClick={onIda ? () => onIda(ida.id) : null}>
-      <span className="min-w-0 flex-1 truncate">{comNome ? `${ida.nome} · ${ida.loja}` : ida.loja}</span>
+    <Linha onClick={abreIda(dados, ida) ? () => onIda(ida.id) : null}>
+      <NomeDaLinha nome={comNome ? `${ida.nome} · ${ida.loja}` : ida.loja} noLugarDe={ida.no_lugar_de} />
       <span className="tabular-nums text-muted-foreground">{intervaloCurto(ida.inicio, ida.fim)}</span>
+      {ida.troca_id && <span className="text-[12px] font-semibold text-primary">troca</span>}
     </Linha>
   );
 }
@@ -141,18 +170,17 @@ function AusenciaLinha({ ausencia }) {
 }
 
 // O dia escolhido, por baixo da grelha, conforme o filtro.
-function Dia({ dados, iso, filtro, onTapar, onIda }) {
+function Dia({ dados, iso, filtro, onTapar, onIda, onTrocar }) {
   const dia = (dados.dias || []).find((d) => d.data === iso);
   if (!dia) return null;
   const feriados = dia.feriados.length ? dia.feriados.join(' · ') : null;
-  const abrirIda = dados.pode_marcar ? onIda : null;
   if (filtro === 'pessoal') {
     const idas = minhasIdas(dados).filter((i) => i.data === iso);
     return (
       <Cartao titulo={tituloDoDia(iso)} subtitulo={feriados}>
         <div className="px-4 pb-3">
           {idas.length === 0 && <p className="py-2 text-[14px] text-muted-foreground">Sem idas tuas neste dia.</p>}
-          {idas.map((i) => <IdaLinha key={i.id} ida={i} onIda={abrirIda} />)}
+          {idas.map((i) => <IdaLinha key={i.id} ida={i} dados={dados} onIda={onIda} />)}
         </div>
       </Cartao>
     );
@@ -181,7 +209,7 @@ function Dia({ dados, iso, filtro, onTapar, onIda }) {
     <Cartao titulo={tituloDoDia(iso)} subtitulo={feriados}>
       <ul className="divide-y border-t">
         {dia.lojas.map((l) => (
-          <LojaDoDia key={l.location_id} loja={l} data={iso} podeMarcar={dados.pode_marcar} onTapar={onTapar} onIda={onIda} />
+          <LojaDoDia key={l.location_id} loja={l} data={iso} dados={dados} onTapar={onTapar} onIda={onIda} onTrocar={onTrocar} />
         ))}
       </ul>
     </Cartao>
@@ -194,19 +222,18 @@ function Lista({ dados, filtro, hoje, onTapar, onIda }) {
     const nada = { geral: 'Sem buracos nem idas', pessoal: 'Sem idas tuas', ferias: 'Ninguém ausente' }[filtro];
     return <p className="mt-6 text-center text-[14px] text-muted-foreground">{nada} neste mês.</p>;
   }
-  const abrirIda = dados.pode_marcar ? onIda : null;
   return dias.map((d) => (
     <Cartao key={d.data} titulo={tituloDoDia(d.data)}>
       {d.buracos.length > 0 && (
         <ul className="divide-y border-t">
           {d.buracos.map((l) => (
-            <LojaDoDia key={l.location_id} loja={l} data={d.data} podeMarcar={dados.pode_marcar} onTapar={onTapar} onIda={onIda} soBuracos />
+            <LojaDoDia key={l.location_id} loja={l} data={d.data} dados={dados} onTapar={onTapar} onIda={onIda} soBuracos />
           ))}
         </ul>
       )}
       {d.idas.length > 0 && (
         <div className="px-4 pb-2 border-t">
-          {d.idas.map((i) => <IdaLinha key={i.id} ida={i} comNome={filtro === 'geral'} onIda={abrirIda} />)}
+          {d.idas.map((i) => <IdaLinha key={i.id} ida={i} comNome={filtro === 'geral'} dados={dados} onIda={onIda} />)}
         </div>
       )}
       {d.ausencias.length > 0 && (
@@ -460,9 +487,18 @@ export default function BolsoCalendario() {
     modo: 'tapar', nomeDaLoja: b.nome,
     inicial: { datas: [b.data], location_id: b.location_id, inicio: b.inicio, fim: b.fim },
   });
+  // O ponto comum de todas as vistas: uma troca abre-se para a desfazer (só admin; para os
+  // outros a linha nem é tocável), uma ida para a editar.
   const editar = (idaId) => {
     const ida = (desteMes?.idas || []).find((i) => i.id === idaId);
     if (!ida) return;
+    if (ida.troca_id) {
+      if (desteMes.pode_trocar) {
+        abrirPainel({ modo: 'desfazer', troca_id: ida.troca_id,
+          idas: desteMes.idas.filter((i) => i.troca_id === ida.troca_id) });
+      }
+      return;
+    }
     abrirPainel({
       modo: 'editar',
       inicial: {
@@ -479,6 +515,13 @@ export default function BolsoCalendario() {
     modo: 'marcar',
     inicial: { datas: escolhido ? [escolhido] : [], location_id: loja, inicio: '', fim: '' },
   });
+  // «Trocar turnos» só quando a linha tocada é o turno inteiro: a única linha dessa pessoa no
+  // dia, contada no mês SEM o filtro de loja (uma ida dela noutra loja também lhe parte o dia).
+  const trocarPessoa = (t) => {
+    const linhas = (desteMes?.dias || []).find((d) => d.data === t.data)?.lojas
+      .flatMap((l) => l.pessoas || []).filter((p) => p.user_id === t.sai.user_id) || [];
+    abrirPainel({ modo: 'trocar', ...t, turnoInteiro: linhas.length === 1 });
+  };
   const guardado = () => {
     setPainel(null);
     carregar();
@@ -538,7 +581,7 @@ export default function BolsoCalendario() {
           : (
             <>
               <Semana dados={daSemana} filtro={filtro} escolhido={escolhido} onTocar={setEscolhido} />
-              <Dia dados={daSemana} iso={escolhido} filtro={filtro} onTapar={tapar} onIda={editar} />
+              <Dia dados={daSemana} iso={escolhido} filtro={filtro} onTapar={tapar} onIda={editar} onTrocar={trocarPessoa} />
             </>
           ))}
         {vista === 'mes' && (
@@ -551,7 +594,7 @@ export default function BolsoCalendario() {
               />
             </section>
             {doMes
-              ? <Dia dados={doMes} iso={escolhido} filtro={filtro} onTapar={tapar} onIda={editar} />
+              ? <Dia dados={doMes} iso={escolhido} filtro={filtro} onTapar={tapar} onIda={editar} onTrocar={trocarPessoa} />
               : <Esqueleto />}
           </>
         )}
@@ -587,12 +630,16 @@ export default function BolsoCalendario() {
       )}
 
       <MenuLateral aberto={menu} onFechar={() => setMenu(false)} actual="/bolso/calendario" />
-      {painel && desteMes && (
+      {painel && desteMes && (['trocar', 'desfazer'].includes(painel.modo) ? (
+        <PainelTroca
+          key={painel.chave} painel={painel} dados={desteMes} onFechar={() => setPainel(null)} onGuardado={guardado}
+        />
+      ) : (
         <PainelIda
           key={painel.chave} painel={painel} dados={desteMes} hoje={hoje}
           onFechar={() => setPainel(null)} onGuardado={guardado}
         />
-      )}
+      ))}
     </div>
   );
 }
