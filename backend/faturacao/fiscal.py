@@ -3326,6 +3326,11 @@ def _reparticao_do_pagamento(venda: Dict) -> Optional[Dict]:
     perigoso desta função."""
     pagamentos = venda.get("pagamentos") or []
     if not pagamentos:
+        # A conta a 0,00 € oferecida por uma recompensa finaliza-se SEM
+        # pagamentos de propósito (ver `finalizar`): aí a lista vazia é a
+        # resposta certa — nada entrou na gaveta —, não «não se sabe».
+        if _totais(venda)["total"] == 0 and _tem_linha_de_voucher(venda):
+            return {"dinheiro": 0.0, "outros": 0.0, "total_pago": 0.0}
         return None
     dinheiro = soma_vendas_dinheiro([dict(venda, estado="emitida")])
     total_pago = round(sum(float(p.get("valor") or 0) for p in pagamentos), 2)
