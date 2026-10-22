@@ -46,10 +46,12 @@ export default function PainelHistorico({ ano, mes, onFechar }) {
           {erro ? (
             <p role="alert" className="text-[14px] text-destructive-strong dark:text-destructive whitespace-pre-line break-words">{erro}</p>
           ) : !entradas ? (
-            <Loader2 aria-label="A ler" className="mx-auto my-4 h-5 w-5 animate-spin text-muted-foreground" />
+            <p role="status" className="my-4 flex items-center justify-center gap-2 text-[14px] text-muted-foreground">
+              <Loader2 aria-hidden="true" className="h-5 w-5 animate-spin" />A ler
+            </p>
           ) : entradas.length === 0 ? (
             <p className="text-[14px] text-muted-foreground">
-              Sem alterações registadas neste mês. O histórico começou em outubro de 2026.
+              Sem alterações registadas neste mês. As mudanças só ficam registadas desde que o histórico existe.
             </p>
           ) : (
             <ul className="divide-y">

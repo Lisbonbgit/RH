@@ -74,14 +74,30 @@ devolve([...dlg().querySelectorAll('li')].map((li) => li.textContent));
                  "20/10 às 14:32 · Carol · apagou a ida de Débora em Oeiras, 13h–22h · 13/10"]
 
 
-def test_sem_entradas_o_painel_diz_desde_quando_ha_historico_e_quem_so_le_tambem_o_ve(tmp_path):
+def test_sem_entradas_o_painel_diz_que_so_ha_registo_desde_que_o_historico_existe_e_quem_so_le_tambem_o_ve(tmp_path):
     mes, _ = _servidor(eu=sn.CONTABILISTA, pode_marcar=False)
     r = _ecra(tmp_path, AJUDAS + """
 await abrir();
 devolve({ texto: dlg().textContent, linhas: dlg().querySelectorAll('li').length });
 """, mes, antes=_servir({"entradas": []}))
+    # Sem mês escrito à mão: a data da publicação ainda não se sabe.
     assert r == {"texto": "Histórico de outubroSem alterações registadas neste mês. "
-                          "O histórico começou em outubro de 2026.", "linhas": 0}
+                          "As mudanças só ficam registadas desde que o histórico existe.", "linhas": 0}
+
+
+def test_enquanto_le_o_painel_diz_a_ler_num_estado(tmp_path):
+    # O servidor nunca responde: fica o «A ler», em texto e anunciado (`role="status"`).
+    mes, _ = _servidor()
+    r = _ecra(tmp_path, AJUDAS + """
+await abrir();
+const estado = dlg().querySelector('[role="status"]');
+devolve({ tag: estado?.tagName, texto: estado?.textContent });
+""", mes, antes="""
+const servidorDoMes = global.SERVIDOR;
+global.SERVIDOR = (metodo, url, ...resto) => (metodo === 'GET' && url === '/calendario/historico'
+  ? new Promise(() => {}) : servidorDoMes(metodo, url, ...resto));
+""")
+    assert r == {"tag": "P", "texto": "A ler"}
 
 
 def test_um_erro_do_historico_aparece_dentro_do_painel(tmp_path):
