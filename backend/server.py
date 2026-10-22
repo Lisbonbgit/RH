@@ -8941,11 +8941,10 @@ async def _bolso_registar(current_user: dict, acao: str, antes: List[dict], depo
             {"_id": 0, "id": 1, "name": 1}).to_list(1000)}
 
         def _retrato(i):
-            sai = i.get("no_lugar_de_emp")
             return {"data": i["data"], "loja": lojas.get(i.get("location_id")) or calendario.NOME_SEM_LOJA,
                     "nome": nomes.get(i.get("user_id")) or calendario.NOME_SEM_CONTA,
                     "inicio": i["inicio"], "fim": i["fim"],
-                    "no_lugar_de": (fichas.get(sai) or calendario.NOME_SEM_CONTA) if sai else None}
+                    "no_lugar_de": calendario.quem_sai(i, fichas)}
 
         await db.bolso_historico.insert_one({
             "id": str(uuid.uuid4()), "quando": datetime.now(timezone.utc).isoformat(),

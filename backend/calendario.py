@@ -285,7 +285,7 @@ def _pessoa(user_id, nome, horas: Intervalo, origem: str, extra: bool = False, i
             "origem": origem, "extra": extra, "ida_id": ida_id, "troca_id": troca_id, "no_lugar_de": no_lugar_de}
 
 
-def _quem_sai(ida: Dict, nome_do_emp: Dict[str, str]) -> Optional[str]:
+def quem_sai(ida: Dict, nome_do_emp: Dict[str, str]) -> Optional[str]:
     """O nome de quem sai numa troca (o da ficha, como na linha da escala); `None` fora das trocas."""
     sai = ida.get("no_lugar_de_emp")
     return (nome_do_emp.get(sai) or NOME_SEM_CONTA) if sai else None
@@ -355,7 +355,7 @@ def dia_do_calendario(dia: date, dados: Dict, p: Optional[Dict] = None) -> Dict:
         if dentro:
             presentes.setdefault(ida["location_id"], []).append(_pessoa(
                 ida.get("user_id"), user.get("name") or NOME_SEM_CONTA, dentro, "ida", extra, ida.get("id"),
-                ida.get("troca_id"), _quem_sai(ida, p["nome_do_emp"])))
+                ida.get("troca_id"), quem_sai(ida, p["nome_do_emp"])))
     personalizados = dados.get("feriados", [])
     do_dia = feriados_do_dia(dia, personalizados)
     for emp_id, (loja_id, horas) in escala.items():
@@ -627,7 +627,7 @@ def resposta_do_mes(ano: int, mes: int, dados: Dict, eu: Optional[str], pode_mar
                   "user_id": i.get("user_id"), "inicio": i["inicio"], "fim": i["fim"],
                   "nome": (utilizadores.get(i.get("user_id")) or {}).get("name") or NOME_SEM_CONTA,
                   "loja": (lojas.get(i.get("location_id")) or {}).get("name") or NOME_SEM_LOJA,
-                  "troca_id": i.get("troca_id"), "no_lugar_de": _quem_sai(i, nome_do_emp)}
+                  "troca_id": i.get("troca_id"), "no_lugar_de": quem_sai(i, nome_do_emp)}
                  for i in idas],
         "ausencias": [{"nome": _ficha(a).get("name") or NOME_SEM_CONTA, "tipo": a.get("leave_type"),
                        "inicio": (a.get("start_date") or "")[:10], "fim": (a.get("end_date") or "")[:10],
