@@ -8,21 +8,45 @@
  *     quando passa do limite), esbatidos quando as horas não são as atuais;
  *   - os botões das ações (`botoesDoResumo`): "Calcular melhor ordem", "Recalcular horas" e "Guardar rota",
  *     cada um desligado com o motivo, e os motivos iguais escritos uma só vez (sem rede, os três dizem o
- *     mesmo); a mensagem do último cálculo só quando não repete um motivo.
+ *     mesmo); a mensagem do último cálculo só quando não repete um motivo;
+ *   - (T3.39) as definições do dia (`definicoesDoPainel`): as duas horas, o início e o fim ("Fábrica" ou
+ *     "Ponto no mapa", e qual está à espera do toque), "Evitar portagens" e o resumo de uma linha;
+ *   - a faixa do "Ponto no mapa" (`faixaDoPonto`): "Toque no mapa no ponto de início/fim", com "Cancelar";
+ *   - as sugestões (`sugestoesDoPainel`): os grupos, cada loja com a distância e o botão "Adicionar" ("A
+ *     adicionar…" com o pedido a correr; desligado quando a rota não aceita mais);
+ *   - o cartão pequeno de uma loja esbatida tocada no mapa (`cartaoDaLoja`): o nome, a fase, o motivo e
+ *     "Adicionar à rota".
  */
 import { MENSAGEM_SEM_REDE } from './api';
 import {
   MENSAGEM_SEM_CALCULO,
+  TEXTOS_ESCOLHER_PONTO,
+  TEXTO_A_ADICIONAR,
   TEXTO_A_CALCULAR,
   TEXTO_CALCULAR,
+  TEXTO_DEFINICOES_SEM_ROTA,
+  TEXTO_FABRICA,
   TEXTO_GUARDAR_ROTA,
   TEXTO_HORAS_EM_DIA,
+  TEXTO_PONTO_NO_MAPA,
   TEXTO_PRIMEIRA_PARAGEM,
   TEXTO_RECALCULAR,
+  TEXTO_SUGESTOES_A_CARREGAR,
+  TEXTO_SUGESTOES_NENHUMA,
   acoesDaRota,
+  vistaDasSugestoes,
 } from './planeador';
 import {
+  ROTULOS_HORAS,
+  ROTULOS_PONTAS,
   ROTULOS_TOTAIS,
+  TEXTO_ADICIONAR,
+  TEXTO_ADICIONAR_A_ROTA,
+  TEXTO_EVITAR_PORTAGENS,
+  TEXTO_FECHAR,
+  TEXTO_NOTA_PORTAGENS,
+  TITULO_DEFINICOES,
+  TITULO_SUGESTOES,
   TEXTO_A_RECARREGAR,
   TEXTO_CANCELAR,
   TEXTO_GUARDAR_MESMO_ASSIM,
@@ -37,7 +61,11 @@ import {
   TITULO_RESUMO,
   TITULOS_SECCOES,
   botoesDoResumo,
+  cartaoDaLoja,
+  definicoesDoPainel,
+  faixaDoPonto,
   seccoesDoPainel,
+  sugestoesDoPainel,
   totaisDoResumo,
 } from './painelRota';
 
@@ -310,5 +338,327 @@ describe('botoesDoResumo', () => {
     expect(Object.isFrozen(resumo.botoes)).toBe(true);
     expect(Object.isFrozen(resumo.botoes[0])).toBe(true);
     expect(Object.isFrozen(resumo.motivos)).toBe(true);
+  });
+});
+
+// --- As definições do dia (T3.39) ----------------------------------------------------------------
+
+test('os textos das definições do dia, das sugestões e do cartão', () => {
+  expect(TITULO_DEFINICOES).toBe('Definições do dia');
+  expect(ROTULOS_HORAS).toEqual({ hora_saida: 'Hora de saída', hora_regresso_limite: 'Hora limite de regresso' });
+  expect(Object.isFrozen(ROTULOS_HORAS)).toBe(true);
+  expect(ROTULOS_PONTAS).toEqual({ inicio: 'Início', fim: 'Fim' });
+  expect(Object.isFrozen(ROTULOS_PONTAS)).toBe(true);
+  expect(TEXTO_EVITAR_PORTAGENS).toBe('Evitar portagens');
+  // O desenho original §7.2: a otimização não evita portagens; as horas (e a linha) vêm do Directions, que sim.
+  expect(TEXTO_NOTA_PORTAGENS).toBe('A melhor ordem escolhe-se com portagens; as horas e a linha evitam-nas.');
+  expect(TITULO_SUGESTOES).toBe('Sugestões perto da rota');
+  expect(TEXTO_ADICIONAR).toBe('Adicionar');
+  expect(TEXTO_ADICIONAR_A_ROTA).toBe('Adicionar à rota');
+  expect(TEXTO_FECHAR).toBe('Fechar');
+});
+
+describe('definicoesDoPainel', () => {
+  const FABRICA = Object.freeze({ lat: 38.75, lng: -9.2, fabrica: true, texto: 'Fábrica' });
+  const PONTO = Object.freeze({ lat: 39.1, lng: -8.5, fabrica: false, texto: 'Ponto no mapa' });
+  const definicoes = (extra = {}) => ({
+    hora_saida: '08:00',
+    hora_regresso_limite: '19:00',
+    inicio: FABRICA,
+    fim: FABRICA,
+    evitar_portagens: false,
+    ativas: true,
+    mensagem: null,
+    ...extra,
+  });
+
+  test('as horas, as pontas, as portagens e o resumo de uma rota com início e fim na fábrica', () => {
+    expect(definicoesDoPainel(definicoes(), null)).toEqual({
+      resumo: 'Saída 08:00 · Regresso até 19:00 · Início e fim: Fábrica',
+      horas: [
+        { chave: 'hora_saida', rotulo: 'Hora de saída', valor: '08:00' },
+        { chave: 'hora_regresso_limite', rotulo: 'Hora limite de regresso', valor: '19:00' },
+      ],
+      pontas: [
+        { chave: 'inicio', rotulo: 'Início', texto: 'Fábrica', fabrica: true, noMapa: false, aEscolher: false },
+        { chave: 'fim', rotulo: 'Fim', texto: 'Fábrica', fabrica: true, noMapa: false, aEscolher: false },
+      ],
+      evitarPortagens: false,
+      ativas: true,
+      mensagem: null,
+    });
+  });
+
+  test('um ponto no mapa e pontas diferentes: cada uma no resumo; "Sem portagens" no fim', () => {
+    const painel = definicoesDoPainel(definicoes({ fim: PONTO, evitar_portagens: true }), null);
+    expect(painel.resumo).toBe('Saída 08:00 · Regresso até 19:00 · Início: Fábrica · Fim: Ponto no mapa · Sem portagens');
+    expect(painel.pontas[1]).toEqual({ chave: 'fim', rotulo: 'Fim', texto: 'Ponto no mapa', fabrica: false, noMapa: true, aEscolher: false });
+    expect(painel.evitarPortagens).toBe(true);
+  });
+
+  test('os dois num ponto no mapa (o mesmo texto) juntam-se no resumo', () => {
+    const painel = definicoesDoPainel(definicoes({ inicio: PONTO, fim: PONTO }), null);
+    expect(painel.resumo).toBe('Saída 08:00 · Regresso até 19:00 · Início e fim: Ponto no mapa');
+  });
+
+  test('a ponta à espera do toque no mapa (a faixa da vista) é a que está a escolher', () => {
+    const inicio = definicoesDoPainel(definicoes(), 'inicio');
+    expect(inicio.pontas.map((p) => [p.chave, p.aEscolher])).toEqual([['inicio', true], ['fim', false]]);
+    const fim = definicoesDoPainel(definicoes(), 'fim');
+    expect(fim.pontas.map((p) => [p.chave, p.aEscolher])).toEqual([['inicio', false], ['fim', true]]);
+    expect(definicoesDoPainel(definicoes(), 'outra').pontas.map((p) => p.aEscolher)).toEqual([false, false]);
+    expect(definicoesDoPainel(definicoes()).pontas.map((p) => p.aEscolher)).toEqual([false, false]);
+  });
+
+  test('desligadas numa rota virtual, com a mensagem do planeador', () => {
+    const painel = definicoesDoPainel(definicoes({ ativas: false, mensagem: TEXTO_DEFINICOES_SEM_ROTA }), null);
+    expect(painel.ativas).toBe(false);
+    expect(painel.mensagem).toBe('Adicione a primeira paragem para mudar as definições do dia.');
+  });
+
+  test('só um ativas e um evitar_portagens verdadeiros contam; uma mensagem vazia ou que não é texto não conta', () => {
+    const painel = definicoesDoPainel(definicoes({ ativas: 'sim', evitar_portagens: 1, mensagem: '' }), null);
+    expect([painel.ativas, painel.evitarPortagens, painel.mensagem]).toEqual([false, false, null]);
+    expect(definicoesDoPainel(definicoes({ mensagem: 42 }), null).mensagem).toBeNull();
+  });
+
+  test('uma hora que não é texto fica vazia no campo e fora do resumo', () => {
+    const painel = definicoesDoPainel(definicoes({ hora_saida: null, hora_regresso_limite: 1900 }), null);
+    expect(painel.horas.map((h) => h.valor)).toEqual(['', '']);
+    expect(painel.resumo).toBe('Início e fim: Fábrica');
+    const soSaida = definicoesDoPainel(definicoes({ hora_regresso_limite: '' }), null);
+    expect(soSaida.resumo).toBe('Saída 08:00 · Início e fim: Fábrica');
+  });
+
+  test('uma ponta estragada (null na vista) não tem texto nem botão carregado, e fica fora do resumo', () => {
+    const painel = definicoesDoPainel(definicoes({ fim: null }), null);
+    expect(painel.pontas[1]).toEqual({ chave: 'fim', rotulo: 'Fim', texto: null, fabrica: false, noMapa: false, aEscolher: false });
+    expect(painel.resumo).toBe('Saída 08:00 · Regresso até 19:00 · Início: Fábrica');
+    const semNenhuma = definicoesDoPainel(definicoes({ inicio: null, fim: null }), null);
+    expect(semNenhuma.resumo).toBe('Saída 08:00 · Regresso até 19:00');
+  });
+
+  test('o texto da ponta é o dos botões, pelo sinal da fábrica (o texto da vista não conta)', () => {
+    const painel = definicoesDoPainel(definicoes({ inicio: { ...FABRICA, texto: 'outro' }, fim: { ...PONTO, texto: 7 } }), null);
+    expect(painel.pontas.map((p) => p.texto)).toEqual([TEXTO_FABRICA, TEXTO_PONTO_NO_MAPA]);
+    // Só o `fabrica: true` é a fábrica.
+    const estranha = definicoesDoPainel(definicoes({ inicio: { lat: 1, lng: 2, fabrica: 'sim' } }), null);
+    expect(estranha.pontas[0]).toEqual({ chave: 'inicio', rotulo: 'Início', texto: 'Ponto no mapa', fabrica: false, noMapa: true, aEscolher: false });
+  });
+
+  test('sem definições (a carregar, falha, dia inválido), null', () => {
+    expect(definicoesDoPainel(null, null)).toBeNull();
+    expect(definicoesDoPainel(undefined, 'inicio')).toBeNull();
+    expect(definicoesDoPainel('definicoes', null)).toBeNull();
+  });
+
+  test('vem congelado', () => {
+    const painel = definicoesDoPainel(definicoes(), 'inicio');
+    expect(Object.isFrozen(painel)).toBe(true);
+    expect(Object.isFrozen(painel.horas)).toBe(true);
+    expect(Object.isFrozen(painel.horas[0])).toBe(true);
+    expect(Object.isFrozen(painel.pontas)).toBe(true);
+    expect(Object.isFrozen(painel.pontas[1])).toBe(true);
+  });
+});
+
+describe('faixaDoPonto', () => {
+  test('"Toque no mapa no ponto de início/fim" (os textos do planeador), com a ponta', () => {
+    expect(faixaDoPonto('inicio')).toEqual({ ponta: 'inicio', texto: 'Toque no mapa no ponto de início' });
+    expect(faixaDoPonto('fim')).toEqual({ ponta: 'fim', texto: 'Toque no mapa no ponto de fim' });
+    expect(faixaDoPonto('fim').texto).toBe(TEXTOS_ESCOLHER_PONTO.fim);
+  });
+
+  test('sem nada a escolher (ou uma ponta que não existe), sem faixa', () => {
+    expect(faixaDoPonto(null)).toBeNull();
+    expect(faixaDoPonto(undefined)).toBeNull();
+    expect(faixaDoPonto('meio')).toBeNull();
+    expect(faixaDoPonto('toString')).toBeNull();
+  });
+
+  test('vem congelada', () => {
+    expect(Object.isFrozen(faixaDoPonto('inicio'))).toBe(true);
+  });
+});
+
+// --- As sugestões (T3.39) ------------------------------------------------------------------------
+
+describe('sugestoesDoPainel', () => {
+  const loja = (id, extra = {}) => ({
+    id, nome: `Loja ${id}`, fase: 'contactada', lat: 38.7, lng: -9.1, distancia: '1,2 km', noCaminho: false, aAdicionar: false, ...extra,
+  });
+  const lista = (extra = {}) => ({
+    estado: 'lista',
+    grupos: [
+      { fase: 'contactada', titulo: 'A aguardar amostra', lojas: [loja('a'), loja('b', { distancia: 'no caminho, 0,8 km', noCaminho: true })], mais: 0, textoMais: null },
+      { fase: 'potencial', titulo: 'Potencial', lojas: [loja('c', { fase: 'potencial' })], mais: 3, textoMais: 'e mais 3' },
+    ],
+    mensagem: null,
+    tentar: false,
+    aTentar: false,
+    ...extra,
+  });
+
+  test('os grupos pela ordem da vista, cada loja com a distância e o botão "Adicionar" ligado', () => {
+    expect(sugestoesDoPainel(lista(), true)).toEqual({
+      titulo: 'Sugestões perto da rota',
+      estado: 'lista',
+      mensagem: null,
+      tentar: false,
+      aTentar: false,
+      grupos: [
+        {
+          fase: 'contactada',
+          titulo: 'A aguardar amostra',
+          textoMais: null,
+          lojas: [
+            { id: 'a', nome: 'Loja a', distancia: '1,2 km', noCaminho: false, botao: { texto: 'Adicionar', ativo: true, rotulo: 'Adicionar: Loja a' } },
+            { id: 'b', nome: 'Loja b', distancia: 'no caminho, 0,8 km', noCaminho: true, botao: { texto: 'Adicionar', ativo: true, rotulo: 'Adicionar: Loja b' } },
+          ],
+        },
+        {
+          fase: 'potencial',
+          titulo: 'Potencial',
+          textoMais: 'e mais 3',
+          lojas: [{ id: 'c', nome: 'Loja c', distancia: '1,2 km', noCaminho: false, botao: { texto: 'Adicionar', ativo: true, rotulo: 'Adicionar: Loja c' } }],
+        },
+      ],
+    });
+  });
+
+  test('a loja a adicionar: "A adicionar…" e desligada (as outras continuam)', () => {
+    const vista = lista();
+    vista.grupos[0].lojas[1].aAdicionar = true;
+    const [grupo] = sugestoesDoPainel(vista, true).grupos;
+    expect(grupo.lojas.map((l) => l.botao)).toEqual([
+      { texto: 'Adicionar', ativo: true, rotulo: 'Adicionar: Loja a' },
+      { texto: 'A adicionar…', ativo: false, rotulo: 'A adicionar…: Loja b' },
+    ]);
+    expect(TEXTO_A_ADICIONAR).toBe('A adicionar…');
+  });
+
+  test('sem poder adicionar (a rota cheia, sem rede, o conflito), todos desligados', () => {
+    const painel = sugestoesDoPainel(lista(), false);
+    expect(painel.grupos.flatMap((g) => g.lojas.map((l) => l.botao.ativo))).toEqual([false, false, false]);
+    expect(sugestoesDoPainel(lista(), 'sim').grupos[0].lojas[0].botao.ativo).toBe(false);
+    expect(sugestoesDoPainel(lista()).grupos[0].lojas[0].botao.ativo).toBe(false);
+  });
+
+  test('só um aAdicionar e um noCaminho verdadeiros contam', () => {
+    const vista = lista();
+    vista.grupos[0].lojas[0] = loja('a', { aAdicionar: 'sim', noCaminho: 1 });
+    const [primeira] = sugestoesDoPainel(vista, true).grupos[0].lojas;
+    expect([primeira.botao.texto, primeira.botao.ativo, primeira.noCaminho]).toEqual(['Adicionar', true, false]);
+  });
+
+  test('a carregar, sem paragens, nenhuma e a falha: a mensagem da vista, sem grupos', () => {
+    const aCarregar = { estado: 'a_carregar', grupos: [], mensagem: TEXTO_SUGESTOES_A_CARREGAR, tentar: false, aTentar: false };
+    expect(sugestoesDoPainel(aCarregar, true)).toEqual({
+      titulo: 'Sugestões perto da rota', estado: 'a_carregar', mensagem: 'A procurar lojas perto…', tentar: false, aTentar: false, grupos: [],
+    });
+    const falha = sugestoesDoPainel({ estado: 'falha', grupos: [], mensagem: 'Sem rede.', tentar: true, aTentar: true }, true);
+    expect([falha.estado, falha.mensagem, falha.tentar, falha.aTentar]).toEqual(['falha', 'Sem rede.', true, true]);
+    const tentarEstranho = sugestoesDoPainel({ estado: 'falha', grupos: [], mensagem: 'x', tentar: 'sim', aTentar: 1 }, true);
+    expect([tentarEstranho.tentar, tentarEstranho.aTentar]).toEqual([false, false]);
+  });
+
+  test('com a vista do planeador (vistaDasSugestoes): sem paragens, nenhuma e a lista', () => {
+    expect(sugestoesDoPainel(vistaDasSugestoes({ sem_paragens: true }, []), true).mensagem).toBe(TEXTO_PRIMEIRA_PARAGEM);
+    expect(sugestoesDoPainel(vistaDasSugestoes({ sem_paragens: false, grupos: [] }, []), true).mensagem).toBe(TEXTO_SUGESTOES_NENHUMA);
+    const resposta = {
+      sem_paragens: false,
+      no_caminho: true,
+      grupos: [{ fase: 'potencial', lojas: [{ id: 'x', nome: 'Café X', fase: 'potencial', lat: 1, lng: 2, distancia_m: 800, no_caminho: true }], mais: 0 }],
+    };
+    const vista = vistaDasSugestoes(resposta, []);
+    // O planeador junta o `aAdicionar` de cada loja.
+    vista.grupos[0].lojas[0].aAdicionar = false;
+    const painel = sugestoesDoPainel(vista, true);
+    expect(painel.grupos).toEqual([{
+      fase: 'potencial',
+      titulo: 'Potencial',
+      textoMais: null,
+      lojas: [{ id: 'x', nome: 'Café X', distancia: 'no caminho, 0,8 km', noCaminho: true, botao: { texto: 'Adicionar', ativo: true, rotulo: 'Adicionar: Café X' } }],
+    }]);
+  });
+
+  test('o que não é um grupo ou uma loja fica de fora; um nome ou uma distância que não são texto ficam vazios', () => {
+    const vista = lista({ grupos: [null, 'grupo', { fase: 'potencial', titulo: 'Potencial', lojas: [null, 7, loja('d', { nome: 3, distancia: 5 })], textoMais: '' }, { fase: 'x', titulo: 'X', lojas: 'nada' }] });
+    const painel = sugestoesDoPainel(vista, true);
+    expect(painel.grupos).toEqual([
+      {
+        fase: 'potencial',
+        titulo: 'Potencial',
+        textoMais: null,
+        lojas: [{ id: 'd', nome: '', distancia: null, noCaminho: false, botao: { texto: 'Adicionar', ativo: true, rotulo: 'Adicionar' } }],
+      },
+      { fase: 'x', titulo: 'X', textoMais: null, lojas: [] },
+    ]);
+    expect(sugestoesDoPainel(lista({ grupos: 'nada', mensagem: '' }), true)).toMatchObject({ grupos: [], mensagem: null });
+  });
+
+  test('sem sugestões (só de leitura, a carregar a rota), null', () => {
+    expect(sugestoesDoPainel(null, true)).toBeNull();
+    expect(sugestoesDoPainel(undefined, true)).toBeNull();
+    expect(sugestoesDoPainel('lista', true)).toBeNull();
+  });
+
+  test('vem congelado', () => {
+    const painel = sugestoesDoPainel(lista(), true);
+    expect(Object.isFrozen(painel)).toBe(true);
+    expect(Object.isFrozen(painel.grupos)).toBe(true);
+    expect(Object.isFrozen(painel.grupos[0])).toBe(true);
+    expect(Object.isFrozen(painel.grupos[0].lojas)).toBe(true);
+    expect(Object.isFrozen(painel.grupos[0].lojas[0].botao)).toBe(true);
+  });
+});
+
+// --- O cartão de uma loja esbatida (T3.39) -------------------------------------------------------
+
+describe('cartaoDaLoja', () => {
+  const escolhida = (extra = {}) => ({
+    id: 'loja-z', nome: 'Café Z', fase: 'contactada', motivo: 'amostra', rotuloMotivo: 'Amostra', aAdicionar: false, ativo: true, ...extra,
+  });
+
+  test('o nome, a fase, o motivo (o da fase, já escolhido pelo planeador) e "Adicionar à rota" ligado', () => {
+    expect(cartaoDaLoja(escolhida())).toEqual({
+      id: 'loja-z',
+      nome: 'Café Z',
+      fase: 'contactada',
+      rotuloFase: 'A aguardar amostra',
+      motivo: 'amostra',
+      textoMotivo: 'Motivo: Amostra',
+      botao: { texto: 'Adicionar à rota', ativo: true },
+    });
+  });
+
+  test('a adicionar: "A adicionar…" e desligado; sem poder adicionar, desligado', () => {
+    expect(cartaoDaLoja(escolhida({ aAdicionar: true, ativo: false })).botao).toEqual({ texto: 'A adicionar…', ativo: false });
+    expect(cartaoDaLoja(escolhida({ ativo: false })).botao).toEqual({ texto: 'Adicionar à rota', ativo: false });
+    expect(cartaoDaLoja(escolhida({ ativo: 'sim' })).botao.ativo).toBe(false);
+    expect(cartaoDaLoja(escolhida({ aAdicionar: 1 })).botao.texto).toBe('Adicionar à rota');
+  });
+
+  test('uma fase desconhecida fica sem rótulo; um nome ou um motivo que não são texto ficam vazios', () => {
+    const cartao = cartaoDaLoja(escolhida({ fase: 'toString', nome: null, rotuloMotivo: null, motivo: 7 }));
+    expect(cartao).toEqual({
+      id: 'loja-z', nome: '', fase: null, rotuloFase: null, motivo: null, textoMotivo: null, botao: { texto: 'Adicionar à rota', ativo: true },
+    });
+    expect(cartaoDaLoja(escolhida({ fase: null })).rotuloFase).toBeNull();
+    expect(cartaoDaLoja(escolhida({ rotuloMotivo: '' })).textoMotivo).toBeNull();
+  });
+
+  test('sem loja escolhida (ou sem id), sem cartão', () => {
+    expect(cartaoDaLoja(null)).toBeNull();
+    expect(cartaoDaLoja(undefined)).toBeNull();
+    expect(cartaoDaLoja('loja')).toBeNull();
+    expect(cartaoDaLoja(escolhida({ id: '' }))).toBeNull();
+    expect(cartaoDaLoja(escolhida({ id: 7 }))).toBeNull();
+  });
+
+  test('vem congelado', () => {
+    const cartao = cartaoDaLoja(escolhida());
+    expect(Object.isFrozen(cartao)).toBe(true);
+    expect(Object.isFrozen(cartao.botao)).toBe(true);
   });
 });

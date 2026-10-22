@@ -1,4 +1,4 @@
-// O planeador da rota de um dia, em `rotas/:data` (plano F3 T3.38; desenho original §7). As regras estão em
+// O planeador da rota de um dia, em `rotas/:data` (plano F3 T3.38/T3.39; desenho original §7). As regras estão em
 // `lib/crm/planeador.js` (o controlador, com testes) e em `lib/crm/painelRota.js`: esta página cria o
 // planeador num `useEffect` (e o `destruir()` no retorno: as respostas atrasadas, a rede e a espera das horas
 // já não mudam nada), desenha a `vista` que ele entrega e passa-lhe o que a pessoa faz.
@@ -6,8 +6,9 @@
 //    abaixo disso o mapa com altura fixa em cima e o painel por baixo, tudo a deslocar-se. O painel tem o
 //    título, a faixa da leitura só ("Concluída — só de leitura"), a do conflito ("Alterado por outra pessoa —
 //    recarregar", com "Recarregar"), o alerta da última gravação recusada, o `ResumoRota` (estado, totais,
-//    avisos, botões com o motivo, blocos do Google), as secções da `ListaParagens` ("Rota", "⚠️ Fechadas neste
-//    dia", "⚠️ Não cabem no horário", "Lojas apagadas") e, num bloco próprio no fim, a atribuição do
+//    avisos, botões com o motivo, blocos do Google), as `DefinicoesDoDia` (fechadas, com o resumo), as secções
+//    da `ListaParagens` ("Rota", "⚠️ Fechadas neste dia", "⚠️ Não cabem no horário", "Lojas apagadas"), as
+//    `SugestoesRota` (depois das paragens: a lista pode ser longa) e, num bloco próprio no fim, a atribuição do
 //    openrouteservice (`RodapeOrs`).
 //  - O mapa é o `MapaLojas` com a classe `crm-mapa--planeador` (as lojas fora da rota esbatidas), as lojas
 //    fora da rota, a rota (`vista.mapa`: os pinos numerados, o início e o fim e a linha) e os negócios da
@@ -15,6 +16,13 @@
 //    lojas ou da configuração fica numa faixa por cima da área do mapa, que encolhe. Sem a chave Google no
 //    servidor (ou se a Google não carregar), a mensagem no lugar do mapa; o resto do planeador funciona. O
 //    mapa enquadra a rota uma vez, quando fica pronto; o toque num pino de uma paragem leva à linha dela.
+//  - O mapa também escolhe (T3.39): com "Ponto no mapa" nas definições, a faixa "Toque no mapa no ponto de
+//    início" (com "Cancelar") fica por cima da área do mapa (que encolhe; no telemóvel a área põe-se à vista) e
+//    o toque seguinte no mapa é o ponto (`tocarNoMapa`). Um toque numa loja esbatida abre, por baixo da área do
+//    mapa, o cartão pequeno "Adicionar à rota" (`escolherLoja`): o mapa centra-se na loja e o foco vai para o
+//    nome; ao fechar (o "Fechar", o Escape, a loja que entrou na rota) o foco volta ao pino ou ao mapa. Os
+//    negócios da Google não respondem (`negociosClicaveis={false}`): um toque neles é um toque no mapa. O
+//    Escape também cancela o "Ponto no mapa".
 //  - Leitura só (um dia passado, registos do motorista): sem botões nem pegas; os links ficam.
 //  - "Dia inválido" (um dia que não existe, ou que o servidor recusa) e a falha da rota ("Tentar novamente")
 //    mostram-se sozinhos, com a ligação às Rotas. Com um dia que existe a página ocupa a área toda, sem as
@@ -24,21 +32,23 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { ChevronLeft, Route as IconeRota } from 'lucide-react'; // nunca `Route`: confundia-se com o `Route` do React Router
+import { ChevronLeft, Crosshair, Route as IconeRota } from 'lucide-react'; // nunca `Route`: confundia-se com o `Route` do React Router
 import PageHeader from '../../components/PageHeader';
 import { Button } from '../../components/ui/button';
+import DefinicoesDoDia from '../../components/crm/DefinicoesDoDia';
 import { IndicadorCrm } from '../../components/crm/GuardaCrm';
 import ListaParagens from '../../components/crm/ListaParagens';
 import MapaLojas from '../../components/crm/MapaLojas';
 import ResumoRota, { RodapeOrs } from '../../components/crm/ResumoRota';
+import SugestoesRota, { CartaoLojaEscolhida } from '../../components/crm/SugestoesRota';
 import { baseCrm, ecraCheioDoCrm } from '../../lib/crm/acesso';
 import {
   adicionarParagem, alterarRota, listarLojas, obterConfigMapa, obterRota, obterSugestoes, otimizarRota, recalcularHoras,
 } from '../../lib/crm/api';
 import { configuracaoDoMapa, mensagemSemMapa } from '../../lib/crm/ecraMapa';
 import {
-  TEXTO_A_RECARREGAR, TEXTO_RECARREGAR, TEXTO_ROTAS, TEXTO_TENTAR_DE_NOVO, TEXTO_VOLTAR_AS_ROTAS, TITULO_PAINEL,
-  seccoesDoPainel,
+  TEXTO_A_RECARREGAR, TEXTO_CANCELAR, TEXTO_RECARREGAR, TEXTO_ROTAS, TEXTO_TENTAR_DE_NOVO, TEXTO_VOLTAR_AS_ROTAS,
+  TITULO_PAINEL, faixaDoPonto, seccoesDoPainel,
 } from '../../lib/crm/painelRota';
 import { TEXTO_A_CARREGAR, criarPlaneador } from '../../lib/crm/planeador';
 import { criarEstadoRede } from '../../lib/crm/rede';
@@ -93,6 +103,10 @@ function PlaneadorDoDia({ data, base, cheio }) {
   const [mapa, setMapa] = useState(null); // o mapa do MapaLojas, quando está pronto
   const [mapaFalhou, setMapaFalhou] = useState(false); // a Google não carregou ou o mapa não se criou
   const painel = useRef(null);
+  const areaDoMapa = useRef(null);
+  const tituloDoCartao = useRef(null);
+  // O último pino de loja tocado ({loja, marcador}): para centrar o mapa nela e lhe devolver o foco.
+  const tocada = useRef(null);
 
   useEffect(() => {
     const criado = criarPlaneador({
@@ -124,7 +138,51 @@ function PlaneadorDoDia({ data, base, cheio }) {
     linha.querySelector('button[aria-expanded]')?.focus({ preventScroll: true });
   }, []);
 
+  // "Ponto no mapa": a área do mapa à vista (no telemóvel o planeador desloca-se e o mapa está em cima).
+  const pontaAEscolher = vista.escolherPonto;
+  useEffect(() => {
+    if (pontaAEscolher !== null) areaDoMapa.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [pontaAEscolher]);
+
+  // O cartão de uma loja esbatida abre (o mapa centra-se nela e o foco vai para o nome) ou fecha (o foco, que
+  // estava no cartão e se perdeu com ele, volta ao pino da loja ou ao mapa). Um efeito normal e não de
+  // `layout`: corre depois dos do MapaLojas (os filhos primeiro), por isso o pino de uma loja que acabou de
+  // entrar na rota já saiu do mapa e não recebe o foco.
+  const idDoCartao = vista.lojaEscolhida?.id ?? null;
+  const cartaoAntes = useRef(null);
+  useEffect(() => {
+    const antes = cartaoAntes.current;
+    cartaoAntes.current = idDoCartao;
+    if (idDoCartao === antes) return;
+    // O cartão é sempre o do último pino tocado (só o `escolherLoja` desta página o abre).
+    if (idDoCartao !== null) {
+      mapa?.centrarEm(tocada.current?.loja);
+      tituloDoCartao.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (document.activeElement !== document.body) return;
+    const pino = tocada.current?.marcador?.element;
+    if (pino?.isConnected) pino.focus();
+    else mapa?.focar();
+  }, [idDoCartao, mapa]);
+
   const p = planeador;
+
+  // O toque num pino de uma loja esbatida (o cartão) e o toque no mapa (o ponto, ou fecha o cartão).
+  const escolherLoja = (loja, marcador) => {
+    tocada.current = { loja, marcador };
+    p?.escolherLoja(loja);
+  };
+  const tocarNoMapa = (ponto) => p?.tocarNoMapa(ponto);
+
+  // O Escape no planeador cancela o "Ponto no mapa" ou fecha o cartão. Os diálogos e os menus do Radix (a
+  // pergunta do "Guardar rota", o motivo) tratam o Escape deles primeiro e marcam-no (`defaultPrevented`), e a
+  // pega da lista também, a meio de um movimento.
+  function aoCarregarNumaTecla(evento) {
+    if (evento.key !== 'Escape' || evento.defaultPrevented) return;
+    if (vista.escolherPonto !== null) p?.escolherPonto(null);
+    else if (vista.lojaEscolhida !== null) p?.escolherLoja(null);
+  }
 
   if (vista.estado !== 'rota') {
     return (
@@ -154,9 +212,11 @@ function PlaneadorDoDia({ data, base, cheio }) {
   const mensagemDoMapa = mensagemSemMapa({ estado: estadoDoMapa, falhou: mapaFalhou });
   const comMapa = mensagemDoMapa === null && estadoDoMapa === 'ok';
   const desligada = vista.semRede || vista.conflito !== null;
+  const faixa = faixaDoPonto(vista.escolherPonto);
 
   return (
-    <div className="crm-planeador" data-testid="crm-rota">
+    // O Escape sobe dos filhos (o painel, o cartão) até aqui; o planeador em si não recebe o foco.
+    <div className="crm-planeador" onKeyDown={aoCarregarNumaTecla} data-testid="crm-rota">
       <aside ref={painel} className="crm-planeador__painel" aria-label={TITULO_PAINEL}>
         <div className="grid gap-4 p-4">
           <header className="grid gap-1">
@@ -208,6 +268,15 @@ function PlaneadorDoDia({ data, base, cheio }) {
             aoResponderGuardar={(sim) => p?.responderGuardar(sim)}
           />
 
+          <DefinicoesDoDia
+            definicoes={vista.definicoes}
+            escolherPonto={vista.escolherPonto}
+            somenteLeitura={vista.somenteLeitura}
+            aoMudarDefinicao={(chave, valor) => p?.mudarDefinicao(chave, valor)}
+            aoUsarFabrica={(ponta) => p?.usarFabrica(ponta)}
+            aoEscolherPonto={(ponta) => p?.escolherPonto(ponta)}
+          />
+
           {seccoesDoPainel(vista.seccoes).map((seccao) => (
             <ListaParagens
               key={seccao.chave}
@@ -227,11 +296,18 @@ function PlaneadorDoDia({ data, base, cheio }) {
               aoPorNaRota={seccao.comPorNaRota ? (id) => p?.porNaRota(id) : undefined}
             />
           ))}
+
+          <SugestoesRota
+            sugestoes={vista.sugestoes}
+            podeAdicionar={vista.podeAdicionar}
+            aoAdicionar={(lojaId) => p?.adicionar(lojaId)}
+            aoTentarDeNovo={() => p?.tentarDeNovo()}
+          />
         </div>
         <RodapeOrs atribuicao={vista.atribuicaoOrs} />
       </aside>
 
-      <div className="crm-planeador__mapa">
+      <div ref={areaDoMapa} className="crm-planeador__mapa">
         <div className="flex h-full flex-col">
           {vista.falhaDoMapa && (
             <div role="alert" className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b bg-card px-4 py-2.5" data-testid="crm-rota-falha-mapa">
@@ -248,6 +324,23 @@ function PlaneadorDoDia({ data, base, cheio }) {
               </Button>
             </div>
           )}
+          {faixa && (
+            <div role="status" className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b bg-card px-4 py-2" data-testid="crm-rota-faixa-ponto">
+              <p className="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold">
+                <Crosshair className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
+                {faixa.texto}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-11"
+                onClick={() => p?.escolherPonto(null)}
+                data-testid="crm-rota-faixa-cancelar"
+              >
+                {TEXTO_CANCELAR}
+              </Button>
+            </div>
+          )}
           <div className="crm-mapa__vista bg-muted">
             {comMapa && (
               <MapaLojas
@@ -259,6 +352,8 @@ function PlaneadorDoDia({ data, base, cheio }) {
                 aoPronto={setMapa}
                 aoFalhar={() => setMapaFalhou(true)}
                 aoEscolherParagem={escolherParagem}
+                aoEscolherLoja={escolherLoja}
+                aoTocarNoMapa={tocarNoMapa}
               />
             )}
             {mensagemDoMapa && (
@@ -267,6 +362,13 @@ function PlaneadorDoDia({ data, base, cheio }) {
               </p>
             )}
           </div>
+          {/* O cartão vive fora da vista do mapa, por baixo dela: o mapa encolhe, nada o tapa. */}
+          <CartaoLojaEscolhida
+            loja={vista.lojaEscolhida}
+            aoAdicionar={(lojaId, motivo) => p?.adicionar(lojaId, motivo)}
+            aoFechar={() => p?.escolherLoja(null)}
+            refTitulo={tituloDoCartao}
+          />
         </div>
       </div>
     </div>

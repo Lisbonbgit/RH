@@ -698,6 +698,8 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
     'components/crm/DialogoDuplicado.js',
     'components/crm/ListaParagens.js',
     'components/crm/ResumoRota.js',
+    'components/crm/DefinicoesDoDia.js',
+    'components/crm/SugestoesRota.js',
     'pages/crm/CrmMapa.js',
     'pages/crm/CrmLojaNova.js',
     'pages/crm/CrmLoja.js',
