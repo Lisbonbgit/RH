@@ -4,11 +4,14 @@ PODS:
   - CapacitorCordova (6.2.2)
   - CapacitorStatusBar (6.0.3):
     - Capacitor
+  - CapgoCapacitorNativeBiometric (0.0.1):
+    - Capacitor
 
 DEPENDENCIES:
   - "Capacitor (from `../../node_modules/@capacitor/ios`)"
   - "CapacitorCordova (from `../../node_modules/@capacitor/ios`)"
   - "CapacitorStatusBar (from `../../node_modules/@capacitor/status-bar`)"
+  - "CapgoCapacitorNativeBiometric (from `../../node_modules/@capgo/capacitor-native-biometric`)"
 
 EXTERNAL SOURCES:
   Capacitor:
@@ -17,12 +20,15 @@ EXTERNAL SOURCES:
     :path: "../../node_modules/@capacitor/ios"
   CapacitorStatusBar:
     :path: "../../node_modules/@capacitor/status-bar"
+  CapgoCapacitorNativeBiometric:
+    :path: "../../node_modules/@capgo/capacitor-native-biometric"
 
 SPEC CHECKSUMS:
   Capacitor: 6591a78b923b7e6dde28506ffeea820356e68013
   CapacitorCordova: c2c76283b5c00cf6073bab0b1311e3b10bd17254
   CapacitorStatusBar: 149cde8f1328ec3aa6cbdd872a55137ae3f98b16
+  CapgoCapacitorNativeBiometric: 2cbb9787f3a73bd4e8bccbd5e10bec7231a48ccd
 
-PODFILE CHECKSUM: ac6ee68a7697e9a04938332b6e56bb9fed834041
+PODFILE CHECKSUM: f001e75b9438004fe1c62de57f9d0b4924998205
 
 COCOAPODS: 1.16.2
