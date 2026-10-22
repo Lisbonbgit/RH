@@ -28,6 +28,7 @@ import {
   ROTULOS_ESTADO,
   ROTULOS_MOTIVO,
   TEXTOS_AVISO,
+  TEXTO_WAZE_PORTAGENS,
   aplicarLocalmente,
   avisosDaRota,
   corpoOrdem,
@@ -249,6 +250,13 @@ test('os rótulos dos motivos e dos estados e os textos dos avisos', () => {
     fora_de_horario: '⚠️ Fora do horário de receção',
   });
   for (const mapa of [ROTULOS_MOTIVO, ROTULOS_ESTADO, TEXTOS_AVISO]) expect(Object.isFrozen(mapa)).toBe(true);
+});
+
+// Correção "T3.10" do plano da F3: o `avoid_tolls=true` do Waze não está na documentação dos links do Waze
+// (lá, evitar portagens é uma definição da app). Com "Evitar portagens" ligado, o detalhe da paragem
+// (`ListaParagens`, T3.36) diz-o junto do link do Waze.
+test('o aviso do Waze com as portagens evitadas é o texto fixado na correção "T3.10"', () => {
+  expect(TEXTO_WAZE_PORTAGENS).toBe("No Waze, confirme 'Evitar portagens' nas definições da app");
 });
 
 test.each([

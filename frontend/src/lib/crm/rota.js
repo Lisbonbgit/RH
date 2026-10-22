@@ -59,6 +59,10 @@ export const TEXTOS_AVISO = Object.freeze({
   fora_de_horario: '⚠️ Fora do horário de receção',
 });
 
+// O `avoid_tolls=true` do link do Waze não está na documentação dele (evitar portagens é uma definição da app):
+// com "Evitar portagens" ligado, o detalhe da paragem diz para o confirmar lá (correção "T3.10" do plano da F3).
+export const TEXTO_WAZE_PORTAGENS = "No Waze, confirme 'Evitar portagens' nas definições da app";
+
 // Sem fase conhecida, a loja ainda está por angariar.
 const MOTIVO_SEM_FASE = 'angariacao';
 
