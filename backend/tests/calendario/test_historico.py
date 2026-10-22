@@ -156,6 +156,27 @@ def test_uma_falha_do_historico_nao_desfaz_a_ida(semana, monkeypatch, caplog):
     assert any(reg.exc_info and "o histórico rebentou" in str(reg.exc_info[1]) for reg in caplog.records)
 
 
+# --- Só depois de gravar --------------------------------------------------------------------------
+
+
+def test_um_pedido_recusado_nao_deixa_entrada(semana):
+    _criar(datas=["2026-10-27"], location_id=sn.ALFRAGIDE, user_ids=[sn.DEBORA], inicio="10:00", fim="14:00")
+    with pytest.raises(HTTPException) as erro:
+        _criar(datas=["2026-10-27"], location_id=sn.OEIRAS, user_ids=[sn.DEBORA], inicio="13:00", fim="22:00")
+    assert erro.value.status_code == 409
+    assert [e["acao"] for e in _entradas(semana)] == ["marcou"]
+
+
+def test_apagar_a_mesma_ida_duas_vezes_da_404_e_um_so_apagou(semana):
+    [ida_id] = _criar(datas=["2026-10-27"], location_id=sn.ALFRAGIDE, user_ids=[sn.DEBORA],
+                      inicio="10:00", fim="14:00")["ids"]
+    corre(server.bolso_apagar_ida(ida_id, current_user=DEBORA))
+    with pytest.raises(HTTPException) as erro:
+        corre(server.bolso_apagar_ida(ida_id, current_user=DEBORA))
+    assert erro.value.status_code == 404
+    assert [e["acao"] for e in _entradas(semana)] == ["marcou", "apagou"]
+
+
 # --- A leitura do mês ---------------------------------------------------------------------------
 
 

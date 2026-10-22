@@ -8842,9 +8842,10 @@ _BOLSO_CAMPOS_DA_LOJA = {"_id": 0, "id": 1, "name": 1, "company_id": 1, "horario
 
 
 async def _bolso_criar_indices():
-    """O índice único apanha a MESMA ida gravada duas vezes (duas gestoras no mesmo
+    """Idas: o índice único apanha a MESMA ida gravada duas vezes (duas gestoras no mesmo
     segundo) — é com ele que o «tudo ou nada» do POST se compensa; o de `data` serve a
-    leitura do mês. `create_index` é idempotente."""
+    leitura do mês. Histórico (`bolso_historico`): `datas` serve a lista do mês e `quando`
+    a ordem, da mudança mais recente para a mais antiga. `create_index` é idempotente."""
     await db.bolso_idas.create_index(
         [("data", 1), ("user_id", 1), ("location_id", 1), ("inicio", 1)], unique=True)
     await db.bolso_idas.create_index([("data", 1)])

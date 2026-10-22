@@ -529,9 +529,10 @@ def _troca_de(emp_id: str, idas: List[Dict], iso: str, loja_id: str,
 
 
 def _ja_ha_troca(nome: str, ida: Dict, p: Dict) -> str:
-    return "Já há uma troca para %s a %s (%s)." % (
-        nome, data_curta(ida["data"]),
-        primeiro_nome((p["utilizadores"].get(ida.get("user_id")) or {}).get("name")) or NOME_SEM_CONTA)
+    quem = primeiro_nome((p["utilizadores"].get(ida.get("user_id")) or {}).get("name"))
+    # O «(conta removida)» já traz os parênteses.
+    return "Já há uma troca para %s a %s %s." % (
+        nome, data_curta(ida["data"]), "(%s)" % quem if quem else NOME_SEM_CONTA)
 
 
 def _fora_da_escala(nome: str, dia: date) -> str:

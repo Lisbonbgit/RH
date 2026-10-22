@@ -114,7 +114,7 @@ def test_o_ajudante_do_feriado_nacional_e_da_loja():
     assert _quem(dados, TERCA, "Amadora") == [("Joana", "14:00", "23:00", "escala", False, None)]
 
 
-def test_quem_esta_na_escala_sem_conta_continua_a_aparecer_e_pode_ser_trocado():
+def test_quem_esta_na_escala_sem_conta_continua_a_aparecer_e_a_troca_sobrevive():
     dados = _com(troca("2026-10-30", sn.ALFRAGIDE, sn.CAROL, "10:00", "14:00", "Beatrice"))
     dados["utilizadores"] = [u for u in dados["utilizadores"] if u["id"] not in (EMILY, BEATRICE)]
     loja = next(l for l in calendario.dia_do_calendario(SEXTA, dados)["lojas"] if l["nome"] == "Alfragide")
@@ -162,14 +162,21 @@ def test_escala_de_nao_olha_a_ausencia_pendente():
 # --- §5 3: a contagem ----------------------------------------------------------------------
 
 LOJAS = {l["id"]: l for l in sn.LOJAS}
-NOMES = {sn.CAROL: "Carol Santos", BEATRICE: "Beatrice", JOANA: "Joana", EMILY: "Emily"}
-PAPEIS = {sn.CAROL: "admin", BEATRICE: "colaborador", JOANA: "colaborador", EMILY: "colaborador"}
+NOMES = {sn.CAROL: "Carol Santos", BEATRICE: "Beatrice", JOANA: "Joana", EMILY: "Emily", sn.GERENTE: "Guilherme Gestor"}
+PAPEIS = {sn.CAROL: "admin", BEATRICE: "colaborador", JOANA: "colaborador", EMILY: "colaborador",
+          sn.GERENTE: "gerente"}
 
 
 def test_a_troca_com_um_gestor_conta():
     idas = [troca("2026-10-27", sn.ALFRAGIDE, sn.CAROL, "14:00", "23:00", "Emily")]
     [linha] = calendario.contagem(idas, LOJAS, NOMES, PAPEIS)
     assert (linha["user_id"], linha["total"]) == (sn.CAROL, 1.0)
+
+
+def test_a_troca_com_um_gerente_tambem_conta():
+    idas = [troca("2026-10-27", sn.AMADORA, sn.GERENTE, "14:00", "23:00", "Joana")]
+    [linha] = calendario.contagem(idas, LOJAS, NOMES, PAPEIS)
+    assert (linha["user_id"], linha["total"]) == (sn.GERENTE, 1.0)
 
 
 def test_a_troca_entre_colaboradores_nao_conta_e_a_ida_normal_conta_como_hoje():
@@ -219,6 +226,12 @@ def test_ja_ha_troca_para_quem_sai_com_horas_que_se_sobrepoem():
     assert _recusa("Emily", WEBER, "17:00", "23:00", dados) == (409, "Já há uma troca para Emily a 27/10 (Beatrice).")
     # Horas encostadas não se sobrepõem: a outra metade do turno troca-se à parte.
     assert _recusa("Emily", WEBER, "18:00", "23:00", dados) is None
+
+
+def test_ja_ha_troca_feita_por_uma_conta_que_ja_nao_existe():
+    dados = _com(troca("2026-10-27", sn.ALFRAGIDE, "u-apagada", "14:00", "18:00", "Emily"))
+    assert _recusa("Emily", WEBER, "14:00", "23:00", dados) == (
+        409, "Já há uma troca para Emily a 27/10 (conta removida).")
 
 
 def test_turnos_da_troca_entre_si_com_lojas_diferentes():
