@@ -227,3 +227,87 @@ def test_o_filtro_de_loja_deixa_so_essa_loja_e_as_ausencias_de_quem_la_tem_a_fic
     assert r["ferias"] == [["Emanuela"]]
     assert r["vazio"] is True
     assert r["intacto"] == 6                                                # não estraga os dados do mês
+
+
+# --- As trocas e o histórico (2026-10-22) ------------------------------------------------------
+
+
+def test_quem_esta_na_escala_no_dia_sem_quem_sai_sem_repetidos_e_sem_quem_nao_tem_conta(tmp_path):
+    # 27/10 (terça), o mês SEM filtro de loja: Emily em Alfragide, Walisson em Algueirão e Joana
+    # em Amadora (por loja seria Emily, Walisson, Joana; sai por nome). Uma ida da Emily às 17–18
+    # parte-lhe a escala em duas linhas (fica a primeira); o Zé está na escala de Alfragide mas
+    # não tem conta no RH (user_id null), por isso não se troca; a ida da Débora não é escala.
+    dados = sn.semana_normal()
+    dados["empregados"].append({"id": "e-ze", "name": "Zé", "location_id": sn.ALFRAGIDE, "company_id": sn.FORDAIMON})
+    dados["atribuicoes"].append({"id": "a-ze", "employee_id": "e-ze", "template_id": "m-emily",
+                                 "work_days": [1], "start_date": "2026-01-01", "end_date": None})
+    dados["idas"] = [sn.ida("2026-10-27", sn.ALFRAGIDE, sn.user("Emily"), "17:00", "18:00"),
+                     sn.ida("2026-10-27", sn.OEIRAS, sn.DEBORA, "13:00", "22:00")]
+    mes = calendario.resposta_do_mes(2026, 10, dados, sn.DEBORA, True)
+    na_escala = [(p["nome"], p["user_id"]) for l in next(d for d in mes["dias"] if d["data"] == "2026-10-27")["lojas"]
+                 for p in l["pessoas"] if p["origem"] == "escala"]
+    assert ("Zé", None) in na_escala and na_escala.count(("Emily", "u-emily")) == 2      # o cenário é o que se diz
+    todos, sem_emily, fora = _cal(
+        tmp_path, "[cal.escaladosDoDia(D, '2026-10-27', null), cal.escaladosDoDia(D, '2026-10-27', 'u-emily'), "
+                  "cal.escaladosDoDia(D, '2026-12-01', null)]", mes)
+    emily = {"user_id": "u-emily", "nome": "Emily", "location_id": sn.ALFRAGIDE, "loja": "Alfragide",
+             "inicio": "14:00", "fim": "17:00"}
+    joana = {"user_id": "u-joana", "nome": "Joana", "location_id": sn.AMADORA, "loja": "Amadora",
+             "inicio": "14:00", "fim": "23:00"}
+    walisson = {"user_id": "u-walisson", "nome": "Walisson", "location_id": sn.ALGUEIRAO, "loja": "Algueirão",
+                "inicio": "13:00", "fim": "22:00"}
+    assert todos == [emily, joana, walisson]
+    assert sem_emily == [joana, walisson]
+    assert fora == []
+
+
+def _entrada(acao, antes=(), depois=(), datas=None):
+    retratos = list(antes) + list(depois)
+    return {"id": "h1", "quando": "2026-10-20T13:32:00+00:00", "quem_id": sn.CAROL, "quem_nome": "Carol Santos",
+            "acao": acao, "datas": datas or sorted({r["data"] for r in retratos}),
+            "antes": list(antes), "depois": list(depois)}
+
+
+def _retrato(data, loja, nome, inicio, fim, no_lugar_de=None):
+    return {"data": data, "loja": loja, "nome": nome, "inicio": inicio, "fim": fim, "no_lugar_de": no_lugar_de}
+
+
+def test_as_linhas_do_historico_das_seis_accoes(tmp_path):
+    dias = ["2026-10-06", "2026-10-13", "2026-10-20"]
+    entradas = [
+        _entrada("marcou", depois=[_retrato(d, "Oeiras", n, "13:00", "22:00")
+                                   for d in dias for n in ("Débora Ferreira", "Carol Santos")]),
+        _entrada("alterou", [_retrato("2026-10-27", "Alfragide", "Débora Ferreira", "10:00", "14:00")],
+                 [_retrato("2026-10-28", "Oeiras", "Débora Ferreira", "13:00", "22:00")]),
+        _entrada("alterou", [_retrato("2026-10-27", "Alfragide", "Débora Ferreira", "10:00", "14:00")],
+                 [_retrato("2026-10-27", "Alfragide", "Carol Santos", "10:00", "14:00")]),
+        _entrada("apagou", [_retrato("2026-10-27", "Loja Alfragide", "Débora Ferreira", "10:00", "14:00")]),
+        _entrada("trocou", depois=[_retrato("2026-10-27", "Alfragide", "Beatrice", "14:00", "23:00", "Emily")]),
+        _entrada("trocou entre si", depois=[_retrato("2026-10-27", "Amadora", "Emily", "14:00", "23:00", "Joana"),
+                                            _retrato("2026-10-27", "Alfragide", "Joana", "14:00", "23:00", "Emily")]),
+        _entrada("desfez a troca", [_retrato("2026-10-27", "Alfragide", "Beatrice", "14:00", "23:00", "Emily")]),
+        _entrada("desfez a troca", [_retrato("2026-10-27", "Amadora", "Emily", "14:00", "23:00", "Joana"),
+                                    _retrato("2026-10-27", "Alfragide", "Joana", "14:00", "23:00", "Emily")]),
+        _entrada("trocou", depois=[_retrato("2026-10-27", "Alfragide", "Beatrice", "14:00", "23:00",
+                                            "(conta removida)")]),
+    ]
+    r = _cal(tmp_path, "D.map(cal.linhaDoHistorico)", entradas)
+    assert r == [
+        "20/10 às 14:32 · Carol · marcou Débora e Carol em Oeiras, 13h–22h · 6/10, 13/10, 20/10",
+        "20/10 às 14:32 · Carol · alterou a ida de Débora: Alfragide 10h–14h, 27/10 → Oeiras 13h–22h, 28/10",
+        "20/10 às 14:32 · Carol · alterou a ida de Débora: Alfragide 10h–14h, 27/10 → Carol em Alfragide 10h–14h, 27/10",
+        "20/10 às 14:32 · Carol · apagou a ida de Débora em Alfragide, 10h–14h · 27/10",
+        "20/10 às 14:32 · Carol · trocou Emily por Beatrice em Alfragide, 14h–23h · 27/10",
+        "20/10 às 14:32 · Carol · trocou Emily (Alfragide) com Joana (Amadora) · 27/10",
+        "20/10 às 14:32 · Carol · desfez a troca de Emily por Beatrice em Alfragide · 27/10",
+        "20/10 às 14:32 · Carol · desfez a troca de Emily (Alfragide) com Joana (Amadora) · 27/10",
+        "20/10 às 14:32 · Carol · trocou (conta removida) por Beatrice em Alfragide, 14h–23h · 27/10",
+    ]
+
+
+def test_um_lote_grande_no_historico_mostra_os_primeiros_dias_e_quantos_faltam(tmp_path):
+    dias = ["2026-10-%02d" % d for d in range(1, 32)]
+    lote = _entrada("marcou", depois=[_retrato(d, "Oeiras", n, "13:00", "22:00")
+                                      for d in dias for n in ("Débora Ferreira", "Carol Santos")])
+    assert _cal(tmp_path, "cal.linhaDoHistorico(D)", lote) == (
+        "20/10 às 14:32 · Carol · marcou Débora e Carol em Oeiras, 13h–22h · 1/10, 2/10, 3/10 e mais 28")

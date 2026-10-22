@@ -74,6 +74,12 @@ export const criarIdas = (corpo) => api.post('/calendario/idas', corpo);
 // corpo: { data, location_id, user_id, inicio, fim }
 export const mudarIda = (id, corpo) => api.put(`/calendario/idas/${id}`, corpo);
 export const apagarIda = (id) => api.delete(`/calendario/idas/${id}`);
+// As trocas (só administradores). corpo: { data, sai, entra, inicio, fim } — `sai` e `entra` são user_id.
+export const trocar = (corpo) => api.post('/calendario/trocas', corpo);
+// corpo: { data, uma, outra } — duas pessoas da escala trocam de loja e de horas.
+export const trocarEntreSi = (corpo) => api.post('/calendario/trocas/entre-si', corpo);
+export const desfazerTroca = (trocaId) => api.delete(`/calendario/trocas/${trocaId}`);
+export const getHistorico = (ano, mes) => api.get('/calendario/historico', { params: { ano, mes } });
 
 // O dinheiro escreve-se sempre com duas casas e o símbolo à frente, como no
 // resto do portal. **`null` não é zero**: um valor que o servidor não soube
