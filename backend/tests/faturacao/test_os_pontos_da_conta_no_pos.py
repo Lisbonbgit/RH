@@ -12,12 +12,17 @@ fatura por ligação, quem mostrou a app ficava sem nada.
 """
 import json
 
+import pytest
+
 from .test_a_faixa_do_modo_no_ecra import _montar_no_node
 
-# Os TRÊS campos da gaveta. O `fatura_por_email` entrou a 2026-09-17 com a
-# fatura por email e está sempre presente, mesmo a `False` — ver
-# `lib/pos.js::guardarPontosDaConta`.
-_ANA = {"id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False}
+# Os QUATRO campos da gaveta. O `fatura_por_email` entrou a 2026-09-17 com a
+# fatura por email e o `nif` da conta da app a 2026-10-24; estão sempre
+# presentes, mesmo a `False` e a `None` — ver `lib/pos.js::guardarPontosDaConta`.
+_ANA = {"id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False, "nif": None}
+# A mesma cliente, com NIF na conta da app: o telefone da queixa de 2026-09-11
+# com o dígito de controlo certo (test_o_nif_que_nao_existe_no_pos.py).
+_ANA_COM_NIF = dict(_ANA, nif="219363935")
 _CODIGO = "LQ7K2MN8P3QRSTUV4WXYZ9AB"
 
 
@@ -109,3 +114,71 @@ def test_ler_o_QR_pergunta_ao_servidor_pela_conta_e_devolve_o_primeiro_nome(tmp_
     assert saida["url"].endswith("/api/faturacao/pos/pontos/ler"), saida["url"]
     assert saida["corpo"] == {"venda_id": "venda-1", "codigo": _CODIGO}
     assert saida["operador"] == "ot"
+
+
+def test_o_NIF_da_conta_da_app_fica_na_gaveta_da_MESMA_conta_e_so_dessa(tmp_path):
+    """O NIF que o servidor mandou na leitura fica com a ligação, para o cartão
+    Cliente o poder OFERECER — e morre com ela: outra conta não o vê."""
+    saida = _correr("\n".join([
+        "lib.guardarPontosDaConta('venda-1', %s);" % json.dumps(_ANA_COM_NIF),
+        "process.stdout.write(JSON.stringify({",
+        "  lida: lib.lerPontosDaConta('venda-1'), outra: lib.lerPontosDaConta('venda-2') }));",
+    ]), tmp_path)
+    assert saida["lida"] == _ANA_COM_NIF
+    assert saida["outra"] is None
+
+
+# --- O NIF da app no cartão Cliente: as duas decisões, corridas a sério -------
+
+
+def _em_node(expressoes, tmp_path):
+    """As funções REAIS do `lib/pos.js` sobre cada expressão, numa só viagem
+    ao Node."""
+    return _correr(
+        "process.stdout.write(JSON.stringify([%s]));" % ", ".join(expressoes), tmp_path)
+
+
+def test_a_mascara_mostra_so_o_primeiro_digito_e_os_dois_ultimos(tmp_path):
+    """O ecrã da caixa está virado para a fila: chega para a funcionária
+    confirmar «é este?», e o resto não se lê por cima do ombro."""
+    assert _em_node(["lib.nifMascarado('219363935')", "lib.nifMascarado('517542510')"],
+                    tmp_path) == ["2•• ••• •35", "5•• ••• •10"]
+
+
+def test_a_mascara_de_um_numero_que_nao_tem_nove_digitos_nao_mostra_nada(tmp_path):
+    """Uma máscara que deixasse passar o número inteiro não escondia coisa
+    nenhuma — e com dez dígitos o `slice` dos dois últimos mostrava três."""
+    assert _em_node([
+        "lib.nifMascarado('')", "lib.nifMascarado(null)", "lib.nifMascarado(undefined)",
+        "lib.nifMascarado('12345')", "lib.nifMascarado('2193639351')",
+    ], tmp_path) == [""] * 5
+
+
+def _oferece(ligacao, nif_texto):
+    return "lib.nifDaAppParaOferecer({ ligacao: %s, nifTexto: %s })" % (
+        json.dumps(ligacao), "undefined" if nif_texto is None else json.dumps(nif_texto))
+
+
+def test_com_o_campo_do_NIF_vazio_oferece_se_o_NIF_da_app(tmp_path):
+    """Vazio, só com espaços, ou nunca escrito: o botão aparece, com os nove
+    dígitos que o toque vai pôr no campo."""
+    assert _em_node([_oferece(_ANA_COM_NIF, ""), _oferece(_ANA_COM_NIF, "   "),
+                     _oferece(_ANA_COM_NIF, None)], tmp_path) == ["219363935"] * 3
+
+
+@pytest.mark.parametrize("ligacao, nif_texto", [
+    (None, ""),                                   # nenhum QR lido nesta conta
+    (_ANA, ""),                                   # a conta da app não tem NIF
+    ({"id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False}, ""),  # gaveta antiga
+    (dict(_ANA, nif="219363931"), ""),            # o telefone da queixa: não é NIF
+    (dict(_ANA, nif="219 363 935"), ""),          # o servidor manda nove dígitos e mais nada
+    (_ANA_COM_NIF, "5"),                          # um dígito escrito depois da leitura
+    (_ANA_COM_NIF, "517 542 510"),                # o NIF ditado ANTES do QR
+    (_ANA_COM_NIF, "219363935"),                  # o próprio, já no campo
+])
+def test_o_NIF_da_app_NAO_se_oferece(ligacao, nif_texto, tmp_path):
+    """**Perguntar sempre, nunca tapar o que lá está.** Sem cliente lido, sem
+    NIF que passe o dígito de controlo, ou com QUALQUER dígito no campo, não há
+    botão: o que a operadora escreveu não se substitui por baixo dela, e um
+    botão que pusesse um número inválido acendia o aviso vermelho do cartão."""
+    assert _em_node([_oferece(ligacao, nif_texto)], tmp_path) == [None]
