@@ -147,14 +147,16 @@ export default function PosLerQr({ vendaId, onLigada, onFechar, titulo, rotuloFe
     setALer(true);
     setErro(null);
     try {
-      const { ligacao_id: id, primeiro_nome, fatura_por_email } =
+      const { ligacao_id: id, primeiro_nome, fatura_por_email, nif } =
         await lerQrDePontos(vendaId, lido);
       // A guarda do ecrã já fechado vem do caminho dos pontos e vale igual aqui:
       // sem ela, um QR lido mesmo antes de sair do ecrã chamava o `onLigada` de
       // um componente que já não existe. O `catch` abaixo tem a mesma.
       if (!vivo.current) return;
       APITO_LIDO();
-      onLigada({ id, primeiro_nome, fatura_por_email: !!fatura_por_email });
+      // O `nif` é o da conta da app, e só OFERECE o botão do cartão Cliente:
+      // ler o QR nunca o põe na fatura (ver `lib/pos.js::nifDaAppParaOferecer`).
+      onLigada({ id, primeiro_nome, fatura_por_email: !!fatura_por_email, nif: nif || null });
     } catch (error) {
       if (!vivo.current) return;
       // 404 e 503 trazem a frase do servidor; sem resposta nenhuma (rede,

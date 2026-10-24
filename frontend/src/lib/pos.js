@@ -215,14 +215,40 @@ export const nifValidoPT = (texto) => {
   return (resto < 2 ? 0 : 11 - resto) === Number(digitos[8]);
 };
 
+// **O NIF da conta da app, escondido.** O ecrã da caixa está virado para a
+// fila: o primeiro dígito e os dois últimos chegam para a funcionária
+// confirmar «é este?», e o resto não se lê por cima do ombro de ninguém.
+// Fora de nove dígitos não mostra nada — uma máscara que deixasse passar um
+// número inteiro não escondia coisa nenhuma.
+export const nifMascarado = (nif) => {
+  const digitos = String(nif || '');
+  return /^\d{9}$/.test(digitos) ? `${digitos[0]}•• ••• •${digitos.slice(7)}` : '';
+};
+
+// **O botão «Usar o NIF da app» aparece?** Devolve os nove dígitos quando há
+// cliente lido NESTA conta, o NIF da conta dele passa o dígito de controlo e o
+// campo do NIF não tem dígito nenhum; senão `null`.
+//
+// Perguntar sempre, nunca preencher sozinho (decisão do dono): muitos clientes
+// não querem NIF na fatura, e uma FS com um NIF que ninguém pediu só se
+// corrige com nota de crédito. Com qualquer dígito no campo — ditado antes do
+// QR, ou escrito depois — não se oferece nada: o que a operadora escreveu não
+// se tapa. Uma gaveta de antes desta versão não tem `nif` e dá `null`.
+export const nifDaAppParaOferecer = ({ ligacao, nifTexto }) => {
+  const nif = ligacao ? String(ligacao.nif || '') : '';
+  return /^\d{9}$/.test(nif) && nifValidoPT(nif) && !/\d/.test(String(nifTexto || ''))
+    ? nif : null;
+};
+
 // --- Os pontos L'Açaí da conta -----------------------------------------------
 //
 // **Ganha os pontos quem mostra a app na caixa antes de pagar.** O talão das
 // lojas era um bilhete ao portador: quem o apanhasse lia o QR fiscal na app e
 // ficava com os pontos. Agora a funcionária lê o QR que o CLIENTE mostra
-// (`lerQrDePontos`), o servidor pede à app uma ligação e devolve só o primeiro
-// nome, e o POS guarda-a até ao EMITIR, que a manda em `pontos_ligacao`. Nada
-// se grava na venda antes disso.
+// (`lerQrDePontos`), o servidor pede à app uma ligação e devolve o primeiro
+// nome e, se houver, o NIF da conta — que só se OFERECE num botão
+// (`nifDaAppParaOferecer`) —, e o POS guarda-a até ao EMITIR, que a manda em
+// `pontos_ligacao` (sem o NIF). Nada se grava na venda antes disso.
 //
 // Guardada com o ID DA CONTA, pelo molde do NIF aqui em cima e pela mesma
 // razão: numa conta repartida, uma ligação que passasse da primeira parte para
@@ -236,24 +262,29 @@ export const guardarPontosDaConta = (vendaId, ligacao) => {
   if (!vendaId) return;
   guardarNaSessao(CHAVE_PONTOS_DA_CONTA, JSON.stringify({
     vendaId,
-    // **Campo a campo, e nunca `{ ...ligacao }`.** São estes três e mais
+    // **Campo a campo, e nunca `{ ...ligacao }`.** São estes quatro e mais
     // nenhum: o endereço de email do cliente não entra aqui, nem hoje (o
     // servidor não o manda) nem no dia em que alguém o acrescentar do outro
     // lado — o `sessionStorage` do POS é lido por tudo o que corra naquela aba.
+    //
+    // O `nif` é o da conta da app, inteiro, e fica SÓ aqui: o ecrã mostra-o
+    // mascarado (`nifMascarado`) e ele só entra na fatura se a operadora tocar
+    // no botão — e aí vai pela gaveta do NIF, como um NIF ditado.
     //
     // O `fatura_por_email` é a preferência DAQUELA leitura e serve SÓ para
     // desenhar o cartão. Quem decide se o papel sai é o servidor, pelo
     // `fat_pontos_qr` que ele gravou ao ler o QR: adulterar esta gaveta faz o
     // cartão mentir à operadora, não faz desaparecer o documento do cliente.
     //
-    // **Está SEMPRE presente, mesmo a `false`.** Uma forma que mudasse com a
-    // resposta do servidor punha o ecrã a ter de distinguir «não vai por
-    // email» de «esta gaveta é de uma versão antiga» — e essa é a distinção
-    // que ninguém faz bem às três da tarde.
+    // **Estão SEMPRE presentes, mesmo a `false` ou a `null`.** Uma forma que
+    // mudasse com a resposta do servidor punha o ecrã a ter de distinguir «não
+    // vai por email» de «esta gaveta é de uma versão antiga» — e essa é a
+    // distinção que ninguém faz bem às três da tarde.
     ligacao: ligacao ? {
       id: ligacao.id,
       primeiro_nome: ligacao.primeiro_nome,
       fatura_por_email: !!ligacao.fatura_por_email,
+      nif: ligacao.nif || null,
     } : null,
   }));
 };
@@ -273,12 +304,14 @@ export const lerPontosDaConta = (vendaId) => {
 export const MSG_PONTOS_SEM_RESPOSTA =
   'Não foi possível falar com a app agora. A fatura pode seguir sem pontos.';
 
-// `POST /pos/pontos/ler` → `{ ligacao_id, primeiro_nome, fatura_por_email }`.
+// `POST /pos/pontos/ler` → `{ ligacao_id, primeiro_nome, fatura_por_email, nif }`.
 // 404 é QR recusado e 503 é a app em baixo; as frases vêm no `detail`. A conta
 // vai no pedido para o servidor confirmar que está aberta e é desta loja.
 //
-// O `fatura_por_email` é o sim/não da preferência daquele cliente — **e é só
-// isso que vem**: o endereço nunca sai da app, nem mascarado.
+// O `fatura_por_email` é o sim/não da preferência daquele cliente — **e o
+// endereço nunca sai da app**, nem mascarado. O `nif` é o da conta (ou `null`)
+// e vem inteiro, porque é para entrar num documento fiscal; quem o esconde é o
+// ecrã (`nifMascarado`).
 export const lerQrDePontos = async (vendaId, codigo) =>
   (await api.post('/pos/pontos/ler', { venda_id: vendaId, codigo })).data;
 

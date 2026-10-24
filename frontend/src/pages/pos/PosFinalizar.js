@@ -18,7 +18,7 @@ import PosLerQr from './PosLerQr';
 import {
   contaTravada, duvidaPorApurar, detalhesErroPos, eurosPos as euros,
   temMaisDe2CasasDecimaisPos, avisoDoDocumento, previsaoDoDividir,
-  guardarNifDaConta, lerNifDaConta, nifValidoPT,
+  guardarNifDaConta, lerNifDaConta, nifValidoPT, nifMascarado, nifDaAppParaOferecer,
   guardarPontosDaConta, lerPontosDaConta, guardarPreferenciaDeFaturaPorEmail,
   aFaturaVaiPorEmail, pedirVoucherDaConta, estadoDoVoucher, contaComVoucher, fraseDoPapel,
   aAppNaoRespondeu,
@@ -422,7 +422,12 @@ function CartaoTotal({ venda, desativado, onAplicarDesconto }) {
 // nada se descarta em silêncio: o que ela escreveu fica lá, à vista, e o
 // cartão passa a mostrar as duas saídas (terminar, ou assumir Consumidor
 // Final) sem ser preciso reabrir o lápis.
-function CartaoCliente({ nifTexto, onNifTexto, desativado }) {
+//
+// **O NIF da conta da app** (`nifDaApp`, ver `lib/pos.js::nifDaAppParaOferecer`)
+// oferece-se num botão e nunca se põe sozinho: muitos clientes não o querem na
+// fatura. Escondido no botão e escondido no título depois do toque — o ecrã
+// está virado para a fila; quem abre o lápis vê os dígitos, de propósito.
+function CartaoCliente({ nifTexto, onNifTexto, desativado, nifDaApp, nifDaLigacao, onUsarNifDaApp }) {
   const [aEditar, setAEditar] = useState(false);
   // Até quando o campo ignora escrita — ver `escritaNoNif`.
   const fechadoAte = useRef(0);
@@ -465,8 +470,24 @@ function CartaoCliente({ nifTexto, onNifTexto, desativado }) {
         </div>
       ) : (
         <p className="font-heading font-bold text-2xl">
-          {digitos.length === 9 ? nifPorExtenso(digitos) : 'Consumidor Final'}
+          {digitos.length !== 9 ? 'Consumidor Final'
+            : digitos === nifDaLigacao ? nifMascarado(digitos) : nifPorExtenso(digitos)}
         </p>
+      )}
+
+      {/* No cartão FECHADO: o editor é a outra porta, e quem o abre vai
+          escrever. A funcionária pergunta «contribuinte?» como sempre, e quem
+          não quer NIF não gasta toque nenhum. */}
+      {nifDaApp && !aEditar && (
+        <Button
+          type="button"
+          variant="outline"
+          className="h-12 mt-3 w-full sm:w-auto"
+          onClick={onUsarNifDaApp}
+          disabled={desativado}
+        >
+          {`Usar o NIF da app · ${nifMascarado(nifDaApp)}`}
+        </Button>
       )}
 
       {/* As duas saídas à distância de um toque, com o editor FECHADO: quem
@@ -1295,6 +1316,10 @@ export default function PosFinalizar({
   // sem desconto nenhum, o total sobe, e o Dividir destranca-se então. Quem
   // manda na conta é sempre o servidor.
   const removerOCliente = () => {
+    // E o NIF, se ainda for o da app tal e qual: um NIF que a operadora mudou
+    // é dela e fica. Compara-se o valor — um NIF ditado igual ao da app também
+    // sai, e está bem assim.
+    if (ligacao?.nif && soDigitos(nifTexto) === ligacao.nif) setNifTexto('');
     mudarLigacao(null);
     setVoucher(null);
     pedirOVoucher(null);
@@ -1397,6 +1422,8 @@ export default function PosFinalizar({
   // NIF a sério: contar nove dígitos deixava passar um telefone, e quem o
   // recusava era o Vendus, no fim, com a venda toda feita.
   const nifValido = digitosNif.length === 0 || nifValidoPT(digitosNif);
+  // O NIF da conta da app que o cartão Cliente OFERECE, ou `null`.
+  const nifDaApp = nifDaAppParaOferecer({ ligacao, nifTexto });
 
   // As DUAS razões para congelar este ecrã — e são duas porque uma delas não
   // sobrevive a nada:
@@ -1782,7 +1809,16 @@ export default function PosFinalizar({
             </p>
           )}
 
-          <CartaoCliente nifTexto={nifTexto} onNifTexto={setNifTexto} desativado={aEmitir || congelada} />
+          <CartaoCliente
+            nifTexto={nifTexto}
+            onNifTexto={setNifTexto}
+            desativado={aEmitir || congelada}
+            nifDaApp={nifDaApp}
+            nifDaLigacao={ligacao?.nif}
+            // Pelo `setNifTexto`, como um NIF ditado: é ele que grava a gaveta
+            // do NIF e é dele que o `motivoBloqueio` e o EMITIR lêem.
+            onUsarNifDaApp={() => setNifTexto(nifDaApp)}
+          />
 
           <CartaoPontos
             ligacao={ligacao}

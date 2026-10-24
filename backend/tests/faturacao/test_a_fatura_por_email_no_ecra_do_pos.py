@@ -69,7 +69,7 @@ def leitura(tmp_path_factory):
         "  };",
         # **A gaveta escrita com a FORMA CRUA do servidor**, e não com o objecto
         # que o PosLerQr já filtrou. É a única escrita que prova a filtragem da
-        # GAVETA: alimentada com os três campos limpos, um `{ ...ligacao }` lá
+        # GAVETA: alimentada com os quatro campos limpos, um `{ ...ligacao }` lá
         # dentro passava despercebido para sempre.
         "  lib.guardarPontosDaConta('v-2', { id: 'lig-2', primeiro_nome: 'Ana',",
         "    fatura_por_email: true, email: %s });" % json.dumps(_EMAIL_DO_CLIENTE),
@@ -84,13 +84,13 @@ def leitura(tmp_path_factory):
 
 
 def test_a_preferencia_lida_no_QR_chega_ao_Finalizar_e_sobrevive_a_gaveta(leitura):
-    """**Os três campos, e só estes.** O `fatura_por_email` serve para desenhar
+    """**Os quatro campos, e só estes.** O `fatura_por_email` serve para desenhar
     o cartão e mais nada: quem decide se o papel sai é o servidor, pelo
     `fat_pontos_qr` que ele próprio gravou ao ler o QR."""
     assert leitura["ligadas"] == [
-        {"id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": True}]
+        {"id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": True, "nif": None}]
     assert leitura["guardada"] == {
-        "id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": True}
+        "id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": True, "nif": None}
 
 
 def test_o_ENDERECO_do_cliente_nao_entra_na_gaveta_nem_no_ecra(leitura):
@@ -99,7 +99,7 @@ def test_o_ENDERECO_do_cliente_nao_entra_na_gaveta_nem_no_ecra(leitura):
     cada cliente no `sessionStorage` do PC do balcão — e o `sessionStorage` do
     POS é lido por tudo o que corra naquela aba."""
     assert leitura["guardadaCrua"] == {
-        "id": "lig-2", "primeiro_nome": "Ana", "fatura_por_email": True}
+        "id": "lig-2", "primeiro_nome": "Ana", "fatura_por_email": True, "nif": None}
     assert _EMAIL_DO_CLIENTE not in leitura["gaveta"], leitura["gaveta"]
     assert _EMAIL_DO_CLIENTE not in leitura["visivel"], leitura["visivel"][:400]
 
@@ -187,7 +187,7 @@ def test_voltar_ao_papel_pede_ao_SERVIDOR_e_so_depois_muda_o_ecra(cartao):
         cartao["noPapel"][:600]
     assert "Enviar por email" in cartao["noPapel"], cartao["noPapel"][:600]
     assert cartao["guardada"] == {
-        "id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False}
+        "id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False, "nif": None}
 
 
 def test_uma_RECUSA_do_servidor_nao_mente_no_cartao(cartao):
@@ -200,7 +200,7 @@ def test_uma_RECUSA_do_servidor_nao_mente_no_cartao(cartao):
     assert "Fatura por email" not in cartao["depoisDaRecusa"], \
         cartao["depoisDaRecusa"][:600]
     assert cartao["guardadaDepois"] == {
-        "id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False}
+        "id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False, "nif": None}
 
 
 def test_o_cartao_escreve_o_que_o_SERVIDOR_devolveu_e_nao_o_que_se_pediu(cartao):
@@ -219,7 +219,7 @@ def test_o_cartao_escreve_o_que_o_SERVIDOR_devolveu_e_nao_o_que_se_pediu(cartao)
     assert "Fatura por email" not in cartao["depoisDaDivergencia"], \
         cartao["depoisDaDivergencia"][:600]
     assert cartao["guardadaDivergente"] == {
-        "id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False}
+        "id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False, "nif": None}
 
 
 def test_a_preferencia_NAO_viaja_no_corpo_do_EMITIR(cartao):

@@ -8,11 +8,13 @@ Três peças, e uma regra acima das três: **nada daqui pode impedir uma fatura
 de sair nem atrasar o EMITIR.**
 
 1. **Ler** (`POST /pos/pontos/ler`) — troca o código do QR por uma ligação na
-   app e devolve só o primeiro nome e um sim/não à fatura por email. Não grava
-   nada na VENDA — é o ecrã que guarda a ligação e a manda no finalizar
-   (`fiscal.PedidoFinalizarVenda`) — mas grava a preferência do email em
-   `fat_pontos_qr`, porque suprimir um documento fiscal não se decide por um
-   campo do corpo de um pedido do browser.
+   app e devolve o primeiro nome, um sim/não à fatura por email e o NIF da
+   conta (ou `None`), que só entra na fatura se o cliente o confirmar na
+   caixa. Não grava nada na VENDA — é o ecrã que guarda a ligação e a manda no
+   finalizar (`fiscal.PedidoFinalizarVenda`) — mas grava a preferência do
+   email em `fat_pontos_qr`, porque suprimir um documento fiscal não se decide
+   por um campo do corpo de um pedido do browser. O NIF não se grava em lado
+   nenhum.
 2. **A fila** (`fat_pontos_app`) — uma linha por crédito (FS) e por estorno
    (NC), com chave única. Nasce DEPOIS de o documento existir e nunca antes:
    os pontos só entram com a fatura já entregue à AT.
@@ -129,6 +131,31 @@ class PedidoLerQr(BaseModel):
     codigo: str = Field(min_length=1, max_length=200)
 
 
+def _nif_da_app(cru) -> Optional[str]:
+    """O NIF da conta da app, só se for um NIF que o finalizar aceitaria; senão
+    `None`.
+
+    **Nunca levanta**: quando chegamos aqui a app já gastou o QR do cliente, e
+    um 500 era a funcionária a pedir-lhe um código novo que já não servia. Daí
+    o tipo conferido primeiro (uma lista ou um objecto, passados a texto,
+    escondiam nove dígitos) e o alfabeto de `fiscal._valida_nif` —
+    `c in "0123456789"`, nunca `isdigit()` — antes do dígito de controlo, que
+    faz `int()` a cada carácter.
+
+    O 999999990 é o «Consumidor Final» genérico e passa o dígito de controlo:
+    na conta de alguém não é um NIF. E o número nunca vai para o log."""
+    # Importado aqui e não no topo: o `fiscal` só importa este módulo tarde, de
+    # propósito, e um import de topo para o lado de lá podia fechar o ciclo.
+    from .fiscal import _nif_portugues_valido
+
+    if type(cru) not in (str, int):  # `bool` é um `int` em Python e fica de fora
+        return None
+    digitos = "".join(c for c in str(cru) if c in "0123456789")
+    if digitos == "999999990" or not _nif_portugues_valido(digitos):
+        return None
+    return digitos
+
+
 async def _gravar_qr_da_ligacao(db, ligacao_id: str, fatura_por_email: bool) -> bool:
     """Grava em `fat_pontos_qr` a preferência desta leitura, e diz se ficou lá.
 
@@ -190,6 +217,12 @@ async def ler_qr_de_pontos(
     id da conta e a manda no finalizar. Uma leitura que não acabe em fatura
     não deixa lixo em lado nenhum deste servidor.
 
+    **O NIF da conta volta ao ecrã e a mais lado nenhum** (`_nif_da_app`): nem
+    na venda, nem em `fat_pontos_qr`, nem no log. O ecrã esconde-o e só o põe
+    no campo do NIF se a funcionária tocar no botão, depois de perguntar ao
+    cliente; entra na fatura pelo `nif` de sempre do finalizar, que o valida
+    outra vez.
+
     A loja e o operador vão pelo NOME e saem do TOKEN, nunca do corpo: são o
     registo de quem associou que conta a que venda, para o relatório de
     concentração da 2.ª fase."""
@@ -227,9 +260,12 @@ async def ler_qr_de_pontos(
     if not isinstance(corpo, dict) or not corpo.get("ligacao_id"):
         # 401 (chave trocada), 5xx, ou um 200 sem a forma do contrato: para a
         # funcionária é tudo «a app não está a responder»; o pormenor fica no log.
+        # O estado e as CHAVES do corpo, nunca o texto: um 200 sem `ligacao_id`
+        # pode trazer o NIF da conta, e o NIF não vai para o log.
         logger.error(
             "[faturacao] ler QR de pontos (venda %s): resposta inesperada da app "
-            "(HTTP %s): %s", dados.venda_id, resposta.status_code, resposta.text[:200])
+            "(HTTP %s, chaves %s)", dados.venda_id, resposta.status_code,
+            sorted(corpo) if isinstance(corpo, dict) else None)
         raise HTTPException(status_code=503, detail=_MSG_APP_INDISPONIVEL)
     ligacao_id = str(corpo["ligacao_id"])
     return {
@@ -242,6 +278,9 @@ async def ler_qr_de_pontos(
         # email por cima de um talão a sair, que é a mentira que interessa.
         "fatura_por_email": await _gravar_qr_da_ligacao(
             db, ligacao_id, bool(corpo.get("fatura_por_email"))),
+        # Sempre presente, `None` quando não há. Só volta ao ecrã — ver a
+        # docstring acima.
+        "nif": _nif_da_app(corpo.get("nif")),
     }
 
 
