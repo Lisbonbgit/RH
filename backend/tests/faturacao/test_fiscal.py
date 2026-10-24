@@ -4801,11 +4801,10 @@ def test_reparticao_do_pagamento_sem_pagamentos_gravados_devolve_none():
 def test_reparticao_da_conta_a_zero_com_recompensa_e_zero_e_nao_none():
     """A conta a 0,00 € oferecida por uma recompensa finaliza-se SEM pagamentos
     de propósito. Aí sim, nada entrou na gaveta — e o «não se sabe como foi
-    paga» do Reconciliar era falso. Um zero de desconto manual continua None."""
-    a_zero = _venda(linhas=[_linha(desconto_eur=8.99, voucher_id="vch-1")])
-    assert _reparticao_do_pagamento(a_zero) == {
-        "dinheiro": 0.0, "outros": 0.0, "total_pago": 0.0}
-    assert _reparticao_do_pagamento(_venda(linhas=[_linha(desconto_eur=8.99)])) is None
+    paga» do Reconciliar era falso. Vale também para o desconto manual."""
+    for linha in (_linha(desconto_eur=8.99, voucher_id="vch-1"), _linha(desconto_eur=8.99)):
+        assert _reparticao_do_pagamento(_venda(linhas=[linha])) == {
+            "dinheiro": 0.0, "outros": 0.0, "total_pago": 0.0}
 
 
 def test_reconciliar_a_MESMA_venda_duas_vezes_deixa_UMA_marca(monkeypatch):

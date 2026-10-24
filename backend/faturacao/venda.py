@@ -520,9 +520,8 @@ def _garante_que_nao_tem_voucher(venda: Dict) -> None:
     `deepcopy`: o `voucher_id` e uma fatia do `desconto_eur` viajam para as
     partes. Daí saem dois estragos, os dois reais:
 
-    - **Faturas Simplificadas a 0,00 € que ninguém autorizou.** O travão do
-      zero (`fiscal._tem_linha_de_voucher`) pergunta só se a conta tem uma
-      linha com marca E desconto — e passa a haver uma em CADA parte. Um
+    - **Faturas Simplificadas a 0,00 € que ninguém autorizou.** A marca e o
+      desconto passam a existir em CADA parte. Um
       voucher de 7,20 € vira N documentos fiscais reais a zero, entregues à
       Autoridade Tributária. O ecrã do POS já recusa isto, mas um ecrã não é
       uma tranca (regra 3 do cabeçalho: os ecrãs do POS desenham-se sem

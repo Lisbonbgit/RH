@@ -510,8 +510,8 @@ def a_zero_sem_marca(tmp_path_factory):
     linha não tem `voucher_id`."""
     return _montar(_A_ZERO_SEM_MARCA, "() => ({ data: {} })", "\n".join([
         "const ecra = textoVisivel(alvo);",
-        "const emitirVivo = !!botao('EMITIR DOCUMENTO');",
-        "process.stdout.write(JSON.stringify({ ecra, emitirVivo }));",
+        _EMITIR,
+        "process.stdout.write(JSON.stringify({ ecra, emitirVivo, corpos }));",
     ]), tmp_path_factory, "voucher-a-zero-sem-marca")
 
 
@@ -540,21 +540,18 @@ def test_a_conta_a_zero_DIZ_porque_e_que_nao_ha_nada_a_cobrar(a_zero):
     assert "não há nada a cobrar" in a_zero["ecra"], a_zero["ecra"][:600]
 
 
-def test_um_zero_SEM_a_marca_do_voucher_continua_a_ser_RECUSADO(a_zero_sem_marca):
-    """**O travão, e a razão de ele não se abrir para toda a gente.** Um
-    desconto manual de 100 % não pede PIN a ninguém: se o zero passasse sem a
-    marca `voucher_id`, qualquer pessoa ao balcão emitia Faturas Simplificadas
-    reais a 0,00 € sem ter trocado pontos nenhuns.
-
-    O servidor faz o MESMO travão (`fiscal.py::finalizar`) — este ecrã só não o
-    pode convidar a recusar com o cliente à frente."""
-    assert a_zero_sem_marca["emitirVivo"] is False, a_zero_sem_marca["ecra"][:600]
-    assert "O total tem de ser positivo para emitir" in a_zero_sem_marca["ecra"], \
-        a_zero_sem_marca["ecra"][:600]
-    # E não promete recompensa nenhuma: o desconto é da funcionária, não da
-    # fidelidade, e um ecrã a dizer o contrário sobre uma conta a 0,00 € era a
-    # frase que fazia o gestor procurar pontos que ninguém gastou.
-    assert "recompensa" not in a_zero_sem_marca["ecra"], a_zero_sem_marca["ecra"][:600]
+def test_um_zero_por_DESCONTO_MANUAL_tambem_emite(a_zero_sem_marca):
+    """**Decisão do dono, 2026-10-24:** uma oferta da loja (desconto manual de
+    100 %, sem PIN) emite a 0,00 € como a recompensa. Antes isto dava «O total
+    tem de ser positivo» e a conta ficava presa ao balcão (Benfica, 24/10)."""
+    ecra = a_zero_sem_marca["ecra"]
+    assert a_zero_sem_marca["emitirVivo"] is True, ecra[:600]
+    assert len(a_zero_sem_marca["corpos"]) == 1, a_zero_sem_marca["corpos"]
+    assert a_zero_sem_marca["corpos"][0]["pagamentos"] == []
+    assert "com o desconto aplicado — não há nada a cobrar" in ecra, ecra[:600]
+    assert "tem de ser positivo" not in ecra, ecra[:600]
+    # E não promete recompensa nenhuma: o desconto é da loja, não da fidelidade.
+    assert "recompensa" not in ecra, ecra[:600]
 
 
 # --- A conta mudou entre a leitura e o EMITIR ---------------------------------
@@ -643,28 +640,14 @@ def marca_orfa_a_zero(tmp_path_factory):
     ]), tmp_path_factory, "voucher-marca-orfa")
 
 
-def test_uma_MARCA_ORFA_nao_abre_o_travao_do_zero_e_o_ecra_diz_a_VERDADE(marca_orfa_a_zero):
-    """**O ecrã e o servidor faziam perguntas DIFERENTES sobre a mesma conta.**
-
-    O servidor exige a marca **E** o desconto (`fiscal.py::_tem_linha_de_voucher`);
-    o ecrã contentava-se com a marca. A rota de editar linha aceita `desconto_eur`
-    e não conhece o `voucher_id`, por isso limpar o desconto deixa a marca para
-    trás — e com um desconto global de 100 % por cima o ecrã dizia «não há nada a
-    cobrar», acendia o EMITIR e mandava a lista de pagamentos VAZIA. O servidor
-    respondia 422 a falar de recompensas sobre um desconto que ela deu de cabeça.
-
-    Falha segura, e ainda assim o pior sítio para ela cair: um beco sem saída com
-    o cliente à frente e o ecrã a garantir-lhe que estava tudo bem. Agora faz a
-    MESMA pergunta, e a razão que ela lê é a do desconto que ela deu."""
-    assert marca_orfa_a_zero["emitirVivo"] is False, marca_orfa_a_zero["ecra"][:800]
-    assert "O total tem de ser positivo para emitir" in marca_orfa_a_zero["ecra"], \
-        marca_orfa_a_zero["ecra"][:800]
-    # E NÃO a frase da conta oferecida: prometer «não há nada a cobrar» sobre uma
-    # conta que o servidor recusa é a mentira que fazia o beco.
-    assert "não há nada a cobrar" not in marca_orfa_a_zero["ecra"], \
-        marca_orfa_a_zero["ecra"][:800]
-    assert "recompensa L'Açaí — não há" not in marca_orfa_a_zero["ecra"], \
-        marca_orfa_a_zero["ecra"][:800]
+def test_uma_MARCA_ORFA_a_zero_emite_e_o_ecra_diz_a_VERDADE(marca_orfa_a_zero):
+    """A operadora limpou o desconto da recompensa (a MARCA ficou na linha) e deu
+    um desconto global de 100 %. Desde 2026-10-24 o zero emite para todos — mas
+    a frase tem de falar do desconto que ELA deu, não de uma recompensa."""
+    ecra = marca_orfa_a_zero["ecra"]
+    assert marca_orfa_a_zero["emitirVivo"] is True, ecra[:800]
+    assert "com o desconto aplicado — não há nada a cobrar" in ecra, ecra[:800]
+    assert "recompensa L'Açaí — não há" not in ecra, ecra[:800]
 
 
 @pytest.fixture(scope="module")

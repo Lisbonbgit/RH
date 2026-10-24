@@ -422,16 +422,15 @@ def test_a_conta_a_zero_sem_DINHEIRO_ligado_ao_vendus_e_recusada_antes_de_sair(
     assert ClienteEmissaoVendusFalso.instancias == []  # nem se fala com o Vendus
 
 
-def test_a_conta_a_zero_SEM_linha_de_voucher_continua_a_ser_RECUSADA(monkeypatch, _arranque_saudavel):
-    """**O travão, e é a parte que não se pode esquecer.** Abrir o zero a toda a
-    gente deixava emitir a zero também com um desconto manual de 100 % — e esses
-    não pedem PIN a ninguém."""
+def test_a_conta_a_zero_por_DESCONTO_MANUAL_tambem_emite(monkeypatch, _arranque_saudavel):
+    """**Decisão do dono, 2026-10-24:** ofertas da loja (desconto manual de
+    100 %, sem PIN) emitem a 0,00 € como a recompensa — e levam o mesmo 0,00 €
+    em Dinheiro ao Vendus. Antes eram recusadas aqui com 422."""
     db = _db_do_emitir([_linha(desconto_eur=8.99)])
-    with pytest.raises(HTTPException) as e:
-        _emitir(monkeypatch, db, [])
-    assert e.value.status_code == 422
-    assert "recompensa L'Açaí" in e.value.detail
-    assert ClienteEmissaoVendusFalso.instancias == []  # nem se fala com o Vendus
+    resultado = _emitir(monkeypatch, db, [])
+    assert resultado["estado"] == "emitida"
+    assert ClienteEmissaoVendusFalso.instancias[0].chamadas_criar[0]["pagamentos"] == [
+        {"id": "316430468", "amount": 0.0}]
 
 
 def test_uma_conta_COM_VALOR_sem_pagamentos_continua_a_ser_RECUSADA(
@@ -454,22 +453,10 @@ def test_uma_conta_COM_VALOR_sem_pagamentos_continua_a_ser_RECUSADA(
     assert ClienteEmissaoVendusFalso.instancias == []  # nem se fala com o Vendus
 
 
-def test_uma_MARCA_orfa_sem_desconto_nao_destranca_a_conta_a_zero(
-        monkeypatch, _arranque_saudavel):
-    """A marca sozinha não chega. `PUT /pos/venda/{id}/linhas/{linha_id}` aceita
-    `desconto_eur` e não conhece o `voucher_id`: a operadora pode limpar o
-    desconto do voucher e deixar a marca para trás. Se o travão olhasse só para
-    a marca, essa linha órfã destrancava a emissão a zero para um desconto
-    manual de 100 % noutra linha — o buraco exacto que o travão existe para
-    fechar."""
-    # A marca ficou na linha; o zero veio de um desconto GLOBAL de 100 %, que
-    # qualquer pessoa ao balcão pode dar e que não pede PIN a ninguém.
-    db = _db_do_emitir([_linha(voucher_id="vch-1", desconto_eur=None)],
-                       desconto_global_eur=8.99)
-    with pytest.raises(HTTPException) as e:
-        _emitir(monkeypatch, db, [])
-    assert e.value.status_code == 422
-    assert "recompensa L'Açaí" in e.value.detail
+def test_um_desconto_GLOBAL_de_100_tambem_emite_a_zero(monkeypatch, _arranque_saudavel):
+    """O caso de Benfica a 24/10: café + coxinha com 100 % na conta inteira."""
+    db = _db_do_emitir([_linha()], desconto_global_eur=8.99)
+    assert _emitir(monkeypatch, db, [])["estado"] == "emitida"
 
 
 def test_uma_conta_COM_valor_continua_a_nao_se_finalizar_sem_pagamentos(monkeypatch, _arranque_saudavel):
@@ -492,7 +479,7 @@ def test_um_total_NEGATIVO_continua_a_ser_recusado(monkeypatch, _arranque_saudav
     with pytest.raises(HTTPException) as e:
         _emitir(monkeypatch, db, [])
     assert e.value.status_code == 422
-    assert "positivo" in e.value.detail
+    assert "negativo" in e.value.detail
 
 
 def test_o_desconto_do_voucher_chega_ao_VENDUS_pela_percentagem_de_sempre(monkeypatch, _arranque_saudavel):

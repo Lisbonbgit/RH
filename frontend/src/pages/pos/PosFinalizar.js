@@ -1420,8 +1420,8 @@ export default function PosFinalizar({
   const travada = contaTravada(venda);
   const congelada = duvida || travada;
   const temLinhas = (vendaViva?.linhas || []).length > 0;
-  // **A conta que ficou a 0,00 € por causa de uma recompensa** — um açaí
-  // oferecido é o caso NORMAL disto, não um erro.
+  // **A conta que ficou a 0,00 €** — um açaí oferecido por uma recompensa, ou
+  // uma oferta da loja com desconto de 100 % — é um caso NORMAL, não um erro.
   //
   // A zero não se manda pagamento nenhum: o servidor recusa `valor: 0`
   // (`fiscal.py::PagamentoEntrada`) e a soma de zero pagamentos é 0, que bate
@@ -1429,7 +1429,7 @@ export default function PosFinalizar({
   // ou a pedir «escolha como o cliente vai pagar» numa conta que não tem nada
   // a pagar, ou, se ela tocasse em Dinheiro por hábito, a pedir-lhe o valor de
   // um pagamento de 0,00 € que o servidor nunca aceitaria.
-  const contaAZeroPeloVoucher = totalCentimos === 0 && temLinhas && haLinhaDeVoucher;
+  const contaAZero = totalCentimos === 0 && temLinhas;
 
   const nomeDoTipo = (id) => tipoPorId.get(id)?.nome || 'este pagamento';
 
@@ -1453,22 +1453,13 @@ export default function PosFinalizar({
     // **A conta pode ficar a 0,00 €, e a Fatura Simplificada sai à mesma** —
     // zero euros, zero pontos (desenho de 2026-09-22, decisão 3; a FS
     // 06P2026/1081 da app já saiu assim, com 100 % de desconto numa linha).
-    //
-    // **Mas só com uma linha marcada com `voucher_id`.** Abrir o zero a toda a
-    // gente deixava emitir a 0,00 € com um desconto manual de 100 %, e esses
-    // não pedem PIN a ninguém. O servidor tem o MESMO travão
-    // (`fiscal.py::finalizar`) e os dois têm de concordar: um crivo mais largo
-    // aqui era o ecrã a convidar ao que o servidor recusa com 422, com o
-    // cliente à frente.
+    // Também com um desconto manual de 100 % (decisão do dono, 2026-10-24:
+    // ofertas da loja, sem PIN). O servidor aceita o mesmo (`fiscal.py::finalizar`).
     //
     // Em CÊNTIMOS INTEIROS, como todo o dinheiro deste ficheiro: um total de
-    // 0,00 € que chegue como 0.0000001 não pode ficar de fora do travão nem
-    // preso nele.
+    // 0,00 € que chegue como 0.0000001 conta como zero.
     if (totalCentimos < 0) {
       return { texto: 'O total não pode ser negativo — reveja o desconto aplicado à conta.' };
-    }
-    if (totalCentimos === 0 && !haLinhaDeVoucher) {
-      return { texto: 'O total tem de ser positivo para emitir — reveja o desconto aplicado à conta.' };
     }
     // Duas razões diferentes, e a ordem importa: com quatro dígitos escritos
     // ninguém pode levar "este NIF não existe" — ainda não acabou de o
@@ -1487,7 +1478,7 @@ export default function PosFinalizar({
     // nenhum a repartir. O NIF fica ACIMA desta saída de propósito: uma fatura
     // a zero leva contribuinte como qualquer outra, e um NIF a meio continua a
     // ser um NIF a meio.
-    if (contaAZeroPeloVoucher) return null;
+    if (contaAZero) return null;
     if (pagamentos.length === 0) return { texto: 'Escolha como o cliente vai pagar.' };
 
     // A FORMA dos valores é crivada ANTES de qualquer conta sobre a soma: com
@@ -1682,7 +1673,7 @@ export default function PosFinalizar({
       // A zero vai a lista VAZIA, mesmo que ela tenha tocado num tipo por
       // hábito: `valor: 0` é 422 do lado do servidor, e a soma de zero
       // pagamentos é o total.
-      pagamentos: contaAZeroPeloVoucher ? [] : pagamentos.map((p) => ({
+      pagamentos: contaAZero ? [] : pagamentos.map((p) => ({
         tipo_pagamento_id: p.tipo_pagamento_id,
         valor: Number(p.valor),
       })),
@@ -1777,13 +1768,12 @@ export default function PosFinalizar({
 
           <CartaoTotal venda={vendaViva} desativado={aEmitir || congelada} onAplicarDesconto={onAplicarDesconto} />
 
-          {/* A MESMA regra do `motivoBloqueio` — e a mesma razão de ser a
-              mesma: uma conta a 0,00 € com um voucher aplicado é um desfecho
-              NORMAL (um açaí oferecido), e pintá-la de vermelho aqui ensinava a
-              operadora a ignorar o aviso nos dias em que ele é a sério. */}
-          {(totalCentimos < 0 || (totalCentimos === 0 && !haLinhaDeVoucher)) && temLinhas && (
+          {/* A MESMA regra do `motivoBloqueio`: só o negativo é erro. Uma
+              conta a 0,00 € é um desfecho NORMAL (recompensa ou oferta), e
+              pintá-la de vermelho ensinava a ignorar o aviso. */}
+          {totalCentimos < 0 && temLinhas && (
             <p className="text-sm text-destructive px-1">
-              O total tem de ser positivo para emitir uma fatura — reveja o desconto aplicado.
+              O total não pode ser negativo — reveja o desconto aplicado.
             </p>
           )}
           {!temLinhas && (
@@ -1834,9 +1824,9 @@ export default function PosFinalizar({
                 escolher como se paga; numa conta oferecida isso nunca
                 acontece, e sem esta frase ela fica a tocar nos tipos de
                 pagamento à procura do passo que falta. */}
-            {contaAZeroPeloVoucher && (
+            {contaAZero && (
               <p className="mt-2 text-sm">
-                Esta conta fica a € 0,00 com a recompensa L&apos;Açaí — não há nada a cobrar,
+                Esta conta fica a € 0,00 {haLinhaDeVoucher ? <>com a recompensa L&apos;Açaí</> : 'com o desconto aplicado'} — não há nada a cobrar,
                 e a Fatura Simplificada sai à mesma.
               </p>
             )}
