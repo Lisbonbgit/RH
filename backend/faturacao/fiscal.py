@@ -103,19 +103,7 @@ _ESPERA_ENTRE_TENTATIVAS_S = 0.05
 
 _MSG_LINHAS_VAZIAS = "A venda não tem nenhuma linha — nada para faturar."
 _MSG_TOTAL_NAO_POSITIVO = (
-    "O total da venda tem de ser positivo para emitir uma fatura — "
-    "confirme os descontos aplicados."
-)
-# **O travão da conta a zero.** Uma conta a 0,00 € emite-se — a Fatura
-# Simplificada sai à mesma, zero euros e zero pontos — mas SÓ quando o zero
-# veio de uma recompensa L'Açaí, ou seja, quando a conta tem uma linha com
-# `voucher_id` (marca posta pelo SERVIDOR, em `pontos_app.voucher_ao_balcao`, e
-# nunca aceite do corpo de um pedido do browser). Aberto a toda a gente, isto
-# deixava emitir a zero também com um desconto manual de 100 % — e esses não
-# pedem PIN a ninguém.
-_MSG_TOTAL_ZERO_SEM_VOUCHER = (
-    "Uma conta a 0,00 € só se emite com uma recompensa L'Açaí aplicada — "
-    "confirme os descontos desta conta."
+    "O total da venda não pode ser negativo — confirme os descontos aplicados."
 )
 _MSG_TIPO_PAGAMENTO_INEXISTENTE = "Tipo de pagamento não encontrado ou inactivo."
 _MSG_TIPO_PAGAMENTO_SEM_VENDUS = (
@@ -2011,31 +1999,6 @@ class PedidoFinalizarVenda(BaseModel):
         return digitos
 
 
-def _tem_linha_de_voucher(venda: Dict) -> bool:
-    """Esta conta tem alguma linha marcada com uma recompensa L'Açaí?
-
-    É a chave do travão da conta a zero. A marca (`voucher_id`) só é escrita
-    pelo SERVIDOR, em `pontos_app.voucher_ao_balcao`, depois de a app L'Açaí ter
-    escolhido o voucher e a linha — nunca pelo corpo de um pedido do browser
-    (nem `PedidoLinha` nem `PedidoEditarLinha` a conhecem, `venda.py`). É isso
-    que a separa de um desconto manual de 100 %, que qualquer pessoa ao balcão
-    pode dar e que continua a não poder emitir a zero.
-
-    **Exige a marca E o desconto, e não só a marca.** O `desconto_eur` de uma
-    linha marcada pode ser limpo por fora daqui — `PUT /pos/venda/{id}/linhas/
-    {linha_id}` aceita `desconto_eur` e não conhece o `voucher_id`, por isso
-    apagar o desconto pela mão da operadora deixava a MARCA para trás. Essa
-    marca órfã destrancava a conta a zero para um desconto manual de 100 %, que
-    é exactamente o que o travão existe para impedir. Um voucher a sério traz
-    sempre os dois (a rota recusa um `valor` que não seja positivo).
-
-    `.get` e `or []` porque uma venda sem linhas e outra com `linhas: []` valem
-    exactamente o mesmo aqui — e nenhuma delas pode cair num KeyError no meio
-    de uma emissão."""
-    return any(li.get("voucher_id") and li.get("desconto_eur")
-               for li in venda.get("linhas") or [])
-
-
 def _resposta_documento(documento: Dict) -> Dict:
     return {
         "id": documento.get("id"),
@@ -2114,17 +2077,13 @@ async def finalizar(
         raise HTTPException(status_code=422, detail=_MSG_LINHAS_VAZIAS)
 
     totais = _totais(venda)
-    # **`< 0` e já não `<= 0`** — o zero passou a ser um desfecho legítimo: um
-    # açaí oferecido por uma recompensa L'Açaí deixa a conta a 0,00 € e a
-    # Fatura Simplificada sai à mesma (está provado contra a conta real — a FS
-    # 06P2026/1081 da app saiu a 0,00 € com 100 % de desconto numa linha).
+    # **`< 0` e já não `<= 0`** — o zero é um desfecho legítimo: um açaí
+    # oferecido por uma recompensa L'Açaí, ou uma oferta da loja com desconto
+    # manual de 100 % (decisão do dono, 2026-10-24: sem PIN, para todos), deixa
+    # a conta a 0,00 € e a Fatura Simplificada sai à mesma (provado em
+    # mode=tests: FS T06P2026/35).
     if totais["total"] < 0:
         raise HTTPException(status_code=422, detail=_MSG_TOTAL_NAO_POSITIVO)
-    # **O travão** (ver `_MSG_TOTAL_ZERO_SEM_VOUCHER`): o zero só passa quando
-    # veio de um voucher. Sem esta linha, o `< 0` acima abria a emissão a zero
-    # a qualquer desconto manual de 100 %.
-    if totais["total"] == 0 and not _tem_linha_de_voucher(venda):
-        raise HTTPException(status_code=422, detail=_MSG_TOTAL_ZERO_SEM_VOUCHER)
 
     # A soma dos pagamentos continua a ter de bater com o total, e é ela que
     # segura o resto: uma conta a 0,00 € finaliza-se SEM pagamento nenhum
@@ -3326,10 +3285,10 @@ def _reparticao_do_pagamento(venda: Dict) -> Optional[Dict]:
     perigoso desta função."""
     pagamentos = venda.get("pagamentos") or []
     if not pagamentos:
-        # A conta a 0,00 € oferecida por uma recompensa finaliza-se SEM
-        # pagamentos de propósito (ver `finalizar`): aí a lista vazia é a
-        # resposta certa — nada entrou na gaveta —, não «não se sabe».
-        if _totais(venda)["total"] == 0 and _tem_linha_de_voucher(venda):
+        # A conta a 0,00 € finaliza-se SEM pagamentos de propósito (ver
+        # `finalizar`): aí a lista vazia é a resposta certa — nada entrou na
+        # gaveta —, não «não se sabe».
+        if venda.get("linhas") and _totais(venda)["total"] == 0:
             return {"dinheiro": 0.0, "outros": 0.0, "total_pago": 0.0}
         return None
     dinheiro = soma_vendas_dinheiro([dict(venda, estado="emitida")])

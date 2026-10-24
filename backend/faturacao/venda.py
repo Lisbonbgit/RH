@@ -74,14 +74,14 @@ _MSG_CONTA_VAZIA_NAO_SE_DIVIDE = (
     "Esta conta ainda não tem nada — não há o que dividir. Pique primeiro o "
     "que o cliente leva."
 )
-# `separar_conta` (achado da revisão): uma parte cujas linhas somam 0,00 €
-# nasceria `aberta` para sempre — `fiscal.finalizar` recusa um total que não
-# seja positivo (`_MSG_TOTAL_NAO_POSITIVO`, fiscal.py) e a única saída é
-# cancelar, não fechar. Recusa-se aqui, antes de gravar nada.
+# `separar_conta`: uma parte cujas linhas somam 0,00 € recusa-se, antes de
+# gravar nada. Desde 2026-10-24 uma conta a zero EMITE (`fiscal.finalizar`),
+# mas o desconto global reparte-se pelo valor de cada parte
+# (`_reparte_por_peso`), e uma parte de peso zero não leva fatia nenhuma — não
+# se abriu essa matemática para separar uma oferta à parte.
 _MSG_PARTE_SEM_VALOR = (
-    "Uma das partes não leva nenhum artigo com valor — ficaria aberta para "
-    "sempre, sem forma de gerar fatura. Junte-lhe pelo menos um artigo com "
-    "preço, ou junte-a a outra parte."
+    "Uma das partes não leva nenhum artigo com valor — não se separa à parte. "
+    "Junte-lhe pelo menos um artigo com preço, ou junte-a a outra parte."
 )
 # `separar_uma_parte`: a pessoa que leva TUDO não está a separar nada — e a
 # conta ficaria a zero, presa e sem forma de emitir. O caminho dela é cobrar a
@@ -90,13 +90,11 @@ _MSG_PARTE_LEVA_A_CONTA_TODA = (
     "Esta pessoa está a levar a conta inteira — não sobra nada para cobrar a "
     "seguir. Emita a conta como ela está, sem separar."
 )
-# E o inverso: o que SOBRA também tem de valer alguma coisa. Uma sobra de
-# 0,00 € (só artigos oferecidos) ficava `aberta` para sempre, pela mesma razão
-# de `_MSG_PARTE_SEM_VALOR` — só que do lado da conta, que é onde a operadora
-# nem sequer olha à procura de um defeito.
+# E o inverso: o que SOBRA também tem de valer alguma coisa, pela mesma razão
+# de `_MSG_PARTE_SEM_VALOR` — só que do lado da conta.
 _MSG_RESTO_SEM_VALOR = (
-    "O que ficaria na conta não tem valor nenhum — ficava aberta para sempre, "
-    "sem forma de gerar fatura. Deixe na conta pelo menos um artigo com preço."
+    "O que ficaria na conta não tem valor nenhum. Deixe na conta pelo menos um "
+    "artigo com preço."
 )
 _MSG_LINHA_INEXISTENTE = "Linha não encontrada nesta venda."
 _MSG_PRODUTO_INEXISTENTE = "Produto não encontrado."
@@ -520,9 +518,8 @@ def _garante_que_nao_tem_voucher(venda: Dict) -> None:
     `deepcopy`: o `voucher_id` e uma fatia do `desconto_eur` viajam para as
     partes. Daí saem dois estragos, os dois reais:
 
-    - **Faturas Simplificadas a 0,00 € que ninguém autorizou.** O travão do
-      zero (`fiscal._tem_linha_de_voucher`) pergunta só se a conta tem uma
-      linha com marca E desconto — e passa a haver uma em CADA parte. Um
+    - **Faturas Simplificadas a 0,00 € que ninguém autorizou.** A marca e o
+      desconto passam a existir em CADA parte. Um
       voucher de 7,20 € vira N documentos fiscais reais a zero, entregues à
       Autoridade Tributária. O ecrã do POS já recusa isto, mas um ecrã não é
       uma tranca (regra 3 do cabeçalho: os ecrãs do POS desenham-se sem
@@ -1006,11 +1003,16 @@ def _desconto_global_eur(venda: Dict, base: float) -> float:
     """O desconto da conta TODA, em euros — o € tem precedência sobre a
     percentagem, mesma regra do desconto por linha. Incide sobre `base`
     (o líquido depois dos descontos por linha): é o ÚLTIMO passo, não um
-    desconto em paralelo com os que já foram dados linha a linha."""
+    desconto em paralelo com os que já foram dados linha a linha.
+
+    **O € nunca passa da `base`.** Oferecer tudo escrevendo o total mostrado
+    (que já inclui a caução) descontava também a caução: o nosso total dava
+    0,00 € e o Vendus, que só desconta os produtos, recebia linhas a somar a
+    caução e um pagamento de 0,00 €. A caução não se desconta."""
     eur = venda.get("desconto_global_eur")
     pct = venda.get("desconto_global_pct")
     if eur:
-        return round(float(eur), 2)
+        return round(min(float(eur), max(base, 0.0)), 2)
     if pct:
         return round(base * float(pct) / 100, 2)
     return 0.0
@@ -3020,13 +3022,8 @@ async def separar_conta(
     pesos = [
         _centimos(_totais({"linhas": linhas})["total"]) for linhas in linhas_por_parte
     ]
-    # Uma parte cujas linhas somam 0,00 € (só artigos oferecidos, preço 0) é
-    # tão presa como uma parte sem linha nenhuma: `fiscal.finalizar` recusa
-    # `total <= 0` (a MESMA guarda que aqui se antecipa, `_MSG_TOTAL_NAO_
-    # POSITIVO` em fiscal.py) e só sobra cancelar — uma venda `aberta` para
-    # sempre na sessão, que a operadora nem vê porque não tem nada visível
-    # de errado. Recusa-se aqui, ANTES de gravar, e não se descobre isto
-    # três clientes depois com uma conta presa.
+    # Uma parte cujas linhas somam 0,00 € (só artigos oferecidos) recusa-se
+    # ANTES de gravar: ver `_MSG_PARTE_SEM_VALOR`.
     if any(peso <= 0 for peso in pesos):
         raise HTTPException(status_code=422, detail=_MSG_PARTE_SEM_VALOR)
     globais = _reparte_por_peso(_centimos(_totais(mae)["desconto_global"]), pesos)
