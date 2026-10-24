@@ -86,6 +86,7 @@ Comportamento que resulta das regras, e que é o pretendido:
 - **Privacidade §1**, item «Pontos dados na caixa» (≈61-66): *«Quando a caixa lê o seu QR, a loja recebe da app o seu primeiro nome e, se tiver NIF na conta, esse NIF. O NIF só entra na fatura dessa compra se o confirmar na caixa.»* Data da última atualização (43) para 24 de outubro de 2026.
 - **Termos 4.2**, junto ao parágrafo «Fatura por email» (≈276), que aparece sempre (o `_QR_NA_CAIXA` só aparece com o «Ler fatura» desligado): *«NIF na fatura. Se tiver NIF na conta, a caixa pode perguntar-lhe se o quer na fatura. Só é usado se disser que sim e vale apenas para essa compra. Depois de emitida, a fatura não pode ser alterada.»*
 - `tests/test_termos_unit.py` ganha os asserts das duas frases, no estilo do teste da linha 62.
+- **Mudar o texto dos Termos obriga, no mesmo commit, a mudar a «Última atualização» dos Termos (`legal_pages.py:184`) e a `TERMOS_VERSAO` (`auth.py`) para `"2026-10-24"`** (o comentário junto à constante exige-o; senão as contas novas carimbam a aceitação com uma versão que não leram). A asserção fixa em `tests/test_ponte_categorias_unit.py` acompanha. Ninguém é obrigado a aceitar outra vez: só o `carimbo_dos_termos` lê a constante.
 
 ## Testes
 
