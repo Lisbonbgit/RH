@@ -245,9 +245,10 @@ export const nifDaAppParaOferecer = ({ ligacao, nifTexto }) => {
 // **Ganha os pontos quem mostra a app na caixa antes de pagar.** O talão das
 // lojas era um bilhete ao portador: quem o apanhasse lia o QR fiscal na app e
 // ficava com os pontos. Agora a funcionária lê o QR que o CLIENTE mostra
-// (`lerQrDePontos`), o servidor pede à app uma ligação e devolve só o primeiro
-// nome, e o POS guarda-a até ao EMITIR, que a manda em `pontos_ligacao`. Nada
-// se grava na venda antes disso.
+// (`lerQrDePontos`), o servidor pede à app uma ligação e devolve o primeiro
+// nome e, se houver, o NIF da conta — que só se OFERECE num botão
+// (`nifDaAppParaOferecer`) —, e o POS guarda-a até ao EMITIR, que a manda em
+// `pontos_ligacao` (sem o NIF). Nada se grava na venda antes disso.
 //
 // Guardada com o ID DA CONTA, pelo molde do NIF aqui em cima e pela mesma
 // razão: numa conta repartida, uma ligação que passasse da primeira parte para
