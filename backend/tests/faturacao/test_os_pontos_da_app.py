@@ -119,16 +119,20 @@ def _ler(monkeypatch, db, codigo="LQABCDEFGHJKLMNPQRSTUVWX", venda_id="venda-1")
 
 
 def test_ler_o_qr_devolve_a_ligacao_o_primeiro_nome_e_o_SIM_NAO_do_email(monkeypatch, app):
-    """A resposta tem TRÊS chaves e não duas — e o `False` aqui não é um
+    """A resposta tem QUATRO chaves, sempre — e o `False` aqui não é um
     pormenor: o corpo da app não trouxe `fatura_por_email` nenhum, e o que sai
     é o que FICOU GRAVADO em `fat_pontos_qr` (nada), nunca o que a app disse.
 
     Sem linha não se promete email: o cartão do Finalizar desenha-se pelo valor
     que sai daqui, e um cartão a dizer «Fatura por email» por cima de um talão
-    a sair é o ecrã a mentir à funcionária."""
+    a sair é o ecrã a mentir à funcionária.
+
+    E o `nif` vem `None` em vez de faltar: uma app antiga (ou uma conta sem
+    NIF) não manda nada, e o ecrã simplesmente não mostra o botão."""
     app.responde(200, {"ligacao_id": "lig-1", "primeiro_nome": "Ana"})
     assert _ler(monkeypatch, _db_do_ler()) == {
-        "ligacao_id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False}
+        "ligacao_id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False,
+        "nif": None}
 
 
 def test_ler_manda_a_loja_e_o_operador_do_TOKEN_com_a_chave_no_cabecalho(monkeypatch, app):
@@ -156,6 +160,68 @@ def test_ler_nao_grava_nada_na_venda(monkeypatch, app):
     db = _db_do_ler()
     _ler(monkeypatch, db)
     assert _corre(db[COLECOES["vendas"]].find_one({"id": "venda-1"})) == _venda_aberta()
+
+
+@pytest.mark.parametrize("nif_da_app, nif", [
+    ("517542510", "517542510"),
+    ("517 542 510", "517542510"),
+    (517542510, "517542510"),
+    (219363931, None),
+    ("51754251X", None),
+    ("٢١٩٣٦٣٩٣٥", None),
+    (["517542510"], None),
+    ({"nif": "517542510"}, None),
+    (True, None),
+    ("999999990", None),
+    (None, None),
+], ids=["nove_digitos", "com_espacos", "numero_inteiro", "o_telefone_de_Lisboa",
+        "com_uma_letra", "algarismos_arabes", "lista", "objecto", "booleano",
+        "consumidor_final", "nulo"])
+def test_o_NIF_da_conta_so_chega_ao_ecra_se_for_um_NIF_que_a_fatura_aceita(
+        monkeypatch, app, nif_da_app, nif):
+    """O mesmo crivo do `nif` do finalizar (`fiscal._valida_nif`): só os
+    algarismos do teclado — o `int()` do dígito de controlo rebentava com um
+    «X» ou um «²», e aceitava os algarismos árabes, que chegavam ao ecrã como
+    se fossem um NIF — e o dígito de controlo, que trava o telefone de Lisboa
+    ditado como NIF.
+
+    Uma lista ou um objecto passados a texto escondiam nove dígitos válidos, e
+    o 999999990 é o «Consumidor Final» genérico: passa a conta, mas não é o NIF
+    de ninguém.
+
+    **Nada disto pode dar 500**: a app já gastou o QR do cliente quando
+    chegamos aqui. Um NIF que não presta vale `None` — sem botão, a funcionária
+    pergunta como sempre."""
+    app.responde(200, {"ligacao_id": "lig-1", "primeiro_nome": "Ana", "nif": nif_da_app})
+    assert _ler(monkeypatch, _db_do_ler())["nif"] == nif
+
+
+def test_o_que_a_app_mandar_a_mais_nao_passa_para_o_ecra_da_caixa(monkeypatch, app):
+    """A resposta monta-se campo a campo, e é isso que segura a privacidade do
+    lado do servidor: o ecrã da caixa está virado para a fila, e o que a app
+    mandar a mais — o email da conta, num deploy enganado — fica aqui. Até
+    hoje só o banco de ensaio do ecrã o provava."""
+    app.responde(200, {"ligacao_id": "lig-1", "primeiro_nome": "Ana",
+                       "fatura_por_email": False, "nif": "517542510",
+                       "email": "ana@exemplo.pt", "telefone": "+351912345678"})
+    assert _ler(monkeypatch, _db_do_ler()) == {
+        "ligacao_id": "lig-1", "primeiro_nome": "Ana", "fatura_por_email": False,
+        "nif": "517542510"}
+
+
+def test_o_NIF_da_conta_nao_fica_gravado_nem_na_venda_nem_na_coleccao_do_qr(monkeypatch, app):
+    """O NIF volta ao ecrã e a mais lado nenhum: só entra na fatura se o
+    cliente o confirmar na caixa, e gravado aqui ficava preso a uma conta que
+    pode nunca chegar a fatura — e a um cliente que disse que não."""
+    app.responde(200, {"ligacao_id": "lig-1", "primeiro_nome": "Ana",
+                       "fatura_por_email": True, "nif": "517542510"})
+    db = _db_do_ler()
+
+    assert _ler(monkeypatch, db)["nif"] == "517542510"
+
+    assert _corre(db[COLECOES["vendas"]].find_one({"id": "venda-1"})) == _venda_aberta()
+    [linha] = db[COLECOES["pontos_qr"]]._documentos
+    assert "517542510" not in str(linha)
 
 
 def test_um_QR_recusado_pela_app_da_404_com_a_frase_da_funcionaria(monkeypatch, app):
@@ -201,6 +267,19 @@ def test_um_200_sem_a_forma_do_contrato_da_503(monkeypatch, app):
     with pytest.raises(HTTPException) as e:
         _ler(monkeypatch, _db_do_ler())
     assert (e.value.status_code, e.value.detail) == (503, _MSG_APP)
+
+
+def test_a_resposta_inesperada_fica_no_log_com_as_CHAVES_e_sem_o_NIF(monkeypatch, app, caplog):
+    """Um 200 sem `ligacao_id` é a app fora do contrato, e o pormenor fica no
+    log — mas o pormenor é o estado HTTP e as CHAVES do corpo, nunca o texto:
+    com o NIF a viajar na resposta do `ligar`, despejar o corpo metia-o no log."""
+    app.responde(200, {"primeiro_nome": "Ana", "nif": "517542510"})
+    with caplog.at_level(logging.ERROR, logger="faturacao.pontos_app"):
+        with pytest.raises(HTTPException) as e:
+            _ler(monkeypatch, _db_do_ler())
+    assert (e.value.status_code, e.value.detail) == (503, _MSG_APP)
+    assert "517542510" not in caplog.text and "Ana" not in caplog.text
+    assert "HTTP 200" in caplog.text and "'nif', 'primeiro_nome'" in caplog.text
 
 
 @pytest.mark.parametrize("variavel", ["APP_LACAI_URL", "APP_LACAI_CHAVE"])
