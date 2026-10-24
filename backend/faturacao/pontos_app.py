@@ -50,6 +50,7 @@ from .venda import (
     _garante_sessao_desta_venda_aberta,
     _linha_vendus,
     _obter_venda_da_loja,
+    _totais,
     _venda_publica,
 )
 from .vendus.cliente import ClienteVendus, obter_conta
@@ -526,6 +527,19 @@ async def _linhas_para_a_app(db, venda: Dict) -> List[Dict]:
     linhas = venda.get("linhas") or []
     if not linhas:
         return []
+    # **Uma oferta da loja não leva recompensa por cima** (revisão de
+    # 2026-10-24, quando a conta a 0,00 € por desconto manual passou a emitir).
+    # O € do voucher tem precedência sobre a % da linha: um açaí oferecido a
+    # 100 % passava a cobrar a diferença, e o voucher gastava-se num artigo que
+    # já era grátis. Fica de fora a linha já descontada à mão — e tudo, quando
+    # o desconto da conta já leva os produtos a zero.
+    sem_voucher = [dict(li, voucher_id=None, desconto_eur=None) if li.get("voucher_id")
+                   else li for li in linhas]
+    totais = _totais(dict(venda, linhas=sem_voucher))
+    if round(totais["total"] - totais["deposito"], 2) <= 0:
+        return []
+    linhas = [li for li in linhas if li.get("voucher_id")
+              or not (li.get("desconto_pct") or li.get("desconto_eur"))]
     produtos = {
         p["id"]: p
         # **A projecção é afirmada à mão no teste** (`test_voucher_ao_balcao.py::

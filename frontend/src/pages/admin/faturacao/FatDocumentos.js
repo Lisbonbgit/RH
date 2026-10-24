@@ -65,7 +65,7 @@ const primeiroDoMes = () => hoje().slice(0, 8) + '01';
 // ecrã ainda não conheça aparece em cru — nunca em silêncio.
 const MOTIVOS_DOS_PONTOS = {
   plataforma: 'pagamento por plataforma',
-  sem_valor: 'a fatura não tem valor para pontos (só caução)',
+  sem_valor: 'a fatura não tem valor para pontos (oferta a 0,00 € ou só caução)',
   acima_do_teto: 'a fatura passa o valor máximo que dá pontos',
   fatura_bloqueada: 'a fatura está bloqueada na app',
   fatura_de_outra_conta: 'a fatura já deu pontos a outra conta',

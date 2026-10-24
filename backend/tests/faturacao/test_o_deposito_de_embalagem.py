@@ -243,3 +243,18 @@ def test_a_caucao_do_Z_esta_DENTRO_do_dinheiro_esperado():
         _linha("Água", 1.45, deposito=0.10), dinheiro=1.55))
     assert resumo["depositos"] == 0.10
     assert resumo["esperado"] == 51.55, "50 de fundo + 1,55 cobrados"
+
+
+def test_um_desconto_em_EUROS_do_total_mostrado_NAO_come_a_caucao():
+    """Oferecer tudo escrevendo o total mostrado (4,10 €, caução incluída) dava
+    0,00 € do nosso lado e, no Vendus, linhas a somar 0,10 € com um pagamento de
+    0,00 €. O € fica limitado aos produtos: a caução cobra-se, e os dois lados
+    batem certo."""
+    from faturacao.venda import _totais
+    v = _venda(_linha("Lata", 1.50, deposito=0.10), _linha("Coxinha", 2.50),
+               desconto_global_eur=4.10)
+    assert _totais(v)["total"] == 0.10
+    itens = _itens_vendus(v, REF)
+    soma = sum(round(i["gross_price"] * i["qty"] * (1 - i.get("discount_percentage", 0) / 100), 2)
+               for i in itens)
+    assert round(soma, 2) == _totais(v)["total"]

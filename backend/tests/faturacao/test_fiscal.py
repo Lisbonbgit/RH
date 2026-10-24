@@ -1644,14 +1644,14 @@ def test_finalizar_venda_sem_linhas_e_recusado_422(monkeypatch):
     assert excinfo.value.status_code == 422
 
 
-def test_finalizar_com_desconto_global_maior_que_o_total_e_recusado_422(monkeypatch):
-    """O segundo buraco fechado nesta tarefa também protege o desconto
-    GLOBAL: um desconto maior do que a própria venda produziria um total
-    negativo/zero — a rota recusa-o (422) ANTES de tocar em qualquer
-    reserva ou no Vendus, nunca emite uma fatura com total ≤ 0."""
+def test_finalizar_com_desconto_global_maior_que_o_total_nunca_fica_negativo(monkeypatch):
+    """Um desconto GLOBAL maior do que a venda fica limitado ao valor dos
+    produtos (`venda._desconto_global_eur`, 2026-10-24): o total é 0,00 €, nunca
+    negativo — e um pagamento de 0,01 € continua a não bater (422) ANTES de
+    tocar em qualquer reserva ou no Vendus."""
     _configura_vendus_env(monkeypatch)
     venda = _venda(linhas=[_linha()], desconto_global_eur=100.0)  # linha vale 8.99
-    assert _totais(venda)["total"] < 0  # confirma a premissa do teste
+    assert _totais(venda)["total"] == 0  # confirma a premissa do teste
     db = _db(vendas=[venda], tipos_pagamento=[_tipo_pagamento()])
     monkeypatch.setattr(fiscal_mod, "obter_db", lambda: db)
 
