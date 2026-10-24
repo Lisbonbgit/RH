@@ -386,18 +386,40 @@ def _db_do_emitir(linhas, **over):
     return db
 
 
-def test_a_conta_a_zero_COM_linha_de_voucher_emite_sem_pagamento_nenhum(monkeypatch, _arranque_saudavel):
+def test_a_conta_a_zero_COM_linha_de_voucher_emite_com_0_euros_em_dinheiro_no_vendus(
+        monkeypatch, _arranque_saudavel):
     """A decisão do dono: a conta pode ficar a 0,00 € e a Fatura Simplificada sai
     à mesma — zero euros, zero pontos.
 
-    Sem pagamento nenhum, e é a única forma: o `PagamentoEntrada.valor` continua
-    `gt=0`, porque um pagamento de 0,00 € não existe. A verificação que já lá
-    estava — a soma dos pagamentos bate com o total — funciona sem se lhe tocar:
-    soma de zero pagamentos é 0, e o total é 0."""
+    O POS manda a lista VAZIA (o `PagamentoEntrada.valor` continua `gt=0`), e a
+    venda fica gravada sem pagamentos. Mas o Vendus NÃO aceita uma FS sem
+    `payments`: recusa-a com `A001 Missing payment ID` (produção, 2026-10-22).
+    **Este teste exigia antes `pagamentos == []` para o Vendus — defendia o
+    defeito.** O que lhe vai é 0,00 € no método do Dinheiro, como a app faz."""
     db = _db_do_emitir([_linha(desconto_eur=8.99, voucher_id="vch-1")])
     resultado = _emitir(monkeypatch, db, [])
     assert resultado["estado"] == "emitida"
-    assert ClienteEmissaoVendusFalso.instancias[0].chamadas_criar[0]["pagamentos"] == []
+    assert ClienteEmissaoVendusFalso.instancias[0].chamadas_criar[0]["pagamentos"] == [
+        {"id": "316430468", "amount": 0.0}]
+    venda = _corre(db[COLECOES["vendas"]].find_one({"id": "venda-1"}))
+    assert venda["pagamentos"] == []   # do nosso lado ninguém pagou nada
+
+
+def test_a_conta_a_zero_sem_DINHEIRO_ligado_ao_vendus_e_recusada_antes_de_sair(
+        monkeypatch, _arranque_saudavel):
+    """Sem um Dinheiro activo com id do Vendus não há o que mandar — e mandar a
+    lista vazia é o `A001` outra vez. Recusa-se aqui, sem falar com o Vendus."""
+    db = _db_do_emitir([_linha(desconto_eur=8.99, voucher_id="vch-1")])
+    db._coleccoes[COLECOES["tipos_pagamento"]] = ColeccaoFalsa([
+        _tipo_pagamento(ativo=False),
+        _tipo_pagamento(id="tipo-mb", nome="Multibanco", tipo_fiscal="CD"),
+        _tipo_pagamento(id="tipo-d2", vendus_payment_method_id=None),
+    ])
+    with pytest.raises(HTTPException) as e:
+        _emitir(monkeypatch, db, [])
+    assert e.value.status_code == 422
+    assert "Dinheiro" in e.value.detail
+    assert ClienteEmissaoVendusFalso.instancias == []  # nem se fala com o Vendus
 
 
 def test_a_conta_a_zero_SEM_linha_de_voucher_continua_a_ser_RECUSADA(monkeypatch, _arranque_saudavel):
