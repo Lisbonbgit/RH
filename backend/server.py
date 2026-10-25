@@ -8786,13 +8786,18 @@ async def bolso_painel(
     # A proveniência: quando é que cada origem leu pela última vez. É o que
     # transforma "não vendemos nada" em "ninguém leu" — a pergunta que o
     # `bol_leituras` existe para responder.
-    leituras = await db.bol_leituras.find(
-        {}, {"_id": 0, "origem": 1, "terminou_em": 1, "completa": 1, "erros": 1}
-    ).sort("comecou_em", -1).to_list(60)
+    # Uma pergunta por origem, e não "as últimas 60 de todas": a faturação
+    # corre ao minuto para o dia de hoje, e 60 leituras dela empurravam as do
+    # Vendus para fora da lista — o ecrã dizia "ninguém leu" a quem leu há
+    # meia hora. Cada `find_one` vai pelo índice (origem, comecou_em).
     ultima_por_origem = {}
-    for r in leituras:
-        origem = r.get("origem")
-        if origem not in ultima_por_origem:
+    for origem in await db.bol_leituras.distinct("origem"):
+        r = await db.bol_leituras.find_one(
+            {"origem": origem},
+            {"_id": 0, "terminou_em": 1, "completa": 1, "erros": 1},
+            sort=[("comecou_em", -1)],
+        )
+        if r:
             ultima_por_origem[origem] = {
                 "origem": origem,
                 "terminou_em": r.get("terminou_em"),
