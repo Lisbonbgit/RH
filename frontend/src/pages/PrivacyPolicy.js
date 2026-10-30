@@ -60,7 +60,8 @@ export default function PrivacyPolicy() {
               No CRM (secção 8), o mapa é o Google Maps (Google Ireland Limited): é o próprio browser que lhe pede
               o mapa, a pesquisa de moradas e a posição dos lugares, dando-lhe a conhecer, como em qualquer site, o
               endereço IP. A morada sugerida de um ponto do GPS vem da Geoapify (dados OpenStreetMap), a quem o
-              servidor só envia pontos do mapa, sem dados pessoais.
+              servidor só envia pontos do mapa, sem dados pessoais. A ordem das visitas e as horas das rotas do CRM
+              vêm do openrouteservice (HeiGIT gGmbH), a quem o servidor só envia coordenadas e números, sem dados pessoais.
             </p>
           </section>
 
@@ -122,6 +123,13 @@ export default function PrivacyPolicy() {
                 identificador do lugar (place ID) e o pino confirmado pelo membro. A morada preenchida depois de uma
                 pesquisa vem da Google; a de um ponto do GPS vem da Geoapify (dados OpenStreetMap), com a indicação
                 Powered by Geoapify.
+              </li>
+              <li>
+                <strong>Rotas:</strong> a ordem das visitas e as horas das rotas são calculadas pelo openrouteservice
+                (HeiGIT gGmbH), com a indicação Developed by VROOM · Hosted by HeiGIT · Routing by openrouteservice ·
+                Data from OpenStreetMap. O pedido parte do servidor, que só lhe envia as coordenadas das lojas e dos
+                pontos de partida e de chegada, com os tempos e as prioridades de cada visita, e <strong>nunca</strong>{' '}
+                nomes, moradas, telefones ou outros dados pessoais.
               </li>
             </ul>
           </section>
