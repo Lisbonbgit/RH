@@ -14,8 +14,10 @@
 //    fora da rota, a rota (`vista.mapa`: os pinos numerados, o início e o fim e a linha) e os negócios da
 //    Google não clicáveis. Nada nosso fica dentro nem por cima dele (a regra de disposição): a falha das
 //    lojas ou da configuração fica numa faixa por cima da área do mapa, que encolhe. Sem a chave Google no
-//    servidor (ou se a Google não carregar), a mensagem no lugar do mapa; o resto do planeador funciona. O
-//    mapa enquadra a rota uma vez, quando fica pronto; o toque num pino de uma paragem leva à linha dela.
+//    servidor (ou se a Google não carregar), a mensagem no lugar do mapa; o resto do planeador funciona, menos o
+//    "Ponto no mapa" (a página diz ao planeador se há mapa: `mapaDisponivel`; revisão dos ecrãs da F3, F3-UX-6).
+//    O mapa enquadra a rota uma vez, quando fica pronto; sem paragens, as lojas e não só a fábrica, e as lojas
+//    quando chegam (`enquadramentoDoMapa`, F3-UX-2). O toque num pino de uma paragem leva à linha dela.
 //  - O mapa também escolhe (T3.39): com "Ponto no mapa" nas definições, a faixa "Toque no mapa no ponto de
 //    início" (com "Cancelar") fica por cima da área do mapa (que encolhe; no telemóvel a área põe-se à vista) e
 //    o toque seguinte no mapa é o ponto (`tocarNoMapa`). Um toque numa loja esbatida abre, por baixo da área do
@@ -48,7 +50,7 @@ import {
 import { configuracaoDoMapa, mensagemSemMapa } from '../../lib/crm/ecraMapa';
 import {
   TEXTO_A_RECARREGAR, TEXTO_CANCELAR, TEXTO_RECARREGAR, TEXTO_ROTAS, TEXTO_TENTAR_DE_NOVO, TEXTO_VOLTAR_AS_ROTAS,
-  TITULO_PAINEL, faixaDoPonto, seccoesDoPainel,
+  TITULO_PAINEL, enquadramentoDoMapa, faixaDoPonto, seccoesDoPainel,
 } from '../../lib/crm/painelRota';
 import { TEXTO_A_CARREGAR, criarPlaneador } from '../../lib/crm/planeador';
 import { criarEstadoRede } from '../../lib/crm/rede';
@@ -123,11 +125,28 @@ function PlaneadorDoDia({ data, base, cheio }) {
     return () => criado.destruir();
   }, [data, base]);
 
-  // A rota enquadra-se uma vez por mapa, quando ele fica pronto (o mapa só existe com a rota, e o MapaLojas já
-  // a mostrou: os efeitos dele correm antes dos desta página); depois a pessoa é que mexe no mapa.
+  // A primeira vista, uma vez por mapa, quando ele fica pronto (o mapa só existe com a rota, e o MapaLojas já a
+  // mostrou: os efeitos dele correm antes dos desta página): a rota; sem paragens, as lojas (e, se ainda não
+  // chegaram, elas quando chegam). Depois a pessoa é que mexe no mapa (`enquadramentoDoMapa`, F3-UX-2).
+  const enquadramento = useRef({ mapa: null, estado: null });
+  const mapaDaVista = vista.mapa;
   useEffect(() => {
-    mapa?.enquadrarRota();
-  }, [mapa]);
+    if (!mapa) return;
+    if (enquadramento.current.mapa !== mapa) enquadramento.current = { mapa, estado: null };
+    const { enquadrar, estado } = enquadramentoDoMapa(mapaDaVista, enquadramento.current.estado);
+    enquadramento.current.estado = estado;
+    if (enquadrar === 'rota') mapa.enquadrarRota();
+    else if (enquadrar !== null) mapa.enquadrar(enquadrar);
+  }, [mapa, mapaDaVista]);
+
+  // Sem mapa: o servidor sem a chave Google, uma configuração que não serve, ou a Google que não carregou. O
+  // planeador sabe-o (o "Ponto no mapa" não tem onde tocar; F3-UX-6).
+  const estadoDoMapa = configuracaoDoMapa(vista.configuracao);
+  const mensagemDoMapa = mensagemSemMapa({ estado: estadoDoMapa, falhou: mapaFalhou });
+  const comMapa = mensagemDoMapa === null && estadoDoMapa === 'ok';
+  useEffect(() => {
+    planeador?.mapaDisponivel(comMapa);
+  }, [planeador, comMapa]);
 
   // O toque num pino de uma paragem: a linha dela no painel fica à vista e com o foco.
   const escolherParagem = useCallback((paragem) => {
@@ -208,9 +227,6 @@ function PlaneadorDoDia({ data, base, cheio }) {
     );
   }
 
-  const estadoDoMapa = configuracaoDoMapa(vista.configuracao);
-  const mensagemDoMapa = mensagemSemMapa({ estado: estadoDoMapa, falhou: mapaFalhou });
-  const comMapa = mensagemDoMapa === null && estadoDoMapa === 'ok';
   const desligada = vista.semRede || vista.conflito !== null;
   const faixa = faixaDoPonto(vista.escolherPonto);
 
@@ -293,6 +309,7 @@ function PlaneadorDoDia({ data, base, cheio }) {
               aoMudarMotivo={(id, motivo) => p?.mudarMotivo(id, motivo)}
               aoMudarTempo={(id, minutos) => p?.mudarTempo(id, minutos)}
               aoManter={seccao.comManter ? (id) => p?.manter(id) : undefined}
+              aoNaoManter={(id) => p?.naoManter(id)}
               aoPorNaRota={seccao.comPorNaRota ? (id) => p?.porNaRota(id) : undefined}
             />
           ))}

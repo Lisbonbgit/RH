@@ -1,8 +1,11 @@
 // A lista das paragens de uma secção da rota (plano F3 T3.36), no painel do planeador (CrmRota, T3.38/T3.39):
 // a secção "Rota" (arrastável) e as "⚠️ Fechadas neste dia" e "⚠️ Não cabem no horário". Só desenha a `vista`
 // do planeador (`lib/crm/planeador.js`: `vista.seccoes.<secção>`, linhas `{id, numero, nome, fase, motivo,
-// rotuloMotivo, tempo, chegada, espera, textoAviso, google, waze, podeSubir, podeDescer, seccao}`) e avisa a
-// página do que a pessoa fez; quem grava é o planeador (cada ação grava logo, §1 "Gravação").
+// rotuloMotivo, tempo, chegada, espera, chegadaAntiga, textoAviso, mantida, google, waze, podeSubir, podeDescer,
+// seccao}`) e avisa a página do que a pessoa fez; quem grava é o planeador (cada ação grava logo, §1 "Gravação").
+// A hora de chegada só vale com as horas atuais: com as velhas, "Chegada 10:35 (antiga)" esbatida
+// (`textoDaChegada`; revisão dos ecrãs da F3, F3-UX-1). Uma fechada mantida diz "⚠️ Fechada neste dia — mantida"
+// e tem "Não manter" (F3-UX-5).
 //
 // Reordenar (§1 "Arrastar", sem bibliotecas; as regras estão em `lib/crm/reordenar.js`, com testes):
 //  - a pega (`button.crm-pega`, 44 × 44 px e `touch-action: none`) arrasta-se com o rato ou o dedo (Pointer
@@ -20,7 +23,8 @@
 //  O jsdom do Jest não tem `setPointerCapture`: chama-se com `?.` (correção "Receita F3e" do plano).
 //
 // O detalhe de cada paragem (Radix `Collapsible`): o motivo, o tempo na loja, "Subir"/"Descer", "Manter" (as
-// fechadas), "Pôr na rota" (as que não cabem), "Retirar" e os links do Google Maps e do Waze. Os links só
+// fechadas), "Não manter" (as fechadas mantidas), "Pôr na rota" (as que não cabem), "Retirar" e os links do
+// Google Maps e do Waze. Os links só
 // passam pelo `hrefNavegacao` (regra 9 do §0) e abrem noutro separador com `rel="noopener noreferrer"`
 // (correção "T3.36 / T3.38 / receita F3e"); com "Evitar portagens" ligado, junto do Waze, o
 // `TEXTO_WAZE_PORTAGENS` (correção "T3.10"). Em leitura só não há pega nem botões: só o que se vê e os links.
@@ -46,6 +50,7 @@ import {
   indiceDestino,
   teclaNaLista,
 } from '../../lib/crm/reordenar';
+import { TEXTO_FECHADA_MANTIDA, textoDaChegada } from '../../lib/crm/painelRota';
 import { MOTIVOS, ROTULOS_MOTIVO, TEXTO_WAZE_PORTAGENS } from '../../lib/crm/rota';
 import './crm.css';
 
@@ -53,6 +58,7 @@ export const TEXTO_SUBIR = 'Subir';
 export const TEXTO_DESCER = 'Descer';
 export const TEXTO_RETIRAR = 'Retirar';
 export const TEXTO_MANTER = 'Manter';
+export const TEXTO_NAO_MANTER = 'Não manter';
 export const TEXTO_POR_NA_ROTA = 'Pôr na rota';
 export const TEXTO_MOTIVO = 'Motivo';
 export const TEXTO_TEMPO = 'Tempo na loja (min)';
@@ -66,17 +72,12 @@ const TEMPO_MAXIMO = 240;
 
 const nomeDaLinha = (linha) => (typeof linha.nome === 'string' && linha.nome.trim() !== '' ? linha.nome : '');
 
-// "Entrega · 10 min" e "Chegada 10:35 (espera 5 min)", só com o que existe.
+// "Entrega · 10 min", só com o que existe (a chegada é o `textoDaChegada` do painelRota.js).
 function textoDoMotivo(linha) {
   const partes = [];
   if (linha.rotuloMotivo) partes.push(linha.rotuloMotivo);
   if (Number.isInteger(linha.tempo)) partes.push(`${linha.tempo} min`);
   return partes.join(' · ');
-}
-
-function textoDaChegada(linha) {
-  if (!linha.chegada) return null;
-  return linha.espera ? `Chegada ${linha.chegada} (espera ${linha.espera} min)` : `Chegada ${linha.chegada}`;
 }
 
 // O contentor que desloca a lista: o primeiro antepassado com deslocamento vertical (o painel no computador, o
@@ -269,6 +270,11 @@ function Detalhe({ idBase, linha, somenteLeitura, desligada, arrastavel, evitarP
               {TEXTO_MANTER}
             </Button>
           )}
+          {linha.mantida === true && acoes.aoNaoManter && (
+            <Button type="button" variant="outline" className="h-11" disabled={desligada} onClick={() => acoes.aoNaoManter(linha.id)}>
+              {TEXTO_NAO_MANTER}
+            </Button>
+          )}
           {linha.seccao === 'nao_cabe' && acoes.aoPorNaRota && (
             <Button type="button" variant="outline" className="h-11" disabled={desligada} onClick={() => acoes.aoPorNaRota(linha.id)}>
               {TEXTO_POR_NA_ROTA}
@@ -319,7 +325,7 @@ function Detalhe({ idBase, linha, somenteLeitura, desligada, arrastavel, evitarP
 // arrastavel: a secção "Rota" (com a pega, "Subir" e "Descer"); somenteLeitura: sem pega nem botões;
 // desligada: os controlos aparecem desligados (sem rede, conflito); evitarPortagens: o aviso do Waze.
 // aoMover(de, para), aoSubir(id), aoDescer(id), aoRetirar(id), aoMudarMotivo(id, motivo),
-// aoMudarTempo(id, texto), aoManter(id), aoPorNaRota(id): as ações do planeador.
+// aoMudarTempo(id, texto), aoManter(id), aoNaoManter(id), aoPorNaRota(id): as ações do planeador.
 export default function ListaParagens({
   linhas,
   titulo,
@@ -334,6 +340,7 @@ export default function ListaParagens({
   aoMudarMotivo,
   aoMudarTempo,
   aoManter,
+  aoNaoManter,
   aoPorNaRota,
 }) {
   const idBase = useId();
@@ -518,7 +525,7 @@ export default function ListaParagens({
     deslocamentos = desvios(pegada.caixas, de, para, desvioDoTeclado(pegada.caixas, de, para));
     movida = de;
   }
-  const acoes = { aoSubir, aoDescer, aoRetirar, aoMudarMotivo, aoMudarTempo, aoManter, aoPorNaRota };
+  const acoes = { aoSubir, aoDescer, aoRetirar, aoMudarMotivo, aoMudarTempo, aoManter, aoNaoManter, aoPorNaRota };
 
   return (
     <section aria-labelledby={titulo ? idTitulo : undefined} className="grid gap-2">
@@ -636,8 +643,17 @@ function LinhaParagem({
               <span className="grid min-w-0 flex-1 gap-0.5">
                 <span className="font-semibold leading-snug [overflow-wrap:anywhere]">{nome}</span>
                 {motivo && <span className="text-sm text-muted-foreground">{motivo}</span>}
-                {chegada && <span className="text-sm text-muted-foreground">{chegada}</span>}
+                {chegada && (
+                  <span className={`text-sm text-muted-foreground ${linha.chegadaAntiga === true ? 'opacity-60' : ''}`} data-testid="crm-paragem-chegada">
+                    {chegada}
+                  </span>
+                )}
                 {linha.textoAviso && <span className="text-sm font-semibold text-amber-700 dark:text-amber-400">{linha.textoAviso}</span>}
+                {linha.mantida === true && (
+                  <span className="text-sm font-semibold text-amber-700 dark:text-amber-400" data-testid="crm-paragem-mantida">
+                    {TEXTO_FECHADA_MANTIDA}
+                  </span>
+                )}
               </span>
               <ChevronDown
                 className={`mt-1 h-4 w-4 shrink-0 text-muted-foreground transition-transform ${aberta ? 'rotate-180' : ''}`}

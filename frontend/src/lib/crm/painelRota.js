@@ -20,6 +20,12 @@
 //    e o botão "Adicionar" ("A adicionar…" com o pedido a correr; desligado quando a rota não aceita mais);
 //  - `cartaoDaLoja(vista.lojaEscolhida)`: o cartão pequeno de uma loja esbatida tocada no mapa (o nome, a
 //    fase, o motivo que o planeador escolheu pela fase e "Adicionar à rota").
+// E, da revisão dos ecrãs da F3 (2026-10-30):
+//  - `textoDaChegada(linha)`: "Chegada 10:35 (espera 5 min)", ou "Chegada 10:35 (antiga)" com as horas velhas
+//    (F3-UX-1); `TEXTO_FECHADA_MANTIDA`, a linha de uma fechada com "Manter" (F3-UX-5);
+//  - nas definições do dia, `pontoNoMapa`: "Ponto no mapa" desligado sem mapa onde tocar (F3-UX-6);
+//  - `enquadramentoDoMapa(vista.mapa, estado)`: a primeira vista do mapa do planeador; sem paragens, as lojas e
+//    não só a fábrica (F3-UX-2).
 // Tudo sai congelado. Os textos são da página; os da rota (estado, avisos, horas) vêm já na `vista`.
 
 import { FASES } from './fases';
@@ -66,6 +72,11 @@ export const TITULOS_SECCOES = Object.freeze({
 });
 
 export const ROTULOS_TOTAIS = Object.freeze({ distancia: 'Distância', duracao: 'Condução', regresso: 'Regresso previsto' });
+
+// A linha de uma fechada neste dia que está na rota por "Manter" (F3-UX-5).
+export const TEXTO_FECHADA_MANTIDA = '⚠️ Fechada neste dia — mantida';
+// Porque é que "Ponto no mapa" está desligado (F3-UX-6).
+export const TEXTO_SEM_MAPA_PONTO = 'Sem mapa — use a fábrica.';
 
 const ORDEM_SECCOES = Object.freeze(['rota', 'fechadas', 'naoCabem', 'semLoja']);
 const ORDEM_TOTAIS = Object.freeze(['distancia', 'duracao', 'regresso']);
@@ -174,20 +185,25 @@ function resumoDasDefinicoes(horas, pontas, evitarPortagens) {
 }
 
 // As definições do dia no painel: {resumo, horas: [{chave, rotulo, valor}], pontas: [{chave, rotulo, texto,
-// fabrica, noMapa, aEscolher}], evitarPortagens, ativas, mensagem}, ou null sem definições (sem a rota).
-// `escolherPonto` é o da vista: a ponta que está à espera do toque no mapa.
+// fabrica, noMapa, aEscolher}], evitarPortagens, ativas, mensagem, pontoNoMapa: {ativo, falta}}, ou null sem
+// definições (sem a rota). `escolherPonto` é o da vista: a ponta que está à espera do toque no mapa. Sem mapa
+// onde tocar (`semMapa`), "Ponto no mapa" desliga-se com o porquê; com as definições desligadas o porquê é o
+// geral (a `mensagem`, ou a rede), e não se repete.
 export function definicoesDoPainel(definicoes, escolherPonto) {
   if (!eObjeto(definicoes)) return null;
   const horas = ORDEM_HORAS.map((chave) => ({ chave, rotulo: ROTULOS_HORAS[chave], valor: textoOuVazio(definicoes[chave]) }));
   const pontas = ORDEM_PONTAS.map((chave) => pontaDoPainel(chave, definicoes[chave], escolherPonto));
   const evitarPortagens = definicoes.evitar_portagens === true;
+  const ativas = definicoes.ativas === true;
+  const semMapa = definicoes.semMapa === true;
   return congelarAFundo({
     resumo: resumoDasDefinicoes(horas, pontas, evitarPortagens),
     horas,
     pontas,
     evitarPortagens,
-    ativas: definicoes.ativas === true,
+    ativas,
     mensagem: eTexto(definicoes.mensagem) ? definicoes.mensagem : null,
+    pontoNoMapa: { ativo: ativas && !semMapa, falta: ativas && semMapa ? TEXTO_SEM_MAPA_PONTO : null },
   });
 }
 
@@ -250,4 +266,41 @@ export function cartaoDaLoja(loja) {
     textoMotivo: eTexto(loja.rotuloMotivo) ? `Motivo: ${loja.rotuloMotivo}` : null,
     botao: { texto: loja.aAdicionar === true ? TEXTO_A_ADICIONAR : TEXTO_ADICIONAR_A_ROTA, ativo: loja.ativo === true },
   });
+}
+
+// --- A revisão dos ecrãs da F3 (2026-10-30) ------------------------------------------------------
+
+// "Chegada 10:35 (espera 5 min)" ou "Chegada 10:35"; com as horas velhas (`chegadaAntiga`: o cálculo já não é o
+// da rota), "Chegada 10:35 (antiga)", sem a espera, que também é velha (F3-UX-1). Sem chegada, null.
+export function textoDaChegada(linha) {
+  if (!eTexto(linha?.chegada)) return null;
+  if (linha.chegadaAntiga === true) return `Chegada ${linha.chegada} (antiga)`;
+  return linha.espera ? `Chegada ${linha.chegada} (espera ${linha.espera} min)` : `Chegada ${linha.chegada}`;
+}
+
+const comCoordenadas = (ponto) => eObjeto(ponto) && Number.isFinite(ponto.lat) && Number.isFinite(ponto.lng);
+const pontoDe = (ponto) => ({ lat: ponto.lat, lng: ponto.lng });
+const ENQUADRADO = Object.freeze({ enquadrar: null, estado: 'feito' });
+
+// A primeira vista do mapa do planeador, uma vez por mapa (F3-UX-2). A página guarda o `estado` entre chamadas
+// (começa em null) e chama-a quando o mapa fica pronto e a cada `vista.mapa` nova:
+//  - com paragens, a rota (`'rota'`: o `enquadrarRota` do mapa.js);
+//  - sem nenhuma (um dia novo, ou depois de retirar todas), as lojas fora da rota com as pontas: só a fábrica
+//    dava o zoom da rua (o máximo do enquadramento) e quase nenhuma loja à vista;
+//  - sem as lojas ainda (ou sem nenhuma com coordenadas), o centro (`[]`: o `enquadrar([])` do mapa.js, o zoom 12)
+//    e, quando as lojas chegam, elas, uma vez. Uma paragem que entra entretanto acaba a espera: quem planeia já
+//    está a mexer no mapa.
+// → {enquadrar: null | 'rota' | [{lat, lng}], estado: null | 'sem_lojas' | 'feito'}
+export function enquadramentoDoMapa(mapa, estado = null) {
+  if (estado === 'feito') return ENQUADRADO;
+  const comParagens = Array.isArray(mapa?.paragens) && mapa.paragens.length > 0;
+  if (comParagens) return estado === null ? congelarAFundo({ enquadrar: 'rota', estado: 'feito' }) : ENQUADRADO;
+  const primeira = estado === null;
+  if (!Array.isArray(mapa?.lojasForaDaRota)) {
+    return congelarAFundo({ enquadrar: primeira ? [] : null, estado: 'sem_lojas' });
+  }
+  const lojas = mapa.lojasForaDaRota.filter(comCoordenadas).map(pontoDe);
+  if (lojas.length === 0) return primeira ? congelarAFundo({ enquadrar: [], estado: 'feito' }) : ENQUADRADO;
+  const pontas = [mapa.inicio, mapa.fim].filter(comCoordenadas).map(pontoDe);
+  return congelarAFundo({ enquadrar: [...lojas, ...pontas], estado: 'feito' });
 }

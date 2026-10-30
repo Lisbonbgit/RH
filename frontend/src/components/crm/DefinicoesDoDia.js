@@ -9,7 +9,9 @@
 //    volta ao valor de antes).
 //  - O início e o fim: "Fábrica" (`aoUsarFabrica`) ou "Ponto no mapa" (`aoEscolherPonto`: a página mostra a
 //    faixa "Toque no mapa no ponto de início" por cima do mapa, com "Cancelar"; tocar outra vez no botão também
-//    cancela). O botão da escolha em vigor (ou à espera do toque) fica premido (`aria-pressed`).
+//    cancela). O botão da escolha em vigor (ou à espera do toque) fica premido (`aria-pressed`). Sem mapa onde
+//    tocar (sem a chave Google, ou a Google que falhou), "Ponto no mapa" desliga-se com "Sem mapa — use a
+//    fábrica." por baixo (`aria-describedby`; revisão dos ecrãs da F3, F3-UX-6).
 //  - "Evitar portagens" é um `Switch` (o rótulo inteiro é a área de toque, ≥ 44 px), com a nota de que a melhor
 //    ordem se escolhe com portagens (desenho original §7.2).
 //  - Desligadas sem rede, no conflito e numa rota virtual (a mensagem "Adicione a primeira paragem para mudar as
@@ -68,8 +70,10 @@ function CampoHora({ id, hora, ativas, aoMudarDefinicao }) {
   );
 }
 
-// O início ou o fim: "Fábrica" ou "Ponto no mapa".
-function EscolhaDaPonta({ id, ponta, ativas, aoUsarFabrica, aoEscolherPonto }) {
+// O início ou o fim: "Fábrica" ou "Ponto no mapa" (`pontoNoMapa`: {ativo, falta}, e o id do porquê).
+function EscolhaDaPonta({
+  id, ponta, ativas, pontoNoMapa, idFaltaMapa, aoUsarFabrica, aoEscolherPonto,
+}) {
   const naFabrica = ponta.fabrica && !ponta.aEscolher;
   const noMapa = ponta.noMapa || ponta.aEscolher;
   const faixa = ponta.aEscolher ? faixaDoPonto(ponta.chave) : null;
@@ -92,7 +96,8 @@ function EscolhaDaPonta({ id, ponta, ativas, aoUsarFabrica, aoEscolherPonto }) {
           variant={noMapa ? 'default' : 'outline'}
           className="h-auto min-h-11 whitespace-normal py-2"
           aria-pressed={noMapa}
-          disabled={!ativas}
+          aria-describedby={pontoNoMapa.falta ? idFaltaMapa : undefined}
+          disabled={!pontoNoMapa.ativo}
           onClick={() => aoEscolherPonto?.(ponta.aEscolher ? null : ponta.chave)}
         >
           {TEXTO_PONTO_NO_MAPA}
@@ -166,10 +171,17 @@ export default function DefinicoesDoDia({
                 id={`${idBase}-${ponta.chave}`}
                 ponta={ponta}
                 ativas={painel.ativas}
+                pontoNoMapa={painel.pontoNoMapa}
+                idFaltaMapa={`${idBase}-sem-mapa`}
                 aoUsarFabrica={aoUsarFabrica}
                 aoEscolherPonto={aoEscolherPonto}
               />
             ))}
+            {painel.pontoNoMapa.falta && (
+              <p id={`${idBase}-sem-mapa`} className="text-sm text-muted-foreground" data-testid="crm-definicoes-sem-mapa">
+                {painel.pontoNoMapa.falta}
+              </p>
+            )}
             <div className="grid gap-1">
               <Label
                 htmlFor={`${idBase}-portagens`}

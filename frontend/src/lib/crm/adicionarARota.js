@@ -18,7 +18,9 @@
 //  - Com sucesso, o aviso "Adicionada à rota de ter 13/10 (9 paragens)." com a ação "Abrir rota" (um toast,
 //    `aoAvisar(texto, {acao, href, abrir})`). Quando a rota tinha horas calculadas e ficaram velhas, o aviso
 //    acaba com "Abra a rota para recalcular as horas." (correção "T3.16 / T3.21 / T3.32", a parte da T3.40:
-//    pelo cartão ninguém recalcula; o planeador recalcula sozinho quando a rota abre).
+//    pelo cartão ninguém recalcula; o planeador recalcula sozinho quando a rota abre). Quando a loja fecha
+//    nesse dia (a paragem dela voltou na secção "fechada": fica fora do cálculo até "Manter"), o aviso diz para
+//    abrir a rota e escolher "Manter" ou retirá-la (revisão dos ecrãs da F3, F3-UX-4).
 //  - Os erros mostram a mensagem do servidor (`ja_na_rota`, `rota_cheia`, `rota_fechada`, `rota_em_curso`,
 //    `conflito`, a loja apagada, `sem_rede`…) no `alerta`; o 422 do dia e o do motivo ficam junto do campo.
 // Os dados ficam como texto: o React escreve-os como texto.
@@ -36,6 +38,8 @@ export const TEXTO_A_ADICIONAR = 'A adicionar…';
 export const TEXTO_ABRIR_ROTA = 'Abrir rota';
 export const TEXTO_FALTA_DIA = 'Escolha o dia.';
 export const TEXTO_RECALCULAR_NA_ROTA = 'Abra a rota para recalcular as horas.';
+// A loja fecha no dia escolhido (F3-UX-4).
+export const TEXTO_FECHADA_NO_DIA = '⚠️ A loja está fechada neste dia — abra a rota para escolher "Manter" ou retirá-la.';
 // O diálogo do cartão (T3.40): o grupo dos atalhos, a ajuda do campo da data, "Cancelar" e "Tentar novamente".
 export const TEXTO_DIAS_COM_ROTA = 'Dias com rota';
 export const TEXTO_AJUDA_DIA = 'Num dia ainda sem rota, a rota começa com esta loja.';
@@ -103,13 +107,20 @@ function diaNaFrase(data, hoje) {
 const horasPorRecalcular = (rota) => eObjeto(rota) && rota.calculo_disponivel === true && eObjeto(rota.calculo)
   && rota.calculo.atual !== true;
 
-// "Adicionada à rota de ter 13/10 (9 paragens)." (+ "Abra a rota para recalcular as horas."), a partir da
-// Rota que o servidor devolveu (as paragens são só as ativas). O hoje da resposta ganha ao da lista.
-export function textoAdicionada(rota, { data, hoje } = {}) {
+// A paragem da loja `lojaId` voltou na secção "fechada" (a loja fecha nesse dia).
+const fechadaNaRota = (rota, lojaId) => textoComConteudo(lojaId) && Array.isArray(rota?.paragens)
+  && rota.paragens.some((p) => eObjeto(p) && p.loja_id === lojaId && p.seccao === 'fechada');
+
+// "Adicionada à rota de ter 13/10 (9 paragens)." (+ o aviso da loja fechada nesse dia, + "Abra a rota para
+// recalcular as horas."), a partir da Rota que o servidor devolveu (as paragens são só as ativas). O hoje da
+// resposta ganha ao da lista; `lojaId` é a loja que se adicionou.
+export function textoAdicionada(rota, { data, hoje, lojaId } = {}) {
   const diaHoje = eDataValida(rota?.hoje) ? rota.hoje : hoje;
   const paragens = Array.isArray(rota?.paragens) ? textoParagens(rota.paragens.length) : null;
-  const frase = `Adicionada à rota de ${diaNaFrase(data, diaHoje)}${paragens === null ? '' : ` (${paragens})`}.`;
-  return horasPorRecalcular(rota) ? `${frase} ${TEXTO_RECALCULAR_NA_ROTA}` : frase;
+  const partes = [`Adicionada à rota de ${diaNaFrase(data, diaHoje)}${paragens === null ? '' : ` (${paragens})`}.`];
+  if (fechadaNaRota(rota, lojaId)) partes.push(TEXTO_FECHADA_NO_DIA);
+  if (horasPorRecalcular(rota)) partes.push(TEXTO_RECALCULAR_NA_ROTA);
+  return partes.join(' ');
 }
 
 // O botão "Adicionar": {ativo, texto, falta} (falta: porque não se pode, ou null).
@@ -281,7 +292,7 @@ export function criarAdicionarARota({
     guardarNaLista(dia, rota);
     atualizar();
     const caminho = `${base}/rotas/${dia}`;
-    aoAvisar?.(textoAdicionada(rota, { data: dia, hoje }), Object.freeze({
+    aoAvisar?.(textoAdicionada(rota, { data: dia, hoje, lojaId: loja.id }), Object.freeze({
       acao: TEXTO_ABRIR_ROTA,
       href: caminho,
       abrir: () => navegar?.(caminho),

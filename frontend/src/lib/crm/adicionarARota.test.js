@@ -28,6 +28,7 @@ import {
   TEXTO_DIA,
   TEXTO_DIAS_COM_ROTA,
   TEXTO_FALTA_DIA,
+  TEXTO_FECHADA_NO_DIA,
   TEXTO_MOTIVO,
   TEXTO_RECALCULAR_NA_ROTA,
   TEXTO_TENTAR_DE_NOVO,
@@ -869,4 +870,50 @@ describe('destruir(): o diálogo fechou', () => {
     ecra.destruir();
     expect(cancelados).toEqual(['cancelado']);
   });
+});
+
+// --- Revisão dos ecrãs da F3 (2026-10-30), F3-UX-4 -------------------------------------------------
+
+// A rota que voltou com a paragem desta loja (a última) numa secção.
+function comALoja(seccao, extra = {}) {
+  const lista = paragens(8);
+  lista.push({ id: 'p8', loja_id: LOJA.id, seccao, numero: seccao === 'rota' ? 9 : null });
+  return rotaAdicionada({ paragens: lista, ...extra });
+}
+
+describe('textoAdicionada com a loja fechada nesse dia (F3-UX-4)', () => {
+  test('o texto exato', () => {
+    expect(TEXTO_FECHADA_NO_DIA).toBe('⚠️ A loja está fechada neste dia — abra a rota para escolher "Manter" ou retirá-la.');
+  });
+
+  test('a paragem da loja na secção "fechada": o aviso a seguir à frase', () => {
+    expect(textoAdicionada(comALoja('fechada'), { data: '2026-10-13', hoje: HOJE, lojaId: LOJA.id })).toBe(
+      'Adicionada à rota de ter 13/10 (9 paragens). ⚠️ A loja está fechada neste dia — abra a rota para escolher "Manter" ou retirá-la.',
+    );
+    // Com as horas também velhas, os dois avisos.
+    const velha = comALoja('fechada', { calculo: { atual: false, distancia_m: 1200 } });
+    expect(textoAdicionada(velha, { data: '2026-10-13', hoje: HOJE, lojaId: LOJA.id })).toBe(
+      'Adicionada à rota de ter 13/10 (9 paragens). ⚠️ A loja está fechada neste dia — abra a rota para escolher "Manter" ou retirá-la. Abra a rota para recalcular as horas.',
+    );
+  });
+
+  test('sem esse aviso: a loja na secção "rota", outra loja fechada, ou sem saber qual é a loja', () => {
+    const frase = 'Adicionada à rota de ter 13/10 (9 paragens).';
+    expect(textoAdicionada(comALoja('rota'), { data: '2026-10-13', hoje: HOJE, lojaId: LOJA.id })).toBe(frase);
+    expect(textoAdicionada(comALoja('nao_cabe'), { data: '2026-10-13', hoje: HOJE, lojaId: LOJA.id })).toBe(frase);
+    expect(textoAdicionada(comALoja('fechada'), { data: '2026-10-13', hoje: HOJE, lojaId: 'outra' })).toBe(frase);
+    expect(textoAdicionada(comALoja('fechada'), { data: '2026-10-13', hoje: HOJE })).toBe(frase);
+    const estragadas = rotaAdicionada({ paragens: [null, 'p', ...paragens(7)] });
+    expect(textoAdicionada(estragadas, { data: '2026-10-13', hoje: HOJE, lojaId: LOJA.id })).toBe(frase);
+  });
+});
+
+test('F3-UX-4: adicionar uma loja fechada nesse dia — o aviso diz para abrir a rota e escolher "Manter"', async () => {
+  const m = await carregado();
+  m.ecra.adicionar();
+  await responder(m, 'adicionarParagem', comALoja('fechada'));
+  expect(m.avisos[0][0]).toBe(
+    'Adicionada à rota de ter 13/10 (9 paragens). ⚠️ A loja está fechada neste dia — abra a rota para escolher "Manter" ou retirá-la.',
+  );
+  expect(m.avisos[0][1].acao).toBe('Abrir rota');
 });

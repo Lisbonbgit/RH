@@ -52,10 +52,20 @@
 //  - as sugestões voltam a pedir-se quando a fila esvazia depois de uma gravação que deu certo (também a de
 //    um recálculo: o corredor muda com as horas);
 //  - os avisos ("Adicionada", "Retirada", "Rota guardada como planeada") vão para o `aoAvisar`.
+//
+// A revisão dos ecrãs da F3 (2026-10-30):
+//  - F3-UX-1: a hora de chegada de cada paragem só vale com `calculo.atual: true` (plano F3 §4). O servidor não
+//    a limpa quando a ordem muda, nem a visão otimista: a linha leva `chegadaAntiga` e o ecrã marca-a;
+//  - F3-UX-3: um dia passado sem rota é "Sem rota" (nunca "Concluída") e não mostra as definições por omissão
+//    de hoje, que nunca foram as desse dia;
+//  - F3-UX-5: uma fechada com "Manter" (na secção "rota", ou na das que não cabem) leva `mantida` (a loja fecha
+//    nesse dia) e "Não manter" (`naoManter`) desfaz-o;
+//  - F3-UX-6: sem mapa onde tocar (sem a chave Google, o Map ID, ou a Google que falhou; a página diz-o com
+//    `mapaDisponivel`), "Ponto no mapa" não abre e a escolha a meio cancela-se (`definicoes.semMapa`).
 
 import { MENSAGEM_ERRO_INESPERADO, MENSAGEM_SEM_REDE } from './api';
 import { ATRIBUICOES, TEXTO_ROTA_DE_TERCEIROS } from './atribuicoes';
-import { eDataValida, rotuloDataLonga } from './datas';
+import { diaDaSemana, eDataValida, rotuloDataLonga } from './datas';
 import { hrefNavegacao } from './dom';
 import { textoDoErro } from './ecraMapa';
 import { FASES } from './fases';
@@ -79,6 +89,8 @@ export const TEXTO_CONCLUIDA_LEITURA = 'Concluída — só de leitura';
 export const TEXTO_EM_CURSO_LEITURA = 'A rota já tem registos do motorista — no escritório só se pode ver.';
 // O estado de um dia sem rota, hoje ou no futuro (a rota nasce com a primeira paragem).
 export const TEXTO_AINDA_SEM_PARAGENS = 'Ainda sem paragens';
+// O estado de um dia sem rota que já só se pode ver (um dia passado; revisão dos ecrãs, F3-UX-3).
+export const TEXTO_SEM_ROTA = 'Sem rota';
 
 // As definições do dia.
 export const TEXTO_DEFINICOES_SEM_ROTA = 'Adicione a primeira paragem para mudar as definições do dia.';
@@ -287,11 +299,18 @@ function pontaDasDefinicoes(ponto) {
   return ponta === null ? null : { ...ponta, texto: ponta.fabrica ? TEXTO_FABRICA : TEXTO_PONTO_NO_MAPA };
 }
 
+// A loja da paragem fecha neste dia da semana (`dia`: 'seg'…'dom', ou null)?
+function fechaNoDia(loja, dia) {
+  return dia !== null && eObjeto(loja) && Array.isArray(loja.dias_fechada) && loja.dias_fechada.includes(dia);
+}
+
 // Uma linha da lista das paragens. Subir e descer só na secção "rota", e só se a rota se puder mudar agora.
-function linhaDe(paragem, { podeSubir = false, podeDescer = false } = {}) {
+// `horasAtuais`: o cálculo da rota é o atual (senão a chegada é antiga: F3-UX-1); `dia`: o dia da semana da rota.
+function linhaDe(paragem, { podeSubir = false, podeDescer = false, horasAtuais = false, dia = null } = {}) {
   const { loja } = paragem;
   let nome = TEXTO_PARAGEM_SEM_LOJA;
   if (eObjeto(loja)) nome = typeof loja.nome === 'string' ? loja.nome : '';
+  const chegada = typeof paragem.chegada_prevista === 'string' ? paragem.chegada_prevista : null;
   return {
     id: paragem.id,
     numero: Number.isInteger(paragem.numero) ? paragem.numero : null,
@@ -300,9 +319,13 @@ function linhaDe(paragem, { podeSubir = false, podeDescer = false } = {}) {
     motivo: paragem.motivo,
     rotuloMotivo: rotuloMotivo(paragem.motivo),
     tempo: paragem.tempo_servico_min,
-    chegada: typeof paragem.chegada_prevista === 'string' ? paragem.chegada_prevista : null,
+    chegada,
     espera: Number.isInteger(paragem.espera_min) && paragem.espera_min > 0 ? paragem.espera_min : null,
+    chegadaAntiga: chegada !== null && !horasAtuais,
     textoAviso: textoAviso(paragem.aviso),
+    // Uma fechada neste dia que só está na rota por "Manter" (F3-UX-5): na secção "rota", ou na das que não cabem
+    // (na das fechadas o "Manter" está desligado, por definição).
+    mantida: paragem.manter_fechada === true && fechaNoDia(loja, dia),
     google: hrefNavegacao(paragem.links?.google),
     waze: hrefNavegacao(paragem.links?.waze),
     podeSubir,
@@ -314,11 +337,13 @@ function linhaDe(paragem, { podeSubir = false, podeDescer = false } = {}) {
 function seccoesDaVista(rota, podeMover) {
   const grupos = seccoesDaRota(rota);
   const ultima = grupos.rota.length - 1;
+  const daRota = { horasAtuais: rota.calculo?.atual === true, dia: diaDaSemana(rota.data) };
+  const linha = (p) => linhaDe(p, daRota);
   return {
-    rota: grupos.rota.map((p, i) => linhaDe(p, { podeSubir: podeMover && i > 0, podeDescer: podeMover && i < ultima })),
-    fechadas: grupos.fechadas.map((p) => linhaDe(p)),
-    naoCabem: grupos.naoCabem.map((p) => linhaDe(p)),
-    semLoja: grupos.semLoja.map((p) => linhaDe(p)),
+    rota: grupos.rota.map((p, i) => linhaDe(p, { ...daRota, podeSubir: podeMover && i > 0, podeDescer: podeMover && i < ultima })),
+    fechadas: grupos.fechadas.map(linha),
+    naoCabem: grupos.naoCabem.map(linha),
+    semLoja: grupos.semLoja.map(linha),
   };
 }
 
@@ -371,9 +396,9 @@ const parDe = (rota) => JSON.stringify([rota?.versao ?? null, rota?.calculo?.cal
 
 // criarPlaneador({api, rede, data, base, navegar, aoMudarVista, aoAvisar, temporizador})
 //   → {vista, iniciar, tentarDeNovo, recarregar, voltarAsRotas, destruir,
-//      adicionar, retirar, mover, subir, descer, mudarMotivo, mudarTempo, manter, porNaRota, mudarDefinicao,
-//      escolherPonto, tocarNoMapa, usarFabrica, escolherLoja, calcularMelhorOrdem, recalcularHoras, guardar,
-//      responderGuardar}
+//      adicionar, retirar, mover, subir, descer, mudarMotivo, mudarTempo, manter, naoManter, porNaRota,
+//      mudarDefinicao, escolherPonto, tocarNoMapa, usarFabrica, escolherLoja, calcularMelhorOrdem, recalcularHoras,
+//      guardar, responderGuardar, mapaDisponivel}
 //  - api: o cliente do lib/crm/api.js (`obterRota`, `obterConfigMapa`, `listarLojas`, `obterSugestoes` e as
 //    escritas `adicionarParagem`, `alterarRota`, `recalcularHoras`, `otimizarRota`, pela fila);
 //    data: o `:data` da rota (`AAAA-MM-DD`);
@@ -385,8 +410,8 @@ const parDe = (rota) => JSON.stringify([rota?.versao ?? null, rota?.calculo?.cal
 // vista: {estado: 'a_carregar'|'falha'|'rota'|'data_invalida', titulo, somenteLeitura, textoLeitura,
 //         rotuloEstado, falha: null | {mensagem, tentar, aTentar}, conflito: null | {mensagem, aRecarregar, erro},
 //         semRede, definicoes: null | {hora_saida, hora_regresso_limite, inicio, fim, evitar_portagens, ativas,
-//         mensagem}, totais, horas: null | {atuais, texto}, avisos, seccoes: null | {rota, fechadas, naoCabem,
-//         semLoja}, sugestoes: null | {estado, grupos (cada loja com `aAdicionar`), mensagem, tentar, aTentar},
+//         mensagem, semMapa}, totais, horas: null | {atuais, texto}, avisos, seccoes: null | {rota, fechadas,
+//         naoCabem, semLoja} (cada linha com `chegadaAntiga` e `mantida`), sugestoes: null | {estado, grupos (cada loja com `aAdicionar`), mensagem, tentar, aTentar},
 //         mapa: {paragens, inicio, fim, linha, linhaAtual, lojasForaDaRota}, configuracao, falhaDoMapa,
 //         acoes: null | {calcular, recalcular, guardar (com a `pergunta`)}, calculo: null | {aCalcular, mensagem},
 //         blocosGoogle, atribuicaoOrs, limite: null | {cheia, texto}, escolherPonto: null | 'inicio' | 'fim',
@@ -429,6 +454,7 @@ export function criarPlaneador({
   let pontaAEscolher = null; // "Ponto no mapa": 'inicio' ou 'fim', à espera do toque
   let lojaEscolhida = null; // o cartão de uma loja esbatida: {id, nome, fase, motivo, rotuloMotivo}
   let perguntarGuardar = false;
+  let comMapa = true; // há mapa onde tocar (a página diz quando não: `mapaDisponivel`)
   const aAdicionar = new Set(); // os `loja_id` a adicionar
   const paresTratados = new Set(); // os pares que já tiveram (ou já deram) um recálculo automático
   let esperaHoras = null; // a espera das horas automáticas (o id do temporizador)
@@ -513,6 +539,13 @@ export function criarPlaneador({
     return { ...lojaEscolhida, aAdicionar: emCursoAqui, ativo: podeAdicionar && !emCursoAqui };
   }
 
+  // O estado da rota: o do servidor; sem ele, "Sem rota" num dia que só se pode ver e "Ainda sem paragens" num
+  // que ainda se pode planear.
+  function estadoDaVista(r, semRotaSoLeitura) {
+    if (semRotaSoLeitura) return TEXTO_SEM_ROTA;
+    return rotuloEstado(r.estado_efetivo) ?? TEXTO_AINDA_SEM_PARAGENS;
+  }
+
   function montarVista() {
     const r = rotaDaVista();
     let estado = 'a_carregar';
@@ -525,6 +558,8 @@ export function criarPlaneador({
     const podeMudar = editavel && ligado && !conflito;
     const limite = comRota ? limiteDaRota(r) : null;
     const podeAdicionar = podeMudar && !limite.cheia;
+    // Um dia passado sem rota (F3-UX-3): nem estado de uma rota que não houve, nem as definições por omissão.
+    const semRotaSoLeitura = comRota && !editavel && r.existe !== true;
 
     let falhaVista = null;
     if (estado === 'data_invalida') falhaVista = { mensagem: dataRecusada, tentar: false, aTentar: false };
@@ -541,11 +576,11 @@ export function criarPlaneador({
       titulo: dataRecusada === null ? `Rota de ${rotuloDataLonga(data)}` : TITULO_DIA_INVALIDO,
       somenteLeitura: comRota && !editavel,
       textoLeitura: comRota ? (bloqueio ?? textoLeitura(r)) : null,
-      rotuloEstado: comRota ? (rotuloEstado(r.estado_efetivo) ?? TEXTO_AINDA_SEM_PARAGENS) : null,
+      rotuloEstado: comRota ? estadoDaVista(r, semRotaSoLeitura) : null,
       falha: falhaVista,
       conflito: conflito ? { mensagem: TEXTO_CONFLITO, aRecarregar, erro: erroRecarga } : null,
       semRede: !ligado,
-      definicoes: comRota ? {
+      definicoes: comRota && !semRotaSoLeitura ? {
         hora_saida: r.hora_saida,
         hora_regresso_limite: r.hora_regresso_limite,
         inicio: pontaDasDefinicoes(r.inicio),
@@ -553,6 +588,7 @@ export function criarPlaneador({
         evitar_portagens: r.evitar_portagens === true,
         ativas: r.existe === true && podeMudar,
         mensagem: editavel && r.existe !== true ? TEXTO_DEFINICOES_SEM_ROTA : null,
+        semMapa: !comMapa,
       } : null,
       totais: comRota ? totaisDaRota(r) : null,
       horas: comRota ? {
@@ -1018,6 +1054,10 @@ export function criarPlaneador({
     manter(id) {
       alterarParagem(id, { manter_fechada: true });
     },
+    // "Não manter" uma fechada mantida: volta às fechadas, fora do cálculo (F3-UX-5).
+    naoManter(id) {
+      alterarParagem(id, { manter_fechada: false });
+    },
     // "Pôr na rota" uma que não cabe no horário.
     porNaRota(id) {
       alterarParagem(id, { nao_cabe: false });
@@ -1030,7 +1070,7 @@ export function criarPlaneador({
         atualizar();
         return;
       }
-      if (!PONTAS.includes(ponta) || rotaComDefinicoes() === null) return;
+      if (!PONTAS.includes(ponta) || !comMapa || rotaComDefinicoes() === null) return;
       pontaAEscolher = ponta;
       lojaEscolhida = null;
       atualizar();
@@ -1099,6 +1139,15 @@ export function criarPlaneador({
         return;
       }
       perguntarGuardar = true;
+      atualizar();
+    },
+    // A página diz se há mapa onde tocar (só o `true` é "sim"). Sem ele, "Ponto no mapa" não abre e a escolha
+    // que estava a meio cancela-se (F3-UX-6).
+    mapaDisponivel(sim) {
+      const agora = sim === true;
+      if (!ativo || agora === comMapa) return;
+      comMapa = agora;
+      if (!comMapa) pontaAEscolher = null;
       atualizar();
     },
     // A resposta à pergunta do "Guardar rota" (o "sim" só grava se ainda se puder).

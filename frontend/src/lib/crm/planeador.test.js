@@ -64,6 +64,7 @@ import {
   TEXTO_PRIMEIRA_PARAGEM,
   TEXTO_RECALCULAR,
   TEXTO_SEM_HORAS,
+  TEXTO_SEM_ROTA,
   TEXTO_SUGESTOES_A_CARREGAR,
   TEXTO_SUGESTOES_NENHUMA,
   TITULO_DIA_INVALIDO,
@@ -734,6 +735,7 @@ test('a rota chega: o estado, as definições do dia, os totais, as horas, os av
     evitar_portagens: false,
     ativas: true,
     mensagem: null,
+    semMapa: false,
   });
   expect(vista.totais).toEqual({ distancia: '123,5 km', duracao: '5 h 21 min', regresso: '19:40', regressoTarde: true, atual: true });
   expect(vista.horas).toEqual({ atuais: true, texto: null });
@@ -769,28 +771,30 @@ test('as linhas de cada secção: número, nome, motivo, tempo, chegada, espera,
   expect(seccoes.rota).toEqual([
     {
       id: 'A', numero: 1, nome: 'Loja A', fase: 'contactada', motivo: 'amostra', rotuloMotivo: 'Amostra', tempo: 10,
-      chegada: '09:00', espera: null, textoAviso: null, google, waze, podeSubir: false, podeDescer: true, seccao: 'rota',
+      chegada: '09:00', espera: null, chegadaAntiga: false, textoAviso: null, mantida: false, google, waze, podeSubir: false,
+      podeDescer: true, seccao: 'rota',
     },
     {
       id: 'C', numero: 2, nome: 'Loja C', fase: 'contactada', motivo: 'amostra', rotuloMotivo: 'Amostra', tempo: 10,
-      chegada: '09:02', espera: null, textoAviso: null, google: linksDe('C').google, waze: linksDe('C').waze,
-      podeSubir: true, podeDescer: true, seccao: 'rota',
+      chegada: '09:02', espera: null, chegadaAntiga: false, textoAviso: null, mantida: false, google: linksDe('C').google,
+      waze: linksDe('C').waze, podeSubir: true, podeDescer: true, seccao: 'rota',
     },
     {
       id: 'E', numero: 3, nome: 'Loja E', fase: 'contactada', motivo: 'amostra', rotuloMotivo: 'Amostra', tempo: 10,
-      chegada: '09:04', espera: 12, textoAviso: '⚠️ Fora do horário de receção', google: linksDe('E').google, waze: linksDe('E').waze,
-      podeSubir: true, podeDescer: false, seccao: 'rota',
+      chegada: '09:04', espera: 12, chegadaAntiga: false, textoAviso: '⚠️ Fora do horário de receção', mantida: false,
+      google: linksDe('E').google, waze: linksDe('E').waze, podeSubir: true, podeDescer: false, seccao: 'rota',
     },
   ]);
   expect(seccoes.fechadas).toEqual([{
     id: 'B', numero: null, nome: 'Loja B', fase: 'contactada', motivo: 'amostra', rotuloMotivo: 'Amostra', tempo: 10,
-    chegada: null, espera: null, textoAviso: '⚠️ Fechada neste dia', google: linksDe('B').google, waze: linksDe('B').waze,
-    podeSubir: false, podeDescer: false, seccao: 'fechada',
+    chegada: null, espera: null, chegadaAntiga: false, textoAviso: '⚠️ Fechada neste dia', mantida: false,
+    google: linksDe('B').google, waze: linksDe('B').waze, podeSubir: false, podeDescer: false, seccao: 'fechada',
   }]);
   expect(seccoes.naoCabem.map((l) => [l.id, l.numero, l.textoAviso, l.podeSubir, l.podeDescer])).toEqual([['D', null, '⚠️ Não cabe no horário', false, false]]);
   expect(seccoes.semLoja).toEqual([{
     id: 'F', numero: null, nome: 'Loja apagada', fase: null, motivo: 'amostra', rotuloMotivo: 'Amostra', tempo: 10,
-    chegada: null, espera: null, textoAviso: null, google: null, waze: null, podeSubir: false, podeDescer: false, seccao: 'sem_loja',
+    chegada: null, espera: null, chegadaAntiga: false, textoAviso: null, mantida: false, google: null, waze: null, podeSubir: false,
+    podeDescer: false, seccao: 'sem_loja',
   }]);
   expect(Object.keys(seccoes)).toEqual(['rota', 'fechadas', 'naoCabem', 'semLoja']);
 });
@@ -1137,6 +1141,7 @@ test('a rota virtual de um dia sem rota: as definições do dia desligadas, sem 
     evitar_portagens: false,
     ativas: false,
     mensagem: 'Adicione a primeira paragem para mudar as definições do dia.',
+    semMapa: false,
   });
   expect(v.acoes.calcular).toEqual({ texto: 'Calcular melhor ordem', ativo: false, falta: 'Adicione a primeira paragem pelo mapa.' });
   expect(v.acoes.guardar).toMatchObject({ ativo: false, falta: 'Adicione a primeira paragem pelo mapa.' });
@@ -1206,12 +1211,17 @@ test('leitura só: um dia passado com rota — "Concluída — só de leitura", 
   expect(v.atribuicaoOrs).not.toBeNull();
 });
 
-test('leitura só: um dia passado sem rota — "Não houve rota neste dia."', async () => {
+test('leitura só: um dia passado sem rota — "Não houve rota neste dia.", o estado "Sem rota" e sem definições do dia (revisão dos ecrãs, F3-UX-3)', async () => {
   const m = await carregado({ rota: rotaVirtual({ estado_efetivo: 'concluida', editavel: false }) });
   expect(m.vista()).toMatchObject({
-    somenteLeitura: true, textoLeitura: 'Não houve rota neste dia.', rotuloEstado: 'Concluída', acoes: null, sugestoes: null,
+    somenteLeitura: true, textoLeitura: 'Não houve rota neste dia.', rotuloEstado: 'Sem rota', acoes: null, sugestoes: null,
   });
-  expect(m.vista().definicoes).toMatchObject({ ativas: false, mensagem: null });
+  // As definições por omissão de hoje nunca foram as desse dia: não se mostram.
+  expect(m.vista().definicoes).toBeNull();
+  // Uma rota que existiu (concluída) continua "Concluída", com as definições dela.
+  const feita = await carregado({ rota: rotaDoServidor({ estado: 'planeada', estado_efetivo: 'concluida', editavel: false }) });
+  expect(feita.vista().rotuloEstado).toBe('Concluída');
+  expect(feita.vista().definicoes).toMatchObject({ hora_saida: '08:00', ativas: false });
 });
 
 test('leitura só: a rota com registos do motorista (hoje ou no futuro)', async () => {
@@ -2807,4 +2817,161 @@ test('a rede a mudar antes de a rota chegar não rebenta (nem no ouvinte)', asyn
   } finally {
     erros.mockRestore();
   }
+});
+
+// =================================================================================================
+// Revisão dos ecrãs da F3 (2026-10-30): F3-UX-1, F3-UX-3, F3-UX-5 e F3-UX-6
+// =================================================================================================
+
+const chegadas = (m) => m.vista().seccoes.rota.map((l) => [l.id, l.chegada, l.chegadaAntiga]);
+
+test('F3-UX-1: a hora de cada paragem só vale com o cálculo atual — com as horas velhas, `chegadaAntiga`', async () => {
+  const m = await carregado();
+  expect(chegadas(m)).toEqual([['A', '09:00', false], ['C', '09:02', false], ['E', '09:04', false]]);
+  // Arrastar (otimista): a ordem nova com as horas da antiga, que já não valem.
+  m.planeador.mover(2, 0);
+  expect(chegadas(m)).toEqual([['E', '09:04', true], ['A', '09:00', true], ['C', '09:02', true]]);
+  // A resposta do servidor (sem o openrouteservice, por exemplo): a ordem nova, as horas que ele não limpa e o
+  // cálculo velho. Continuam antigas.
+  const semCalculo = respostaVelha(4);
+  semCalculo.paragens = [semCalculo.paragens[4], semCalculo.paragens[0], semCalculo.paragens[2], semCalculo.paragens[3], semCalculo.paragens[1], semCalculo.paragens[5]];
+  await responder(m, 'alterarRota', semCalculo);
+  expect(chegadas(m)).toEqual([['E', '09:04', true], ['A', '09:00', true], ['C', '09:02', true]]);
+  // As que não têm hora (as fechadas, as que não cabem, a da loja apagada) nunca são "antigas".
+  const { fechadas, naoCabem, semLoja } = m.vista().seccoes;
+  expect([...fechadas, ...naoCabem, ...semLoja].map((l) => [l.chegada, l.chegadaAntiga])).toEqual([[null, false], [null, false], [null, false]]);
+  // O recálculo automático traz as horas da ordem nova: voltam a valer.
+  m.relogio.disparar();
+  await responder(m, 'recalcularHoras', resposta(4));
+  expect(chegadas(m).map(([, , antiga]) => antiga)).toEqual([false, false, false]);
+});
+
+test('F3-UX-1: sem cálculo nenhum (ou só de leitura com o cálculo velho), as horas que a paragem traz são antigas', async () => {
+  const semCalculo = await carregado({ rota: rotaDoServidor({ calculo: null }) });
+  expect(chegadas(semCalculo).map(([, , antiga]) => antiga)).toEqual([true, true, true]);
+  const leitura = await carregado({ rota: comHorasVelhas({ editavel: false, estado_efetivo: 'concluida', estado: 'planeada' }) });
+  expect(chegadas(leitura)).toEqual([['A', '09:00', true], ['C', '09:02', true], ['E', '09:04', true]]);
+  // Só o `atual: true` conta.
+  const quase = await carregado({ rota: rotaDoServidor({ calculo: { ...CALCULO, atual: 'sim' } }) });
+  expect(chegadas(quase).map(([, , antiga]) => antiga)).toEqual([true, true, true]);
+});
+
+test('F3-UX-3: o texto do estado de um dia passado sem rota', () => {
+  expect(TEXTO_SEM_ROTA).toBe('Sem rota');
+});
+
+test('F3-UX-3: um 409 `rota_fechada` numa rota virtual (passou a meia-noite) dá "Sem rota" e tira as definições', async () => {
+  const m = await carregado({ rota: rotaVirtual() });
+  expect(m.vista().rotuloEstado).toBe('Ainda sem paragens');
+  m.planeador.adicionar('loja-X');
+  await falhar(m, 'adicionarParagem', erroFechada());
+  expect(m.vista()).toMatchObject({ somenteLeitura: true, rotuloEstado: 'Sem rota', definicoes: null });
+});
+
+// A rota do exemplo com a B (fechada à segunda) mantida: na secção "rota", sem aviso, a 2.ª.
+function comBMantida(versao) {
+  const rota = rotaDoServidor({ versao });
+  const [a, b, c, d, e, f] = rota.paragens;
+  rota.paragens = [
+    a,
+    { ...b, seccao: 'rota', numero: 2, aviso: 'nenhum', manter_fechada: true, chegada_prevista: '09:01', espera_min: 0 },
+    { ...c, numero: 3 },
+    d,
+    { ...e, numero: 4 },
+    f,
+  ];
+  return copia(rota);
+}
+
+test('F3-UX-5: "Manter" — a paragem fica na secção "rota" com `mantida`, e "Não manter" desfaz-o', async () => {
+  const m = await carregado();
+  expect(m.vista().seccoes.rota.map((l) => l.mantida)).toEqual([false, false, false]);
+  expect(m.vista().seccoes.fechadas.map((l) => [l.id, l.mantida])).toEqual([['B', false]]);
+  m.planeador.manter('B');
+  // Otimista: logo na secção "rota", sem o ⚠️ das fechadas, mas a dizer que a loja fecha neste dia.
+  expect(m.vista().seccoes.rota.find((l) => l.id === 'B')).toMatchObject({ seccao: 'rota', textoAviso: null, mantida: true });
+  await responder(m, 'alterarRota', comBMantida(4));
+  expect(m.vista().seccoes.rota.map((l) => [l.id, l.mantida])).toEqual([['A', false], ['B', true], ['C', false], ['E', false]]);
+  // "Não manter": volta logo às fechadas (otimista) e grava `manter_fechada: false`.
+  m.planeador.naoManter('B');
+  expect(corpo(m)).toEqual([DIA, { paragens: { B: { manter_fechada: false } }, versao: 4 }]);
+  expect(idsDaRota(m)).toEqual(['A', 'C', 'E']);
+  expect(m.vista().seccoes.fechadas.map((l) => [l.id, l.mantida, l.textoAviso])).toEqual([['B', false, '⚠️ Fechada neste dia']]);
+  await responder(m, 'alterarRota', resposta(5));
+  // Uma paragem que não está na rota: nada.
+  m.planeador.naoManter('Z');
+  m.planeador.naoManter();
+  expect(pedidos(m, 'alterarRota')).toHaveLength(2);
+});
+
+test('F3-UX-5: uma fechada mantida que não cabe no horário também é `mantida` (e "Não manter" serve-lhe)', async () => {
+  const rota = comBMantida(3);
+  Object.assign(rota.paragens[1], { seccao: 'nao_cabe', numero: null, aviso: 'nao_cabe', nao_cabe: true, chegada_prevista: null, espera_min: null });
+  const m = await carregado({ rota });
+  expect(m.vista().seccoes.naoCabem.map((l) => [l.id, l.mantida])).toEqual([['B', true], ['D', false]]);
+  m.planeador.naoManter('B');
+  expect(corpo(m)).toEqual([DIA, { paragens: { B: { manter_fechada: false } }, versao: 3 }]);
+  expect(m.vista().seccoes.fechadas.map((l) => [l.id, l.mantida])).toEqual([['B', false]]);
+});
+
+test('F3-UX-5: `mantida` só com o "Manter" e a loja fechada nesse dia; só de leitura também se vê, sem ações', async () => {
+  // O "Manter" de uma loja que já não fecha nesse dia (o horário mudou): não é uma fechada mantida.
+  const rota = comBMantida(3);
+  rota.paragens[1].loja.dias_fechada = ['ter'];
+  const m = await carregado({ rota });
+  expect(m.vista().seccoes.rota.map((l) => l.mantida)).toEqual([false, false, false, false]);
+  // Fechada nesse dia mas sem o "Manter" (vinda assim do servidor): também não.
+  const semSinal = comBMantida(3);
+  semSinal.paragens[1].manter_fechada = false;
+  const n = await carregado({ rota: semSinal });
+  expect(n.vista().seccoes.rota.map((l) => l.mantida)).toEqual([false, false, false, false]);
+  // Só de leitura: vê-se, mas "Não manter" não grava.
+  const leitura = await carregado({ rota: { ...comBMantida(3), editavel: false, estado_efetivo: 'concluida', estado: 'planeada' } });
+  expect(leitura.vista().seccoes.rota.map((l) => l.mantida)).toEqual([false, true, false, false]);
+  leitura.planeador.naoManter('B');
+  expect(escritas(leitura)).toEqual([]);
+});
+
+test('F3-UX-6: "Ponto no mapa" só com o mapa — sem ele não abre, e a escolha a meio cancela-se', async () => {
+  const m = await carregado({ rota: rotaDoServidor({ fim: { lat: 38.9, lng: -9.3, fabrica: false } }) });
+  expect(m.vista().definicoes.semMapa).toBe(false);
+  m.planeador.escolherPonto('inicio');
+  expect(m.vista().escolherPonto).toBe('inicio');
+  // O mapa falhou (a Google recusou a chave, por exemplo): a faixa fecha-se.
+  const antes = m.vistas.length;
+  m.planeador.mapaDisponivel(false);
+  expect(m.vistas).toHaveLength(antes + 1);
+  expect(m.vista().escolherPonto).toBeNull();
+  expect(m.vista().definicoes.semMapa).toBe(true);
+  // O mesmo outra vez: nada muda.
+  m.planeador.mapaDisponivel(false);
+  expect(m.vistas).toHaveLength(antes + 1);
+  // Sem mapa não abre (nem com um toque perdido).
+  m.planeador.escolherPonto('fim');
+  expect(m.vista().escolherPonto).toBeNull();
+  m.planeador.tocarNoMapa({ lat: 38.6, lng: -9.0 });
+  expect(escritas(m)).toEqual([]);
+  // "Fábrica" continua a servir.
+  m.planeador.usarFabrica('fim');
+  expect(corpo(m)).toEqual([DIA, { fim: null, versao: 3 }]);
+  await responder(m, 'alterarRota', resposta(4));
+  // O mapa volta: "Ponto no mapa" também. Só o `true` é "com mapa".
+  m.planeador.mapaDisponivel(true);
+  expect(m.vista().definicoes.semMapa).toBe(false);
+  m.planeador.escolherPonto('fim');
+  expect(m.vista().escolherPonto).toBe('fim');
+  m.planeador.mapaDisponivel('sim');
+  expect(m.vista()).toMatchObject({ escolherPonto: null, definicoes: { semMapa: true } });
+});
+
+test('F3-UX-6: o mapa a faltar antes de a rota chegar não rebenta e já conta quando ela chega', async () => {
+  const m = montar();
+  m.planeador.mapaDisponivel(false);
+  expect(m.vista().definicoes).toBeNull();
+  await responder(m, 'obterConfigMapa', copia(CONFIG));
+  await responder(m, 'listarLojas', copia(LOJAS));
+  await responder(m, 'obterRota', copia(rotaDoServidor()));
+  expect(m.vista().definicoes.semMapa).toBe(true);
+  m.planeador.escolherPonto('inicio');
+  expect(m.vista().escolherPonto).toBeNull();
 });

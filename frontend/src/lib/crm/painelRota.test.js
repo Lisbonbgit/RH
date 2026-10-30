@@ -43,8 +43,10 @@ import {
   TEXTO_ADICIONAR,
   TEXTO_ADICIONAR_A_ROTA,
   TEXTO_EVITAR_PORTAGENS,
+  TEXTO_FECHADA_MANTIDA,
   TEXTO_FECHAR,
   TEXTO_NOTA_PORTAGENS,
+  TEXTO_SEM_MAPA_PONTO,
   TITULO_DEFINICOES,
   TITULO_SUGESTOES,
   TEXTO_A_RECARREGAR,
@@ -63,6 +65,8 @@ import {
   botoesDoResumo,
   cartaoDaLoja,
   definicoesDoPainel,
+  enquadramentoDoMapa,
+  textoDaChegada,
   faixaDoPonto,
   seccoesDoPainel,
   sugestoesDoPainel,
@@ -386,6 +390,7 @@ describe('definicoesDoPainel', () => {
       evitarPortagens: false,
       ativas: true,
       mensagem: null,
+      pontoNoMapa: { ativo: true, falta: null },
     });
   });
 
@@ -459,6 +464,21 @@ describe('definicoesDoPainel', () => {
     expect(Object.isFrozen(painel.horas[0])).toBe(true);
     expect(Object.isFrozen(painel.pontas)).toBe(true);
     expect(Object.isFrozen(painel.pontas[1])).toBe(true);
+    expect(Object.isFrozen(painel.pontoNoMapa)).toBe(true);
+  });
+
+  // Revisão dos ecrãs da F3, F3-UX-6: sem mapa onde tocar, "Ponto no mapa" desliga-se e diz porquê.
+  test('F3-UX-6: sem mapa (`semMapa`), "Ponto no mapa" desligado com "Sem mapa — use a fábrica."', () => {
+    expect(TEXTO_SEM_MAPA_PONTO).toBe('Sem mapa — use a fábrica.');
+    expect(definicoesDoPainel(definicoes({ semMapa: true }), null).pontoNoMapa).toEqual({ ativo: false, falta: 'Sem mapa — use a fábrica.' });
+    expect(definicoesDoPainel(definicoes({ semMapa: false }), null).pontoNoMapa).toEqual({ ativo: true, falta: null });
+    // Só o `true` é "sem mapa".
+    expect(definicoesDoPainel(definicoes({ semMapa: 'sim' }), null).pontoNoMapa).toEqual({ ativo: true, falta: null });
+    // Com as definições desligadas (a rota virtual, sem rede) o porquê é o geral: a falta do mapa não se repete.
+    expect(definicoesDoPainel(definicoes({ ativas: false, semMapa: true }), null).pontoNoMapa).toEqual({ ativo: false, falta: null });
+    expect(definicoesDoPainel(definicoes({ ativas: false }), null).pontoNoMapa).toEqual({ ativo: false, falta: null });
+    // O resto não muda: as horas, a fábrica e as portagens continuam ligadas.
+    expect(definicoesDoPainel(definicoes({ semMapa: true }), null).ativas).toBe(true);
   });
 });
 
@@ -660,5 +680,96 @@ describe('cartaoDaLoja', () => {
     const cartao = cartaoDaLoja(escolhida());
     expect(Object.isFrozen(cartao)).toBe(true);
     expect(Object.isFrozen(cartao.botao)).toBe(true);
+  });
+});
+
+// --- Revisão dos ecrãs da F3 (2026-10-30) ----------------------------------------------------------
+
+describe('textoDaChegada (F3-UX-1)', () => {
+  const linha = (extra = {}) => ({ chegada: '10:35', espera: null, chegadaAntiga: false, ...extra });
+
+  test('a chegada e a espera, só com o que existe', () => {
+    expect(textoDaChegada(linha())).toBe('Chegada 10:35');
+    expect(textoDaChegada(linha({ espera: 5 }))).toBe('Chegada 10:35 (espera 5 min)');
+  });
+
+  test('com as horas velhas: "(antiga)" e sem a espera (também velha)', () => {
+    expect(textoDaChegada(linha({ chegadaAntiga: true }))).toBe('Chegada 10:35 (antiga)');
+    expect(textoDaChegada(linha({ espera: 5, chegadaAntiga: true }))).toBe('Chegada 10:35 (antiga)');
+    // Só o `true` é antiga.
+    expect(textoDaChegada(linha({ espera: 5, chegadaAntiga: 'sim' }))).toBe('Chegada 10:35 (espera 5 min)');
+  });
+
+  test('sem chegada (ou que não é texto), null', () => {
+    expect(textoDaChegada(linha({ chegada: null }))).toBeNull();
+    expect(textoDaChegada(linha({ chegada: '', chegadaAntiga: true }))).toBeNull();
+    expect(textoDaChegada(linha({ chegada: 935 }))).toBeNull();
+    expect(textoDaChegada(null)).toBeNull();
+  });
+});
+
+test('F3-UX-5: o texto de uma fechada mantida', () => {
+  expect(TEXTO_FECHADA_MANTIDA).toBe('⚠️ Fechada neste dia — mantida');
+});
+
+describe('enquadramentoDoMapa (F3-UX-2)', () => {
+  const FABRICA = Object.freeze({ lat: 38.75, lng: -9.2, fabrica: true });
+  const PARAGEM = Object.freeze({ id: 'A', numero: 1, lat: 38.7, lng: -9.1 });
+  const LOJAS = Object.freeze([
+    { id: 'x', nome: 'X', lat: 38.8, lng: -9.3 },
+    { id: 'y', nome: 'Y', lat: 41.1, lng: -8.6 },
+    { id: 'z', nome: 'Sem sítio', lat: null, lng: null },
+  ]);
+  const mapa = (extra = {}) => ({ paragens: [], inicio: FABRICA, fim: FABRICA, lojasForaDaRota: LOJAS, ...extra });
+
+  test('com paragens, a rota (o `enquadrarRota`), uma vez', () => {
+    expect(enquadramentoDoMapa(mapa({ paragens: [PARAGEM] }), null)).toEqual({ enquadrar: 'rota', estado: 'feito' });
+    expect(enquadramentoDoMapa(mapa({ paragens: [PARAGEM] }), 'feito')).toEqual({ enquadrar: null, estado: 'feito' });
+    // As lojas ainda por chegar não contam: a rota tem paragens.
+    expect(enquadramentoDoMapa(mapa({ paragens: [PARAGEM], lojasForaDaRota: null }))).toEqual({ enquadrar: 'rota', estado: 'feito' });
+  });
+
+  test('sem paragens: as lojas fora da rota (com coordenadas) e as pontas — não só a fábrica, que dava o zoom da rua', () => {
+    expect(enquadramentoDoMapa(mapa(), null)).toEqual({
+      enquadrar: [{ lat: 38.8, lng: -9.3 }, { lat: 41.1, lng: -8.6 }, { lat: 38.75, lng: -9.2 }, { lat: 38.75, lng: -9.2 }],
+      estado: 'feito',
+    });
+    // Um início num ponto do mapa e o fim estragado.
+    const outro = enquadramentoDoMapa(mapa({ inicio: { lat: 39, lng: -9, fabrica: false }, fim: null }), null);
+    expect(outro.enquadrar).toEqual([{ lat: 38.8, lng: -9.3 }, { lat: 41.1, lng: -8.6 }, { lat: 39, lng: -9 }]);
+    expect(enquadramentoDoMapa(mapa(), 'feito')).toEqual({ enquadrar: null, estado: 'feito' });
+  });
+
+  test('sem paragens e sem as lojas ainda: o centro (`[]`, o zoom 12 do mapa.js) e, quando chegam, elas, uma vez', () => {
+    const primeiro = enquadramentoDoMapa(mapa({ lojasForaDaRota: null }), null);
+    expect(primeiro).toEqual({ enquadrar: [], estado: 'sem_lojas' });
+    // Ainda sem elas: nada mais.
+    expect(enquadramentoDoMapa(mapa({ lojasForaDaRota: null }), 'sem_lojas')).toEqual({ enquadrar: null, estado: 'sem_lojas' });
+    // Chegam.
+    expect(enquadramentoDoMapa(mapa(), 'sem_lojas')).toEqual({
+      enquadrar: [{ lat: 38.8, lng: -9.3 }, { lat: 41.1, lng: -8.6 }, { lat: 38.75, lng: -9.2 }, { lat: 38.75, lng: -9.2 }],
+      estado: 'feito',
+    });
+    // Chegam vazias (ou só sem coordenadas): o centro já está, nada mais.
+    expect(enquadramentoDoMapa(mapa({ lojasForaDaRota: [] }), 'sem_lojas')).toEqual({ enquadrar: null, estado: 'feito' });
+    // Entretanto entrou uma paragem: quem planeia já mexeu, o mapa fica.
+    expect(enquadramentoDoMapa(mapa({ paragens: [PARAGEM] }), 'sem_lojas')).toEqual({ enquadrar: null, estado: 'feito' });
+  });
+
+  test('sem paragens e nenhuma loja com coordenadas: o centro, e acabou', () => {
+    expect(enquadramentoDoMapa(mapa({ lojasForaDaRota: [] }), null)).toEqual({ enquadrar: [], estado: 'feito' });
+    expect(enquadramentoDoMapa(mapa({ lojasForaDaRota: [LOJAS[2]] }), null)).toEqual({ enquadrar: [], estado: 'feito' });
+  });
+
+  test('um mapa da vista estragado não rebenta: o centro, à espera das lojas', () => {
+    expect(enquadramentoDoMapa(null, null)).toEqual({ enquadrar: [], estado: 'sem_lojas' });
+    expect(enquadramentoDoMapa({ paragens: 'x', lojasForaDaRota: 'y' })).toEqual({ enquadrar: [], estado: 'sem_lojas' });
+  });
+
+  test('vem congelado', () => {
+    const resultado = enquadramentoDoMapa(mapa(), null);
+    expect(Object.isFrozen(resultado)).toBe(true);
+    expect(Object.isFrozen(resultado.enquadrar)).toBe(true);
+    expect(Object.isFrozen(resultado.enquadrar[0])).toBe(true);
   });
 });
