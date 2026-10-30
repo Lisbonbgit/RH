@@ -4,7 +4,10 @@
 // ficha. Porta de public/assets/js/componentes/cartao-loja.js do CRM autónomo.
 // O botão Ligar do desenho original saiu em 2026-10-13, a pedido do Bruce: o
 // contacto lê-se no próprio cartão (`contactoDaLoja`, `lib/crm/ecraMapa.js`).
-// O "Adicionar à rota" chega na F3 e a última ação na F5 (linha do tempo).
+// "Adicionar à rota" (F3, plano T3.40; ícone `Route`) avisa a página
+// (`aoAdicionarARota`), que abre o diálogo de escolher o dia e o motivo
+// (`DialogoAdicionarARota`); o botão (`refAdicionar`) recebe o foco quando o
+// diálogo fecha. A última ação chega na F5 (linha do tempo).
 //
 // O nome, a fase e o contacto entram como texto (o React escapa-os); não se
 // monta nenhuma ligação com o telefone. O cartão não se fecha sozinho: o
@@ -14,15 +17,18 @@
 // pintava sobre eles (revisão do mapa Google, MAPA-G-5; `css.test.js`).
 import React, { useId } from 'react';
 import { Link } from 'react-router-dom';
-import { FileText, X } from 'lucide-react';
+import { FileText, Route as IconeRota, X } from 'lucide-react'; // nunca `Route`: confundia-se com o do React Router
 import { Button } from '../ui/button';
+import { TITULO_ADICIONAR_A_ROTA } from '../../lib/crm/adicionarARota';
 import { contactoDaLoja } from '../../lib/crm/ecraMapa';
 import { FASES, ORDEM } from '../../lib/crm/fases';
 import './crm.css';
 
 export const TEXTO_ULTIMA_ACAO = 'Última ação: ainda sem histórico';
 
-export default function CartaoLoja({ loja, base, aoFechar, refNome }) {
+export default function CartaoLoja({
+  loja, base, aoFechar, refNome, aoAdicionarARota, refAdicionar,
+}) {
   const idNome = useId();
   const conhecida = ORDEM.includes(loja.fase);
   const contacto = contactoDaLoja(loja);
@@ -67,6 +73,17 @@ export default function CartaoLoja({ loja, base, aoFechar, refNome }) {
               <FileText className="h-4 w-4" aria-hidden="true" />
               Ver ficha
             </Link>
+          </Button>
+          <Button
+            ref={refAdicionar}
+            type="button"
+            variant="outline"
+            className="h-11 flex-1 basis-36"
+            onClick={() => aoAdicionarARota?.(loja)}
+            data-testid="crm-cartao-adicionar-rota"
+          >
+            <IconeRota className="h-4 w-4" aria-hidden="true" />
+            {TITULO_ADICIONAR_A_ROTA}
           </Button>
         </div>
       </div>

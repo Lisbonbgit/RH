@@ -36,6 +36,11 @@ export const TEXTO_A_ADICIONAR = 'A adicionar…';
 export const TEXTO_ABRIR_ROTA = 'Abrir rota';
 export const TEXTO_FALTA_DIA = 'Escolha o dia.';
 export const TEXTO_RECALCULAR_NA_ROTA = 'Abra a rota para recalcular as horas.';
+// O diálogo do cartão (T3.40): o grupo dos atalhos, a ajuda do campo da data, "Cancelar" e "Tentar novamente".
+export const TEXTO_DIAS_COM_ROTA = 'Dias com rota';
+export const TEXTO_AJUDA_DIA = 'Num dia ainda sem rota, a rota começa com esta loja.';
+export const TEXTO_CANCELAR = 'Cancelar';
+export const TEXTO_TENTAR_DE_NOVO = 'Tentar novamente';
 
 // No máximo 5 atalhos de dias (plano F3 T3.34).
 export const ATALHOS_MAXIMO = 5;
@@ -115,6 +120,10 @@ export function estadoAdicionar({ aAdicionar, online, dataValida }) {
   if (!dataValida) return desativado(TEXTO_FALTA_DIA);
   return { ativo: true, texto: TEXTO_ADICIONAR, falta: null };
 }
+
+// O diálogo pode fechar-se ("Cancelar", o Escape, um toque fora)? Não enquanto a paragem se grava: o pedido já
+// saiu, e fechar escondia o resultado (o aviso ou o erro).
+export const podeFechar = (vista) => vista?.camposDesativados !== true;
 
 // --- Ecrã ----------------------------------------------------------------------------------------
 

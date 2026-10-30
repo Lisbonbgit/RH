@@ -19,6 +19,12 @@
 //  - Tocar num pino abre o cartão da loja por baixo do mapa: o mapa encolhe e
 //    centra-se na loja. Tocar no mapa fecha o cartão e os filtros; o Escape
 //    fecha o cartão e devolve o foco ao pino (ou ao mapa, se o pino já saiu).
+//  - "Adicionar à rota" no cartão (F3, T3.40) abre o diálogo modal de escolher
+//    o dia e o motivo (`DialogoAdicionarARota`, que grava e mostra o toast com
+//    "Abrir rota"). O estado do diálogo vive aqui: a loja do cartão de quando
+//    abriu. Ao fechar, o foco volta ao botão do cartão (ou ao mapa, se o
+//    cartão já fechou). O Escape do diálogo é dele (o Radix marca-o tratado):
+//    não fecha o cartão.
 //  - Tocar no ícone de um negócio abre o balão da própria Google (não lhe
 //    tocamos: fecha-se no × dele ou ao tocar noutro sítio) e, no sítio do
 //    cartão (nunca por cima do mapa), o painel "Negócio selecionado" com
@@ -38,6 +44,7 @@ import { toast } from 'sonner';
 import { MapPinPlus } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import CartaoLoja from '../../components/crm/CartaoLoja';
+import DialogoAdicionarARota from '../../components/crm/DialogoAdicionarARota';
 import FiltrosMapa from '../../components/crm/FiltrosMapa';
 import MapaLojas from '../../components/crm/MapaLojas';
 import NegocioSelecionado from '../../components/crm/NegocioSelecionado';
@@ -91,6 +98,8 @@ export default function CrmMapa() {
   // O painel do negócio: a `vista` do `criarNegocioSelecionado` ({placeId, reserva, estado, mensagem}); null
   // antes da primeira abertura. Exclusivo com o cartão da loja.
   const [negocio, setNegocio] = useState(null);
+  // A loja do diálogo "Adicionar à rota" (a do cartão quando o botão foi tocado); null: fechado.
+  const [lojaParaRota, setLojaParaRota] = useState(null);
 
   const filtrosAtuais = useRef(filtros);
   const geracao = useRef(0); // as respostas de uma montagem que já acabou não contam
@@ -98,6 +107,7 @@ export default function CrmMapa() {
   const avisoMostrado = useRef(false);
   const nomeDoCartao = useRef(null);
   const tituloDoNegocio = useRef(null);
+  const botaoAdicionarARota = useRef(null); // o "Adicionar à rota" do cartão: recebe o foco quando o diálogo fecha
   const focoAoFechar = useRef(null); // o marcador (ou 'mapa') que recebe o foco quando o cartão ou o painel fecha
   const controloNegocio = useRef(null); // o criarNegocioSelecionado desta montagem
 
@@ -277,6 +287,13 @@ export default function CrmMapa() {
     navigate(destino.caminho, { state: destino.estado });
   }
 
+  // O diálogo "Adicionar à rota" fechou: o foco volta ao botão do cartão, ou ao mapa se o cartão já não está.
+  function focarDepoisDoDialogo() {
+    const botao = botaoAdicionarARota.current; // null quando o cartão já fechou
+    if (botao) botao.focus();
+    else mapa?.focar();
+  }
+
   // Escape: fecha o cartão ou o painel do negócio. Com o painel dos filtros aberto, é o painel que o trata
   // (e fica por aí).
   function aoCarregarNumaTecla(evento) {
@@ -346,6 +363,8 @@ export default function CrmMapa() {
           base={base}
           aoFechar={() => fecharCartao({ devolverFoco: true })}
           refNome={nomeDoCartao}
+          aoAdicionarARota={setLojaParaRota}
+          refAdicionar={botaoAdicionarARota}
         />
       )}
       {negocioAberto && (
@@ -357,6 +376,14 @@ export default function CrmMapa() {
           refTitulo={tituloDoNegocio}
         />
       )}
+      {/* Modal, num portal por cima de tudo: o mapa não encolhe nem se mexe. */}
+      <DialogoAdicionarARota
+        loja={lojaParaRota}
+        base={base}
+        navegar={navigate}
+        aoFechar={() => setLojaParaRota(null)}
+        focarAoFechar={focarDepoisDoDialogo}
+      />
     </section>
   );
 }

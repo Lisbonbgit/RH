@@ -23,15 +23,20 @@ import {
   TEXTO_ADICIONAR,
   TEXTO_A_ADICIONAR,
   TEXTO_A_CARREGAR_DIAS,
+  TEXTO_AJUDA_DIA,
+  TEXTO_CANCELAR,
   TEXTO_DIA,
+  TEXTO_DIAS_COM_ROTA,
   TEXTO_FALTA_DIA,
   TEXTO_MOTIVO,
   TEXTO_RECALCULAR_NA_ROTA,
+  TEXTO_TENTAR_DE_NOVO,
   TITULO_ADICIONAR_A_ROTA,
   atalhosDosDias,
   criarAdicionarARota,
   diaPorOmissao,
   estadoAdicionar,
+  podeFechar,
   textoAdicionada,
   textoParagens,
 } from './adicionarARota';
@@ -107,6 +112,15 @@ test('os textos exatos do diálogo', () => {
   expect(ATALHOS_MAXIMO).toBe(5);
   expect([...ESTADOS_EDITAVEIS]).toEqual(['rascunho', 'planeada']);
   expect(Object.isFrozen(ESTADOS_EDITAVEIS)).toBe(true);
+});
+
+// O diálogo do cartão do mapa (T3.40): o grupo dos atalhos, a ajuda do campo da data, "Cancelar" e "Tentar
+// novamente" (a lista das rotas não carregou).
+test('os textos do diálogo do cartão (T3.40)', () => {
+  expect(TEXTO_DIAS_COM_ROTA).toBe('Dias com rota');
+  expect(TEXTO_AJUDA_DIA).toBe('Num dia ainda sem rota, a rota começa com esta loja.');
+  expect(TEXTO_CANCELAR).toBe('Cancelar');
+  expect(TEXTO_TENTAR_DE_NOVO).toBe('Tentar novamente');
 });
 
 describe('igual ao servidor, lido dos próprios ficheiros', () => {
@@ -750,6 +764,41 @@ test('o 422 de outro campo (a loja) vai para o alerta com a mensagem do campo; s
   m.ecra.adicionar();
   await falhar(m, 'adicionarParagem', new ErroCrm({ codigo: 'validacao', mensagem: 'Verifique os campos assinalados.', estado: 422, campos: null }));
   expect(m.vista().alerta).toBe('Verifique os campos assinalados.');
+});
+
+// O diálogo (T3.40) não fecha enquanto a paragem se grava: o "Cancelar", o Escape e o toque fora ignoram-se
+// até à resposta (o pedido já saiu; fechar escondia o resultado).
+describe('podeFechar(vista)', () => {
+  test('a carregar, pronto e depois da resposta (certa ou errada) pode; a adicionar não', async () => {
+    const m = montar();
+    expect(podeFechar(m.vista())).toBe(true);
+    await responder(m, 'listarRotas', copia(LISTA));
+    expect(podeFechar(m.vista())).toBe(true);
+    m.ecra.adicionar();
+    expect(podeFechar(m.vista())).toBe(false);
+    await falhar(m, 'adicionarParagem', erro('ja_na_rota', 'Esta loja já está na rota deste dia.'));
+    expect(podeFechar(m.vista())).toBe(true);
+    m.ecra.adicionar();
+    expect(podeFechar(m.vista())).toBe(false);
+    await responder(m, 'adicionarParagem', rotaAdicionada());
+    expect(podeFechar(m.vista())).toBe(true);
+  });
+
+  test('a lista que falhou pode fechar-se, também enquanto "Tentar novamente" pede outra vez', async () => {
+    const m = montar();
+    await falhar(m, 'listarRotas', erro('sem_rede', MENSAGEM_SEM_REDE));
+    expect(podeFechar(m.vista())).toBe(true);
+    m.ecra.tentarDeNovo();
+    expect(m.vista().falha.aTentar).toBe(true);
+    expect(podeFechar(m.vista())).toBe(true);
+  });
+
+  test('só camposDesativados === true impede; sem vista pode', () => {
+    expect(podeFechar({ camposDesativados: true })).toBe(false);
+    for (const vista of [null, undefined, {}, { camposDesativados: false }, { camposDesativados: 'sim' }, { camposDesativados: 1 }]) {
+      expect(podeFechar(vista)).toBe(true);
+    }
+  });
 });
 
 describe('destruir(): o diálogo fechou', () => {
