@@ -200,16 +200,18 @@ export default function EmployeeLayout() {
         <Outlet />
       </main>
 
-      {/* Bottom Navigation */}
+      {/* Bottom Navigation: os itens repartem a largura do ecrã (cada um nunca abaixo da sua
+          palavra mais comprida), para nenhum ficar fora do ecrã num telemóvel estreito ou com
+          letra grande — o CRM, 5.º item, ficava escondido à direita. */}
       <nav className="fixed bottom-0 left-0 right-0 border-t bg-card safe-area-inset-bottom">
-        <div className="flex justify-around items-center h-16">
+        <div className="flex items-center h-16">
           {itens.map((item) => (
             <NavLink
               key={item.path}
               to={item.path}
               end={item.exact}
               className={({ isActive }) =>
-                `flex flex-col items-center gap-1 px-3 py-2 rounded-lg transition-colors ${
+                `flex flex-1 flex-col items-center gap-1 px-0.5 py-1 rounded-lg transition-colors ${
                   isActive
                     ? 'text-primary'
                     : 'text-muted-foreground'
@@ -217,8 +219,8 @@ export default function EmployeeLayout() {
               }
               data-testid={`nav-${item.path.split('/').pop() || 'inicio'}`}
             >
-              <item.icon className="h-5 w-5" />
-              <span className="text-xs font-medium">{item.label}</span>
+              <item.icon className="h-5 w-5 shrink-0" />
+              <span className="text-center text-xs font-medium leading-tight">{item.label}</span>
             </NavLink>
           ))}
         </div>
