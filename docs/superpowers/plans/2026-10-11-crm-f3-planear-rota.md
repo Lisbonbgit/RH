@@ -1526,7 +1526,7 @@ Servidores locais, `preview_start` e como parar: dossiê §12.6. A pré-visualiz
 
 ### Bloco F3f — Fecho
 
-#### [ ] T3.43 Fecho da F3 com pré-visualização local (60 min)
+#### [x] T3.43 Fecho da F3 com pré-visualização local (60 min)
 - **Suites:**
   - `pytest tests/crm` verde;
   - `test_mongo_local.py` com a variável, verde;
@@ -1559,6 +1559,14 @@ Servidores locais, `preview_start` e como parar: dossiê §12.6. A pré-visualiz
     - o ponto 7 (a redação nova da privacidade);
     - o ponto 11 (os blocos de 9, na F4).
 - **Commit:** só se houver correções ou dossiê, `CRM: fecho do planear rota (F3) verificado em local`. **Nada sai do Mac.**
+- **Feito (2026-10-30):** sem código novo nem correções: só o dossiê e este plano (o commit do fecho). A árvore estava limpa à partida (`83db897`), sem trabalho por guardar da T3.43. Aplicadas as correções "T3.25 / T3.43 (contagem dos skipped)", "T3.12 / T3.43 (dossiê §14)", "T3.12 / T3.43 (gravador, .env.local e fixtures)" e a linha "T3.43" das correções do mapa Google.
+  - **Suites** (uma de cada vez): `pytest tests/crm` **6949 passed, 39 skipped** em 24 s, os 6 avisos de sempre (`t3.43-pytest-crm.log`); `grep -rn "asyncio.run(" backend/tests/crm` → 0; `test_mongo_local.py` com a variável **56 passed** (`t3.43-mongo-local.log`; sem ela, 17 passed e 39 skipped, todos com a razão do ensaio). Suite completa em segundo plano (`pytest-tudo-T3_43.log`, 204 s, saída 0): **10888 passed, 0 failed, 42 skipped** = 3 de sempre (`test_o_contrato_com_a_app.py:130`) + 39 do ensaio (confirmados com `-rs`), os 6 avisos de sempre; com a variável (`pytest-tudo-T3_43-com-mongo.log`, 215 s, saída 0): **10927 passed, 3 skipped**. Os 3939 testes fora de `tests/crm` (eram 3552 na revisão do servidor da F3) vêm do `main` do Matheus juntado em `ab57fd1`. Jest `src/lib`: **45 suites, 2642 testes** (as 6 antigas com 114 + as 39 do CRM com 2528; `t3.43-jest-lib.log`).
+  - **Build** em segundo plano (`build-T3_43.log`, inventário em `t3.43-build-inventario.log`): saída 0, avisos só nos mesmos 16 ficheiros do portal (0 do CRM). `main.afde21fa.js` sem `maps.googleapis.com` (0); o *chunk* do planeador (`2.*`, com "Calcular melhor ordem" e "Não houve rota neste dia.") com ele, como o do mapa (`73.*`); `leaflet` em 0 ficheiros do build, de `frontend/src`, do `package.json`, do `yarn.lock` e de `backend/crm`; `leaflet-container` 0; `gmp-place-details`/`gmp-basic-place-autocomplete` 0. O "Developed by VROOM…" que está no `main` é só a frase da `PrivacyPolicy.js` (T3.42); o `ATRIBUICOES.ors` está nos *chunks* `2.*` e `484.*`.
+  - **Pré-visualização:** o pedido de parar a da G22 (8001/3000, pids em `g22-backend.pid`/`g22-frontend.pid`) foi **recusado pelo sistema de permissões** do agente (não parar processos que não arrancou); não se insistiu. Por isso: as duas linhas `CRM_ORS_*` entraram no `backend/.env.local` (o `grep -c "^CRM_ORS"` dava 0; agora 2; valores não mostrados) e o simulador ficou a correr em 127.0.0.1:8013 (`t3.43-ors-simulado.log`, pid em `t3.43-8013.pid`), mas o backend em 8001 continua o código de 2026-10-20 sem essas linhas, e o frontend em 3000 é o `craco start` da G22 (recompila sozinho: serviu os ecrãs da F3 na aceitação). **Falta reiniciar o 8001 e o 3000** (dossiê §12.6, "Fim da F3").
+  - **Aceitação F3 (§8) no browser** (`$LOGS/t343_aceitacao.py`, receita da T2.32; resultados em `t343-resultado-final.txt`): os guiões no browser das T3.37–T3.41 copiados para `t343-aceitacao/k37…k41` e apontados para uma cópia `lisbonb_crm_t343_local` **sem palavras-passe** (refeita antes de cada parte, apagada no fim; a origem intacta), mais o `t343_extra.py` com o que faltava: a rota de 48 paragens no cartão ("Uma rota tem no máximo 48 paragens."), os 6 blocos de 9 e os links com o `avoid` e a frase do Waze, "Não houve rota neste dia.", "Guardar rota" com a pergunta "1 paragem não cabe — guardar mesmo assim?" e arrastar com o dedo no planeador verdadeiro a 375 × 812 (toques pelo CDP: o PATCH da ordem e o recálculo sozinho). Computador 1280 × 800 claro, telemóvel 375 × 812 escuro com toque; o router verdadeiro em 8011 e um simulador só da aceitação em 8014 (o da pré-visualização não se tocou); o Google falso no próprio browser; tudo o que saía de 127.0.0.1 abortado (só `cdn.jsdelivr.net` e `fonts.googleapis.com`). **346 verificações, 0 falhas** na passagem final de cada parte (k37 33, k38 65, k39 121, k40 53, k41 39, extra 35). As falhas das passagens anteriores foram do guião, não do CRM: a cópia da T3.37 esperava o "Brevemente" da T3.35; o simulador filho do guião ficava *zombie* e o `kill -0` da T3.39 dava-o como vivo; o `encher` criou 40 lojas para uma rota de 48; o "Guardar" do extra lia o PATCH antes da resposta (o "Planeada" é a visão otimista). Consola: só os pedidos abortados e os 409/422/503 provocados.
+  - **Rota de demonstração** na `lisbonb_crm_local` (`t343-demo/t343_demo.py`, servidor temporário em 127.0.0.1:8012 já parado; `t343-demo.log`): segunda-feira **2026-11-02**, 8 lojas do seed (as mais perto da fábrica, abertas à segunda), criadas pelo POST das paragens e calculadas pelo simulador com "Calcular melhor ordem": 7 na rota (102,8 km, regresso às 13:02) e a Frutaria do Bocage em "⚠️ Não cabe no horário". `http://127.0.0.1:3000/crm/rotas/2026-11-02` (com o 8001 reiniciado).
+  - **Dossiê `CRM_PORTING_GUIDE.md`:** cabeçalho; §3 (`crm_rotas`, a paragem, os campos do escritório e do terreno, as escritas condicionais, os índices e o ensaio); §5.13 (o contrato com a F4); §5.14 aponta para a §5.16 nova "Planear rota (F3)" (as regras do §1 e das correções, como ficaram no código); §6 (as 7 rotas, a Rota da API, as mensagens; o "só nomeadas" passa a F4+); §7 (o menu, as páginas Rotas e planeador, o diálogo do cartão, o separador Rotas, os módulos novos e o `mapa.js` da rota; a `PrivacyPolicy.js` da F3); §8 (tempos, mensagens, atribuição, simulador e gravador); §9 (`CRM_ORS_CHAVE`, `CRM_ORS_URL` e o `.env.local`); §10; §12.3, §12.6 ("Fim da F3": as três portas e como parar), §12.7 (39 saltados, 56 com a variável), §12.8; §13 (as linhas da revisão do servidor da F3 e do fecho, a regra dos skipped e o bloco "Fecho da F3"); §14 (ponto 5 com o gravador, 6 com o `.env.example` e a `PrivacyPolicy.js` da F3, 7 com a redação nova, 8, 11, e os novos 21 — confirmar com a gravação os `segments` e a entrega no VROOM — e 22 — a F3 em produção só com lojas reais nas regiões da primeira rota).
+  - **Desvios:** (1) a pré-visualização ficou a meio (acima): o 8001 e o 3000 não se reiniciaram; (2) a aceitação reaproveita os guiões das T3.37–T3.41 (copiados e apontados para a base da T3.43) em vez de um guião único escrito de raiz, mais um guião de extras; (3) o simulador da aceitação em 8014 e não em 8013, para a T3.39 o poder matar sem parar o da pré-visualização; (4) o §8 "Pré-visualização" fica por marcar. Nenhum ficheiro de código, partilhado, `App.js` ou `AdminLayout.js` tocado; nenhum ficheiro novo versionado. Fora do âmbito desta tarefa e ainda por fazer: o pedido do dono de dar à colaboradora Franciely acesso total ao CRM sem o resto do Gestão.
 
 #### [ ] Revisão da F3 (3 revisores só de leitura)
 - Fidelidade ao desenho, segurança (chave e dados pessoais) e o terreno. Os achados entram como correções, com vermelho, verde e mutações, no molde das revisões da F0/F1 e da F2.
@@ -1598,7 +1606,7 @@ Servidores locais, `preview_start` e como parar: dossiê §12.6. A pré-visualiz
   - `rota_api` com `estado` e `resultado` por paragem.
 
 ## 8. Listas de aceitação (F3, em local)
-- [ ] **Domínio:**
+- [x] **Domínio:**
   - janelas em segundos, iguais nos dias de mudança de hora;
   - prioridades 100/1;
   - pedidos ao VROOM e ao Directions só com números (canários);
@@ -1607,41 +1615,41 @@ Servidores locais, `preview_start` e como parar: dossiê §12.6. A pré-visualiz
   - assinatura;
   - sugestões (5 km, 3 km, grupos, exclusões);
   - links e blocos de 9.
-- [ ] **ORS:**
+- [x] **ORS:**
   - a chave só no `Authorization`, nunca no URL, nas mensagens ou nos registos (chave canária em DEBUG);
   - sem chave → 503 sem chamar;
   - 429, 2010 e falhas da rede → mensagens pt-PT;
   - nenhum teste sai para a rede.
-- [ ] **API:**
+- [x] **API:**
   - uma rota por dia; criar pelo cartão sem versão; 48 paragens; já na rota;
   - o passado só de leitura (409 nas escritas, `concluida` ao ler);
   - a versão → 409;
   - retirar suave;
   - a loja numa rota não se apaga;
   - as definições das rotas.
-- [ ] **O terreno ganha:**
+- [x] **O terreno ganha:**
   - nenhuma escrita do escritório usa `$pull`, `$unset` nem a lista inteira, nem toca nos campos do terreno (varrimento);
   - com um registo do motorista, tudo 409 e nada muda (também na corrida).
-- [ ] **Cálculo:**
+- [x] **Cálculo:**
   - "Calcular melhor ordem" → horas, esperas, avisos e "não cabem" no fim sem hora;
   - uma falha não muda nada e mostra a mensagem;
   - as horas recalculadas sozinhas depois de arrastar, adicionar, retirar e mudar as definições do dia;
   - sem ORS, a ordem manual guarda-se sem horas.
-- [ ] **Planeador** (1280 × 800):
+- [x] **Planeador** (1280 × 800):
   - mapa e lista lateral, pinos numerados, linha, totais, hora por paragem e ⚠️;
   - a **atribuição exata do ORS**;
   - Google Maps/Waze por paragem (com o `avoid` quando se evitam portagens) e blocos de 9;
   - arrastar com o rato, o teclado (com anúncios) e o toque (375 × 812);
   - Guardar → Planeada, com a pergunta dos "não cabem".
-- [ ] **Leitura:** a rota de um dia passado só de leitura; um dia passado sem rota → "Não houve rota neste dia.".
-- [ ] **Cartão do mapa:** "Adicionar à rota" com o dia e o motivo pela fase, e as mensagens de já na rota, cheia e dia passado.
-- [ ] **Definições:** o separador Rotas (horas e tempos por motivo).
-- [ ] **Segurança e suites:**
+- [x] **Leitura:** a rota de um dia passado só de leitura; um dia passado sem rota → "Não houve rota neste dia.".
+- [x] **Cartão do mapa:** "Adicionar à rota" com o dia e o motivo pela fase, e as mensagens de já na rota, cheia e dia passado.
+- [x] **Definições:** o separador Rotas (horas e tempos por motivo).
+- [x] **Segurança e suites:**
   - o varrimento do DOM verde; os `href` de navegação só pelo `hrefNavegacao`;
   - o ensaio no MongoDB local verde;
   - as suites sem falhas novas; o build com o planeador à parte.
-- [ ] **Pré-visualização:** a correr (8013, 8001 e 3000), com a rota de demonstração.
-- [ ] **Nada saiu do Mac.**
+- [ ] **Pré-visualização:** a correr (8013, 8001 e 3000), com a rota de demonstração. *(T3.43: o 8013 e a rota de demonstração sim; o 8001 e o 3000 continuam os da G22 — parar processos que o agente não arrancou foi recusado pelas permissões; falta reiniciá-los, dossiê §12.6.)*
+- [x] **Nada saiu do Mac.**
 
 ## 9. Riscos e mitigação
 
