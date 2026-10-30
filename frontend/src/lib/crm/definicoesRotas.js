@@ -32,6 +32,8 @@ const TEXTO_FALTA_ALTERACOES = 'Sem alterações por guardar.';
 // O tempo de serviço de uma paragem (`dominio/validador_rota.py::TEMPO_SERVICO_MINIMO/MAXIMO`).
 export const TEMPO_SERVICO_MINIMO = 1;
 export const TEMPO_SERVICO_MAXIMO = 240;
+// A ajuda do grupo dos tempos (a página da T3.41): o formulário é `noValidate`, os limites ficam escritos.
+export const TEXTO_AJUDA_TEMPO_SERVICO = `Minutos em cada paragem nova, de ${TEMPO_SERVICO_MINIMO} a ${TEMPO_SERVICO_MAXIMO}.`;
 
 // As `HORAS` e os `MINUTOS` de `dominio/definicoes.py`, pela mesma ordem (um tempo por motivo).
 export const CHAVES_HORAS = Object.freeze(['rota_hora_saida', 'rota_hora_regresso']);

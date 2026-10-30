@@ -708,6 +708,7 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
     'pages/crm/DefinicoesMembros.js',
     'pages/crm/DefinicoesRegioes.js',
     'pages/crm/DefinicoesFabrica.js',
+    'pages/crm/DefinicoesRotas.js',
     'pages/crm/CrmRotas.js',
     'pages/crm/CrmRota.js',
     'pages/crm/rotasCrm.js',

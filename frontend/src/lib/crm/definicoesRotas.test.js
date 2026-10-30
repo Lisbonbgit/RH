@@ -20,6 +20,7 @@ import {
   TEMPO_SERVICO_MINIMO,
   TEXTO_A_CARREGAR_ROTAS,
   TEXTO_A_GUARDAR,
+  TEXTO_AJUDA_TEMPO_SERVICO,
   TEXTO_DESCRICAO_ROTAS,
   TEXTO_GUARDAR,
   TEXTO_ROTAS_GUARDADAS,
@@ -78,6 +79,8 @@ test('os textos exatos do separador', () => {
   expect(TEXTO_A_CARREGAR_ROTAS).toBe('A carregar as definições das rotas…');
   expect(TEXTO_ROTAS_GUARDADAS).toBe('Definições das rotas guardadas.');
   expect(TEXTO_TEMPO_SERVICO).toBe('Tempo de serviço (min)');
+  // A ajuda do grupo dos tempos (T3.41): os limites são os do servidor.
+  expect(TEXTO_AJUDA_TEMPO_SERVICO).toBe('Minutos em cada paragem nova, de 1 a 240.');
   // Os mesmos do botão da fábrica.
   expect([TEXTO_GUARDAR, TEXTO_A_GUARDAR]).toEqual(['Guardar', 'A guardar…']);
   expect([TEXTO_GUARDAR, TEXTO_A_GUARDAR]).toEqual([GUARDAR_FABRICA, A_GUARDAR_FABRICA]);
