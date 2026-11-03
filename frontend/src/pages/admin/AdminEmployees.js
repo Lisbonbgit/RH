@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { getEmployees, createEmployee, updateEmployee, deleteEmployee, getCompanies, getLocations, createAdminLeave } from '../../lib/api';
+import { dadosParaAtualizar, mensagemDoErro } from '../../lib/colaboradores';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -257,12 +258,8 @@ export default function AdminEmployees() {
     setSaving(true);
     try {
       if (selectedEmployee) {
-        const updateData = { ...formData };
-        delete updateData.password;
-        delete updateData.email;
-        // Não reenviar a foto (base64) se não foi alterada
-        if (updateData.photo === (selectedEmployee.photo || '')) delete updateData.photo;
-        await updateEmployee(selectedEmployee.id, updateData);
+        // Sem a palavra-passe; o email e a foto (base64) só se mudaram.
+        await updateEmployee(selectedEmployee.id, dadosParaAtualizar(formData, selectedEmployee));
         toast.success('Colaborador atualizado com sucesso');
       } else {
         if (!formData.password) {
@@ -276,7 +273,8 @@ export default function AdminEmployees() {
       setDialogOpen(false);
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Erro ao guardar colaborador');
+      // Sempre texto: o 422 traz uma lista de objetos, que o toast não sabe desenhar.
+      toast.error(mensagemDoErro(error));
     } finally {
       setSaving(false);
     }
@@ -476,9 +474,14 @@ export default function AdminEmployees() {
                   onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                   placeholder="email@exemplo.com"
                   required
-                  disabled={!!selectedEmployee}
                   data-testid="employee-email-input"
                 />
+                {selectedEmployee && (
+                  <p className="text-xs text-muted-foreground">
+                    Se mudar o email, o colaborador passa a entrar com o novo e tem de voltar a entrar.
+                    Se ainda não trocou a palavra-passe temporária, recebe uma nova no email novo.
+                  </p>
+                )}
               </div>
               {!selectedEmployee && (
                 <div className="space-y-2">
