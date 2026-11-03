@@ -6,6 +6,10 @@
 // No portal, o React já escapa o texto; isto serve onde se monta DOM à mão
 // para o Google Maps (ex.: o conteúdo de cada pino, com a etiqueta do nome, em
 // `lib/crm/mapa.js`).
+//
+// Os `href` que não são do CRM têm uma porta cada um: o `tel:` só pelo
+// `hrefTelefone` e os links de navegação (F3) só pelo `hrefNavegacao`, as duas
+// verificadas pelo varrimento do `seguranca.test.js`.
 
 const ATRIBUTOS_URL = new Set(['href', 'src', 'action', 'formaction', 'xlink:href', 'poster']);
 
@@ -82,4 +86,23 @@ export function hrefTelefone(telefone) {
   if (digitos.length < 9) return null;
   const mais = texto.slice(0, primeiroDigito).includes('+') ? '+' : '';
   return `tel:${mais}${digitos}`;
+}
+
+// Os links de navegação que o servidor calcula (F3 / T3.26; backend/crm/dominio/navegacao.py, T3.10):
+// `paragem.links.google`/`.waze` e o `href` de cada um dos `rota.blocos_google`. O frontend só os
+// desenha como `<a href>` tocados pela pessoa, e só depois de passarem por aqui:
+//   - o Google Maps: `https://www.google.com/maps/dir/?api=1&…`;
+//   - o Waze: `https://waze.com/ul?…`;
+// sempre com alguma coisa depois do prefixo e só com os caracteres de um URL em ASCII (os não reservados,
+// os reservados menos a plica, e o `%`): sem espaços, aspas, `<`, `>`, `|`, `\`, acentos nem caracteres de
+// controlo. O servidor codifica o `|` dos waypoints (`%7C`). O resto (`javascript:`, `http:`, outro
+// domínio, outra página, o que não é texto) dá null e não há ligação. O link aceite volta tal e qual.
+const PREFIXOS_NAVEGACAO = Object.freeze(['https://www.google.com/maps/dir/?api=1&', 'https://waze.com/ul?']);
+const CARACTERES_URL = /^[A-Za-z0-9\-._~:/?#[\]@!$&()*+,;=%]+$/;
+
+export function hrefNavegacao(url) {
+  if (typeof url !== 'string' || !CARACTERES_URL.test(url)) return null;
+  const prefixo = PREFIXOS_NAVEGACAO.find((p) => url.startsWith(p));
+  if (prefixo === undefined || url.length === prefixo.length) return null;
+  return url;
 }

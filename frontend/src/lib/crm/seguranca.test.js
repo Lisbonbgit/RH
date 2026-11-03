@@ -25,7 +25,13 @@
  *     componente só passa o `window.google`); o `__crmMapa` (o gancho da verificação no browser, regra 16)
  *     só no `mapa.js`; o `content` de um marcador avançado só no `mapa.js` e no `seletor.js`, e lá é
  *     sempre um nó do `el(...)`;
- *   - um `tel:` só se monta no `hrefTelefone` do `dom.js` (só dígitos e `+`).
+ *   - um `tel:` só se monta no `hrefTelefone` do `dom.js` (só dígitos e `+`);
+ *   - os links de navegação só passam pelo `hrefNavegacao` do `dom.js` (F3 / T3.26; regra 9 da F2 e
+ *     correção "T3.26 / T3.14" do plano da F3): um `href` — ou os campos `google` e `waze` de uma
+ *     paragem — que leia os `links` de uma paragem, um `.href` (o dos `blocos_google`) ou os `blocos`
+ *     tem de ser exatamente uma chamada `hrefNavegacao(…)`. Vale no atributo do JSX (`href={…}`), na
+ *     chave de um objeto (`href: …`, o `atributos` do `el()`), na propriedade do DOM (`no.href = …`) e
+ *     no `setAttribute('href', …)`.
  * As regras da biblioteca do mapa antigo (etiquetas, ícones com `html`, `attribution:` e o prefixo)
  * saíram com ela: a atribuição do mapa é a da própria Google, que o CRM não escreve.
  *
@@ -140,6 +146,78 @@ function soCamposPermitidos(texto, depoisDoColchete) {
     });
 }
 
+// --- Os links de navegação: só pelo hrefNavegacao ---
+
+const REGRA_NAVEGACAO = 'link de navegação sem hrefNavegacao';
+const NOMES_NAVEGACAO = '(?:href|google|waze)';
+// [onde começa o valor, até onde vai]
+const INICIOS_NAVEGACAO = [
+  // O atributo do JSX: `href={…}` (o valor é o que está dentro das chavetas).
+  [new RegExp(`(?<![\\w$])${NOMES_NAVEGACAO}\\s*=\\s*\\{`, 'g'), 'chavetas'],
+  // A chave de um objeto: `href: …`, `'href': …` (o valor vai até à vírgula ou ao fecho do objeto).
+  [new RegExp(`(?<![\\w$.])(['"]?)${NOMES_NAVEGACAO}\\1\\s*:`, 'g'), 'objeto'],
+  // A propriedade do DOM: `no.href = …` (uma comparação, `===`, não conta).
+  [/\.\s*href\s*=(?![=>])/g, 'atribuicao'],
+  // O `setAttribute('href', …)`.
+  [/\bsetAttribute\s*\(\s*(['"])href\1\s*,/g, 'argumento'],
+];
+// O que é um link de navegação do servidor: os `links` de uma paragem, um `.href` (ou `['href']`) e os
+// `blocos` (`blocos_google`, `blocosGoogle`).
+const LE_NAVEGACAO = /\blinks|\.\s*href\b|\[\s*['"]href['"]\s*\]|\bblocos/;
+
+// O índice da aspa que fecha o texto que começa em `abre` (sem contar as escapadas).
+function fimDoTexto(texto, abre) {
+  const aspa = texto[abre];
+  for (let i = abre + 1; i < texto.length; i += 1) {
+    if (texto[i] === '\\') i += 1;
+    else if (texto[i] === aspa) return i;
+  }
+  return texto.length;
+}
+
+// O valor que começa em `inicio`: à mesma profundidade de (), [] e {}, fora dos textos, até ao fecho do
+// que estava aberto antes dele (a chaveta do JSX, o objeto, o argumento) ou até ao separador do `fim`.
+function valorAte(texto, inicio, fim) {
+  let i = inicio;
+  while (i < texto.length && /\s/.test(texto[i])) i += 1;
+  let profundidade = 0;
+  for (; i < texto.length; i += 1) {
+    const c = texto[i];
+    if (c === '"' || c === "'" || c === '`') {
+      i = fimDoTexto(texto, i);
+    } else if ('([{'.includes(c)) {
+      profundidade += 1;
+    } else if (')]}'.includes(c)) {
+      if (profundidade === 0) break;
+      profundidade -= 1;
+    } else if (profundidade === 0 && fim !== 'chavetas' && (c === ',' || c === ';')) {
+      break;
+    } else if (profundidade === 0 && fim === 'atribuicao' && c === '\n') {
+      break;
+    }
+  }
+  return texto.slice(inicio, i);
+}
+
+// O valor é exatamente `hrefNavegacao(…)`, uma só chamada e nada à volta.
+function soOHrefNavegacao(valor) {
+  const m = /^\s*hrefNavegacao\s*\(/.exec(valor);
+  if (m === null) return false;
+  const dentro = valorAte(valor, m[0].length, 'chavetas');
+  return valor[m[0].length + dentro.length] === ')' && valor.slice(m[0].length + dentro.length + 1).trim() === '';
+}
+
+function violacoesDeNavegacao(texto) {
+  const achados = [];
+  for (const [padrao, fim] of INICIOS_NAVEGACAO) {
+    for (const m of texto.matchAll(padrao)) {
+      const valor = valorAte(texto, m.index + m[0].length, fim);
+      if (LE_NAVEGACAO.test(valor) && !soOHrefNavegacao(valor)) achados.push({ regra: REGRA_NAVEGACAO, indice: m.index });
+    }
+  }
+  return achados;
+}
+
 const linhaDe = (texto, indice) => texto.slice(0, indice).split('\n').length;
 
 // procurarViolacoes(texto, {ficheiro}) → [{regra, linha}], pela ordem do texto.
@@ -154,6 +232,8 @@ function procurarViolacoes(texto, { ficheiro = '' } = {}) {
       if (!soCamposPermitidos(texto, m.index + m[0].length)) achados.push({ regra: REGRA_CAMPOS, indice: m.index });
     }
   }
+  // Em todo o lado, também no dom.js e nos módulos do Google.
+  achados.push(...violacoesDeNavegacao(texto));
   return achados
     .sort((a, b) => a.indice - b.indice)
     .map(({ regra, indice }) => ({ regra, linha: linhaDe(texto, indice) }));
@@ -383,6 +463,85 @@ describe('google.maps, importLibrary, __crmMapa e content só onde o plano diz',
   });
 });
 
+describe('os links de navegação só passam pelo hrefNavegacao (correção "T3.26 / T3.14")', () => {
+  test.each([
+    ['<a href={paragem.links.google}>Google Maps</a>'],
+    ['<a href={paragem.links?.waze}>Waze</a>'],
+    ["<a href={paragem['links'].google}>Google Maps</a>"],
+    ['<a href={bloco.href}>Abrir</a>'],
+    ["<a href={bloco['href']}>Abrir</a>"],
+    ['<a href={rota.blocos_google[0].href}>Abrir</a>'],
+    ['<a href={vista.blocosGoogle[i].href} target="_blank" rel="noopener noreferrer">Abrir</a>'],
+    ['<a href={`${paragem.links.google}`}>Google Maps</a>'],
+    ['<a href = { paragem.links.google }>Google Maps</a>'],
+    ['<a\n  href={\n    paragem.links.google\n  }\n>Google Maps</a>'],
+    ['<a href={hrefNavegacao(paragem.links.google) || paragem.links.waze}>Ir</a>'],
+    ['<a href={aberto ? hrefNavegacao(paragem.links.google) : paragem.links.waze}>Ir</a>'],
+    ['<a href={aberto\n  ? hrefNavegacao(paragem.links.google)\n  : paragem.links.waze}>Ir</a>'],
+    ['<a href={hrefNavegacao(paragem.links.google) + paragem.links.waze}>Ir</a>'],
+    ['<a href={hrefNavegacao(paragem.links.google)(x)}>Ir</a>'],
+    ['<a href={hrefTelefone(paragem.links.google)}>Ir</a>'],
+    ['<a href={naoEOHrefNavegacao(bloco.href)}>Ir</a>'],
+    ['<a xlink:href={bloco.href}>Ir</a>'],
+    ['<LinksParagem google={paragem.links.google} />'],
+    ['<LinksParagem waze={paragem.links.waze} />'],
+    ["el(documento, 'a', { texto: 'Waze', atributos: { href: paragem.links.waze } });"],
+    ["el(documento, 'a', { atributos: { 'href': bloco.href } });"],
+    ['const ligacao = { rotulo: bloco.rotulo, href: bloco.href };'],
+    ['const linha = { numero, google: paragem.links?.google ?? null };'],
+    ['const linha = {\n  numero,\n  waze:\n    paragem.links.waze,\n};'],
+    ['ligacao.href = paragem.links.google;'],
+    ['ligacao.href=bloco.href'],
+    ["ligacao.setAttribute('href', bloco.href);"],
+    ['ligacao.setAttribute("href", paragem.links.waze);'],
+  ])('recusa %s', (amostra) => {
+    for (const ficheiro of [...TODOS, DOM]) expect(regras(amostra, ficheiro)).toContain(REGRA_NAVEGACAO);
+  });
+
+  test('cada ligação conta à parte: só a que não passa pelo hrefNavegacao é recusada', () => {
+    const amostra = [
+      'const linha = {',
+      '  google: paragem.links?.google ?? null,',
+      '  waze: hrefNavegacao(paragem.links?.waze),',
+      '};',
+      '<a href={hrefNavegacao(linha.google)}>Google Maps</a>',
+      '<a href={bloco.href}>Abrir</a>',
+    ].join('\n');
+    expect(procurarViolacoes(amostra, { ficheiro: COMPONENTE })).toEqual([
+      { regra: REGRA_NAVEGACAO, linha: 2 },
+      { regra: REGRA_NAVEGACAO, linha: 6 },
+    ]);
+  });
+
+  test.each([
+    ['<a href={hrefNavegacao(paragem.links.google)} target="_blank" rel="noopener noreferrer">Google Maps</a>'],
+    ['<a href={hrefNavegacao(paragem.links?.waze ?? null)}>Waze</a>'],
+    ['<a href={ hrefNavegacao( bloco.href ) }>Abrir</a>'],
+    ['<a\n  href={hrefNavegacao(\n    bloco.href,\n  )}\n>Abrir</a>'],
+    ["<a href={hrefNavegacao(paragem['links'].google)}>Google Maps</a>"],
+    ['<a href={hrefNavegacao(`${bloco.href}`)}>Abrir</a>'],
+    ["el(documento, 'a', { texto: 'Waze', atributos: { href: hrefNavegacao(paragem.links.waze), rel: 'noopener noreferrer' } });"],
+    ['const linha = { numero, google: hrefNavegacao(paragem.links?.google), waze: hrefNavegacao(paragem.links?.waze) };'],
+    ['const linha = {\n  google:\n    hrefNavegacao(paragem.links.google),\n  numero,\n};'],
+    ['const blocos = rota.blocos_google.map((bloco) => ({ ...bloco, href: hrefNavegacao(bloco.href) }));'],
+    ['ligacao.href = hrefNavegacao(bloco.href);'],
+    ["ligacao.setAttribute('href', hrefNavegacao(paragem.links.google));"],
+    ['<a href={linha.google}>Google Maps</a>'],
+    ['<a href={parte.url} target="_blank" rel="noopener noreferrer">{parte.texto}</a>'],
+    ['<a href={hrefTelefone(loja.telefone)}>Ligar</a>'],
+    ['const criado = criarMapa({ google: window.google, documento: document, elemento, configuracao });'],
+    ['const links = paragem.links;'],
+    ['if (bloco.href === null) return null;'],
+    ['if (bloco.href !== undefined) {}'],
+    ['// o href de cada ligação passa pelo hrefNavegacao(paragem.links.google)'],
+    ["const ATRIBUTOS_URL = new Set(['href', 'src', 'xlink:href']);"],
+    ["// el(document, 'span', {texto, classe, atributos: {href: 'tel:+351…'}, filhos: [...]})"],
+    ['// {google: {chave, map_id}, centro}: a configuração do mapa'],
+  ])('deixa passar %s', (amostra) => {
+    for (const ficheiro of [...TODOS, DOM]) expect(regras(amostra, ficheiro)).not.toContain(REGRA_NAVEGACAO);
+  });
+});
+
 describe('procurarViolacoes deixa passar o código seguro', () => {
   test('fora dos módulos do Google', () => {
     const seguro = [
@@ -393,6 +552,8 @@ describe('procurarViolacoes deixa passar o código seguro', () => {
       'const { partes } = ATRIBUICOES.geoapify;',
       '<a href={hrefTelefone(loja.telefone)}>Ligar</a>',
       '// o "Ligar" leva o `tel:` do hrefTelefone',
+      '<a href={hrefNavegacao(paragem.links.google)} target="_blank" rel="noopener noreferrer">Google Maps</a>',
+      "const { partes } = ATRIBUICOES.ors;",
       'navigator.clipboard.writeText(texto);',
       "const { importar } = prepararGoogleMaps({ janela: window, documento: document, chave, versao: 'weekly' });",
       "await importar('maps');",
@@ -504,6 +665,16 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
     'lib/crm/lugarGoogle.js',
     'lib/crm/dom.js',
     'lib/crm/atribuicoes.js',
+    'lib/crm/datas.js',
+    'lib/crm/polilinha.js',
+    'lib/crm/rota.js',
+    'lib/crm/reordenar.js',
+    'lib/crm/filaRota.js',
+    'lib/crm/planeador.js',
+    'lib/crm/adicionarARota.js',
+    'lib/crm/definicoesRotas.js',
+    'lib/crm/listaRotas.js',
+    'lib/crm/painelRota.js',
     'lib/crm/api.js',
     'lib/crm/ecraMapa.js',
     'lib/crm/seletor.js',
@@ -525,6 +696,11 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
     'components/crm/Partes.js',
     'components/crm/FormularioLoja.js',
     'components/crm/DialogoDuplicado.js',
+    'components/crm/ListaParagens.js',
+    'components/crm/ResumoRota.js',
+    'components/crm/DefinicoesDoDia.js',
+    'components/crm/SugestoesRota.js',
+    'components/crm/DialogoAdicionarARota.js',
     'pages/crm/CrmMapa.js',
     'pages/crm/CrmLojaNova.js',
     'pages/crm/CrmLoja.js',
@@ -532,6 +708,9 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
     'pages/crm/DefinicoesMembros.js',
     'pages/crm/DefinicoesRegioes.js',
     'pages/crm/DefinicoesFabrica.js',
+    'pages/crm/DefinicoesRotas.js',
+    'pages/crm/CrmRotas.js',
+    'pages/crm/CrmRota.js',
     'pages/crm/rotasCrm.js',
     ...FICHEIROS_SOLTOS,
   ]) {
@@ -544,6 +723,16 @@ test('a lista dos ficheiros tem o código do CRM e deixa de fora os testes e os 
     'lib/crm/carregadorGoogle.test.js',
     'lib/crm/lugarGoogle.test.js',
     'lib/crm/atribuicoes.test.js',
+    'lib/crm/datas.test.js',
+    'lib/crm/polilinha.test.js',
+    'lib/crm/rota.test.js',
+    'lib/crm/reordenar.test.js',
+    'lib/crm/filaRota.test.js',
+    'lib/crm/planeador.test.js',
+    'lib/crm/adicionarARota.test.js',
+    'lib/crm/definicoesRotas.test.js',
+    'lib/crm/listaRotas.test.js',
+    'lib/crm/painelRota.test.js',
     'lib/crm/css.test.js',
     'lib/crm/ecraMapa.test.js',
     'lib/crm/seletor.test.js',

@@ -18,7 +18,13 @@
 //    `gm_authFailure`), com o mapa já criado ou ainda a carregar, e a página também recebe `aoFalhar` (uma vez;
 //    revisão do mapa Google, MAPA-G-1);
 //  - quando a área muda de tamanho (o cartão da loja, um aviso por cima, o telemóvel a rodar), avisa o mapa
-//    (`redimensionar`).
+//    (`redimensionar`);
+//  - no planeador (F3 / T3.36), mostra também a rota (`rota`: o `vista.mapa` do planeador, que só muda de
+//    referência quando os pinos, as pontas, a linha ou as lojas fora mudam), num efeito à parte do das lojas
+//    (`mapa.mostrarRota`: os pinos numerados, o início e o fim e a linha). Sem o `prop`, nenhuma rota
+//    (`mostrarRota(null)`). O toque num pino de uma paragem avisa a página (`aoEscolherParagem`, lido do `ref`
+//    dos ouvintes: uma função nova a cada desenho não volta a desenhar os pinos). A `classe` junta-se à do
+//    elemento do mapa (`crm-mapa--planeador` esbate as lojas fora da rota; `crm.css`).
 //
 // O `div.crm-mapa` é o único elemento que este componente desenha, sem filhos nossos: a Google enche-o com o
 // mapa, o logótipo e a atribuição, que nada nosso tapa (a regra de disposição do `crm.css`).
@@ -40,6 +46,9 @@ export default function MapaLojas({
   aoEscolherLoja,
   aoTocarNoMapa,
   aoTocarNumLugar,
+  rota,
+  classe,
+  aoEscolherParagem,
 }) {
   const area = useRef(null);
   const [mapa, setMapa] = useState(null);
@@ -47,7 +56,7 @@ export default function MapaLojas({
   // As funções mais recentes da página: o mapa cria-se uma vez e chama-as daqui.
   const ouvintes = useRef({});
   useLayoutEffect(() => {
-    ouvintes.current = { aoPronto, aoFalhar, aoEscolherLoja, aoTocarNoMapa, aoTocarNumLugar };
+    ouvintes.current = { aoPronto, aoFalhar, aoEscolherLoja, aoTocarNoMapa, aoTocarNumLugar, aoEscolherParagem };
   });
 
   useEffect(() => {
@@ -120,10 +129,18 @@ export default function MapaLojas({
     if (mapa && Array.isArray(lojas)) mapa.mostrarLojas(lojas);
   }, [mapa, lojas]);
 
+  // A rota é um grupo à parte das lojas: mostrar uma não mexe na outra. Sem rota, tira-se a que houver.
+  useEffect(() => {
+    if (!mapa) return;
+    mapa.mostrarRota(rota ?? null, {
+      aoEscolherParagem: (paragem, marcador) => ouvintes.current.aoEscolherParagem?.(paragem, marcador),
+    });
+  }, [mapa, rota]);
+
   return (
     <div
       ref={area}
-      className="crm-mapa"
+      className={classe ? `crm-mapa ${classe}` : 'crm-mapa'}
       role="region"
       aria-label="Mapa das lojas"
       aria-busy={ocupado ? 'true' : undefined}

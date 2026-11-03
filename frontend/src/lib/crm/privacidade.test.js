@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 // POLÍTICA DE PRIVACIDADE — a secção do CRM (T2.31; G7 do plano do mapa Google;
-// adenda 2026-10-14 §2.2 e correção A6).
+// adenda 2026-10-14 §2.2 e correção A6; T3.42 do plano da F3).
 //
 // A página (`pages/PrivacyPolicy.js`) é do portal e partilhada com o Matheus; este
 // teste só confere o que o CRM lá pôs, pelo texto que a pessoa lê: a página é
@@ -25,12 +25,20 @@
 //     GPS da Geoapify ("Powered by Geoapify");
 //   - o §3 a falar só do registo de ponto e o §4 a nomear o Google Maps e a
 //     Geoapify, a quem o servidor só envia pontos do mapa, sem dados pessoais;
+//   - as rotas (F3, T3.42 e a correção "T3.42 (política de privacidade, §4)"): a
+//     secção do CRM e o §4 nomeiam o openrouteservice (HeiGIT), que calcula a
+//     ordem das visitas e as horas das rotas; o pedido parte do servidor, que só
+//     lhe envia coordenadas e números, nunca dados pessoais; e a secção do CRM
+//     traz a atribuição do openrouteservice, a mesma do painel do planeador. As
+//     frases da G7 ficam todas (os testes acima não mudaram);
 //   - a página já não fala da biblioteca do mapa antigo nem do OpenMapTiles (o
 //     mapa deixou de ser deles); o nome da biblioteca escreve-se por partes, para
 //     o inventário do §5 do plano do mapa Google (G19) dar vazio;
 //   - a data do topo não é anterior à secção do CRM.
-// O texto não vem de `atribuicoes.js`: a atribuição do mapa é a da própria Google,
-// e a da Geoapify escreve-se aqui tal e qual.
+// O texto da página não vem de `atribuicoes.js` (a página é do portal): a
+// atribuição do mapa é a da própria Google, e as da Geoapify e do openrouteservice
+// escrevem-se aqui tal e qual; a do openrouteservice confere-se também com a do
+// painel (`ATRIBUICOES.ors.texto`), para as duas não se desencontrarem.
 // A redação é do dono (CRM_PORTING_GUIDE.md §14, ponto 7): se ele a mudar, este
 // teste muda com ela, mas os compromissos acima ficam.
 import React from 'react';
@@ -38,8 +46,11 @@ import React from 'react';
 import { renderToStaticMarkup as marcacaoEstatica } from 'react-dom/server';
 import PrivacyPolicy from '../../pages/PrivacyPolicy';
 import { TEXTO_ESTOU_NESTA_LOJA } from './seletor';
+import { ATRIBUICOES } from './atribuicoes';
 
 const TITULO_CRM = 'CRM Purple House (equipa comercial)';
+// A atribuição do openrouteservice, tal como o plano da F3 a fixa (T3.26 e T3.42).
+const ATRIBUICAO_ORS = 'Developed by VROOM · Hosted by HeiGIT · Routing by openrouteservice · Data from OpenStreetMap';
 const DATA_DA_SECCAO_CRM = '2026-10-10';
 const TERMOS_GOOGLE_MAPS = 'https://maps.google.com/help/terms_maps/';
 const PRIVACIDADE_GOOGLE = 'https://policies.google.com/privacy';
@@ -139,6 +150,29 @@ test('secção do CRM: nome e telefone nunca copiados da Google; a origem das mo
   expect(crm).toContain(
     'A morada preenchida depois de uma pesquisa vem da Google; a de um ponto do GPS vem da Geoapify'
       + ' (dados OpenStreetMap), com a indicação Powered by Geoapify.',
+  );
+});
+
+test('secção do CRM: as rotas pelo openrouteservice (HeiGIT), com a atribuição, e só coordenadas e números', () => {
+  const crm = seccao(pagina().seccoes, TITULO_CRM).texto;
+  // A mesma atribuição que o painel do planeador mostra.
+  expect(ATRIBUICOES.ors.texto).toBe(ATRIBUICAO_ORS);
+  expect(crm).toContain(
+    'Rotas: a ordem das visitas e as horas das rotas são calculadas pelo openrouteservice (HeiGIT gGmbH),'
+      + ` com a indicação ${ATRIBUICAO_ORS}.`,
+  );
+  // A frase inteira: passa pelo <strong> (nunca), e assim um espaço em falta também se vê.
+  expect(crm).toContain(
+    'O pedido parte do servidor, que só lhe envia as coordenadas das lojas e dos pontos de partida e de chegada,'
+      + ' com os tempos e as prioridades de cada visita, e nunca nomes, moradas, telefones ou outros dados pessoais.',
+  );
+});
+
+test('§4: o openrouteservice (HeiGIT) junta-se ao Google Maps e à Geoapify, só com coordenadas e números', () => {
+  const partilha = seccao(pagina().seccoes, 'Partilha de dados').texto;
+  expect(partilha).toContain(
+    'A ordem das visitas e as horas das rotas do CRM vêm do openrouteservice (HeiGIT gGmbH), a quem o servidor'
+      + ' só envia coordenadas e números, sem dados pessoais.',
   );
 });
 

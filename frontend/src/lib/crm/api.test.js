@@ -23,7 +23,17 @@
  * própria Google). Os `params` da morada comparam-se com `toStrictEqual`: o
  * `toEqual` ignora as chaves com `undefined` e deixava passar um
  * `lat: undefined`.
+ *
+ * As chamadas da F3 (T3.29): as rotas de um dia (`/rotas`, `/rotas/{data}`,
+ * as sugestões, adicionar uma paragem, alterar, recalcular as horas e a
+ * melhor ordem). Os pedidos comparam-se inteiros com `toStrictEqual`: a chave
+ * `versao` em falta e a `versao: null` dizem coisas diferentes ao servidor, e
+ * um `timeout` a mais ou a menos muda o tecto de espera. Os caminhos e o
+ * tecto do cálculo conferem-se com o servidor (`backend/crm/rotas.py` e
+ * `servicos/ors.py`), lidos pelo próprio teste.
  */
+import fs from 'fs';
+import path from 'path';
 import axios, { AxiosError, AxiosHeaders } from 'axios';
 import {
   ErroCrm, erroCrm, criarClienteCrm, criarInstanciaCrm, instanciaCrm,
@@ -31,8 +41,9 @@ import {
   listarRegioes, criarRegiao, alterarRegiao, apagarRegiao,
   listarLojas, obterLoja, criarLoja, alterarLoja, apagarLoja,
   obterDefinicoes, alterarDefinicoes, obterConfigMapa, moradaInversa,
+  listarRotas, obterRota, obterSugestoes, adicionarParagem, alterarRota, recalcularHoras, otimizarRota,
   MENSAGEM_SEM_REDE, MENSAGEM_ERRO_INESPERADO, MENSAGEM_VALIDACAO, MENSAGEM_SEM_SESSAO,
-  TIMEOUT_CRM_MS, URL_BASE_CRM,
+  TIMEOUT_CRM_MS, TIMEOUT_CALCULO_MS, URL_BASE_CRM,
 } from './api';
 import * as moduloApi from './api';
 import { pontoDeBias } from './morada';
@@ -65,6 +76,17 @@ const rejeicao = async (promessa) => {
   }
   throw new Error('a promessa não rejeitou');
 };
+
+// Um pedir falso que responde, por ordem, com cada um dos `dados`.
+const pedirQueResponde = (...dados) => {
+  const fila = [...dados];
+  return jest.fn(async () => ({ data: fila.shift(), status: 200 }));
+};
+const pedirQueFalha = (erro) => jest.fn(async () => { throw erro; });
+// O que se tira de cada pedido, numa lista do próprio teste: o `mock.calls`
+// nasce noutro «realm» e um `.map` sobre ele dá um Array que o
+// `toStrictEqual` recusa ("serializes to the same string").
+const pedidos = (pedir, tirar) => Array.from(pedir.mock.calls, ([config]) => tirar(config));
 
 const AUTORIZACAO_ORIGINAL = axios.defaults.headers.common.Authorization;
 const ADAPTADOR_ORIGINAL = instanciaCrm.defaults.adapter;
@@ -359,17 +381,6 @@ describe('criarClienteCrm — chamadas da F2 com pedir falso', () => {
   const LOJA_ID = '0b6f3c2e-8d4a-4f1b-9c7e-2a5d8e1f3b4c';
   const VERSAO = '2026-10-10T09:00:00.123456Z';
 
-  // Um pedir falso que responde, por ordem, com cada um dos `dados`.
-  const pedirQueResponde = (...dados) => {
-    const fila = [...dados];
-    return jest.fn(async () => ({ data: fila.shift(), status: 200 }));
-  };
-  const pedirQueFalha = (erro) => jest.fn(async () => { throw erro; });
-  // O que se tira de cada pedido, numa lista do próprio teste: o `mock.calls`
-  // nasce noutro «realm» e um `.map` sobre ele dá um Array que o
-  // `toStrictEqual` recusa ("serializes to the same string").
-  const pedidos = (pedir, tirar) => Array.from(pedir.mock.calls, ([config]) => tirar(config));
-
   test('regiões: listar (GET), criar (POST), alterar (PATCH) e apagar (DELETE), e devolvem os dados', async () => {
     const lista = [{ id: REGIAO_ID, nome: 'Lisboa', ordem: 0 }];
     const criada = { id: REGIAO_ID, nome: 'Setúbal', ordem: 1 };
@@ -573,6 +584,295 @@ describe('criarClienteCrm — chamadas da F2 com pedir falso', () => {
   });
 });
 
+describe('criarClienteCrm — chamadas da F3 (rotas) com pedir falso', () => {
+  // Uma data como as do servidor (`AAAA-MM-DD`, o dia em Lisboa) e ids uuid4.
+  const DATA = '2026-10-12';
+  const LOJA_ID = '0b6f3c2e-8d4a-4f1b-9c7e-2a5d8e1f3b4c';
+  const PARAGEM_ID = '9a1b2c3d-4e5f-4a6b-8c7d-0e1f2a3b4c5d';
+  // O pedido inteiro, como o cliente o entregou ao `pedir`.
+  const inteiros = (pedir) => pedidos(pedir, (config) => ({ ...config }));
+
+  // As seis chamadas de um dia (todas com a data no caminho).
+  const chamadasDoDia = (cliente, data) => [
+    () => cliente.obterRota(data),
+    () => cliente.obterSugestoes(data),
+    () => cliente.adicionarParagem(data, { loja_id: LOJA_ID, motivo: 'amostra', versao: 3 }),
+    () => cliente.alterarRota(data, { versao: 3, evitar_portagens: true }),
+    () => cliente.recalcularHoras(data, 3),
+    () => cliente.otimizarRota(data, 3),
+  ];
+
+  test('o tecto do cálculo é de 35 s, acima dos 30 s das outras chamadas', () => {
+    expect(TIMEOUT_CALCULO_MS).toBe(35000);
+    expect(TIMEOUT_CALCULO_MS).toBeGreaterThan(TIMEOUT_CRM_MS);
+  });
+
+  test('listarRotas faz GET /rotas só com o de e o ate, sem os nulos; sem intervalo vai sem parâmetros', async () => {
+    const lista = { hoje: DATA, de: '2026-09-28', ate: '2026-12-11', rotas: [] };
+    const pedir = pedirQueResponde(lista, lista, lista, lista, lista, lista);
+    const cliente = criarClienteCrm({ pedir });
+
+    // As outras chaves do intervalo são estado do ecrã: não vão.
+    await expect(cliente.listarRotas({ de: '2026-10-01', ate: '2026-10-31', outra: 'x' })).resolves.toBe(lista);
+    await expect(cliente.listarRotas({ de: '2026-10-01', ate: null })).resolves.toBe(lista);
+    await expect(cliente.listarRotas({ de: undefined, ate: '2026-10-31' })).resolves.toBe(lista);
+    // Sem intervalo, o servidor usa hoje − 14 e hoje + 60 (o «Adicionar à rota», T3.34).
+    await expect(cliente.listarRotas()).resolves.toBe(lista);
+    await expect(cliente.listarRotas({})).resolves.toBe(lista);
+    await expect(cliente.listarRotas(null)).resolves.toBe(lista);
+
+    expect(inteiros(pedir)).toStrictEqual([
+      { method: 'GET', url: '/rotas', params: { de: '2026-10-01', ate: '2026-10-31' } },
+      { method: 'GET', url: '/rotas', params: { de: '2026-10-01' } },
+      { method: 'GET', url: '/rotas', params: { ate: '2026-10-31' } },
+      { method: 'GET', url: '/rotas', params: {} },
+      { method: 'GET', url: '/rotas', params: {} },
+      { method: 'GET', url: '/rotas', params: {} },
+    ]);
+  });
+
+  test('obterRota faz GET /rotas/{data} e obterSugestoes GET /rotas/{data}/sugestoes', async () => {
+    const rota = { id: null, data: DATA, existe: false, versao: null, paragens: [] };
+    const sugestoes = { sem_paragens: true, no_caminho: false, grupos: [] };
+    const pedir = pedirQueResponde(rota, sugestoes);
+    const cliente = criarClienteCrm({ pedir });
+
+    await expect(cliente.obterRota(DATA)).resolves.toBe(rota);
+    await expect(cliente.obterSugestoes(DATA)).resolves.toBe(sugestoes);
+
+    expect(inteiros(pedir)).toStrictEqual([
+      { method: 'GET', url: '/rotas/2026-10-12' },
+      { method: 'GET', url: '/rotas/2026-10-12/sugestoes' },
+    ]);
+  });
+
+  test('adicionarParagem faz POST /rotas/{data}/paragens só com loja_id, motivo e versao, e devolve a rota (201)', async () => {
+    const rota = { id: 'r-1', data: DATA, existe: true, versao: 4 };
+    const pedir = jest.fn(async () => ({ data: rota, status: 201 }));
+    const cliente = criarClienteCrm({ pedir });
+
+    // O planeador conhece a versão; o nome e a fase são estado do ecrã.
+    await expect(cliente.adicionarParagem(DATA, {
+      loja_id: LOJA_ID, motivo: 'amostra', versao: 3, nome: 'Café Central', fase: 'contactada',
+    })).resolves.toBe(rota);
+    // O cartão do mapa não conhece a versão: a chave NÃO vai (o servidor lê,
+    // grava condicionado e tenta de novo).
+    await cliente.adicionarParagem(DATA, { loja_id: LOJA_ID, motivo: 'entrega' });
+    await cliente.adicionarParagem(DATA, { loja_id: LOJA_ID, motivo: 'entrega', versao: undefined });
+    // `versao: null` vai `null`: «julgo que ainda não há rota» (a rota virtual).
+    // Sem motivo, o servidor escolhe-o pela fase da loja.
+    await cliente.adicionarParagem(DATA, { loja_id: LOJA_ID, versao: null });
+    await cliente.adicionarParagem(DATA, { loja_id: LOJA_ID, motivo: null, versao: 1 });
+
+    expect(inteiros(pedir)).toStrictEqual([
+      { method: 'POST', url: '/rotas/2026-10-12/paragens', data: { loja_id: LOJA_ID, motivo: 'amostra', versao: 3 } },
+      { method: 'POST', url: '/rotas/2026-10-12/paragens', data: { loja_id: LOJA_ID, motivo: 'entrega' } },
+      { method: 'POST', url: '/rotas/2026-10-12/paragens', data: { loja_id: LOJA_ID, motivo: 'entrega' } },
+      { method: 'POST', url: '/rotas/2026-10-12/paragens', data: { loja_id: LOJA_ID, versao: null } },
+      { method: 'POST', url: '/rotas/2026-10-12/paragens', data: { loja_id: LOJA_ID, motivo: null, versao: 1 } },
+    ]);
+    // Dito por extenso: sem versão, a chave nem existe no corpo.
+    expect('versao' in pedir.mock.calls[1][0].data).toBe(false);
+    expect('versao' in pedir.mock.calls[2][0].data).toBe(false);
+    expect(pedir.mock.calls[3][0].data.versao).toBeNull();
+  });
+
+  test('adicionarParagem sem o pedido (ou com um nulo) não rebenta: vai um corpo vazio e o servidor responde 422', async () => {
+    const pedir = pedirQueResponde({}, {});
+    const cliente = criarClienteCrm({ pedir });
+    await cliente.adicionarParagem(DATA);
+    await cliente.adicionarParagem(DATA, null);
+    expect(inteiros(pedir)).toStrictEqual([
+      { method: 'POST', url: '/rotas/2026-10-12/paragens', data: {} },
+      { method: 'POST', url: '/rotas/2026-10-12/paragens', data: {} },
+    ]);
+  });
+
+  test('alterarRota faz PATCH /rotas/{data} com o corpo tal como o planeador o montou', async () => {
+    const rota = { id: 'r-1', data: DATA, existe: true, versao: 4 };
+    const pedir = pedirQueResponde(rota);
+    const cliente = criarClienteCrm({ pedir });
+    // O corpo vem da fila (`juntarAlteracoes`, T3.30): vai tal e qual, e o
+    // servidor valida-o.
+    const corpo = {
+      versao: 3, ordem: [PARAGEM_ID], paragens: { [PARAGEM_ID]: { motivo: 'entrega' } }, retirar: [], estado: 'planeada',
+    };
+
+    await expect(cliente.alterarRota(DATA, corpo)).resolves.toBe(rota);
+
+    expect(inteiros(pedir)).toStrictEqual([{ method: 'PATCH', url: '/rotas/2026-10-12', data: corpo }]);
+    expect(pedir.mock.calls[0][0].data).toBe(corpo);
+  });
+
+  test('recalcularHoras e otimizarRota fazem POST com {versao} e o tecto de espera do cálculo', async () => {
+    const comHoras = { id: 'r-1', versao: 4, calculo: { atual: true } };
+    const otimizada = { id: 'r-1', versao: 5, calculo: { atual: true } };
+    const pedir = pedirQueResponde(comHoras, otimizada);
+    const cliente = criarClienteCrm({ pedir });
+
+    await expect(cliente.recalcularHoras(DATA, 4)).resolves.toBe(comHoras);
+    await expect(cliente.otimizarRota(DATA, 4)).resolves.toBe(otimizada);
+
+    expect(inteiros(pedir)).toStrictEqual([
+      { method: 'POST', url: '/rotas/2026-10-12/recalcular', data: { versao: 4 }, timeout: TIMEOUT_CALCULO_MS },
+      { method: 'POST', url: '/rotas/2026-10-12/otimizar', data: { versao: 4 }, timeout: TIMEOUT_CALCULO_MS },
+    ]);
+    expect(pedir.mock.calls[0][0].timeout).toBe(35000);
+    expect(pedir.mock.calls[1][0].timeout).toBe(35000);
+  });
+
+  test('a data vai codificada num só pedaço do caminho (nunca abre outra rota)', async () => {
+    const pedir = pedirQueResponde({}, {}, {}, {}, {}, {});
+    const cliente = criarClienteCrm({ pedir });
+    await cliente.obterRota('2026/10/12');
+    await cliente.obterSugestoes('a?b');
+    await cliente.adicionarParagem('../x', { loja_id: LOJA_ID });
+    await cliente.alterarRota('a b', { versao: 1 });
+    await cliente.recalcularHoras('#1', 1);
+    await cliente.otimizarRota('%', 1);
+    expect(pedidos(pedir, (c) => c.url)).toStrictEqual([
+      '/rotas/2026%2F10%2F12', '/rotas/a%3Fb/sugestoes', '/rotas/..%2Fx/paragens',
+      '/rotas/a%20b', '/rotas/%231/recalcular', '/rotas/%25/otimizar',
+    ]);
+  });
+
+  test('uma data «.», «..» ou vazia nunca sai: rejeita com erro_interno, sem pedido nenhum', async () => {
+    const pedir = pedirQueResponde({});
+    const cliente = criarClienteCrm({ pedir });
+    for (const data of ['.', '..', '']) {
+      for (const chamada of chamadasDoDia(cliente, data)) {
+        // Rejeita (nunca lança fora da promessa): o ecrã trata-o como os outros erros.
+        const e = await rejeicao(chamada());
+        expect(e).toBeInstanceOf(ErroCrm);
+        expect(forma(e)).toEqual(esperado('erro_interno', MENSAGEM_ERRO_INESPERADO, 0));
+      }
+    }
+    expect(pedir).not.toHaveBeenCalled();
+  });
+
+  test('os erros das rotas chegam normalizados: o código, a mensagem do servidor e o tipo do cálculo em extra', async () => {
+    const detalhe = (estado, codigo, mensagem, resto = {}) => comResposta(estado, { detail: { codigo, mensagem, ...resto } });
+    const conflito = 'Alterado por outra pessoa — recarregar';
+    const fechada = 'Este dia já passou — a rota só se pode ver.';
+    const emCurso = 'A rota já tem registos do motorista — no escritório só se pode ver.';
+    const jaNaRota = 'Esta loja já está na rota deste dia.';
+    const cheia = 'Uma rota tem no máximo 48 paragens.';
+    const semRota = 'Ainda não há rota para este dia.';
+    const limite = 'Cálculo automático indisponível por agora (limite de pedidos) — espere um minuto ou ordene à mão';
+    const semEstrada = 'A paragem 3 não fica perto de uma estrada — corrija a localização da loja';
+    const semChave = 'Cálculo automático indisponível — ordene à mão';
+    const pedir = jest.fn()
+      .mockRejectedValueOnce(detalhe(409, 'conflito', conflito))
+      .mockRejectedValueOnce(detalhe(409, 'rota_fechada', fechada))
+      .mockRejectedValueOnce(detalhe(409, 'rota_em_curso', emCurso))
+      .mockRejectedValueOnce(detalhe(409, 'ja_na_rota', jaNaRota))
+      .mockRejectedValueOnce(detalhe(409, 'rota_cheia', cheia))
+      .mockRejectedValueOnce(detalhe(404, 'nao_encontrado', semRota))
+      .mockRejectedValueOnce(detalhe(503, 'calculo_indisponivel', limite, { tipo: 'limite' }))
+      .mockRejectedValueOnce(detalhe(503, 'calculo_indisponivel', semEstrada, { tipo: 'ponto_sem_estrada' }))
+      .mockRejectedValueOnce(detalhe(503, 'calculo_indisponivel', semChave, { tipo: 'sem_chave' }))
+      .mockRejectedValueOnce(detalhe(422, 'validacao', MENSAGEM_VALIDACAO, { campos: { data: 'Indique o dia no formato AAAA-MM-DD.' } }))
+      .mockRejectedValueOnce(detalhe(422, 'validacao', MENSAGEM_VALIDACAO, { campos: { versao: 'Indique a versão da rota que recebeu.' } }));
+    const cliente = criarClienteCrm({ pedir });
+
+    const erros = [];
+    for (const chamada of [
+      () => cliente.alterarRota(DATA, { versao: 3, hora_saida: '09:00' }),
+      () => cliente.adicionarParagem('2026-10-01', { loja_id: LOJA_ID }),
+      () => cliente.alterarRota(DATA, { versao: 3, retirar: [PARAGEM_ID] }),
+      () => cliente.adicionarParagem(DATA, { loja_id: LOJA_ID, versao: 3 }),
+      () => cliente.adicionarParagem(DATA, { loja_id: LOJA_ID, versao: 3 }),
+      () => cliente.recalcularHoras(DATA, 1),
+      () => cliente.otimizarRota(DATA, 3),
+      () => cliente.recalcularHoras(DATA, 3),
+      () => cliente.otimizarRota(DATA, 3),
+      () => cliente.obterRota('2026-13-01'),
+      () => cliente.otimizarRota(DATA, undefined),
+    ]) {
+      const e = await rejeicao(chamada());
+      expect(e).toBeInstanceOf(ErroCrm);
+      erros.push(forma(e));
+    }
+
+    expect(erros).toEqual([
+      esperado('conflito', conflito, 409),
+      esperado('rota_fechada', fechada, 409),
+      esperado('rota_em_curso', emCurso, 409),
+      esperado('ja_na_rota', jaNaRota, 409),
+      esperado('rota_cheia', cheia, 409),
+      esperado('nao_encontrado', semRota, 404),
+      esperado('calculo_indisponivel', limite, 503, { extra: { tipo: 'limite' } }),
+      esperado('calculo_indisponivel', semEstrada, 503, { extra: { tipo: 'ponto_sem_estrada' } }),
+      esperado('calculo_indisponivel', semChave, 503, { extra: { tipo: 'sem_chave' } }),
+      esperado('validacao', MENSAGEM_VALIDACAO, 422, { campos: { data: 'Indique o dia no formato AAAA-MM-DD.' } }),
+      esperado('validacao', MENSAGEM_VALIDACAO, 422, { campos: { versao: 'Indique a versão da rota que recebeu.' } }),
+    ]);
+  });
+
+  test('sem rede, ou com o tecto do cálculo esgotado, todas as chamadas da F3 rejeitam com sem_rede', async () => {
+    for (const falha of [semResposta(), semResposta('ECONNABORTED', 'timeout of 35000ms exceeded')]) {
+      const cliente = criarClienteCrm({ pedir: pedirQueFalha(falha) });
+      for (const chamada of [() => cliente.listarRotas(), ...chamadasDoDia(cliente, DATA)]) {
+        const e = await rejeicao(chamada());
+        expect(e).toBeInstanceOf(ErroCrm);
+        expect(forma(e)).toEqual(esperado('sem_rede', MENSAGEM_SEM_REDE, 0));
+      }
+    }
+  });
+});
+
+describe('as chamadas da F3 batem com o servidor (o teste lê o backend)', () => {
+  // `frontend/src/lib/crm` → a raiz do repositório.
+  const RAIZ = path.join(__dirname, '..', '..', '..', '..');
+  const ROTAS_PY = path.join(RAIZ, 'backend', 'crm', 'rotas.py');
+  const ORS_PY = path.join(RAIZ, 'backend', 'crm', 'servicos', 'ors.py');
+  const DATA = '2026-10-12';
+
+  test('o cliente chama as 7 rotas do rotas.py, pelo método e caminho de cada uma — nem mais nem menos', async () => {
+    const texto = fs.readFileSync(ROTAS_PY, 'utf8');
+    const doServidor = Array.from(
+      texto.matchAll(/^@router\.(\w+)\("([^"]*)"/gm),
+      ([, metodo, caminho]) => `${metodo.toUpperCase()} ${caminho}`,
+    ).sort();
+    // O leitor prova-se contra a lista do plano F3 §4.
+    expect(doServidor).toEqual([
+      'GET /rotas', 'GET /rotas/{data}', 'GET /rotas/{data}/sugestoes', 'PATCH /rotas/{data}',
+      'POST /rotas/{data}/otimizar', 'POST /rotas/{data}/paragens', 'POST /rotas/{data}/recalcular',
+    ]);
+
+    const pedir = jest.fn(async () => ({ data: {} }));
+    const cliente = criarClienteCrm({ pedir });
+    await cliente.listarRotas({ de: DATA, ate: DATA });
+    await cliente.obterRota(DATA);
+    await cliente.obterSugestoes(DATA);
+    await cliente.adicionarParagem(DATA, { loja_id: 'x' });
+    await cliente.alterarRota(DATA, { versao: 1 });
+    await cliente.recalcularHoras(DATA, 1);
+    await cliente.otimizarRota(DATA, 1);
+    const doCliente = Array.from(
+      pedir.mock.calls,
+      ([config]) => `${config.method} ${config.url.replace(`/${DATA}`, '/{data}')}`,
+    ).sort();
+    expect(doCliente).toEqual(doServidor);
+  });
+
+  test('o tecto do cálculo cobre o pior caso do otimizar no servidor (VROOM + Directions), com folga', () => {
+    const texto = fs.readFileSync(ORS_PY, 'utf8');
+    const segundos = (nome) => {
+      const achado = texto.match(new RegExp(`^${nome} = (\\d+(?:\\.\\d+)?)$`, 'm'));
+      if (!achado) throw new Error(`Não encontrei ${nome} no ors.py`);
+      return Number(achado[1]);
+    };
+    // O `otimizar` faz o VROOM e depois sempre o Directions (plano F3 §1:
+    // 15 s + 10 s, abaixo dos 25 s, contra os 35 s do cliente).
+    const pior = (segundos('TOTAL_OTIMIZACAO_S') + segundos('TOTAL_DIRECOES_S')) * 1000;
+    expect(pior).toBe(25000);
+    expect(TIMEOUT_CALCULO_MS - pior).toBeGreaterThanOrEqual(5000);
+    // O recalcular só faz o Directions: cabe com mais folga ainda.
+    expect(TIMEOUT_CALCULO_MS - segundos('TOTAL_DIRECOES_S') * 1000).toBeGreaterThanOrEqual(5000);
+  });
+});
+
 describe('o URL do backend vem de REACT_APP_BACKEND_URL', () => {
   // No Jest a variável não existe (o CRA não carrega o `.env.local` com
   // NODE_ENV=test): comparar o URL_BASE_CRM com a mesma expressão dava
@@ -733,6 +1033,48 @@ describe('a instância axios do CRM', () => {
     expect(corpo(10)).toEqual({ fabrica_lat: 38.7, fabrica_lng: -9.1 });
     // Os GET e os DELETE não levam corpo.
     for (const i of [0, 3, 4, 5, 8, 9, 11, 12]) expect(adaptador.mock.calls[i][0].data).toBeUndefined();
+  });
+
+  test('as funções da F3 do módulo saem pela instância do CRM: método, caminho, corpo e tecto de espera', async () => {
+    const adaptador = adaptadorQueResponde({});
+    instanciaCrm.defaults.adapter = adaptador;
+    const data = '2026-10-12';
+    const loja = '0b6f3c2e-8d4a-4f1b-9c7e-2a5d8e1f3b4c';
+    await listarRotas({ de: '2026-10-01', ate: '2026-10-31' });
+    await listarRotas();
+    await obterRota(data);
+    await obterSugestoes(data);
+    await adicionarParagem(data, { loja_id: loja, motivo: 'amostra' });
+    await adicionarParagem(data, { loja_id: loja, versao: null });
+    await alterarRota(data, { versao: 3, evitar_portagens: true });
+    await recalcularHoras(data, 3);
+    await otimizarRota(data, 4);
+
+    const chamadas = Array.from(adaptador.mock.calls, ([c]) => c);
+    expect(chamadas.map((c) => `${c.method.toUpperCase()} ${axios.getUri(c)}`)).toEqual([
+      `GET ${URL_BASE_CRM}/rotas?de=2026-10-01&ate=2026-10-31`,
+      `GET ${URL_BASE_CRM}/rotas`,
+      `GET ${URL_BASE_CRM}/rotas/${data}`,
+      `GET ${URL_BASE_CRM}/rotas/${data}/sugestoes`,
+      `POST ${URL_BASE_CRM}/rotas/${data}/paragens`,
+      `POST ${URL_BASE_CRM}/rotas/${data}/paragens`,
+      `PATCH ${URL_BASE_CRM}/rotas/${data}`,
+      `POST ${URL_BASE_CRM}/rotas/${data}/recalcular`,
+      `POST ${URL_BASE_CRM}/rotas/${data}/otimizar`,
+    ]);
+    const corpo = (i) => JSON.parse(chamadas[i].data);
+    expect(corpo(4)).toStrictEqual({ loja_id: loja, motivo: 'amostra' });
+    expect(corpo(5)).toStrictEqual({ loja_id: loja, versao: null });
+    expect(corpo(6)).toStrictEqual({ versao: 3, evitar_portagens: true });
+    expect(corpo(7)).toStrictEqual({ versao: 3 });
+    expect(corpo(8)).toStrictEqual({ versao: 4 });
+    // Os GET não levam corpo.
+    for (const i of [0, 1, 2, 3]) expect(chamadas[i].data).toBeUndefined();
+    // Só o recalcular e o otimizar esperam pelo openrouteservice: 35 s; o resto, os 30 s da instância.
+    expect(chamadas.map((c) => c.timeout)).toEqual([
+      TIMEOUT_CRM_MS, TIMEOUT_CRM_MS, TIMEOUT_CRM_MS, TIMEOUT_CRM_MS, TIMEOUT_CRM_MS, TIMEOUT_CRM_MS, TIMEOUT_CRM_MS,
+      TIMEOUT_CALCULO_MS, TIMEOUT_CALCULO_MS,
+    ]);
   });
 
   test('a query da morada inversa chega ao servidor com os números por extenso, sem nulos', async () => {

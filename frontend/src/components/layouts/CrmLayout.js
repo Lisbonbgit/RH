@@ -16,6 +16,7 @@ import {
   Map as IconeMapa, // nunca `Map`: tapava o Map do JavaScript
   MapPinPlus,
   Menu,
+  Route as IconeRota, // nunca `Route`: confundia-se com o `Route` do React Router
   Settings,
   User,
 } from 'lucide-react';
@@ -38,7 +39,7 @@ import {
 } from '../ui/dropdown-menu';
 
 // O ícone de cada item de `ITENS_MENU_CRM`, pela `chave`.
-const ICONES = { mapa: IconeMapa, 'loja-nova': MapPinPlus, definicoes: Settings };
+const ICONES = { mapa: IconeMapa, rotas: IconeRota, 'loja-nova': MapPinPlus, definicoes: Settings };
 
 const classeItem = (ativo) =>
   `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${

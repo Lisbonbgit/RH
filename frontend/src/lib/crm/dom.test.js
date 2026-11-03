@@ -1,5 +1,5 @@
 /**
- * AJUDAS DE DOM SEGURAS — `el()` e `hrefTelefone()`.
+ * AJUDAS DE DOM SEGURAS — `el()`, `hrefTelefone()` e `hrefNavegacao()`.
  *
  * Porta de tests/js/dom.test.js do CRM autónomo (etiqueta
  * `referencia-standalone`), com o `node:assert` passado a `expect`. O
@@ -13,9 +13,22 @@
  * browser; os últimos testes fazem o mesmo com o `document` do jsdom.
  *
  * Os dados só entram no DOM como texto (regra 9 do plano; dossiê §0).
+ *
+ * O `hrefNavegacao` (F3 / T3.26) é a única porta dos links de navegação que o servidor calcula
+ * (`paragem.links.google`/`.waze` e `rota.blocos_google[].href`, `backend/crm/dominio/navegacao.py`):
+ * só passam os do Google Maps (`https://www.google.com/maps/dir/?api=1&…`) e os do Waze
+ * (`https://waze.com/ul?…`), só com os caracteres de um URL (sem espaços, aspas, `<`, `>`, `|`, `\`
+ * nem acentos); o resto dá `null` e o ecrã não desenha a ligação. Os prefixos leem-se do próprio
+ * `navegacao.py` no último teste deste bloco: uma cópia dentro do teste não apanhava uma mudança do
+ * servidor.
  */
 /* eslint-disable no-script-url -- os 'javascript:' daqui são ataques que o el() tem de recusar */
-import { el, hrefTelefone } from './dom';
+import fs from 'fs';
+import path from 'path';
+
+import { el, hrefNavegacao, hrefTelefone } from './dom';
+
+const NAVEGACAO_PY = path.join(__dirname, '..', '..', '..', '..', 'backend', 'crm', 'dominio', 'navegacao.py');
 
 // Documento falso mínimo: só createElement/createTextNode, textContent,
 // setAttribute e appendChild. Qualquer via de HTML em texto rebenta.
@@ -180,6 +193,86 @@ test('hrefTelefone: menos de 9 dígitos ou vazio → null', () => {
   expect(hrefTelefone('sem telefone')).toBe(null);
 });
 
+// --- hrefNavegacao: só os links de navegação que o servidor calcula ---
+
+// Os links exatos do backend/tests/crm/test_dominio_navegacao.py (T3.10).
+const GOOGLE = 'https://www.google.com/maps/dir/?api=1&destination=38.710800,-9.136900&travelmode=driving&dir_action=navigate';
+const WAZE = 'https://waze.com/ul?ll=38.710800,-9.136900&navigate=yes';
+const BLOCO = 'https://www.google.com/maps/dir/?api=1&destination=38.711100,-9.136900&waypoints=38.710800,-9.136900%7C38.710900,-9.136900&travelmode=driving&dir_action=navigate';
+
+test.each([
+  ['Google Maps, uma paragem', GOOGLE],
+  ['Google Maps, a evitar portagens', `${GOOGLE}&avoid=tolls`],
+  ['Google Maps, um bloco com waypoints (o | codificado)', BLOCO],
+  ['Waze', WAZE],
+  ['Waze, a evitar portagens', `${WAZE}&avoid_tolls=true`],
+])('hrefNavegacao deixa passar o link do servidor, tal e qual: %s', (_, link) => {
+  expect(hrefNavegacao(link)).toBe(link);
+});
+
+test.each([
+  ['javascript:', 'javascript:alert(1)'],
+  ['javascript: com o caminho do Google', 'javascript://www.google.com/maps/dir/?api=1&%0aalert(1)'],
+  ['data:', 'data:text/html,<b>x</b>'],
+  ['http: (sem cifra)', 'http://www.google.com/maps/dir/?api=1&destination=38.7,-9.1'],
+  ['o esquema em maiúsculas', 'HTTPS://waze.com/ul?ll=38.7,-9.1&navigate=yes'],
+  ['sem esquema', '//waze.com/ul?ll=38.7,-9.1&navigate=yes'],
+  ['outro domínio', 'https://exemplo.invalid/maps/dir/?api=1&destination=38.7,-9.1'],
+  ['um domínio que só começa como o da Google', 'https://www.google.com.exemplo.invalid/maps/dir/?api=1&x=1'],
+  ['um domínio que só começa como o do Waze', 'https://waze.com.exemplo.invalid/ul?ll=38.7,-9.1'],
+  ['o Google sem www', 'https://google.com/maps/dir/?api=1&destination=38.7,-9.1'],
+  ['outro serviço da Google', 'https://maps.google.com/maps/dir/?api=1&destination=38.7,-9.1'],
+  ['outra página do Google Maps', 'https://www.google.com/maps/search/?api=1&query=38.7,-9.1'],
+  ['outra versão da API', 'https://www.google.com/maps/dir/?api=2&destination=38.7,-9.1'],
+  ['o Waze com www', 'https://www.waze.com/ul?ll=38.7,-9.1&navigate=yes'],
+  ['outra página do Waze', 'https://waze.com/live-map?ll=38.7,-9.1'],
+  ['o Waze sem o ?', 'https://waze.com/ul'],
+  ['o prefixo do Google sozinho', 'https://www.google.com/maps/dir/?api=1&'],
+  ['o Google sem o &', 'https://www.google.com/maps/dir/?api=1'],
+  ['o prefixo do Waze sozinho', 'https://waze.com/ul?'],
+  ['um link escondido noutro', 'https://exemplo.invalid/?https://waze.com/ul?ll=38.7,-9.1'],
+  ['aspas', `${WAZE}&x="`],
+  ['aspas que fecham o atributo', `${GOOGLE}"><img src=x onerror=alert(1)>`],
+  ['plica', `${WAZE}&x='`],
+  ['<', `${WAZE}&x=<`],
+  ['>', `${WAZE}&x=>`],
+  ['| em claro', 'https://www.google.com/maps/dir/?api=1&destination=1,1&waypoints=2,2|3,3'],
+  ['barra invertida', `${WAZE}\\`],
+  ['acento grave', `${WAZE}\``],
+  ['um espaço no meio', `${WAZE}&x=a b`],
+  ['um espaço antes', ` ${WAZE}`],
+  ['um espaço depois', `${WAZE} `],
+  ['uma mudança de linha', `${WAZE}\n`],
+  ['um tab', `${WAZE}\t`],
+  ['um NUL', `${WAZE}\u0000`],
+  ['um acento', `${WAZE}&x=ç`],
+  ['vazio', ''],
+])('hrefNavegacao recusa: %s → null', (_, link) => {
+  expect(hrefNavegacao(link)).toBe(null);
+});
+
+test.each([[null], [undefined], [42], [true], [[WAZE]], [{ toString: () => WAZE }], [Object(WAZE)]])(
+  'hrefNavegacao recusa o que não é texto (%p) → null',
+  (valor) => {
+    expect(hrefNavegacao(valor)).toBe(null);
+  },
+);
+
+test('hrefNavegacao aceita os links que o navegacao.py do servidor monta (os prefixos lidos de lá)', () => {
+  const texto = fs.readFileSync(NAVEGACAO_PY, 'utf8');
+  const google = /^_GOOGLE = "([^"]+)"$/m.exec(texto);
+  const waze = /^_WAZE = "([^"]+)"$/m.exec(texto);
+  expect(google).not.toBe(null);
+  expect(waze).not.toBe(null);
+  expect(google[1]).toBe('https://www.google.com/maps/dir/?api=1');
+  expect(waze[1]).toBe('https://waze.com/ul?');
+  // O servidor junta "&destination=…" ao do Google e "ll=…" ao do Waze.
+  expect(hrefNavegacao(`${google[1]}&destination=38.710800,-9.136900`)).not.toBe(null);
+  expect(hrefNavegacao(`${waze[1]}ll=38.710800,-9.136900`)).not.toBe(null);
+  // E o servidor codifica o separador dos waypoints, que aqui se recusa em claro.
+  expect(/^_SEPARADOR_WAYPOINTS = "%7C"$/m.test(texto)).toBe(true);
+});
+
 // --- O mesmo `el()` com o `document` do jsdom, como no browser ---
 
 test('jsdom: um nome <b>x</b> fica texto literal, sem criar <b>', () => {
@@ -209,4 +302,15 @@ test('jsdom: a ligação "Ligar" leva o tel: do hrefTelefone; javascript: é rec
   expect(el(document, 'a', { atributos: { href: hrefTelefone('1234') } }).hasAttribute('href')).toBe(false);
   expect(() => el(document, 'a', { atributos: { href: 'javascript:alert(1)' } })).toThrow(/URL recusada/);
   expect(() => el(document, 'img', { atributos: { onerror: 'alert(1)' } })).toThrow(/Atributo de evento recusado/);
+});
+
+test('jsdom: a ligação do Waze leva o href do hrefNavegacao; um link recusado fica sem href', () => {
+  const waze = el(document, 'a', {
+    texto: 'Waze',
+    atributos: { href: hrefNavegacao(WAZE), target: '_blank', rel: 'noopener noreferrer' },
+  });
+  expect(waze.getAttribute('href')).toBe(WAZE);
+  expect(waze.textContent).toBe('Waze');
+  const recusado = el(document, 'a', { texto: 'Google Maps', atributos: { href: hrefNavegacao('javascript:alert(1)') } });
+  expect(recusado.hasAttribute('href')).toBe(false);
 });

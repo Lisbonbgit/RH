@@ -1,7 +1,8 @@
 /*
  * O mapa das lojas do CRM (MapaLojas, FiltrosMapa, CartaoLoja e a página Mapa), o seletor da localização
- * (SeletorLocalizacao) e o painel do negócio selecionado (NegocioSelecionado), sobre o Google Maps. O resto
- * do aspeto é o do portal (Tailwind e shadcn).
+ * (SeletorLocalizacao), o painel do negócio selecionado (NegocioSelecionado) e o planeador da rota (os pinos da
+ * rota, a ListaParagens e a disposição do CrmRota; F3), sobre o Google Maps. O resto do aspeto é o do portal
+ * (Tailwind e shadcn).
  *
  * O mapa é o mesmo no tema claro e no escuro (o da Google é claro), por isso os pinos e as etiquetas têm
  * cores fixas. O lib/crm/css.test.js confere estas regras (as cores dos pinos com as de lib/crm/fases.js).
@@ -13,7 +14,10 @@
  * A atribuição: o logótipo, os termos e os dados do mapa são postos pela própria Google no fundo do mapa e
  * nunca se escondem nem se tapam (adenda §2.2). Daí a regra de disposição:
  *  - o elemento do mapa (.crm-mapa) é da Google: nenhum seletor deste ficheiro entra nele (nada de filhos,
- *    descendentes ou outras classes nossas lá dentro) e nenhum toca nas classes nem nos elementos da Google;
+ *    descendentes ou outras classes nossas lá dentro) e nenhum toca nas classes nem nos elementos da Google.
+ *    Lá dentro só há de nosso o conteúdo dos marcadores (.pino, .pino-paragem, .pino-extremo, .pino-seletor),
+ *    que o mapa.js e o seletor.js põem; o mapa do planeador (MapaLojas com a classe .crm-mapa--planeador)
+ *    esbate o .pino das lojas fora da rota;
  *  - cartões, painéis, pegas e rodapés vivem fora da caixa do mapa e encolhem-na (são irmãos da vista, por
  *    baixo ou ao lado dela), nunca absolutos por cima do mapa;
  *  - por cima do mapa só fica a barra de cima (.crm-mapa__barra), presa pelo top, longe do fundo, e que deixa
@@ -114,6 +118,84 @@
   transform: translateY(-50%);
 }
 
+/* A rota no mapa do planeador (F3 / T3.33): os pinos das paragens e do início/fim são o `content` dos marcadores
+   avançados do mapa.mostrarRota, no mesmo bloco de 44 × 44 px do .pino (a .etiqueta-loja fica no mesmo sítio e o
+   centro do bloco no ponto). A cor da fase vem das classes .pino--<fase>, no mesmo elemento, sem a classe .pino
+   (o planeador esbate as lojas fora da rota, e as paragens não). A linha da rota não tem CSS: as opções vão no
+   google.maps.Polyline. */
+.pino-paragem {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  transform: translateY(50%);
+}
+
+/* O número da paragem num disco branco com o anel na cor da fase: o número lê-se em todas as fases (escuro sobre
+   branco) e a fase vê-se no anel. Dois algarismos (até 48 paragens) cabem no disco. Com aviso, um halo vermelho
+   à volta (a variável só existe no .pino-paragem--aviso; sem ela, a sombra é transparente). */
+.pino-paragem__numero {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: -12px 0 0 -12px;
+  border: 4px solid var(--cor-pino, #cfcfcf);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 3px var(--aviso-pino, transparent), 0 1px 3px rgb(0 0 0 / 45%);
+  color: #221a2e;
+  font-family: 'Hanken Grotesk', sans-serif;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* Fora do horário de receção, fechada neste dia ou não cabe no horário (o texto do aviso vai no título do pino). */
+.pino-paragem--aviso {
+  --aviso-pino: #c62828;
+}
+
+/* Sem número (fechada neste dia, não cabe no horário): só um ponto na cor da fase, com o anel do aviso. */
+.pino-paragem--sem-numero {
+  background: radial-gradient(circle, var(--cor-pino, #cfcfcf) 0 6px, #fff 6px 9px, var(--aviso-pino, rgb(0 0 0 / 45%)) 9px 11px, transparent 11px);
+}
+
+/* O início e o fim (ou os dois, num só pino): um quadrado escuro, que não se confunde com uma loja nem com uma
+   paragem. Não recebe toques (o marcador não é clicável). */
+.pino-extremo {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  transform: translateY(50%);
+}
+
+.pino-extremo__marca {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  box-sizing: border-box;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  border: 3px solid #fff;
+  border-radius: 5px;
+  background: #221a2e;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 45%);
+}
+
+/* No mapa do planeador (MapaLojas com a classe crm-mapa--planeador), as lojas fora da rota ficam esbatidas: veem-se
+   e tocam-se (para as adicionar), mas a rota fica por cima. */
+.crm-mapa--planeador .pino {
+  opacity: 0.5;
+}
+
 /* A amostra da cor da fase, nos filtros e no cartão (as cores vêm das classes .pino--<fase>). O contorno por
    omissão segue o tema, para a perdida (quase preta) se ver também sobre o fundo escuro. */
 .crm-amostra-fase {
@@ -200,4 +282,117 @@
   color: hsl(var(--muted-foreground));
   font-size: 0.875rem;
   line-height: 1.4;
+}
+
+/* O planeador da rota (CrmRota, F3): enche a área do ecrã cheio (o main do layout tem a altura do ecrã e não se
+   desloca). Abaixo de 1024 px, numa só coluna, o mapa com altura fixa em cima e o painel por baixo, e é o
+   planeador que se desloca: a lista chega à última paragem, também a arrastar com o dedo. A partir de 1024 px,
+   o painel (até 440 px) ao lado do mapa, e só o painel se desloca. O painel, a lista, a pega e o rodapé do ORS
+   vivem fora do .crm-mapa e encolhem-no (a regra de disposição): nada deles é absoluto sobre o mapa. O planeador e o
+   painel, os que deslocam, são posicionados: o que é absoluto lá dentro (os textos só para leitores de ecrã da
+   ListaParagens) desloca-se com eles e não alonga a página (T3.38). */
+.crm-planeador {
+  position: relative;
+  display: grid;
+  grid-template-areas: "mapa" "painel";
+  grid-template-columns: minmax(0, 1fr);
+  height: 100%;
+  overflow-y: auto;
+}
+
+/* A área do mapa (o .crm-mapa é absoluto, de canto a canto, dentro dela). */
+.crm-planeador__mapa {
+  position: relative;
+  grid-area: mapa;
+  height: 45vh;
+  min-height: 15rem;
+}
+
+.crm-planeador__painel {
+  position: relative;
+  grid-area: painel;
+  min-width: 0;
+}
+
+@media (min-width: 1024px) {
+  .crm-planeador {
+    grid-template-areas: "painel mapa";
+    grid-template-columns: minmax(0, 440px) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    overflow-y: hidden;
+  }
+
+  .crm-planeador__painel {
+    min-height: 0;
+    overflow-y: auto;
+    border-right: 1px solid hsl(var(--border));
+  }
+
+  .crm-planeador__mapa {
+    height: auto;
+    min-height: 0;
+  }
+}
+
+/* A lista das paragens (ListaParagens): uma linha por paragem, com a pega à esquerda. */
+.crm-lista-paragens {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Ao arrastar, as outras linhas abrem lugar a deslizar (translateY); a arrastada segue o dedo, por cima. */
+.crm-paragem {
+  position: relative;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  transition: transform 150ms ease;
+}
+
+.crm-paragem--arrastada {
+  z-index: 1;
+  box-shadow: 0 8px 20px rgb(0 0 0 / 18%);
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crm-paragem {
+    transition: none;
+  }
+}
+
+/* A pega de arrastar: 44 × 44 px (o dedo), e o dedo nela não desloca a página (touch-action: none); com o rato,
+   não seleciona texto. */
+.crm-pega {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  color: hsl(var(--muted-foreground));
+  cursor: grab;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.crm-pega:hover {
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+}
+
+.crm-pega:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.crm-paragem--arrastada .crm-pega {
+  cursor: grabbing;
 }

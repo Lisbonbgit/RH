@@ -398,3 +398,331 @@ test('regra de disposição (d): o cartão da loja e o painel do negócio, por b
   const comSombra = doPainel.filter((r) => sombraParaCima(valor(r.corpo, 'box-shadow') ?? 'none'));
   expect(comSombra.map((r) => r.cabeca)).toEqual([]);
 });
+
+// --- O planeador da rota (F3 / T3.36) ------------------------------------------------------------------------
+// Os pinos da rota são o `content` dos marcadores avançados do `mapa.mostrarRota` (T3.33): `div.pino-paragem`
+// + `pino--<fase>` (+ `--aviso`, `--sem-numero`) com `span.pino-paragem__numero` e `span.etiqueta-loja`, e o
+// `div.pino-extremo` > `span.pino-extremo__marca` + `span.etiqueta-loja`. A linha da rota não tem CSS: as opções
+// vão no `google.maps.Polyline` (mapa.test.js). O planeador (`.crm-planeador`) põe o painel e o mapa lado a lado
+// a partir de 1024 px; abaixo, o mapa com altura fixa e o painel por baixo, tudo a deslocar-se (correções
+// "T3.35 / T3.36" e "T3.36 (css.test.js e crm.css)" do mapa Google). O painel, a lista, a pega e o rodapé do
+// ORS vivem fora do `.crm-mapa` e encolhem-no, nunca por cima (as asserções (a)–(d) de cima continuam).
+
+// Os blocos de topo que são @-regras com chavetas, pela ordem: {cabeca, dentro}. As regras soltas ficam no `fora`
+// (sem as @-regras sem chavetas, como o @import, que o lerRegras juntava à cabeça da regra seguinte).
+function blocosDeTopo(css) {
+  const blocos = [];
+  let fora = '';
+  let profundidade = 0;
+  let inicio = 0;
+  let cabecaDoBloco = null;
+  let abre = -1;
+  for (let i = 0; i < css.length; i += 1) {
+    if (css[i] === '{') {
+      if (profundidade === 0) {
+        const cabeca = css.slice(inicio, i).trim();
+        if (cabeca.startsWith('@')) {
+          cabecaDoBloco = cabeca;
+          abre = i;
+        } else {
+          cabecaDoBloco = null;
+        }
+      }
+      profundidade += 1;
+    } else if (css[i] === '}') {
+      profundidade -= 1;
+      if (profundidade === 0) {
+        if (cabecaDoBloco === null) fora += css.slice(inicio, i + 1);
+        else blocos.push({ cabeca: cabecaDoBloco, dentro: css.slice(abre + 1, i) });
+        inicio = i + 1;
+      }
+    } else if (css[i] === ';' && profundidade === 0) {
+      inicio = i + 1;
+    }
+  }
+  return { blocos, fora };
+}
+
+const normalizar = (texto) => texto.replace(/\s+/g, ' ').trim();
+
+// As regras dentro dos @media com esta condição exata (ex.: '(min-width: 1024px)'), e as de fora de qualquer
+// @-regra com chavetas.
+const regrasDoMedia = (css, condicao) => blocosDeTopo(css).blocos
+  .filter((b) => normalizar(b.cabeca) === `@media ${condicao}`)
+  .flatMap((b) => lerRegras(b.dentro));
+const regrasSoltas = (css) => lerRegras(blocosDeTopo(css).fora);
+
+const corpoEm = (lista, seletor) => lista.find((r) => r.cabeca === seletor)?.corpo ?? null;
+const DESKTOP = '(min-width: 1024px)';
+const SOLTAS = regrasSoltas(CSS);
+const NO_DESKTOP = regrasDoMedia(CSS, DESKTOP);
+
+// O contraste WCAG entre duas cores #rgb/#rrggbb (de 1 a 21).
+function luminancia(hex) {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex ?? '');
+  if (m === null) return null;
+  const digitos = m[1].length === 3 ? [...m[1]].map((c) => c + c).join('') : m[1];
+  const [r, g, b] = [0, 2, 4].map((i) => {
+    const canal = parseInt(digitos.slice(i, i + 2), 16) / 255;
+    return canal <= 0.03928 ? canal / 12.92 : ((canal + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contraste(a, b) {
+  const [la, lb] = [luminancia(a), luminancia(b)];
+  if (la === null || lb === null) return null;
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+const px = (texto) => {
+  const m = /^(-?\d+(?:\.\d+)?)px$/.exec(texto ?? '');
+  return m === null ? null : Number(m[1]);
+};
+
+test('blocosDeTopo separa os @media (com as regras lá dentro) das regras soltas e das @-regras sem chavetas', () => {
+  const amostra = [
+    '@import url(x.css);',
+    '.a { color: red; }',
+    '@media (min-width: 1024px) {\n  .b { top: 0; }\n  .c { left: 0; }\n}',
+    '@media (max-width: 600px) { .d { top: 1px; } }',
+    '.e { color: blue; }',
+  ].join('\n');
+  const { blocos, fora } = blocosDeTopo(amostra);
+  expect(blocos.map((b) => normalizar(b.cabeca))).toEqual(['@media (min-width: 1024px)', '@media (max-width: 600px)']);
+  expect(regrasDoMedia(amostra, DESKTOP).map((r) => r.cabeca)).toEqual(['.b', '.c']);
+  expect(regrasDoMedia(amostra, '(max-width: 600px)').map((r) => r.cabeca)).toEqual(['.d']);
+  expect(regrasDoMedia(amostra, '(min-width: 1023px)')).toEqual([]);
+  expect(regrasSoltas(amostra).map((r) => r.cabeca)).toEqual(['.a', '.e']);
+  expect(fora).not.toContain('@import');
+  expect(fora).not.toContain('.b');
+});
+
+test('contraste dá a razão do WCAG (21 entre o preto e o branco; o #767676 mal passa os 4,5 sobre o branco)', () => {
+  expect(contraste('#000', '#fff')).toBeCloseTo(21, 5);
+  expect(contraste('#ffffff', '#FFFFFF')).toBeCloseTo(1, 5);
+  expect(contraste('#767676', '#fff')).toBeGreaterThanOrEqual(4.5);
+  expect(contraste('#777777', '#fff')).toBeLessThan(4.5);
+  expect(contraste('var(--x)', '#fff')).toBeNull();
+  expect(contraste('#fff', null)).toBeNull();
+});
+
+test('o pino de uma paragem e o do início/fim são o mesmo bloco de 44 × 44 px do pino da loja (a etiqueta e a ancoragem batem)', () => {
+  for (const seletor of ['.pino-paragem', '.pino-extremo']) {
+    const bloco = regra(seletor);
+    expect([seletor, bloco === null]).toEqual([seletor, false]);
+    expect([seletor, valor(bloco, 'position')]).toEqual([seletor, 'relative']);
+    expect([seletor, valor(bloco, 'width')]).toEqual([seletor, '44px']);
+    expect([seletor, valor(bloco, 'height')]).toEqual([seletor, '44px']);
+    // O marcador põe o fundo ao centro do conteúdo no ponto: o centro do bloco fica no ponto da loja.
+    expect([seletor, valor(bloco, 'transform')]).toEqual([seletor, 'translateY(50%)']);
+  }
+});
+
+test('a cor da fase chega ao pino da paragem pelas classes .pino--<fase>: só elas (e o .pino, antes delas) mudam as cores', () => {
+  for (const variavel of ['--cor-pino', '--contorno-pino']) {
+    const comVariavel = REGRAS.filter((r) => valor(r.corpo, variavel) !== null).map((r) => r.cabeca);
+    // Uma regra de uma só classe depois das das fases (ex.: `.pino-paragem { --cor-pino: … }`) ganhava-lhes.
+    expect([variavel, comVariavel[0]]).toEqual([variavel, '.pino']);
+    expect([variavel, comVariavel.slice(1).every((cabeca) => ORDEM.some((fase) => cabeca === `.pino--${fase}`))]).toEqual([
+      variavel,
+      true,
+    ]);
+  }
+});
+
+test('o número da paragem é um disco de 24 px ao centro do bloco, com o anel na cor da fase', () => {
+  const numero = regra('.pino-paragem__numero');
+  expect(numero).not.toBeNull();
+  expect(valor(numero, 'position')).toBe('absolute');
+  expect(valor(numero, 'top')).toBe('50%');
+  expect(valor(numero, 'left')).toBe('50%');
+  expect(valor(numero, 'box-sizing')).toBe('border-box');
+  expect(valor(numero, 'width')).toBe('24px');
+  expect(valor(numero, 'height')).toBe('24px');
+  expect(valor(numero, 'margin')).toBe('-12px 0 0 -12px');
+  expect(valor(numero, 'border-radius')).toBe('50%');
+  expect(valor(numero, 'border')).toBe('4px solid var(--cor-pino, #cfcfcf)');
+  // O número ao meio do disco.
+  expect(valor(numero, 'display')).toBe('flex');
+  expect(valor(numero, 'align-items')).toBe('center');
+  expect(valor(numero, 'justify-content')).toBe('center');
+});
+
+test('o número tem cor fixa e legível em todas as fases: texto escuro sobre o disco branco (contraste ≥ 4,5)', () => {
+  const numero = regra('.pino-paragem__numero');
+  const fundo = valor(numero, 'background');
+  const cor = valor(numero, 'color');
+  // Cores fixas: o mapa é claro também no tema escuro do portal, e a cor da fase só pinta o anel.
+  for (const valorDaCor of [fundo, cor]) expect(valorDaCor).toMatch(/^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/i);
+  expect(contraste(cor, fundo)).toBeGreaterThanOrEqual(4.5);
+  expect(Number(valor(numero, 'font-weight'))).toBeGreaterThanOrEqual(700);
+  // Dois algarismos (até 48 paragens) cabem no disco.
+  const letra = px(valor(numero, 'font-size'));
+  expect(letra).not.toBeNull();
+  expect(letra).toBeLessThanOrEqual(12);
+  expect(valor(numero, 'white-space')).toBe('nowrap');
+});
+
+test('o disco do número quase não passa por baixo da etiqueta (que começa aos 32 px do bloco)', () => {
+  const largura = px(valor(regra('.pino-paragem__numero'), 'width'));
+  const etiqueta = px(valor(regra('.etiqueta-loja'), 'left'));
+  expect([largura, etiqueta].includes(null)).toBe(false);
+  const metade = largura / 2;
+  // O centro do disco está aos 22 px (o meio do bloco de 44): acaba no máximo 2 px depois do início da etiqueta.
+  expect(22 + metade - etiqueta).toBeLessThanOrEqual(2);
+});
+
+test('uma paragem com aviso tem um halo vermelho fixo à volta do número (sem aviso, nenhum)', () => {
+  const aviso = regra('.pino-paragem--aviso');
+  expect(aviso).not.toBeNull();
+  const vermelho = valor(aviso, '--aviso-pino');
+  expect(vermelho).toMatch(/^#[0-9a-f]{6}$/i);
+  // Um contorno que se vê sobre o branco (contraste ≥ 3 nos elementos gráficos).
+  expect(contraste(vermelho, '#fff')).toBeGreaterThanOrEqual(3);
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(vermelho.slice(i, i + 2), 16));
+  expect(r).toBeGreaterThan(g + b);
+  // O halo é uma sombra do disco com a variável: sem a classe do aviso, a variável não existe e fica a cor de
+  // reserva (transparente).
+  expect(valor(regra('.pino-paragem__numero'), 'box-shadow')).toMatch(/^0 0 0 3px var\(--aviso-pino, transparent\),/);
+  const comAviso = REGRAS.filter((r) => valor(r.corpo, '--aviso-pino') !== null).map((r) => r.cabeca);
+  expect(comAviso).toEqual(['.pino-paragem--aviso']);
+});
+
+test('uma paragem sem número (fechada, não cabe) é um ponto na cor da fase, com o anel do aviso', () => {
+  const semNumero = regra('.pino-paragem--sem-numero');
+  expect(semNumero).not.toBeNull();
+  const fundo = valor(semNumero, 'background');
+  expect(fundo).toMatch(/^radial-gradient\(circle, /);
+  expect(fundo).toContain('var(--cor-pino, #cfcfcf) 0 6px');
+  expect(fundo).toContain('var(--aviso-pino, ');
+  expect(fundo).toMatch(/transparent \d+px\)$/);
+  // O ponto (com os anéis) não passa da etiqueta: o último anel acaba no máximo aos 12 px do centro.
+  const raios = [...fundo.matchAll(/(\d+)px/g)].map((m) => Number(m[1]));
+  expect(Math.max(...raios)).toBeLessThanOrEqual(12);
+});
+
+test('a marca do início e do fim é um quadrado escuro ao centro do bloco, com cores fixas (não é um pino de loja)', () => {
+  const marca = regra('.pino-extremo__marca');
+  expect(marca).not.toBeNull();
+  expect(valor(marca, 'position')).toBe('absolute');
+  expect(valor(marca, 'top')).toBe('50%');
+  expect(valor(marca, 'left')).toBe('50%');
+  const lado = px(valor(marca, 'width'));
+  expect(lado).not.toBeNull();
+  expect(px(valor(marca, 'height'))).toBe(lado);
+  expect(valor(marca, 'margin')).toBe(`-${lado / 2}px 0 0 -${lado / 2}px`);
+  expect(22 + lado / 2 - px(valor(regra('.etiqueta-loja'), 'left'))).toBeLessThanOrEqual(2);
+  expect(valor(marca, 'border-radius')).not.toBe('50%');
+  for (const propriedade of ['background', 'border']) {
+    expect([propriedade, valor(marca, propriedade)]).not.toEqual([propriedade, null]);
+    expect(valor(marca, propriedade)).not.toMatch(/var\(|currentcolor|inherit/i);
+  }
+  expect(contraste(valor(marca, 'background'), '#ffffff')).toBeGreaterThanOrEqual(4.5);
+});
+
+test('no mapa do planeador, os pinos das lojas fora da rota ficam esbatidos (os da rota não)', () => {
+  const esbatido = regra('.crm-mapa--planeador .pino');
+  expect(esbatido).not.toBeNull();
+  const opacidade = Number(valor(esbatido, 'opacity'));
+  expect(opacidade).toBeGreaterThanOrEqual(0.3);
+  expect(opacidade).toBeLessThanOrEqual(0.7);
+  // Só o pino das lojas (a classe .pino): nada esbate as paragens, o início nem o fim.
+  const doPlaneador = seletores().filter((s) => s.includes('crm-mapa--planeador'));
+  expect(doPlaneador).toEqual(['.crm-mapa--planeador .pino']);
+  for (const r of REGRAS.filter((x) => x.seletores.some((s) => /pino-(?:paragem|extremo)/.test(s)))) {
+    expect([r.cabeca, valor(r.corpo, 'opacity')]).toEqual([r.cabeca, null]);
+  }
+});
+
+test('a pega de arrastar tem 44 × 44 px e não deixa o dedo deslocar a página (touch-action: none)', () => {
+  const pega = regra('.crm-pega');
+  expect(pega).not.toBeNull();
+  expect(valor(pega, 'width')).toBe('44px');
+  expect(valor(pega, 'height')).toBe('44px');
+  expect(valor(pega, 'flex')).toBe('none');
+  expect(valor(pega, 'touch-action')).toBe('none');
+  expect(valor(pega, 'cursor')).toBe('grab');
+  expect(valor(pega, 'user-select')).toBe('none');
+  expect(valor(regra('.crm-paragem--arrastada .crm-pega'), 'cursor')).toBe('grabbing');
+});
+
+test('a linha arrastada segue o dedo por cima das outras (sem transição); as outras abrem lugar com transição', () => {
+  const linha = regra('.crm-paragem');
+  expect(linha).not.toBeNull();
+  expect(valor(linha, 'position')).toBe('relative');
+  expect(valor(linha, 'transition')).toMatch(/^transform \d+ms/);
+  const arrastada = regra('.crm-paragem--arrastada');
+  expect(arrastada).not.toBeNull();
+  expect(Number(valor(arrastada, 'z-index'))).toBeGreaterThanOrEqual(1);
+  expect(valor(arrastada, 'transition')).toBe('none');
+  // Quem pede menos movimento não vê as linhas a deslizar.
+  const reduzido = regrasDoMedia(CSS, '(prefers-reduced-motion: reduce)');
+  expect(valor(corpoEm(reduzido, '.crm-paragem'), 'transition')).toBe('none');
+});
+
+test('o planeador enche a área do ecrã cheio; abaixo de 1024 px, o mapa tem altura fixa e o painel vem por baixo, tudo a deslocar-se', () => {
+  const planeador = corpoEm(SOLTAS, '.crm-planeador');
+  expect(planeador).not.toBeNull();
+  expect(valor(planeador, 'height')).toBe('100%');
+  expect(valor(planeador, 'display')).toBe('grid');
+  expect(valor(planeador, 'overflow-y')).toBe('auto');
+  expect(valor(planeador, 'grid-template-areas')).toBe('"mapa" "painel"');
+  const mapa = corpoEm(SOLTAS, '.crm-planeador__mapa');
+  expect(mapa).not.toBeNull();
+  // O .crm-mapa é absoluto (inset 0) dentro desta área: ela precisa de altura própria.
+  expect(valor(mapa, 'position')).toBe('relative');
+  expect(valor(mapa, 'grid-area')).toBe('mapa');
+  expect(valor(mapa, 'height')).toMatch(/^\d+vh$/);
+  expect(valor(mapa, 'min-height')).toMatch(/^\d+(?:\.\d+)?rem$/);
+  const painel = corpoEm(SOLTAS, '.crm-planeador__painel');
+  expect(painel).not.toBeNull();
+  expect(valor(painel, 'grid-area')).toBe('painel');
+  expect(valor(painel, 'min-width')).toBe('0');
+});
+
+test('a partir de 1024 px, o painel (até 440 px) e o mapa lado a lado; só o painel se desloca', () => {
+  const planeador = corpoEm(NO_DESKTOP, '.crm-planeador');
+  expect(planeador).not.toBeNull();
+  expect(valor(planeador, 'grid-template-columns')).toBe('minmax(0, 440px) minmax(0, 1fr)');
+  expect(valor(planeador, 'grid-template-rows')).toBe('minmax(0, 1fr)');
+  expect(valor(planeador, 'grid-template-areas')).toBe('"painel mapa"');
+  expect(valor(planeador, 'overflow-y')).toBe('hidden');
+  const painel = corpoEm(NO_DESKTOP, '.crm-planeador__painel');
+  expect(painel).not.toBeNull();
+  expect(valor(painel, 'overflow-y')).toBe('auto');
+  expect(valor(painel, 'min-height')).toBe('0');
+  const mapa = corpoEm(NO_DESKTOP, '.crm-planeador__mapa');
+  expect(mapa).not.toBeNull();
+  expect(valor(mapa, 'height')).toBe('auto');
+  expect(valor(mapa, 'min-height')).toBe('0');
+  // Só estas três regras mudam no computador.
+  expect(NO_DESKTOP.filter((r) => r.seletores.some((s) => s.includes('crm-planeador'))).map((r) => r.cabeca).sort()).toEqual([
+    '.crm-planeador',
+    '.crm-planeador__mapa',
+    '.crm-planeador__painel',
+  ]);
+});
+
+test('o planeador e o painel (os que deslocam) contêm o que é absoluto lá dentro: os textos só para leitores de ecrã não fazem a página deslocar', () => {
+  // T3.38: sem um antepassado posicionado, o `sr-only` (absoluto) da ListaParagens escapava ao deslocamento e
+  // alongava a página no telemóvel (o `main` do ecrã cheio já não desloca).
+  expect(valor(corpoEm(SOLTAS, '.crm-planeador'), 'position')).toBe('relative');
+  expect(valor(corpoEm(SOLTAS, '.crm-planeador__painel'), 'position')).toBe('relative');
+  // A área do mapa já o era (o .crm-mapa é absoluto dentro dela), e nenhum @media o muda.
+  expect(valor(corpoEm(SOLTAS, '.crm-planeador__mapa'), 'position')).toBe('relative');
+  for (const r of NO_DESKTOP.filter((regra) => regra.seletores.some((s) => s.includes('crm-planeador')))) {
+    expect([r.cabeca, valor(r.corpo, 'position')]).toEqual([r.cabeca, null]);
+  }
+});
+
+test('o painel, a lista e a pega vivem fora do mapa: nada deles é absoluto, fixo nem pegajoso', () => {
+  const doPlaneador = REGRAS.filter((r) => r.seletores.some((s) => /crm-planeador|crm-lista-paragens|crm-paragem|crm-pega/.test(s)));
+  expect(doPlaneador.length).toBeGreaterThanOrEqual(6);
+  const soltas = doPlaneador.filter((r) => /absolute|fixed|sticky/.test(valor(r.corpo, 'position') ?? ''));
+  expect(soltas.map((r) => r.cabeca)).toEqual([]);
+  // E nenhum entra no elemento do mapa nem toca na Google (as asserções (a) e as guardas, para estas regras).
+  for (const s of doPlaneador.flatMap((r) => r.seletores)) {
+    expect([s, entraNoMapa(s) || tocaNaGoogle(s)]).toEqual([s, false]);
+  }
+});

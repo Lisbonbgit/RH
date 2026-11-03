@@ -23,6 +23,13 @@
 //    como literal {lat, lng}: lê-las sempre pelo `pontoDe`.
 //  - O elemento guarda o Map em `__crmMapa`, só para a verificação no browser
 //    (regra 16 do plano): nenhum código do CRM o lê.
+//  - A rota do planeador (F3, T3.33; correções do mapa Google do plano da F3)
+//    é um grupo à parte, por cima das lojas: um pino numerado por paragem (o
+//    número e o nome entram por textContent no `content` do `el()`), os
+//    extremos (um só "Início e fim: fábrica" quando calham no mesmo ponto) e a
+//    linha do openrouteservice (`google.maps.Polyline`, cheia com as horas em
+//    dia, tracejada com as horas velhas). A geometria vem do servidor, nunca
+//    da Google. As lojas e a rota mostram-se e tiram-se cada uma por si.
 
 import { el } from './dom';
 import { FASES, ORDEM, classePino } from './fases';
@@ -38,13 +45,39 @@ export const ZOOM_LOJA = 17;
 // O ponto da fábrica por defeito (os PADROES de backend/crm/dominio/definicoes.py),
 // se a configuração não trouxer o centro.
 export const CENTRO_PADRAO = Object.freeze({ lat: 38.7223, lng: -9.1393 });
-// Folga (px) à volta das lojas no enquadramento (as etiquetas ficam à direita dos pinos).
+// Folga (px) à volta das lojas (ou da rota) no enquadramento (as etiquetas ficam à direita dos pinos).
 export const MARGEM_ENQUADRAR = 40;
 
 // A Google não carregou (rede, quota, referrer) ou não criou o mapa.
 export const MENSAGEM_SEM_MAPA = 'Não foi possível carregar o mapa — recarregue a página.';
 // O servidor não tem a chave do navegador ou o Map ID (o GET /api/crm/config trouxe google: null).
 export const MENSAGEM_MAPA_NAO_CONFIGURADO = 'Mapa não configurado — peça ao administrador para configurar a chave Google.';
+
+// A rota do planeador por cima dos pinos das lojas, que não têm zIndex: a Google ordena-os pela altura no ecrã
+// e, nos marcadores antigos dela, o maior zIndex que atribuía sozinha era o MAX_ZINDEX (1000000). As paragens
+// ficam por cima dos extremos.
+export const ZINDEX_EXTREMO = 1000001;
+export const ZINDEX_PARAGEM = 1000002;
+// Os nomes dos pinos dos extremos (o título e a etiqueta).
+export const TEXTO_INICIO = 'Início';
+export const TEXTO_FIM = 'Fim';
+export const TEXTO_INICIO_E_FIM = 'Início e fim';
+export const TEXTO_INICIO_E_FIM_FABRICA = 'Início e fim: fábrica';
+// A linha da rota: o roxo da marca (o do cliente, em fases.js), sem CSS (a Google desenha-a ela própria).
+export const COR_LINHA_ROTA = '#6b2fa3';
+// As opções da linha (objetos novos a cada vez: a Google fica com eles). Com as horas em dia, cheia; com as
+// horas velhas (o cálculo já não serve), o traço só nos ícones: um traço curto repetido a cada 14 px, a
+// tracejada. Nunca recebe toques (um toque nela é um toque no mapa).
+function opcoesDaLinha(atual) {
+  if (atual) return { strokeColor: COR_LINHA_ROTA, strokeWeight: 4, strokeOpacity: 0.9, clickable: false };
+  return {
+    strokeColor: COR_LINHA_ROTA,
+    strokeWeight: 4,
+    strokeOpacity: 0,
+    icons: [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 0.6, scale: 3 }, offset: '0', repeat: '14px' }],
+    clickable: false,
+  };
+}
 
 const textoPreenchido = (valor) => typeof valor === 'string' && valor.trim() !== '';
 
@@ -97,9 +130,47 @@ function tituloPino(loja) {
   return fase ? `${loja.nome} (${fase})` : String(loja.nome);
 }
 
+// --- A rota do planeador ---
+
+const texto = (valor) => (typeof valor === 'string' ? valor : '');
+
+// A linha do planeador chega em pares [lat, lng] (o `descodificarPolilinha`); a Google quer literais {lat, lng}.
+// Um par estragado deita fora a linha toda, como o descodificador faz a um texto estragado.
+function caminhoDaLinha(linha) {
+  if (!Array.isArray(linha)) return [];
+  const caminho = [];
+  for (const par of linha) {
+    if (!Array.isArray(par) || par.length !== 2 || !numero(par[0]) || !numero(par[1])) return [];
+    caminho.push({ lat: par[0], lng: par[1] });
+  }
+  return caminho;
+}
+
+// "3. Café X", com o aviso (já em texto) a seguir; uma paragem sem número (fechada, não cabe) só com o nome.
+function tituloParagem(paragem) {
+  const nome = texto(paragem.nome);
+  const base = Number.isInteger(paragem.numero) ? `${paragem.numero}. ${nome}` : nome;
+  return textoPreenchido(paragem.aviso) ? `${base} — ${paragem.aviso}` : base;
+}
+
+// Os pinos dos extremos: um só quando o início e o fim calham no mesmo ponto ("Início e fim: fábrica" se os
+// dois são a fábrica); senão "Início" e "Fim", e só os que têm coordenadas.
+function extremosDaRota(inicio, fim) {
+  const a = temCoordenadas(inicio) ? inicio : null;
+  const b = temCoordenadas(fim) ? fim : null;
+  if (a && b && a.lat === b.lat && a.lng === b.lng) {
+    const fabrica = a.fabrica === true && b.fabrica === true;
+    return [{ ponto: pontoDaLoja(a), nome: fabrica ? TEXTO_INICIO_E_FIM_FABRICA : TEXTO_INICIO_E_FIM }];
+  }
+  return [
+    a && { ponto: pontoDaLoja(a), nome: TEXTO_INICIO },
+    b && { ponto: pontoDaLoja(b), nome: TEXTO_FIM },
+  ].filter(Boolean);
+}
+
 // criarMapa({google, documento, elemento, configuracao, negociosClicaveis = true, aoEscolherLoja?,
 //            aoTocarNoMapa?, aoTocarNumLugar?})
-//   → {mapa, mostrarLojas, enquadrar, redimensionar, centrarEm, focar, destruir}
+//   → {mapa, mostrarLojas, enquadrar, mostrarRota, enquadrarRota, redimensionar, centrarEm, focar, destruir}
 //  - configuracao: a do GET /api/crm/config, {google: {chave, map_id}, centro: {lat, lng}} (ver configuracaoValida);
 //  - aoEscolherLoja(loja, marcador): tocaram no pino da loja;
 //  - aoTocarNoMapa({lat, lng} | null): tocaram no mapa, fora dos pinos e dos negócios, nesse ponto (os toques
@@ -143,6 +214,10 @@ export function criarMapa({
   }
 
   let marcadores = [];
+  // A rota (mostrarRota): os pinos das paragens e dos extremos, a linha e os pontos para o enquadrarRota.
+  let pinosDaRota = [];
+  let linhaDaRota = null;
+  let pontosDaRota = [];
   let destruido = false;
 
   function pino(loja) {
@@ -166,17 +241,95 @@ export function criarMapa({
     return marcador;
   }
 
+  // Uma paragem da rota: {id, numero, nome, fase, lat, lng, aviso, …} do `vista.mapa.paragens` (planeador.js).
+  // O número só nas da secção "rota"; o aviso já vem em texto.
+  function pinoParagem(paragem, aoEscolherParagem) {
+    const comNumero = Number.isInteger(paragem.numero);
+    const marcador = new google.maps.marker.AdvancedMarkerElement({
+      map: mapa,
+      position: pontoDaLoja(paragem),
+      content: el(documento, 'div', {
+        classe: [
+          'pino-paragem',
+          ORDEM.includes(paragem.fase) && `pino--${paragem.fase}`,
+          textoPreenchido(paragem.aviso) && 'pino-paragem--aviso',
+          !comNumero && 'pino-paragem--sem-numero',
+        ],
+        filhos: [
+          comNumero && el(documento, 'span', { classe: 'pino-paragem__numero', texto: String(paragem.numero) }),
+          el(documento, 'span', { classe: 'etiqueta-loja', texto: texto(paragem.nome) }),
+        ],
+      }),
+      title: tituloParagem(paragem),
+      gmpClickable: true,
+      collisionBehavior: google.maps.CollisionBehavior.REQUIRED,
+      zIndex: ZINDEX_PARAGEM,
+    });
+    if (typeof aoEscolherParagem === 'function') {
+      marcador.addListener('gmp-click', () => aoEscolherParagem(paragem, marcador));
+    }
+    return marcador;
+  }
+
+  // O início, o fim, ou os dois num só pino. Não se escolhe: não recebe toques.
+  function pinoExtremo({ ponto, nome }) {
+    return new google.maps.marker.AdvancedMarkerElement({
+      map: mapa,
+      position: ponto,
+      content: el(documento, 'div', {
+        classe: 'pino-extremo',
+        filhos: [
+          el(documento, 'span', { classe: 'pino-extremo__marca' }),
+          el(documento, 'span', { classe: 'etiqueta-loja', texto: nome }),
+        ],
+      }),
+      title: nome,
+      collisionBehavior: google.maps.CollisionBehavior.REQUIRED,
+      zIndex: ZINDEX_EXTREMO,
+    });
+  }
+
   // Com a chave recusada pela Google (ex.: RefererNotAllowedMapError), `marcador.map = null` lança dentro da
-  // biblioteca; tirar os pinos nunca pode derrubar a página do CRM (visto em produção a 2026-10-22).
-  function tirarPinos() {
-    for (const marcador of marcadores) {
+  // biblioteca; tirar os pinos (e a linha) nunca pode derrubar a página do CRM (visto em produção a 2026-10-22).
+  function tirarDoMapa(lista) {
+    for (const marcador of lista) {
       try {
         marcador.map = null;
       } catch {
         // O mapa já não existe para a Google: não há pino para tirar.
       }
     }
+  }
+
+  function tirarPinos() {
+    tirarDoMapa(marcadores);
     marcadores = [];
+  }
+
+  function tirarRota() {
+    tirarDoMapa(pinosDaRota);
+    try {
+      linhaDaRota?.setMap(null);
+    } catch {
+      // Idem: o mapa já não existe para a Google.
+    }
+    pinosDaRota = [];
+    linhaDaRota = null;
+    pontosDaRota = [];
+  }
+
+  // Todos os pontos à vista (sem passar do zoom 16); sem nenhum, o centro das definições (o ponto da fábrica).
+  function enquadrarPontos(pontos) {
+    if (pontos.length > 0) {
+      const limites = new google.maps.LatLngBounds();
+      for (const ponto of pontos) limites.extend(ponto);
+      mapa.fitBounds(limites, MARGEM_ENQUADRAR);
+      limitarZoomDepoisDeEnquadrar(google, mapa, ZOOM_MAXIMO_ENQUADRAR);
+      return;
+    }
+    cancelarLimiteDoZoom(mapa);
+    mapa.setCenter({ ...centro });
+    mapa.setZoom(ZOOM_SEM_LOJAS);
   }
 
   return {
@@ -191,17 +344,33 @@ export function criarMapa({
     // (o ponto da fábrica).
     enquadrar(lojas) {
       if (destruido) return;
-      const pontos = lojas.filter(temCoordenadas).map(pontoDaLoja);
-      if (pontos.length > 0) {
-        const limites = new google.maps.LatLngBounds();
-        for (const ponto of pontos) limites.extend(ponto);
-        mapa.fitBounds(limites, MARGEM_ENQUADRAR);
-        limitarZoomDepoisDeEnquadrar(google, mapa, ZOOM_MAXIMO_ENQUADRAR);
-        return;
+      enquadrarPontos(lojas.filter(temCoordenadas).map(pontoDaLoja));
+    },
+    // Mostra esta rota (e só esta) por cima das lojas: o `vista.mapa` do planeador, {paragens, inicio, fim,
+    // linha, linhaAtual, …} (as pontas {lat, lng, fabrica} ou null; a linha em pares [lat, lng]). A linha só
+    // com 2 pontos ou mais; `null` tira a rota. aoEscolherParagem(paragem, marcador): tocaram no pino da
+    // paragem (ou Enter/Espaço com o foco nele).
+    mostrarRota(rota, opcoes) {
+      if (destruido) return;
+      tirarRota();
+      if (rota === null || typeof rota !== 'object') return;
+      const caminho = caminhoDaLinha(rota.linha);
+      if (caminho.length >= 2) {
+        linhaDaRota = new google.maps.Polyline({ path: caminho, ...opcoesDaLinha(rota.linhaAtual === true), map: mapa });
       }
-      cancelarLimiteDoZoom(mapa);
-      mapa.setCenter({ ...centro });
-      mapa.setZoom(ZOOM_SEM_LOJAS);
+      const paragens = Array.isArray(rota.paragens) ? rota.paragens.filter(temCoordenadas) : [];
+      const extremos = extremosDaRota(rota.inicio, rota.fim);
+      pinosDaRota = [
+        ...paragens.map((paragem) => pinoParagem(paragem, opcoes?.aoEscolherParagem)),
+        ...extremos.map(pinoExtremo),
+      ];
+      pontosDaRota = [...paragens.map(pontoDaLoja), ...extremos.map((extremo) => extremo.ponto)];
+    },
+    // A rota à vista: as paragens e os extremos da última rota mostrada (sem passar do zoom 16); sem nenhum
+    // ponto, o centro das definições.
+    enquadrarRota() {
+      if (destruido) return;
+      enquadrarPontos(pontosDaRota);
     },
     // Depois de a área do mapa mudar de tamanho (ex.: o cartão da loja abre ao lado). A Google mede-se sozinha
     // nas versões atuais; o aviso fica pela interface e é inofensivo.
@@ -234,6 +403,7 @@ export function criarMapa({
       destruido = true;
       cancelarLimiteDoZoom(mapa);
       tirarPinos();
+      tirarRota();
       google.maps.event.clearInstanceListeners(mapa);
       if (elemento.__crmMapa === mapa) delete elemento.__crmMapa;
       elemento.replaceChildren();

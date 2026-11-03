@@ -7,6 +7,7 @@
 // teste `test_protecao_rotas.py`). Por isso aqui fecha-se na dúvida: um `eu`
 // estragado, uma opção em falta ou uma regra que rebenta escondem o CRM — e
 // nunca deitam abaixo o menu do resto do portal.
+import { eDataValida } from './datas';
 
 // As duas casas das mesmas páginas: a área própria e a secção da gestão.
 export const BASE_CRM = '/crm';
@@ -18,9 +19,13 @@ export const BASE_CRM_ADMIN = '/admin/crm';
 export const PERFIS_ESCRITORIO = Object.freeze(['admin', 'utilizador']);
 
 // O menu do CRM, pela ordem em que aparece. `caminho` é relativo à casa
-// (`BASE_CRM` ou `BASE_CRM_ADMIN`) e bate com as rotas filhas de `rotasCrm.js`.
+// (`BASE_CRM` ou `BASE_CRM_ADMIN`) e bate com as rotas filhas de `rotasCrm.js`
+// (o `acesso.test.js` lê-o). As Rotas (F3) são do escritório, como as
+// `/api/crm/rotas…` no backend: a lista dos dias e, em `rotas/AAAA-MM-DD`, o
+// planeador de cada um.
 export const ITENS_MENU_CRM = Object.freeze([
   Object.freeze({ chave: 'mapa', rotulo: 'Mapa', caminho: 'mapa', soAdmin: false }),
+  Object.freeze({ chave: 'rotas', rotulo: 'Rotas', caminho: 'rotas', soAdmin: false }),
   Object.freeze({ chave: 'loja-nova', rotulo: 'Nova loja', caminho: 'lojas/nova', soAdmin: false }),
   Object.freeze({ chave: 'definicoes', rotulo: 'Definições', caminho: 'definicoes', soAdmin: true }),
 ]);
@@ -109,6 +114,7 @@ export function seccaoVisivel(seccao, ctx) {
 // As regras seguem-no, para o menu acender o que o router mostra.
 const ROTA_CRM_NO_ADMIN = /^\/admin\/crm(?:\/|$)/i;
 const ECRA_CHEIO = /^(?:\/admin)?\/crm(?:\/mapa)?\/*$/i;
+const PLANEADOR = /^(?:\/admin)?\/crm\/rotas\/([^/]+)\/*$/i;
 
 /**
  * O caminho é da secção CRM da gestão (`/admin/crm` e o que está por baixo).
@@ -125,16 +131,26 @@ export function baseCrm(caminho) {
 
 /**
  * O mapa ocupa a área toda (sem margens): `/crm`, `/crm/mapa`, `/admin/crm` e
- * `/admin/crm/mapa`. Decide-se pela rota, não pela secção: a Nova loja e as
- * Definições ficam com as margens de sempre.
+ * `/admin/crm/mapa`; e o planeador de um dia, que é mapa e painel
+ * (`/crm/rotas/2026-10-12` e `/admin/crm/rotas/2026-10-12`). Decide-se pela
+ * rota, não pela secção: a lista das Rotas, a Nova loja e as Definições ficam
+ * com as margens de sempre.
+ *
+ * O planeador só com um dia que existe (`eDataValida`, a mesma regra com que
+ * ele decide "Dia inválido"): `/crm/rotas/abc` ou `/crm/rotas/2026-02-30` são
+ * só a mensagem, com as margens. Um dia que só o servidor recusa (a mais de um
+ * ano) abre na área toda e a página põe as suas margens à mensagem.
  */
 export function ecraCheioDoCrm(caminho) {
-  return typeof caminho === 'string' && ECRA_CHEIO.test(caminho);
+  if (typeof caminho !== 'string') return false;
+  if (ECRA_CHEIO.test(caminho)) return true;
+  const planeador = PLANEADOR.exec(caminho);
+  return planeador !== null && eDataValida(planeador[1]);
 }
 
 /**
- * O menu do CRM para este `eu`: Mapa e Nova loja para os perfis de escritório,
- * Definições só para o admin; nada para o motorista ou quem não é membro.
+ * O menu do CRM para este `eu`: Mapa, Rotas e Nova loja para os perfis de
+ * escritório, Definições só para o admin; nada para o motorista ou quem não é membro.
  * `base` é `BASE_CRM` (por omissão) ou `BASE_CRM_ADMIN`; outra coisa dá a área
  * própria, nunca um caminho inventado. Cada chamada devolve objetos novos.
  */
