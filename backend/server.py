@@ -392,7 +392,7 @@ async def send_welcome_email(email: str, employee_name: str, company_name: str, 
             "html": get_welcome_email_html(employee_name, company_name, email, temp_password, FRONTEND_URL),
         }
         await asyncio.to_thread(resend.Emails.send, params)
-        logger.info(f"Welcome email sent to {email}")
+        logger.info("Email de boas-vindas enviado")
         return True
     except Exception as e:
         logger.error(f"Failed to send welcome email: {str(e)}")
@@ -1319,14 +1319,18 @@ async def forgot_password(request: ForgotPasswordRequest):
         return success_message
 
     reset_code = generate_reset_code()
-    await db.users.update_one(
-        {"id": user["id"]},
+    # Só na conta com o email que se leu: se um gestor o corrigiu entretanto
+    # (noutro worker), o código não fica válido nem vai para o email antigo.
+    gravado = await db.users.update_one(
+        {"id": user["id"], "email": user["email"]},
         {"$set": {
             "reset_password_token": hash_reset_token(reset_code),
             "reset_password_expires": (agora + timedelta(hours=RESET_TOKEN_EXPIRATION_HOURS)).isoformat(),
             "reset_pedido_em": agora.isoformat(),
         }}
     )
+    if not gravado.matched_count:
+        return success_message
     if not await send_password_reset_email(email=user["email"], user_name=user["name"], reset_code=reset_code):
         logger.warning("Falha ao enviar o email de recuperação ao utilizador %s", user["id"])
     return success_message
@@ -1349,8 +1353,11 @@ async def reset_password(request: ResetPasswordCodeRequest):
             detail="Código expirado. Por favor, solicite um novo código."
         )
 
-    await db.users.update_one(
-        {"id": user["id"]},
+    # Só se a conta ainda tem o email e o código que se conferiram: uma correção
+    # do email pelo meio (que apaga o código) não deixa mudar a palavra-passe.
+    feito = await db.users.update_one(
+        {"id": user["id"], "email": user["email"],
+         "reset_password_token": user["reset_password_token"]},
         {
             "$set": {
                 "password": hash_password(request.new_password),
@@ -1365,6 +1372,11 @@ async def reset_password(request: ResetPasswordCodeRequest):
             }
         }
     )
+    if not feito.matched_count:
+        raise HTTPException(
+            status_code=400,
+            detail="Código inválido ou expirado. Por favor, solicite um novo código."
+        )
     logger.info("Password redefinida para o utilizador %s", user["id"])
     return {
         "message": "Palavra-passe redefinida com sucesso. Pode agora fazer login com a nova palavra-passe."
@@ -1878,22 +1890,46 @@ _CAMPOS_DO_RESET = (
 
 
 def _chave_email(email: Optional[str]) -> str:
-    """O email como se compara: sem espaços e sem diferenciar maiúsculas."""
+    """A caixa de correio de um email: sem espaços e sem diferenciar maiúsculas."""
     return (email or "").strip().lower()
 
 
-async def _email_novo_do_colaborador(emp: dict, novo: str) -> bool:
-    """`novo` muda mesmo o email de acesso do colaborador `emp`? False quando é o
-    mesmo (outras maiúsculas ou espaços não contam). O que não pode ser → 400.
-    Só lê: quem escreve é o update_employee, depois de tudo validado."""
-    conta = await db.users.find_one({"id": emp["user_id"]}, {"_id": 0, "email": 1})
-    atual = (conta or {}).get("email") or emp.get("email")
-    if _chave_email(novo) == _chave_email(atual):
-        return False
+# Sem os caracteres que se confundem ao ler (0/O, 1/l/I): copia-se do email.
+_LETRAS_DA_TEMPORARIA = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def _senha_temporaria() -> str:
+    return "".join(secrets.choice(_LETRAS_DA_TEMPORARIA) for _ in range(12))
+
+
+async def _correcao_do_email(emp: dict, novo: str) -> dict:
+    """O que o email `novo` muda no colaborador `emp`. Só lê — quem escreve é o
+    update_employee, depois de tudo validado; o que não pode ser → 400.
+
+    - `na_conta` (users.email, o login) e `na_ficha` (employees.email, os avisos
+      das férias): cada cópia decide por si, tal e qual e sem os espaços. O login
+      compara tal e qual, por isso corrigir só as maiúsculas é uma mudança a
+      sério. E uma cópia que ficou para trás (a escrita parou a meio, ou o email
+      mudou pelos /admins, que só mexe na conta) alinha-se com o mesmo pedido.
+    - `outra_caixa`: a conta passa para OUTRA caixa de correio (não só outras
+      maiúsculas): o que foi mandado para a antiga deixa de servir.
+    - `nova_temporaria`: e a palavra-passe ainda é a temporária, que foi no email
+      de boas-vindas para a caixa antiga."""
+    conta = await db.users.find_one(
+        {"id": emp["user_id"]}, {"_id": 0, "email": 1, "must_change_password": 1})
+    da_conta = ((conta or {}).get("email") or "").strip()
+    correcao = {
+        "na_conta": conta is not None and novo != da_conta,
+        "na_ficha": novo != (emp.get("email") or "").strip(),
+    }
+    correcao["outra_caixa"] = correcao["na_conta"] and _chave_email(novo) != _chave_email(da_conta)
+    correcao["nova_temporaria"] = correcao["outra_caixa"] and bool(conta.get("must_change_password"))
+    if not (correcao["na_conta"] or correcao["na_ficha"]):
+        return correcao
     # O admin master (do portal e do CRM) é a conta com ESSE email: não se dá a
     # outra conta, nem se tira à dele, por uma ficha de colaborador.
     mestre = _chave_email(MASTER_ADMIN_EMAIL)
-    if _chave_email(atual) == mestre:
+    if _chave_email(da_conta or emp.get("email")) == mestre:
         raise HTTPException(status_code=400, detail="O administrador master edita-se pelo .env do servidor")
     if _chave_email(novo) == mestre:
         raise HTTPException(status_code=400, detail="Este email é do administrador master")
@@ -1905,7 +1941,7 @@ async def _email_novo_do_colaborador(emp: dict, novo: str) -> bool:
     )
     if repetido:
         raise HTTPException(status_code=400, detail="Email já registado")
-    return True
+    return correcao
 
 
 @api_router.put("/employees/{employee_id}", response_model=EmployeeResponse)
@@ -1922,24 +1958,41 @@ async def update_employee(employee_id: str, employee: EmployeeUpdate, current_us
     emp = await db.employees.find_one({"id": employee_id}, {"_id": 0})
     if not emp:
         raise HTTPException(status_code=404, detail="Colaborador não encontrado")
-    if "email" in update_data and not await _email_novo_do_colaborador(emp, update_data["email"]):
-        del update_data["email"]
+    # A conta de login acompanha o nome e o email da ficha.
+    na_conta = {"name": update_data["name"]} if "name" in update_data else {}
+    correcao = {}
+    if "email" in update_data:
+        email = update_data.pop("email")
+        correcao = await _correcao_do_email(emp, email)
+        if correcao["na_conta"]:
+            na_conta["email"] = email
+        if correcao["na_ficha"]:
+            update_data["email"] = email
+
+    # A conta (o login) primeiro, a ficha depois: se a escrita parar a meio, a
+    # ficha ainda mostra o email antigo, o gestor volta a mandar o novo e este
+    # mesmo pedido completa a correção (ver _correcao_do_email).
+    temporaria = None
+    if na_conta:
+        mudanca = {"$set": dict(na_conta)}
+        if correcao.get("outra_caixa"):
+            # O que foi para a caixa antiga (errada: pode ser a de um estranho)
+            # deixa de servir: o código do «Esqueci» pendente, as sessões abertas
+            # com ele (as anteriores a este momento terminam — get_current_user)...
+            mudanca["$unset"] = {campo: "" for campo in _CAMPOS_DO_RESET}
+            mudanca["$set"]["password_mudada_em"] = _agora_s()
+            if correcao["nova_temporaria"]:
+                # ... e a temporária das boas-vindas: troca-se, e a nova vai para
+                # o email novo (mais abaixo). Continua a ter de a trocar ao entrar.
+                temporaria = _senha_temporaria()
+                mudanca["$set"]["password"] = hash_password(temporaria)
+        await db.users.update_one({"id": emp["user_id"]}, mudanca)
 
     if update_data:
         result = await db.employees.update_one({"id": employee_id}, {"$set": update_data})
         if result.matched_count == 0:
             raise HTTPException(status_code=404, detail="Colaborador não encontrado")
-
-    # A conta de login acompanha o nome e o email da ficha.
-    na_conta = {k: update_data[k] for k in ("name", "email") if k in update_data}
-    if na_conta:
-        mudanca = {"$set": na_conta}
-        if "email" in na_conta:
-            # Um código pedido para o email antigo (errado: pode ser a caixa de um
-            # estranho) não pode servir depois da correção.
-            mudanca["$unset"] = {campo: "" for campo in _CAMPOS_DO_RESET}
-        await db.users.update_one({"id": emp["user_id"]}, mudanca)
-    if "email" in update_data:
+    if correcao.get("na_conta") or correcao.get("na_ficha"):
         logger.info("Email de acesso do colaborador %s corrigido", employee_id)
 
     updated = await db.employees.find_one({"id": employee_id}, {"_id": 0})
@@ -1947,6 +2000,8 @@ async def update_employee(employee_id: str, employee: EmployeeUpdate, current_us
         raise HTTPException(status_code=404, detail="Colaborador não encontrado")
     company = await db.companies.find_one({"id": updated["company_id"]}, {"_id": 0})
     location = await db.locations.find_one({"id": updated["location_id"]}, {"_id": 0})
+    if temporaria:
+        await send_welcome_email(na_conta["email"], updated["name"], (company or {}).get("name") or "", temporaria)
     
     return EmployeeResponse(
         **updated,
