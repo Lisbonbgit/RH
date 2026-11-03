@@ -623,6 +623,8 @@ class EmployeeCreate(BaseModel):
 
 class EmployeeUpdate(BaseModel):
     name: Optional[str] = None
+    # Corrigir o email muda o login do colaborador (users.email) — ver update_employee.
+    email: Optional[EmailStr] = None
     company_id: Optional[str] = None
     location_id: Optional[str] = None
     position: Optional[str] = None
@@ -1868,6 +1870,44 @@ async def update_my_profile(profile: SelfProfileUpdate, current_user: dict = Dep
     employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
     return await _build_employee_response(employee)
 
+# Os campos do «Esqueci a palavra-passe» na conta (forgot_password / reset_password).
+_CAMPOS_DO_RESET = (
+    "reset_password_token", "reset_password_expires", "reset_pedido_em",
+    "reset_tentativas", "reset_tentativas_desde",
+)
+
+
+def _chave_email(email: Optional[str]) -> str:
+    """O email como se compara: sem espaços e sem diferenciar maiúsculas."""
+    return (email or "").strip().lower()
+
+
+async def _email_novo_do_colaborador(emp: dict, novo: str) -> bool:
+    """`novo` muda mesmo o email de acesso do colaborador `emp`? False quando é o
+    mesmo (outras maiúsculas ou espaços não contam). O que não pode ser → 400.
+    Só lê: quem escreve é o update_employee, depois de tudo validado."""
+    conta = await db.users.find_one({"id": emp["user_id"]}, {"_id": 0, "email": 1})
+    atual = (conta or {}).get("email") or emp.get("email")
+    if _chave_email(novo) == _chave_email(atual):
+        return False
+    # O admin master (do portal e do CRM) é a conta com ESSE email: não se dá a
+    # outra conta, nem se tira à dele, por uma ficha de colaborador.
+    mestre = _chave_email(MASTER_ADMIN_EMAIL)
+    if _chave_email(atual) == mestre:
+        raise HTTPException(status_code=400, detail="O administrador master edita-se pelo .env do servidor")
+    if _chave_email(novo) == mestre:
+        raise HTTPException(status_code=400, detail="Este email é do administrador master")
+    # Sem diferenciar maiúsculas, como o «Esqueci a palavra-passe» procura a conta.
+    repetido = await db.users.find_one(
+        {"email": {"$regex": f"^{re.escape(_chave_email(novo))}$", "$options": "i"},
+         "id": {"$ne": emp["user_id"]}},
+        {"_id": 0, "id": 1},
+    )
+    if repetido:
+        raise HTTPException(status_code=400, detail="Email já registado")
+    return True
+
+
 @api_router.put("/employees/{employee_id}", response_model=EmployeeResponse)
 async def update_employee(employee_id: str, employee: EmployeeUpdate, current_user: dict = Depends(admin_required)):
     update_data = {k: v for k, v in employee.model_dump().items() if v is not None}
@@ -1877,17 +1917,34 @@ async def update_employee(employee_id: str, employee: EmployeeUpdate, current_us
 
     validate_photo_data_url(update_data.get("photo"))
 
-    # Also update name in users collection if provided
-    if "name" in update_data:
-        emp = await db.employees.find_one({"id": employee_id}, {"_id": 0})
-        if emp:
-            await db.users.update_one({"id": emp["user_id"]}, {"$set": {"name": update_data["name"]}})
-    
-    result = await db.employees.update_one({"id": employee_id}, {"$set": update_data})
-    if result.matched_count == 0:
+    # Tudo validado ANTES de escrever: um 404/400 não deixa nada meio escrito
+    # (nem o nome na conta, nem o email só numa das colecções).
+    emp = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not emp:
         raise HTTPException(status_code=404, detail="Colaborador não encontrado")
-    
+    if "email" in update_data and not await _email_novo_do_colaborador(emp, update_data["email"]):
+        del update_data["email"]
+
+    if update_data:
+        result = await db.employees.update_one({"id": employee_id}, {"$set": update_data})
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Colaborador não encontrado")
+
+    # A conta de login acompanha o nome e o email da ficha.
+    na_conta = {k: update_data[k] for k in ("name", "email") if k in update_data}
+    if na_conta:
+        mudanca = {"$set": na_conta}
+        if "email" in na_conta:
+            # Um código pedido para o email antigo (errado: pode ser a caixa de um
+            # estranho) não pode servir depois da correção.
+            mudanca["$unset"] = {campo: "" for campo in _CAMPOS_DO_RESET}
+        await db.users.update_one({"id": emp["user_id"]}, mudanca)
+    if "email" in update_data:
+        logger.info("Email de acesso do colaborador %s corrigido", employee_id)
+
     updated = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not updated:
+        raise HTTPException(status_code=404, detail="Colaborador não encontrado")
     company = await db.companies.find_one({"id": updated["company_id"]}, {"_id": 0})
     location = await db.locations.find_one({"id": updated["location_id"]}, {"_id": 0})
     
