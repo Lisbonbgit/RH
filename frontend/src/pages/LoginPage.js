@@ -190,6 +190,9 @@ export default function LoginPage() {
                       name="email"
                       autoComplete="username"
                       type="email"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                       placeholder="seu@email.com"
                       value={loginEmail}
                       onChange={(e) => setLoginEmail(e.target.value)}

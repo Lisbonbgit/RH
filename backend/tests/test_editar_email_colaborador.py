@@ -394,14 +394,15 @@ def test_o_mesmo_email_com_espacos_nao_e_mudanca(base):
     assert _ficha_de(base, "e-ze")["email"] == ERRADO
 
 
-def test_corrigir_so_as_maiusculas_grava_porque_o_login_compara_tal_e_qual(base, monkeypatch):
+def test_corrigir_so_as_maiusculas_grava_e_e_a_mesma_caixa(base, monkeypatch):
     # Gravado «Ze.Errado@…» (a criação guarda a parte local como foi escrita); o
-    # telemóvel escreve tudo em minúsculas e o login dá 401.
+    # telemóvel escreve tudo em minúsculas e o login já entra (antes dava 401 —
+    # ver tests/test_login_maiusculas.py). O gestor pode à mesma corrigir a grafia.
     misto = "Ze.Errado@example.com"
     _corre(base.users.update_one({"id": "u-ze"}, {"$set": {
         "email": misto, "reset_password_token": "pendente", "must_change_password": True}}))
     _corre(base.employees.update_one({"id": "e-ze"}, {"$set": {"email": misto}}))
-    assert _estado(_login(ERRADO)) == 401
+    assert _corre(_login(ERRADO))["user"]["email"] == misto
     sessao = _token_de_antes(monkeypatch, "u-ze", misto)
     r = _corre(_put("e-ze", email=ERRADO))
     assert r.email == ERRADO

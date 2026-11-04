@@ -2,8 +2,8 @@
 // colaboradores.test.js.
 
 // O email como se compara para saber se MUDOU: sem os espaços, mas com as
-// maiúsculas — o login compara tal e qual, por isso corrigir só as maiúsculas é
-// uma mudança a sério (a mesma regra do servidor, em _correcao_do_email).
+// maiúsculas — corrigir só as maiúsculas também se grava, é como o email se
+// mostra e se escreve (a mesma regra do servidor, em _correcao_do_email).
 const emailLimpo = (email) => String(email ?? '').trim();
 
 /** O corpo do PUT /employees/{id} a partir do formulário e da ficha aberta.
