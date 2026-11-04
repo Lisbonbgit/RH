@@ -3,9 +3,9 @@ import React from 'react';
 // **A última defesa contra a página branca.** Um erro a desenhar (um toast com
 // uma lista em vez de texto, por exemplo) desmontava a app inteira: sem nada à
 // volta, o React tira tudo do ecrã. Aqui fica uma frase e um botão. Recarrega-se
-// a página em vez de tentar de novo: o toast que rebentou continuava na fila do
-// sonner e rebentava outra vez. Sem dependências de components/ui de propósito —
-// o que rebentou pode ser um deles. Ver ErrorBoundary.test.js.
+// a página em vez de tentar de novo: não se sabe que estado ficou estragado. Sem
+// dependências de components/ui de propósito — o que rebentou pode ser um deles.
+// Ver ErrorBoundary.test.js.
 export default class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
