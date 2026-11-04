@@ -352,7 +352,7 @@ export default function FatProdutos() {
         toast.error('Este produto já não existe. A atualizar a lista...');
         fetchAll();
       } else {
-        toast.error(error.response?.data?.detail || 'Erro ao eliminar o produto');
+        toast.error(detalhesErro(error, 'Erro ao eliminar o produto').mensagem);
       }
     }
   };
@@ -370,7 +370,7 @@ export default function FatProdutos() {
         toast.error('Este produto já não existe. A atualizar a lista...');
         fetchAll();
       } else {
-        toast.error(error.response?.data?.detail || 'Erro ao mudar o estado do produto');
+        toast.error(detalhesErro(error, 'Erro ao mudar o estado do produto').mensagem);
       }
     } finally {
       setTogglingId(null);

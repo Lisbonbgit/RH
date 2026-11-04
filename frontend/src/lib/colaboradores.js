@@ -1,5 +1,6 @@
 // O que vai no PUT do «Editar Colaborador», fora do JSX de propósito — ver
 // colaboradores.test.js.
+import { mensagemDoErro as mensagemGenerica } from './erros';
 
 // O email como se compara para saber se MUDOU: sem os espaços, mas com as
 // maiúsculas — corrigir só as maiúsculas também se grava, é como o email se
@@ -22,18 +23,6 @@ export function dadosParaAtualizar(formulario, ficha) {
 }
 
 /** O texto para o toast quando gravar o colaborador falha — sempre uma string.
- *  O `detail` de um 422 do FastAPI é uma LISTA de objetos ([{type, loc, msg}]):
- *  entregue cru, o sonner desenha-o como filho React e o portal fica em branco. */
-export function mensagemDoErro(error) {
-  const detalhe = error?.response?.data?.detail;
-  if (typeof detalhe === 'string' && detalhe) return detalhe;
-  if (Array.isArray(detalhe) && detalhe.length > 0) {
-    const primeiro = detalhe[0] || {};
-    const campo = Array.isArray(primeiro.loc) ? primeiro.loc[primeiro.loc.length - 1] : null;
-    // A explicação do validador de email vem em inglês: diz-se o essencial.
-    if (campo === 'email') return 'Email inválido. Verifique como está escrito.';
-    const texto = String(primeiro.msg || '').replace(/^Value error,\s*/i, '');
-    if (texto) return texto;
-  }
-  return 'Erro ao guardar colaborador';
-}
+ *  A regra é a de lib/erros.js (o 422 do FastAPI traz uma LISTA de objetos, que o
+ *  sonner desenhava como filho React: portal em branco). */
+export const mensagemDoErro = (error) => mensagemGenerica(error, 'Erro ao guardar colaborador');

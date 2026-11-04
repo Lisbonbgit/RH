@@ -559,7 +559,7 @@ export default function FatPagamentos() {
         toast.error('Este tipo de pagamento já não existe. A atualizar a lista...');
         fetchAll();
       } else {
-        toast.error(error.response?.data?.detail || 'Erro ao eliminar o tipo de pagamento');
+        toast.error(detalhesErro(error, 'Erro ao eliminar o tipo de pagamento').mensagem);
       }
     }
   };

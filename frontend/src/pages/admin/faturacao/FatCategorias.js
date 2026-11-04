@@ -265,7 +265,7 @@ export default function FatCategorias() {
         toast.error('Esta categoria já não existe. A atualizar a lista...');
         fetchAll();
       } else {
-        toast.error(error.response?.data?.detail || 'Erro ao eliminar a categoria');
+        toast.error(detalhesErro(error, 'Erro ao eliminar a categoria').mensagem);
       }
     }
   };

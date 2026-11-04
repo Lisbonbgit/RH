@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from '../components/ui/alert';
 import { toast } from 'sonner';
 import { Lock, ArrowLeft, CheckCircle2, Loader2, Mail } from 'lucide-react';
 import axios from 'axios';
+import { mensagemDoErro } from '../lib/erros';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL + '/api';
 
@@ -81,7 +82,8 @@ export default function ResetPasswordPage() {
       setUserEmail(response.data.email || email);
       toast.success('Código confirmado com sucesso!');
     } catch (error) {
-      const message = error.response?.data?.detail || 'Erro ao verificar código';
+      // Sempre texto: o 422 (email mal escrito) traz uma lista, que o toast não desenha.
+      const message = mensagemDoErro(error, 'Erro ao verificar código');
       toast.error(message);
     } finally {
       setVerifyingCode(false);
@@ -105,7 +107,7 @@ export default function ResetPasswordPage() {
       setSuccess(true);
       toast.success('Palavra-passe redefinida com sucesso!');
     } catch (error) {
-      const message = error.response?.data?.detail || 'Erro ao redefinir palavra-passe';
+      const message = mensagemDoErro(error, 'Erro ao redefinir palavra-passe');
       toast.error(message);
 
       if (message.includes('expirado') || message.includes('inválido')) {

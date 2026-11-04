@@ -439,7 +439,7 @@ export default function FatPersonalizacoes() {
         toast.error('Este grupo já não existe. A atualizar a lista...');
         fetchAll();
       } else {
-        toast.error(error.response?.data?.detail || 'Erro ao eliminar o grupo de personalização');
+        toast.error(detalhesErro(error, 'Erro ao eliminar o grupo de personalização').mensagem);
       }
     }
   };

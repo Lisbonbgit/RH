@@ -2,6 +2,14 @@ import React, { createContext, useCallback, useContext, useState, useEffect } fr
 import axios from 'axios';
 import { apagar as apagarFaceId, emailGuardado, guardar as guardarFaceId } from '../lib/faceid';
 import { abrirBarreira, ligarEntrada, ligarSaida, reentrar } from '../lib/sessao';
+import { detalheEmTexto } from '../lib/erros';
+
+// **O `detail` em lista (o 422 do FastAPI) chega aos ecrãs já em texto.** Aqui,
+// onde se configura o axios por omissão, e uma vez só: sem isto, cada
+// `toast.error(error.response?.data?.detail || …)` do portal deixava a página em
+// branco num 422. As instâncias do `axios.create` (pos, faturacao, crm, bolso,
+// plataformas) não o herdam: tratam o 422 à sua maneira. Ver lib/erros.js.
+axios.interceptors.response.use(undefined, detalheEmTexto);
 
 const AuthContext = createContext(null);
 

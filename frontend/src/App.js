@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Toaster } from './components/ui/sonner';
+import ErrorBoundary from './components/ErrorBoundary';
 import { initNativeStatusBar } from './lib/statusbar';
 import { aterragem, PAPEIS_DO_BOLSO } from './lib/sessao';
 
@@ -388,13 +389,17 @@ function App() {
     // Barra de estado nativa a acompanhar o tema (app Android/iOS).
     initNativeStatusBar();
   }, []);
+  // O ErrorBoundary por fora de tudo, Toaster incluído: um erro a desenhar
+  // mostra «Algo correu mal.» em vez da página branca.
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <AppRoutes />
-        <Toaster position="top-right" richColors />
-      </AuthProvider>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <AuthProvider>
+          <AppRoutes />
+          <Toaster position="top-right" richColors />
+        </AuthProvider>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }
 

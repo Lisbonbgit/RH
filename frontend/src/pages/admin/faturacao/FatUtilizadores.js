@@ -219,7 +219,7 @@ export default function FatUtilizadores() {
         toast.error('Este utilizador já não existe. A atualizar a lista...');
         fetchAll();
       } else {
-        toast.error(error.response?.data?.detail || 'Erro ao mudar o estado do utilizador');
+        toast.error(detalhesErro(error, 'Erro ao mudar o estado do utilizador').mensagem);
       }
     } finally {
       setTogglingId(null);
