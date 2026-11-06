@@ -68,9 +68,12 @@ export function lojaComId(lojas, id) {
 // A vista quando o pedido das lojas termina:
 //  - lojas: a lista que chegou, ou null se o pedido falhou;
 //  - idLoja: o `?loja=<id>` do endereço (ou null);
-//  - jaTemVista: o mapa já tem uma vista (de uma falha anterior).
+//  - jaTemVista: o mapa já tem uma vista (de uma falha anterior);
+//  - centradoNaPessoa: "A minha localização" centrou este mapa antes de ele ter vista. O toque é o mais recente e
+//    ganha à primeira vista, também à do `?loja=`: o mapa não salta da pessoa para as lojas.
 // → {tipo: 'centrar', loja, zoom} | {tipo: 'enquadrar', lojas} | null (não mexer).
-export function vistaAoCarregar({ lojas, filtros, idLoja = null, jaTemVista = false }) {
+export function vistaAoCarregar({ lojas, filtros, idLoja = null, jaTemVista = false, centradoNaPessoa = false }) {
+  if (centradoNaPessoa) return null;
   if (!Array.isArray(lojas)) return jaTemVista ? null : { tipo: 'enquadrar', lojas: [] };
   const alvo = lojaComId(lojas, idLoja);
   if (alvo) return { tipo: 'centrar', loja: alvo, zoom: ZOOM_LOJA };

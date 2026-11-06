@@ -10,7 +10,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import React, { StrictMode, act } from 'react';
+import React, { StrictMode, act, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { toast } from 'sonner';
 
@@ -31,8 +31,8 @@ function mapaFalso() {
 let raiz;
 let contentor;
 
-function desenhar(mapa, { estrito = true } = {}) {
-  const botao = <BotaoMinhaLocalizacao mapa={mapa} />;
+function desenhar(mapa, { estrito = true, aoCentrar } = {}) {
+  const botao = <BotaoMinhaLocalizacao mapa={mapa} aoCentrar={aoCentrar} />;
   act(() => raiz.render(estrito ? <StrictMode>{botao}</StrictMode> : botao));
 }
 
@@ -101,6 +101,37 @@ test('o mapa ainda não está pronto: o botão funciona, e o ponto e o centro ch
   desenhar(mapa);
   expect(mapa.mostrarMinhaPosicao).toHaveBeenCalledWith({ lat: AQUI[0], lng: AQUI[1], precisao_m: 25 });
   expect(mapa.centrarEm).toHaveBeenCalledTimes(1);
+});
+
+test('aoCentrar: chega à função mais recente da página, e trocá-la não recria as regras nem o GPS', () => {
+  const gps = usarGps(gpsFalso());
+  const mapa = mapaFalso();
+  const antiga = jest.fn();
+  const recente = jest.fn();
+  desenhar(mapa, { aoCentrar: antiga });
+  tocar();
+  desenhar(mapa, { aoCentrar: recente });
+  act(() => gps.responder(...AQUI));
+  expect(antiga).not.toHaveBeenCalled();
+  expect(recente.mock.calls).toEqual([[mapa]]);
+  expect(gps.seguimentos).toHaveLength(1);
+  expect(gps.limpezas).toEqual([]);
+});
+
+test('aoCentrar corre com o efeito do botão, antes dos efeitos da página no mesmo commit', () => {
+  const gps = usarGps(gpsFalso());
+  const ordem = [];
+  function Pagina({ mapa }) {
+    useEffect(() => {
+      if (mapa) ordem.push('vista da página');
+    }, [mapa]);
+    return <BotaoMinhaLocalizacao mapa={mapa} aoCentrar={() => ordem.push('centro')} />;
+  }
+  act(() => raiz.render(<Pagina mapa={null} />));
+  tocar();
+  act(() => gps.responder(...AQUI));
+  act(() => raiz.render(<Pagina mapa={mapaFalso()} />));
+  expect(ordem).toEqual(['centro', 'vista da página']);
 });
 
 test('o mapa recriado recebe o ponto sem centrar outra vez, e o GPS continua o mesmo', () => {
@@ -204,10 +235,17 @@ const fonte = (relativo) => fs.readFileSync(path.join(__dirname, '../..', relati
 test.each(['pages/crm/CrmMapa.js', 'pages/crm/CrmRota.js'])('%s põe o botão na barra de cima, com o mapa da página', (relativo) => {
   const codigo = fonte(relativo);
   // Dentro da .crm-mapa__barra, sem nenhum elemento a fechar a barra pelo meio (`</div>`).
-  expect(codigo).toMatch(/className="crm-mapa__barra">(?:(?!<\/div>)[\s\S])*<BotaoMinhaLocalizacao mapa=\{mapa\} \/>/);
+  expect(codigo).toMatch(
+    /className="crm-mapa__barra[^"]*">(?:(?!<\/div>)[\s\S])*<BotaoMinhaLocalizacao mapa=\{mapa\} aoCentrar=\{aoCentrarNaPessoa\} \/>/,
+  );
   // A barra vem depois do mapa e dentro da vista dele.
   expect(codigo.indexOf('crm-mapa__vista')).toBeLessThan(codigo.indexOf('<MapaLojas'));
-  expect(codigo.indexOf('<MapaLojas')).toBeLessThan(codigo.indexOf('className="crm-mapa__barra"'));
+  expect(codigo.indexOf('<MapaLojas')).toBeLessThan(codigo.indexOf('className="crm-mapa__barra'));
+});
+
+test('só o planeador põe a barra à esquerda: lá não há "Nova loja" e à direita tapava o zoom da Google', () => {
+  expect(fonte('pages/crm/CrmRota.js')).toContain('className="crm-mapa__barra crm-mapa__barra--planeador"');
+  expect(fonte('pages/crm/CrmMapa.js')).not.toContain('crm-mapa__barra--planeador');
 });
 
 test('a barra só devolve os toques aos filhos diretos: o botão é um só elemento', () => {

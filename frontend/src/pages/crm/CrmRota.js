@@ -12,13 +12,14 @@
 //    openrouteservice (`RodapeOrs`).
 //  - O mapa é o `MapaLojas` com a classe `crm-mapa--planeador` (as lojas fora da rota esbatidas), as lojas
 //    fora da rota, a rota (`vista.mapa`: os pinos numerados, o início e o fim e a linha) e os negócios da
-//    Google não clicáveis. Nada nosso fica dentro dele e por cima só a barra de cima, com "A minha localização"
-//    (`BotaoMinhaLocalizacao`; a regra de disposição): a falha das lojas ou da configuração fica numa faixa por
-//    cima da área do mapa, que encolhe. Sem a chave Google no servidor (ou se a Google não carregar), a mensagem
-//    no lugar do mapa; o resto do planeador funciona, menos o "Ponto no mapa" (a página diz ao planeador se há
-//    mapa: `mapaDisponivel`; revisão dos ecrãs da F3, F3-UX-6).
+//    Google não clicáveis. Nada nosso fica dentro dele e por cima só a barra de cima, à esquerda, com "A minha
+//    localização" (`BotaoMinhaLocalizacao`; a regra de disposição): a falha das lojas ou da configuração fica numa
+//    faixa por cima da área do mapa, que encolhe. Sem a chave Google no servidor (ou se a Google não carregar), a
+//    mensagem no lugar do mapa; o resto do planeador funciona, menos o "Ponto no mapa" (a página diz ao planeador se
+//    há mapa: `mapaDisponivel`; revisão dos ecrãs da F3, F3-UX-6).
 //    O mapa enquadra a rota uma vez, quando fica pronto; sem paragens, as lojas e não só a fábrica, e as lojas
-//    quando chegam (`enquadramentoDoMapa`, F3-UX-2). O toque num pino de uma paragem leva à linha dela.
+//    quando chegam (`enquadramentoDoMapa`, F3-UX-2); o centro de "A minha localização" conta como essa vista. O
+//    toque num pino de uma paragem leva à linha dela.
 //  - O mapa também escolhe (T3.39): com "Ponto no mapa" nas definições, a faixa "Toque no mapa no ponto de
 //    início" (com "Cancelar") fica por cima da área do mapa (que encolhe; no telemóvel a área põe-se à vista) e
 //    o toque seguinte no mapa é o ponto (`tocarNoMapa`). Um toque numa loja esbatida abre, por baixo da área do
@@ -140,6 +141,12 @@ function PlaneadorDoDia({ data, base, cheio }) {
     if (enquadrar === 'rota') mapa.enquadrarRota();
     else if (enquadrar !== null) mapa.enquadrar(enquadrar);
   }, [mapa, mapaDaVista]);
+
+  // O botão centrou o mapa na pessoa. Vem antes do efeito de cima (os efeitos dos filhos correm primeiro): conta como
+  // a primeira vista, que já não se faz nem quando as lojas chegam.
+  const aoCentrarNaPessoa = useCallback((centrado) => {
+    enquadramento.current = { mapa: centrado, estado: 'feito' };
+  }, []);
 
   // Sem mapa: o servidor sem a chave Google, uma configuração que não serve, ou a Google que não carregou. O
   // planeador sabe-o (o "Ponto no mapa" não tem onde tocar; F3-UX-6).
@@ -375,8 +382,8 @@ function PlaneadorDoDia({ data, base, cheio }) {
                   aoEscolherLoja={escolherLoja}
                   aoTocarNoMapa={tocarNoMapa}
                 />
-                <div className="crm-mapa__barra">
-                  <BotaoMinhaLocalizacao mapa={mapa} />
+                <div className="crm-mapa__barra crm-mapa__barra--planeador">
+                  <BotaoMinhaLocalizacao mapa={mapa} aoCentrar={aoCentrarNaPessoa} />
                 </div>
               </>
             )}

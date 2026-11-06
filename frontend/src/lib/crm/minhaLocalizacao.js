@@ -17,7 +17,8 @@
 //    sozinho, porque alguns telemóveis param o seguimento e não o retomam. O ponto fica e a primeira leitura depois
 //    disso conta como as seguintes: não mexe no mapa.
 //  - O mapa pode ainda não estar pronto ou ser recriado (`usarMapa`): a posição guarda-se aqui e desenha-se no mapa
-//    que chegar; o centro que ficou por fazer faz-se aí.
+//    que chegar; o centro que ficou por fazer faz-se aí. A página dá a primeira vista a esse mapa logo a seguir (os
+//    efeitos dos filhos correm primeiro) ou só quando as lojas chegam: `aoCentrar` avisa-a, para não desfazer o centro.
 //  - `destruir()` para o GPS e tira o ponto; o que chegar depois não conta.
 //
 // A posição não sai do telemóvel para o portal: vai só para o mapa. Este ficheiro e o componente nunca falam com o
@@ -44,13 +45,14 @@ const VISTAS = Object.freeze({
 
 export const VISTA_INICIAL = VISTAS.desligado;
 
-// criarMinhaLocalizacao({geolocation, documento, aoMudarVista?, aoAvisar?}) → {tocar, usarMapa, destruir}
+// criarMinhaLocalizacao({geolocation, documento, aoMudarVista?, aoAvisar?, aoCentrar?}) → {tocar, usarMapa, destruir}
 //  - geolocation: o navigator.geolocation do browser (sem ele, o toque avisa e fica desligado);
 //  - documento: o `document` (o `hidden` e o `visibilitychange`);
 //  - aoMudarVista(vista): {estado, ligado, aProcurar, texto, rotulo}, só quando o estado muda (as leituras não voltam
 //    a desenhar o botão);
-//  - aoAvisar(mensagem): um erro para mostrar à pessoa, já em texto.
-export function criarMinhaLocalizacao({ geolocation, documento, aoMudarVista, aoAvisar }) {
+//  - aoAvisar(mensagem): um erro para mostrar à pessoa, já em texto;
+//  - aoCentrar(mapa): o mapa que acabou de ser centrado na pessoa (o mapa, nunca a posição).
+export function criarMinhaLocalizacao({ geolocation, documento, aoMudarVista, aoAvisar, aoCentrar }) {
   let estado = 'desligado';
   let mapa = null; // o do `criarMapa`, quando está pronto
   let posicao = null; // a última leitura boa
@@ -71,6 +73,7 @@ export function criarMinhaLocalizacao({ geolocation, documento, aoMudarVista, ao
     if (porCentrar === null) return;
     mapa.centrarEm(posicao, porCentrar === 'primeira' ? ZOOM_MINHA_POSICAO : undefined);
     porCentrar = null;
+    aoCentrar?.(mapa);
   }
 
   function tirarPonto() {

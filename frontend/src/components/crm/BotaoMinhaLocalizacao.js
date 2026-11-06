@@ -4,18 +4,26 @@
 //    recriado. Por isso o botão não espera por ele: o GPS arranca ao toque e o ponto desenha-se no mapa que chegar;
 //  - as regras criam-se num `useEffect` e destroem-se no cleanup: sair do ecrã para o GPS e tira o ponto. O
 //    `StrictMode` monta duas vezes em desenvolvimento, sem efeito: nada corre antes do toque;
+//  - `aoCentrar(mapa)` diz à página que o mapa foi centrado na pessoa, para a primeira vista não desfazer esse centro
+//    (corre antes dela: os efeitos dos filhos vêm primeiro). Lê-se de um `ref`: uma função nova não recria as regras;
 //  - enquanto procura, o botão fica com `aria-disabled` (o foco não se perde) e um toque não pede outra vez;
 //  - os erros são toasts do sonner, como nos outros ecrãs do CRM.
 // É um só elemento: a barra (`.crm-mapa__barra`) devolve os toques aos filhos diretos.
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Loader2, LocateFixed } from 'lucide-react';
 import { Button } from '../ui/button';
 import { VISTA_INICIAL, criarMinhaLocalizacao } from '../../lib/crm/minhaLocalizacao';
 
-export default function BotaoMinhaLocalizacao({ mapa }) {
+export default function BotaoMinhaLocalizacao({ mapa, aoCentrar }) {
   const [vista, setVista] = useState(VISTA_INICIAL);
   const controlo = useRef(null);
+
+  // A função mais recente da página: as regras criam-se uma vez e chamam-na daqui.
+  const ouvinte = useRef(aoCentrar);
+  useLayoutEffect(() => {
+    ouvinte.current = aoCentrar;
+  });
 
   useEffect(() => {
     const criado = criarMinhaLocalizacao({
@@ -23,6 +31,7 @@ export default function BotaoMinhaLocalizacao({ mapa }) {
       documento: document,
       aoMudarVista: setVista,
       aoAvisar: (texto) => toast.error(texto),
+      aoCentrar: (centrado) => ouvinte.current?.(centrado),
     });
     controlo.current = criado;
     return () => {

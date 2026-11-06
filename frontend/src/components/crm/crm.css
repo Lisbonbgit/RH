@@ -43,9 +43,9 @@
 }
 
 /* "N lojas", Filtros, Nova loja e A minha localização, por cima do mapa, no canto de cima à direita (no planeador,
-   só A minha localização; os botões de zoom e a atribuição da Google ficam no fundo). É irmã do .crm-mapa, presa
-   pelo top: nunca chega ao fundo. A barra deixa passar os toques para o mapa; só os filhos os recebem. Num telemóvel
-   estreito (320 px) os botões passam a outra linha em vez de transbordarem. */
+   só A minha localização, à esquerda; os botões de zoom e a atribuição da Google ficam no fundo). É irmã do
+   .crm-mapa, presa pelo top: nunca chega ao fundo. A barra deixa passar os toques para o mapa; só os filhos os
+   recebem. Num telemóvel estreito (320 px) os botões passam a outra linha em vez de transbordarem. */
 .crm-mapa__barra {
   position: absolute;
   top: 10px;
@@ -58,6 +58,12 @@
   justify-content: flex-end;
   gap: 8px;
   pointer-events: none;
+}
+
+/* No planeador o canto de cima à esquerda está livre. À direita, com o cartão aberto e o mapa no mínimo (8rem), o
+   botão ficava por cima do "+" da Google, que está no fundo à direita. */
+.crm-mapa__barra--planeador {
+  justify-content: flex-start;
 }
 
 .crm-mapa__barra > * {

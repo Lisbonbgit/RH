@@ -159,7 +159,8 @@ test('GPS do CRM: sobre a Google não se promete mais do que é verdade (recebe 
     'O mapa é servido pela Google, que recebe a zona que está a ser vista, como em qualquer mapa: com o mapa centrado'
       + ' na pessoa, é a zona onde ela está.',
   );
-  // A posição não sai dos nossos servidores para a Google, mas o mapa à volta dela sim: nunca "ninguém recebe nada".
+  // A posição não vai para os nossos servidores, mas a Google recebe a zona do mapa à volta dela: nunca "ninguém
+  // recebe nada".
   expect(crm).not.toMatch(/nunca sai do telem[oó]vel/i);
 });
 

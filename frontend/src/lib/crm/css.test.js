@@ -278,6 +278,16 @@ test('num telemóvel estreito a barra de cima não transborda: os botões passam
   expect(valor(barra, 'right')).toBe('max(10px, env(safe-area-inset-right))');
 });
 
+test('no planeador a barra fica à esquerda: à direita tapava o "+" da Google quando o mapa encolhe com o cartão', () => {
+  const planeador = regra('.crm-mapa__barra--planeador');
+  expect(valor(planeador, 'justify-content')).toBe('flex-start');
+  // Só muda o lado: o resto (presa pelo top, deixa passar os toques) é o da barra, que vem antes para ceder aqui.
+  expect(planeador.trim().split(';').filter(Boolean)).toHaveLength(1);
+  expect(valor(regra('.crm-mapa__barra'), 'justify-content')).toBe('flex-end');
+  const cabecas = REGRAS.map((r) => r.cabeca);
+  expect(cabecas.indexOf('.crm-mapa__barra')).toBeLessThan(cabecas.indexOf('.crm-mapa__barra--planeador'));
+});
+
 // --- As áreas dos mapas --------------------------------------------------------------------------------------
 
 test('o mapa tem altura explícita: ocupa a área toda e pode encolher com o cartão da loja aberto', () => {

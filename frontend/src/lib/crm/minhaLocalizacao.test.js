@@ -7,7 +7,8 @@
  * chegam tarde.
  *
  * No fim, a regra de privacidade do desenho, lida do próprio código: a posição não sai do telemóvel para o portal.
- * Só as unidades de "A minha localização" tocam nela, e nenhuma fala com o servidor nem grava no browser.
+ * Só as unidades de "A minha localização" tocam nela, e nenhuma fala com o servidor, grava no browser ou deixa
+ * registos na consola.
  *
  * O Jest do CRA corre com `resetMocks`: os falsos criam-se dentro de cada teste.
  */
@@ -61,16 +62,18 @@ function preparar({ gps = gpsFalso(), comMapa = true } = {}) {
   const pagina = paginaFalsa();
   const vistas = [];
   const avisos = [];
+  const centros = [];
   const controlo = criarMinhaLocalizacao({
     geolocation: gps,
     documento: pagina,
     aoMudarVista: (vista) => vistas.push(vista),
     aoAvisar: (mensagem) => avisos.push(mensagem),
+    aoCentrar: (...argumentos) => centros.push(argumentos),
   });
   const novo = novoMapa();
   if (comMapa) controlo.usarMapa(novo.mapa);
   const estados = () => vistas.map((vista) => vista.estado);
-  return { ...novo, gps, pagina, controlo, vistas, avisos, estados };
+  return { ...novo, gps, pagina, controlo, vistas, avisos, centros, estados };
 }
 
 // Ligado: já tocou e a primeira leitura chegou.
@@ -457,6 +460,43 @@ test('voltar a centrar sem mapa fica para quando ele chegar', () => {
   expect(outro.mapaGoogle.vistas).toEqual([{ tipo: 'panTo', centro: ponto(AQUI) }]);
 });
 
+test('aoCentrar: diz à página cada centro feito (a primeira leitura e o toque), e as leituras seguintes não contam', () => {
+  const { gps, controlo, mapa, centros } = ligado();
+  expect(centros).toEqual([[mapa]]);
+  gps.responder(...ALI);
+  expect(centros).toHaveLength(1);
+  controlo.tocar();
+  expect(centros).toEqual([[mapa], [mapa]]);
+});
+
+test('aoCentrar: sem mapa não há centro, e o que ficou por fazer avisa com o mapa que chegar', () => {
+  const { gps, controlo, centros } = preparar({ comMapa: false });
+  controlo.tocar();
+  gps.responder(...AQUI);
+  expect(centros).toEqual([]);
+  const { mapa } = novoMapa();
+  controlo.usarMapa(mapa);
+  expect(centros).toEqual([[mapa]]);
+});
+
+test('aoCentrar: o toque de voltar a centrar guardado sem mapa também avisa, com o mapa que chegar', () => {
+  const { controlo, mapa, centros } = ligado();
+  mapa.destruir();
+  controlo.usarMapa(null);
+  controlo.tocar();
+  expect(centros).toHaveLength(1);
+  const outro = novoMapa();
+  controlo.usarMapa(outro.mapa);
+  expect(centros).toEqual([[mapa], [outro.mapa]]);
+});
+
+test('aoCentrar: o mapa recriado sem centro por fazer não avisa, e a primeira vista dele é da página', () => {
+  const { controlo, mapa, centros } = ligado();
+  mapa.destruir();
+  controlo.usarMapa(novoMapa().mapa);
+  expect(centros).toEqual([[mapa]]);
+});
+
 test('o mesmo mapa outra vez não desenha nem centra de novo', () => {
   const { controlo, mapa, mapaGoogle } = ligado();
   const vistasDoMapa = mapaGoogle.vistas.length;
@@ -539,7 +579,8 @@ const UNIDADES = {
   ],
 };
 
-// O que faria a posição sair do telemóvel ou ficar gravada. O texto inteiro conta, comentários incluídos.
+// O que faria a posição sair do telemóvel, ficar gravada ou ficar nos registos. O texto inteiro conta, comentários
+// incluídos.
 const FUGAS = [
   ['api', /(?:from\s+|import\s*\(\s*|import\s+|require\(\s*)['"][^'"]*\bapi(?:\.js)?['"]/g],
   ['axios', /\baxios\b/g],
@@ -552,6 +593,7 @@ const FUGAS = [
   ['sessionStorage', /\bsessionStorage\b/g],
   ['indexedDB', /\bindexedDB\b/g],
   ['cookie', /\bcookie\b/g],
+  ['console', /\bconsole\b/g],
 ];
 
 const fugasEm = (codigo) => FUGAS.filter(([, padrao]) => codigo.search(padrao) !== -1).map(([nome]) => nome);
@@ -577,6 +619,8 @@ test.each([
   ["window.sessionStorage.setItem('crm.posicao', texto);", 'sessionStorage'],
   ["indexedDB.open('crm');", 'indexedDB'],
   ["document.cookie = 'crm=1';", 'cookie'],
+  ['console.log(leitura);', 'console'],
+  ["window.console.info('leitura', leitura);", 'console'],
 ])('o detetor de fugas apanha: %s', (amostra, nome) => {
   expect(fugasEm(amostra)).toContain(nome);
 });
@@ -590,7 +634,7 @@ test('importacoesDe lê as importações de uma e de várias linhas', () => {
   expect(importacoesDe(amostra)).toEqual(['a', './b', './crm.css']);
 });
 
-test.each(Object.keys(UNIDADES))('%s não fala com o servidor nem grava nada no browser', (relativo) => {
+test.each(Object.keys(UNIDADES))('%s não fala com o servidor, não grava nada no browser nem escreve na consola', (relativo) => {
   const codigo = ler(relativo);
   expect(codigo.length).toBeGreaterThan(0);
   expect(fugasEm(codigo)).toEqual([]);
@@ -630,13 +674,15 @@ test('watchPosition só no gps.js, e o seguirPosicao só nas regras de "A minha 
   expect(comPalavra('seguirPosicao').sort()).toEqual(['lib/crm/gps.js', 'lib/crm/minhaLocalizacao.js']);
 });
 
-test('as regras só entregam a posição ao mapa: o aviso e a vista nunca a levam', () => {
-  const { gps, vistas, avisos } = ligado();
+test('as regras só entregam a posição ao mapa: o aviso, a vista e o aoCentrar nunca a levam', () => {
+  const { gps, controlo, mapa, vistas, avisos, centros } = ligado();
+  controlo.tocar();
   gps.responder(...ALI);
   gps.falhar(1);
   const dito = JSON.stringify({ vistas, avisos });
   expect(dito).not.toContain('38.7');
   expect(dito).not.toContain('-9.1');
+  expect(centros).toEqual([[mapa], [mapa]]); // só o mapa, o mesmo que já tem a posição
   for (const vista of vistas) {
     expect(Object.keys(vista).sort()).toEqual(['aProcurar', 'estado', 'ligado', 'rotulo', 'texto']);
   }
