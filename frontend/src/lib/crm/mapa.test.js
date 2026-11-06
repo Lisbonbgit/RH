@@ -19,6 +19,8 @@
  * "Fim" ou um só "Início e fim: fábrica"), a linha (`google.maps.Polyline` com as opções exatas, a cheia e a
  * tracejada das horas velhas) e o `enquadrarRota`.
  *
+ * "A minha localização" (desenho de 2026-11-06): o `mostrarMinhaPosicao`, com o ponto azul e o círculo da precisão.
+ *
  * O Jest do CRA corre com `resetMocks`: o falso cria-se dentro de cada teste.
  */
 import fs from 'fs';
@@ -26,10 +28,10 @@ import path from 'path';
 
 import {
   criarMapa, configuracaoValida, pontoDe, limitarZoomDepoisDeEnquadrar,
-  ZOOM_MINIMO, ZOOM_MAXIMO, ZOOM_SEM_LOJAS, ZOOM_MAXIMO_ENQUADRAR, ZOOM_LOJA, CENTRO_PADRAO, MARGEM_ENQUADRAR,
-  MENSAGEM_SEM_MAPA, MENSAGEM_MAPA_NAO_CONFIGURADO,
-  ZINDEX_PARAGEM, ZINDEX_EXTREMO, TEXTO_INICIO, TEXTO_FIM, TEXTO_INICIO_E_FIM, TEXTO_INICIO_E_FIM_FABRICA,
-  COR_LINHA_ROTA,
+  ZOOM_MINIMO, ZOOM_MAXIMO, ZOOM_SEM_LOJAS, ZOOM_MAXIMO_ENQUADRAR, ZOOM_LOJA, ZOOM_MINHA_POSICAO, CENTRO_PADRAO,
+  MARGEM_ENQUADRAR, MENSAGEM_SEM_MAPA, MENSAGEM_MAPA_NAO_CONFIGURADO,
+  ZINDEX_PARAGEM, ZINDEX_EXTREMO, ZINDEX_MINHA_POSICAO, TEXTO_INICIO, TEXTO_FIM, TEXTO_INICIO_E_FIM,
+  TEXTO_INICIO_E_FIM_FABRICA, TEXTO_MINHA_POSICAO, COR_LINHA_ROTA, COR_MINHA_POSICAO, ESTILO_PRECISAO,
 } from './mapa';
 import { FASES } from './fases';
 import { TEXTOS_AVISO } from './rota';
@@ -102,7 +104,10 @@ test('cria um só Map no elemento, com as opções exatas (Map ID, centro, zoom 
 test('o objeto do mapa tem só a interface dos ecrãs (sem a atribuição nem as imagens do mapa antigo)', () => {
   const { mapa } = preparar();
   expect(Object.keys(mapa).sort()).toEqual(
-    ['centrarEm', 'destruir', 'enquadrar', 'enquadrarRota', 'focar', 'mapa', 'mostrarLojas', 'mostrarRota', 'redimensionar'],
+    [
+      'centrarEm', 'destruir', 'enquadrar', 'enquadrarRota', 'focar', 'mapa', 'mostrarLojas', 'mostrarMinhaPosicao',
+      'mostrarRota', 'redimensionar',
+    ],
   );
 });
 
@@ -1221,6 +1226,165 @@ test('destruir não rebenta quando tirar a linha ou os pinos da rota lança erro
   expect(() => mapa.destruir()).not.toThrow();
   expect(mapaGoogle.limpezas).toBe(1);
   expect(elemento.childNodes.length).toBe(0);
+});
+
+// --- A posição da pessoa ("A minha localização") -------------------------------------------------
+
+const AQUI = { lat: 38.7223, lng: -9.1393, precisao_m: 25 };
+const ALI = { lat: 38.7301, lng: -9.1502, precisao_m: 12 };
+const pontoDaPessoa = (registo) => registo.marcadores.find((m) => m.content.className === 'ponto-minha-posicao');
+
+test('o ponto azul: um marcador avançado na posição da pessoa, que não recebe toques e nunca se esconde', () => {
+  const { mapa, registo, mapaGoogle } = preparar();
+  mapa.mostrarMinhaPosicao(AQUI);
+  expect(registo.marcadores).toHaveLength(1);
+  const ponto = registo.marcadores[0];
+  expect(ponto.map).toBe(mapaGoogle);
+  expect(ponto.posicao()).toEqual({ lat: AQUI.lat, lng: AQUI.lng });
+  expect(ponto.content.className).toBe('ponto-minha-posicao');
+  expect(ponto.title).toBe(TEXTO_MINHA_POSICAO);
+  expect(ponto.gmpClickable).toBe(false);
+  expect(ponto.gmpDraggable).toBe(false);
+  expect(ponto.ouvintes('gmp-click')).toBe(0);
+  expect(ponto.collisionBehavior).toBe('REQUIRED');
+  expect(() => ponto.tocar()).toThrow(/não recebe toques/);
+});
+
+test('o ponto azul fica por cima das lojas, das paragens e dos extremos', () => {
+  const { mapa, registo } = preparar();
+  mapa.mostrarLojas(LOJAS);
+  mapa.mostrarMinhaPosicao(AQUI);
+  expect(pontoDaPessoa(registo).zIndex).toBe(ZINDEX_MINHA_POSICAO);
+  expect(ZINDEX_MINHA_POSICAO).toBeGreaterThan(ZINDEX_PARAGEM);
+  expect(ZINDEX_PARAGEM).toBeGreaterThan(ZINDEX_EXTREMO);
+});
+
+test('o círculo da precisão: um google.maps.Circle do tamanho da precisão, azul e sem receber toques', () => {
+  const { mapa, registo, mapaGoogle } = preparar();
+  mapa.mostrarMinhaPosicao(AQUI);
+  expect(registo.circulos).toHaveLength(1);
+  const circulo = registo.circulos[0];
+  expect(circulo.getMap()).toBe(mapaGoogle);
+  expect(circulo.getRadius()).toBe(25);
+  expect(circulo.getCenter().toJSON()).toEqual({ lat: AQUI.lat, lng: AQUI.lng });
+  expect(circulo.options.clickable).toBe(false);
+  expect(circulo.options.fillColor).toBe(COR_MINHA_POSICAO);
+  expect(circulo.options.strokeColor).toBe(COR_MINHA_POSICAO);
+  expect(Object.isFrozen(ESTILO_PRECISAO)).toBe(true);
+  // Claro: o mapa e as lojas veem-se através dele.
+  expect(circulo.options.fillOpacity).toBeLessThanOrEqual(0.2);
+});
+
+test('cria uma vez e depois só move: o mesmo ponto e o mesmo círculo, sem mexer na vista do mapa', () => {
+  const { mapa, registo, mapaGoogle } = preparar();
+  mapa.mostrarMinhaPosicao(AQUI);
+  const ponto = registo.marcadores[0];
+  const circulo = registo.circulos[0];
+  const vistas = mapaGoogle.vistas.length;
+  const centro = mapaGoogle.getCenter().toJSON();
+  mapa.mostrarMinhaPosicao(ALI);
+  expect(registo.marcadores).toEqual([ponto]);
+  expect(registo.circulos).toEqual([circulo]);
+  expect(ponto.posicao()).toEqual({ lat: ALI.lat, lng: ALI.lng });
+  expect(circulo.getCenter().toJSON()).toEqual({ lat: ALI.lat, lng: ALI.lng });
+  expect(circulo.getRadius()).toBe(12);
+  expect(mapaGoogle.vistas).toHaveLength(vistas);
+  expect(mapaGoogle.getCenter().toJSON()).toEqual(centro);
+});
+
+test('sem precisão, sem círculo: só o ponto, e o círculo que havia sai; quando a precisão volta, volta o círculo', () => {
+  for (const precisao_m of [null, undefined, 0, -3, Number.NaN, '25']) {
+    const { mapa, registo } = preparar();
+    mapa.mostrarMinhaPosicao({ ...AQUI, precisao_m });
+    expect(registo.marcadores).toHaveLength(1);
+    expect(registo.circulos).toEqual([]);
+  }
+  const { mapa, registo } = preparar();
+  mapa.mostrarMinhaPosicao(AQUI);
+  mapa.mostrarMinhaPosicao({ ...ALI, precisao_m: null });
+  expect(registo.circulos).toEqual([]);
+  expect(registo.marcadores).toHaveLength(1);
+  mapa.mostrarMinhaPosicao(ALI);
+  expect(registo.circulos.map((c) => c.getRadius())).toEqual([12]);
+});
+
+test('null tira o ponto e o círculo, e o conteúdo sai do mapa; depois disso, cria-os de novo', () => {
+  const { mapa, registo, mapaGoogle } = preparar();
+  mapa.mostrarMinhaPosicao(AQUI);
+  const conteudo = registo.marcadores[0].content;
+  mapa.mostrarMinhaPosicao(null);
+  expect(registo.marcadores).toEqual([]);
+  expect(registo.circulos).toEqual([]);
+  expect(Array.from(mapaGoogle.vista.children)).not.toContain(conteudo);
+  mapa.mostrarMinhaPosicao(null); // sem nada para tirar, também não rebenta
+  mapa.mostrarMinhaPosicao(ALI);
+  expect(registo.marcadores).toHaveLength(1);
+  expect(registo.circulos).toHaveLength(1);
+});
+
+test('uma posição sem coordenadas válidas não muda nada (nem desenha, nem tira)', () => {
+  const { mapa, registo } = preparar();
+  for (const invalida of [undefined, {}, { lat: '38.7', lng: -9.1 }, { lat: 38.7, lng: Number.NaN }]) {
+    mapa.mostrarMinhaPosicao(invalida);
+  }
+  expect(registo.marcadores).toEqual([]);
+  mapa.mostrarMinhaPosicao(AQUI);
+  mapa.mostrarMinhaPosicao({ lat: Number.NaN, lng: Number.NaN, precisao_m: 3 });
+  expect(registo.marcadores[0].posicao()).toEqual({ lat: AQUI.lat, lng: AQUI.lng });
+  expect(registo.circulos[0].getRadius()).toBe(25);
+});
+
+test('as lojas, a rota e a posição da pessoa são grupos à parte: mostrar uns não tira o outro', () => {
+  const { mapa, registo } = preparar();
+  mapa.mostrarMinhaPosicao(AQUI);
+  const ponto = pontoDaPessoa(registo);
+  mapa.mostrarLojas(LOJAS);
+  mapa.mostrarRota({ paragens: [], inicio: null, fim: null, linha: [] });
+  mapa.mostrarRota(null);
+  mapa.mostrarLojas([]);
+  expect(pontoDaPessoa(registo)).toBe(ponto);
+  expect(registo.circulos).toHaveLength(1);
+  mapa.mostrarLojas(LOJAS);
+  mapa.mostrarMinhaPosicao(null);
+  expect(registo.marcadores).toHaveLength(LOJAS.length);
+});
+
+test('centrarEm serve para a posição da pessoa: com zoom mostra-a logo; sem zoom, desloca-se e mantém o zoom', () => {
+  const { mapa, mapaGoogle } = preparar();
+  mapa.centrarEm(AQUI, ZOOM_MINHA_POSICAO);
+  expect(mapaGoogle.vistas.slice(-2)).toEqual([
+    { tipo: 'setCenter', centro: { lat: AQUI.lat, lng: AQUI.lng } },
+    { tipo: 'setZoom', zoom: 16 },
+  ]);
+  mapaGoogle.setZoom(13);
+  mapa.centrarEm(ALI);
+  expect(mapaGoogle.vistas.at(-1)).toEqual({ tipo: 'panTo', centro: { lat: ALI.lat, lng: ALI.lng } });
+  expect(mapaGoogle.getZoom()).toBe(13);
+  expect(ZOOM_MINHA_POSICAO).toBeGreaterThanOrEqual(ZOOM_MINIMO);
+  expect(ZOOM_MINHA_POSICAO).toBeLessThanOrEqual(ZOOM_MAXIMO);
+});
+
+test('destruir tira o ponto e o círculo; depois disso, mostrarMinhaPosicao não faz nada', () => {
+  const { mapa, registo } = preparar();
+  mapa.mostrarMinhaPosicao(AQUI);
+  mapa.destruir();
+  expect(registo.marcadores).toEqual([]);
+  expect(registo.circulos).toEqual([]);
+  mapa.mostrarMinhaPosicao(ALI);
+  mapa.mostrarMinhaPosicao(null);
+  expect(registo.marcadores).toEqual([]);
+  expect(registo.circulos).toEqual([]);
+});
+
+test('tirar a posição não rebenta quando a Google já recusou a chave (tirar do mapa lança erro)', () => {
+  const { mapa, registo } = preparar();
+  mapa.mostrarMinhaPosicao(AQUI);
+  const ponto = registo.marcadores[0];
+  const circulo = registo.circulos[0];
+  Object.defineProperty(ponto, 'map', { set() { throw new Error('InvalidKeyMapError'); } });
+  circulo.setMap = () => { throw new Error('InvalidKeyMapError'); };
+  expect(() => mapa.mostrarMinhaPosicao(null)).not.toThrow();
+  expect(() => mapa.destruir()).not.toThrow();
 });
 
 // --- pontoDe: o LatLng da Google ou um literal ----------------------------------------------------

@@ -15,9 +15,9 @@
  * nunca se escondem nem se tapam (adenda §2.2). Daí a regra de disposição:
  *  - o elemento do mapa (.crm-mapa) é da Google: nenhum seletor deste ficheiro entra nele (nada de filhos,
  *    descendentes ou outras classes nossas lá dentro) e nenhum toca nas classes nem nos elementos da Google.
- *    Lá dentro só há de nosso o conteúdo dos marcadores (.pino, .pino-paragem, .pino-extremo, .pino-seletor),
- *    que o mapa.js e o seletor.js põem; o mapa do planeador (MapaLojas com a classe .crm-mapa--planeador)
- *    esbate o .pino das lojas fora da rota;
+ *    Lá dentro só há de nosso o conteúdo dos marcadores (.pino, .pino-paragem, .pino-extremo, .pino-seletor,
+ *    .ponto-minha-posicao), que o mapa.js e o seletor.js põem; o mapa do planeador (MapaLojas com a classe
+ *    .crm-mapa--planeador) esbate o .pino das lojas fora da rota;
  *  - cartões, painéis, pegas e rodapés vivem fora da caixa do mapa e encolhem-na (são irmãos da vista, por
  *    baixo ou ao lado dela), nunca absolutos por cima do mapa;
  *  - por cima do mapa só fica a barra de cima (.crm-mapa__barra), presa pelo top, longe do fundo, e que deixa
@@ -42,9 +42,10 @@
   isolation: isolate;
 }
 
-/* "N lojas", Filtros e Nova loja, por cima do mapa, no canto de cima à direita (os botões de zoom e a
-   atribuição da Google ficam no fundo). É irmã do .crm-mapa, presa pelo top: nunca chega ao fundo. A barra
-   deixa passar os toques para o mapa; só os filhos os recebem. */
+/* "N lojas", Filtros, Nova loja e A minha localização, por cima do mapa, no canto de cima à direita (no planeador,
+   só A minha localização; os botões de zoom e a atribuição da Google ficam no fundo). É irmã do .crm-mapa, presa
+   pelo top: nunca chega ao fundo. A barra deixa passar os toques para o mapa; só os filhos os recebem. Num telemóvel
+   estreito (320 px) os botões passam a outra linha em vez de transbordarem. */
 .crm-mapa__barra {
   position: absolute;
   top: 10px;
@@ -194,6 +195,23 @@
    e tocam-se (para as adicionar), mas a rota fica por cima. */
 .crm-mapa--planeador .pino {
   opacity: 0.5;
+}
+
+/* A posição da pessoa ("A minha localização"): o `content` do marcador avançado do mapa.mostrarMinhaPosicao. O
+   marcador põe o fundo ao centro do conteúdo no ponto: a descer metade da altura, é o centro do ponto que fica lá.
+   Cores fixas, como os pinos (o mapa é claro também no tema escuro), com o azul de COR_MINHA_POSICAO (mapa.js). Não
+   recebe toques: a loja que estiver por baixo continua a poder tocar-se. O círculo da precisão não tem CSS: as
+   opções vão no google.maps.Circle (ESTILO_PRECISAO, no mapa.js), que a Google desenha por baixo dos pinos. */
+.ponto-minha-posicao {
+  box-sizing: border-box;
+  width: 18px;
+  height: 18px;
+  border: 3px solid #fff;
+  border-radius: 50%;
+  background: #1a73e8;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 45%);
+  pointer-events: none;
+  transform: translateY(50%);
 }
 
 /* A amostra da cor da fase, nos filtros e no cartão (as cores vêm das classes .pino--<fase>). O contorno por

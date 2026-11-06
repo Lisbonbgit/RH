@@ -8,7 +8,8 @@
 //    em desenvolvimento: a montagem já desfeita não cria nada quando a Google chega (`ativo`), e o carregador
 //    não mete um segundo script;
 //  - mostra as lojas que recebe (as que os filtros deixam ver; `null` enquanto não chegam). A primeira vista é
-//    da página (`aoPronto` entrega-lhe o mapa, com `enquadrar`, `centrarEm`, `redimensionar` e `focar`);
+//    da página (`aoPronto` entrega-lhe o mapa, com `enquadrar`, `centrarEm`, `redimensionar`, `focar` e
+//    `mostrarMinhaPosicao`, que a página passa ao `BotaoMinhaLocalizacao`);
 //  - tocar no ícone de um negócio abre o balão da própria Google e avisa a página (`aoTocarNumLugar`, com o
 //    identificador do lugar e o ponto tocado); sem esse ouvinte, chega como um toque no mapa. Com
 //    `negociosClicaveis={false}` (o planeador da F3b) os negócios não respondem;

@@ -37,12 +37,15 @@
 //    aviso no `state` da navegação (`{aviso: 'Loja guardada'}`): aparece num
 //    toast, com "— os filtros escondem-na do mapa." quando é o caso, e só uma
 //    vez (sai do histórico, para não voltar ao recarregar).
+//  - "A minha localização" (`BotaoMinhaLocalizacao`, na barra de cima) mostra a
+//    posição da pessoa no mapa, só a pedido dela e só neste ecrã.
 // As decisões estão em `lib/crm/ecraMapa.js` (com testes).
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { MapPinPlus } from 'lucide-react';
 import { Button } from '../../components/ui/button';
+import BotaoMinhaLocalizacao from '../../components/crm/BotaoMinhaLocalizacao';
 import CartaoLoja from '../../components/crm/CartaoLoja';
 import DialogoAdicionarARota from '../../components/crm/DialogoAdicionarARota';
 import FiltrosMapa from '../../components/crm/FiltrosMapa';
@@ -351,6 +354,7 @@ export default function CrmMapa() {
                   <span className="hidden sm:inline">Nova loja</span>
                 </Link>
               </Button>
+              <BotaoMinhaLocalizacao mapa={mapa} />
             </div>
           </>
         )}

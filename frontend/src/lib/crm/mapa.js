@@ -30,6 +30,11 @@
 //    linha do openrouteservice (`google.maps.Polyline`, cheia com as horas em
 //    dia, tracejada com as horas velhas). A geometria vem do servidor, nunca
 //    da Google. As lojas e a rota mostram-se e tiram-se cada uma por si.
+//  - A posição da própria pessoa ("A minha localização", desenho de
+//    2026-11-06) é outro grupo: um ponto azul por cima de tudo, com o círculo
+//    da precisão (`google.maps.Circle`). Não recebem toques (as lojas por baixo
+//    continuam a tocar-se) e vivem só no mapa: a regra de quando aparecem está
+//    em `minhaLocalizacao.js`.
 
 import { el } from './dom';
 import { FASES, ORDEM, classePino } from './fases';
@@ -42,6 +47,8 @@ export const ZOOM_SEM_LOJAS = 12;
 export const ZOOM_MAXIMO_ENQUADRAR = 16;
 // Ao voltar ao mapa depois de guardar uma loja nova: ao nível da rua, com os nomes à volta.
 export const ZOOM_LOJA = 17;
+// Ao ligar "A minha localização": perto o bastante para se verem as ruas e as lojas à volta da pessoa.
+export const ZOOM_MINHA_POSICAO = 16;
 // O ponto da fábrica por defeito (os PADROES de backend/crm/dominio/definicoes.py),
 // se a configuração não trouxer o centro.
 export const CENTRO_PADRAO = Object.freeze({ lat: 38.7223, lng: -9.1393 });
@@ -58,6 +65,8 @@ export const MENSAGEM_MAPA_NAO_CONFIGURADO = 'Mapa não configurado — peça ao
 // ficam por cima dos extremos.
 export const ZINDEX_EXTREMO = 1000001;
 export const ZINDEX_PARAGEM = 1000002;
+// O ponto da pessoa fica por cima das lojas e da rota.
+export const ZINDEX_MINHA_POSICAO = 1000003;
 // Os nomes dos pinos dos extremos (o título e a etiqueta).
 export const TEXTO_INICIO = 'Início';
 export const TEXTO_FIM = 'Fim';
@@ -78,6 +87,20 @@ function opcoesDaLinha(atual) {
     clickable: false,
   };
 }
+
+// O ponto da pessoa e o círculo da precisão: o azul de "estou aqui" dos mapas, para não se confundir com o roxo das
+// lojas nem com o da rota (o crm.css pinta o ponto com a mesma cor; o círculo desenha-o a Google, sem CSS). Cores
+// fixas, como os pinos: o mapa é claro também no tema escuro. O círculo nunca recebe toques.
+export const TEXTO_MINHA_POSICAO = 'A sua posição';
+export const COR_MINHA_POSICAO = '#1a73e8';
+export const ESTILO_PRECISAO = Object.freeze({
+  strokeColor: COR_MINHA_POSICAO,
+  strokeOpacity: 0.4,
+  strokeWeight: 1,
+  fillColor: COR_MINHA_POSICAO,
+  fillOpacity: 0.15,
+  clickable: false,
+});
 
 const textoPreenchido = (valor) => typeof valor === 'string' && valor.trim() !== '';
 
@@ -170,7 +193,8 @@ function extremosDaRota(inicio, fim) {
 
 // criarMapa({google, documento, elemento, configuracao, negociosClicaveis = true, aoEscolherLoja?,
 //            aoTocarNoMapa?, aoTocarNumLugar?})
-//   → {mapa, mostrarLojas, enquadrar, mostrarRota, enquadrarRota, redimensionar, centrarEm, focar, destruir}
+//   → {mapa, mostrarLojas, enquadrar, mostrarRota, enquadrarRota, redimensionar, centrarEm, mostrarMinhaPosicao,
+//      focar, destruir}
 //  - configuracao: a do GET /api/crm/config, {google: {chave, map_id}, centro: {lat, lng}} (ver configuracaoValida);
 //  - aoEscolherLoja(loja, marcador): tocaram no pino da loja;
 //  - aoTocarNoMapa({lat, lng} | null): tocaram no mapa, fora dos pinos e dos negócios, nesse ponto (os toques
@@ -218,6 +242,9 @@ export function criarMapa({
   let pinosDaRota = [];
   let linhaDaRota = null;
   let pontosDaRota = [];
+  // A posição da pessoa (mostrarMinhaPosicao): o ponto e o círculo da precisão.
+  let pontoDaPessoa = null;
+  let circuloDaPessoa = null;
   let destruido = false;
 
   function pino(loja) {
@@ -318,6 +345,33 @@ export function criarMapa({
     pontosDaRota = [];
   }
 
+  // Não é clicável e o crm.css tira-lhe os toques: um toque no ponto chega ao pino ou ao mapa que estão por baixo.
+  function pontoMinhaPosicao(ponto) {
+    return new google.maps.marker.AdvancedMarkerElement({
+      map: mapa,
+      position: ponto,
+      content: el(documento, 'div', { classe: 'ponto-minha-posicao' }),
+      title: TEXTO_MINHA_POSICAO,
+      collisionBehavior: google.maps.CollisionBehavior.REQUIRED,
+      zIndex: ZINDEX_MINHA_POSICAO,
+    });
+  }
+
+  function tirarCirculoDaPessoa() {
+    try {
+      circuloDaPessoa?.setMap(null);
+    } catch {
+      // Idem: o mapa já não existe para a Google.
+    }
+    circuloDaPessoa = null;
+  }
+
+  function tirarMinhaPosicao() {
+    if (pontoDaPessoa) tirarDoMapa([pontoDaPessoa]);
+    pontoDaPessoa = null;
+    tirarCirculoDaPessoa();
+  }
+
   // Todos os pontos à vista (sem passar do zoom 16); sem nenhum, o centro das definições (o ponto da fábrica).
   function enquadrarPontos(pontos) {
     if (pontos.length > 0) {
@@ -390,6 +444,29 @@ export function criarMapa({
         mapa.panTo(pontoDaLoja(loja));
       }
     },
+    // A posição da pessoa, {lat, lng, precisao_m}: o ponto e o círculo criam-se uma vez e depois só se movem, sem
+    // tocar na vista do mapa. Sem precisão (ou com 0 m), só o ponto; `null` tira os dois; uma posição sem
+    // coordenadas válidas não muda nada.
+    mostrarMinhaPosicao(posicao) {
+      if (destruido) return;
+      if (posicao === null) {
+        tirarMinhaPosicao();
+        return;
+      }
+      if (!temCoordenadas(posicao)) return;
+      const ponto = pontoDaLoja(posicao);
+      if (pontoDaPessoa) pontoDaPessoa.position = ponto;
+      else pontoDaPessoa = pontoMinhaPosicao(ponto);
+      const raio = posicao.precisao_m;
+      if (!numero(raio) || raio <= 0) {
+        tirarCirculoDaPessoa();
+      } else if (circuloDaPessoa) {
+        circuloDaPessoa.setCenter(ponto);
+        circuloDaPessoa.setRadius(raio);
+      } else {
+        circuloDaPessoa = new google.maps.Circle({ ...ESTILO_PRECISAO, center: ponto, radius: raio, map: mapa });
+      }
+    },
     // O foco no mapa (ao fechar o cartão de uma loja cujo pino já não existe).
     focar() {
       if (destruido) return;
@@ -404,6 +481,7 @@ export function criarMapa({
       cancelarLimiteDoZoom(mapa);
       tirarPinos();
       tirarRota();
+      tirarMinhaPosicao();
       google.maps.event.clearInstanceListeners(mapa);
       if (elemento.__crmMapa === mapa) delete elemento.__crmMapa;
       elemento.replaceChildren();

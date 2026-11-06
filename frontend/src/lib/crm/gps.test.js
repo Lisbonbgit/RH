@@ -13,21 +13,28 @@
  * `backend/tests/crm/test_consistencia_frontend.py`, que lê este `gps.js`
  * (plano T2.22).
  *
- * Os quatro últimos testes são extra: nunca há seguimento contínuo (desenho
- * §4.4: guarda-se só o ponto da loja), um `geolocation` sem
+ * Os quatro testes "Extra" são do portal: o `obterPosicao` nunca segue a
+ * pessoa (desenho §4.4: guarda-se só o ponto da loja), um `geolocation` sem
  * `getCurrentPosition` também é "sem GPS", o `traduzirErroGps` devolve sempre
  * uma cópia, e as opções passadas ao browser são uma cópia das congeladas.
+ *
+ * No fim, o `seguirPosicao` de "A minha localização" (desenho de 2026-11-06):
+ * o único `watchPosition`, com opções e mensagens próprias, que para uma só
+ * vez e ignora as coordenadas inválidas e o que chega depois de parar.
  */
 import {
   LIMITE_PRECISAO_M,
   OPCOES_GPS,
+  OPCOES_SEGUIMENTO,
   avaliarPrecisao,
   obterPosicao,
+  seguirPosicao,
   traduzirErroGps,
   limitesDoCirculo,
   MENSAGEM_PERMISSAO_NEGADA,
   MENSAGEM_LOCALIZACAO_IMPRECISA,
 } from './gps';
+import { coordenadas, gpsFalso } from './testes/gpsFalso';
 
 const POSICAO_INDISPONIVEL = {
   codigo: 'posicao_indisponivel',
@@ -233,4 +240,164 @@ test('OPCOES_GPS está congelado e o browser recebe uma cópia', async () => {
   await obterPosicao(geo);
   expect(geo.chamadas[0]).not.toBe(OPCOES_GPS);
   expect(Object.isFrozen(geo.chamadas[0])).toBe(false);
+});
+
+// --- O seguimento de "A minha localização" -------------------------------------------------------
+
+// Um seguimento com os avisos guardados: `leituras` (aoMudar) e `falhas` (aoFalhar).
+function seguir(gps) {
+  const leituras = [];
+  const falhas = [];
+  const parar = seguirPosicao(gps, {
+    aoMudar: (leitura) => leituras.push(leitura),
+    aoFalhar: (falha) => falhas.push(falha),
+  });
+  return { leituras, falhas, parar };
+}
+
+test('seguirPosicao: um só watchPosition, com opções próprias (em cópia), sem pedir uma leitura à parte', () => {
+  const gps = gpsFalso();
+  seguir(gps);
+  expect(gps.seguimentos).toHaveLength(1);
+  expect(gps.leiturasUnicas).toBe(0);
+  expect(gps.seguimentos[0].opcoes).toEqual({ enableHighAccuracy: true, timeout: 20000, maximumAge: 5000 });
+  expect(gps.seguimentos[0].opcoes).not.toBe(OPCOES_SEGUIMENTO);
+  expect(Object.isFrozen(OPCOES_SEGUIMENTO)).toBe(true);
+  // As de "Estou nesta loja" não mudaram.
+  expect(OPCOES_GPS).toEqual({ enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+});
+
+test('seguirPosicao: cada leitura chega com lat, lng e a precisão arredondada, como a do obterPosicao', () => {
+  const gps = gpsFalso();
+  const { leituras, falhas } = seguir(gps);
+  gps.responder(38.7075, -9.1364, 12.6);
+  gps.responder(38.708, -9.137, 8);
+  expect(leituras).toEqual([
+    { lat: 38.7075, lng: -9.1364, precisao_m: 13 },
+    { lat: 38.708, lng: -9.137, precisao_m: 8 },
+  ]);
+  expect(falhas).toEqual([]);
+});
+
+test('seguirPosicao: precisão em falta ou inválida fica null, e a leitura conta na mesma', () => {
+  for (const accuracy of [undefined, null, Number.NaN, Infinity, -5, '12']) {
+    const gps = gpsFalso();
+    const { leituras } = seguir(gps);
+    gps.seguimentos[0].sucesso(coordenadas(38.7075, -9.1364, accuracy));
+    expect(leituras).toEqual([{ lat: 38.7075, lng: -9.1364, precisao_m: null }]);
+  }
+});
+
+test('seguirPosicao: coordenadas inválidas não chegam a ninguém, e a leitura boa seguinte chega', () => {
+  const gps = gpsFalso();
+  const { leituras, falhas } = seguir(gps);
+  const { sucesso } = gps.seguimentos[0];
+  for (const resposta of [
+    undefined,
+    null,
+    {},
+    { coords: null },
+    coordenadas(Number.NaN, -9.1),
+    coordenadas(38.7, Infinity),
+    coordenadas('38.7', -9.1),
+    coordenadas(38.7, null),
+    coordenadas(90.5, -9.1),
+    coordenadas(38.7, -180.5),
+  ]) {
+    sucesso(resposta);
+  }
+  expect(leituras).toEqual([]);
+  expect(falhas).toEqual([]);
+  gps.responder(38.7075, -9.1364, 5);
+  expect(leituras).toHaveLength(1);
+});
+
+test('seguirPosicao: parar chama o clearWatch com o id do seguimento, uma só vez', () => {
+  const gps = gpsFalso();
+  const { parar } = seguir(gps);
+  expect(gps.limpezas).toEqual([]);
+  parar();
+  parar();
+  expect(gps.limpezas).toEqual([gps.seguimentos[0].id]);
+});
+
+test('seguirPosicao: o id 0 também se para (é um id como os outros)', () => {
+  const gps = gpsFalso({ primeiroId: 0 });
+  const { parar } = seguir(gps);
+  parar();
+  expect(gps.limpezas).toEqual([0]);
+});
+
+test('seguirPosicao: depois de parar, o que chegar do browser não conta', () => {
+  const gps = gpsFalso();
+  const { leituras, falhas, parar } = seguir(gps);
+  const { sucesso, erro } = gps.seguimentos[0];
+  parar();
+  sucesso(coordenadas(38.7075, -9.1364, 5));
+  erro({ code: 1 });
+  expect(leituras).toEqual([]);
+  expect(falhas).toEqual([]);
+});
+
+test('seguirPosicao: os erros têm os códigos do obterPosicao e mensagens próprias, sem o pino nem o outro botão', () => {
+  const esperados = { 1: 'permissao_negada', 2: 'posicao_indisponivel', 3: 'tempo_esgotado', 99: 'posicao_indisponivel' };
+  for (const [code, codigo] of Object.entries(esperados)) {
+    const gps = gpsFalso();
+    const { falhas } = seguir(gps);
+    gps.falhar(Number(code));
+    expect(falhas.map((falha) => falha.codigo)).toEqual([codigo]);
+    expect(falhas[0].mensagem).not.toMatch(/pino|Estou nesta loja/i);
+  }
+  const gps = gpsFalso();
+  const { falhas } = seguir(gps);
+  gps.falhar(1);
+  // Diz como autorizar.
+  expect(falhas[0].mensagem).toBe('Autorize a localização nas definições do browser para ver onde está no mapa');
+  gps.falhar(2);
+  gps.falhar(3);
+  // Pedem para tentar de novo.
+  expect(falhas[1].mensagem).toBe('Não foi possível obter a sua localização — tente outra vez');
+  expect(falhas[2].mensagem).toBe('A localização demorou demasiado — tente outra vez');
+  // O seguimento não para sozinho: é quem chama que decide.
+  expect(gps.limpezas).toEqual([]);
+});
+
+test('seguirPosicao: sem geolocalização no browser avisa logo, sem rebentar, e a função de parar não faz nada', () => {
+  for (const geo of [undefined, null, {}, { watchPosition: 'não é função' }]) {
+    const { falhas, parar } = seguir(geo);
+    expect(falhas).toEqual([{
+      codigo: 'sem_gps',
+      mensagem: 'Este browser não permite obter a localização — tente outra vez ou use outro browser',
+    }]);
+    expect(falhas[0].mensagem).not.toMatch(/pino|Estou nesta loja/i);
+    expect(() => parar()).not.toThrow();
+  }
+});
+
+test('seguirPosicao: um watchPosition que lança avisa com a mensagem pt, sem rebentar', () => {
+  const geo = {
+    watchPosition() {
+      throw new TypeError('Illegal invocation');
+    },
+    clearWatch() {
+      throw new Error('não há nada para limpar');
+    },
+  };
+  const { falhas, parar } = seguir(geo);
+  expect(falhas.map((falha) => falha.codigo)).toEqual(['posicao_indisponivel']);
+  expect(() => parar()).not.toThrow();
+});
+
+test('seguirPosicao: um clearWatch que lança não rebenta com quem sai do ecrã', () => {
+  const gps = gpsFalso();
+  gps.clearWatch = () => {
+    throw new TypeError('Illegal invocation');
+  };
+  const { parar } = seguir(gps);
+  expect(() => parar()).not.toThrow();
+});
+
+test('as mensagens de "Estou nesta loja" não mudaram com o seguimento', () => {
+  expect(traduzirErroGps({ code: 1 })).toEqual({ codigo: 'permissao_negada', mensagem: MENSAGEM_PERMISSAO_NEGADA });
+  expect(traduzirErroGps({ code: 2 })).toEqual(POSICAO_INDISPONIVEL);
 });

@@ -12,10 +12,11 @@
 //    openrouteservice (`RodapeOrs`).
 //  - O mapa é o `MapaLojas` com a classe `crm-mapa--planeador` (as lojas fora da rota esbatidas), as lojas
 //    fora da rota, a rota (`vista.mapa`: os pinos numerados, o início e o fim e a linha) e os negócios da
-//    Google não clicáveis. Nada nosso fica dentro nem por cima dele (a regra de disposição): a falha das
-//    lojas ou da configuração fica numa faixa por cima da área do mapa, que encolhe. Sem a chave Google no
-//    servidor (ou se a Google não carregar), a mensagem no lugar do mapa; o resto do planeador funciona, menos o
-//    "Ponto no mapa" (a página diz ao planeador se há mapa: `mapaDisponivel`; revisão dos ecrãs da F3, F3-UX-6).
+//    Google não clicáveis. Nada nosso fica dentro dele e por cima só a barra de cima, com "A minha localização"
+//    (`BotaoMinhaLocalizacao`; a regra de disposição): a falha das lojas ou da configuração fica numa faixa por
+//    cima da área do mapa, que encolhe. Sem a chave Google no servidor (ou se a Google não carregar), a mensagem
+//    no lugar do mapa; o resto do planeador funciona, menos o "Ponto no mapa" (a página diz ao planeador se há
+//    mapa: `mapaDisponivel`; revisão dos ecrãs da F3, F3-UX-6).
 //    O mapa enquadra a rota uma vez, quando fica pronto; sem paragens, as lojas e não só a fábrica, e as lojas
 //    quando chegam (`enquadramentoDoMapa`, F3-UX-2). O toque num pino de uma paragem leva à linha dela.
 //  - O mapa também escolhe (T3.39): com "Ponto no mapa" nas definições, a faixa "Toque no mapa no ponto de
@@ -37,6 +38,7 @@ import { toast } from 'sonner';
 import { ChevronLeft, Crosshair, Route as IconeRota } from 'lucide-react'; // nunca `Route`: confundia-se com o `Route` do React Router
 import PageHeader from '../../components/PageHeader';
 import { Button } from '../../components/ui/button';
+import BotaoMinhaLocalizacao from '../../components/crm/BotaoMinhaLocalizacao';
 import DefinicoesDoDia from '../../components/crm/DefinicoesDoDia';
 import { IndicadorCrm } from '../../components/crm/GuardaCrm';
 import ListaParagens from '../../components/crm/ListaParagens';
@@ -360,18 +362,23 @@ function PlaneadorDoDia({ data, base, cheio }) {
           )}
           <div className="crm-mapa__vista bg-muted">
             {comMapa && (
-              <MapaLojas
-                classe="crm-mapa--planeador"
-                negociosClicaveis={false}
-                configuracao={vista.configuracao}
-                lojas={vista.mapa.lojasForaDaRota}
-                rota={vista.mapa}
-                aoPronto={setMapa}
-                aoFalhar={() => setMapaFalhou(true)}
-                aoEscolherParagem={escolherParagem}
-                aoEscolherLoja={escolherLoja}
-                aoTocarNoMapa={tocarNoMapa}
-              />
+              <>
+                <MapaLojas
+                  classe="crm-mapa--planeador"
+                  negociosClicaveis={false}
+                  configuracao={vista.configuracao}
+                  lojas={vista.mapa.lojasForaDaRota}
+                  rota={vista.mapa}
+                  aoPronto={setMapa}
+                  aoFalhar={() => setMapaFalhou(true)}
+                  aoEscolherParagem={escolherParagem}
+                  aoEscolherLoja={escolherLoja}
+                  aoTocarNoMapa={tocarNoMapa}
+                />
+                <div className="crm-mapa__barra">
+                  <BotaoMinhaLocalizacao mapa={mapa} />
+                </div>
+              </>
             )}
             {mensagemDoMapa && (
               <p role="status" className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground" data-testid="crm-rota-sem-mapa">

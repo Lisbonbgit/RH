@@ -13,8 +13,14 @@
 // O que fica preso:
 //   - a secção "CRM Purple House (equipa comercial)" logo antes de "Alterações",
 //     e os números das secções seguidos (1, 2, 3…);
-//   - o GPS só ao tocar no botão com o texto verdadeiro do seletor, uma leitura,
-//     só o ponto da loja, nunca a posição da pessoa nem percursos, sem seguimento;
+//   - "Estou nesta loja": o GPS só ao tocar no botão com o texto verdadeiro do
+//     seletor, uma leitura, só o ponto da loja, nunca a posição da pessoa nem
+//     percursos;
+//   - "A minha localização" (desenho de 2026-11-06), com o texto verdadeiro do
+//     botão: só a pedido da pessoa, enquanto o mapa estiver aberto, só no ecrã
+//     dela, sem ir para os nossos servidores nem ficar guardada, mais ninguém a
+//     vê, e a Google recebe a zona que está a ser vista. A frase "não há
+//     seguimento contínuo" saiu da secção do CRM, e ficou a do registo de ponto;
 //   - o mapa do CRM é o Google Maps (Google Ireland Limited), e a secção do CRM
 //     diz, por estas palavras, que quem usa o mapa fica sujeito aos Termos
 //     adicionais do Google Maps/Google Earth e à Política de Privacidade da Google
@@ -46,12 +52,14 @@ import React from 'react';
 import { renderToStaticMarkup as marcacaoEstatica } from 'react-dom/server';
 import PrivacyPolicy from '../../pages/PrivacyPolicy';
 import { TEXTO_ESTOU_NESTA_LOJA } from './seletor';
+import { TEXTO_MINHA_LOCALIZACAO } from './minhaLocalizacao';
 import { ATRIBUICOES } from './atribuicoes';
 
 const TITULO_CRM = 'CRM Purple House (equipa comercial)';
 // A atribuição do openrouteservice, tal como o plano da F3 a fixa (T3.26 e T3.42).
 const ATRIBUICAO_ORS = 'Developed by VROOM · Hosted by HeiGIT · Routing by openrouteservice · Data from OpenStreetMap';
-const DATA_DA_SECCAO_CRM = '2026-10-10';
+// A da última mudança da secção do CRM ("A minha localização").
+const DATA_DA_SECCAO_CRM = '2026-11-06';
 const TERMOS_GOOGLE_MAPS = 'https://maps.google.com/help/terms_maps/';
 const PRIVACIDADE_GOOGLE = 'https://policies.google.com/privacy';
 
@@ -114,14 +122,55 @@ test('a secção do CRM fica logo antes de "Alterações", e os números seguem 
   expect(titulos.slice(-2)).toEqual([`${n - 1}. ${TITULO_CRM}`, `${n}. Alterações`]);
 });
 
-test('GPS do CRM: só ao tocar no botão, uma leitura, só o ponto da loja, sem seguimento', () => {
+test('GPS do CRM: "Estou nesta loja" só ao tocar no botão, uma leitura, só o ponto da loja', () => {
   const crm = seccao(pagina().seccoes, TITULO_CRM).texto;
   expect(TEXTO_ESTOU_NESTA_LOJA).toBe('Estou nesta loja');
-  expect(crm).toContain(`só é pedida quando um membro toca em "${TEXTO_ESTOU_NESTA_LOJA}"`);
-  expect(crm).toContain('uma única vez');
-  // A frase inteira: passa pelos dois <strong> (nunca, não), e assim um espaço em falta também se vê.
   expect(crm).toContain(
-    'Guarda-se só o ponto da loja, nunca a posição da pessoa nem percursos, e não há seguimento contínuo.',
+    `para marcar uma loja, a posição (GPS) só é pedida quando um membro toca em "${TEXTO_ESTOU_NESTA_LOJA}",`
+      + ' e é lida uma única vez, nesse momento.',
+  );
+  // A frase inteira: passa pelo <strong> (nunca), e assim um espaço em falta também se vê.
+  expect(crm).toContain('Guarda-se só o ponto da loja, nunca a posição da pessoa nem percursos.');
+  expect(crm).toContain('Na primeira vez, o browser pede autorização; se a recusar, pode marcar a loja no mapa ou pela morada.');
+});
+
+test('GPS do CRM: "A minha localização" só a pedido da pessoa e enquanto o mapa estiver aberto', () => {
+  const crm = seccao(pagina().seccoes, TITULO_CRM).texto;
+  expect(TEXTO_MINHA_LOCALIZACAO).toBe('A minha localização');
+  expect(crm).toContain(`no mapa e no planeador da rota, o botão "${TEXTO_MINHA_LOCALIZACAO}" mostra à pessoa onde está.`);
+  expect(crm).toContain(
+    'Só liga a pedido da própria pessoa, de cada vez que abre o mapa, e segue a posição (GPS) apenas enquanto o mapa'
+      + ' estiver aberto.',
+  );
+  expect(crm).toContain('Se recusar a autorização do browser, o botão não liga e o resto do CRM funciona na mesma.');
+});
+
+test('GPS do CRM: a posição de "A minha localização" fica no ecrã da pessoa e não é enviada nem guardada', () => {
+  const crm = seccao(pagina().seccoes, TITULO_CRM).texto;
+  // A frase inteira: passa pelo <strong> (não), e assim um espaço em falta também se vê.
+  expect(crm).toContain(
+    'A posição aparece só no ecrã dessa pessoa, não é enviada para os nossos servidores nem guardada, e mais ninguém a vê.',
+  );
+});
+
+test('GPS do CRM: sobre a Google não se promete mais do que é verdade (recebe a zona vista, como em qualquer mapa)', () => {
+  const crm = seccao(pagina().seccoes, TITULO_CRM).texto;
+  expect(crm).toContain(
+    'O mapa é servido pela Google, que recebe a zona que está a ser vista, como em qualquer mapa: com o mapa centrado'
+      + ' na pessoa, é a zona onde ela está.',
+  );
+  // A posição não sai dos nossos servidores para a Google, mas o mapa à volta dela sim: nunca "ninguém recebe nada".
+  expect(crm).not.toMatch(/nunca sai do telem[oó]vel/i);
+});
+
+test('o seguimento contínuo: a secção do CRM já não o nega, e a do registo de ponto continua igual', () => {
+  const { seccoes } = pagina();
+  expect(seccao(seccoes, TITULO_CRM).texto).not.toMatch(/não há seguimento contínuo/i);
+  const dados = seccao(seccoes, 'Que dados tratamos').texto;
+  expect(dados).toContain('a posição (GPS) é recolhida apenas no momento em que toca em "Entrada" ou "Saída"');
+  expect(dados).toContain('Não há recolha de localização em segundo plano nem seguimento contínuo.');
+  expect(seccao(seccoes, 'Permissões da aplicação').texto).toContain(
+    'A app pede permissão de localização apenas para o registo de ponto.',
   );
 });
 
