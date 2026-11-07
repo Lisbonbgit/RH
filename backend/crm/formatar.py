@@ -32,6 +32,7 @@ import uuid
 
 from . import relogio
 from .dominio.campos_loja import DIAS
+from .dominio.datas import texto_data
 from .dominio.validador_loja import campos_de_janelas, janelas_para_lista
 
 # A loja completa da API, pela ordem do plano §4 ("Loja completa (API)"), com o
@@ -49,11 +50,14 @@ CAMPOS_API = (
     "criado_por", "criado_em", "atualizado_em",
 )
 
-# O resumo de cada loja no mapa (GET /lojas): o que o pino, os filtros e a
-# linha "Contacto: pessoa · telefone" do cartão precisam (a `pessoa_contacto`
-# entrou na revisão das alterações do dono, 2026-10-13: o cartão recebe a
-# loja da lista, não a ficha). O `ecraMapa.test.js` lê esta linha: fica numa só.
-CAMPOS_RESUMO = ("id", "nome", "fase", "regiao_id", "lat", "lng", "telefone", "pessoa_contacto")
+# O resumo de cada loja no mapa e na lista de clientes (GET /lojas): o que o
+# pino, os filtros, a linha "Contacto: pessoa · telefone" do cartão (a
+# `pessoa_contacto` entrou na revisão das alterações do dono, 2026-10-13: o
+# cartão recebe a loja da lista, não a ficha) e a lista de clientes
+# (2026-11-07) precisam. São as chaves da API: o `ultimo_contacto` calcula-se, e
+# o que se lê da base é a `PROJECAO_RESUMO` de `lojas.py`. O `ecraMapa.test.js`
+# lê esta linha: fica numa só.
+CAMPOS_RESUMO = ("id", "nome", "fase", "regiao_id", "lat", "lng", "telefone", "pessoa_contacto", "localidade", "consumo_semanal", "marca_atual", "marca_nao_revela", "ultimo_contacto")
 
 # Os temporizadores da F4/F5 (dossiê §5.11): já existem no documento, a null.
 _TEMPORIZADORES = (
@@ -196,8 +200,10 @@ def loja_api(doc: dict) -> dict:
 
 
 def resumo_loja_api(doc: dict) -> dict:
-    """O resumo de uma loja para o mapa, pela ordem de `CAMPOS_RESUMO`. Basta
-    o documento com esses campos (a projeção do GET /lojas)."""
+    """O resumo de uma loja para o mapa e para a lista de clientes, pela ordem
+    de `CAMPOS_RESUMO`. Basta o documento da `PROJECAO_RESUMO` de `lojas.py`. O
+    `ultimo_contacto` é o dia de Lisboa do `ultima_interacao_em`, ou `None`."""
+    ultima_interacao = doc.get("ultima_interacao_em")
     return {
         "id": doc["id"],
         "nome": doc["nome"],
@@ -207,4 +213,10 @@ def resumo_loja_api(doc: dict) -> dict:
         "lng": _coordenada(doc["lng"], -180.0, 180.0),
         "telefone": doc["telefone"],
         "pessoa_contacto": doc["pessoa_contacto"],
+        "localidade": doc["localidade"],
+        # Entraram em 2026-11-07 sem migração: um documento de antes não os tem.
+        "consumo_semanal": doc.get("consumo_semanal"),
+        "marca_atual": doc.get("marca_atual"),
+        "marca_nao_revela": doc.get("marca_nao_revela") is True,
+        "ultimo_contacto": None if ultima_interacao is None else texto_data(relogio.dia_lisboa(ultima_interacao)),
     }

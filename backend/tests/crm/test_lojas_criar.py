@@ -81,6 +81,7 @@ SEM_ACESSO = {"detail": {"codigo": "sem_acesso_crm", "mensagem": "Sem acesso ao 
 
 PROJECAO_RESUMO = {
     "_id": 0, "id": 1, "nome": 1, "fase": 1, "regiao_id": 1, "lat": 1, "lng": 1, "telefone": 1, "pessoa_contacto": 1,
+    "localidade": 1, "consumo_semanal": 1, "marca_atual": 1, "marca_nao_revela": 1, "ultima_interacao_em": 1,
 }
 PROJECAO_CANDIDATO = {"_id": 0, "id": 1, "nome": 1, "lat": 1, "lng": 1}
 PROJECAO_ID = {"_id": 0, "id": 1}
@@ -479,7 +480,7 @@ def test_criar_com_o_identificador_do_lugar_grava_o_e_devolve_o(sessao):
 
 
 def test_a_lista_nao_traz_o_identificador_do_lugar(sessao):
-    """O resumo do mapa (`CAMPOS_RESUMO`) não muda: o `google_place_id` só vem na loja completa."""
+    """O resumo do mapa (`CAMPOS_RESUMO`) não o traz: o `google_place_id` só vem na loja completa."""
     cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_loja(1, "Bar", 38.72, google_place_id=PLACE)]))
     r = cliente.get(LOJAS_URL)
 
@@ -844,7 +845,10 @@ def test_a_lista_e_o_resumo_de_todas_as_lojas_por_nome(sessao):
     a collation do MariaDB)."""
     cafe = _loja(1, "Café Central", 38.720000, fase="cliente", regiao_id=LISBOA,
                  telefone="+351 912 345 678", pessoa_contacto="D. Amélia", notas="Não aparece no resumo.",
-                 instagram="https://www.instagram.com/cafecentral/", site="https://cafecentral.pt")
+                 instagram="https://www.instagram.com/cafecentral/", site="https://cafecentral.pt",
+                 localidade="Lisboa", consumo_semanal="2 baldes grandes", marca_atual="Marca Exemplo",
+                 marca_nao_revela=False, ultima_interacao_em="2026-07-15T23:30:00Z",
+                 ultima_visita_ou_entrega_em="2026-07-15T23:30:00Z")
     acai = _loja(2, "Açaí da Esquina", 38.730000, fase="perdida", pessoa_contacto="Sr. Rui")
     bar = _loja(3, "bar do Rui", 38.740000)
     cliente = sessao(RUI_UTILIZADOR, _base(lojas=[cafe, acai, bar], regioes=[_regiao(LISBOA, "Lisboa")]))
@@ -854,15 +858,32 @@ def test_a_lista_e_o_resumo_de_todas_as_lojas_por_nome(sessao):
     assert r.status_code == 200
     assert r.json() == [
         {"id": acai["id"], "nome": "Açaí da Esquina", "fase": "perdida", "regiao_id": None, "lat": 38.73,
-         "lng": -9.1369, "telefone": None, "pessoa_contacto": "Sr. Rui"},
+         "lng": -9.1369, "telefone": None, "pessoa_contacto": "Sr. Rui", "localidade": None,
+         "consumo_semanal": None, "marca_atual": None, "marca_nao_revela": False, "ultimo_contacto": None},
         {"id": bar["id"], "nome": "bar do Rui", "fase": "potencial", "regiao_id": None, "lat": 38.74,
-         "lng": -9.1369, "telefone": None, "pessoa_contacto": None},
+         "lng": -9.1369, "telefone": None, "pessoa_contacto": None, "localidade": None,
+         "consumo_semanal": None, "marca_atual": None, "marca_nao_revela": False, "ultimo_contacto": None},
         {"id": cafe["id"], "nome": "Café Central", "fase": "cliente", "regiao_id": LISBOA, "lat": 38.72,
-         "lng": -9.1369, "telefone": "+351 912 345 678", "pessoa_contacto": "D. Amélia"},
+         "lng": -9.1369, "telefone": "+351 912 345 678", "pessoa_contacto": "D. Amélia", "localidade": "Lisboa",
+         "consumo_semanal": "2 baldes grandes", "marca_atual": "Marca Exemplo", "marca_nao_revela": False,
+         "ultimo_contacto": "2026-07-16"},
     ]
     assert [list(loja) for loja in r.json()] == [
-        ["id", "nome", "fase", "regiao_id", "lat", "lng", "telefone", "pessoa_contacto"],
+        ["id", "nome", "fase", "regiao_id", "lat", "lng", "telefone", "pessoa_contacto", "localidade",
+         "consumo_semanal", "marca_atual", "marca_nao_revela", "ultimo_contacto"],
     ] * 3
+
+
+def test_a_lista_calcula_o_ultimo_contacto_da_loja_gravada_e_marca_quem_nao_revela(sessao):
+    """Pelo `GET /lojas` e não só pelo `resumo_loja_api`: a projeção tem de ler
+    o `ultima_interacao_em`, que não é uma chave da API."""
+    loja = _loja(1, "Bar", 38.72, ultima_interacao_em="2026-11-05T12:00:00Z", marca_nao_revela=True)
+
+    [resumo] = sessao(RUI_UTILIZADOR, _base(lojas=[loja])).get(LOJAS_URL).json()
+
+    assert resumo["ultimo_contacto"] == "2026-11-05"
+    assert resumo["marca_nao_revela"] is True
+    assert "ultima_interacao_em" not in resumo
 
 
 def test_a_lista_pede_so_os_campos_do_resumo(sessao):

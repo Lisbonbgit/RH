@@ -63,15 +63,21 @@ const QUIOSQUE = '0b6f3c1e-3333-4222-8333-444455556666';
 const TRES_LOJAS = [
   {
     id: MERCEARIA, nome: 'Mercearia da Baixa', fase: 'cliente', regiao_id: LISBOA, lat: 38.7108, lng: -9.1369,
-    telefone: '+351 912 345 678', pessoa_contacto: 'D. Amélia',
+    telefone: '+351 912 345 678', pessoa_contacto: 'D. Amélia', localidade: 'Lisboa',
+    consumo_semanal: '2 baldes grandes', marca_atual: 'Marca Exemplo', marca_nao_revela: false,
+    ultimo_contacto: '2026-11-05',
   },
   {
     id: CAFE, nome: 'Café Fechado', fase: 'perdida', regiao_id: LISBOA, lat: 38.7135, lng: -9.1458,
-    telefone: null, pessoa_contacto: null,
+    telefone: null, pessoa_contacto: null, localidade: null,
+    consumo_semanal: null, marca_atual: null, marca_nao_revela: true,
+    ultimo_contacto: null,
   },
   {
     id: QUIOSQUE, nome: 'Quiosque Novo', fase: 'potencial', regiao_id: null, lat: 38.74, lng: -9.16,
-    telefone: null, pessoa_contacto: null,
+    telefone: null, pessoa_contacto: null, localidade: null,
+    consumo_semanal: null, marca_atual: null, marca_nao_revela: false,
+    ultimo_contacto: null,
   },
 ];
 

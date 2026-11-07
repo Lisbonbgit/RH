@@ -55,6 +55,12 @@ CAMPOS_API = (
     "criado_por", "criado_em", "atualizado_em",
 )
 
+# O resumo do GET /lojas: as chaves da API, com o `ultimo_contacto` calculado.
+CAMPOS_RESUMO = (
+    "id", "nome", "fase", "regiao_id", "lat", "lng", "telefone", "pessoa_contacto",
+    "localidade", "consumo_semanal", "marca_atual", "marca_nao_revela", "ultimo_contacto",
+)
+
 # O documento de crm_lojas, pela ordem do plano §3.
 CAMPOS_BASE = (
     "id", "nome", "fase", "fase_desde", "regiao_id", "morada", "codigo_postal", "localidade",
@@ -379,6 +385,11 @@ def test_o_resumo_do_mapa_tem_so_os_campos_do_pino():
         "lng": -9.1369,
         "telefone": "+351 912 345 678",
         "pessoa_contacto": "D. Amélia",
+        "localidade": "Lisboa",
+        "consumo_semanal": "2 baldes grandes",
+        "marca_atual": "Marca Exemplo",
+        "marca_nao_revela": False,
+        "ultima_interacao_em": "2026-11-05T15:00:00Z",
     })
     esperado = {
         "id": LOJA,
@@ -389,21 +400,27 @@ def test_o_resumo_do_mapa_tem_so_os_campos_do_pino():
         "lng": -9.1369,
         "telefone": "+351 912 345 678",
         "pessoa_contacto": "D. Amélia",
+        "localidade": "Lisboa",
+        "consumo_semanal": "2 baldes grandes",
+        "marca_atual": "Marca Exemplo",
+        "marca_nao_revela": False,
+        "ultimo_contacto": "2026-11-05",
     }
     assert list(resumo.items()) == list(esperado.items())
 
     minimo = _doc_minimo()
-    resumo = formatar.resumo_loja_api({campo: minimo[campo] for campo in formatar.CAMPOS_RESUMO})
+    resumo = formatar.resumo_loja_api({campo: minimo[campo] for campo in formatar.CAMPOS_RESUMO if campo in minimo})
     assert list(resumo.items()) == list({
         "id": "00000000-0000-4000-8000-000000000001", "nome": "Bar", "fase": "potencial", "regiao_id": None,
-        "lat": 39.0, "lng": -8.0, "telefone": None, "pessoa_contacto": None,
+        "lat": 39.0, "lng": -8.0, "telefone": None, "pessoa_contacto": None, "localidade": None,
+        "consumo_semanal": None, "marca_atual": None, "marca_nao_revela": False, "ultimo_contacto": None,
     }.items())
     assert type(resumo["lat"]) is float and type(resumo["lng"]) is float
 
 
 def test_o_resumo_ignora_os_outros_campos_do_documento():
     resumo = formatar.resumo_loja_api(_doc_completo())
-    assert tuple(resumo) == ("id", "nome", "fase", "regiao_id", "lat", "lng", "telefone", "pessoa_contacto")
+    assert tuple(resumo) == CAMPOS_RESUMO
     assert tuple(resumo) == formatar.CAMPOS_RESUMO
 
 
@@ -417,10 +434,56 @@ def test_o_resumo_traz_o_que_a_linha_de_contacto_do_cartao_mostra():
 
 def test_o_resumo_do_mapa_nao_traz_o_identificador_do_lugar():
     """Plano do mapa Google §4: a lista `GET /lojas` não traz o `google_place_id`
-    (`CAMPOS_RESUMO` não muda); só a loja completa o tem."""
-    assert formatar.CAMPOS_RESUMO == ("id", "nome", "fase", "regiao_id", "lat", "lng", "telefone", "pessoa_contacto")
+    (`CAMPOS_RESUMO` não o tem); só a loja completa o tem."""
+    assert formatar.CAMPOS_RESUMO == CAMPOS_RESUMO
     assert "google_place_id" in formatar.CAMPOS_API
     assert "google_place_id" not in formatar.resumo_loja_api(_doc_completo())
+
+
+def test_o_resumo_traz_o_que_a_lista_de_clientes_mostra():
+    resumo = formatar.resumo_loja_api(_doc_completo())
+    assert (resumo["localidade"], resumo["consumo_semanal"], resumo["marca_atual"]) == (
+        "Lisboa", "2 baldes grandes", "Marca Exemplo",
+    )
+    assert resumo["marca_nao_revela"] is False
+    assert resumo["ultimo_contacto"] == "2026-10-02"
+    assert "ultima_interacao_em" not in resumo
+
+
+def test_o_resumo_de_uma_loja_gravada_antes_do_consumo_e_das_marcas_le_se_sem_migracao():
+    doc = _doc_completo()
+    for campo in ("consumo_semanal", "marca_atual", "marca_nao_revela", "ultima_interacao_em"):
+        del doc[campo]
+    resumo = formatar.resumo_loja_api(doc)
+    assert [resumo[c] for c in ("consumo_semanal", "marca_atual", "ultimo_contacto")] == [None, None, None]
+    assert resumo["marca_nao_revela"] is False
+
+
+@pytest.mark.parametrize("gravado, api", [(True, True), (False, False), (None, False)])
+def test_no_resumo_marca_nao_revela_sai_sempre_como_booleano(gravado, api):
+    assert formatar.resumo_loja_api({**_doc_completo(), "marca_nao_revela": gravado})["marca_nao_revela"] is api
+
+
+@pytest.mark.parametrize("gravado, dia", [
+    (None, None),
+    ("2026-11-05T12:00:00Z", "2026-11-05"),
+    ("2026-07-15T23:30:00Z", "2026-07-16"),
+    ("2026-12-31T23:30:00Z", "2026-12-31"),
+], ids=["sem contactos", "inverno", "verão às 23:30Z", "fim do ano no inverno"])
+def test_o_ultimo_contacto_e_o_dia_de_lisboa_do_ultima_interacao_em(gravado, dia):
+    assert formatar.resumo_loja_api({**_doc_completo(), "ultima_interacao_em": gravado})["ultimo_contacto"] == dia
+
+
+def test_um_ultimo_contacto_estragado_e_um_erro_de_programacao():
+    with pytest.raises(ValueError):
+        formatar.resumo_loja_api({**_doc_completo(), "ultima_interacao_em": "2026-11-05"})
+
+
+def test_a_localidade_e_um_campo_obrigatorio_do_resumo():
+    doc = _doc_completo()
+    del doc["localidade"]
+    with pytest.raises(KeyError):
+        formatar.resumo_loja_api(doc)
 
 
 # --- documento_localizacao: lat, lng e loc sempre juntos --------------------------------------

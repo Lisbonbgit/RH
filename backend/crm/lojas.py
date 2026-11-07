@@ -11,9 +11,10 @@ do documento e da resposta em `formatar.py`: aqui só se lê, grava e responde.
 Só o escritório (admin e utilizador do CRM): o motorista ganha o POST na F4
 (plano §1, "Perfis por rota").
 
-- `GET /lojas` → `[{id, nome, fase, regiao_id, lat, lng, telefone}]` (o
-  resumo para o mapa; os filtros aplicam-se no cliente), pelo nome sem
-  maiúsculas nem acentos (`texto.chave_comparacao`, a collation do
+- `GET /lojas` → `[{id, nome, fase, regiao_id, lat, lng, telefone,
+  pessoa_contacto, localidade, consumo_semanal, marca_atual, marca_nao_revela,
+  ultimo_contacto}]` (o resumo para o mapa e para a lista de clientes; os
+  filtros aplicam-se no cliente), pelo nome sem maiúsculas nem acentos (`texto.chave_comparacao`, a collation do
   `ORDER BY nome, id` do autónomo) e depois pelo `id`.
 - `GET /lojas/{loja_id}` → a loja completa, ou 404 "Loja não encontrada.".
 - `POST /lojas` (os campos da loja + `confirmar_duplicado?`) → 201 com a loja
@@ -114,8 +115,13 @@ router = APIRouter()
 # `loja_api` não os copia).
 PROJECAO_LOJA = {"_id": 0}
 
-# O resumo do mapa.
-PROJECAO_RESUMO = {"_id": 0, **{campo: 1 for campo in CAMPOS_RESUMO}}
+# O resumo: as chaves da API menos o `ultimo_contacto`, que não é um campo da
+# base, mais o `ultima_interacao_em`, de onde ele se calcula.
+PROJECAO_RESUMO = {
+    "_id": 0,
+    **{campo: 1 for campo in CAMPOS_RESUMO if campo != "ultimo_contacto"},
+    "ultima_interacao_em": 1,
+}
 
 # O que a regra dos 50 m mede em cada candidato (`geo.encontrar_duplicados`).
 PROJECAO_CANDIDATO = {"_id": 0, "id": 1, "nome": 1, "lat": 1, "lng": 1}
