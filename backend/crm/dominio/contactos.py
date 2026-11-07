@@ -83,10 +83,10 @@ def numerados(linhas: list) -> list:
 
 
 def ultimos_instantes(tipo: str, ocorrida_em: str) -> dict:
-    """Os campos da loja que um contacto novo sobe, para o `$max`. Só a visita
-    conta como `ultima_visita_ou_entrega_em`."""
+    """Os campos da loja que um contacto novo sobe, para o `$max`. Dos tipos da
+    ficha, só a visita conta como `ultima_visita_ou_entrega_em`."""
     campos = {"ultima_interacao_em": ocorrida_em}
-    if tipo in TIPOS_VISITA_OU_ENTREGA:
+    if tipo == "visita":
         campos["ultima_visita_ou_entrega_em"] = ocorrida_em
     return campos
 
