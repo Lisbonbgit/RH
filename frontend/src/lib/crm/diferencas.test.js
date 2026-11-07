@@ -16,6 +16,9 @@
  * (como no `_LOCALIZACAO` do servidor). Os testes portados levam-no a null no
  * bloco (a loja do exemplo não o tem); os do fim fixam que mudar só ele manda
  * o bloco inteiro e que limpá-lo (`''`) vai como null.
+ *
+ * Consumo e marcas (desenho de 2026-11-07, §2): `false` é um valor, não um
+ * vazio, e `null` é a resposta Por saber. Os últimos testes fixam-no.
  */
 import { camposAlterados, CAMPOS_LOCALIZACAO } from './diferencas';
 
@@ -228,5 +231,38 @@ test('google_place_id: um pino posto à mão por cima do da Google limpa-o, no m
     origem_coords: 'pin_manual',
     precisao_m: null,
     google_place_id: null,
+  });
+});
+
+describe('os booleanos da ficha: false é um valor e null é a resposta Por saber', () => {
+  const loja = { ...original, marca_nao_revela: false, outros_sorbets: null, outros_sorbets_quais: null };
+
+  test('null passa a false: envia false, não null', () => {
+    expect(camposAlterados(loja, { ...loja, outros_sorbets: false })).toStrictEqual({ outros_sorbets: false });
+  });
+
+  test('false passa a null: envia null, e false igual a false não é alteração', () => {
+    const naoTrabalha = { ...loja, outros_sorbets: false };
+    expect(camposAlterados(naoTrabalha, { ...naoTrabalha, outros_sorbets: null })).toStrictEqual({ outros_sorbets: null });
+    expect(camposAlterados(naoTrabalha, { ...naoTrabalha })).toStrictEqual({});
+  });
+
+  test('true passa a false e a null, e false passa a true', () => {
+    const sim = { ...loja, outros_sorbets: true };
+    expect(camposAlterados(sim, { ...sim, outros_sorbets: false })).toStrictEqual({ outros_sorbets: false });
+    expect(camposAlterados(sim, { ...sim, outros_sorbets: null })).toStrictEqual({ outros_sorbets: null });
+    expect(camposAlterados(loja, { ...loja, marca_nao_revela: true })).toStrictEqual({ marca_nao_revela: true });
+    expect(camposAlterados({ ...loja, marca_nao_revela: true }, loja)).toStrictEqual({ marca_nao_revela: false });
+  });
+
+  test('false não conta como vazio: uma loja sem o campo e false são coisas diferentes', () => {
+    const { marca_nao_revela: semUso, ...antiga } = loja;
+    expect(camposAlterados(antiga, { ...antiga, marca_nao_revela: false })).toStrictEqual({ marca_nao_revela: false });
+  });
+
+  test('um texto guardado que passa a null, e null igual a vazio', () => {
+    const comTexto = { ...loja, outros_sorbets_quais: 'Manga' };
+    expect(camposAlterados(comTexto, { ...comTexto, outros_sorbets_quais: null })).toStrictEqual({ outros_sorbets_quais: null });
+    expect(camposAlterados(loja, { ...loja, outros_sorbets_quais: '' })).toStrictEqual({});
   });
 });

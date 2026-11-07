@@ -3,7 +3,8 @@
 // região, telefone, pessoa de contacto, morada, código postal, localidade e
 // notas. A ficha tem também o Instagram e o site (2026-10-13, a seguir à
 // localidade), o horário de receção (até duas janelas, HH:MM) e os dias
-// fechada, antes das notas; o registo rápido não os tem.
+// fechada, antes das notas, e o bloco "Consumo e marcas" (desenho de
+// 2026-11-07, §2), depois delas; o registo rápido não os tem.
 //
 // Porta de public/assets/js/componentes/formulario-loja.js do CRM autónomo,
 // sem o DOM: o estado do formulário é um objeto `{valores, preenchida, erros}`
@@ -25,6 +26,12 @@
 //
 // Adaptação dos ids: a região é um uuid em texto (`eUuid`). O `Select` do
 // shadcn não aceita um valor vazio, por isso "Sem região" é `VALOR_SEM_REGIAO`.
+//
+// "Consumo e marcas": com "O cliente não quer revelar" marcada, ou com outra
+// resposta que não Sim, o texto da marca ou de "Quais?" fica nos `valores`,
+// escondido, mas o que se envia é `null` (`valoresDoFormulario`). Assim, um
+// toque por engano não apaga nada: voltar atrás antes de guardar repõe o texto
+// e deixa o `camposAlterados` vazio.
 import { FASES, FUNIL } from './fases';
 import { TEXTO_REGIAO_GUARDADA, regioesValidas } from './filtros';
 import { eUuid } from './ids';
@@ -37,6 +44,22 @@ export const ROTULO_DIAS = 'Dias fechada';
 export const TEXTO_SEM_HORARIO = 'Sem horário, a loja recebe a qualquer hora do dia de trabalho.';
 export const VALOR_SEM_REGIAO = 'sem';
 export const TEXTO_SEM_REGIAO = 'Sem região';
+export const ROTULO_CONSUMO_MARCAS = 'Consumo e marcas';
+export const ROTULO_MARCA_NAO_REVELA = 'O cliente não quer revelar';
+export const TEXTO_AVISO_MARCA = 'Não voltar a perguntar a marca.';
+export const ROTULO_OUTROS_SORBETS = 'Trabalha com outros sorbets?';
+
+// As respostas a "Trabalha com outros sorbets?". Por saber é a de quem ainda não perguntou (`null`), para não
+// ficar um "Não" falso. A `chave` nomeia cada opção no ecrã.
+export const OPCOES_OUTROS_SORBETS = Object.freeze([
+  Object.freeze({ chave: 'sim', valor: true, rotulo: 'Sim' }),
+  Object.freeze({ chave: 'nao', valor: false, rotulo: 'Não' }),
+  Object.freeze({ chave: 'por-saber', valor: null, rotulo: 'Por saber' }),
+]);
+
+// Uma pastilha com uma escolha lá dentro (a fase, um dia, os sorbets): o rótulo envolve a opção, por isso a
+// pastilha inteira (44 px) é área de toque, e o estado vem da opção marcada.
+export const CLASSE_PASTILHA = 'inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-full border bg-background py-2 pl-2.5 pr-3.5 text-sm font-semibold transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/10 has-[:checked]:text-primary has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring';
 
 // Os campos que não são a fase, as horas nem os dias. `maxLength` do nome, da morada, da localidade e da
 // pessoa de contacto: os do `validador_loja.py` (o formularioLoja.test.js lê-os de lá).
@@ -57,12 +80,18 @@ export const CAMPOS = Object.freeze({
     rotulo: 'Site', tipo: 'url', inputMode: 'url', maxLength: 255, placeholder: 'https://exemplo.pt', autoComplete: 'off',
   }),
   notas: Object.freeze({ rotulo: 'Notas', tag: 'textarea', linhas: 3, autoComplete: 'off' }),
+  // Só na ficha, no bloco "Consumo e marcas". Os limites são os do `validador_loja.py` (o teste lê-os).
+  consumo_semanal: Object.freeze({ rotulo: 'Consumo semanal', tipo: 'text', maxLength: 100, autoComplete: 'off' }),
+  marca_atual: Object.freeze({ rotulo: 'Marca atual', tipo: 'text', maxLength: 100, autoComplete: 'off' }),
+  outros_sorbets_quais: Object.freeze({ rotulo: 'Quais?', tipo: 'text', maxLength: 255, autoComplete: 'off' }),
 });
 
 // Os campos de texto que se escrevem à mão.
 const CAMPOS_TEXTO = Object.freeze(['nome', 'telefone', 'pessoa_contacto', 'morada', 'codigo_postal', 'localidade', 'notas']);
 // Os textos que só a ficha tem (2026-10-13), pela ordem do ecrã.
 const CAMPOS_TEXTO_FICHA = Object.freeze(['instagram', 'site']);
+// Os textos do bloco "Consumo e marcas": à parte, porque aquela lista vem antes das horas e estes depois das notas.
+const CAMPOS_TEXTO_CONSUMO = Object.freeze(['consumo_semanal', 'marca_atual', 'outros_sorbets_quais']);
 
 // O horário de receção (dossiê §5.6): duas janelas, cada uma com início e fim.
 const JANELAS = Object.freeze([
@@ -81,6 +110,8 @@ const VALORES_DIAS = Object.freeze(DIAS.map((dia) => dia.valor));
 const temChave = (objeto, chave) => Object.prototype.hasOwnProperty.call(objeto ?? {}, chave);
 const textoOuVazio = (valor) => (typeof valor === 'string' ? valor : '');
 const diasPorOrdem = (dias) => VALORES_DIAS.filter((dia) => Array.isArray(dias) && dias.includes(dia));
+// A resposta aos sorbets: `true`, `false` ou, tudo o resto, por saber.
+const respostaSorbets = (valor) => (typeof valor === 'boolean' ? valor : null);
 
 // Os campos que o formulário mostra, pela ordem do ecrã (os erros destes ficam junto a cada um).
 export function camposDoFormulario({ ficha = false } = {}) {
@@ -88,6 +119,7 @@ export function camposDoFormulario({ ficha = false } = {}) {
     'nome', 'fase', 'regiao_id', 'telefone', 'pessoa_contacto', 'morada', 'codigo_postal', 'localidade',
     ...(ficha ? [...CAMPOS_TEXTO_FICHA, ...CAMPOS_HORAS, 'dias_fechada'] : []),
     'notas',
+    ...(ficha ? ['consumo_semanal', 'marca_atual', 'marca_nao_revela', 'outros_sorbets', 'outros_sorbets_quais'] : []),
   ];
 }
 
@@ -120,6 +152,9 @@ function valoresVazios({ ficha, regiaoId }) {
   for (const campo of CAMPOS_TEXTO_FICHA) valores[campo] = '';
   for (const campo of CAMPOS_HORAS) valores[campo] = '';
   valores.dias_fechada = [];
+  for (const campo of CAMPOS_TEXTO_CONSUMO) valores[campo] = '';
+  valores.marca_nao_revela = false;
+  valores.outros_sorbets = null;
   return valores;
 }
 
@@ -129,7 +164,8 @@ export function estadoInicial({ ficha = false, regiaoId = null } = {}) {
 }
 
 // Os valores para a API: só as chaves da loja, com a fase e a região só se forem válidas (senão null) e os
-// textos como estão ('' fica '': o servidor trata-o como sem valor).
+// textos como estão ('' fica '': o servidor trata-o como sem valor). A marca escondida pela caixa e o "Quais?"
+// escondido pela resposta vão como null, e o texto deles fica nos `valores`.
 export function valoresDoFormulario(valores, { ficha = false } = {}) {
   const v = valores ?? {};
   const lidos = {
@@ -147,6 +183,11 @@ export function valoresDoFormulario(valores, { ficha = false } = {}) {
   for (const campo of CAMPOS_TEXTO_FICHA) lidos[campo] = textoOuVazio(v[campo]);
   for (const campo of CAMPOS_HORAS) lidos[campo] = textoOuVazio(v[campo]);
   lidos.dias_fechada = diasPorOrdem(v.dias_fechada);
+  lidos.consumo_semanal = textoOuVazio(v.consumo_semanal);
+  lidos.marca_nao_revela = v.marca_nao_revela === true;
+  lidos.marca_atual = lidos.marca_nao_revela ? null : textoOuVazio(v.marca_atual);
+  lidos.outros_sorbets = respostaSorbets(v.outros_sorbets);
+  lidos.outros_sorbets_quais = lidos.outros_sorbets === true ? textoOuVazio(v.outros_sorbets_quais) : null;
   return lidos;
 }
 
@@ -160,7 +201,9 @@ function semErro(erros, campo) {
 function valorAceite(campo, valor) {
   if (campo === 'fase') return FUNIL.includes(valor);
   if (campo === 'regiao_id') return valor === null || eUuid(valor);
-  return (CAMPOS_TEXTO.includes(campo) || CAMPOS_TEXTO_FICHA.includes(campo) || CAMPOS_HORAS.includes(campo))
+  if (campo === 'marca_nao_revela') return typeof valor === 'boolean';
+  if (campo === 'outros_sorbets') return valor === null || typeof valor === 'boolean';
+  return [CAMPOS_TEXTO, CAMPOS_TEXTO_FICHA, CAMPOS_HORAS, CAMPOS_TEXTO_CONSUMO].some((lista) => lista.includes(campo))
     && typeof valor === 'string';
 }
 
@@ -303,6 +346,9 @@ export function preencherComLoja(loja, { ficha = false } = {}) {
     for (const campo of CAMPOS_TEXTO_FICHA) valores[campo] = textoOuVazio(loja?.[campo]);
     for (const campo of CAMPOS_HORAS) valores[campo] = textoOuVazio(loja?.[campo]);
     valores.dias_fechada = diasPorOrdem(loja?.dias_fechada);
+    for (const campo of CAMPOS_TEXTO_CONSUMO) valores[campo] = textoOuVazio(loja?.[campo]);
+    valores.marca_nao_revela = loja?.marca_nao_revela === true;
+    valores.outros_sorbets = respostaSorbets(loja?.outros_sorbets);
   }
   return { valores, preenchida: {}, erros: {} };
 }

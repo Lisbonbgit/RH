@@ -7,7 +7,8 @@
 //
 //  - O formulário é o da nova loja (`formularioLoja.js`), já preenchido com o
 //    GET /api/crm/lojas/{id}, mais o Instagram e o site (2026-10-13), o
-//    horário de receção (2 janelas) e os dias fechada.
+//    horário de receção (2 janelas), os dias fechada e o bloco "Consumo e
+//    marcas" (desenho de 2026-11-07, §2), que se grava com o Guardar.
 //  - A fase muda com um toque: escolher uma pastilha grava logo só a fase
 //    (PATCH {fase, atualizado_em}), sem Guardar, e avisa "Fase guardada". O
 //    resto da ficha fica como está (o que se mudou noutros campos, antes ou
@@ -19,7 +20,9 @@
 //  - Guardar envia só o que mudou (`diferencas.js`: a localização vai em
 //    bloco) + o `atualizado_em` da loja em vigor (a do GET, a do último PATCH
 //    da fase ou do Guardar). Fica desativado sem alterações, sem nome, com a
-//    correção da localização por confirmar, com o conflito e sem rede.
+//    correção da localização por confirmar, com o conflito e sem rede. A marca
+//    escondida pela caixa e o "Quais?" escondido vão como null, e o texto fica
+//    no formulário: voltar atrás antes de guardar não deixa alterações.
 //    Enquanto grava, os campos ficam desativados (a resposta volta a
 //    preenchê-los: o que se escrevesse perdia-se). Com sucesso, a ficha fica
 //    com a loja devolvida e avisa "Alterações guardadas".
