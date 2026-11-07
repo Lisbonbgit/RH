@@ -40,8 +40,8 @@
 //   - os dados das lojas (desenho de 2026-11-07, "Privacidade"): "Dados guardados"
 //     diz que se guardam o consumo, as marcas, os resumos dos contactos e quem os
 //     escreveu, e, como os §3 e §5 só falam da relação laboral e estes dados são
-//     de pessoas das lojas, a finalidade e o prazo de conservação. A frase foi
-//     aceite pelo dono tal e qual;
+//     de pessoas das lojas, a finalidade e o prazo de conservação. A frase é a
+//     proposta do desenho, por rever pelo dono antes de publicar;
 //   - a página já não fala da biblioteca do mapa antigo nem do OpenMapTiles (o
 //     mapa deixou de ser deles); o nome da biblioteca escreve-se por partes, para
 //     o inventário do §5 do plano do mapa Google (G19) dar vazio;
@@ -217,7 +217,7 @@ test('secção do CRM: "Dados guardados" diz o consumo, as marcas, os resumos do
   );
 });
 
-test('secção do CRM: a finalidade e o prazo dos dados das lojas, pelas palavras aceites pelo dono', () => {
+test('secção do CRM: a finalidade e o prazo dos dados das lojas, pela proposta do desenho, por rever pelo dono', () => {
   const crm = seccao(pagina().seccoes, TITULO_CRM).texto;
   expect(crm).toContain(
     'Usamos estes dados para gerir a relação comercial com as lojas. Ficam no CRM enquanto a loja lá estiver, e'
