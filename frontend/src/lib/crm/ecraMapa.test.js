@@ -191,6 +191,14 @@ describe('vistaAoCarregar (a vista quando o pedido das lojas termina)', () => {
       .toEqual({ tipo: 'centrar', loja: TRES_LOJAS[0], zoom: ZOOM_LOJA });
   });
 
+  test('"A minha localização" já centrou este mapa: a primeira vista não se faz, com as lojas, o endereço ou a falha', () => {
+    const filtros = filtrosPadrao();
+    expect(vistaAoCarregar({ lojas: TRES_LOJAS, filtros, centradoNaPessoa: true })).toBeNull();
+    expect(vistaAoCarregar({ lojas: TRES_LOJAS, filtros, idLoja: QUIOSQUE, centradoNaPessoa: true })).toBeNull();
+    expect(vistaAoCarregar({ lojas: null, filtros, jaTemVista: false, centradoNaPessoa: true })).toBeNull();
+    expect(vistaAoCarregar({ lojas: [], filtros, centradoNaPessoa: true })).toBeNull();
+  });
+
   test('não altera a lista nem os filtros recebidos', () => {
     const lojas = TRES_LOJAS.map((l) => ({ ...l }));
     const filtros = { fases: new Set(['cliente']), regiao: 'todas' };

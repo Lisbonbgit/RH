@@ -37,12 +37,16 @@
 //    aviso no `state` da navegação (`{aviso: 'Loja guardada'}`): aparece num
 //    toast, com "— os filtros escondem-na do mapa." quando é o caso, e só uma
 //    vez (sai do histórico, para não voltar ao recarregar).
+//  - "A minha localização" (`BotaoMinhaLocalizacao`, na barra de cima) mostra a
+//    posição da pessoa no mapa, só a pedido dela e só neste ecrã. Se o centro
+//    nela vier antes da primeira vista, a primeira vista já não se faz.
 // As decisões estão em `lib/crm/ecraMapa.js` (com testes).
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { MapPinPlus } from 'lucide-react';
 import { Button } from '../../components/ui/button';
+import BotaoMinhaLocalizacao from '../../components/crm/BotaoMinhaLocalizacao';
 import CartaoLoja from '../../components/crm/CartaoLoja';
 import DialogoAdicionarARota from '../../components/crm/DialogoAdicionarARota';
 import FiltrosMapa from '../../components/crm/FiltrosMapa';
@@ -104,6 +108,7 @@ export default function CrmMapa() {
   const filtrosAtuais = useRef(filtros);
   const geracao = useRef(0); // as respostas de uma montagem que já acabou não contam
   const vistaFeita = useRef(null); // o mapa que já tem uma vista
+  const centradoNaPessoa = useRef(null); // o mapa que "A minha localização" centrou antes de ele ter vista
   const avisoMostrado = useRef(false);
   const nomeDoCartao = useRef(null);
   const tituloDoNegocio = useRef(null);
@@ -179,11 +184,24 @@ export default function CrmMapa() {
   // Quando as lojas chegam (ou falham), ou o endereço pede outra loja: a vista (lib/crm/ecraMapa.js).
   useEffect(() => {
     if (!mapa || lojas === undefined) return;
-    const vista = vistaAoCarregar({ lojas, filtros: filtrosAtuais.current, idLoja, jaTemVista: vistaFeita.current === mapa });
+    const vista = vistaAoCarregar({
+      lojas,
+      filtros: filtrosAtuais.current,
+      idLoja,
+      jaTemVista: vistaFeita.current === mapa,
+      centradoNaPessoa: centradoNaPessoa.current === mapa,
+    });
     vistaFeita.current = mapa;
+    centradoNaPessoa.current = null;
     if (vista?.tipo === 'centrar') mapa.centrarEm(vista.loja, vista.zoom);
     else if (vista?.tipo === 'enquadrar') mapa.enquadrar(vista.lojas);
   }, [mapa, lojas, idLoja]);
+
+  // O botão centrou o mapa na pessoa. Vem antes do efeito de cima (os efeitos dos filhos correm primeiro): sem a
+  // vista feita, é o centro que fica. Com ela feita não se guarda nada: um `?loja=` novo continua a centrar na loja.
+  const aoCentrarNaPessoa = useCallback((centrado) => {
+    if (vistaFeita.current !== centrado) centradoNaPessoa.current = centrado;
+  }, []);
 
   // O aviso de quem mandou voltar ao mapa, quando já se sabe se os filtros escondem a loja do endereço.
   useEffect(() => {
@@ -351,6 +369,7 @@ export default function CrmMapa() {
                   <span className="hidden sm:inline">Nova loja</span>
                 </Link>
               </Button>
+              <BotaoMinhaLocalizacao mapa={mapa} aoCentrar={aoCentrarNaPessoa} />
             </div>
           </>
         )}

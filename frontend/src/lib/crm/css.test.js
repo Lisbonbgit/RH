@@ -19,10 +19,15 @@
  * mapa, nunca se escondem nem se tapam — nenhum seletor entra no elemento do
  * mapa, nada nosso absoluto sobre os mapas chega ao fundo, e nenhum seletor
  * toca nos elementos da Google. O Playwright da G21 confere o mesmo no browser.
+ *
+ * "A minha localização" (desenho de 2026-11-06): o ponto azul é o `content` de um marcador avançado, com a mesma
+ * ancoragem do pino, a cor do `mapa.js`, cores fixas e sem receber toques. O círculo da precisão não tem CSS: as
+ * opções vão no `google.maps.Circle` (mapa.test.js).
  */
 import fs from 'fs';
 import path from 'path';
 import { FASES, ORDEM } from './fases';
+import { COR_MINHA_POSICAO } from './mapa';
 import { ESTILO_CIRCULO } from './seletor';
 
 const CAMINHO = path.join(__dirname, '../../components/crm/crm.css');
@@ -232,6 +237,55 @@ test('as amostras de cor (filtros e cartão) usam as classes dos pinos, com o me
   expect(amostra).not.toBeNull();
   expect(amostra).toMatch(/background:\s*var\(--cor-pino,\s*#cfcfcf\);/);
   expect(amostra).toMatch(/border:\s*2px solid var\(--contorno-pino,/);
+});
+
+// --- A posição da pessoa ("A minha localização") --------------------------------------------------------------
+
+test('o ponto azul é um círculo de 18 px que desce metade da altura: o centro fica na posição da pessoa', () => {
+  const ponto = regra('.ponto-minha-posicao');
+  expect(ponto).not.toBeNull();
+  expect(valor(ponto, 'box-sizing')).toBe('border-box');
+  expect(valor(ponto, 'width')).toBe('18px');
+  expect(valor(ponto, 'height')).toBe('18px');
+  expect(valor(ponto, 'border-radius')).toBe('50%');
+  // O marcador avançado põe o fundo ao centro do conteúdo no ponto, como no .pino.
+  expect(valor(ponto, 'transform')).toBe('translateY(50%)');
+});
+
+test('o ponto azul não rouba toques aos pinos que estejam por baixo', () => {
+  expect(valor(regra('.ponto-minha-posicao'), 'pointer-events')).toBe('none');
+  // Uma só regra e sem filhos: nada lá dentro volta a receber toques.
+  expect(seletores().filter((s) => /ponto-minha-posicao/.test(s))).toEqual(['.ponto-minha-posicao']);
+});
+
+test('o ponto azul tem a cor do mapa.js e cores fixas (o mapa é claro também no tema escuro)', () => {
+  const ponto = regra('.ponto-minha-posicao');
+  expect(valor(ponto, 'background')).toBe(COR_MINHA_POSICAO);
+  expect(valor(ponto, 'border')).toBe('3px solid #fff');
+  for (const propriedade of ['background', 'border', 'box-shadow']) {
+    expect(valor(ponto, propriedade)).not.toMatch(/var\(|currentcolor|inherit/i);
+  }
+  // Vê-se por cima do contorno branco e do mapa claro.
+  expect(contraste(valor(ponto, 'background'), '#ffffff')).toBeGreaterThanOrEqual(3);
+});
+
+test('num telemóvel estreito a barra de cima não transborda: os botões passam a outra linha', () => {
+  const barra = regra('.crm-mapa__barra');
+  expect(valor(barra, 'display')).toBe('flex');
+  expect(valor(barra, 'flex-wrap')).toBe('wrap');
+  // Presa aos dois lados: a largura é a do mapa, nunca a dos botões.
+  expect(valor(barra, 'left')).toBe('max(10px, env(safe-area-inset-left))');
+  expect(valor(barra, 'right')).toBe('max(10px, env(safe-area-inset-right))');
+});
+
+test('no planeador a barra fica à esquerda: à direita tapava o "+" da Google quando o mapa encolhe com o cartão', () => {
+  const planeador = regra('.crm-mapa__barra--planeador');
+  expect(valor(planeador, 'justify-content')).toBe('flex-start');
+  // Só muda o lado: o resto (presa pelo top, deixa passar os toques) é o da barra, que vem antes para ceder aqui.
+  expect(planeador.trim().split(';').filter(Boolean)).toHaveLength(1);
+  expect(valor(regra('.crm-mapa__barra'), 'justify-content')).toBe('flex-end');
+  const cabecas = REGRAS.map((r) => r.cabeca);
+  expect(cabecas.indexOf('.crm-mapa__barra')).toBeLessThan(cabecas.indexOf('.crm-mapa__barra--planeador'));
 });
 
 // --- As áreas dos mapas --------------------------------------------------------------------------------------

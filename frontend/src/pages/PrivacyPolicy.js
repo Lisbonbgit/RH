@@ -7,7 +7,7 @@ export default function PrivacyPolicy() {
     <div className="min-h-screen bg-background text-foreground">
       <div className="max-w-3xl mx-auto px-5 py-10">
         <h1 className="text-2xl font-heading font-bold mb-1">Política de Privacidade — Lisbonb RH</h1>
-        <p className="text-sm text-muted-foreground mb-8">Última atualização: 10 de outubro de 2026</p>
+        <p className="text-sm text-muted-foreground mb-8">Última atualização: 6 de novembro de 2026</p>
 
         <div className="space-y-6 text-sm leading-relaxed">
           <section>
@@ -101,10 +101,19 @@ export default function PrivacyPolicy() {
             </p>
             <ul className="list-disc pl-5 space-y-1">
               <li>
-                <strong>Localização:</strong> a posição (GPS) só é pedida quando um membro toca em "Estou nesta
-                loja", e é lida uma única vez, nesse momento. Guarda-se só o ponto da loja, <strong>nunca</strong> a
-                posição da pessoa nem percursos, e <strong>não</strong> há seguimento contínuo. Na primeira vez, o
-                browser pede autorização; se a recusar, pode marcar a loja no mapa ou pela morada.
+                <strong>Localização:</strong> para marcar uma loja, a posição (GPS) só é pedida quando um membro toca
+                em "Estou nesta loja", e é lida uma única vez, nesse momento. Guarda-se só o ponto da loja,{' '}
+                <strong>nunca</strong> a posição da pessoa nem percursos. Na primeira vez, o browser pede autorização;
+                se a recusar, pode marcar a loja no mapa ou pela morada.
+              </li>
+              <li>
+                <strong>A minha localização:</strong> no mapa e no planeador da rota, o botão "A minha localização"
+                mostra à pessoa onde está. Só liga a pedido da própria pessoa, de cada vez que abre o mapa, e segue a
+                posição (GPS) apenas enquanto o mapa estiver aberto. A posição aparece só no ecrã dessa pessoa,{' '}
+                <strong>não</strong> é enviada para os nossos servidores nem guardada, e mais ninguém a vê. O mapa é
+                servido pela Google, que recebe a zona que está a ser vista, como em qualquer mapa: com o mapa
+                centrado na pessoa, é a zona onde ela está. Se recusar a autorização do browser, o botão não liga e o
+                resto do CRM funciona na mesma.
               </li>
               <li>
                 <strong>Dados guardados:</strong> os das lojas (nome, morada, telefone, pessoa de contacto, horário,
