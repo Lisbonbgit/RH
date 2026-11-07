@@ -7,7 +7,7 @@ export default function PrivacyPolicy() {
     <div className="min-h-screen bg-background text-foreground">
       <div className="max-w-3xl mx-auto px-5 py-10">
         <h1 className="text-2xl font-heading font-bold mb-1">Política de Privacidade — Lisbonb RH</h1>
-        <p className="text-sm text-muted-foreground mb-8">Última atualização: 6 de novembro de 2026</p>
+        <p className="text-sm text-muted-foreground mb-8">Última atualização: 7 de novembro de 2026</p>
 
         <div className="space-y-6 text-sm leading-relaxed">
           <section>
@@ -117,7 +117,10 @@ export default function PrivacyPolicy() {
               </li>
               <li>
                 <strong>Dados guardados:</strong> os das lojas (nome, morada, telefone, pessoa de contacto, horário,
-                fase e notas), o perfil de cada membro no CRM e quem registou cada loja e cada mudança de fase.
+                fase e notas), o consumo, as marcas, os resumos dos contactos e quem os escreveu, o perfil de cada
+                membro no CRM e quem registou cada loja e cada mudança de fase. Usamos estes dados para gerir a
+                relação comercial com as lojas. Ficam no CRM enquanto a loja lá estiver, e corrigem-se ou apagam-se a
+                pedido da pessoa.
               </li>
               <li>
                 <strong>Mapa:</strong> o mapa é o Google Maps, da Google Ireland Limited. Ao usar o mapa do CRM, o
