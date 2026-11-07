@@ -14,8 +14,9 @@ Só o escritório (admin e utilizador do CRM): o motorista ganha o POST na F4
 - `GET /lojas` → `[{id, nome, fase, regiao_id, lat, lng, telefone,
   pessoa_contacto, localidade, consumo_semanal, marca_atual, marca_nao_revela,
   ultimo_contacto}]` (o resumo para o mapa e para a lista de clientes; os
-  filtros aplicam-se no cliente), pelo nome sem maiúsculas nem acentos (`texto.chave_comparacao`, a collation do
-  `ORDER BY nome, id` do autónomo) e depois pelo `id`.
+  filtros aplicam-se no cliente), pelo nome sem maiúsculas nem acentos
+  (`texto.chave_comparacao`, a collation do `ORDER BY nome, id` do autónomo) e
+  depois pelo `id`.
 - `GET /lojas/{loja_id}` → a loja completa, ou 404 "Loja não encontrada.".
 - `POST /lojas` (os campos da loja + `confirmar_duplicado?`) → 201 com a loja
   completa. As outras chaves do corpo (`id`, `criado_por`, `fase_desde`,
