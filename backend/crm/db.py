@@ -28,7 +28,8 @@ COLECOES = {
     "regioes": "crm_regioes",
     # As lojas e o seu lugar no funil (plano §3); `loc` é o ponto GeoJSON.
     "lojas": "crm_lojas",
-    # A linha do tempo de cada loja (na F2 só `mudanca_fase`).
+    # A linha do tempo de cada loja: as `mudanca_fase` e, desde 2026-11-07, os
+    # contactos da ficha (crm/contactos.py).
     "interacoes": "crm_interacoes",
     # {chave, valor (texto), atualizado_em, atualizado_por}: só o que o admin
     # alterou; os padrões vivem no código (crm/dominio/definicoes.py).
@@ -65,9 +66,10 @@ INDICES = [
     ("crm_interacoes", [("id", 1)], {"unique": True}),
     # A linha do tempo de uma loja, por ordem (ix_interacoes_loja do autónomo).
     ("crm_interacoes", [("loja_id", 1), ("ocorrida_em", 1)], {}),
-    # O registo feito sem rede (F4): um client_uuid repetido é o mesmo registo.
-    # Único SÓ quando é texto: um índice único normal (ou sparse, que indexa o
-    # null) fazia colidir todas as interações sem ele, que são todas as da F2.
+    # O registo que pode chegar duas vezes (os contactos da ficha; sem rede, na
+    # F4): um client_uuid repetido é o mesmo registo. Único SÓ quando é texto:
+    # um índice único normal (ou sparse, que indexa o null) fazia colidir todas
+    # as interações sem ele, que são todas as `mudanca_fase`.
     (
         "crm_interacoes",
         [("client_uuid", 1)],

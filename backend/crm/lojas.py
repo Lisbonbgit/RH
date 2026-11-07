@@ -142,8 +142,9 @@ MENSAGENS_LOJA_EM_ROTA = {
     rotas.LOJA_ESTEVE_EM_ROTA: MENSAGEM_LOJA_ESTEVE_EM_ROTA,
 }
 
-# O tipo da interação que cada mudança de fase grava. As outras (visita,
-# chamada, amostra, entrega, nota; F4/F5) são o histórico real da loja.
+# O tipo da interação que cada mudança de fase grava. As outras (os contactos
+# da ficha, em `contactos.py`; amostra, entrega e nota, na F4/F5) são o
+# histórico real da loja.
 MUDANCA_FASE = "mudanca_fase"
 
 

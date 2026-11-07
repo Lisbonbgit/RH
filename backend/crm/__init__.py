@@ -34,6 +34,7 @@ async def saude():
 # As rotas de cada área vivem no seu módulo (molde de faturacao/__init__.py) e
 # entram aqui. Cada rota nova é classificada no teste de proteção (T1.8).
 from .config_mapa import router as _config_mapa  # noqa: E402
+from .contactos import router as _contactos  # noqa: E402
 from .definicoes import router as _definicoes  # noqa: E402
 from .eu import router as _eu  # noqa: E402
 from .lojas import router as _lojas  # noqa: E402
@@ -46,6 +47,7 @@ router.include_router(_eu)
 router.include_router(_membros)
 router.include_router(_regioes)
 router.include_router(_lojas)
+router.include_router(_contactos)
 router.include_router(_definicoes)
 router.include_router(_config_mapa)
 router.include_router(_morada)

@@ -91,6 +91,13 @@ PERFIS_POR_ROTA = {
     ("PATCH", "/api/crm/lojas/{loja_id}"): PERFIS_ESCRITORIO,
     # Apagar uma loja (T2.12): o escritório, só os enganos (sem histórico).
     ("DELETE", "/api/crm/lojas/{loja_id}"): PERFIS_ESCRITORIO,
+    # Os contactos de uma loja (2026-11-07): o escritório, na ficha; quem pode
+    # corrigir ou apagar cada um decide-se por linha (`pode_alterar`), e o
+    # motorista só entra no terreno na F4.
+    ("GET", "/api/crm/lojas/{loja_id}/contactos"): PERFIS_ESCRITORIO,
+    ("POST", "/api/crm/lojas/{loja_id}/contactos"): PERFIS_ESCRITORIO,
+    ("PATCH", "/api/crm/lojas/{loja_id}/contactos/{contacto_id}"): PERFIS_ESCRITORIO,
+    ("DELETE", "/api/crm/lojas/{loja_id}/contactos/{contacto_id}"): PERFIS_ESCRITORIO,
     # Definições da fábrica (T2.13): só o admin as vê e as muda.
     ("GET", "/api/crm/definicoes"): PERFIS_ADMIN,
     ("PATCH", "/api/crm/definicoes"): PERFIS_ADMIN,
