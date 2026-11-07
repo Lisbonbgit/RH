@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { aterragem, depoisDoLoginComSenha, ligarFaceId, recusar } from '../lib/sessao';
+import { mensagemDoErro } from '../lib/erros';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -76,7 +77,9 @@ export default function LoginPage() {
       navigate(paraOndeVoltar(userData.role));
     } catch (error) {
       aDecidir.current = false;
-      toast.error(error.response?.data?.detail || 'Erro ao iniciar sessão');
+      // Sempre texto: um email que o browser aceita e o servidor não («carlos@gmailcom»)
+      // dá 422 com uma lista, e a lista no toast deixava a página em branco.
+      toast.error(mensagemDoErro(error, 'Erro ao iniciar sessão'));
     } finally {
       setLoading(false);
     }
@@ -190,6 +193,9 @@ export default function LoginPage() {
                       name="email"
                       autoComplete="username"
                       type="email"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                       placeholder="seu@email.com"
                       value={loginEmail}
                       onChange={(e) => setLoginEmail(e.target.value)}

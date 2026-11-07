@@ -170,7 +170,7 @@ export default function FatDispositivos() {
         toast.error('Este dispositivo já não existe ou já estava revogado. A atualizar a lista...');
         fetchAll();
       } else {
-        toast.error(error.response?.data?.detail || 'Erro ao revogar o dispositivo');
+        toast.error(detalhesErro(error, 'Erro ao revogar o dispositivo').mensagem);
       }
     } finally {
       setRevoking(false);
@@ -185,7 +185,7 @@ export default function FatDispositivos() {
       await apagarDispositivo(alvo.id);
       toast.success('Dispositivo apagado');
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Erro ao apagar o dispositivo');
+      toast.error(detalhesErro(error, 'Erro ao apagar o dispositivo').mensagem);
     } finally {
       setDeleting(false);
       fetchAll();

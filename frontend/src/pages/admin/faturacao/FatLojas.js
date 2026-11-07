@@ -327,7 +327,7 @@ export default function FatLojas() {
         toast.error('Esta loja já não existe. A atualizar a lista...');
         fetchAll();
       } else {
-        toast.error(error.response?.data?.detail || 'Erro ao eliminar a loja');
+        toast.error(detalhesErro(error, 'Erro ao eliminar a loja').mensagem);
       }
     }
   };
@@ -386,7 +386,7 @@ export default function FatLojas() {
         toast.error('Esta caixa já não existe. A atualizar a lista...');
         fetchAll();
       } else {
-        toast.error(error.response?.data?.detail || 'Erro ao eliminar a caixa');
+        toast.error(detalhesErro(error, 'Erro ao eliminar a caixa').mensagem);
       }
     }
   };

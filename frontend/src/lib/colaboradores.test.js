@@ -2,7 +2,7 @@
  * O QUE VAI NO PUT DO «EDITAR COLABORADOR» — corrido de verdade, não lido.
  *
  * A promessa: o email só segue quando o gestor o MUDOU (sem contar os espaços;
- * as maiúsculas contam, porque o login compara tal e qual), e segue sem os
+ * as maiúsculas contam, porque é como o email fica gravado), e segue sem os
  * espaços. Mudar o email muda o login do colaborador e apaga o código de
  * recuperação pendente — não pode acontecer por acaso.
  *
@@ -38,7 +38,7 @@ describe('dadosParaAtualizar — o email', () => {
     const dados = dadosParaAtualizar(formulario({ email: '  ze.errado@example.com ' }), ficha);
     expect(dados).not.toHaveProperty('email');
   });
-  test('só maiúsculas é mudança: o login compara tal e qual, por isso vai', () => {
+  test('só maiúsculas é mudança: muda como fica gravado, por isso vai', () => {
     const gravado = { ...ficha, email: 'Ze.Errado@example.com' };
     const dados = dadosParaAtualizar(formulario({ email: ' ze.errado@example.com ' }), gravado);
     expect(dados.email).toBe('ze.errado@example.com');

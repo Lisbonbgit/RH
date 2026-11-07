@@ -1146,6 +1146,46 @@ async def ensure_master_admin_exists():
         )
         logger.info(f"Master admin password atualizada: {MASTER_ADMIN_EMAIL}")
 
+
+def _chave_email(email: Optional[str]) -> str:
+    """A caixa de correio de um email: sem espaços e sem diferenciar maiúsculas."""
+    return (email or "").strip().lower()
+
+
+def _filtro_da_caixa(email: Optional[str]) -> dict:
+    """As contas da caixa de correio de `email`, com quaisquer maiúsculas."""
+    return {"email": {"$regex": f"^{re.escape(_chave_email(email))}$", "$options": "i"}}
+
+
+async def _conta_pelo_email(email: Optional[str], projecao: Optional[dict] = None) -> Optional[dict]:
+    """A conta de um email escrito por uma pessoa (login, «Esqueci», equipa do
+    Financeiro). Tal e qual primeiro; senão a da mesma caixa com outras
+    maiúsculas: o admin gravou «Carlos.Silva@…» e o telemóvel escreve
+    «carlos.silva@…» (o EmailStr só põe o domínio em minúsculas). Com DUAS
+    contas que só diferem nas maiúsculas, nenhuma: nunca se escolhe ao acaso."""
+    email = (email or "").strip()
+    if not email:
+        return None
+    projecao = projecao or {"_id": 0}
+    conta = await db.users.find_one({"email": email}, projecao)
+    if conta:
+        return conta
+    filtro = _filtro_da_caixa(email)
+    conta = await db.users.find_one(filtro, projecao)
+    if conta and await db.users.count_documents(filtro, limit=2) > 1:
+        return None
+    return conta
+
+
+async def _email_ja_registado(email: Optional[str], exceto_id: Optional[str] = None) -> bool:
+    """Já há uma conta nesta caixa de correio, mesmo com outras maiúsculas?
+    `exceto_id`: a própria conta. Duas assim deixavam o login e o «Esqueci» sem
+    saber qual é (ver _conta_pelo_email)."""
+    filtro = _filtro_da_caixa(email)
+    if exceto_id is not None:
+        filtro["id"] = {"$ne": exceto_id}
+    return await db.users.find_one(filtro, {"_id": 0, "id": 1}) is not None
+
 # ==================== AUTH ROUTES ====================
 
 @api_router.post("/auth/login")
@@ -1161,7 +1201,7 @@ async def login(credentials: UserLogin, request: Request):
     # bcrypt deixava 60 pedidos em paralelo passarem todos pelo "ainda há vaga".
     limite.falhou(por_conta, LOGIN_JANELA_S)
     limite.falhou(por_ip, LOGIN_JANELA_S)
-    user = await db.users.find_one({"email": credentials.email}, {"_id": 0})
+    user = await _conta_pelo_email(credentials.email)
     if not user or not verify_password(credentials.password, user["password"]):
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
     limite.perdoa(por_conta)
@@ -1250,17 +1290,16 @@ RESET_ESPERA_NOVO_CODIGO = timedelta(seconds=60)
 _MSG_RESET_ESGOTADO = "Demasiadas tentativas. Tente amanhã ou peça ajuda a um gestor."
 
 
-async def _utilizador_por_email(normalized_email: str) -> Optional[dict]:
-    user = await db.users.find_one(
-        {"email": {"$regex": f"^{re.escape(normalized_email)}$", "$options": "i"}}, {"_id": 0}
-    )
-    return user or await db.users.find_one({"email": normalized_email}, {"_id": 0})
+async def _utilizador_por_email(email: str) -> Optional[dict]:
+    # O email como a pessoa o escreveu e a regra do login: o código vai para a
+    # conta com que depois se entra, e nunca para uma de duas parecidas.
+    return await _conta_pelo_email(email)
 
 
-async def _codigo_de_reset_certo(normalized_email: str, code: str) -> Optional[dict]:
+async def _codigo_de_reset_certo(email: str, code: str) -> Optional[dict]:
     """Gasta UMA tentativa da conta e diz se o código bate (devolve o utilizador)
     ou não (None). Esgotadas as tentativas → 429, mesmo com o código certo."""
-    user = await _utilizador_por_email(normalized_email)
+    user = await _utilizador_por_email(email)
     if not user or not user.get("reset_password_token"):
         return None
     agora = datetime.now(timezone.utc)
@@ -1303,7 +1342,7 @@ async def forgot_password(request: ForgotPasswordRequest):
     success_message = {
         "message": "Se o email existir no sistema, receberá um código de 6 dígitos para redefinir a palavra-passe."
     }
-    user = await _utilizador_por_email(request.email.lower().strip())
+    user = await _utilizador_por_email(request.email)
     if not user:
         return success_message
 
@@ -1341,7 +1380,7 @@ async def reset_password(request: ResetPasswordCodeRequest):
     Reset password using the code received via email.
     Code must be valid and not expired.
     """
-    user = await _codigo_de_reset_certo(request.email.lower().strip(), request.code.strip())
+    user = await _codigo_de_reset_certo(request.email, request.code.strip())
     if not user:
         raise HTTPException(
             status_code=400,
@@ -1387,7 +1426,7 @@ async def verify_reset_code(request: VerifyResetCodeRequest):
     """
     Verify if a password reset code is valid (for frontend validation before showing form).
     """
-    user = await _codigo_de_reset_certo(request.email.lower().strip(), request.code.strip())
+    user = await _codigo_de_reset_certo(request.email, request.code.strip())
     if not user:
         raise HTTPException(status_code=400, detail="Código inválido")
     if await _codigo_expirou(user):
@@ -1433,8 +1472,7 @@ async def create_admin(admin: AdminCreate, current_user: dict = Depends(admin_re
         raise HTTPException(status_code=403, detail="Apenas o administrador master pode criar outros administradores")
     
     # Check if email exists
-    existing = await db.users.find_one({"email": admin.email})
-    if existing:
+    if await _email_ja_registado(admin.email):
         raise HTTPException(status_code=400, detail="Email já registado")
     
     # Create admin/manager with must_change_password = True
@@ -1504,8 +1542,7 @@ async def update_admin(admin_id: str, payload: AdminUpdate, current_user: dict =
             raise HTTPException(status_code=400, detail="Tipo de acesso inválido")
         updates["role"] = payload.role
     if payload.email is not None and payload.email != admin["email"]:
-        existing = await db.users.find_one({"email": payload.email, "id": {"$ne": admin_id}})
-        if existing:
+        if await _email_ja_registado(payload.email, exceto_id=admin_id):
             raise HTTPException(status_code=400, detail="Email já registado")
         updates["email"] = payload.email
     if payload.new_password:
@@ -1679,8 +1716,7 @@ async def delete_location(location_id: str, current_user: dict = Depends(admin_r
 async def create_employee(employee: EmployeeCreate, current_user: dict = Depends(admin_required)):
     """Create employee with temporary password (must_change_password = true)"""
     # Check if email exists
-    existing = await db.users.find_one({"email": employee.email})
-    if existing:
+    if await _email_ja_registado(employee.email):
         raise HTTPException(status_code=400, detail="Email já registado")
     
     # Verify company and location
@@ -1889,11 +1925,6 @@ _CAMPOS_DO_RESET = (
 )
 
 
-def _chave_email(email: Optional[str]) -> str:
-    """A caixa de correio de um email: sem espaços e sem diferenciar maiúsculas."""
-    return (email or "").strip().lower()
-
-
 # Sem os caracteres que se confundem ao ler (0/O, 1/l/I): copia-se do email.
 _LETRAS_DA_TEMPORARIA = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -1907,10 +1938,11 @@ async def _correcao_do_email(emp: dict, novo: str) -> dict:
     update_employee, depois de tudo validado; o que não pode ser → 400.
 
     - `na_conta` (users.email, o login) e `na_ficha` (employees.email, os avisos
-      das férias): cada cópia decide por si, tal e qual e sem os espaços. O login
-      compara tal e qual, por isso corrigir só as maiúsculas é uma mudança a
-      sério. E uma cópia que ficou para trás (a escrita parou a meio, ou o email
-      mudou pelos /admins, que só mexe na conta) alinha-se com o mesmo pedido.
+      das férias): cada cópia decide por si, tal e qual e sem os espaços. Corrigir
+      só as maiúsculas também grava: é como o email se mostra e se escreve (o
+      login já entra com outras maiúsculas, ver _conta_pelo_email). E uma cópia
+      que ficou para trás (a escrita parou a meio, ou o email mudou pelos
+      /admins, que só mexe na conta) alinha-se com o mesmo pedido.
     - `outra_caixa`: a conta passa para OUTRA caixa de correio (não só outras
       maiúsculas): o que foi mandado para a antiga deixa de servir.
     - `nova_temporaria`: e a palavra-passe ainda é a temporária, que foi no email
@@ -1933,13 +1965,7 @@ async def _correcao_do_email(emp: dict, novo: str) -> dict:
         raise HTTPException(status_code=400, detail="O administrador master edita-se pelo .env do servidor")
     if _chave_email(novo) == mestre:
         raise HTTPException(status_code=400, detail="Este email é do administrador master")
-    # Sem diferenciar maiúsculas, como o «Esqueci a palavra-passe» procura a conta.
-    repetido = await db.users.find_one(
-        {"email": {"$regex": f"^{re.escape(_chave_email(novo))}$", "$options": "i"},
-         "id": {"$ne": emp["user_id"]}},
-        {"_id": 0, "id": 1},
-    )
-    if repetido:
+    if await _email_ja_registado(novo, exceto_id=emp["user_id"]):
         raise HTTPException(status_code=400, detail="Email já registado")
     return correcao
 
@@ -3824,11 +3850,12 @@ async def fin_get_team(current_user: dict = Depends(get_current_user)):
 async def fin_add_team_member(payload: FinTeamAdd, current_user: dict = Depends(get_current_user)):
     """Adiciona por email (a pessoa tem de já ter conta) e propaga às empresas do dono."""
     uid = current_user["user_id"]
-    email = (payload.email or "").strip().lower()
+    email = (payload.email or "").strip()
     role = payload.role if payload.role in FIN_ROLES else "partner"
     if "@" not in email or "." not in email.split("@")[-1]:
         raise HTTPException(status_code=400, detail="Email inválido.")
-    u = await db.users.find_one({"email": email}, {"_id": 0, "id": 1, "email": 1, "name": 1})
+    # A conta pode estar gravada com outras maiúsculas (ver _conta_pelo_email).
+    u = await _conta_pelo_email(email, {"_id": 0, "id": 1, "email": 1, "name": 1})
     if not u:
         raise HTTPException(
             status_code=404,

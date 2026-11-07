@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from '../components/ui/alert';
 import { toast } from 'sonner';
 import { Mail, ArrowLeft, CheckCircle2 } from 'lucide-react';
 import axios from 'axios';
+import { mensagemDoErro, MENSAGEM_EMAIL_INVALIDO } from '../lib/erros';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL + '/api';
 
@@ -34,6 +35,12 @@ export default function ForgotPasswordPage() {
       await axios.post(`${API_URL}/auth/forgot-password`, { email });
       setSubmitted(true);
     } catch (error) {
+      // 422 é o email mal escrito («carlos@gmailcom»): nenhum código ia chegar, e
+      // dizê-lo não revela se a conta existe (é só a forma). O resto, como sempre.
+      if (error.response?.status === 422) {
+        toast.error(mensagemDoErro(error, MENSAGEM_EMAIL_INVALIDO));
+        return;
+      }
       setSubmitted(true);
     } finally {
       setLoading(false);
@@ -110,6 +117,9 @@ export default function ForgotPasswordPage() {
                     <Input
                       id="email"
                       type="email"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                       placeholder="seu@email.com"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
