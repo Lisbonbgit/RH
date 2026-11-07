@@ -22,6 +22,9 @@
 //  - Apagar pergunta num `AlertDialog` (o foco na escolha que não apaga) e,
 //    apagada, volta ao mapa da mesma casa com o aviso "Loja apagada" (o toast é
 //    do mapa).
+//  - A ficha aberta pela lista de clientes (`veioDaLista`, com o `state` da
+//    navegação) mostra "Voltar à lista", ao lado de "Ver no mapa" e só com a
+//    ficha carregada: uma ligação, e não um passo atrás no histórico.
 // Outra loja na mesma rota (ex.: "Sim, abrir X") é outra ficha: a `key` do
 // `lojaId` cria tudo de novo. Os dados da loja entram como texto (o React
 // escapa-os).
@@ -29,7 +32,7 @@ import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'reac
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
-  Loader2, MapPin, MapPinned, RefreshCw, Save, Store, Trash2, TriangleAlert, WifiOff,
+  ArrowLeft, Loader2, MapPin, MapPinned, RefreshCw, Save, Store, Trash2, TriangleAlert, WifiOff,
 } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import { Button } from '../../components/ui/button';
@@ -48,6 +51,7 @@ import {
   TEXTO_A_CARREGAR, TEXTO_CANCELAR_CORRECAO, TEXTO_CONFLITO, TEXTO_CORRIGIR, TEXTO_RECARREGAR, caminhoNoMapa,
   criarFicha,
 } from '../../lib/crm/ficha';
+import { TEXTO_VOLTAR_A_LISTA, caminhoDaLista, veioDaLista } from '../../lib/crm/listaClientes';
 import { TEXTO_A_GUARDAR, TEXTO_GUARDAR_SEM_REDE } from '../../lib/crm/lojaNova';
 import { criarEstadoRede } from '../../lib/crm/rede';
 
@@ -69,7 +73,7 @@ export default function CrmLoja() {
 }
 
 function FichaDaLoja({ id }) {
-  const { pathname } = useLocation();
+  const { pathname, state } = useLocation();
   const navigate = useNavigate();
   const base = baseCrm(pathname);
   const idDados = useId();
@@ -164,6 +168,14 @@ function FichaDaLoja({ id }) {
   return (
     <div className="mx-auto max-w-3xl space-y-6 animate-fade-in" data-testid="crm-ficha">
       <PageHeader icon={Store} title={<span className="[overflow-wrap:anywhere]">{vista.titulo}</span>} subtitle="Ficha da loja · CRM Purple House">
+        {vista.estado === 'ficha' && veioDaLista(state) && (
+          <Button asChild variant="outline" className="h-11">
+            <Link to={caminhoDaLista(base)} data-testid="crm-ficha-voltar-lista">
+              <ArrowLeft aria-hidden="true" />
+              {TEXTO_VOLTAR_A_LISTA}
+            </Link>
+          </Button>
+        )}
         {vista.estado === 'ficha' && (
           <Button asChild variant="outline" className="h-11">
             <Link to={caminhoNoMapa(base, id)} data-testid="crm-ficha-ver-no-mapa">
