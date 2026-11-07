@@ -652,7 +652,7 @@ def test_uma_falha_ao_subir_a_loja_nao_desfaz_o_contacto(sessao, caplog, falha):
     [registo] = _linhas_crm(caplog)
     assert registo.levelno == logging.ERROR
     assert registo.getMessage() == (
-        f"[crm] loja {CAFE}: o contacto ficou gravado, mas o último contacto da loja não se atualizou "
+        f"[crm] loja {CAFE}: o contacto mudou, mas o último contacto da loja não se atualizou "
         f"({type(falha).__name__})"
     )
     for dado in ("Dados pessoais", "Amélia", "segredo", "rui@example.com", "u-rui", UUID_DO_BLOCO):
@@ -1068,7 +1068,7 @@ def test_uma_falha_no_recalculo_nao_desfaz_o_contacto(sessao, caplog, metodo, co
     assert r.status_code == 200
     [registo] = _linhas_crm(caplog)
     assert registo.getMessage() == (
-        f"[crm] loja {CAFE}: o contacto ficou gravado, mas o último contacto da loja não se atualizou "
+        f"[crm] loja {CAFE}: o contacto mudou, mas o último contacto da loja não se atualizou "
         f"({type(falha).__name__})"
     )
     for dado in ("Amélia", "segredo", "u-rui", "Resumo 1"):

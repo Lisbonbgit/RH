@@ -259,7 +259,7 @@ async def _recalcular_ultimo_contacto(base, loja_id: str) -> None:
             "ultima_interacao_em": await _ultimo_instante(base, loja_id, contactos.TIPOS_ULTIMA_INTERACAO),
             "ultima_visita_ou_entrega_em": await _ultimo_instante(base, loja_id, contactos.TIPOS_VISITA_OU_ENTREGA),
         }})
-    except Exception as e:  # noqa: BLE001 — o contacto já está gravado (ver o docstring do módulo)
+    except Exception as e:  # noqa: BLE001 — o contacto já está alterado ou apagado (ver o docstring do módulo)
         _registar_falha(loja_id, e)
 
 
@@ -272,9 +272,11 @@ async def _ultimo_instante(base, loja_id: str, tipos):
 
 def _registar_falha(loja_id: str, excecao: Exception) -> None:
     """A linha `[crm]`, só com o id da loja e o tipo da exceção: nunca a mensagem
-    dela (pode trazer o documento), nem o resumo, nem quem o escreveu."""
+    dela (pode trazer o documento), nem o resumo, nem quem o escreveu. A frase
+    serve ao POST, ao PATCH e ao DELETE: depois de um DELETE, o contacto já não
+    existe."""
     logger.error(
-        "[crm] loja %s: o contacto ficou gravado, mas o último contacto da loja não se atualizou (%s)",
+        "[crm] loja %s: o contacto mudou, mas o último contacto da loja não se atualizou (%s)",
         loja_id,
         type(excecao).__name__,
     )
