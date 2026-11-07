@@ -78,7 +78,7 @@ const MERCEARIA = resumo({
   id: ID_MERCEARIA, nome: 'Mercearia da Baixa', fase: 'cliente', localidade: 'Porto', marca_nao_revela: true,
 });
 const QUIOSQUE = resumo({ id: ID_QUIOSQUE, nome: 'Quiosque Novo', fase: 'potencial', telefone: '21 000 00 00' });
-const TASCA = resumo({ id: ID_TASCA, nome: 'Tasca do Sr. Rui', fase: 'perdida', localidade: 'Évora' });
+const TASCA = resumo({ id: ID_TASCA, nome: 'Tasca Antiga', fase: 'perdida', localidade: 'Évora' });
 const LOJAS = [CAFE, MERCEARIA, QUIOSQUE, TASCA];
 
 const nomes = (lojas) => lojas.map((loja) => loja.nome);
@@ -113,8 +113,8 @@ describe('lojasDaPesquisa', () => {
   test('ignora maiúsculas e acentos: "cafe" encontra "Café", nos dois sentidos', () => {
     expect(pesquisar('cafe')).toEqual(['Café Central']);
     expect(pesquisar('CAFÉ')).toEqual(['Café Central']);
-    expect(pesquisar('evora')).toEqual(['Tasca do Sr. Rui']);
-    expect(pesquisar('Évora')).toEqual(['Tasca do Sr. Rui']);
+    expect(pesquisar('evora')).toEqual(['Tasca Antiga']);
+    expect(pesquisar('Évora')).toEqual(['Tasca Antiga']);
     expect(pesquisar('amelia')).toEqual(['Café Central']);
   });
 
@@ -453,7 +453,7 @@ describe('criarListaClientes', () => {
   test('pronto: todas as lojas, pela ordem do GET /lojas, e as pastilhas', async () => {
     const m = await carregada({}, [TASCA, CAFE, MERCEARIA, QUIOSQUE]);
     expect(m.vista().estado).toBe('pronto');
-    expect(nomesDaVista(m)).toEqual(['Tasca do Sr. Rui', 'Café Central', 'Mercearia da Baixa', 'Quiosque Novo']);
+    expect(nomesDaVista(m)).toEqual(['Tasca Antiga', 'Café Central', 'Mercearia da Baixa', 'Quiosque Novo']);
     expect(numeros(m)).toEqual({
       todas: 4, potencial: 1, contactada: 0, amostra: 0, cliente: 2, perdida: 1,
     });
