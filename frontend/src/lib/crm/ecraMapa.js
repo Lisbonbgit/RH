@@ -16,7 +16,9 @@
 //    botão Ligar do desenho original saiu em 2026-10-13, a pedido do Bruce. A
 //    loja do cartão é a do resumo do `GET /lojas` (a que o pino tem), por isso
 //    o resumo traz os dois campos (`CAMPOS_RESUMO` em `backend/crm/formatar.py`;
-//    o `ecraMapa.test.js` confere-o).
+//    o `ecraMapa.test.js` confere-o);
+//  - a linha do último contacto do cartão e da lista de clientes
+//    (`linhaUltimoContacto`), com a data do `ultimo_contacto` do resumo.
 // Com o mapa da Google (plano do mapa Google, G15; adenda §1.1 e §6.3):
 //  - o negócio tocado no mapa (o ícone dele): só o identificador do lugar e o
 //    ponto tocado, nada mais (`negocioDoToque`). Os dados do negócio estão no
@@ -29,6 +31,7 @@
 //    `mensagemSemMapa`).
 
 import { MENSAGEM_ERRO_INESPERADO } from './api';
+import { rotuloDataCurta } from './datas';
 import { aplicarFiltros } from './filtros';
 import { MENSAGEM_MAPA_NAO_CONFIGURADO, MENSAGEM_SEM_MAPA, ZOOM_LOJA, configuracaoValida } from './mapa';
 
@@ -41,6 +44,9 @@ export const TEXTO_ESCONDIDA_PELOS_FILTROS = 'os filtros escondem-na do mapa.';
 // Entre a pessoa de contacto e o telefone, na linha "Contacto:" do cartão.
 export const SEPARADOR_CONTACTO = ' · ';
 
+export const ROTULO_ULTIMO_CONTACTO = 'Último contacto:';
+export const TEXTO_SEM_CONTACTOS = 'Ainda sem contactos';
+
 const numero = (valor) => typeof valor === 'number' && Number.isFinite(valor);
 const temCoordenadas = (loja) => numero(loja?.lat) && numero(loja?.lng);
 const texto = (valor) => (typeof valor === 'string' ? valor.trim() : '');
@@ -51,6 +57,13 @@ const texto = (valor) => (typeof valor === 'string' ? valor.trim() : '');
 export function contactoDaLoja(loja) {
   const partes = [texto(loja?.pessoa_contacto), texto(loja?.telefone)].filter((parte) => parte !== '');
   return partes.length > 0 ? partes.join(SEPARADOR_CONTACTO) : null;
+}
+
+// A linha do último contacto: {rotulo: 'Último contacto:', texto: '5 nov 2026'}, ou a frase de quem ainda não
+// tem contactos, sem rótulo (também com uma data que não seja válida).
+export function linhaUltimoContacto(loja) {
+  const data = rotuloDataCurta(loja?.ultimo_contacto);
+  return data === null ? { rotulo: null, texto: TEXTO_SEM_CONTACTOS } : { rotulo: ROTULO_ULTIMO_CONTACTO, texto: data };
 }
 
 // A mensagem de um erro do cliente (`ErroCrm`); sem ela, o texto de erro inesperado.

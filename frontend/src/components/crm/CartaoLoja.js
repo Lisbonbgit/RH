@@ -1,13 +1,14 @@
 // O cartão da loja no mapa (desenho original §6.1; plano T2.25): abre ao tocar
 // num pino, por baixo do mapa, com o nome, a fase, o contacto (a pessoa de
-// contacto e o telefone, em texto, só o que existe), a última ação e Ver
+// contacto e o telefone, em texto, só o que existe), o último contacto e Ver
 // ficha. Porta de public/assets/js/componentes/cartao-loja.js do CRM autónomo.
 // O botão Ligar do desenho original saiu em 2026-10-13, a pedido do Bruce: o
 // contacto lê-se no próprio cartão (`contactoDaLoja`, `lib/crm/ecraMapa.js`).
 // "Adicionar à rota" (F3, plano T3.40; ícone `Route`) avisa a página
 // (`aoAdicionarARota`), que abre o diálogo de escolher o dia e o motivo
 // (`DialogoAdicionarARota`); o botão (`refAdicionar`) recebe o foco quando o
-// diálogo fecha. A última ação chega na F5 (linha do tempo).
+// diálogo fecha. O último contacto sai do `linhaUltimoContacto`
+// (`lib/crm/ecraMapa.js`), lido do resumo do `GET /lojas`.
 //
 // O nome, a fase e o contacto entram como texto (o React escapa-os); não se
 // monta nenhuma ligação com o telefone. O cartão não se fecha sozinho: o
@@ -20,11 +21,9 @@ import { Link } from 'react-router-dom';
 import { FileText, Route as IconeRota, X } from 'lucide-react'; // nunca `Route`: confundia-se com o do React Router
 import { Button } from '../ui/button';
 import { TITULO_ADICIONAR_A_ROTA } from '../../lib/crm/adicionarARota';
-import { contactoDaLoja } from '../../lib/crm/ecraMapa';
+import { contactoDaLoja, linhaUltimoContacto } from '../../lib/crm/ecraMapa';
 import { FASES, ORDEM } from '../../lib/crm/fases';
 import './crm.css';
-
-export const TEXTO_ULTIMA_ACAO = 'Última ação: ainda sem histórico';
 
 export default function CartaoLoja({
   loja, base, aoFechar, refNome, aoAdicionarARota, refAdicionar,
@@ -32,6 +31,7 @@ export default function CartaoLoja({
   const idNome = useId();
   const conhecida = ORDEM.includes(loja.fase);
   const contacto = contactoDaLoja(loja);
+  const ultimoContacto = linhaUltimoContacto(loja);
 
   return (
     <section
@@ -64,8 +64,10 @@ export default function CartaoLoja({
             <strong className="font-semibold text-foreground">Contacto:</strong> {contacto}
           </p>
         )}
-        <p className="mb-3 mt-1 text-sm text-muted-foreground">
-          <strong className="font-semibold text-foreground">Última ação:</strong> ainda sem histórico
+        <p className="mb-3 mt-1 text-sm text-muted-foreground" data-testid="crm-cartao-ultimo-contacto">
+          {ultimoContacto.rotulo && <strong className="font-semibold text-foreground">{ultimoContacto.rotulo}</strong>}
+          {ultimoContacto.rotulo && ' '}
+          {ultimoContacto.texto}
         </p>
         <div className="flex flex-wrap gap-2">
           <Button asChild variant="outline" className="h-11 flex-1 basis-36">

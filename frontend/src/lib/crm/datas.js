@@ -43,6 +43,7 @@ const MESES = Object.freeze([
   'novembro',
   'dezembro',
 ]);
+const MESES_CURTOS = Object.freeze(['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']);
 
 const FORMATO = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/;
 const ANO_MINIMO = 1;
@@ -116,4 +117,12 @@ export function rotuloDataLonga(data) {
   const lida = partes(data);
   if (lida === null) return null;
   return `${DIAS_LONGOS[indiceDoDia(lida.instante)]}, ${lida.dia} de ${MESES[lida.mes - 1]}`;
+}
+
+// "5 nov 2026" (o dia sem zero à esquerda), ou null: a data do último contacto no cartão do mapa, na lista de
+// clientes e em cada contacto da ficha.
+export function rotuloDataCurta(data) {
+  const lida = partes(data);
+  if (lida === null) return null;
+  return `${lida.dia} ${MESES_CURTOS[lida.mes - 1]} ${lida.ano}`;
 }
