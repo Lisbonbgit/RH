@@ -827,7 +827,8 @@ def test_a_primeira_loja_por_inteiro():
     assert list(loja) == [
         "id", "nome", "fase", "fase_desde", "regiao_id", "morada", "codigo_postal", "localidade",
         "lat", "lng", "loc", "origem_coords", "precisao_m", "google_place_id", "telefone", "pessoa_contacto",
-        "instagram", "site", "notas", "janelas", "dias_fechada", "visita_pendente_motivo", "visita_pendente_desde",
+        "instagram", "site", "notas", "consumo_semanal", "marca_atual", "marca_nao_revela", "outros_sorbets",
+        "outros_sorbets_quais", "janelas", "dias_fechada", "visita_pendente_motivo", "visita_pendente_desde",
         "ultima_interacao_em", "ultima_visita_ou_entrega_em", "criado_por", "criado_em", "atualizado_em",
     ]
     assert {**loja, "id": "<uuid4>"} == {
@@ -850,6 +851,11 @@ def test_a_primeira_loja_por_inteiro():
         "instagram": "https://www.instagram.com/mercearia.da.baixa.demo/",
         "site": "https://mercearia-da-baixa.example.com",
         "notas": "Encomenda todas as semanas. Descarga pela porta lateral.",
+        "consumo_semanal": None,
+        "marca_atual": None,
+        "marca_nao_revela": False,
+        "outros_sorbets": None,
+        "outros_sorbets_quais": None,
         "janelas": [{"inicio": "09:00", "fim": "12:00"}, {"inicio": "14:30", "fim": "18:00"}],
         "dias_fechada": ["dom"],
         "visita_pendente_motivo": None,

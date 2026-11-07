@@ -46,7 +46,8 @@ plano, linha "T2.11"):
    calculado sobre a loja que o cliente viu, e nunca um 422 de janelas ou um
    409 duplicado sobre as horas ou o sítio de outra versão;
 4. as janelas contra as horas que a loja já tem, só se o pedido mexer numa
-   hora (422 nas horas);
+   hora (422 nas horas), e "Quais?" contra a resposta dos sorbets que fica
+   (`_sorbets_coerentes`: não recusa, limpa);
 5. a região existe (422 em `regiao_id`);
 6. outra loja a menos de 50 m, só se as coordenadas mudarem nas 6 casas que
    a base guarda (409 `duplicado`, sem contar a própria), salvo com
@@ -217,6 +218,7 @@ async def alterar_loja(loja_id: str, membro: Dict = Depends(ESCRITORIO), corpo: 
         raise _conflito()
 
     janelas_novas = _janelas_alteradas(antes, alteracoes)
+    alteracoes = _sorbets_coerentes(antes, alteracoes)
     await _exigir_regiao(base, alteracoes.get("regiao_id"))
     if not confirmado and _mudou_de_sitio(antes, alteracoes):
         await _recusar_duplicados(lojas, alteracoes["lat"], alteracoes["lng"], excluir_id=loja_id)
@@ -305,6 +307,19 @@ def _janelas_alteradas(antes: Dict, alteracoes: Dict):
     if erros:
         raise validacao(erros)
     return janelas_para_lista(juntas)
+
+
+def _sorbets_coerentes(antes: Dict, alteracoes: Dict) -> Dict:
+    """As alterações com `outros_sorbets_quais` a `None`, se o pedido mexer nos
+    sorbets e a resposta que fica não for Sim. A resposta que fica pode ser a
+    gravada, por isso a regra vive aqui e não no validador; uma loja de antes
+    destes campos conta como Por saber. Sem um dos dois no pedido, nem se
+    olha: a loja não muda."""
+    if "outros_sorbets" not in alteracoes and "outros_sorbets_quais" not in alteracoes:
+        return alteracoes
+    if alteracoes.get("outros_sorbets", antes.get("outros_sorbets")) is True:
+        return alteracoes
+    return {**alteracoes, "outros_sorbets_quais": None}
 
 
 def _seis_casas(coordenada) -> str:

@@ -289,6 +289,10 @@ def test_criar_devolve_201_com_a_loja_completa(sessao):
         "instagram": "@cafe.central",
         "site": "cafecentral.pt",
         "notas": "Fecha em agosto.",
+        "consumo_semanal": " 2 baldes grandes ",
+        "marca_atual": " Marca Exemplo ",
+        "outros_sorbets": True,
+        "outros_sorbets_quais": " Limão e manga ",
         "janela1_inicio": "10:00",
         "janela1_fim": "13:00",
         "janela2_inicio": "15:00",
@@ -318,6 +322,11 @@ def test_criar_devolve_201_com_a_loja_completa(sessao):
         "instagram": "https://www.instagram.com/cafe.central/",
         "site": "https://cafecentral.pt",
         "notas": "Fecha em agosto.",
+        "consumo_semanal": "2 baldes grandes",
+        "marca_atual": "Marca Exemplo",
+        "marca_nao_revela": False,
+        "outros_sorbets": True,
+        "outros_sorbets_quais": "Limão e manga",
         "janela1_inicio": "10:00",
         "janela1_fim": "13:00",
         "janela2_inicio": "15:00",
@@ -390,6 +399,11 @@ def test_a_loja_fica_gravada_como_a_api_a_devolve(sessao):
         "instagram": None,
         "site": None,
         "notas": None,
+        "consumo_semanal": None,
+        "marca_atual": None,
+        "marca_nao_revela": False,
+        "outros_sorbets": None,
+        "outros_sorbets_quais": None,
         "janelas": [{"inicio": "09:30", "fim": "12:00"}],
         "dias_fechada": ["seg", "dom"],
         "visita_pendente_motivo": None,
@@ -407,6 +421,30 @@ def test_a_loja_fica_gravada_como_a_api_a_devolve(sessao):
     assert lida.status_code == 200
     assert lida.json() == criada, "GET /lojas/{id} devolve o mesmo que o POST."
     assert list(lida.json()) == list(criada)
+
+
+def test_criar_com_a_marca_por_revelar_e_sem_a_resposta_sim_grava_as_regras_do_desenho(sessao):
+    """A "Nova loja" não mostra estes campos, mas o `POST /lojas` aceita-os."""
+    cliente = sessao(RUI_UTILIZADOR)
+    r = cliente.post(LOJAS_URL, json=_minima(
+        marca_atual="Marca Exemplo", marca_nao_revela=True, outros_sorbets=False, outros_sorbets_quais="Limão",
+    ))
+    assert r.status_code == 201, r.text
+    assert (r.json()["marca_atual"], r.json()["marca_nao_revela"]) == (None, True)
+    assert (r.json()["outros_sorbets"], r.json()["outros_sorbets_quais"]) == (False, None)
+    [gravada] = cliente.base.crm_lojas.sem_id()
+    assert (gravada["marca_atual"], gravada["marca_nao_revela"]) == (None, True)
+    assert (gravada["outros_sorbets"], gravada["outros_sorbets_quais"]) == (False, None)
+
+
+@pytest.mark.parametrize("campo", ["marca_nao_revela", "outros_sorbets"])
+@pytest.mark.parametrize("valor", [1, "true"])
+def test_um_booleano_que_nao_e_json_da_422_no_campo_e_nada_se_grava(sessao, campo, valor):
+    cliente = sessao(RUI_UTILIZADOR)
+    r = cliente.post(LOJAS_URL, json=_minima(**{campo: valor}))
+    assert r.status_code == 422
+    assert list(r.json()["detail"]["campos"]) == [campo]
+    assert cliente.base.crm_lojas.docs == []
 
 
 def test_so_com_os_obrigatorios_o_resto_fica_vazio(sessao):

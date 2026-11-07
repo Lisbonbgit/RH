@@ -335,6 +335,7 @@ def dados_lojas_demo() -> list:
             "instagram": opcionais["instagram"],
             "site": opcionais["site"],
             "notas": opcionais["notas"],
+            "marca_nao_revela": False,
             "janela1_inicio": opcionais["janela1"][0],
             "janela1_fim": opcionais["janela1"][1],
             "janela2_inicio": opcionais["janela2"][0],

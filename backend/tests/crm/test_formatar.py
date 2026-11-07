@@ -43,11 +43,13 @@ LISBOA = "00000000-0000-4000-8000-000000000002"
 UUID4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 
 # A loja completa da API, pela ordem do plano §4 ("Loja completa (API)"), com o
-# `instagram` e o `site` de 2026-10-13 a seguir à pessoa de contacto.
+# `instagram` e o `site` de 2026-10-13 a seguir à pessoa de contacto, e o
+# consumo e as marcas de 2026-11-07 a seguir às notas.
 CAMPOS_API = (
     "id", "nome", "fase", "fase_desde", "regiao_id", "morada", "codigo_postal", "localidade",
     "lat", "lng", "origem_coords", "precisao_m", "google_place_id",
     "telefone", "pessoa_contacto", "instagram", "site", "notas",
+    "consumo_semanal", "marca_atual", "marca_nao_revela", "outros_sorbets", "outros_sorbets_quais",
     "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim", "dias_fechada",
     "visita_pendente_motivo", "visita_pendente_desde", "ultima_interacao_em", "ultima_visita_ou_entrega_em",
     "criado_por", "criado_em", "atualizado_em",
@@ -58,6 +60,7 @@ CAMPOS_BASE = (
     "id", "nome", "fase", "fase_desde", "regiao_id", "morada", "codigo_postal", "localidade",
     "lat", "lng", "loc", "origem_coords", "precisao_m", "google_place_id",
     "telefone", "pessoa_contacto", "instagram", "site", "notas",
+    "consumo_semanal", "marca_atual", "marca_nao_revela", "outros_sorbets", "outros_sorbets_quais",
     "janelas", "dias_fechada",
     "visita_pendente_motivo", "visita_pendente_desde", "ultima_interacao_em", "ultima_visita_ou_entrega_em",
     "criado_por", "criado_em", "atualizado_em",
@@ -87,6 +90,11 @@ def _doc_completo():
         "instagram": "https://www.instagram.com/cafe.central/",
         "site": "https://cafecentral.pt",
         "notas": "Fecha em agosto.",
+        "consumo_semanal": "2 baldes grandes",
+        "marca_atual": "Marca Exemplo",
+        "marca_nao_revela": False,
+        "outros_sorbets": True,
+        "outros_sorbets_quais": "Limão e manga",
         "janelas": [{"inicio": "10:00", "fim": "13:00"}, {"inicio": "15:00", "fim": "19:00"}],
         "dias_fechada": ["sab", "dom"],
         "visita_pendente_motivo": "amostra",
@@ -112,6 +120,7 @@ def _doc_minimo():
         "lng": -8,
         "loc": {"type": "Point", "coordinates": [-8, 39]},
         "origem_coords": "pin_manual",
+        "marca_nao_revela": False,
         "janelas": [],
         "dias_fechada": [],
         "criado_em": "2026-10-03T09:00:00Z",
@@ -151,6 +160,11 @@ def test_a_loja_completa_vem_com_os_tipos_da_api():
         "instagram": "https://www.instagram.com/cafe.central/",
         "site": "https://cafecentral.pt",
         "notas": "Fecha em agosto.",
+        "consumo_semanal": "2 baldes grandes",
+        "marca_atual": "Marca Exemplo",
+        "marca_nao_revela": False,
+        "outros_sorbets": True,
+        "outros_sorbets_quais": "Limão e manga",
         "janela1_inicio": "10:00",
         "janela1_fim": "13:00",
         "janela2_inicio": "15:00",
@@ -180,6 +194,8 @@ def test_os_campos_opcionais_sem_valor_vem_a_null():
         "regiao_id": None, "morada": None, "codigo_postal": None, "localidade": None,
         "precisao_m": None, "google_place_id": None,
         "telefone": None, "pessoa_contacto": None, "instagram": None, "site": None, "notas": None,
+        "consumo_semanal": None, "marca_atual": None, "marca_nao_revela": False, "outros_sorbets": None,
+        "outros_sorbets_quais": None,
         "janela1_inicio": None, "janela1_fim": None, "janela2_inicio": None, "janela2_fim": None,
         "dias_fechada": [],
         "visita_pendente_motivo": None, "visita_pendente_desde": None,
@@ -283,6 +299,30 @@ def test_um_documento_sem_um_campo_e_um_erro_de_programacao():
     del doc["morada"]
     with pytest.raises(KeyError):
         formatar.loja_api(doc)
+
+
+def test_uma_loja_gravada_antes_do_consumo_e_das_marcas_le_se_sem_migracao():
+    """Os cinco campos entraram em 2026-11-07 sem migração: `.get`, e o
+    `marca_nao_revela` sai sempre como `false`, nunca como `null`."""
+    doc = _doc_completo()
+    novos = ("consumo_semanal", "marca_atual", "marca_nao_revela", "outros_sorbets", "outros_sorbets_quais")
+    for campo in novos:
+        del doc[campo]
+    loja = formatar.loja_api(doc)
+    assert [loja[campo] for campo in novos] == [None, None, False, None, None]
+    assert loja["marca_nao_revela"] is False
+    assert tuple(loja) == CAMPOS_API
+    assert not set(novos) & set(doc), "O documento recebido não se toca."
+
+
+@pytest.mark.parametrize("gravado, api", [(True, True), (False, False), (None, False), (1, False), ("true", False)])
+def test_marca_nao_revela_sai_sempre_como_booleano(gravado, api):
+    assert formatar.loja_api({**_doc_completo(), "marca_nao_revela": gravado})["marca_nao_revela"] is api
+
+
+@pytest.mark.parametrize("gravado", [True, False, None])
+def test_outros_sorbets_sai_com_as_tres_respostas(gravado):
+    assert formatar.loja_api({**_doc_completo(), "outros_sorbets": gravado})["outros_sorbets"] is gravado
 
 
 def test_uma_loja_gravada_antes_do_instagram_e_do_site_le_se_com_eles_a_null():
@@ -444,7 +484,7 @@ def test_os_limites_do_mundo_sao_pontos_validos():
 
 
 def _dados():
-    """Os 21 campos como o `validador_loja.criacao` os devolve sem erros
+    """Os 26 campos como o `validador_loja.criacao` os devolve sem erros
     (escritos à mão)."""
     return {
         "nome": "Café Central",
@@ -463,6 +503,11 @@ def _dados():
         "instagram": "https://www.instagram.com/cafe.central/",
         "site": "https://cafecentral.pt",
         "notas": "Fecha em agosto.",
+        "consumo_semanal": "2 baldes grandes",
+        "marca_atual": "Marca Exemplo",
+        "marca_nao_revela": False,
+        "outros_sorbets": True,
+        "outros_sorbets_quais": "Limão e manga",
         "janela1_inicio": "10:00",
         "janela1_fim": "13:00",
         "janela2_inicio": "15:00",
@@ -497,6 +542,11 @@ def test_a_loja_nova_tem_a_forma_da_base():
         "instagram": "https://www.instagram.com/cafe.central/",
         "site": "https://cafecentral.pt",
         "notas": "Fecha em agosto.",
+        "consumo_semanal": "2 baldes grandes",
+        "marca_atual": "Marca Exemplo",
+        "marca_nao_revela": False,
+        "outros_sorbets": True,
+        "outros_sorbets_quais": "Limão e manga",
         "janelas": [{"inicio": "10:00", "fim": "13:00"}, {"inicio": "15:00", "fim": "19:00"}],
         "dias_fechada": ["sab", "dom"],
         "visita_pendente_motivo": None,

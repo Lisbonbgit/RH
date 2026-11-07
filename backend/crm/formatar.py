@@ -3,7 +3,7 @@
 Porta de src/Http/Formatar.php (`loja`, `resumoLoja`) e da parte do
 `LojasRepositorio::criar` que monta a linha nova, para o modelo do portal:
 
-- **Na base** (`documento_loja`): `id` uuid4 em texto, os 21 campos do
+- **Na base** (`documento_loja`): `id` uuid4 em texto, os 26 campos do
   `validador_loja`, `lat`/`lng` em `float` e SEMPRE juntos do `loc` GeoJSON
   (`documento_localizacao`, `[lng, lat]`), as janelas numa lista `[{inicio,
   fim}]` (0 a 2, por ordem; `validador_loja.janelas_para_lista`), os dias pela
@@ -22,9 +22,10 @@ Os documentos só os escreve o `documento_loja` (e o seed, T2.18, por ele): um
 documento estragado à mão (uma janela a meio, um dia desconhecido, uma
 coordenada em texto) é `ValueError` — um 500 —, nunca uma resposta com outra
 forma, com que o frontend não contava. Um campo em falta é `KeyError`, exceto
-o `instagram` e o `site` (2026-10-13) e o `google_place_id` (2026-10-18, mapa
-Google): as lojas gravadas antes não os têm, leem-se com `.get` e vêm a
-`null` — sem migração.
+o `instagram` e o `site` (2026-10-13), o `google_place_id` (2026-10-18, mapa
+Google) e os cinco do consumo e das marcas (2026-11-07): as lojas gravadas
+antes não os têm, leem-se com `.get` e vêm a `null` — sem migração. O
+`marca_nao_revela` sai sempre como `true` ou `false`.
 """
 import math
 import uuid
@@ -34,13 +35,15 @@ from .dominio.campos_loja import DIAS
 from .dominio.validador_loja import campos_de_janelas, janelas_para_lista
 
 # A loja completa da API, pela ordem do plano §4 ("Loja completa (API)"), com o
-# `instagram` e o `site` (2026-10-13) a seguir à pessoa de contacto e o
-# `google_place_id` (2026-10-18, mapa Google) a seguir à precisão. A lista
-# `GET /lojas` (`CAMPOS_RESUMO`) não o traz.
+# `instagram` e o `site` (2026-10-13) a seguir à pessoa de contacto, o
+# `google_place_id` (2026-10-18, mapa Google) a seguir à precisão e o consumo e
+# as marcas (2026-11-07) a seguir às notas. A lista `GET /lojas`
+# (`CAMPOS_RESUMO`) não traz o `google_place_id`.
 CAMPOS_API = (
     "id", "nome", "fase", "fase_desde", "regiao_id", "morada", "codigo_postal", "localidade",
     "lat", "lng", "origem_coords", "precisao_m", "google_place_id",
     "telefone", "pessoa_contacto", "instagram", "site", "notas",
+    "consumo_semanal", "marca_atual", "marca_nao_revela", "outros_sorbets", "outros_sorbets_quais",
     "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim", "dias_fechada",
     "visita_pendente_motivo", "visita_pendente_desde", "ultima_interacao_em", "ultima_visita_ou_entrega_em",
     "criado_por", "criado_em", "atualizado_em",
@@ -111,7 +114,7 @@ def documento_localizacao(lat, lng) -> dict:
 def documento_loja(dados: dict, criado_por, agora) -> dict:
     """A loja nova como fica gravada em `crm_lojas`, pela ordem do plano §3.
 
-    `dados` são os 21 campos do `validador_loja.criacao` SEM erros (as janelas
+    `dados` são os 26 campos do `validador_loja.criacao` SEM erros (as janelas
     a meio são `ValueError`: nunca se gravam); `criado_por` é o `user_id` do
     portal de quem a criou; `agora` uma datetime com fuso (o `relogio.agora()`
     do pedido): `fase_desde` e `criado_em` são o `relogio.instante(agora)` e
@@ -139,6 +142,11 @@ def documento_loja(dados: dict, criado_por, agora) -> dict:
         "instagram": dados["instagram"],
         "site": dados["site"],
         "notas": dados["notas"],
+        "consumo_semanal": dados["consumo_semanal"],
+        "marca_atual": dados["marca_atual"],
+        "marca_nao_revela": dados["marca_nao_revela"],
+        "outros_sorbets": dados["outros_sorbets"],
+        "outros_sorbets_quais": dados["outros_sorbets_quais"],
         "janelas": janelas_para_lista(dados),
         "dias_fechada": _dias(dados["dias_fechada"]),
         **dict.fromkeys(_TEMPORIZADORES),
@@ -172,6 +180,12 @@ def loja_api(doc: dict) -> dict:
         "instagram": doc.get("instagram"),
         "site": doc.get("site"),
         "notas": doc["notas"],
+        # Entraram em 2026-11-07 sem migração: um documento de antes não os tem.
+        "consumo_semanal": doc.get("consumo_semanal"),
+        "marca_atual": doc.get("marca_atual"),
+        "marca_nao_revela": doc.get("marca_nao_revela") is True,
+        "outros_sorbets": doc.get("outros_sorbets"),
+        "outros_sorbets_quais": doc.get("outros_sorbets_quais"),
         **campos_de_janelas(doc["janelas"]),
         "dias_fechada": _dias(doc["dias_fechada"]),
         **{campo: doc[campo] for campo in _TEMPORIZADORES},
