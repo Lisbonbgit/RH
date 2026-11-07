@@ -19,7 +19,10 @@ Mongo pela mesma operação que o código usa (`find_one_and_update` →
 `OperationFailure`, correção "T3.25"), as datas em texto por `$gte`/`$lte`,
 as corridas com o Motor dos `POST /paragens` (sem versão: as tentativas) e
 dos `PATCH` (a mesma versão: um 200 e um 409) e o `DELETE /lojas/{id}` de
-uma loja numa paragem.
+uma loja numa paragem. Desde 2026-11-07, os contactos em `crm_interacoes`: o
+`$max` sobre `null`, sobre o campo em falta e sobre um texto maior, o repetido
+(com a linha já gravada, sem índices e na corrida, pelo índice parcial do
+`client_uuid`) e o recálculo pelo cursor ordenado.
 
 Só corre com `CRM_MONGO_TESTE_URL` (variável de shell, nunca no
 `.env.example`):
@@ -60,6 +63,7 @@ import seed_crm_local
 from crm import relogio
 from crm import rotas as rotas_http
 from crm import rotas_bd
+from crm.contactos import alterar_contacto, apagar_contacto, criar_contacto, listar_contactos
 from crm.db import COLECOES, INDICES
 from crm.definicoes import alterar_definicoes
 from crm.dominio.datas import ler_data, somar_dias, texto_data
@@ -1401,3 +1405,181 @@ def test_apagar_uma_loja_numa_paragem_da_409_loja_em_rota(no_mongo):
     assert apagada == {"apagada": True}
     assert depois == antes
     assert restantes == [_id(1), _id(2)]
+
+
+# --- Os contactos (2026-11-07) ------------------------------------------------------------------------
+
+HOJE_DOS_CONTACTOS = "2026-11-07"
+AGORA_DOS_CONTACTOS = datetime(2026, 11, 7, 10, 30, 15, 987654, tzinfo=timezone.utc)
+INSTANTE_DOS_CONTACTOS = "2026-11-07T10:30:15Z"
+UUID_DO_BLOCO = _id(500)
+
+
+def _contacto(**outros):
+    return {"tipo": "visita", "data": HOJE_DOS_CONTACTOS, "resumo": "Falou-se do verão.", **outros}
+
+
+@pytest.fixture
+def relogio_dos_contactos(monkeypatch):
+    monkeypatch.setattr(relogio, "agora", lambda: AGORA_DOS_CONTACTOS)
+
+
+async def _loja_nova(nome="Café"):
+    return (await criar_loja(RUI_MEMBRO, {**_corpo_loja(nome), "confirmar_duplicado": True}))["id"]
+
+
+async def _ultimos(base, loja_id):
+    loja = await base[COLECOES["lojas"]].find_one({"id": loja_id}, {"_id": 0})
+    return loja["ultima_interacao_em"], loja["ultima_visita_ou_entrega_em"], loja["atualizado_em"]
+
+
+def test_o_max_sobe_de_null_nao_desce_e_escreve_o_campo_em_falta(no_mongo, relogio_dos_contactos):
+    """Os três casos do `$max` que o duplo modela, no Mongo verdadeiro: `null`
+    e o campo em falta abaixo do texto, e os instantes a ordenar como texto. O
+    `atualizado_em` da loja fica como estava."""
+    lojas_c = COLECOES["lojas"]
+
+    async def ensaio(base):
+        de_null = await _loja_nova("De null")
+        versao = (await _ultimos(base, de_null))[2]
+        await criar_contacto(de_null, RUI_MEMBRO, _contacto(data="2026-10-20"))
+        depois_do_primeiro = await _ultimos(base, de_null)
+        await criar_contacto(de_null, RUI_MEMBRO, _contacto(data="2026-07-15"))
+        depois_do_antigo = await _ultimos(base, de_null)
+        await criar_contacto(de_null, RUI_MEMBRO, _contacto(tipo="chamada"))
+        depois_da_chamada = await _ultimos(base, de_null)
+
+        sem_campos = await _loja_nova("Sem os campos")
+        await base[lojas_c].update_one(
+            {"id": sem_campos}, {"$unset": {"ultima_interacao_em": "", "ultima_visita_ou_entrega_em": ""}}
+        )
+        await criar_contacto(sem_campos, RUI_MEMBRO, _contacto())
+        return versao, depois_do_primeiro, depois_do_antigo, depois_da_chamada, await _ultimos(base, sem_campos)
+
+    versao, primeiro, antigo, chamada, sem_campos = no_mongo(ensaio)
+
+    assert primeiro == ("2026-10-20T11:00:00Z", "2026-10-20T11:00:00Z", versao)
+    assert antigo == primeiro
+    assert chamada == (INSTANTE_DOS_CONTACTOS, "2026-10-20T11:00:00Z", versao)
+    assert sem_campos[:2] == (INSTANTE_DOS_CONTACTOS, INSTANTE_DOS_CONTACTOS)
+
+
+@pytest.mark.parametrize("indices", [True, False], ids=["com índices", "sem índices"])
+def test_um_repetido_ja_gravado_nao_cria_outra_linha_e_acerta_a_loja(no_mongo, relogio_dos_contactos, indices):
+    """A falha entre o `insert_one` e o `$max`: a linha ficou gravada e a loja
+    não subiu. O reenvio acerta-a com o que está gravado. O CRM pode arrancar
+    sem índices, e é por isso que o `find_one` vem antes de gravar."""
+    interacoes_c = COLECOES["interacoes"]
+
+    async def ensaio(base):
+        loja_id = await _loja_nova()
+        await base[interacoes_c].insert_one({
+            "id": _id(101), "loja_id": loja_id, "tipo": "visita", "resultado": None, "notas": "Já gravado.",
+            "paragem_id": None, "utilizador_id": "u-rui", "ocorrida_em": "2026-11-05T12:00:00Z",
+            "criado_em": "2026-11-05T12:00:00Z", "editado_em": None, "client_uuid": UUID_DO_BLOCO,
+        })
+        resposta = await criar_contacto(loja_id, RUI_MEMBRO, _contacto(client_uuid=UUID_DO_BLOCO, tipo="chamada"))
+        return resposta, await base[interacoes_c].count_documents({}), await _ultimos(base, loja_id)
+
+    resposta, quantas, ultimos = no_mongo(ensaio, indices=indices)
+
+    assert quantas == 1
+    assert [(c["id"], c["tipo"], c["resumo"]) for c in resposta["contactos"]] == [(_id(101), "visita", "Já gravado.")]
+    assert ultimos[:2] == ("2026-11-05T12:00:00Z", "2026-11-05T12:00:00Z")
+
+
+def test_o_mesmo_bloco_enviado_duas_vezes_ao_mesmo_tempo_fica_uma_linha(no_mongo, monkeypatch, relogio_dos_contactos):
+    """Os dois pedidos passam o `find_one` antes de qualquer gravação: só o
+    índice parcial do `client_uuid` trava o segundo, que responde como um
+    repetido. Sem contas no portal, o autor é a conta removida."""
+    interacoes_c = COLECOES["interacoes"]
+
+    async def ensaio(base):
+        loja_id = await _loja_nova()
+        _em_corrida(monkeypatch, base, "interacoes")
+        respostas = await asyncio.gather(
+            criar_contacto(loja_id, RUI_MEMBRO, _contacto(client_uuid=UUID_DO_BLOCO)),
+            criar_contacto(loja_id, RUI_MEMBRO, _contacto(client_uuid=UUID_DO_BLOCO)),
+            return_exceptions=True,
+        )
+        return respostas, await base[interacoes_c].count_documents({}), await _ultimos(base, loja_id)
+
+    respostas, quantas, ultimos = no_mongo(ensaio)
+
+    gravadas, recusadas = _separar(respostas)
+    assert recusadas == []
+    assert quantas == 1
+    assert gravadas[0] == gravadas[1]
+    assert [c["autor"] for c in gravadas[0]["contactos"]] == ["Conta removida"]
+    assert ultimos[:2] == (INSTANTE_DOS_CONTACTOS, INSTANTE_DOS_CONTACTOS)
+
+
+def test_o_mesmo_bloco_em_duas_lojas_ao_mesmo_tempo_da_422_numa_delas(no_mongo, monkeypatch, relogio_dos_contactos):
+    interacoes_c = COLECOES["interacoes"]
+
+    async def ensaio(base):
+        cafe, bar = await _loja_nova("Café"), await _loja_nova("Bar")
+        _em_corrida(monkeypatch, base, "interacoes")
+        respostas = await asyncio.gather(
+            criar_contacto(cafe, RUI_MEMBRO, _contacto(client_uuid=UUID_DO_BLOCO)),
+            criar_contacto(bar, RUI_MEMBRO, _contacto(client_uuid=UUID_DO_BLOCO)),
+            return_exceptions=True,
+        )
+        return respostas, await base[interacoes_c].count_documents({})
+
+    respostas, quantas = no_mongo(ensaio)
+
+    gravadas, recusadas = _separar(respostas)
+    assert quantas == 1
+    assert len(gravadas) == 1 and len(recusadas) == 1
+    assert recusadas[0].status_code == 422
+    assert list(recusadas[0].detail["campos"]) == ["client_uuid"]
+
+
+def test_o_recalculo_pelo_cursor_ordenado_acerta_a_loja_e_o_get_le_o_que_ficou(no_mongo, relogio_dos_contactos):
+    """O PATCH e o DELETE recalculam com `find().sort().limit(1)`; o resumo do
+    `GET /lojas` calcula o dia de Lisboa do que ficou gravado."""
+
+    async def ensaio(base):
+        loja_id = await _loja_nova()
+        primeira = await criar_contacto(loja_id, RUI_MEMBRO, _contacto(data="2026-07-15"))
+        contacto_antigo = primeira["contactos"][0]["id"]
+        segunda = await criar_contacto(loja_id, RUI_MEMBRO, _contacto(tipo="chamada"))
+        contacto_de_hoje = segunda["contactos"][0]["id"]
+
+        await alterar_contacto(loja_id, contacto_de_hoje, RUI_MEMBRO, {"data": "2026-10-26"})
+        depois_de_recuar = await _ultimos(base, loja_id)
+        resumo_de_recuar = (await listar_lojas(RUI_MEMBRO))[0]
+
+        await apagar_contacto(loja_id, contacto_de_hoje, RUI_MEMBRO)
+        depois_de_apagar = await _ultimos(base, loja_id)
+
+        await apagar_contacto(loja_id, contacto_antigo, RUI_MEMBRO)
+        return (
+            depois_de_recuar, resumo_de_recuar, depois_de_apagar, await _ultimos(base, loja_id),
+            await listar_contactos(loja_id, RUI_MEMBRO),
+        )
+
+    recuar, resumo, apagar, sem_nada, lista = no_mongo(ensaio)
+
+    assert recuar[:2] == ("2026-10-26T12:00:00Z", "2026-07-15T11:00:00Z")
+    assert (resumo["ultimo_contacto"], resumo["marca_nao_revela"]) == ("2026-10-26", False)
+    assert apagar[:2] == ("2026-07-15T11:00:00Z", "2026-07-15T11:00:00Z")
+    assert sem_nada[:2] == (None, None)
+    assert lista == {"hoje": HOJE_DOS_CONTACTOS, "contactos": []}
+
+
+def test_os_contactos_gravados_passam_no_verificador_dos_instantes(no_mongo, relogio_dos_contactos):
+    interacoes_c = COLECOES["interacoes"]
+
+    async def ensaio(base):
+        loja_id = await _loja_nova()
+        await criar_contacto(loja_id, RUI_MEMBRO, _contacto(client_uuid=UUID_DO_BLOCO))
+        [gravado] = await base[interacoes_c].find({}, {"_id": 0}).to_list(10)
+        await alterar_contacto(loja_id, gravado["id"], RUI_MEMBRO, {"resumo": "Outro."})
+        return await base[interacoes_c].find({}, {"_id": 0}).to_list(10)
+
+    [gravado] = no_mongo(ensaio)
+
+    assert instantes_fora_do_formato(gravado) == []
+    assert gravado["editado_em"] == INSTANTE_DOS_CONTACTOS
