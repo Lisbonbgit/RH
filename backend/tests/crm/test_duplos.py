@@ -471,6 +471,76 @@ def test_find_one_and_update_com_upsert_nao_esta_modelado():
         correr(col.find_one_and_update({"id": "a"}, {"$set": {"ordem": 0}}, upsert=True))
 
 
+# --- $max (contactos, 2026-11-07) ---------------------------------------------------
+
+
+@pytest.mark.parametrize("guardado, novo, fica", [
+    ("2026-10-10T09:00:00Z", "2026-10-11T09:00:00Z", "2026-10-11T09:00:00Z"),
+    ("2026-10-11T09:00:00Z", "2026-10-10T09:00:00Z", "2026-10-11T09:00:00Z"),
+    ("2026-10-10T09:00:00Z", "2026-10-10T09:00:00Z", "2026-10-10T09:00:00Z"),
+    (None, "2026-10-10T09:00:00Z", "2026-10-10T09:00:00Z"),
+    (3, 5, 5),
+    (5, 3, 5),
+], ids=["sobe", "não desce", "igual", "null abaixo de texto", "número sobe", "número não desce"])
+def test_o_max_fica_com_o_maior(guardado, novo, fica):
+    col = ColeccaoFalsa([{"id": "l1", "ultima": guardado}])
+    correr(col.update_one({"id": "l1"}, {"$max": {"ultima": novo}}))
+    assert col.sem_id() == [{"id": "l1", "ultima": fica}]
+
+
+def test_o_max_escreve_o_campo_em_falta():
+    col = ColeccaoFalsa([{"id": "l1"}])
+    resultado = correr(col.update_one({"id": "l1"}, {"$max": {"ultima": "2026-10-10T09:00:00Z"}}))
+    assert (resultado.matched_count, resultado.modified_count) == (1, 1)
+    assert col.sem_id() == [{"id": "l1", "ultima": "2026-10-10T09:00:00Z"}]
+
+
+def test_o_max_que_nao_muda_nada_conta_como_apanhado_mas_nao_modificado():
+    col = ColeccaoFalsa([{"id": "l1", "ultima": "2026-10-11T09:00:00Z"}])
+    resultado = correr(col.update_one({"id": "l1"}, {"$max": {"ultima": "2026-10-10T09:00:00Z"}}))
+    assert (resultado.matched_count, resultado.modified_count) == (1, 0)
+
+
+def test_o_max_junta_se_ao_set_na_mesma_atualizacao():
+    col = ColeccaoFalsa([{"id": "l1", "ultima": None, "x": 1}])
+    correr(col.update_one({"id": "l1"}, {"$set": {"x": 2}, "$max": {"ultima": "2026-10-10T09:00:00Z"}}))
+    assert col.sem_id() == [{"id": "l1", "ultima": "2026-10-10T09:00:00Z", "x": 2}]
+
+
+def test_o_max_em_conflito_com_outro_operador_e_o_erro_40_do_mongo():
+    col = ColeccaoFalsa([{"id": "l1", "ultima": None}])
+    with pytest.raises(OperationFailure) as excinfo:
+        correr(col.update_one({"id": "l1"}, {"$set": {"ultima": "a"}, "$max": {"ultima": "b"}}))
+    assert excinfo.value.code == 40
+    assert col.sem_id() == [{"id": "l1", "ultima": None}]
+
+
+@pytest.mark.parametrize("guardado, novo", [
+    (5, "2026-10-10T09:00:00Z"),
+    ("2026-10-10T09:00:00Z", 5),
+    ("2026-10-10T09:00:00Z", None),
+    (None, None),
+    (None, 5),
+    (True, "2026-10-10T09:00:00Z"),
+    (True, 5),
+    ([], "2026-10-10T09:00:00Z"),
+], ids=[
+    "número e texto", "texto e número", "texto e null", "null e null", "null e número",
+    "booleano e texto", "booleano e número", "lista e texto",
+])
+def test_o_max_com_outras_misturas_de_tipos_nao_esta_modelado(guardado, novo):
+    col = ColeccaoFalsa([{"id": "l1", "ultima": guardado}])
+    with pytest.raises(NotImplementedError):
+        correr(col.update_one({"id": "l1"}, {"$max": {"ultima": novo}}))
+    assert col.sem_id() == [{"id": "l1", "ultima": guardado}]
+
+
+def test_o_max_com_null_no_campo_em_falta_nao_esta_modelado():
+    col = ColeccaoFalsa([{"id": "l1"}])
+    with pytest.raises(NotImplementedError):
+        correr(col.update_one({"id": "l1"}, {"$max": {"ultima": None}}))
+
+
 # --- delete / count / create_index ------------------------------------------------
 
 
