@@ -25,6 +25,9 @@
 //  - A ficha aberta pela lista de clientes (`veioDaLista`, com o `state` da
 //    navegação) mostra "Voltar à lista", ao lado de "Ver no mapa" e só com a
 //    ficha carregada: uma ligação, e não um passo atrás no histórico.
+//  - A secção "Contactos" (`ContactosLoja`, desenho de 2026-11-07, §3) fica entre os dados da loja e a zona de apagar,
+//    fora do formulário e do `criarFicha`: tem o seu próprio Guardar, e o Guardar e o Recarregar da ficha não lhe
+//    tocam.
 // Outra loja na mesma rota (ex.: "Sim, abrir X") é outra ficha: a `key` do
 // `lojaId` cria tudo de novo. Os dados da loja entram como texto (o React
 // escapa-os).
@@ -39,6 +42,7 @@ import { Button } from '../../components/ui/button';
 import {
   AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogTitle,
 } from '../../components/ui/alert-dialog';
+import ContactosLoja from '../../components/crm/ContactosLoja';
 import DialogoDuplicado from '../../components/crm/DialogoDuplicado';
 import FormularioLoja from '../../components/crm/FormularioLoja';
 import { IndicadorCrm } from '../../components/crm/GuardaCrm';
@@ -326,6 +330,8 @@ function FichaDaLoja({ id }) {
               </Button>
             </div>
           </form>
+
+          <ContactosLoja lojaId={id} />
 
           <div className="space-y-2 rounded-2xl border bg-card p-4 md:p-6">
             {apagar.erro && (

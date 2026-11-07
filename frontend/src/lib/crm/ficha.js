@@ -47,6 +47,8 @@
 //  - Sem a loja não há ficha: a mensagem e "Tentar novamente" (ou, se não
 //    existe, "Voltar ao mapa"). Quando a rede volta, o que falhou (a loja, as
 //    regiões) pede-se outra vez.
+//  - Os contactos da loja não passam por aqui (`contactos.js`): o Guardar e o
+//    Recarregar não lhes tocam.
 //
 // Adaptações ao portal: ids uuid em texto; as chamadas do `lib/crm/api.js`
 // (sempre com o id da rota) e os erros `ErroCrm`; os avisos de sucesso são

@@ -38,7 +38,7 @@ MENSAGEM_RESUMO = "Escreva o resumo do contacto."
 MENSAGEM_CLIENT_UUID = "O identificador do contacto não é válido."
 MENSAGEM_CLIENT_UUID_DE_OUTRA_LOJA = "Este identificador já foi usado noutra loja."
 
-# Os campos de cada corpo, pela ordem dos erros (a do bloco no ecrã).
+# Os campos de cada corpo, pela ordem dos erros.
 _CAMPOS_CRIACAO = ("tipo", "data", "resumo", "client_uuid")
 _CAMPOS_ALTERACAO = ("tipo", "data", "resumo")
 
