@@ -6,6 +6,12 @@
 // servidor aceita num `regiao_id`), verificado pelo último teste do
 // ids.test.js, que lê esse ficheiro: minúsculas, versão 4, variante 8, 9, a
 // ou b, tal e qual (sem aparar).
+//
+// `novoUuid4` gera o `client_uuid` de um contacto (desenho de 2026-11-07, §3).
+// O `crypto.randomUUID` só existe em páginas seguras e em browsers recentes;
+// sem ele, a alternativa do `PosNotaCredito.js`, com a mesma forma, porque o
+// servidor a valida (`ids.e_uuid4`). Serve para reconhecer um reenvio, não é um
+// segredo: o `Math.random` chega.
 
 export const PADRAO_UUID4 = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 
@@ -15,4 +21,9 @@ const UUID4 = new RegExp(`^${PADRAO_UUID4}$`);
 
 export function eUuid(valor) {
   return typeof valor === 'string' && UUID4.test(valor);
+}
+
+export function novoUuid4(cripto = globalThis.crypto) {
+  if (typeof cripto?.randomUUID === 'function') return cripto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => Math.floor(Math.random() * 16).toString(16));
 }
