@@ -164,6 +164,8 @@ function caminhoComId(recurso, id) {
   return `${recurso}/${encodeURIComponent(pedaco)}`;
 }
 
+const caminhoDosContactos = (lojaId) => `${caminhoComId('/lojas', lojaId)}/contactos`;
+
 // Os parâmetros da query sem os `null`/`undefined` (nunca o texto "null"); o
 // zero fica. É o `comParametros` do CRM autónomo.
 function semNulos(parametros) {
@@ -246,6 +248,20 @@ export function criarClienteCrm({ pedir = (config) => instanciaCrm.request(confi
       chamar({ method: 'PATCH', url: caminhoComId('/lojas', lojaId), data: corpo }),
     apagarLoja: async (lojaId) => chamar({ method: 'DELETE', url: caminhoComId('/lojas', lojaId) }),
 
+    // Os contactos de uma loja (desenho de 2026-11-07, §3). Só o escritório. As quatro devolvem `{hoje, contactos:
+    // [{id, numero, tipo, data, resumo, autor, pode_alterar, corrigido}]}`, do mais recente para o mais antigo: a
+    // numeração fica com o servidor, porque um contacto com data antiga renumera os outros. Criar `{tipo, data,
+    // resumo, client_uuid}` dá 201; alterar leva `{tipo?, data?, resumo?}`. O 422 traz `campos` por chave; a loja
+    // ou o contacto que não existem dão 404, e quem não o escreveu nem é admin do CRM, 403 `sem_permissao`.
+    listarContactos: async (lojaId) => chamar({ method: 'GET', url: caminhoDosContactos(lojaId) }),
+    criarContacto: async (lojaId, corpo) => chamar({ method: 'POST', url: caminhoDosContactos(lojaId), data: corpo }),
+    alterarContacto: async (lojaId, contactoId, corpo) => chamar({
+      method: 'PATCH', url: caminhoComId(caminhoDosContactos(lojaId), contactoId), data: corpo,
+    }),
+    apagarContacto: async (lojaId, contactoId) => chamar({
+      method: 'DELETE', url: caminhoComId(caminhoDosContactos(lojaId), contactoId),
+    }),
+
     // Só admin: `{fabrica_morada, fabrica_lat, fabrica_lng}` (números); o PATCH
     // devolve os valores em vigor, e o 422 traz `campos` por chave.
     obterDefinicoes: () => chamar({ method: 'GET', url: '/definicoes' }),
@@ -320,6 +336,7 @@ export const {
   obterEu, listarMembros, listarCandidatos, adicionarMembro, mudarPerfilMembro, retirarMembro,
   listarRegioes, criarRegiao, alterarRegiao, apagarRegiao,
   listarLojas, obterLoja, criarLoja, alterarLoja, apagarLoja,
+  listarContactos, criarContacto, alterarContacto, apagarContacto,
   obterDefinicoes, alterarDefinicoes, obterConfigMapa, moradaInversa,
   listarRotas, obterRota, obterSugestoes, adicionarParagem, alterarRota, recalcularHoras, otimizarRota,
 } = clienteCrm;

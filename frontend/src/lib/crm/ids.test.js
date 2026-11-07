@@ -9,13 +9,17 @@
  * e as regras dos ecrãs da T2.24a (`carregarUltimaRegiao`, `lojaDuplicada`)
  * usam-no onde o autónomo pedia um inteiro positivo.
  *
- * O último teste lê o padrão do próprio `validador_loja.py`: uma cópia dentro
- * do teste não apanhava uma mudança do servidor.
+ * O teste do padrão lê-o do próprio `validador_loja.py`: uma cópia dentro do
+ * teste não apanhava uma mudança do servidor.
+ *
+ * O `novoUuid4` (desenho de 2026-11-07, §3) gera o `client_uuid` de um contacto:
+ * o `crypto.randomUUID`, quando existe, e senão a alternativa do
+ * `PosNotaCredito.js`, que tem de passar a mesma regra.
  */
 import fs from 'fs';
 import path from 'path';
 
-import { PADRAO_UUID4, eUuid } from './ids';
+import { PADRAO_UUID4, eUuid, novoUuid4 } from './ids';
 
 // frontend/src/lib/crm → raiz do repositório.
 const VALIDADOR_PY = path.join(
@@ -86,4 +90,38 @@ test('PADRAO_UUID4 é o padrão do servidor (validador_loja.py, _UUID4), lido do
   expect(linhas).toHaveLength(1);
   expect(PADRAO_UUID4).toBe(linhas[0][1]);
   expect(python).toMatch(/_UUID4\.fullmatch\(/);
+});
+
+describe('novoUuid4', () => {
+  test('usa o `crypto.randomUUID` quando existe, com o `this` dele', () => {
+    const [id] = VALIDOS;
+    const cripto = { id, randomUUID() { return this.id; } };
+    expect(novoUuid4(cripto)).toBe(id);
+  });
+
+  test.each([
+    ['sem crypto', null],
+    ['com crypto sem randomUUID', {}],
+    ['com randomUUID que não é uma função', { randomUUID: 'x' }],
+  ])('%s, gera um uuid4 que o servidor aceita', (_nome, cripto) => {
+    for (let i = 0; i < 200; i += 1) {
+      expect(eUuid(novoUuid4(cripto))).toBe(true);
+    }
+  });
+
+  test('a alternativa não repete', () => {
+    const gerados = new Set(Array.from({ length: 200 }, () => novoUuid4(null)));
+    expect(gerados.size).toBe(200);
+  });
+
+  test('sem argumento, lê o crypto do ambiente', () => {
+    const antes = globalThis.crypto;
+    const [, id] = VALIDOS;
+    Object.defineProperty(globalThis, 'crypto', { value: { randomUUID: () => id }, configurable: true, writable: true });
+    try {
+      expect(novoUuid4()).toBe(id);
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', { value: antes, configurable: true, writable: true });
+    }
+  });
 });

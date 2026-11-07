@@ -37,6 +37,11 @@
 //     lhe envia coordenadas e números, nunca dados pessoais; e a secção do CRM
 //     traz a atribuição do openrouteservice, a mesma do painel do planeador. As
 //     frases da G7 ficam todas (os testes acima não mudaram);
+//   - os dados das lojas (desenho de 2026-11-07, "Privacidade"): "Dados guardados"
+//     diz que se guardam o consumo, as marcas, os resumos dos contactos e quem os
+//     escreveu, e, como os §3 e §5 só falam da relação laboral e estes dados são
+//     de pessoas das lojas, a finalidade e o prazo de conservação. A frase é a
+//     proposta do desenho, por rever pelo dono antes de publicar;
 //   - a página já não fala da biblioteca do mapa antigo nem do OpenMapTiles (o
 //     mapa deixou de ser deles); o nome da biblioteca escreve-se por partes, para
 //     o inventário do §5 do plano do mapa Google (G19) dar vazio;
@@ -58,8 +63,8 @@ import { ATRIBUICOES } from './atribuicoes';
 const TITULO_CRM = 'CRM Purple House (equipa comercial)';
 // A atribuição do openrouteservice, tal como o plano da F3 a fixa (T3.26 e T3.42).
 const ATRIBUICAO_ORS = 'Developed by VROOM · Hosted by HeiGIT · Routing by openrouteservice · Data from OpenStreetMap';
-// A da última mudança da secção do CRM ("A minha localização").
-const DATA_DA_SECCAO_CRM = '2026-11-06';
+// A da última mudança da secção do CRM (o consumo, as marcas e os contactos).
+const DATA_DA_SECCAO_CRM = '2026-11-07';
 const TERMOS_GOOGLE_MAPS = 'https://maps.google.com/help/terms_maps/';
 const PRIVACIDADE_GOOGLE = 'https://policies.google.com/privacy';
 
@@ -203,6 +208,23 @@ test('secção do CRM: nome e telefone nunca copiados da Google; a origem das mo
   );
 });
 
+test('secção do CRM: "Dados guardados" diz o consumo, as marcas, os resumos dos contactos e quem os escreveu', () => {
+  const crm = seccao(pagina().seccoes, TITULO_CRM).texto;
+  expect(crm).toContain(
+    'Dados guardados: os das lojas (nome, morada, telefone, pessoa de contacto, horário, fase e notas), o consumo,'
+      + ' as marcas, os resumos dos contactos e quem os escreveu, o perfil de cada membro no CRM e quem registou cada'
+      + ' loja e cada mudança de fase.',
+  );
+});
+
+test('secção do CRM: a finalidade e o prazo dos dados das lojas, pela proposta do desenho, por rever pelo dono', () => {
+  const crm = seccao(pagina().seccoes, TITULO_CRM).texto;
+  expect(crm).toContain(
+    'Usamos estes dados para gerir a relação comercial com as lojas. Ficam no CRM enquanto a loja lá estiver, e'
+      + ' corrigem-se ou apagam-se a pedido da pessoa.',
+  );
+});
+
 test('secção do CRM: as rotas pelo openrouteservice (HeiGIT), com a atribuição, e só coordenadas e números', () => {
   const crm = seccao(pagina().seccoes, TITULO_CRM).texto;
   // A mesma atribuição que o painel do planeador mostra.
@@ -261,6 +283,7 @@ test('§4: o Google Maps pelo browser, e a Geoapify só com pontos do mapa, sem 
 
 test('a data no topo não é anterior à secção do CRM', () => {
   const { tudo } = pagina();
+  expect(tudo).toContain('Última atualização: 7 de novembro de 2026');
   const m = /Última atualização: (\d{1,2}) de ([a-zç]+) de (\d{4})/.exec(tudo);
   expect(m).not.toBeNull();
   const mes = MESES.indexOf(m[2]);

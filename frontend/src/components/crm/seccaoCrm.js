@@ -13,11 +13,12 @@ import {
   MapPinPlus,
   Route as IconeRota, // nunca `Route`: confundia-se com o `Route` do React Router
   Settings,
+  Users,
 } from 'lucide-react';
 import { BASE_CRM_ADMIN, ITENS_MENU_CRM, rotaDoCrmNoAdmin } from '../../lib/crm/acesso';
 
 // O ícone de cada item de `ITENS_MENU_CRM`, pela `chave` (os mesmos do `CrmLayout`).
-const ICONES = { mapa: IconeMapa, rotas: IconeRota, 'loja-nova': MapPinPlus, definicoes: Settings };
+const ICONES = { mapa: IconeMapa, clientes: Users, rotas: IconeRota, 'loja-nova': MapPinPlus, definicoes: Settings };
 
 export const seccaoCrm = Object.freeze({
   key: 'crm',

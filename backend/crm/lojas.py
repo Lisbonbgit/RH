@@ -11,10 +11,12 @@ do documento e da resposta em `formatar.py`: aqui só se lê, grava e responde.
 Só o escritório (admin e utilizador do CRM): o motorista ganha o POST na F4
 (plano §1, "Perfis por rota").
 
-- `GET /lojas` → `[{id, nome, fase, regiao_id, lat, lng, telefone}]` (o
-  resumo para o mapa; os filtros aplicam-se no cliente), pelo nome sem
-  maiúsculas nem acentos (`texto.chave_comparacao`, a collation do
-  `ORDER BY nome, id` do autónomo) e depois pelo `id`.
+- `GET /lojas` → `[{id, nome, fase, regiao_id, lat, lng, telefone,
+  pessoa_contacto, localidade, consumo_semanal, marca_atual, marca_nao_revela,
+  ultimo_contacto}]` (o resumo para o mapa e para a lista de clientes; os
+  filtros aplicam-se no cliente), pelo nome sem maiúsculas nem acentos
+  (`texto.chave_comparacao`, a collation do `ORDER BY nome, id` do autónomo) e
+  depois pelo `id`.
 - `GET /lojas/{loja_id}` → a loja completa, ou 404 "Loja não encontrada.".
 - `POST /lojas` (os campos da loja + `confirmar_duplicado?`) → 201 com a loja
   completa. As outras chaves do corpo (`id`, `criado_por`, `fase_desde`,
@@ -46,7 +48,8 @@ plano, linha "T2.11"):
    calculado sobre a loja que o cliente viu, e nunca um 422 de janelas ou um
    409 duplicado sobre as horas ou o sítio de outra versão;
 4. as janelas contra as horas que a loja já tem, só se o pedido mexer numa
-   hora (422 nas horas);
+   hora (422 nas horas), e "Quais?" contra a resposta dos sorbets que fica
+   (`_sorbets_coerentes`: não recusa, limpa);
 5. a região existe (422 em `regiao_id`);
 6. outra loja a menos de 50 m, só se as coordenadas mudarem nas 6 casas que
    a base guarda (409 `duplicado`, sem contar a própria), salvo com
@@ -113,8 +116,13 @@ router = APIRouter()
 # `loja_api` não os copia).
 PROJECAO_LOJA = {"_id": 0}
 
-# O resumo do mapa.
-PROJECAO_RESUMO = {"_id": 0, **{campo: 1 for campo in CAMPOS_RESUMO}}
+# O resumo: as chaves da API menos o `ultimo_contacto`, que não é um campo da
+# base, mais o `ultima_interacao_em`, de onde ele se calcula.
+PROJECAO_RESUMO = {
+    "_id": 0,
+    **{campo: 1 for campo in CAMPOS_RESUMO if campo != "ultimo_contacto"},
+    "ultima_interacao_em": 1,
+}
 
 # O que a regra dos 50 m mede em cada candidato (`geo.encontrar_duplicados`).
 PROJECAO_CANDIDATO = {"_id": 0, "id": 1, "nome": 1, "lat": 1, "lng": 1}
@@ -141,8 +149,9 @@ MENSAGENS_LOJA_EM_ROTA = {
     rotas.LOJA_ESTEVE_EM_ROTA: MENSAGEM_LOJA_ESTEVE_EM_ROTA,
 }
 
-# O tipo da interação que cada mudança de fase grava. As outras (visita,
-# chamada, amostra, entrega, nota; F4/F5) são o histórico real da loja.
+# O tipo da interação que cada mudança de fase grava. As outras (os contactos
+# da ficha, em `contactos.py`; amostra, entrega e nota, na F4/F5) são o
+# histórico real da loja.
 MUDANCA_FASE = "mudanca_fase"
 
 
@@ -217,6 +226,7 @@ async def alterar_loja(loja_id: str, membro: Dict = Depends(ESCRITORIO), corpo: 
         raise _conflito()
 
     janelas_novas = _janelas_alteradas(antes, alteracoes)
+    alteracoes = _sorbets_coerentes(antes, alteracoes)
     await _exigir_regiao(base, alteracoes.get("regiao_id"))
     if not confirmado and _mudou_de_sitio(antes, alteracoes):
         await _recusar_duplicados(lojas, alteracoes["lat"], alteracoes["lng"], excluir_id=loja_id)
@@ -305,6 +315,19 @@ def _janelas_alteradas(antes: Dict, alteracoes: Dict):
     if erros:
         raise validacao(erros)
     return janelas_para_lista(juntas)
+
+
+def _sorbets_coerentes(antes: Dict, alteracoes: Dict) -> Dict:
+    """As alterações com `outros_sorbets_quais` a `None`, se o pedido mexer nos
+    sorbets e a resposta que fica não for Sim. A resposta que fica pode ser a
+    gravada, por isso a regra vive aqui e não no validador; uma loja de antes
+    destes campos conta como Por saber. Sem um dos dois no pedido, nem se
+    olha: a loja não muda."""
+    if "outros_sorbets" not in alteracoes and "outros_sorbets_quais" not in alteracoes:
+        return alteracoes
+    if alteracoes.get("outros_sorbets", antes.get("outros_sorbets")) is True:
+        return alteracoes
+    return {**alteracoes, "outros_sorbets_quais": None}
 
 
 def _seis_casas(coordenada) -> str:

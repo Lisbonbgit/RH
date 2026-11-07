@@ -16,6 +16,12 @@ meio-para-longe-do-zero; `precisao_m` em metros inteiros e só com origem
 no bloco da localização e com qualquer origem válida
 (`campos_loja.google_place_id`, 2026-10-18, mapa Google).
 
+Consumo e marcas (2026-11-07): três textos e dois booleanos, em que só conta o
+booleano JSON (`1` e `"true"` são erro do campo). `marca_nao_revela` nunca é
+`None`, e a marca depende só do pedido, por isso decide-se aqui (`_marca`).
+Os sorbets dependem da loja gravada: na alteração é a rota que os acerta; aqui
+só o `criacao`, que não tem loja gravada.
+
 Adaptação do portal (plano T2.5): `regiao_id` é `None` ou o uuid4 em texto
 de uma região (o `str(uuid.uuid4())` com que o portal grava os ids), e não o
 inteiro ≥ 1 do autónomo. Como é texto exato, nunca chega ao `find` um
@@ -36,12 +42,14 @@ from .texto import aparar
 
 # Os campos da loja que a API aceita, pela ordem da tabela (dossiê §5.2): os 18
 # do autónomo mais `instagram` e `site` (2026-10-13, a pedido do dono), a
-# seguir à pessoa de contacto, e `google_place_id` (2026-10-18, mapa Google),
-# a seguir à precisão — 21 ao todo.
+# seguir à pessoa de contacto, `google_place_id` (2026-10-18, mapa Google), a
+# seguir à precisão, e os cinco do consumo e das marcas (2026-11-07), a seguir
+# às notas — 26 ao todo.
 CAMPOS = (
     "nome", "fase", "regiao_id", "morada", "codigo_postal", "localidade",
     "lat", "lng", "origem_coords", "precisao_m", "google_place_id",
     "telefone", "pessoa_contacto", "instagram", "site", "notas",
+    "consumo_semanal", "marca_atual", "marca_nao_revela", "outros_sorbets", "outros_sorbets_quais",
     "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim", "dias_fechada",
 )
 
@@ -60,6 +68,9 @@ TEXTOS = {
     "morada": ("A morada", 255),
     "localidade": ("A localidade", 100),
     "pessoa_contacto": ("A pessoa de contacto", 100),
+    "consumo_semanal": ("O consumo semanal", 100),
+    "marca_atual": ("A marca atual", 100),
+    "outros_sorbets_quais": ("A lista de sorbets", 255),
 }
 
 # Validam-se juntos (a precisão depende da origem; o identificador do lugar na
@@ -70,6 +81,8 @@ _LOCALIZACAO = ("lat", "lng", "origem_coords", "precisao_m", "google_place_id")
 _LOCALIZACAO_OBRIGATORIA = ("lat", "lng", "origem_coords")
 
 MENSAGEM_LOCALIZACAO_INCOMPLETA = "A localização tem de vir completa (lat, lng e origem_coords)."
+MENSAGEM_MARCA_NAO_REVELA = "Escolha sim ou não."
+MENSAGEM_OUTROS_SORBETS = "Escolha sim, não ou por saber."
 
 # Um uuid4 em minúsculas, como o `str(uuid.uuid4())`: a versão 4 e a variante
 # 8, 9, a ou b. `[0-9a-f]` e `fullmatch`, nunca `\d` nem `$` (plano §10).
@@ -78,12 +91,17 @@ _UUID4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 
 
 def criacao(dados: dict):
-    """Uma loja nova: `(dados, erros)`, com os 21 campos (os que faltam a `None`).
+    """Uma loja nova: `(dados, erros)`, com os 26 campos (os que faltam a `None`,
+    e `marca_nao_revela` a `False`).
 
     Obrigatórios: nome, fase e o pino (lat, lng, origem_coords). As janelas
     só se comparam (`janelas.erros`) quando nenhuma das quatro horas tem erro.
+    "Quais?" só se guarda com a resposta Sim, como na alteração (aí, na rota).
     """
     normalizados, erros = _validar({**dict.fromkeys(CAMPOS), **_so_campos(dados)})
+
+    if normalizados["outros_sorbets"] is not True:
+        normalizados["outros_sorbets_quais"] = None
 
     if not any(campo in erros for campo in janelas.CAMPOS):
         erros = _ordenar({**erros, **janelas.erros(normalizados)})
@@ -100,7 +118,9 @@ def alteracao(parcial: dict):
     alguma, as que faltam têm a mensagem da localização incompleta e nenhuma
     das cinco entra nos dados. As janelas não se comparam aqui: a coerência
     depende das horas que a loja já tem, e a rota verifica-a com
-    `janelas.erros` sobre a loja já alterada (T2.11).
+    `janelas.erros` sobre a loja já alterada (T2.11). Os sorbets também não:
+    "Quais?" depende da resposta gravada, e quem a acerta é a rota. A marca
+    sim (`_marca`), e pode acrescentar a chave que não veio.
     """
     parcial = _so_campos(parcial)
     faltam = []
@@ -165,7 +185,8 @@ def _horas_coerentes(campos: dict) -> dict:
 def _validar(campos: dict):
     """Os campos enviados, validados: `(dados, erros)` pela ordem de `CAMPOS`.
 
-    Os da localização validam-se juntos, se vier algum deles.
+    Os da localização validam-se juntos, se vier algum deles. A marca e o
+    `marca_nao_revela` acertam-se um pelo outro (`_marca`).
     """
     dados = {}
     erros = {}
@@ -179,9 +200,22 @@ def _validar(campos: dict):
         dados.update(localizacao)
         erros.update(erros_localizacao)
 
+    _marca(dados)
     erros = {campo: erro for campo, erro in erros.items() if erro is not None}
 
     return _ordenar(dados), _ordenar(erros)
+
+
+def _marca(dados: dict) -> None:
+    """Acerta a marca e o "não quer revelar" em `dados`, só com o que o pedido
+    trouxe, e só nestes dois casos acrescenta a outra chave: com
+    `marca_nao_revela` a `True` a marca fica `None`, mesmo com texto no
+    pedido; com texto na marca (já aparado), sem esse `True`, o cliente
+    revelou e `marca_nao_revela` passa a `False`."""
+    if dados.get("marca_nao_revela") is True:
+        dados["marca_atual"] = None
+    elif dados.get("marca_atual") is not None:
+        dados["marca_nao_revela"] = False
 
 
 def _campo(campo: str, valor):
@@ -202,6 +236,10 @@ def _campo(campo: str, valor):
         return campos_loja.site(valor)
     if campo == "notas":
         return campos_loja.notas(valor)
+    if campo == "marca_nao_revela":
+        return _booleano(valor, False, MENSAGEM_MARCA_NAO_REVELA)
+    if campo == "outros_sorbets":
+        return _booleano(valor, None, MENSAGEM_OUTROS_SORBETS)
     if campo == "dias_fechada":
         return campos_loja.dias_fechada(valor)
     if campo in janelas.CAMPOS:
@@ -236,6 +274,16 @@ def _regiao(valor):
     if isinstance(valor, str) and _UUID4.fullmatch(valor) is not None:
         return valor, None
     return None, "A região não é válida."
+
+
+def _booleano(valor, vazio, mensagem: str):
+    """`(valor, None)` para um booleano JSON; `None` dá `vazio`. O resto, também
+    `1` e `"true"`, dá `(vazio, mensagem)`."""
+    if valor is None:
+        return vazio, None
+    if type(valor) is bool:
+        return valor, None
+    return vazio, mensagem
 
 
 def _localizacao(campos: dict):

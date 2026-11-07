@@ -641,6 +641,144 @@ def test_uma_loja_gravada_antes_do_identificador_do_lugar_edita_se_e_le_se(sessa
     assert cliente.get(f"{LOJAS_URL}/{CAFE}").json()["google_place_id"] == PLACE
 
 
+# --- O consumo, as marcas e os sorbets (2026-11-07) -------------------------------------------------
+
+
+def test_mudar_o_consumo_e_a_marca_grava_os_aparados(sessao):
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe()]))
+
+    r = cliente.alterar(CAFE, {"consumo_semanal": " 2 baldes grandes ", "marca_atual": " Marca Exemplo "})
+
+    assert r.status_code == 200, r.text
+    assert (r.json()["consumo_semanal"], r.json()["marca_atual"]) == ("2 baldes grandes", "Marca Exemplo")
+    guardada = _guardada(cliente.base)
+    assert (guardada["consumo_semanal"], guardada["marca_atual"]) == ("2 baldes grandes", "Marca Exemplo")
+    assert guardada["marca_nao_revela"] is False
+    assert cliente.get(f"{LOJAS_URL}/{CAFE}").json() == r.json()
+
+
+def test_marcar_que_nao_quer_revelar_apaga_a_marca_gravada(sessao):
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe(marca_atual="Marca Exemplo", marca_nao_revela=False)]))
+
+    r = cliente.alterar(CAFE, {"marca_nao_revela": True})
+
+    assert r.status_code == 200, r.text
+    assert (r.json()["marca_atual"], r.json()["marca_nao_revela"]) == (None, True)
+    guardada = _guardada(cliente.base)
+    assert (guardada["marca_atual"], guardada["marca_nao_revela"]) == (None, True)
+
+
+def test_escrever_a_marca_de_quem_nao_queria_revelar_passa_a_revelada(sessao):
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe(marca_atual=None, marca_nao_revela=True)]))
+
+    r = cliente.alterar(CAFE, {"marca_atual": "Marca Exemplo"})
+
+    assert r.status_code == 200, r.text
+    assert (r.json()["marca_atual"], r.json()["marca_nao_revela"]) == ("Marca Exemplo", False)
+
+
+# (a resposta gravada, o que o pedido traz, o que fica em `outros_sorbets` e em `outros_sorbets_quais`)
+SORBETS = [
+    ("Sim com o texto", {}, {"outros_sorbets": True, "outros_sorbets_quais": "Limão"}, True, "Limão"),
+    (
+        "de Sim para Não leva o texto gravado",
+        {"outros_sorbets": True, "outros_sorbets_quais": "Limão"},
+        {"outros_sorbets": False},
+        False,
+        None,
+    ),
+    (
+        "de Sim para Por saber leva o texto gravado",
+        {"outros_sorbets": True, "outros_sorbets_quais": "Limão"},
+        {"outros_sorbets": None},
+        None,
+        None,
+    ),
+    (
+        "Não com texto no pedido não o guarda",
+        {"outros_sorbets": True, "outros_sorbets_quais": "Limão"},
+        {"outros_sorbets": False, "outros_sorbets_quais": "Manga"},
+        False,
+        None,
+    ),
+    (
+        "só o texto, com Sim gravado",
+        {"outros_sorbets": True, "outros_sorbets_quais": "Limão"},
+        {"outros_sorbets_quais": "Manga"},
+        True,
+        "Manga",
+    ),
+    (
+        "só o texto, com Não gravado, não se guarda",
+        {"outros_sorbets": False, "outros_sorbets_quais": None},
+        {"outros_sorbets_quais": "Manga"},
+        False,
+        None,
+    ),
+    ("só o texto, numa loja de antes destes campos, não se guarda", {}, {"outros_sorbets_quais": "Manga"}, None, None),
+    (
+        "limpar o texto com Sim gravado",
+        {"outros_sorbets": True, "outros_sorbets_quais": "Limão"},
+        {"outros_sorbets_quais": None},
+        True,
+        None,
+    ),
+]
+
+
+@pytest.mark.parametrize("gravados, corpo, fica, quais", [c[1:] for c in SORBETS], ids=[c[0] for c in SORBETS])
+def test_quais_so_fica_com_a_resposta_sim_que_fica_na_loja(sessao, gravados, corpo, fica, quais):
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe(**gravados)]))
+
+    r = cliente.alterar(CAFE, corpo)
+
+    assert r.status_code == 200, r.text
+    assert (r.json()["outros_sorbets"], r.json()["outros_sorbets_quais"]) == (fica, quais)
+    guardada = _guardada(cliente.base)
+    assert (guardada.get("outros_sorbets"), guardada["outros_sorbets_quais"]) == (fica, quais)
+
+
+def test_sem_os_sorbets_no_pedido_a_regra_nao_toca_na_loja(sessao):
+    """Uma loja que já tinha texto sem Sim (escrita à mão) não muda por se
+    alterar outra coisa: a regra só corre se o pedido trouxer os sorbets."""
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe(outros_sorbets=False, outros_sorbets_quais="Limão")]))
+
+    assert cliente.alterar(CAFE, {"telefone": "912 345 678"}).status_code == 200
+
+    [atualizacao] = cliente.base.crm_lojas.chamadas("update_one")
+    assert "outros_sorbets_quais" not in atualizacao[2]["$set"]
+    assert _guardada(cliente.base)["outros_sorbets_quais"] == "Limão"
+
+
+def test_com_a_versao_antiga_a_regra_dos_sorbets_nao_chega_a_correr(sessao):
+    loja = _cafe(outros_sorbets=True, outros_sorbets_quais="Limão", atualizado_em=VERSAO_DE_OUTRA_PESSOA)
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[loja]))
+
+    r = cliente.alterar(CAFE, {"outros_sorbets": False})
+
+    assert (r.status_code, r.json()) == (409, CONFLITO)
+    assert _guardada(cliente.base)["outros_sorbets_quais"] == "Limão"
+
+
+@pytest.mark.parametrize("campo", ["marca_nao_revela", "outros_sorbets"])
+@pytest.mark.parametrize("valor", [1, "true"])
+def test_um_booleano_que_nao_e_json_da_422_sem_ler_a_base(sessao, campo, valor):
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe()]))
+    r = cliente.alterar(CAFE, {campo: valor})
+    assert r.status_code == 422
+    assert list(r.json()["detail"]["campos"]) == [campo]
+    assert cliente.base.crm_lojas.chamadas("find_one") == []
+
+
+def test_uma_loja_gravada_antes_do_consumo_e_das_marcas_edita_se_e_le_se(sessao):
+    cliente = sessao(RUI_UTILIZADOR, _base(lojas=[_cafe()]))
+
+    lida = cliente.get(f"{LOJAS_URL}/{CAFE}").json()
+    assert lida["marca_nao_revela"] is False
+    assert [lida[c] for c in ("consumo_semanal", "marca_atual", "outros_sorbets", "outros_sorbets_quais")] == [None] * 4
+    assert cliente.alterar(CAFE, {"telefone": "912 345 678"}).status_code == 200
+
+
 def test_a_resposta_nunca_traz_o_id_do_mongo_o_loc_nem_as_janelas_em_lista(sessao):
     r = sessao(RUI_UTILIZADOR).alterar(CAFE, {**_pino(38.7109), "confirmar_duplicado": True})
     assert r.status_code == 200

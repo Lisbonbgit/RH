@@ -31,6 +31,10 @@ uma só linha `export const MOTIVO_POR_FASE = Object.freeze({ fase: 'motivo', �
 igual a dominio.rotas.MOTIVO_POR_FASE (também pela ordem); e uma só linha
 `export const LIMITE_PARAGENS = <inteiro>;`, igual a dominio.rotas.LIMITE_PARAGENS.
 O rota.test.js faz a mesma comparação no outro sentido (lê o rotas.py).
+
+Os contactos (2026-11-07) também: o contactos.js tem uma só linha
+`export const TIPOS_CONTACTO = Object.freeze([...]);`, igual a
+dominio.contactos.TIPOS_CONTACTO, pela mesma ordem.
 """
 import re
 from pathlib import Path
@@ -38,12 +42,13 @@ from pathlib import Path
 import pytest
 
 from crm import morada
-from crm.dominio import geo, rotas
+from crm.dominio import contactos, geo, rotas
 from crm.dominio.fases import ORDEM
 
 # backend/tests/crm/este_ficheiro.py -> raiz do repositório
 _RAIZ = Path(__file__).resolve().parents[3]
 _LIB_CRM = _RAIZ / "frontend" / "src" / "lib" / "crm"
+CONTACTOS_JS = _LIB_CRM / "contactos.js"
 FASES_JS = _LIB_CRM / "fases.js"
 GPS_JS = _LIB_CRM / "gps.js"
 MORADA_JS = _LIB_CRM / "morada.js"
@@ -343,3 +348,12 @@ def test_o_limite_de_paragens_do_js_e_o_do_servidor():
     valores = _inteiros_do_js(_ler(ROTA_JS), "LIMITE_PARAGENS")
     assert len(valores) == 1, 'rota.js tem de ter uma só linha "export const LIMITE_PARAGENS = <n>;"'
     assert valores[0] == rotas.LIMITE_PARAGENS
+
+
+# --- Os contactos (2026-11-07) ---
+
+
+def test_os_tipos_de_contacto_do_js_sao_os_do_servidor():
+    listas = _listas_do_js(_ler(CONTACTOS_JS), "TIPOS_CONTACTO")
+    assert len(listas) == 1, 'contactos.js tem de ter uma só linha "export const TIPOS_CONTACTO = Object.freeze([...]);"'
+    assert listas[0] == contactos.TIPOS_CONTACTO

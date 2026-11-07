@@ -9,9 +9,9 @@
  *   - `somarDias` conta dias de calendário ao meio-dia UTC, por isso a mudança de hora nunca mexe no
  *     resultado, seja qual for o fuso do browser;
  *   - `diaDaSemana` dá os nomes dos `dias_fechada` da loja (`campos_loja.DIAS`: "seg" … "dom");
- *   - `rotuloDia` ("Hoje", "Amanhã", "seg 19/10") e `rotuloDataLonga` ("segunda-feira, 12 de outubro")
- *     escrevem-se com listas fixas de nomes, sem `Intl` nem `toLocale…` (o resultado não depende da
- *     língua nem do fuso do browser).
+ *   - `rotuloDia` ("Hoje", "Amanhã", "seg 19/10"), `rotuloDataLonga` ("segunda-feira, 12 de outubro") e
+ *     `rotuloDataCurta` ("5 nov 2026") escrevem-se com listas fixas de nomes, sem `Intl` nem `toLocale…`
+ *     (o resultado não depende da língua nem do fuso do browser).
  *
  * Os testes do fuso correm o próprio `datas.js` num processo do Node à parte, com a variável `TZ` (no
  * Jest, o `process.env` é uma cópia e mudar o `TZ` lá dentro não muda o fuso), e provam primeiro que o
@@ -26,6 +26,7 @@ import {
   DIAS_SEMANA,
   diaDaSemana,
   eDataValida,
+  rotuloDataCurta,
   rotuloDataLonga,
   rotuloDia,
   somarDias,
@@ -291,6 +292,28 @@ test('rotuloDataLonga: os doze meses, em minúsculas', () => {
 test.each([['2026-02-29'], ['2026-13-01'], [''], [null], [undefined], [42]])('rotuloDataLonga(%p) → null', (data) => {
   expect(rotuloDataLonga(data)).toBe(null);
 });
+
+test('rotuloDataCurta: o dia sem zero à esquerda, o mês em três letras e o ano', () => {
+  expect(rotuloDataCurta('2026-11-05')).toBe('5 nov 2026');
+  expect(rotuloDataCurta('2026-12-31')).toBe('31 dez 2026');
+  expect(rotuloDataCurta('2000-01-01')).toBe('1 jan 2000');
+  expect(rotuloDataCurta('2024-02-29')).toBe('29 fev 2024');
+});
+
+test('rotuloDataCurta: os doze meses da lista fixa, pela ordem do calendário', () => {
+  const meses = Array.from({ length: 12 }, (_, i) => rotuloDataCurta(`2026-${String(i + 1).padStart(2, '0')}-15`));
+  expect(meses).toEqual([
+    '15 jan 2026', '15 fev 2026', '15 mar 2026', '15 abr 2026', '15 mai 2026', '15 jun 2026',
+    '15 jul 2026', '15 ago 2026', '15 set 2026', '15 out 2026', '15 nov 2026', '15 dez 2026',
+  ]);
+});
+
+test.each([['2026-02-29'], ['2026-13-01'], ['2026-11-5'], ['5 nov 2026'], [''], [null], [undefined], [42]])(
+  'rotuloDataCurta(%p) → null',
+  (data) => {
+    expect(rotuloDataCurta(data)).toBe(null);
+  },
+);
 
 // --- O código: sem Intl, sem o relógio e sem as horas locais ----------------------------------------
 

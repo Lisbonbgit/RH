@@ -584,6 +584,92 @@ describe('criarClienteCrm — chamadas da F2 com pedir falso', () => {
   });
 });
 
+describe('criarClienteCrm — os contactos de uma loja com pedir falso', () => {
+  const LOJA_ID = '0b6f3c2e-8d4a-4f1b-9c7e-2a5d8e1f3b4c';
+  const CONTACTO_ID = '5e2a9d14-7c3b-4e8f-a1d6-3f9b2c8e7a05';
+  const CAMINHO = `/lojas/${LOJA_ID}/contactos`;
+
+  test('listar (GET), criar (POST), alterar (PATCH) e apagar (DELETE), e devolvem os dados', async () => {
+    const respostas = [{ hoje: '2026-11-07', contactos: [] }, { n: 2 }, { n: 3 }, { n: 4 }];
+    const pedir = pedirQueResponde(...respostas);
+    const cliente = criarClienteCrm({ pedir });
+    const corpoNovo = { tipo: 'visita', data: '2026-11-07', resumo: 'Falámos.', client_uuid: CONTACTO_ID };
+    const corpoAlterar = { resumo: 'Falámos da amostra.' };
+
+    await expect(cliente.listarContactos(LOJA_ID)).resolves.toBe(respostas[0]);
+    await expect(cliente.criarContacto(LOJA_ID, corpoNovo)).resolves.toBe(respostas[1]);
+    await expect(cliente.alterarContacto(LOJA_ID, CONTACTO_ID, corpoAlterar)).resolves.toBe(respostas[2]);
+    await expect(cliente.apagarContacto(LOJA_ID, CONTACTO_ID)).resolves.toBe(respostas[3]);
+
+    expect(pedir.mock.calls).toEqual([
+      [{ method: 'GET', url: CAMINHO }],
+      [{ method: 'POST', url: CAMINHO, data: corpoNovo }],
+      [{ method: 'PATCH', url: `${CAMINHO}/${CONTACTO_ID}`, data: corpoAlterar }],
+      [{ method: 'DELETE', url: `${CAMINHO}/${CONTACTO_ID}` }],
+    ]);
+    // O corpo vai tal como o ecrã o montou.
+    expect(pedir.mock.calls[1][0].data).toBe(corpoNovo);
+    expect(pedir.mock.calls[2][0].data).toBe(corpoAlterar);
+  });
+
+  test('os ids vão num só pedaço do caminho, codificados', async () => {
+    const pedir = pedirQueResponde({}, {});
+    const cliente = criarClienteCrm({ pedir });
+    await cliente.listarContactos('a/b');
+    await cliente.apagarContacto('a/b', 'c?d');
+    expect(pedir.mock.calls.map(([config]) => config.url)).toEqual([
+      '/lojas/a%2Fb/contactos',
+      '/lojas/a%2Fb/contactos/c%3Fd',
+    ]);
+  });
+
+  test.each(['', '.', '..'])('um id %j nunca sai: rejeita com `erro_interno`, sem pedido', async (id) => {
+    const pedir = jest.fn();
+    const cliente = criarClienteCrm({ pedir });
+    await expect(cliente.listarContactos(id)).rejects.toMatchObject({ codigo: 'erro_interno' });
+    await expect(cliente.criarContacto(id, {})).rejects.toMatchObject({ codigo: 'erro_interno' });
+    await expect(cliente.alterarContacto(LOJA_ID, id, {})).rejects.toMatchObject({ codigo: 'erro_interno' });
+    await expect(cliente.apagarContacto(LOJA_ID, id)).rejects.toMatchObject({ codigo: 'erro_interno' });
+    expect(pedir).not.toHaveBeenCalled();
+  });
+
+  test('um 422 sai com os campos, como todas', async () => {
+    const pedir = pedirQueFalha(comResposta(422, {
+      detail: { codigo: 'validacao', mensagem: 'Verifique os campos assinalados.', campos: { resumo: 'Escreva o resumo do contacto.' } },
+    }));
+    const cliente = criarClienteCrm({ pedir });
+    await expect(cliente.criarContacto(LOJA_ID, {})).rejects.toMatchObject({
+      codigo: 'validacao', estado: 422, campos: { resumo: 'Escreva o resumo do contacto.' },
+    });
+  });
+
+  test('o cliente chama as 4 rotas do contactos.py, pelo método e caminho de cada uma — nem mais nem menos', async () => {
+    const texto = fs.readFileSync(path.join(__dirname, '..', '..', '..', '..', 'backend', 'crm', 'contactos.py'), 'utf8');
+    const doServidor = Array.from(
+      texto.matchAll(/^@router\.(\w+)\("([^"]*)"/gm),
+      ([, metodo, caminho]) => `${metodo.toUpperCase()} ${caminho}`,
+    ).sort();
+    expect(doServidor).toEqual([
+      'DELETE /lojas/{loja_id}/contactos/{contacto_id}',
+      'GET /lojas/{loja_id}/contactos',
+      'PATCH /lojas/{loja_id}/contactos/{contacto_id}',
+      'POST /lojas/{loja_id}/contactos',
+    ]);
+
+    const pedir = jest.fn(async () => ({ data: {} }));
+    const cliente = criarClienteCrm({ pedir });
+    await cliente.listarContactos(LOJA_ID);
+    await cliente.criarContacto(LOJA_ID, {});
+    await cliente.alterarContacto(LOJA_ID, CONTACTO_ID, {});
+    await cliente.apagarContacto(LOJA_ID, CONTACTO_ID);
+    const doCliente = Array.from(pedir.mock.calls, ([config]) => {
+      const caminho = config.url.replace(LOJA_ID, '{loja_id}').replace(CONTACTO_ID, '{contacto_id}');
+      return `${config.method} ${caminho}`;
+    }).sort();
+    expect(doCliente).toEqual(doServidor);
+  });
+});
+
 describe('criarClienteCrm — chamadas da F3 (rotas) com pedir falso', () => {
   // Uma data como as do servidor (`AAAA-MM-DD`, o dia em Lisboa) e ids uuid4.
   const DATA = '2026-10-12';

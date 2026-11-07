@@ -2,10 +2,11 @@
 
 Porta de `ValidadorLoja::criacao` (src/Dominio/Lojas/ValidadorLoja.php) do
 CRM autónomo, com todos os cenários do ValidadorLojaCriacaoTest.php e os
-mesmos nomes nos `ids`. Devolve `(dados, erros)`: os dados têm sempre os 21
+mesmos nomes nos `ids`. Devolve `(dados, erros)`: os dados têm sempre os 26
 campos de `CAMPOS` (os 18 do autónomo mais `instagram` e `site`, acrescentados
-em 2026-10-13, e `google_place_id`, 2026-10-18, no bloco da localização), por
-essa ordem (os que faltam ficam `None`), e só se usam
+em 2026-10-13, `google_place_id`, 2026-10-18, no bloco da localização, e os
+cinco do consumo e das marcas, 2026-11-07), por essa ordem (os que faltam
+ficam `None`, e `marca_nao_revela` fica `False`), e só se usam
 quando não há erros; os erros são `{campo: mensagem pt-PT}`, também pela
 ordem de `CAMPOS`. A ordem dos dicionários conta, por isso compara-se
 `list(….items())` (o `==` de dois `dict` ignora a ordem), e o tipo também
@@ -79,8 +80,10 @@ def test_os_campos_sao_os_da_tabela_da_loja_por_ordem():
         "nome", "fase", "regiao_id", "morada", "codigo_postal", "localidade",
         "lat", "lng", "origem_coords", "precisao_m", "google_place_id",
         "telefone", "pessoa_contacto", "instagram", "site", "notas",
+        "consumo_semanal", "marca_atual", "marca_nao_revela", "outros_sorbets", "outros_sorbets_quais",
         "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim", "dias_fechada",
     )
+    assert len(CAMPOS) == 26
 
 
 def test_as_origens_os_textos_e_o_tamanho_do_nome():
@@ -90,6 +93,9 @@ def test_as_origens_os_textos_e_o_tamanho_do_nome():
         "morada": ("A morada", 255),
         "localidade": ("A localidade", 100),
         "pessoa_contacto": ("A pessoa de contacto", 100),
+        "consumo_semanal": ("O consumo semanal", 100),
+        "marca_atual": ("A marca atual", 100),
+        "outros_sorbets_quais": ("A lista de sorbets", 255),
     }
 
 
@@ -117,6 +123,11 @@ def test_so_com_os_obrigatorios_os_outros_campos_ficam_vazios():
         ("instagram", None),
         ("site", None),
         ("notas", None),
+        ("consumo_semanal", None),
+        ("marca_atual", None),
+        ("marca_nao_revela", False),
+        ("outros_sorbets", None),
+        ("outros_sorbets_quais", None),
         ("janela1_inicio", None),
         ("janela1_fim", None),
         ("janela2_inicio", None),
@@ -144,6 +155,11 @@ def test_normaliza_uma_loja_completa():
         "instagram": " @gelataria.do.rato ",
         "site": " gelatariadorato.pt ",
         "notas": " Descarga pela porta lateral.\nFérias em agosto. ",
+        "consumo_semanal": " 2 baldes grandes ",
+        "marca_atual": " Marca Exemplo ",
+        "marca_nao_revela": False,
+        "outros_sorbets": True,
+        "outros_sorbets_quais": " Limão e manga ",
         "janela1_inicio": "10:00",
         "janela1_fim": "13:00",
         "janela2_inicio": "15:00",
@@ -169,6 +185,11 @@ def test_normaliza_uma_loja_completa():
         ("instagram", "https://www.instagram.com/gelataria.do.rato/"),
         ("site", "https://gelatariadorato.pt"),
         ("notas", "Descarga pela porta lateral.\nFérias em agosto."),
+        ("consumo_semanal", "2 baldes grandes"),
+        ("marca_atual", "Marca Exemplo"),
+        ("marca_nao_revela", False),
+        ("outros_sorbets", True),
+        ("outros_sorbets_quais", "Limão e manga"),
         ("janela1_inicio", "10:00"),
         ("janela1_fim", "13:00"),
         ("janela2_inicio", "15:00"),
@@ -276,6 +297,20 @@ CASOS_OUTROS_CAMPOS = [
         {"pessoa_contacto": "A pessoa de contacto tem no máximo 100 caracteres."},
     ),
     ("notas com mais de 65 535 bytes", {"notas": "é" * 32768}, {"notas": "As notas são demasiado compridas."}),
+    (
+        "consumo com 101 caracteres",
+        {"consumo_semanal": "c" * 101},
+        {"consumo_semanal": "O consumo semanal tem no máximo 100 caracteres."},
+    ),
+    ("marca com 101 caracteres", {"marca_atual": "m" * 101}, {"marca_atual": "A marca atual tem no máximo 100 caracteres."}),
+    (
+        "lista de sorbets com 256 caracteres",
+        {"outros_sorbets": True, "outros_sorbets_quais": "s" * 256},
+        {"outros_sorbets_quais": "A lista de sorbets tem no máximo 255 caracteres."},
+    ),
+    ("consumo que não é texto", {"consumo_semanal": 2}, {"consumo_semanal": "Tem de ser texto."}),
+    ("marca que não é texto", {"marca_atual": ["Marca"]}, {"marca_atual": "Tem de ser texto."}),
+    ("lista de sorbets que não é texto", {"outros_sorbets_quais": 1}, {"outros_sorbets_quais": "Tem de ser texto."}),
     ("morada que não é texto", {"morada": ["Rua"]}, {"morada": "Tem de ser texto."}),
     ("notas que não são texto", {"notas": 42}, {"notas": "Tem de ser texto."}),
     ("instagram com espaço", {"instagram": "purple house"}, {"instagram": INSTAGRAM}),
@@ -364,6 +399,11 @@ NORMALIZACOES = [
     ("identificador do lugar nulo", "google_place_id", None, None),
     ("notas com 65 535 bytes", "notas", "n" * 65535, "n" * 65535),
     ("notas vazias", "notas", "", None),
+    ("consumo com 100 caracteres (os acentos contam como um)", "consumo_semanal", "é" * 100, "é" * 100),
+    ("consumo sem os espaços nas pontas", "consumo_semanal", " 2 baldes ", "2 baldes"),
+    ("consumo vazio", "consumo_semanal", "", None),
+    ("marca com 100 caracteres", "marca_atual", "m" * 100, "m" * 100),
+    ("marca só com espaços", "marca_atual", "   ", None),
     ("região", "regiao_id", REGIAO_ID, REGIAO_ID),
     ("sem região", "regiao_id", None, None),
     ("dias fechada pela ordem da semana", "dias_fechada", ["dom", "qua", "seg"], ["seg", "qua", "dom"]),
@@ -892,6 +932,8 @@ def test_os_dados_de_uma_loja_vazia_sao_os_do_autonomo():
         ("localidade", None), ("lat", None), ("lng", None), ("origem_coords", None), ("precisao_m", None),
         ("google_place_id", None),
         ("telefone", None), ("pessoa_contacto", None), ("instagram", None), ("site", None), ("notas", None),
+        ("consumo_semanal", None), ("marca_atual", None), ("marca_nao_revela", False), ("outros_sorbets", None),
+        ("outros_sorbets_quais", None),
         ("janela1_inicio", None), ("janela1_fim", None), ("janela2_inicio", None), ("janela2_fim", None),
         ("dias_fechada", []),
     ]
@@ -938,6 +980,11 @@ def test_os_erros_vem_sempre_pela_ordem_dos_campos():
         "instagram": "@",
         "site": "x",
         "notas": 1,
+        "consumo_semanal": 1,
+        "marca_atual": 1,
+        "marca_nao_revela": 1,
+        "outros_sorbets": 1,
+        "outros_sorbets_quais": 1,
         "janela1_inicio": "x",
         "janela1_fim": "x",
         "janela2_inicio": "x",
@@ -953,6 +1000,73 @@ def test_chaves_parecidas_com_os_campos_ignoram_se():
 
     assert erros == {}
     assert dados["nome"] == "Café Central"
+    assert tuple(dados) == CAMPOS
+
+
+# --- O consumo e as marcas (2026-11-07) ---
+
+
+@pytest.mark.parametrize("campo", ["marca_nao_revela", "outros_sorbets"])
+@pytest.mark.parametrize("valor", [1, 0, "true", "false", "", "sim", 1.0, [], {}, [True]])
+def test_nos_booleanos_so_conta_o_booleano_json(campo, valor):
+    dados, erros = criacao(minima({campo: valor}))
+
+    mensagens = {"marca_nao_revela": "Escolha sim ou não.", "outros_sorbets": "Escolha sim, não ou por saber."}
+    assert list(erros.items()) == [(campo, mensagens[campo])]
+    assert mesmo_valor(dados["marca_nao_revela"], False)
+    assert dados["outros_sorbets"] is None
+
+
+@pytest.mark.parametrize("corpo", [{}, {"marca_nao_revela": None}], ids=["em falta", "null"])
+def test_marca_nao_revela_em_falta_ou_null_da_false_e_nunca_none(corpo):
+    dados, erros = criacao(minima(corpo))
+
+    assert erros == {}
+    assert mesmo_valor(dados["marca_nao_revela"], False)
+
+
+@pytest.mark.parametrize("corpo", [{}, {"outros_sorbets": None}], ids=["em falta", "null"])
+def test_outros_sorbets_em_falta_ou_null_fica_por_saber(corpo):
+    dados, erros = criacao(minima(corpo))
+
+    assert erros == {}
+    assert dados["outros_sorbets"] is None
+
+
+def test_quem_nao_quer_revelar_nao_guarda_a_marca_mesmo_que_o_pedido_a_traga():
+    dados, erros = criacao(minima({"marca_atual": "Marca Exemplo", "marca_nao_revela": True}))
+
+    assert erros == {}
+    assert dados["marca_atual"] is None
+    assert dados["marca_nao_revela"] is True
+
+
+@pytest.mark.parametrize("corpo", [{}, {"marca_nao_revela": False}, {"marca_nao_revela": None}])
+def test_com_texto_na_marca_o_cliente_revelou(corpo):
+    dados, erros = criacao(minima({"marca_atual": " Marca Exemplo ", **corpo}))
+
+    assert erros == {}
+    assert dados["marca_atual"] == "Marca Exemplo"
+    assert dados["marca_nao_revela"] is False
+
+
+def test_quais_so_se_guarda_com_a_resposta_sim():
+    dados, erros = criacao(minima({"outros_sorbets": True, "outros_sorbets_quais": " Limão "}))
+
+    assert erros == {}
+    assert (dados["outros_sorbets"], dados["outros_sorbets_quais"]) == (True, "Limão")
+
+
+@pytest.mark.parametrize("corpo", [
+    {"outros_sorbets": False},
+    {"outros_sorbets": None},
+    {},
+], ids=["não", "por saber", "sem resposta"])
+def test_sem_a_resposta_sim_quais_fica_vazio(corpo):
+    dados, erros = criacao(minima({**corpo, "outros_sorbets_quais": "Limão"}))
+
+    assert erros == {}
+    assert dados["outros_sorbets_quais"] is None
     assert tuple(dados) == CAMPOS
 
 

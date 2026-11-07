@@ -473,6 +473,11 @@ def test_com_todos_os_campos_os_dados_sao_os_da_criacao():
         "instagram": "@gelataria.do.rato",
         "site": "gelatariadorato.pt",
         "notas": " Descarga pela porta lateral. ",
+        "consumo_semanal": " 2 baldes grandes ",
+        "marca_atual": " Marca Exemplo ",
+        "marca_nao_revela": False,
+        "outros_sorbets": True,
+        "outros_sorbets_quais": " Limão e manga ",
         "janela1_inicio": "10:00",
         "janela1_fim": "13:00",
         "janela2_inicio": "15:00",
@@ -495,6 +500,83 @@ def test_com_todos_os_campos_os_erros_sao_os_da_criacao_sem_comparar_as_janelas(
 
     assert list(dados.items()) == list(dados_criacao.items())
     assert list(erros_criacao.items()) == [*erros.items(), ("janela1_fim", "O fim tem de ser depois do início.")]
+
+
+# --- O consumo e as marcas (2026-11-07) ---
+
+
+@pytest.mark.parametrize("campo, enviado, guardado", [
+    ("consumo_semanal", " 2 baldes ", "2 baldes"),
+    ("consumo_semanal", "", None),
+    ("consumo_semanal", None, None),
+    ("outros_sorbets_quais", " Limão ", "Limão"),
+    ("outros_sorbets_quais", None, None),
+    ("outros_sorbets", True, True),
+    ("outros_sorbets", False, False),
+    ("outros_sorbets", None, None),
+])
+def test_cada_campo_novo_vem_sozinho(campo, enviado, guardado):
+    """Os sorbets acertam-se na rota, com a loja gravada: aqui "Quais?" passa
+    mesmo sem a resposta no pedido."""
+    dados, erros = alteracao({campo: enviado})
+
+    assert erros == {}
+    assert list(dados) == [campo]
+    assert mesmo_valor(dados[campo], guardado)
+
+
+@pytest.mark.parametrize("enviado, guardado", [(True, True), (False, False), (None, False)])
+def test_marca_nao_revela_nunca_e_none_nos_dados(enviado, guardado):
+    dados, erros = alteracao({"marca_nao_revela": enviado})
+
+    assert erros == {}
+    assert mesmo_valor(dados["marca_nao_revela"], guardado)
+
+
+@pytest.mark.parametrize("campo", ["marca_nao_revela", "outros_sorbets"])
+@pytest.mark.parametrize("valor", [1, 0, "true", "false", "", [], {}])
+def test_nos_booleanos_so_conta_o_booleano_json(campo, valor):
+    mensagens = {"marca_nao_revela": "Escolha sim ou não.", "outros_sorbets": "Escolha sim, não ou por saber."}
+    assert list(alteracao({campo: valor})[1].items()) == [(campo, mensagens[campo])]
+
+
+def test_marcar_que_nao_quer_revelar_limpa_a_marca_mesmo_sem_ela_no_pedido():
+    assert pares(alteracao({"marca_nao_revela": True})) == (
+        [("marca_atual", None), ("marca_nao_revela", True)], [],
+    )
+
+
+def test_marcar_que_nao_quer_revelar_ganha_ao_texto_do_pedido():
+    assert pares(alteracao({"marca_atual": "Marca Exemplo", "marca_nao_revela": True})) == (
+        [("marca_atual", None), ("marca_nao_revela", True)], [],
+    )
+
+
+def test_texto_na_marca_passa_a_revelada_mesmo_sem_a_caixa_no_pedido():
+    assert pares(alteracao({"marca_atual": " Marca Exemplo "})) == (
+        [("marca_atual", "Marca Exemplo"), ("marca_nao_revela", False)], [],
+    )
+
+
+@pytest.mark.parametrize("caixa", [False, None])
+def test_texto_na_marca_com_a_caixa_desligada_fica_revelada(caixa):
+    assert pares(alteracao({"marca_atual": "Marca Exemplo", "marca_nao_revela": caixa})) == (
+        [("marca_atual", "Marca Exemplo"), ("marca_nao_revela", False)], [],
+    )
+
+
+@pytest.mark.parametrize("marca", [None, "", "   "], ids=["null", "vazia", "só espaços"])
+def test_limpar_a_marca_nao_mexe_na_caixa(marca):
+    """A chave derivada só nasce nos dois casos do desenho."""
+    assert pares(alteracao({"marca_atual": marca})) == ([("marca_atual", None)], [])
+
+
+def test_desmarcar_a_caixa_nao_mexe_na_marca():
+    assert pares(alteracao({"marca_nao_revela": False})) == ([("marca_nao_revela", False)], [])
+
+
+def test_sem_os_campos_da_marca_nao_nasce_nenhuma_chave():
+    assert pares(alteracao({"nome": "Café"})) == ([("nome", "Café")], [])
 
 
 def test_nao_mexe_no_corpo_recebido():

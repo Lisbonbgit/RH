@@ -22,6 +22,10 @@ O "hoje" das rotas (F3, T3.1) é o dia em Lisboa (`Europe/Lisbon`), venha o
 processo com o fuso que vier: os casos com outro fuso usam o fixture
 `fuso_de_toquio`, nunca `monkeypatch.setenv("TZ", …)` (correção "T3.1": o
 monkeypatch repõe a variável mas não volta a chamar o `time.tzset()`).
+
+Os contactos (2026-11-07) trazem `dia_lisboa` e `meio_dia_lisboa`, com o verão
+às 23:30Z e os dias da mudança de hora: o dia de um instante nunca é o corte
+do texto, que dava o dia de UTC.
 """
 import os
 import random
@@ -33,7 +37,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from crm import relogio
-from crm.relogio import FUSO_LISBOA, carimbo, hoje, ler_carimbo, proximo_carimbo
+from crm.relogio import FUSO_LISBOA, carimbo, dia_lisboa, hoje, ler_carimbo, meio_dia_lisboa, proximo_carimbo
 
 FORMATO = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 FORMATO_CARIMBO = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
@@ -470,3 +474,104 @@ def test_hoje_e_o_dia_utc_no_inverno_e_o_de_utc_mais_uma_hora_no_verao(monkeypat
             assert hoje() == (momento + timedelta(hours=1)).date()
             vistos["verao"] += 1
     assert min(vistos.values()) > 500
+
+
+# --- dia_lisboa e meio_dia_lisboa (contactos, 2026-11-07) -----------------------
+
+
+@pytest.mark.parametrize("gravado, dia", [
+    ("2026-01-15T12:00:00Z", date(2026, 1, 15)),
+    # No inverno (WET) o dia é o de UTC.
+    ("2026-01-15T23:59:59Z", date(2026, 1, 15)),
+    # No verão (WEST, UTC+1), às 23:30Z já é o dia seguinte: o corte do texto dava o dia 15.
+    ("2026-07-15T23:30:00Z", date(2026, 7, 16)),
+    ("2026-07-15T22:59:59Z", date(2026, 7, 15)),
+    ("2026-07-15T23:00:00Z", date(2026, 7, 16)),
+    # A passagem de ano, no inverno.
+    ("2026-12-31T23:59:59Z", date(2026, 12, 31)),
+    # O dia em que a hora adianta (29 de março de 2026, às 01:00Z).
+    ("2026-03-28T23:59:59Z", date(2026, 3, 28)),
+    ("2026-03-29T00:59:59Z", date(2026, 3, 29)),
+    ("2026-03-29T01:00:00Z", date(2026, 3, 29)),
+    ("2026-03-29T22:59:59Z", date(2026, 3, 29)),
+    ("2026-03-29T23:00:00Z", date(2026, 3, 30)),
+    # O dia em que a hora atrasa (25 de outubro de 2026, às 01:00Z).
+    ("2026-10-24T22:59:59Z", date(2026, 10, 24)),
+    ("2026-10-24T23:00:00Z", date(2026, 10, 25)),
+    ("2026-10-25T00:30:00Z", date(2026, 10, 25)),
+    ("2026-10-25T01:30:00Z", date(2026, 10, 25)),
+    ("2026-10-25T23:59:59Z", date(2026, 10, 25)),
+], ids=[
+    "inverno ao meio-dia", "inverno ao fim do dia", "verão às 23:30Z", "verão antes da meia-noite",
+    "verão à meia-noite", "passagem de ano", "antes de adiantar", "adiantar antes da mudança",
+    "adiantar na mudança", "adiantar antes da meia-noite", "adiantar à meia-noite",
+    "antes de atrasar", "atrasar à meia-noite", "atrasar antes da mudança", "atrasar depois da mudança",
+    "atrasar no fim do dia",
+])
+def test_dia_lisboa_e_o_dia_de_lisboa_do_instante(gravado, dia):
+    assert type(dia_lisboa(gravado)) is date
+    assert dia_lisboa(gravado) == dia
+
+
+def test_dia_lisboa_nao_depende_do_fuso_do_processo(fuso_de_toquio):
+    assert dia_lisboa("2026-07-15T23:30:00Z") == date(2026, 7, 16)
+    assert dia_lisboa("2026-01-15T16:00:00Z") == date(2026, 1, 15)
+
+
+def test_dia_lisboa_e_o_inverso_do_que_o_instante_grava():
+    momento = datetime(2026, 7, 15, 23, 30, 0, tzinfo=UTC)
+    assert dia_lisboa(relogio.instante(momento)) == hoje(momento)
+
+
+@pytest.mark.parametrize("valor", [
+    "",
+    "2026-07-15",
+    "2026-07-15T23:30:00",
+    "2026-07-15T23:30:00.000000Z",
+    "2026-07-15T23:30:00+00:00",
+    "2026-07-15 23:30:00Z",
+    "2026-07-15t23:30:00z",
+    "2026-07-15T23:30:00Z\n",
+    " 2026-07-15T23:30:00Z",
+    "٢٠٢٦-07-15T23:30:00Z",
+    "2026-02-30T12:00:00Z",
+    "2026-13-01T12:00:00Z",
+    "2026-07-15T24:00:00Z",
+    "2026-07-15T23:60:00Z",
+    "0000-01-01T12:00:00Z",
+    "0001-01-01T00:00:00Z",
+    None,
+    20260715,
+    datetime(2026, 7, 15, 23, 30, 0, tzinfo=UTC),
+], ids=[
+    "vazio", "só o dia", "sem Z", "carimbo com casas", "com fuso", "sem o T", "minúsculas", "fim de linha",
+    "espaço no início", "algarismos árabes", "30 de fevereiro", "mês 13", "hora 24", "minuto 60", "ano 0",
+    "antes do primeiro dia de Lisboa", "None", "número", "datetime",
+])
+def test_dia_lisboa_recusa_o_que_nao_e_um_instante_exato(valor):
+    with pytest.raises(ValueError):
+        dia_lisboa(valor)
+
+
+@pytest.mark.parametrize("dia, gravado", [
+    # No inverno (WET), as 12:00 de Lisboa são as 12:00Z.
+    (date(2026, 1, 15), "2026-01-15T12:00:00Z"),
+    # No verão (WEST), são as 11:00Z.
+    (date(2026, 7, 15), "2026-07-15T11:00:00Z"),
+    # Os dias da mudança de hora: ao meio-dia a hora já mudou.
+    (date(2026, 3, 29), "2026-03-29T11:00:00Z"),
+    (date(2026, 10, 25), "2026-10-25T12:00:00Z"),
+    (date(2026, 3, 28), "2026-03-28T12:00:00Z"),
+    (date(2026, 10, 24), "2026-10-24T11:00:00Z"),
+    (date(2000, 1, 1), "2000-01-01T12:00:00Z"),
+], ids=["inverno", "verão", "dia de adiantar", "dia de atrasar", "véspera de adiantar", "véspera de atrasar", "2000"])
+def test_meio_dia_lisboa_e_o_instante_das_12_de_lisboa(dia, gravado):
+    assert meio_dia_lisboa(dia) == gravado
+    assert FORMATO.fullmatch(meio_dia_lisboa(dia))
+
+
+def test_meio_dia_lisboa_cai_sempre_no_proprio_dia(fuso_de_toquio):
+    dia = date(2026, 1, 1)
+    for _ in range(365):
+        assert dia_lisboa(meio_dia_lisboa(dia)) == dia
+        dia += timedelta(days=1)

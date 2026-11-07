@@ -90,6 +90,11 @@ const LOJA = Object.freeze({
   janela2_inicio: null,
   janela2_fim: null,
   dias_fechada: ['dom'],
+  consumo_semanal: null,
+  marca_atual: null,
+  marca_nao_revela: false,
+  outros_sorbets: null,
+  outros_sorbets_quais: null,
   visita_pendente_motivo: null,
   visita_pendente_desde: null,
   ultima_interacao_em: null,
@@ -377,6 +382,11 @@ test('a ficha: o nome no título e o formulário igual ao da criação, já pree
     janela2_inicio: '',
     janela2_fim: '',
     dias_fechada: ['dom'],
+    consumo_semanal: '',
+    marca_atual: '',
+    marca_nao_revela: false,
+    outros_sorbets: null,
+    outros_sorbets_quais: '',
   });
   expect(vista.valorRegiao).toBe(PORTO);
   expect(vista.resumoLocalizacao).toBe('Pino do GPS, no local (precisão de 12 m).');
@@ -639,6 +649,106 @@ test('422 no site e no Instagram: os erros junto aos campos e o foco no primeiro
   expect(m.vista().alerta).toBe('Verifique os campos assinalados.');
   m.ecra.mudarCampo('site', 'exemplo.pt');
   expect(m.vista().erros).toEqual({ instagram: 'O Instagram tem de ser um perfil válido (ex.: @purplehouse).' });
+});
+
+test('consumo e marcas: vão no Guardar, como texto e booleano; limpar um texto envia null', async () => {
+  const loja = copia(LOJA, { consumo_semanal: '1 balde', marca_atual: 'Marca Exemplo' });
+  const m = await carregada({}, loja);
+  m.ecra.mudarCampo('consumo_semanal', '2 baldes grandes');
+  m.ecra.mudarCampo('marca_atual', '');
+  m.ecra.mudarCampo('outros_sorbets', true);
+  m.ecra.mudarCampo('outros_sorbets_quais', 'Sorbet de manga');
+  expect(corpo(await guardar(m))).toStrictEqual({
+    consumo_semanal: '2 baldes grandes',
+    marca_atual: null,
+    outros_sorbets: true,
+    outros_sorbets_quais: 'Sorbet de manga',
+    atualizado_em: LOJA.atualizado_em,
+  });
+});
+
+test('marcar "O cliente não quer revelar": o PATCH leva a caixa e a marca a null; o texto fica na vista', async () => {
+  const m = await carregada({}, copia(LOJA, { marca_atual: 'Marca Exemplo' }));
+  m.ecra.mudarCampo('marca_nao_revela', true);
+  expect(m.vista().valores).toMatchObject({ marca_atual: 'Marca Exemplo', marca_nao_revela: true });
+  expect(m.vista().guardar.ativo).toBe(true);
+  expect(corpo(await guardar(m))).toStrictEqual({ marca_atual: null, marca_nao_revela: true, atualizado_em: LOJA.atualizado_em });
+});
+
+test('marcar e desmarcar a caixa antes de guardar: o texto volta e a ficha fica sem alterações', async () => {
+  const m = await carregada({}, copia(LOJA, { marca_atual: 'Marca Exemplo' }));
+  m.ecra.mudarCampo('marca_nao_revela', true);
+  m.ecra.mudarCampo('marca_nao_revela', false);
+  expect(m.vista().valores.marca_atual).toBe('Marca Exemplo');
+  expect(m.vista().guardar).toEqual({ ativo: false, texto: 'Guardar', falta: 'Sem alterações por guardar.' });
+});
+
+test('Sim, Não, Sim antes de guardar: o texto de "Quais?" volta e a ficha fica sem alterações', async () => {
+  const m = await carregada({}, copia(LOJA, { outros_sorbets: true, outros_sorbets_quais: 'Sorbet de manga' }));
+  m.ecra.mudarCampo('outros_sorbets', false);
+  expect(m.vista().guardar.ativo).toBe(true);
+  m.ecra.mudarCampo('outros_sorbets', true);
+  expect(m.vista().valores.outros_sorbets_quais).toBe('Sorbet de manga');
+  expect(m.vista().guardar.falta).toBe('Sem alterações por guardar.');
+});
+
+test('sair de Sim: Não envia false e Por saber envia null, com "Quais?" a null nos dois', async () => {
+  const loja = copia(LOJA, { outros_sorbets: true, outros_sorbets_quais: 'Sorbet de manga' });
+  const nao = await carregada({}, loja);
+  nao.ecra.mudarCampo('outros_sorbets', false);
+  expect(corpo(await guardar(nao))).toStrictEqual({ outros_sorbets: false, outros_sorbets_quais: null, atualizado_em: LOJA.atualizado_em });
+  const porSaber = await carregada({}, loja);
+  porSaber.ecra.mudarCampo('outros_sorbets', null);
+  expect(corpo(await guardar(porSaber))).toStrictEqual({ outros_sorbets: null, outros_sorbets_quais: null, atualizado_em: LOJA.atualizado_em });
+});
+
+test('Não passa a Por saber: o PATCH leva null, e não fica um "Não" falso', async () => {
+  const m = await carregada({}, copia(LOJA, { outros_sorbets: false }));
+  expect(m.vista().valores.outros_sorbets).toBe(false);
+  m.ecra.mudarCampo('outros_sorbets', null);
+  expect(corpo(await guardar(m))).toStrictEqual({ outros_sorbets: null, atualizado_em: LOJA.atualizado_em });
+});
+
+test('uma loja que já vinha marcada abre com a marca vazia e, desmarcada, só manda a caixa', async () => {
+  const m = await carregada({}, copia(LOJA, { marca_nao_revela: true }));
+  expect(m.vista().valores).toMatchObject({ marca_atual: '', marca_nao_revela: true });
+  expect(m.vista().guardar.falta).toBe('Sem alterações por guardar.');
+  m.ecra.mudarCampo('marca_nao_revela', false);
+  expect(corpo(await guardar(m))).toStrictEqual({ marca_nao_revela: false, atualizado_em: LOJA.atualizado_em });
+});
+
+test('guardada a caixa, o texto que estava escondido sai: a ficha fica com a loja devolvida', async () => {
+  const m = await carregada({}, copia(LOJA, { marca_atual: 'Marca Exemplo' }));
+  m.ecra.mudarCampo('marca_nao_revela', true);
+  await guardar(m);
+  await responder(m, 'alterarLoja', copia(LOJA, { marca_nao_revela: true, atualizado_em: VERSAO_NOVA }));
+  expect(m.vista().valores).toMatchObject({ marca_atual: '', marca_nao_revela: true });
+  m.ecra.mudarCampo('marca_nao_revela', false);
+  expect(m.vista().valores.marca_atual).toBe('');
+});
+
+test('a fase num toque não toca na caixa nem no texto escondido, que continuam por guardar', async () => {
+  const m = await carregada({}, copia(LOJA, { marca_atual: 'Marca Exemplo' }));
+  m.ecra.mudarCampo('marca_nao_revela', true);
+  await tocarNaFase(m, 'cliente');
+  expect(corpo(ultimo(m, 'alterarLoja'))).toStrictEqual({ fase: 'cliente', atualizado_em: LOJA.atualizado_em });
+  await responder(m, 'alterarLoja', copia(LOJA, { marca_atual: 'Marca Exemplo', fase: 'cliente', atualizado_em: VERSAO_NOVA }));
+  expect(m.vista().valores).toMatchObject({ marca_atual: 'Marca Exemplo', marca_nao_revela: true });
+  expect(m.vista().guardar.ativo).toBe(true);
+});
+
+test('422 nos sorbets e no "Quais?": os erros junto aos campos e o foco no primeiro', async () => {
+  const m = await carregada();
+  m.ecra.mudarCampo('outros_sorbets', true);
+  await guardar(m);
+  await falhar(m, 'alterarLoja', erroValidacao({ outros_sorbets_quais: 'A lista de sorbets tem no máximo 255 caracteres.', outros_sorbets: 'Escolha sim, não ou por saber.' }));
+  expect(m.vista().erros).toEqual({
+    outros_sorbets_quais: 'A lista de sorbets tem no máximo 255 caracteres.',
+    outros_sorbets: 'Escolha sim, não ou por saber.',
+  });
+  expect(m.focos).toEqual(['outros_sorbets_quais']);
+  m.ecra.mudarCampo('outros_sorbets', false);
+  expect(m.vista().erros).toEqual({ outros_sorbets_quais: 'A lista de sorbets tem no máximo 255 caracteres.' });
 });
 
 test('os dias marcados pela ordem da semana; desmarcar e voltar a marcar não é alteração', async () => {

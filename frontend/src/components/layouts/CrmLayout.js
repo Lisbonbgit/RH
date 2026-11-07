@@ -19,6 +19,7 @@ import {
   Route as IconeRota, // nunca `Route`: confundia-se com o `Route` do React Router
   Settings,
   User,
+  Users,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useEstadoCrm } from '../../hooks/useEstadoCrm';
@@ -39,7 +40,7 @@ import {
 } from '../ui/dropdown-menu';
 
 // O ícone de cada item de `ITENS_MENU_CRM`, pela `chave`.
-const ICONES = { mapa: IconeMapa, rotas: IconeRota, 'loja-nova': MapPinPlus, definicoes: Settings };
+const ICONES = { mapa: IconeMapa, clientes: Users, rotas: IconeRota, 'loja-nova': MapPinPlus, definicoes: Settings };
 
 const classeItem = (ativo) =>
   `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${

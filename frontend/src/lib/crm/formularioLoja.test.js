@@ -20,18 +20,27 @@
  * O horário de receção e os dias fechada são só da ficha (`{ficha: true}`,
  * T2.28); o registo rápido (T2.27) não os tem. O Instagram e o site
  * (2026-10-13, a pedido do dono) seguem o mesmo caminho: só na ficha, e o
- * limite do site é o do `backend/crm/dominio/campos_loja.py`.
+ * limite do site é o do `backend/crm/dominio/campos_loja.py`. O bloco "Consumo
+ * e marcas" (desenho de 2026-11-07, §2) também é só da ficha, depois das notas:
+ * a marca escondida pela caixa e o "Quais?" escondido ficam nos `valores` e vão
+ * como null, e voltar atrás deixa o `camposAlterados` vazio.
  */
 import fs from 'fs';
 import path from 'path';
 
 import {
   CAMPOS,
+  CLASSE_PASTILHA,
   DIAS,
   FASE_INICIAL,
+  OPCOES_OUTROS_SORBETS,
+  ROTULO_CONSUMO_MARCAS,
   ROTULO_DIAS,
   ROTULO_FASE,
   ROTULO_HORARIO,
+  ROTULO_MARCA_NAO_REVELA,
+  ROTULO_OUTROS_SORBETS,
+  TEXTO_AVISO_MARCA,
   TEXTO_SEM_HORARIO,
   TEXTO_SEM_REGIAO,
   VALOR_SEM_REGIAO,
@@ -56,6 +65,7 @@ import {
   valorSeletorRegiao,
   valoresDoFormulario,
 } from './formularioLoja';
+import { camposAlterados } from './diferencas';
 import { TEXTO_REGIAO_GUARDADA } from './filtros';
 
 // frontend/src/lib/crm → raiz do repositório.
@@ -464,6 +474,11 @@ const LOJA = {
   janela2_inicio: '15:00',
   janela2_fim: '19:00',
   dias_fechada: ['sab', 'dom'],
+  consumo_semanal: '2 baldes grandes',
+  marca_atual: 'Marca Exemplo',
+  marca_nao_revela: false,
+  outros_sorbets: true,
+  outros_sorbets_quais: 'Sorbet de manga',
   atualizado_em: '2026-10-03T09:00:00.123456Z',
 };
 
@@ -507,6 +522,7 @@ test('ficha: o horário de receção (2 janelas, horas HH:MM) e os dias fechada,
   expect(camposDoFormulario({ ficha: true })).toEqual([
     'nome', 'fase', 'regiao_id', 'telefone', 'pessoa_contacto', 'morada', 'codigo_postal', 'localidade',
     'instagram', 'site', ...CAMPOS_HORAS, 'dias_fechada', 'notas',
+    'consumo_semanal', 'marca_atual', 'marca_nao_revela', 'outros_sorbets', 'outros_sorbets_quais',
   ]);
   expect([ROTULO_HORARIO, ROTULO_DIAS]).toEqual(['Horário de receção', 'Dias fechada']);
   expect(camposJanelas()).toEqual([
@@ -589,6 +605,11 @@ test('preencherComLoja: os campos ficam com os da loja (null fica vazio), a fase
       janela2_inicio: '15:00',
       janela2_fim: '19:00',
       dias_fechada: ['sab', 'dom'],
+      consumo_semanal: '2 baldes grandes',
+      marca_atual: 'Marca Exemplo',
+      marca_nao_revela: false,
+      outros_sorbets: true,
+      outros_sorbets_quais: 'Sorbet de manga',
     },
     preenchida: {},
     erros: {},
@@ -642,4 +663,173 @@ test('reporMorada tira os erros dos campos que repõe', () => {
   const reposto = reporMorada(estado, { morada: 'Rua do Ouro 3', codigo_postal: '', localidade: '' });
   expect(reposto.valores.morada).toBe('Rua do Ouro 3');
   expect(reposto.erros).toEqual({ telefone: 'Telefone inválido.' });
+});
+
+// --- A ficha: "Consumo e marcas" (desenho de 2026-11-07, §2) ----------------------------------------
+
+// O que a ficha compara com a loja guardada.
+const alteracoes = (loja, estado) => camposAlterados(loja, valoresDoFormulario(estado.valores, { ficha: true }));
+
+const NOVOS = ['consumo_semanal', 'marca_atual', 'marca_nao_revela', 'outros_sorbets', 'outros_sorbets_quais'];
+
+test('consumo e marcas: os textos do desenho', () => {
+  expect(ROTULO_CONSUMO_MARCAS).toBe('Consumo e marcas');
+  expect(CAMPOS.consumo_semanal.rotulo).toBe('Consumo semanal');
+  expect(CAMPOS.marca_atual.rotulo).toBe('Marca atual');
+  expect(ROTULO_MARCA_NAO_REVELA).toBe('O cliente não quer revelar');
+  expect(TEXTO_AVISO_MARCA).toBe('Não voltar a perguntar a marca.');
+  expect(ROTULO_OUTROS_SORBETS).toBe('Trabalha com outros sorbets?');
+  expect(CAMPOS.outros_sorbets_quais.rotulo).toBe('Quais?');
+  expect(OPCOES_OUTROS_SORBETS.map(({ valor, rotulo }) => [valor, rotulo])).toEqual([[true, 'Sim'], [false, 'Não'], [null, 'Por saber']]);
+  expect(new Set(OPCOES_OUTROS_SORBETS.map((opcao) => opcao.chave)).size).toBe(3);
+  expect(Object.isFrozen(OPCOES_OUTROS_SORBETS) && OPCOES_OUTROS_SORBETS.every(Object.isFrozen)).toBe(true);
+});
+
+test('consumo e marcas: os limites são os do servidor (validador_loja.py) e o browser não os preenche', () => {
+  // Falha, e não salta, se o ficheiro não estiver lá.
+  expect(fs.existsSync(VALIDADOR_PY)).toBe(true);
+  const python = fs.readFileSync(VALIDADOR_PY, 'utf8');
+  for (const [campo, limite] of [['consumo_semanal', 100], ['marca_atual', 100], ['outros_sorbets_quais', 255]]) {
+    const linhas = [...python.matchAll(new RegExp(`^\\s+"${campo}": \\("[^"]+", (\\d+)\\),$`, 'gm'))];
+    expect([campo, linhas.length]).toEqual([campo, 1]);
+    expect([campo, CAMPOS[campo].maxLength]).toEqual([campo, Number(linhas[0][1])]);
+    expect([campo, CAMPOS[campo].maxLength]).toEqual([campo, limite]);
+    expect([campo, CAMPOS[campo].autoComplete]).toEqual([campo, 'off']);
+    expect([campo, CAMPOS[campo].tipo]).toEqual([campo, 'text']);
+  }
+});
+
+test('a Nova loja continua curta: sem `ficha` não há consumo, marcas nem sorbets', () => {
+  const inicial = estadoInicial();
+  for (const campo of NOVOS) {
+    expect([campo, camposDoFormulario().includes(campo)]).toEqual([campo, false]);
+    expect([campo, campo in inicial.valores]).toEqual([campo, false]);
+    expect([campo, campo in valoresDoFormulario({ ...inicial.valores, [campo]: 'x' })]).toEqual([campo, false]);
+    expect([campo, campo in preencherComLoja(LOJA).valores]).toEqual([campo, false]);
+  }
+  expect(mudarCampo(inicial, 'marca_atual', 'x')).toBe(inicial);
+  expect(mudarCampo(inicial, 'marca_nao_revela', true)).toBe(inicial);
+  expect(mudarCampo(inicial, 'outros_sorbets', true)).toBe(inicial);
+});
+
+test('ficha: começa vazia, com a caixa desmarcada e a resposta Por saber', () => {
+  expect(estadoInicial({ ficha: true }).valores).toMatchObject({
+    consumo_semanal: '', marca_atual: '', marca_nao_revela: false, outros_sorbets: null, outros_sorbets_quais: '',
+  });
+});
+
+test('preencherComLoja: uma loja antiga, sem os campos, fica com a caixa desmarcada e Por saber', () => {
+  const { consumo_semanal: c, marca_atual: m, marca_nao_revela: r, outros_sorbets: o, outros_sorbets_quais: q, ...antiga } = LOJA;
+  expect(preencherComLoja(antiga, { ficha: true }).valores).toMatchObject({
+    consumo_semanal: '', marca_atual: '', marca_nao_revela: false, outros_sorbets: null, outros_sorbets_quais: '',
+  });
+});
+
+test('preencherComLoja: só `true` marca a caixa; só um booleano é resposta aos sorbets', () => {
+  const preencher = (mudancas) => preencherComLoja({ ...LOJA, ...mudancas }, { ficha: true }).valores;
+  expect(preencher({ marca_nao_revela: true }).marca_nao_revela).toBe(true);
+  for (const valor of [false, null, undefined, 1, 'true', 'false']) {
+    expect([valor, preencher({ marca_nao_revela: valor }).marca_nao_revela]).toEqual([valor, false]);
+  }
+  expect(preencher({ outros_sorbets: true }).outros_sorbets).toBe(true);
+  expect(preencher({ outros_sorbets: false }).outros_sorbets).toBe(false);
+  for (const valor of [null, undefined, 0, 1, 'true', '']) {
+    expect([valor, preencher({ outros_sorbets: valor }).outros_sorbets]).toEqual([valor, null]);
+  }
+});
+
+test('mudarCampo: a caixa só aceita booleanos e os sorbets booleanos ou null; os textos só texto', () => {
+  const estado = preencherComLoja(LOJA, { ficha: true });
+  expect(mudarCampo(estado, 'marca_nao_revela', true).valores.marca_nao_revela).toBe(true);
+  for (const valor of [null, undefined, 1, 'true', '']) {
+    expect([valor, mudarCampo(estado, 'marca_nao_revela', valor)]).toEqual([valor, estado]);
+  }
+  expect(mudarCampo(estado, 'outros_sorbets', false).valores.outros_sorbets).toBe(false);
+  expect(mudarCampo(estado, 'outros_sorbets', null).valores.outros_sorbets).toBe(null);
+  expect(mudarCampo(estado, 'outros_sorbets', true)).toBe(estado); // já estava em Sim
+  for (const valor of [undefined, 1, 'true', '']) {
+    expect([valor, mudarCampo(estado, 'outros_sorbets', valor)]).toEqual([valor, estado]);
+  }
+  for (const campo of ['consumo_semanal', 'marca_atual', 'outros_sorbets_quais']) {
+    expect(mudarCampo(estado, campo, 'novo').valores[campo]).toBe('novo');
+    expect(mudarCampo(estado, campo, 7)).toBe(estado);
+    expect(mudarCampo(estado, campo, null)).toBe(estado);
+  }
+});
+
+test('os valores: marcada a caixa, a marca vai como null e o texto fica guardado no formulário', () => {
+  const marcada = mudarCampo(preencherComLoja(LOJA, { ficha: true }), 'marca_nao_revela', true);
+  expect(marcada.valores.marca_atual).toBe('Marca Exemplo');
+  expect(valoresDoFormulario(marcada.valores, { ficha: true })).toMatchObject({ marca_atual: null, marca_nao_revela: true });
+  const desmarcada = mudarCampo(marcada, 'marca_nao_revela', false);
+  expect(valoresDoFormulario(desmarcada.valores, { ficha: true })).toMatchObject({ marca_atual: 'Marca Exemplo', marca_nao_revela: false });
+});
+
+test('os valores: "Quais?" só vai com Sim; com Não ou Por saber vai null e o texto fica guardado', () => {
+  const estado = preencherComLoja(LOJA, { ficha: true });
+  for (const resposta of [false, null]) {
+    const outra = mudarCampo(estado, 'outros_sorbets', resposta);
+    expect(outra.valores.outros_sorbets_quais).toBe('Sorbet de manga');
+    expect(valoresDoFormulario(outra.valores, { ficha: true })).toMatchObject({ outros_sorbets: resposta, outros_sorbets_quais: null });
+  }
+  expect(valoresDoFormulario(estado.valores, { ficha: true })).toMatchObject({ outros_sorbets: true, outros_sorbets_quais: 'Sorbet de manga' });
+});
+
+test('os valores: o que não é válido na caixa ou nos sorbets conta como desmarcada e Por saber', () => {
+  const lidos = valoresDoFormulario({ marca_nao_revela: 'true', outros_sorbets: 1, marca_atual: 7, outros_sorbets_quais: 'x' }, { ficha: true });
+  expect(lidos).toMatchObject({ marca_nao_revela: false, marca_atual: '', outros_sorbets: null, outros_sorbets_quais: null });
+});
+
+test('marcar e desmarcar a caixa deixa o camposAlterados vazio', () => {
+  const inicial = preencherComLoja(LOJA, { ficha: true });
+  expect(alteracoes(LOJA, inicial)).toEqual({});
+  const marcada = mudarCampo(inicial, 'marca_nao_revela', true);
+  expect(alteracoes(LOJA, marcada)).toEqual({ marca_atual: null, marca_nao_revela: true });
+  expect(alteracoes(LOJA, mudarCampo(marcada, 'marca_nao_revela', false))).toEqual({});
+});
+
+test('Sim, Não, Sim deixa o camposAlterados vazio; e Sim, Por saber, Sim também', () => {
+  const inicial = preencherComLoja(LOJA, { ficha: true });
+  const nao = mudarCampo(inicial, 'outros_sorbets', false);
+  expect(alteracoes(LOJA, nao)).toEqual({ outros_sorbets: false, outros_sorbets_quais: null });
+  expect(alteracoes(LOJA, mudarCampo(nao, 'outros_sorbets', true))).toEqual({});
+  const porSaber = mudarCampo(inicial, 'outros_sorbets', null);
+  expect(alteracoes(LOJA, porSaber)).toEqual({ outros_sorbets: null, outros_sorbets_quais: null });
+  expect(alteracoes(LOJA, mudarCampo(porSaber, 'outros_sorbets', true))).toEqual({});
+});
+
+test('uma loja que já vinha marcada abre vazia; desmarcar manda só a caixa', () => {
+  const loja = { ...LOJA, marca_atual: null, marca_nao_revela: true };
+  const inicial = preencherComLoja(loja, { ficha: true });
+  expect(inicial.valores).toMatchObject({ marca_atual: '', marca_nao_revela: true });
+  expect(alteracoes(loja, inicial)).toEqual({});
+  const desmarcada = mudarCampo(inicial, 'marca_nao_revela', false);
+  expect(desmarcada.valores.marca_atual).toBe('');
+  expect(alteracoes(loja, desmarcada)).toEqual({ marca_nao_revela: false });
+  expect(alteracoes(loja, mudarCampo(desmarcada, 'marca_atual', 'Outra Marca'))).toEqual({ marca_nao_revela: false, marca_atual: 'Outra Marca' });
+});
+
+test('uma loja sem resposta (Por saber): o texto de "Quais?" que se escreveu fica até se sair de Sim', () => {
+  const loja = { ...LOJA, outros_sorbets: null, outros_sorbets_quais: null };
+  const sim = mudarCampo(mudarCampo(preencherComLoja(loja, { ficha: true }), 'outros_sorbets', true), 'outros_sorbets_quais', 'Manga');
+  expect(alteracoes(loja, sim)).toEqual({ outros_sorbets: true, outros_sorbets_quais: 'Manga' });
+  expect(alteracoes(loja, mudarCampo(sim, 'outros_sorbets', null))).toEqual({});
+});
+
+test('ficha: os erros da API nos campos novos ficam em cada campo; os dois booleanos limpam o deles', () => {
+  const { porCampo, primeiro, restantes } = separarErros({
+    outros_sorbets: 'Escolha sim, não ou por saber.', marca_nao_revela: 'Escolha sim ou não.', consumo_semanal: 'x', marca_atual: 'y', outros_sorbets_quais: 'z',
+  }, { ficha: true });
+  expect(primeiro).toBe('outros_sorbets');
+  expect(Object.keys(porCampo).sort()).toEqual([...NOVOS].sort());
+  expect(restantes).toEqual({});
+  const estado = comErros(preencherComLoja(LOJA, { ficha: true }), porCampo);
+  expect(mudarCampo(estado, 'marca_nao_revela', true).erros).not.toHaveProperty('marca_nao_revela');
+  expect(mudarCampo(estado, 'outros_sorbets', false).erros).not.toHaveProperty('outros_sorbets');
+});
+
+test('a pastilha é uma área de toque de 44 px, e o estado vem da opção marcada', () => {
+  expect(CLASSE_PASTILHA).toContain('min-h-11');
+  expect(CLASSE_PASTILHA).toContain('has-[:checked]:');
+  expect(CLASSE_PASTILHA).toContain('has-[:focus-visible]:ring-2');
 });

@@ -57,9 +57,10 @@ describe('constantes', () => {
 
   // F3 / T3.35: as Rotas entram depois do Mapa, para os perfis de escritório (como no backend, as rotas
   // `/api/crm/rotas…` são do `ESCRITORIO`).
-  test('o menu: Mapa, Rotas, Nova loja e Definições, por esta ordem', () => {
+  test('o menu: Mapa, Clientes, Rotas, Nova loja e Definições, por esta ordem', () => {
     expect(ITENS_MENU_CRM).toEqual([
       { chave: 'mapa', rotulo: 'Mapa', caminho: 'mapa', soAdmin: false },
+      { chave: 'clientes', rotulo: 'Clientes', caminho: 'clientes', soAdmin: false },
       { chave: 'rotas', rotulo: 'Rotas', caminho: 'rotas', soAdmin: false },
       { chave: 'loja-nova', rotulo: 'Nova loja', caminho: 'lojas/nova', soAdmin: false },
       { chave: 'definicoes', rotulo: 'Definições', caminho: 'definicoes', soAdmin: true },
@@ -432,17 +433,18 @@ describe('ecraCheioDoCrm(caminho)', () => {
 
 describe('itensMenuCrm(eu, base)', () => {
   const MAPA = { chave: 'mapa', rotulo: 'Mapa', caminho: '/crm/mapa' };
+  const CLIENTES = { chave: 'clientes', rotulo: 'Clientes', caminho: '/crm/clientes' };
   const ROTAS = { chave: 'rotas', rotulo: 'Rotas', caminho: '/crm/rotas' };
   const NOVA_LOJA = { chave: 'loja-nova', rotulo: 'Nova loja', caminho: '/crm/lojas/nova' };
   const DEFINICOES = { chave: 'definicoes', rotulo: 'Definições', caminho: '/crm/definicoes' };
 
-  test('admin → Mapa, Rotas, Nova loja e Definições, por esta ordem', () => {
-    expect(itensMenuCrm(ADMIN)).toEqual([MAPA, ROTAS, NOVA_LOJA, DEFINICOES]);
-    expect(itensMenuCrm(ADMIN_MASTER)).toEqual([MAPA, ROTAS, NOVA_LOJA, DEFINICOES]);
+  test('admin → Mapa, Clientes, Rotas, Nova loja e Definições, por esta ordem', () => {
+    expect(itensMenuCrm(ADMIN)).toEqual([MAPA, CLIENTES, ROTAS, NOVA_LOJA, DEFINICOES]);
+    expect(itensMenuCrm(ADMIN_MASTER)).toEqual([MAPA, CLIENTES, ROTAS, NOVA_LOJA, DEFINICOES]);
   });
 
-  test('utilizador → Mapa, Rotas e Nova loja, sem Definições', () => {
-    expect(itensMenuCrm(UTILIZADOR)).toEqual([MAPA, ROTAS, NOVA_LOJA]);
+  test('utilizador → Mapa, Clientes, Rotas e Nova loja, sem Definições', () => {
+    expect(itensMenuCrm(UTILIZADOR)).toEqual([MAPA, CLIENTES, ROTAS, NOVA_LOJA]);
   });
 
   test('motorista e não membro → nada', () => {
@@ -457,22 +459,25 @@ describe('itensMenuCrm(eu, base)', () => {
   test('dentro da gestão, os caminhos são os de /admin/crm', () => {
     expect(itensMenuCrm(ADMIN, '/admin/crm')).toEqual([
       { chave: 'mapa', rotulo: 'Mapa', caminho: '/admin/crm/mapa' },
+      { chave: 'clientes', rotulo: 'Clientes', caminho: '/admin/crm/clientes' },
       { chave: 'rotas', rotulo: 'Rotas', caminho: '/admin/crm/rotas' },
       { chave: 'loja-nova', rotulo: 'Nova loja', caminho: '/admin/crm/lojas/nova' },
       { chave: 'definicoes', rotulo: 'Definições', caminho: '/admin/crm/definicoes' },
     ]);
     expect(itensMenuCrm(UTILIZADOR, baseCrm('/admin/crm/lojas/x')).map((i) => i.caminho))
-      .toEqual(['/admin/crm/mapa', '/admin/crm/rotas', '/admin/crm/lojas/nova']);
+      .toEqual(['/admin/crm/mapa', '/admin/crm/clientes', '/admin/crm/rotas', '/admin/crm/lojas/nova']);
   });
 
   test('uma base desconhecida dá a área própria (/crm), nunca um caminho inventado', () => {
-    expect(itensMenuCrm(UTILIZADOR, '/outro').map((i) => i.caminho)).toEqual(['/crm/mapa', '/crm/rotas', '/crm/lojas/nova']);
-    expect(itensMenuCrm(UTILIZADOR, null).map((i) => i.caminho)).toEqual(['/crm/mapa', '/crm/rotas', '/crm/lojas/nova']);
+    const caminhos = ['/crm/mapa', '/crm/clientes', '/crm/rotas', '/crm/lojas/nova'];
+    expect(itensMenuCrm(UTILIZADOR, '/outro').map((i) => i.caminho)).toEqual(caminhos);
+    expect(itensMenuCrm(UTILIZADOR, null).map((i) => i.caminho)).toEqual(caminhos);
   });
 
-  test('o Mapa abre em ecrã cheio; as Rotas (a lista), a Nova loja e as Definições não', () => {
-    const [mapa, rotas, novaLoja, definicoes] = itensMenuCrm(ADMIN);
+  test('o Mapa abre em ecrã cheio; os Clientes, as Rotas (a lista), a Nova loja e as Definições não', () => {
+    const [mapa, clientes, rotas, novaLoja, definicoes] = itensMenuCrm(ADMIN);
     expect(ecraCheioDoCrm(mapa.caminho)).toBe(true);
+    expect(ecraCheioDoCrm(clientes.caminho)).toBe(false);
     expect(ecraCheioDoCrm(rotas.caminho)).toBe(false);
     expect(ecraCheioDoCrm(novaLoja.caminho)).toBe(false);
     expect(ecraCheioDoCrm(definicoes.caminho)).toBe(false);
@@ -490,7 +495,7 @@ describe('itensMenuCrm(eu, base)', () => {
     const primeiros = itensMenuCrm(ADMIN);
     primeiros[0].rotulo = 'Estragado';
     primeiros.pop();
-    expect(itensMenuCrm(ADMIN)).toEqual([MAPA, ROTAS, NOVA_LOJA, DEFINICOES]);
+    expect(itensMenuCrm(ADMIN)).toEqual([MAPA, CLIENTES, ROTAS, NOVA_LOJA, DEFINICOES]);
   });
 });
 
@@ -526,6 +531,10 @@ describe('o menu e as rotas das páginas (rotasCrm.js, CrmLayout.js e seccaoCrm.
     for (const { caminho } of ITENS_MENU_CRM) expect(Object.keys(rotas)).toContain(caminho);
   });
 
+  test('os Clientes abrem a lista das lojas (CrmClientes), com o seu limite', () => {
+    expect(rotasDe(lerFonte(ROTAS_CRM)).clientes).toBe("pagina('clientes', CrmClientes)");
+  });
+
   test('as Rotas abrem a lista (CrmRotas) e rotas/:data o planeador (CrmRota), cada uma com o seu limite', () => {
     const rotas = rotasDe(lerFonte(ROTAS_CRM));
     expect(rotas.rotas).toBe("pagina('rotas', CrmRotas)");
@@ -534,18 +543,22 @@ describe('o menu e as rotas das páginas (rotasCrm.js, CrmLayout.js e seccaoCrm.
 
   test('cada página preguiçosa do rotasCrm.js existe (o React.lazy só a pede ao abrir)', () => {
     const paginas = [...lerFonte(ROTAS_CRM).matchAll(/const (\w+) = lazy\(\(\) => import\('\.\/(\w+)'\)\);/g)];
-    expect(paginas.map(([, nome]) => nome)).toEqual(['CrmMapa', 'CrmLojaNova', 'CrmLoja', 'CrmDefinicoes', 'CrmRotas', 'CrmRota']);
+    expect(paginas.map(([, nome]) => nome)).toEqual([
+      'CrmMapa', 'CrmClientes', 'CrmLojaNova', 'CrmLoja', 'CrmDefinicoes', 'CrmRotas', 'CrmRota',
+    ]);
     for (const [, nome, ficheiro] of paginas) {
       expect(ficheiro).toBe(nome);
       expect(fs.existsSync(path.join(SRC, 'pages', 'crm', `${ficheiro}.js`))).toBe(true);
     }
   });
 
-  test.each(DESENHAM_O_MENU)('o %s dá um ícone a cada item, e às Rotas o Route do lucide', (relativo) => {
+  test.each(DESENHAM_O_MENU)('o %s dá um ícone a cada item, aos Clientes o Users e às Rotas o Route do lucide', (relativo) => {
     const texto = lerFonte(relativo);
     const icones = iconesDe(texto);
     expect(icones).not.toBeNull();
     expect(icones.map(([chave]) => chave)).toEqual(ITENS_MENU_CRM.map((item) => item.chave));
+    expect(Object.fromEntries(icones).clientes).toBe('Users');
+    expect(texto).toMatch(/^\s*Users,\s*$/m);
     expect(Object.fromEntries(icones).rotas).toBe('IconeRota');
     // Nunca `Route` solto: confundia-se com o `Route` do React Router.
     expect(texto).toMatch(/^\s*Route as IconeRota,/m);

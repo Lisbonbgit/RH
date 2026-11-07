@@ -3,7 +3,8 @@
 // telefone, pessoa de contacto, morada, código postal, localidade e notas. Com
 // `ficha` (a ficha da loja, T2.28), também o Instagram e o site (2026-10-13,
 // dois campos de texto a seguir à localidade), o horário de receção (duas
-// janelas, `type="time"`) e os dias fechada, antes das notas. Porta de
+// janelas, `type="time"`) e os dias fechada, antes das notas, e o bloco
+// "Consumo e marcas" (desenho de 2026-11-07, §2), depois delas. Porta de
 // public/assets/js/componentes/formulario-loja.js do CRM autónomo.
 //
 // Só desenha o estado de `lib/crm/formularioLoja.js` (com testes): os
@@ -11,27 +12,32 @@
 // `aria-describedby`), as `opcoesRegiao` e o `valorRegiao`. O que a pessoa
 // muda vai para `aoMudar(campo, valor)` (a região já como uuid ou null), a
 // fase também para `aoMudarFase(fase)` (a ficha grava-a logo) e os dias para
-// `aoAlternarDia(dia, marcado)`. Pela `ref`, `focar(campo)` (o primeiro campo
-// com erro de um 422). `dicas` ({campo: texto}, só nos campos de texto) põe uma
+// `aoAlternarDia(dia, marcado)`. A caixa "O cliente não quer revelar" e as
+// respostas aos sorbets vão para o `aoMudar`, com o booleano ou o `null`. Pela
+// `ref`, `focar(campo)` (o primeiro campo com erro de um 422). `dicas` ({campo: texto}, só nos campos de texto) põe uma
 // dica por baixo do campo, ligada a ele por `aria-describedby` antes do erro
 // (a nova loja que vem de um negócio da Google: a dica do nome, plano do mapa
 // Google, G16).
+//
+// Com a caixa marcada, o campo da marca fica vazio e desativado, sem tocar no
+// texto dos `valores`: desmarcar repõe-no. O campo "Quais?" só existe com Sim.
 //
 // Os dados entram como texto (o React escapa-os). Os campos não aceitam o
 // preenchimento automático do browser: são os dados da loja, não os de quem
 // escreve (desenho original §9).
 import React, { forwardRef, useId, useImperativeHandle, useRef } from 'react';
+import { TriangleAlert } from 'lucide-react';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Textarea } from '../ui/textarea';
 import {
-  CAMPOS, DIAS, ROTULO_DIAS, ROTULO_FASE, ROTULO_HORARIO, TEXTO_SEM_HORARIO, camposJanelas, opcoesFase,
-  regiaoDoSeletor,
+  CAMPOS, CLASSE_PASTILHA, DIAS, OPCOES_OUTROS_SORBETS, ROTULO_CONSUMO_MARCAS, ROTULO_DIAS, ROTULO_FASE,
+  ROTULO_HORARIO, ROTULO_MARCA_NAO_REVELA, ROTULO_OUTROS_SORBETS, TEXTO_AVISO_MARCA, TEXTO_SEM_HORARIO, camposJanelas,
+  opcoesFase, regiaoDoSeletor,
 } from '../../lib/crm/formularioLoja';
 import './crm.css';
 
-const CLASSE_PASTILHA = 'inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-full border bg-background py-2 pl-2.5 pr-3.5 text-sm font-semibold transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/10 has-[:checked]:text-primary has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring';
 const CLASSE_ERRO = 'text-sm font-medium text-destructive [overflow-wrap:anywhere]';
 // O campo com erro fica com a borda a vermelho (além da mensagem por baixo).
 const CLASSE_INVALIDO = 'aria-[invalid=true]:border-destructive';
@@ -71,11 +77,14 @@ const FormularioLoja = forwardRef(function FormularioLoja({
         (nos.current[`fase-${valores.fase}`] ?? nos.current[`fase-${opcoesFase()[0].valor}`])?.focus();
       } else if (campo === 'dias_fechada') {
         nos.current[`dia-${DIAS[0].valor}`]?.focus();
+      } else if (campo === 'outros_sorbets') {
+        const escolhida = OPCOES_OUTROS_SORBETS.find((opcao) => opcao.valor === valores.outros_sorbets);
+        nos.current[`sorbets-${(escolhida ?? OPCOES_OUTROS_SORBETS[0]).chave}`]?.focus();
       } else {
         nos.current[campo]?.focus();
       }
     },
-  }), [valores.fase]);
+  }), [valores.fase, valores.outros_sorbets]);
 
   // Os atributos de erro de um campo: o erro por baixo, ligado a ele para o leitor de ecrã o ler com o campo.
   const comErro = (campo) => (erros[campo]
@@ -91,9 +100,13 @@ const FormularioLoja = forwardRef(function FormularioLoja({
     return typeof texto === 'string' && texto !== '' ? texto : null;
   };
 
+  const marcaPorRevelar = valores.marca_nao_revela === true;
+
   function campoTexto(campo) {
     const def = CAMPOS[campo];
     const textoDica = dica(campo);
+    // A marca por revelar: vazio e desativado à vista, com o texto guardado nos `valores`.
+    const bloqueado = campo === 'marca_atual' && marcaPorRevelar;
     // O leitor de ecrã lê a dica e depois o erro, se houver.
     const descricao = [textoDica !== null ? idDica(campo) : null, erros[campo] ? idErro(campo) : null]
       .filter((valor) => valor !== null)
@@ -102,11 +115,11 @@ const FormularioLoja = forwardRef(function FormularioLoja({
       id: id(campo),
       name: campo,
       ref: guardarNo(campo),
-      value: valores[campo] ?? '',
+      value: bloqueado ? '' : valores[campo] ?? '',
       onChange: (evento) => aoMudar?.(campo, evento.target.value),
       autoComplete: def.autoComplete,
       maxLength: def.maxLength,
-      disabled: desativado,
+      disabled: desativado || bloqueado,
       'data-testid': `crm-campo-${campo}`,
       ...comErro(campo),
       'aria-describedby': descricao === '' ? undefined : descricao,
@@ -250,6 +263,67 @@ const FormularioLoja = forwardRef(function FormularioLoja({
     </fieldset>
   );
 
+  const blocoConsumo = ficha && (
+    <section aria-labelledby={`${base}-consumo`} className="space-y-4 border-t pt-5" data-testid="crm-bloco-consumo">
+      <h2 id={`${base}-consumo`} className="font-heading text-lg font-semibold">{ROTULO_CONSUMO_MARCAS}</h2>
+      {campoTexto('consumo_semanal')}
+      {campoTexto('marca_atual')}
+      <div className="space-y-2">
+        <label htmlFor={id('marca_nao_revela')} className={CLASSE_PASTILHA}>
+          <input
+            type="checkbox"
+            id={id('marca_nao_revela')}
+            name="marca_nao_revela"
+            ref={guardarNo('marca_nao_revela')}
+            checked={marcaPorRevelar}
+            disabled={desativado}
+            onChange={(evento) => aoMudar?.('marca_nao_revela', evento.target.checked)}
+            className="h-[18px] w-[18px] shrink-0 accent-primary"
+            data-testid="crm-campo-marca_nao_revela"
+            {...comErro('marca_nao_revela')}
+          />
+          {ROTULO_MARCA_NAO_REVELA}
+        </label>
+        {/* Sempre na página (mesmo vazio), para os leitores de ecrã lerem o que lá aparecer. */}
+        <div aria-live="polite">
+          {marcaPorRevelar && (
+            <p
+              className="flex items-center gap-2 rounded-lg border border-warning bg-warning/10 px-3 py-2 text-sm font-semibold text-warning-strong"
+              data-testid="crm-aviso-marca"
+            >
+              <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
+              {TEXTO_AVISO_MARCA}
+            </p>
+          )}
+        </div>
+        {erro('marca_nao_revela')}
+      </div>
+      <fieldset className="m-0 min-w-0 space-y-2 border-0 p-0" {...comErro('outros_sorbets')} data-testid="crm-campo-outros_sorbets">
+        <legend className="mb-1.5 p-0 text-sm font-medium">{ROTULO_OUTROS_SORBETS}</legend>
+        <div className="flex flex-wrap gap-2">
+          {OPCOES_OUTROS_SORBETS.map(({ chave, valor, rotulo }) => (
+            <label key={chave} htmlFor={`${id('outros_sorbets')}-${chave}`} className={CLASSE_PASTILHA}>
+              <input
+                type="radio"
+                id={`${id('outros_sorbets')}-${chave}`}
+                name={`${base}-outros-sorbets`}
+                value={chave}
+                ref={guardarNo(`sorbets-${chave}`)}
+                checked={valores.outros_sorbets === valor}
+                disabled={desativado}
+                onChange={() => aoMudar?.('outros_sorbets', valor)}
+                className="h-[18px] w-[18px] shrink-0 accent-primary"
+              />
+              {rotulo}
+            </label>
+          ))}
+        </div>
+        {erro('outros_sorbets')}
+      </fieldset>
+      {valores.outros_sorbets === true && campoTexto('outros_sorbets_quais')}
+    </section>
+  );
+
   return (
     <div className="space-y-4" data-testid="crm-formulario-loja">
       {campoTexto('nome')}
@@ -260,6 +334,7 @@ const FormularioLoja = forwardRef(function FormularioLoja({
       {campoHorario}
       {campoDias}
       {campoTexto('notas')}
+      {blocoConsumo}
     </div>
   );
 });

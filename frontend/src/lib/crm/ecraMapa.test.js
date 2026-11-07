@@ -19,7 +19,10 @@
  *   - os ids são uuid em texto;
  *   - o cartão mostra o contacto em texto (`contactoDaLoja`: pessoa · telefone,
  *     só o que existe) em vez do botão Ligar, que saiu em 2026-10-13 a pedido
- *     do Bruce.
+ *     do Bruce;
+ *   - o cartão e a lista de clientes mostram o último contacto
+ *     (`linhaUltimoContacto`: "Último contacto: 5 nov 2026" ou "Ainda sem
+ *     contactos"), lido do `ultimo_contacto` do resumo.
  *
  * O mapa passa a Google (plano do mapa Google, G15; adenda §1.1 e §6.3):
  *   - tocar no ícone de um negócio abre o balão da própria Google e o painel
@@ -39,12 +42,15 @@ import { filtrosPadrao } from './filtros';
 import { BASE_CRM, BASE_CRM_ADMIN } from './acesso';
 import {
   PARAMETRO_LOJA,
+  ROTULO_ULTIMO_CONTACTO,
   SEPARADOR_CONTACTO,
   TEXTO_ESCONDIDA_PELOS_FILTROS,
+  TEXTO_SEM_CONTACTOS,
   configuracaoDoMapa,
   contactoDaLoja,
   destinoNovaLojaDoNegocio,
   lerAviso,
+  linhaUltimoContacto,
   lojaComId,
   mensagemSemMapa,
   negocioDoToque,
@@ -63,15 +69,21 @@ const QUIOSQUE = '0b6f3c1e-3333-4222-8333-444455556666';
 const TRES_LOJAS = [
   {
     id: MERCEARIA, nome: 'Mercearia da Baixa', fase: 'cliente', regiao_id: LISBOA, lat: 38.7108, lng: -9.1369,
-    telefone: '+351 912 345 678', pessoa_contacto: 'D. Amélia',
+    telefone: '+351 912 345 678', pessoa_contacto: 'D. Amélia', localidade: 'Lisboa',
+    consumo_semanal: '2 baldes grandes', marca_atual: 'Marca Exemplo', marca_nao_revela: false,
+    ultimo_contacto: '2026-11-05',
   },
   {
     id: CAFE, nome: 'Café Fechado', fase: 'perdida', regiao_id: LISBOA, lat: 38.7135, lng: -9.1458,
-    telefone: null, pessoa_contacto: null,
+    telefone: null, pessoa_contacto: null, localidade: null,
+    consumo_semanal: null, marca_atual: null, marca_nao_revela: true,
+    ultimo_contacto: null,
   },
   {
     id: QUIOSQUE, nome: 'Quiosque Novo', fase: 'potencial', regiao_id: null, lat: 38.74, lng: -9.16,
-    telefone: null, pessoa_contacto: null,
+    telefone: null, pessoa_contacto: null, localidade: null,
+    consumo_semanal: null, marca_atual: null, marca_nao_revela: false,
+    ultimo_contacto: null,
   },
 ];
 
@@ -205,6 +217,30 @@ describe('vistaAoCarregar (a vista quando o pedido das lojas termina)', () => {
     vistaAoCarregar({ lojas, filtros, idLoja: CAFE });
     expect(lojas).toEqual(TRES_LOJAS);
     expect([...filtros.fases]).toEqual(['cliente']);
+  });
+});
+
+describe('linhaUltimoContacto (a linha do cartão do mapa e da lista de clientes)', () => {
+  test('os textos do desenho', () => {
+    expect(ROTULO_ULTIMO_CONTACTO).toBe('Último contacto:');
+    expect(TEXTO_SEM_CONTACTOS).toBe('Ainda sem contactos');
+  });
+
+  test('com um último contacto: o rótulo e a data curta', () => {
+    expect(linhaUltimoContacto(TRES_LOJAS[0])).toEqual({ rotulo: 'Último contacto:', texto: '5 nov 2026' });
+  });
+
+  test('sem contactos: só a frase, sem rótulo', () => {
+    expect(linhaUltimoContacto(TRES_LOJAS[1])).toEqual({ rotulo: null, texto: 'Ainda sem contactos' });
+  });
+
+  test('uma data estragada ou uma loja que não é objeto contam como sem contactos', () => {
+    for (const ultimo of ['2026-13-01', '', 7, undefined]) {
+      expect(linhaUltimoContacto({ ultimo_contacto: ultimo })).toEqual({ rotulo: null, texto: 'Ainda sem contactos' });
+    }
+    for (const loja of [null, undefined, 'x', 3]) {
+      expect(linhaUltimoContacto(loja)).toEqual({ rotulo: null, texto: 'Ainda sem contactos' });
+    }
   });
 });
 

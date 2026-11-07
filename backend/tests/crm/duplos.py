@@ -25,6 +25,9 @@ tests/faturacao/test_fiscal.py. O que se copia do Motor, de propósito:
   se estica (índice para lá do fim → NotImplementedError). Dois caminhos em
   que um é prefixo do outro (`$push paragens` + `$set paragens.0.x`) dão o
   erro 40 do Mongo antes de procurar o documento.
+- **`$max`** (contactos, 2026-11-07): os instantes em texto ordenam como texto,
+  e `null` ou o campo em falta ficam abaixo de qualquer texto. As outras
+  misturas de tipos rebentam: a ordem do BSON entre tipos não está modelada.
 - **`antes_de(operacao, funcao)`** corre `funcao(docs)` antes da operação:
   simula a escrita concorrente do motorista (F4) entre a leitura e a escrita
   do escritório.
@@ -61,7 +64,7 @@ OPERACOES = (
     "create_index",
 )
 
-_OPERADORES_DE_ATUALIZACAO = ("$set", "$setOnInsert", "$inc", "$push")
+_OPERADORES_DE_ATUALIZACAO = ("$set", "$setOnInsert", "$inc", "$push", "$max")
 
 # $gt/$gte/$lt/$lte: só entre números (sem booleanos) ou entre textos.
 _COMPARACOES = {"$gt": operator.gt, "$gte": operator.ge, "$lt": operator.lt, "$lte": operator.le}
@@ -549,7 +552,7 @@ class ColeccaoFalsa:
         return opcoes.get("name") or "_".join("%s_%s" % (c, d) for c, d in chaves)
 
 
-# --- Atualizações ($set, $setOnInsert, $inc, $push) --------------------------------
+# --- Atualizações ($set, $setOnInsert, $inc, $push, $max) --------------------------
 
 
 def _validar_atualizacao(atualizacao):
@@ -661,6 +664,17 @@ def _ler_para_escrever(doc, caminho):
     return contentor[chave]
 
 
+def _maior(atual, valor, caminho):
+    """O que fica no campo depois do `$max`: o maior entre textos ou entre
+    números; um texto ganha a `null` e ao campo em falta. Fora disto entrava
+    a ordem do BSON entre tipos, que o duplo não modela."""
+    if isinstance(valor, str) and (atual is _EM_FALTA or atual is None):
+        return valor
+    if (isinstance(atual, str) and isinstance(valor, str)) or (_numero(atual) and _numero(valor)):
+        return max(atual, valor)
+    raise NotImplementedError("o duplo não mistura tipos no $max: %s (%r e %r)" % (caminho, atual, valor))
+
+
 def _aplicar_atualizacao(doc, atualizacao, *, ao_criar=False):
     """Aplica os operadores a `doc` (já uma cópia de quem chama). O
     `$setOnInsert` só ao criar (upsert). Como os caminhos nunca estão em
@@ -694,6 +708,8 @@ def _aplicar_atualizacao(doc, atualizacao, *, ao_criar=False):
             )
         else:
             atual.append(deepcopy(valor))
+    for caminho, valor in atualizacao.get("$max", {}).items():
+        _escrever(doc, caminho, _maior(_ler_para_escrever(doc, caminho), valor, caminho))
 
 
 class BaseFalsa:
