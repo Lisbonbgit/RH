@@ -27,6 +27,10 @@ módulo, e os testes param-no com
 O "hoje" (F3: o dia de cada rota, o fecho simples e o limite de um ano) é o
 dia em Lisboa (`FUSO_LISBOA`), venha o processo com o fuso que vier. É uma
 `date`; o texto `AAAA-MM-DD` escreve-se e lê-se em `crm.dominio.datas`.
+
+Os contactos (2026-11-07) precisam do caminho contrário: `dia_lisboa` lê o dia
+de Lisboa de um instante gravado (nunca um corte do texto, que dava o dia de
+UTC) e `meio_dia_lisboa` dá o instante das 12:00 de Lisboa de um dia.
 """
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -38,6 +42,8 @@ FUSO_LISBOA = ZoneInfo("Europe/Lisbon")
 # O carimbo exato, só com algarismos ASCII ([0-9], nunca \d) e sem nada antes
 # nem depois (fullmatch: o `$` aceitava um "\n" final).
 _CARIMBO = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})\.([0-9]{6})Z")
+# O instante gravado, com as mesmas regras.
+_INSTANTE = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z")
 
 _UM_MICROSSEGUNDO = timedelta(microseconds=1)
 
@@ -80,6 +86,29 @@ def instante(momento: "datetime | None" = None) -> str:
     """
     u = _em_utc(momento)
     return f"{u.year:04d}-{u.month:02d}-{u.day:02d}T{u.hour:02d}:{u.minute:02d}:{u.second:02d}Z"
+
+
+def dia_lisboa(valor: str) -> date:
+    """O dia em Lisboa do instante gravado `valor` (`AAAA-MM-DDTHH:MM:SSZ`, o
+    texto de `instante()`). Às 23:30Z do verão já é o dia seguinte: nunca se
+    corta o texto, que dava o dia de UTC.
+
+    O que não for exatamente esse texto, com um dia e uma hora que existam, é
+    ValueError: um documento estragado à mão é um 500, nunca outro dia.
+    """
+    partes = _INSTANTE.fullmatch(valor) if isinstance(valor, str) else None
+    if partes is None:
+        raise ValueError("o instante não é AAAA-MM-DDTHH:MM:SSZ")
+    try:
+        return datetime(*(int(p) for p in partes.groups()), tzinfo=timezone.utc).astimezone(FUSO_LISBOA).date()
+    except OverflowError:  # no primeiro dia que existe, Lisboa ainda é o ano anterior
+        raise ValueError("o instante está fora do calendário") from None
+
+
+def meio_dia_lisboa(dia: date) -> str:
+    """O instante das 12:00 de Lisboa de `dia`, como o `instante()` o grava:
+    longe das mudanças de hora, que são de noite, e sempre no próprio dia."""
+    return instante(datetime(dia.year, dia.month, dia.day, 12, tzinfo=FUSO_LISBOA))
 
 
 def carimbo(momento: "datetime | None" = None) -> str:
