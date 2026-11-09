@@ -11,11 +11,12 @@ Uso (a partir de backend/):
   (directConnection: não segue para os outros membros de um conjunto de réplicas).
 - Contas (T0.7): 4 contas "(demo)" @example.com e 3 membros do CRM. O que já existe fica
   como está; sem --repor as palavras-passe nunca mudam.
-- Regiões e lojas (T2.18): as 4 regiões e as 24 lojas "(demo)" do src/Cli/DadosDemo.php do
-  CRM autónomo (nomes inventados, telefones +351 000 que não ligam a ninguém, as 5 fases, 2
-  lojas sem região, todas a mais de 200 m umas das outras; desde 2026-10-13, 2 com um
-  Instagram de demonstração — perfis com "demo" no nome — e 1 com um site num domínio
-  example.com, reservado pela RFC 2606: nada disto aponta para ninguém). Construídas com o
+- Regiões e lojas (T2.18): as 4 regiões e as 25 lojas "(demo)": as 24 do src/Cli/DadosDemo.php
+  do CRM autónomo mais uma na fase fecho, desde 2026-11-09 (nomes inventados, telefones +351 000
+  que não ligam a ninguém, as 6 fases, 2 lojas sem região, todas a mais de 200 m umas das
+  outras; desde 2026-10-13, 2 com um Instagram de demonstração — perfis com "demo" no nome — e
+  1 com um site num domínio example.com, reservado pela RFC 2606: nada disto aponta para
+  ninguém). Construídas com o
   `formatar.documento_loja` (a forma que o POST /lojas grava), com o início da fase recuado
   pelos dias na fase de cada uma. Recusa se a base já tiver lojas ou regiões — antes de
   qualquer escrita, também das contas.
@@ -99,7 +100,7 @@ _CONTAS_DEMO = (
 
 
 # As regiões e as lojas do src/Cli/DadosDemo.php do CRM autónomo (nomes e coordenadas
-# inventados, aproximados, em Portugal continental).
+# inventados, aproximados, em Portugal continental), mais a loja da fase fecho (2026-11-09).
 
 # Nome da região e ordem nas listas.
 REGIOES_DEMO = (("Lisboa", 1), ("Porto", 2), ("Setúbal", 3), ("Algarve", 4))
@@ -143,6 +144,11 @@ _LOJAS_DEMO = (
         "notas": "Não tem arca congeladora.",
     }),
     ("Snack-bar de Belém", "potencial", "Lisboa", "Lisboa", 38.697200, -9.206300, 1),
+    # A loja em "A aguardar fecho" (2026-11-09; não existia no autónomo): a amostra foi aprovada e
+    # falta acertar as condições de pagamento e as entregas.
+    ("Café de Campo de Ourique", "fecho", "Lisboa", "Lisboa", 38.717300, -9.166800, 6, {
+        "pessoa_contacto": "Marta", "notas": "Amostra aprovada; a acertar o pagamento e o dia das entregas.",
+    }),
 
     ("Mercearia dos Aliados", "cliente", "Porto", "Porto", 41.145600, -8.611000, 90, {
         "telefone": "+351 000 000 004", "pessoa_contacto": "Joana",
@@ -314,9 +320,9 @@ def regioes_demo() -> list:
 
 
 def dados_lojas_demo() -> list:
-    """As 24 lojas do DadosDemo::lojas(), numa lista nova em cada chamada: os campos da API
-    (`dias_fechada` em lista, as janelas planas; sem morada nem código postal), mais a
-    `regiao` (nome ou None) e os `dias_na_fase`."""
+    """As 25 lojas (as 24 do DadosDemo::lojas() mais a da fase fecho), numa lista nova em cada
+    chamada: os campos da API (`dias_fechada` em lista, as janelas planas; sem morada nem
+    código postal), mais a `regiao` (nome ou None) e os `dias_na_fase`."""
     lojas = []
     for nome, fase, regiao, localidade, lat, lng, dias, *resto in _LOJAS_DEMO:
         opcionais = {**_PADROES, **(resto[0] if resto else {})}
@@ -346,7 +352,7 @@ def dados_lojas_demo() -> list:
 
 
 def lojas_demo(regioes, agora) -> list:
-    """As 24 lojas como ficam em `crm_lojas`, com os ids das `regioes` (as do
+    """As 25 lojas como ficam em `crm_lojas`, com os ids das `regioes` (as do
     `regioes_demo`, pelo nome).
 
     Cada uma passa pelo `validador_loja.criacao` (uma loja inválida é ValueError, antes de
@@ -491,7 +497,7 @@ def escrever_credenciais(caminho, novas: dict) -> None:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        description="Seed local do CRM: contas de demonstração, 4 regiões e 24 lojas de demonstração.",
+        description="Seed local do CRM: contas de demonstração, 4 regiões e 25 lojas de demonstração.",
     )
     parser.add_argument("--env-file", required=True, help="ficheiro de ambiente local (ex.: .env.local)")
     parser.add_argument("--repor", action="store_true",

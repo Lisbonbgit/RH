@@ -353,7 +353,7 @@ def test_cli_le_o_ficheiro_sem_mexer_no_ambiente_do_processo(tmp_path, monkeypat
     assert base["users"].count_documents({}) == 4
     assert base["crm_membros"].count_documents({}) == 3
     assert base["crm_regioes"].count_documents({}) == 4
-    assert base["crm_lojas"].count_documents({}) == 24
+    assert base["crm_lojas"].count_documents({}) == 25
 
     # Escreve as palavras-passe só no ficheiro (modo 600) e só mostra o caminho.
     assert stat.S_IMODE(credenciais.stat().st_mode) == 0o600
@@ -542,20 +542,21 @@ def test_palavra_passe_gerada_tem_16_letras_ou_algarismos():
 
 # ================================================================ regiões e lojas de demonstração (T2.18)
 
-CRIADAS = "Criadas: 4 regiões e 24 lojas de demonstração."
+CRIADAS = "Criadas: 4 regiões e 25 lojas de demonstração."
 USE_REPOR = " Use --repor para apagar todas as lojas e regiões e criar os dados de demonstração de novo."
 NADA_MUDOU = "Erro: os dados de demonstração não foram criados (nada mudou): "
 A_MEIO = (
     "Erro: os dados de demonstração não foram criados e não foi possível repor o que havia; "
     "a base pode ter ficado a meio. Corra o seed de novo com --repor. Causa: "
 )
-FASES = ["amostra", "cliente", "contactada", "perdida", "potencial"]
+FASES = ["amostra", "cliente", "contactada", "fecho", "perdida", "potencial"]
 LOJAS = COLECOES["lojas"]
 REGIOES = COLECOES["regioes"]
 INTERACOES = COLECOES["interacoes"]
 
-# As 24 lojas do src/Cli/DadosDemo.php, pela ordem: nome, fase, região, localidade, lat, lng, dias na fase.
-LOJAS_DO_AUTONOMO = [
+# As 25 lojas, pela ordem: nome, fase, região, localidade, lat, lng, dias na fase. São as 24 do
+# src/Cli/DadosDemo.php do autónomo mais a da fase fecho (2026-11-09), em Lisboa.
+LOJAS_DEMO = [
     ("Mercearia da Baixa (demo)", "cliente", "Lisboa", "Lisboa", 38.710800, -9.136900, 120),
     ("Café do Bairro Alto (demo)", "amostra", "Lisboa", "Lisboa", 38.713500, -9.145800, 5),
     ("Gelataria do Rato (demo)", "contactada", "Lisboa", "Lisboa", 38.722400, -9.145200, 12),
@@ -563,6 +564,7 @@ LOJAS_DO_AUTONOMO = [
     ("Minimercado Entrecampos (demo)", "potencial", "Lisboa", "Lisboa", 38.746500, -9.147900, 2),
     ("Quiosque de Alfama (demo)", "perdida", "Lisboa", "Lisboa", 38.711900, -9.130100, 45),
     ("Snack-bar de Belém (demo)", "potencial", "Lisboa", "Lisboa", 38.697200, -9.206300, 1),
+    ("Café de Campo de Ourique (demo)", "fecho", "Lisboa", "Lisboa", 38.717300, -9.166800, 6),
     ("Mercearia dos Aliados (demo)", "cliente", "Porto", "Porto", 41.145600, -8.611000, 90),
     ("Café da Ribeira (demo)", "contactada", "Porto", "Porto", 41.142200, -8.614500, 20),
     ("Gelataria da Boavista (demo)", "amostra", "Porto", "Porto", 41.157800, -8.629600, 9),
@@ -582,9 +584,9 @@ LOJAS_DO_AUTONOMO = [
     ("Mercearia do Giraldo (demo)", "potencial", None, "Évora", 38.571500, -7.909300, 30),
 ]
 
-# Os campos opcionais das lojas que os têm, como no DadosDemo.php: origem, precisão, telefone,
-# pessoa de contacto, notas, as quatro horas das janelas e os dias fechada. As outras ficam com os padrões.
-OPCIONAIS_DO_AUTONOMO = {
+# Os campos opcionais das lojas que os têm, como no DadosDemo.php (e os da loja em fecho): origem, precisão,
+# telefone, pessoa de contacto, notas, as quatro horas das janelas e os dias fechada. As outras ficam com os padrões.
+OPCIONAIS_DEMO = {
     "Mercearia da Baixa (demo)": (
         "pin_manual", None, "+351 000 000 001", "Ana",
         "Encomenda todas as semanas. Descarga pela porta lateral.", "09:00", "12:00", "14:30",
@@ -599,6 +601,10 @@ OPCIONAIS_DO_AUTONOMO = {
     ),
     "Quiosque de Alfama (demo)": (
         "pin_manual", None, None, None, "Não tem arca congeladora.", None, None, None, None, [],
+    ),
+    "Café de Campo de Ourique (demo)": (
+        "pin_manual", None, None, "Marta", "Amostra aprovada; a acertar o pagamento e o dia das entregas.",
+        None, None, None, None, [],
     ),
     "Mercearia dos Aliados (demo)": (
         "pin_manual", None, "+351 000 000 004", "Joana", None, "09:00", "12:30", None, None,
@@ -699,32 +705,42 @@ def test_cada_chamada_da_regioes_demo_tem_ids_novos():
     assert primeiras.isdisjoint(segundas)
 
 
-def test_os_dados_das_lojas_sao_os_24_do_autonomo():
+def test_os_dados_das_lojas_sao_os_24_do_autonomo_mais_a_da_fase_fecho():
     dados = seed_crm_local.dados_lojas_demo()
 
     assert [
         (d["nome"], d["fase"], d["regiao"], d["localidade"], d["lat"], d["lng"], d["dias_na_fase"])
         for d in dados
-    ] == LOJAS_DO_AUTONOMO
+    ] == LOJAS_DEMO
 
 
-def test_cria_24_lojas_com_demo_no_nome():
+def test_cria_25_lojas_com_demo_no_nome():
     _regioes, lojas = _demo()
     nomes = [loja["nome"] for loja in lojas]
 
-    assert len(nomes) == 24
-    assert len(set(nomes)) == 24, "Os nomes não se repetem."
+    assert len(nomes) == 25
+    assert len(set(nomes)) == 25, "Os nomes não se repetem."
     for nome in nomes:
         assert re.fullmatch(r".*\S \(demo\)", nome), nome
 
 
-def test_estao_presentes_as_cinco_fases():
+def test_estao_presentes_as_seis_fases():
     _regioes, lojas = _demo()
 
     assert sorted({loja["fase"] for loja in lojas}) == FASES
     assert Counter(loja["fase"] for loja in lojas) == {
-        "potencial": 7, "cliente": 6, "contactada": 5, "amostra": 4, "perdida": 2,
+        "potencial": 7, "cliente": 6, "contactada": 5, "amostra": 4, "perdida": 2, "fecho": 1,
     }
+
+
+def test_a_loja_em_fecho_tem_alguns_dias_na_fase_e_fica_em_lisboa():
+    # 2026-11-09: a única em "A aguardar fecho", para o pino verde se ver no mapa local.
+    _regioes, lojas = _demo()
+    [loja] = [loja for loja in lojas if loja["fase"] == "fecho"]
+
+    assert loja["nome"] == "Café de Campo de Ourique (demo)"
+    assert loja["localidade"] == "Lisboa"
+    assert loja["fase_desde"] == _instante_dias_antes(AGORA, 6)
 
 
 def test_as_coordenadas_ficam_em_portugal_continental():
@@ -746,7 +762,7 @@ def test_duas_lojas_ficam_sem_regiao_e_todas_as_regioes_tem_lojas():
     assert {loja["regiao_id"] for loja in lojas} - {None} == set(ids.values())
     por_regiao = Counter(loja["regiao_id"] for loja in lojas)
     assert {nome: por_regiao[regiao_id] for nome, regiao_id in ids.items()} == {
-        "Lisboa": 7, "Porto": 6, "Setúbal": 4, "Algarve": 5,
+        "Lisboa": 8, "Porto": 6, "Setúbal": 4, "Algarve": 5,
     }
 
 
@@ -868,12 +884,12 @@ def test_a_primeira_loja_por_inteiro():
     }
 
 
-def test_os_campos_opcionais_sao_os_do_autonomo():
+def test_os_campos_opcionais_sao_os_do_autonomo_e_os_da_loja_em_fecho():
     _regioes, lojas = _demo()
     padroes = ("pin_manual", None, None, None, None, None, None, None, None, [])
 
     for dados, loja in zip(seed_crm_local.dados_lojas_demo(), lojas):
-        esperados = OPCIONAIS_DO_AUTONOMO.get(dados["nome"], padroes)
+        esperados = OPCIONAIS_DEMO.get(dados["nome"], padroes)
         assert tuple(dados[c] for c in (
             "origem_coords", "precisao_m", "telefone", "pessoa_contacto", "notas",
             "janela1_inicio", "janela1_fim", "janela2_inicio", "janela2_fim", "dias_fechada",
@@ -884,7 +900,7 @@ def test_os_campos_opcionais_sao_os_do_autonomo():
         ]
         assert (loja["origem_coords"], loja["precisao_m"], loja["telefone"], loja["pessoa_contacto"],
                 loja["notas"], loja["janelas"], loja["dias_fechada"]) == (*esperados[:5], janelas, esperados[9])
-    assert len(OPCIONAIS_DO_AUTONOMO) == 14
+    assert len(OPCIONAIS_DEMO) == 15
 
 
 def test_duas_lojas_tem_instagram_e_site_de_demonstracao_e_as_outras_nao():
@@ -986,7 +1002,7 @@ def test_quantas_regioes():
     assert seed_crm_local.quantas(5, "região", "regiões") == "5 regiões"
 
 
-def test_cria_as_quatro_regioes_e_as_24_lojas():
+def test_cria_as_quatro_regioes_e_as_25_lojas():
     db = BaseFalsa()
 
     linhas = seed_crm_local.aplicar_lojas(db, AGORA)
@@ -995,10 +1011,10 @@ def test_cria_as_quatro_regioes_e_as_24_lojas():
     assert [(r["nome"], r["ordem"]) for r in db[REGIOES].docs] == [
         ("Lisboa", 1), ("Porto", 2), ("Setúbal", 3), ("Algarve", 4),
     ]
-    assert [loja["nome"] for loja in db[LOJAS].docs] == [linha[0] for linha in LOJAS_DO_AUTONOMO]
+    assert [loja["nome"] for loja in db[LOJAS].docs] == [linha[0] for linha in LOJAS_DEMO]
     ids = _ids_das_regioes(db[REGIOES].docs)
     assert [loja["regiao_id"] for loja in db[LOJAS].docs] == [
-        ids.get(linha[2]) for linha in LOJAS_DO_AUTONOMO
+        ids.get(linha[2]) for linha in LOJAS_DEMO
     ]
     # Não cria interações; as regiões primeiro, porque as lojas apontam para elas.
     assert db.registo == [(REGIOES, "insert_many"), (LOJAS, "insert_many")]
@@ -1041,7 +1057,7 @@ def test_a_segunda_vez_sem_repor_recusa_e_nao_duplica():
     with pytest.raises(SystemExit) as recusa:
         seed_crm_local.aplicar_lojas(db, AGORA)
 
-    assert recusa.value.code == "Recusado: a base de dados já tem 24 lojas e 4 regiões." + USE_REPOR
+    assert recusa.value.code == "Recusado: a base de dados já tem 25 lojas e 4 regiões." + USE_REPOR
     assert _estado(db) == antes
 
 
@@ -1060,8 +1076,8 @@ def test_repor_apaga_todas_as_lojas_regioes_e_interacoes_e_cria_de_novo():
 
     linhas = seed_crm_local.aplicar_lojas(db, AGORA, repor=True)
 
-    assert linhas == ["Apagadas: 25 lojas e 5 regiões.", CRIADAS]
-    assert len(db[LOJAS].docs) == 24
+    assert linhas == ["Apagadas: 26 lojas e 5 regiões.", CRIADAS]
+    assert len(db[LOJAS].docs) == 25
     assert [loja for loja in db[LOJAS].docs if loja["nome"] == "Loja verdadeira"] == []
     assert ids_antes.isdisjoint(loja["id"] for loja in db[LOJAS].docs)
     assert sorted(r["nome"] for r in db[REGIOES].docs) == ["Algarve", "Lisboa", "Porto", "Setúbal"]
@@ -1091,7 +1107,7 @@ def test_repor_numa_base_vazia_so_cria():
     linhas = seed_crm_local.aplicar_lojas(db, AGORA, repor=True)
 
     assert linhas == ["Apagadas: 0 lojas e 0 regiões.", CRIADAS]
-    assert len(db[LOJAS].docs) == 24 and len(db[REGIOES].docs) == 4
+    assert len(db[LOJAS].docs) == 25 and len(db[REGIOES].docs) == 4
 
 
 @pytest.mark.parametrize(
@@ -1201,10 +1217,10 @@ def test_cli_repor_gera_palavras_passe_novas_e_repoe_as_lojas(tmp_path, monkeypa
     assert saida == 0
     assert capsys.readouterr().out.splitlines() == [
         f"Palavras-passe das contas de demonstração (4 novas): {credenciais}",
-        "Apagadas: 24 lojas e 4 regiões.",
+        "Apagadas: 25 lojas e 4 regiões.",
         CRIADAS,
     ]
-    assert len(base[LOJAS].docs) == 24 and len(base[REGIOES].docs) == 4
+    assert len(base[LOJAS].docs) == 25 and len(base[REGIOES].docs) == 4
     assert regioes_antes.isdisjoint(r["id"] for r in base[REGIOES].docs)
     for email, palavra in seed_crm_local.ler_credenciais(credenciais).items():
         assert _confere(palavra, _conta(base, email)["password"])
@@ -1235,5 +1251,5 @@ def test_cli_a_ajuda_diz_o_que_o_repor_apaga(capsys):
 
     assert saida.value.code == 0
     texto = " ".join(capsys.readouterr().out.split())
-    assert "4 regiões e 24 lojas de demonstração" in texto
+    assert "4 regiões e 25 lojas de demonstração" in texto
     assert "apaga todas as lojas, regiões e interações do CRM (só na base *_local)" in texto
