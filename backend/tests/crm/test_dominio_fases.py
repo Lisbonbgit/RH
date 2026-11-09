@@ -1,8 +1,10 @@
-"""As cinco fases do funil e a ordem das regras automáticas
+"""As seis fases do funil e a ordem das regras automáticas
 (crm/dominio/fases.py).
 
 Porta de src/Dominio/Fases.php, com todos os casos do
-tests/Unit/Dominio/FasesTest.php do CRM autónomo (mesmos nomes nos `ids`).
+tests/Unit/Dominio/FasesTest.php do CRM autónomo (mesmos nomes nos `ids`),
+mais a `fecho` ("A aguardar fecho"), que entrou entre `amostra` e `cliente`
+em 2026-11-09, a pedido do dono (não existia no autónomo).
 Só valem os nomes exatos da ORDEM: o `in_array(…, true)` do PHP passa a
 `isinstance(x, str) and x in ORDEM` (dossiê §2.1 e §5.1).
 
@@ -15,7 +17,13 @@ from crm.dominio.fases import ORDEM, fase_valida
 
 
 def test_a_ordem_vai_de_perdida_a_cliente():
-    assert ORDEM == ("perdida", "potencial", "contactada", "amostra", "cliente")
+    assert ORDEM == ("perdida", "potencial", "contactada", "amostra", "fecho", "cliente")
+
+
+def test_a_fecho_fica_entre_a_amostra_e_o_cliente():
+    # Desenho de 2026-11-09: "Entregue → cliente" sobe por cima da fecho, e
+    # "Amostra deixada → amostra" não desce uma loja em fecho (só se sobe).
+    assert ORDEM.index("amostra") < ORDEM.index("fecho") < ORDEM.index("cliente")
 
 
 def test_a_ordem_nao_se_altera_por_engano():
@@ -26,8 +34,8 @@ def test_a_ordem_nao_se_altera_por_engano():
 
 @pytest.mark.parametrize(
     "fase",
-    ["perdida", "potencial", "contactada", "amostra", "cliente"],
-    ids=["perdida", "potencial", "contactada", "amostra", "cliente"],
+    ["perdida", "potencial", "contactada", "amostra", "fecho", "cliente"],
+    ids=["perdida", "potencial", "contactada", "amostra", "fecho", "cliente"],
 )
 def test_cada_fase_da_ordem_e_valida(fase):
     assert fase_valida(fase) is True
@@ -35,8 +43,9 @@ def test_cada_fase_da_ordem_e_valida(fase):
 
 @pytest.mark.parametrize(
     "fase",
-    ["Cliente", " cliente ", "arquivada", "", None, 1, ["cliente"]],
-    ids=["maiúscula", "com espaços", "desconhecida", "vazia", "nula", "número da posição", "lista"],
+    ["Cliente", " cliente ", "arquivada", "fechamento", "", None, 1, ["cliente"]],
+    ids=["maiúscula", "com espaços", "desconhecida", "o nome que o dono deu à fecho", "vazia", "nula",
+         "número da posição", "lista"],
 )
 def test_recusa_o_que_nao_for_uma_fase_conhecida(fase):
     assert fase_valida(fase) is False

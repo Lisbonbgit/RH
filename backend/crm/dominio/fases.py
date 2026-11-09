@@ -4,10 +4,15 @@ Porta de src/Dominio/Fases.php do CRM autónomo (desenho original §4.1). A
 ORDEM é a das regras automáticas (F4/F5), que só sobem nela; a exceção é
 "Não interessado", que passa a loja a `perdida` exceto se for `cliente`. À
 mão, na ficha, a fase muda sempre (dossiê §5.1).
+
+Seis fases desde 2026-11-09: a `fecho` ("A aguardar fecho", pino verde)
+entrou entre `amostra` e `cliente`, a pedido do dono. Dá-se só à mão:
+nenhum resultado automático a atribui, e "Entregue → cliente" sobe por cima
+dela (desenho de 2026-11-09, §2).
 """
 
 # Igual a ORDEM em frontend/src/lib/crm/fases.js (test_consistencia_frontend.py, T2.20): manter numa só linha.
-ORDEM = ("perdida", "potencial", "contactada", "amostra", "cliente")
+ORDEM = ("perdida", "potencial", "contactada", "amostra", "fecho", "cliente")
 
 
 def fase_valida(fase) -> bool:

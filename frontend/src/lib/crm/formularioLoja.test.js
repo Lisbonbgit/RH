@@ -156,6 +156,7 @@ test('a fase escolhe-se com um toque: uma opção por fase, pela ordem do funil,
     { valor: 'potencial', rotulo: 'Potencial', classeCor: 'crm-amostra-fase pino--potencial' },
     { valor: 'contactada', rotulo: 'A aguardar amostra', classeCor: 'crm-amostra-fase pino--contactada' },
     { valor: 'amostra', rotulo: 'Amostra recebida', classeCor: 'crm-amostra-fase pino--amostra' },
+    { valor: 'fecho', rotulo: 'A aguardar fecho', classeCor: 'crm-amostra-fase pino--fecho' },
     { valor: 'cliente', rotulo: 'Cliente', classeCor: 'crm-amostra-fase pino--cliente' },
     { valor: 'perdida', rotulo: 'Perdida', classeCor: 'crm-amostra-fase pino--perdida' },
   ]);

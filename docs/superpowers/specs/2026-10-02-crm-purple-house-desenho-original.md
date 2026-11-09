@@ -44,12 +44,13 @@ Um CRM para a fábrica de sorbet de açaí **Purple House** cujo ecrã principal
 | `potencial` | Potencial | ⚪ cinza claro | Identificada, ainda sem contacto |
 | `contactada` | A aguardar amostra | 🟡 amarelo | Já houve contacto; a loja espera a amostra |
 | `amostra` | Amostra recebida | 🟠 laranja | Amostra entregue, a experimentar |
+| `fecho` | A aguardar fecho | 🟢 verde | Amostra provada; a acertar condições de pagamento e entregas |
 | `cliente` | Cliente | 🟣 roxo | Compra regularmente |
 | `perdida` | Perdida | ⚫ preto | Não interessada — visível no mapa (para se saber que não vale a pena visitar); pode ser escondida pelo filtro |
 
-O nome interno da fase (a coluna "Fase") é o que a API aceita, o que fica no histórico (`contactada→amostra`) e o que dá a cor ao pino; nunca muda. O nome no ecrã é o único texto que o utilizador vê (filtros, formulário, cartão, ficha, título do pino). Em 2026-10-13 o Bruce renomeou "Contactada" para "A aguardar amostra" e "Amostra" para "Amostra recebida"; as chaves, as cores e as regras automáticas ficaram iguais.
+O nome interno da fase (a coluna "Fase") é o que a API aceita, o que fica no histórico (`contactada→amostra`) e o que dá a cor ao pino; nunca muda. O nome no ecrã é o único texto que o utilizador vê (filtros, formulário, cartão, ficha, título do pino). Em 2026-10-13 o Bruce renomeou "Contactada" para "A aguardar amostra" e "Amostra" para "Amostra recebida"; as chaves, as cores e as regras automáticas ficaram iguais. Em 2026-11-09 o dono pediu a fase `fecho` ("A aguardar fecho", pino verde), entre `amostra` e `cliente`, para as lojas que já provaram a amostra e com quem se acertam as condições de pagamento e as entregas; dá-se só à mão, nenhum resultado automático a atribui ("Entregue → cliente" sobe por cima dela) e nenhuma loja existente mudou (desenho de 2026-11-09).
 
-**Ordem para regras automáticas:** `perdida` < `potencial` < `contactada` < `amostra` < `cliente`. As mudanças automáticas **só sobem** nesta ordem, com uma exceção: o resultado "Não interessado" passa a loja a `perdida`, exceto se for `cliente`. A fase pode sempre ser mudada à mão (um toque na ficha). Cada mudança de fase cria uma interação `mudanca_fase` no histórico.
+**Ordem para regras automáticas:** `perdida` < `potencial` < `contactada` < `amostra` < `fecho` < `cliente`. As mudanças automáticas **só sobem** nesta ordem, com uma exceção: o resultado "Não interessado" passa a loja a `perdida`, exceto se for `cliente`. A fase pode sempre ser mudada à mão (um toque na ficha). Cada mudança de fase cria uma interação `mudanca_fase` no histórico.
 
 **Efeitos automáticos de um resultado** (iguais quer venham de uma paragem da rota, §8.3, quer de uma visita/chamada registada na ficha, §6.3):
 
@@ -76,7 +77,7 @@ Regras dos temporizadores:
 
 ### 4.3 Motivo de uma paragem
 
-`entrega` · `amostra` · `acompanhamento` · `angariacao`. Pré-escolha ao adicionar à rota: `entrega` se a loja tiver encomenda `pendente` com data **até ao dia da rota (inclusive)**; senão `angariacao` (potencial/perdida), `amostra` (contactada), `acompanhamento` (amostra/cliente). Se a loja tiver visita pendente 🔁, usa o motivo dessa visita. Pode ser alterado.
+`entrega` · `amostra` · `acompanhamento` · `angariacao`. Pré-escolha ao adicionar à rota: `entrega` se a loja tiver encomenda `pendente` com data **até ao dia da rota (inclusive)**; senão `angariacao` (potencial/perdida), `amostra` (contactada), `acompanhamento` (amostra/fecho/cliente). Se a loja tiver visita pendente 🔁, usa o motivo dessa visita. Pode ser alterado.
 
 ## 5. Modelo de dados (MariaDB)
 

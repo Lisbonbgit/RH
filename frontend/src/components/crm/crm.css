@@ -98,6 +98,7 @@
 .pino--potencial { --cor-pino: #cfcfcf; --contorno-pino: #888; }
 .pino--contactada { --cor-pino: #f4c20d; }
 .pino--amostra { --cor-pino: #f08a24; }
+.pino--fecho { --cor-pino: #2e9e4f; }
 .pino--cliente { --cor-pino: #6b2fa3; }
 
 /* O nome da loja, sempre visível à direita da bola e ao meio da altura dela, e inteiro: um nome comprido passa

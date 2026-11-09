@@ -90,6 +90,7 @@ LOJA_C = "00000000-0000-4000-8000-00000000000c"
 LOJA_D = "00000000-0000-4000-8000-00000000000d"
 LOJA_E = "00000000-0000-4000-8000-00000000000e"
 LOJA_F = "00000000-0000-4000-8000-00000000000f"
+LOJA_G = "00000000-0000-4000-8000-000000000010"
 INEXISTENTE = "00000000-0000-4000-8000-0000000000ff"
 
 COMERCIO = (38.7075, -9.1364)
@@ -244,6 +245,7 @@ def _lojas():
         _loja(LOJA_D, "Quiosque D", "potencial", (38.71, -9.14)),
         _loja(LOJA_E, "Padaria E", "amostra", (38.715, -9.145)),
         _loja(LOJA_F, "Talho F", "perdida", (38.712, -9.142)),
+        _loja(LOJA_G, "Gelataria G", "fecho", (38.718, -9.148)),
     ]
 
 
@@ -446,10 +448,11 @@ def test_o_id_da_rota_e_o_da_paragem_sao_uuid4_novos(sessao):
         (LOJA_B, "angariacao", 15),
         (LOJA_A, "amostra", 10),
         (LOJA_E, "acompanhamento", 15),
+        (LOJA_G, "acompanhamento", 15),
         (LOJA_C, "acompanhamento", 15),
         (LOJA_F, "angariacao", 15),
     ],
-    ids=["potencial", "contactada", "amostra", "cliente", "perdida"],
+    ids=["potencial", "contactada", "amostra", "fecho", "cliente", "perdida"],
 )
 def test_o_motivo_por_omissao_vem_da_fase_e_o_tempo_do_motivo_nas_definicoes(sessao, loja_id, motivo, minutos):
     cliente = sessao()

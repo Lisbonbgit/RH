@@ -36,10 +36,11 @@ from .datas import dia_da_semana, ler_data
 MOTIVOS = ("entrega", "amostra", "acompanhamento", "angariacao")
 
 # A pré-escolha do motivo ao adicionar à rota (desenho original §4.3), pela
-# ordem das fases (`fases.ORDEM`). A F5 junta a entrega (encomenda pendente
-# até ao dia) e o motivo da visita pendente 🔁.
+# ordem das fases (`fases.ORDEM`): perdida e potencial → angariação,
+# contactada → amostra, amostra, fecho e cliente → acompanhamento. A F5 junta
+# a entrega (encomenda pendente até ao dia) e o motivo da visita pendente 🔁.
 # Igual a MOTIVO_POR_FASE em frontend/src/lib/crm/rota.js (T3.27).
-MOTIVO_POR_FASE = MappingProxyType({"perdida": "angariacao", "potencial": "angariacao", "contactada": "amostra", "amostra": "acompanhamento", "cliente": "acompanhamento"})
+MOTIVO_POR_FASE = MappingProxyType({"perdida": "angariacao", "potencial": "angariacao", "contactada": "amostra", "amostra": "acompanhamento", "fecho": "acompanhamento", "cliente": "acompanhamento"})
 
 # Sem fase conhecida, a loja ainda está por angariar.
 _MOTIVO_SEM_FASE = "angariacao"

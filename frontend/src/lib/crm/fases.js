@@ -6,19 +6,21 @@
 // fases.test.js): manter ORDEM numa só linha, e cada fase de FASES numa linha
 // que começa por `<fase>: Object.freeze({ id: '<fase>', rotulo: …, cor: …`.
 
-export const ORDEM = Object.freeze(['perdida', 'potencial', 'contactada', 'amostra', 'cliente']);
+export const ORDEM = Object.freeze(['perdida', 'potencial', 'contactada', 'amostra', 'fecho', 'cliente']);
 
 // A ordem do funil, a que faz sentido a quem escolhe ou filtra uma fase (a ORDEM é a das regras automáticas).
-export const FUNIL = Object.freeze(['potencial', 'contactada', 'amostra', 'cliente', 'perdida']);
+export const FUNIL = Object.freeze(['potencial', 'contactada', 'amostra', 'fecho', 'cliente', 'perdida']);
 
 // Cores fixas dos pinos (não seguem o tema do portal: o mapa é o mesmo no claro e no escuro).
 // O `rotulo` é o nome no ecrã e a única fonte dele (filtros, formulário, cartão, ficha, título do
 // pino); o `id` é a chave da API e do histórico, e nunca muda com o nome (desenho original §4.1).
+// A `fecho` (2026-11-09) dá-se só à mão: as regras automáticas não a atribuem (desenho de 2026-11-09).
 export const FASES = Object.freeze({
   perdida: Object.freeze({ id: 'perdida', rotulo: 'Perdida', cor: '#1a1a1a', contorno: null }),
   potencial: Object.freeze({ id: 'potencial', rotulo: 'Potencial', cor: '#cfcfcf', contorno: '#888' }),
   contactada: Object.freeze({ id: 'contactada', rotulo: 'A aguardar amostra', cor: '#f4c20d', contorno: null }),
   amostra: Object.freeze({ id: 'amostra', rotulo: 'Amostra recebida', cor: '#f08a24', contorno: null }),
+  fecho: Object.freeze({ id: 'fecho', rotulo: 'A aguardar fecho', cor: '#2e9e4f', contorno: null }),
   cliente: Object.freeze({ id: 'cliente', rotulo: 'Cliente', cor: '#6b2fa3', contorno: null }),
 });
 

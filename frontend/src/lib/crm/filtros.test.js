@@ -10,9 +10,14 @@
  *     autónomo convertia com `Number`);
  *   - **chave:** `crm.filtros` em vez de `phc.filtros`.
  *
- * Por omissão vêem-se as 5 fases, incluindo as perdidas (desenho original
+ * Por omissão vêem-se as 6 fases, incluindo as perdidas (desenho original
  * §4.1/§6.1). As fases guardam-se pela `ORDEM`; o ecrã mostra as caixas pela
  * ordem do `FUNIL` (fases.js).
+ *
+ * Desde a fase `fecho` (desenho de 2026-11-09, §3), o que se grava leva as
+ * `conhecidas` (a `ORDEM` de então) e, ao carregar, as fases que nasceram
+ * depois entram nas mostradas; sem `conhecidas` (o formato antigo) contam as
+ * cinco de antes. Os testes dessa migração estão no fim.
  *
  * Os últimos testes são extra: as regras puras do componente dos filtros do
  * autónomo (`componentes/filtros-mapa.js`, testes de região e de "filtros
@@ -33,8 +38,11 @@ import {
   ajustarARegioes,
   filtrosAtivos,
 } from './filtros';
+import { ORDEM } from './fases';
 
-const TODAS_AS_FASES = ['perdida', 'potencial', 'contactada', 'amostra', 'cliente'];
+const TODAS_AS_FASES = ['perdida', 'potencial', 'contactada', 'amostra', 'fecho', 'cliente'];
+// As cinco fases de antes da `fecho` (2026-11-09): as que um `crm.filtros` do formato antigo conhecia.
+const CINCO_DE_ANTES = ['perdida', 'potencial', 'contactada', 'amostra', 'cliente'];
 
 // uuid4 em texto, como o `str(uuid.uuid4())` do servidor.
 const LISBOA = '3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
@@ -48,9 +56,10 @@ const LOJAS = Object.freeze([
   { id: 'l3', nome: 'Potencial sem região', fase: 'potencial', regiao_id: null },
   { id: 'l4', nome: 'Contactada Porto', fase: 'contactada', regiao_id: PORTO },
   { id: 'l5', nome: 'Amostra Porto', fase: 'amostra', regiao_id: PORTO },
+  { id: 'l6', nome: 'Fecho Lisboa', fase: 'fecho', regiao_id: LISBOA },
 ]);
 
-const TODAS_AS_LOJAS = ['l1', 'l2', 'l3', 'l4', 'l5'];
+const TODAS_AS_LOJAS = ['l1', 'l2', 'l3', 'l4', 'l5', 'l6'];
 
 const ids = (lojas) => lojas.map((l) => l.id);
 
@@ -73,7 +82,7 @@ test('a chave do localStorage é crm.filtros', () => {
   expect(CHAVE_FILTROS).toBe('crm.filtros');
 });
 
-test('filtrosPadrao: todas as 5 fases (incluindo perdida) e todas as regiões', () => {
+test('filtrosPadrao: todas as 6 fases (incluindo perdida) e todas as regiões', () => {
   const f = filtrosPadrao();
   expect(f.fases).toBeInstanceOf(Set);
   expect([...f.fases]).toEqual(TODAS_AS_FASES);
@@ -94,8 +103,9 @@ test('aplicarFiltros: por defeito mostra tudo, incluindo as perdidas', () => {
 });
 
 test('aplicarFiltros: só as fases escolhidas', () => {
-  const semPerdida = new Set(['potencial', 'contactada', 'amostra', 'cliente']);
-  expect(ids(aplicarFiltros(LOJAS, { fases: semPerdida, regiao: 'todas' }))).toEqual(['l1', 'l3', 'l4', 'l5']);
+  const semPerdidaNemFecho = new Set(['potencial', 'contactada', 'amostra', 'cliente']);
+  expect(ids(aplicarFiltros(LOJAS, { fases: semPerdidaNemFecho, regiao: 'todas' }))).toEqual(['l1', 'l3', 'l4', 'l5']);
+  expect(ids(aplicarFiltros(LOJAS, { fases: new Set(['fecho']), regiao: 'todas' }))).toEqual(['l6']);
   expect(ids(aplicarFiltros(LOJAS, { fases: new Set(), regiao: 'todas' }))).toEqual([]);
 });
 
@@ -105,7 +115,7 @@ test("aplicarFiltros: 'sem' mostra só as lojas com regiao_id null", () => {
 
 test('aplicarFiltros: por uuid de região (o texto do value de um <select>)', () => {
   const fases = new Set(TODAS_AS_FASES);
-  expect(ids(aplicarFiltros(LOJAS, { fases, regiao: LISBOA }))).toEqual(['l1', 'l2']);
+  expect(ids(aplicarFiltros(LOJAS, { fases, regiao: LISBOA }))).toEqual(['l1', 'l2', 'l6']);
   expect(ids(aplicarFiltros(LOJAS, { fases, regiao: PORTO }))).toEqual(['l4', 'l5']);
   expect(ids(aplicarFiltros(LOJAS, { fases, regiao: APAGADA }))).toEqual([]);
 });
@@ -253,7 +263,7 @@ test('carregarFiltros: sem nada guardado devolve o padrão', () => {
 });
 
 test('carregarFiltros: lê o que está em crm.filtros', () => {
-  const s = armazenamentoCom(JSON.stringify({ fases: ['cliente', 'perdida'], regiao: LISBOA }));
+  const s = armazenamentoCom(JSON.stringify({ fases: ['cliente', 'perdida'], regiao: LISBOA, conhecidas: TODAS_AS_FASES }));
   const f = carregarFiltros(s);
   expect(f.fases).toBeInstanceOf(Set);
   expect(comoSimples(f)).toEqual({ fases: ['cliente', 'perdida'], regiao: LISBOA });
@@ -275,9 +285,9 @@ test('carregarFiltros: dados corrompidos ou inválidos devolvem o padrão', () =
 });
 
 test('carregarFiltros: campos inválidos são corrigidos um a um', () => {
-  const s = armazenamentoCom(JSON.stringify({ fases: ['amostra', 'xpto'], regiao: 'qualquer' }));
+  const s = armazenamentoCom(JSON.stringify({ fases: ['amostra', 'xpto'], regiao: 'qualquer', conhecidas: TODAS_AS_FASES }));
   expect(comoSimples(carregarFiltros(s))).toEqual({ fases: ['amostra'], regiao: 'todas' });
-  const numerica = armazenamentoCom(JSON.stringify({ fases: ['amostra'], regiao: 3 }));
+  const numerica = armazenamentoCom(JSON.stringify({ fases: ['amostra'], regiao: 3, conhecidas: TODAS_AS_FASES }));
   expect(comoSimples(carregarFiltros(numerica))).toEqual({ fases: ['amostra'], regiao: 'todas' });
 });
 
@@ -293,18 +303,18 @@ test('carregarFiltros: armazenamento ausente ou que lança erro devolve o padrã
   }
 });
 
-test('guardarFiltros grava JSON em crm.filtros, com as fases pela ORDEM', () => {
+test('guardarFiltros grava JSON em crm.filtros, com as fases pela ORDEM (e as conhecidas, desde 2026-11-09)', () => {
   const s = criarArmazenamento();
   const ok = guardarFiltros(s, { fases: new Set(['cliente', 'perdida', 'xpto']), regiao: PORTO });
   expect(ok).toBe(true);
   expect([...s.dados.keys()]).toEqual(['crm.filtros']);
-  expect(JSON.parse(s.dados.get('crm.filtros'))).toEqual({ fases: ['perdida', 'cliente'], regiao: PORTO });
+  expect(JSON.parse(s.dados.get('crm.filtros'))).toEqual({ fases: ['perdida', 'cliente'], regiao: PORTO, conhecidas: TODAS_AS_FASES });
 });
 
 test('guardarFiltros: um id numérico do autónomo grava-se como todas', () => {
   const s = criarArmazenamento();
   expect(guardarFiltros(s, { fases: ['cliente'], regiao: '7' })).toBe(true);
-  expect(JSON.parse(s.dados.get('crm.filtros'))).toEqual({ fases: ['cliente'], regiao: 'todas' });
+  expect(JSON.parse(s.dados.get('crm.filtros'))).toEqual({ fases: ['cliente'], regiao: 'todas', conhecidas: TODAS_AS_FASES });
 });
 
 test('guardarFiltros e carregarFiltros fazem ida e volta', () => {
@@ -326,6 +336,74 @@ test('guardarFiltros não lança erro se o armazenamento falhar e devolve false'
   for (const s of [lanca, null, undefined, {}]) {
     expect(guardarFiltros(s, filtrosPadrao())).toBe(false);
   }
+});
+
+// --- A migração dos filtros guardados (desenho de 2026-11-09, §3: a fase fecho) ---
+
+test('formato antigo (sem conhecidas): a fecho é nova e entra nas fases mostradas', () => {
+  // Quem gravou os filtros antes da fecho nunca a escondeu de propósito: sem isto, as lojas em fecho
+  // ficavam escondidas no mapa sem a pessoa saber (e o botão "Filtros" marcado).
+  const s = armazenamentoCom(JSON.stringify({ fases: ['cliente', 'perdida'], regiao: LISBOA }));
+  expect(comoSimples(carregarFiltros(s))).toEqual({ fases: ['cliente', 'fecho', 'perdida'], regiao: LISBOA });
+  // Com as cinco de antes todas marcadas, continua a ver-se tudo: sem filtros ativos.
+  const todasDeAntes = carregarFiltros(armazenamentoCom(JSON.stringify({ fases: CINCO_DE_ANTES, regiao: 'todas' })));
+  expect([...todasDeAntes.fases]).toEqual(TODAS_AS_FASES);
+  expect(filtrosAtivos(todasDeAntes)).toBe(false);
+});
+
+test('conhecidas completa e a fecho fora das fases: foi escondida de propósito e fica escondida', () => {
+  const s = armazenamentoCom(JSON.stringify({ fases: ['cliente'], regiao: 'todas', conhecidas: TODAS_AS_FASES }));
+  expect(comoSimples(carregarFiltros(s))).toEqual({ fases: ['cliente'], regiao: 'todas' });
+  const semFecho = carregarFiltros(armazenamentoCom(JSON.stringify({ fases: CINCO_DE_ANTES, regiao: 'todas', conhecidas: TODAS_AS_FASES })));
+  expect([...semFecho.fases]).toEqual(CINCO_DE_ANTES);
+  expect(filtrosAtivos(semFecho)).toBe(true);
+});
+
+test('conhecidas antiga (as cinco) com fases antigas: a fecho entra; a perdida escondida fica escondida', () => {
+  const s = armazenamentoCom(JSON.stringify({
+    fases: ['potencial', 'contactada', 'amostra', 'cliente'], regiao: 'sem', conhecidas: CINCO_DE_ANTES,
+  }));
+  expect(comoSimples(carregarFiltros(s))).toEqual({
+    fases: ['amostra', 'cliente', 'contactada', 'fecho', 'potencial'], regiao: 'sem',
+  });
+});
+
+test('conjunto gravado vazio: continua vazio, exceto pelas fases novas', () => {
+  // Sem conhecidas (o formato antigo), só a fecho; com as conhecidas completas, nenhuma.
+  expect(comoSimples(carregarFiltros(armazenamentoCom(JSON.stringify({ fases: [], regiao: 'sem' }))))).toEqual({
+    fases: ['fecho'], regiao: 'sem',
+  });
+  expect(carregarFiltros(armazenamentoCom(JSON.stringify({ fases: [], regiao: 'sem', conhecidas: TODAS_AS_FASES }))).fases.size).toBe(0);
+});
+
+test('conhecidas que não é uma lista conta como o formato antigo', () => {
+  for (const conhecidas of [42, 'x', null, {}, true]) {
+    const s = armazenamentoCom(JSON.stringify({ fases: ['cliente'], regiao: 'todas', conhecidas }));
+    expect([String(conhecidas), comoSimples(carregarFiltros(s))]).toEqual([String(conhecidas), { fases: ['cliente', 'fecho'], regiao: 'todas' }]);
+  }
+});
+
+test('as fases carregadas saem pela ORDEM, também as que entraram por serem novas', () => {
+  const s = armazenamentoCom(JSON.stringify({ fases: ['cliente', 'perdida'], regiao: 'todas' }));
+  expect([...carregarFiltros(s).fases]).toEqual(['perdida', 'fecho', 'cliente']);
+});
+
+test('guardarFiltros grava conhecidas = ORDEM (as fases que existem agora)', () => {
+  const s = criarArmazenamento();
+  guardarFiltros(s, filtrosPadrao());
+  expect(JSON.parse(s.dados.get('crm.filtros')).conhecidas).toEqual([...ORDEM]);
+  guardarFiltros(s, { fases: [], regiao: 'sem' });
+  expect(JSON.parse(s.dados.get('crm.filtros')).conhecidas).toEqual([...ORDEM]);
+});
+
+test('carregar o que guardarFiltros gravou devolve o mesmo: a fecho tirada fica tirada e o vazio fica vazio', () => {
+  const s = criarArmazenamento();
+  guardarFiltros(s, { fases: new Set(CINCO_DE_ANTES), regiao: 'todas' });
+  expect([...carregarFiltros(s).fases]).toEqual(CINCO_DE_ANTES);
+  guardarFiltros(s, { fases: new Set(), regiao: PORTO });
+  expect(comoSimples(carregarFiltros(s))).toEqual({ fases: [], regiao: PORTO });
+  guardarFiltros(s, { fases: new Set(['fecho']), regiao: 'sem' });
+  expect(comoSimples(carregarFiltros(s))).toEqual({ fases: ['fecho'], regiao: 'sem' });
 });
 
 test('textoNumeroLojas: "N lojas" com singular para 1', () => {
@@ -438,7 +516,9 @@ test('filtrosAtivos: true quando o mapa não está a mostrar todas as lojas', ()
   expect(filtrosAtivos(filtrosPadrao())).toBe(false);
   expect(filtrosAtivos({ fases: TODAS_AS_FASES, regiao: 'todas' })).toBe(false);
   expect(filtrosAtivos(null)).toBe(false);
-  expect(filtrosAtivos({ fases: ['potencial', 'contactada', 'amostra', 'cliente'], regiao: 'todas' })).toBe(true);
+  expect(filtrosAtivos({ fases: ['potencial', 'contactada', 'amostra', 'fecho', 'cliente'], regiao: 'todas' })).toBe(true);
+  // As cinco de antes da fecho (2026-11-09) já não são todas.
+  expect(filtrosAtivos({ fases: ['perdida', 'potencial', 'contactada', 'amostra', 'cliente'], regiao: 'todas' })).toBe(true);
   expect(filtrosAtivos({ fases: [], regiao: 'todas' })).toBe(true);
   expect(filtrosAtivos({ fases: new Set(['cliente']), regiao: 'todas' })).toBe(true);
   expect(filtrosAtivos({ fases: TODAS_AS_FASES, regiao: 'sem' })).toBe(true);

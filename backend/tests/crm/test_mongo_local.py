@@ -857,7 +857,7 @@ def test_muitos_patch_das_definicoes_ao_mesmo_tempo_deixam_uma_linha_por_chave(n
 # --- O seed das regiões e lojas de demonstração (T2.18) ---------------------------------------------
 
 AGORA_DO_SEED = datetime(2026, 10, 10, 9, 0, 0, 123456, tzinfo=timezone.utc)
-CRIADAS = "Criadas: 4 regiões e 24 lojas de demonstração."
+CRIADAS = "Criadas: 4 regiões e 25 lojas de demonstração."
 SEED_NADA_MUDOU = (
     "Erro: os dados de demonstração não foram criados (nada mudou): BulkWriteError: Document failed validation"
 )
@@ -880,7 +880,7 @@ async def _tudo(base, *coleccoes):
 
 
 def test_o_seed_grava_as_lojas_de_demonstracao_e_as_rotas_leem_nas(no_mongo):
-    """Na base verdadeira, com os índices do `criar_indices`: as 24 lojas passam
+    """Na base verdadeira, com os índices do `criar_indices`: as 25 lojas passam
     o `2dsphere` (nenhuma a menos de 210 m de outra pelo pré-filtro), as 4
     regiões têm `nome_chave` (o índice único trava "lisboa"), as rotas leem
     tudo; a segunda vez sem --repor recusa, e com --repor não colide."""
@@ -913,8 +913,8 @@ def test_o_seed_grava_as_lojas_de_demonstracao_e_as_rotas_leem_nas(no_mongo):
     linhas, recusa, resumos, completas, regioes, vizinhas, repetida, linhas_repor, contagens = no_mongo(ensaio)
 
     assert linhas == [CRIADAS]
-    assert recusa.startswith("Recusado: a base de dados já tem 24 lojas e 4 regiões.")
-    assert len(resumos) == 24
+    assert recusa.startswith("Recusado: a base de dados já tem 25 lojas e 4 regiões.")
+    assert len(resumos) == 25
     assert [r["nome"] for r in resumos] == sorted((r["nome"] for r in resumos), key=chave_comparacao)
     assert all(r["nome"].endswith(" (demo)") for r in resumos)
     assert [(r["nome"], r["ordem"]) for r in regioes] == [("Lisboa", 1), ("Porto", 2), ("Setúbal", 3), ("Algarve", 4)]
@@ -923,10 +923,10 @@ def test_o_seed_grava_as_lojas_de_demonstracao_e_as_rotas_leem_nas(no_mongo):
     assert all(c["criado_por"] == "seed-local" and c["criado_em"] == c["fase_desde"] for c in completas)
     assert len({c["fase_desde"] for c in completas}) > 5
     assert instantes_fora_do_formato(completas) == []
-    assert vizinhas == [[]] * 24
+    assert vizinhas == [[]] * 25
     assert (repetida.status_code, repetida.detail) == (409, _erro("regiao_repetida", MENSAGEM_REPETIDA))
-    assert linhas_repor == ["Apagadas: 24 lojas e 4 regiões.", CRIADAS]
-    assert contagens == (24, 4)
+    assert linhas_repor == ["Apagadas: 25 lojas e 4 regiões.", CRIADAS]
+    assert contagens == (25, 4)
 
 
 def test_se_o_mongo_recusar_uma_loja_do_seed_nada_muda(no_mongo):
