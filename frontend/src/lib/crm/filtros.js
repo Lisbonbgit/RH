@@ -7,6 +7,11 @@
 // positivo; o id numérico do autónomo volta a 'todas'. A chave passa de
 // `phc.filtros` a `crm.filtros`.
 //
+// Desde 2026-11-09 (a fase `fecho`), o que se grava leva também as
+// `conhecidas`: as fases que existiam quando se gravou. Ao carregar, uma fase
+// da ORDEM que não esteja nas conhecidas nasceu depois e entra no conjunto das
+// mostradas (ver `comFasesNovas`).
+//
 // No fim, as regras puras do componente dos filtros do autónomo
 // (componentes/filtros-mapa.js): as opções da região, a região guardada que
 // já não existe e os "filtros ativos". O FiltrosMapa (T2.25) só as chama.
@@ -18,6 +23,11 @@ export const CHAVE_FILTROS = 'crm.filtros';
 
 // Uma região guardada, enquanto a lista de regiões não chega.
 export const TEXTO_REGIAO_GUARDADA = 'Região guardada';
+
+// As fases que havia antes de se gravarem as `conhecidas` (2026-11-09): um
+// `crm.filtros` sem `conhecidas` (o formato antigo) foi gravado quando só
+// existiam estas cinco, por isso qualquer outra fase da ORDEM é nova para ele.
+const CONHECIDAS_NO_FORMATO_ANTIGO = Object.freeze(['perdida', 'potencial', 'contactada', 'amostra', 'cliente']);
 
 export function filtrosPadrao() {
   return { fases: new Set(ORDEM), regiao: 'todas' };
@@ -58,20 +68,44 @@ export function aplicarFiltros(lojas, filtros) {
   });
 }
 
+// As fases que existiam quando os filtros se gravaram: a lista `conhecidas`
+// gravada ou, sem ela (o formato antigo, ou algo que não é uma lista), as
+// cinco de antes.
+function conhecidasAoGravar(conhecidas) {
+  return new Set(Array.isArray(conhecidas) ? conhecidas : CONHECIDAS_NO_FORMATO_ANTIGO);
+}
+
+// Os filtros gravados, com as fases que nasceram depois de se gravarem a
+// entrar no conjunto das mostradas. Quem gravou os filtros antes de uma fase
+// nova nunca a escondeu de propósito: sem isto, as lojas dessa fase ficavam
+// escondidas no mapa sem a pessoa saber (e o botão "Filtros" marcado). Uma
+// fase conhecida ao gravar e fora de `fases` foi escondida de propósito e
+// fica escondida; um conjunto gravado vazio continua vazio, exceto pelas
+// fases novas. As fases saem pela ORDEM, como no `normalizarFases`.
+function comFasesNovas(dados) {
+  const filtros = normalizarFiltros(dados);
+  if (!ehObjeto(dados)) return filtros;
+  const conhecidas = conhecidasAoGravar(dados.conhecidas);
+  const fases = ORDEM.filter((f) => filtros.fases.has(f) || !conhecidas.has(f));
+  return { fases: new Set(fases), regiao: filtros.regiao };
+}
+
 export function carregarFiltros(storage) {
   try {
     const texto = storage.getItem(CHAVE_FILTROS);
     if (texto == null) return filtrosPadrao();
-    return normalizarFiltros(JSON.parse(texto));
+    return comFasesNovas(JSON.parse(texto));
   } catch {
     return filtrosPadrao();
   }
 }
 
+// Grava {fases, regiao, conhecidas}: as `conhecidas` são a ORDEM de agora, para
+// uma fase que entre mais tarde se mostrar ao carregar (`comFasesNovas`).
 export function guardarFiltros(storage, filtros) {
   try {
     const f = normalizarFiltros(filtros);
-    storage.setItem(CHAVE_FILTROS, JSON.stringify({ fases: [...f.fases], regiao: f.regiao }));
+    storage.setItem(CHAVE_FILTROS, JSON.stringify({ fases: [...f.fases], regiao: f.regiao, conhecidas: [...ORDEM] }));
     return true;
   } catch {
     return false;
