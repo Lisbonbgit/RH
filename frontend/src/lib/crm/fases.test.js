@@ -19,11 +19,11 @@ import { FASES, ORDEM, FUNIL, classePino } from './fases';
 // frontend/src/lib/crm → raiz do repositório.
 const FASES_PY = path.join(__dirname, '..', '..', '..', '..', 'backend', 'crm', 'dominio', 'fases.py');
 
-test('ORDEM tem as 5 fases pela ordem das regras automáticas', () => {
-  expect([...ORDEM]).toEqual(['perdida', 'potencial', 'contactada', 'amostra', 'cliente']);
+test('ORDEM tem as 6 fases pela ordem das regras automáticas (a fecho entre a amostra e o cliente)', () => {
+  expect([...ORDEM]).toEqual(['perdida', 'potencial', 'contactada', 'amostra', 'fecho', 'cliente']);
 });
 
-test('FASES tem exatamente as 5 fases, pela mesma ordem de ORDEM', () => {
+test('FASES tem exatamente as 6 fases, pela mesma ordem de ORDEM', () => {
   expect(Object.keys(FASES)).toEqual([...ORDEM]);
   for (const id of ORDEM) {
     expect(FASES[id].id).toBe(id);
@@ -37,11 +37,12 @@ test('cada fase tem o rótulo em pt-PT', () => {
     potencial: 'Potencial',
     contactada: 'A aguardar amostra',
     amostra: 'Amostra recebida',
+    fecho: 'A aguardar fecho',
     cliente: 'Cliente',
   });
 });
 
-test('cada fase tem a cor exata do pino (potencial com contorno #888)', () => {
+test('cada fase tem a cor exata do pino (potencial com contorno #888; a fecho verde, 2026-11-09)', () => {
   const cores = Object.fromEntries(
     ORDEM.map((id) => [id, { cor: FASES[id].cor, contorno: FASES[id].contorno }]),
   );
@@ -49,6 +50,7 @@ test('cada fase tem a cor exata do pino (potencial com contorno #888)', () => {
     potencial: { cor: '#cfcfcf', contorno: '#888' },
     contactada: { cor: '#f4c20d', contorno: null },
     amostra: { cor: '#f08a24', contorno: null },
+    fecho: { cor: '#2e9e4f', contorno: null },
     cliente: { cor: '#6b2fa3', contorno: null },
     perdida: { cor: '#1a1a1a', contorno: null },
   });
@@ -65,6 +67,7 @@ test('FASES e ORDEM não podem ser alterados', () => {
 test('classePino devolve a classe da fase só para fases conhecidas', () => {
   expect(classePino('cliente')).toBe('pino pino--cliente');
   expect(classePino('perdida')).toBe('pino pino--perdida');
+  expect(classePino('fecho')).toBe('pino pino--fecho');
   expect(classePino('xpto')).toBe('pino');
   expect(classePino('cliente extra')).toBe('pino');
   expect(classePino('constructor')).toBe('pino');
@@ -72,8 +75,8 @@ test('classePino devolve a classe da fase só para fases conhecidas', () => {
   expect(classePino(null)).toBe('pino');
 });
 
-test('FUNIL tem as mesmas 5 fases pela ordem do funil (spec §4.1), para os filtros e o formulário', () => {
-  expect([...FUNIL]).toEqual(['potencial', 'contactada', 'amostra', 'cliente', 'perdida']);
+test('FUNIL tem as mesmas 6 fases pela ordem do funil (spec §4.1), para os filtros e o formulário', () => {
+  expect([...FUNIL]).toEqual(['potencial', 'contactada', 'amostra', 'fecho', 'cliente', 'perdida']);
   expect([...FUNIL].sort()).toEqual([...ORDEM].sort());
   expect(Object.isFrozen(FUNIL)).toBe(true);
 });

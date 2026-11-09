@@ -31,8 +31,9 @@ import { diaDaSemana } from './datas';
 
 export const MOTIVOS = Object.freeze(['entrega', 'amostra', 'acompanhamento', 'angariacao']);
 
-// A pré-escolha do motivo ao adicionar à rota (desenho original §4.3), pela ordem das fases (`fases.ORDEM`).
-export const MOTIVO_POR_FASE = Object.freeze({ perdida: 'angariacao', potencial: 'angariacao', contactada: 'amostra', amostra: 'acompanhamento', cliente: 'acompanhamento' });
+// A pré-escolha do motivo ao adicionar à rota (desenho original §4.3), pela ordem das fases (`fases.ORDEM`):
+// perdida e potencial → angariação, contactada → amostra, amostra, fecho e cliente → acompanhamento.
+export const MOTIVO_POR_FASE = Object.freeze({ perdida: 'angariacao', potencial: 'angariacao', contactada: 'amostra', amostra: 'acompanhamento', fecho: 'acompanhamento', cliente: 'acompanhamento' });
 
 // O Directions aceita 50 coordenadas: 48 paragens mais o início e o fim.
 export const LIMITE_PARAGENS = 48;

@@ -4,7 +4,7 @@ O CRM autónomo não tem código de rotas: as regras vêm do desenho original
 (§4.3 motivos, §7.2 prioridades, §7 planeamento) e do plano F3 (§1 e §3):
 
 - o motivo de uma paragem vem pré-escolhido pela fase (potencial/perdida →
-  angariação, contactada → amostra, amostra/cliente → acompanhamento);
+  angariação, contactada → amostra, amostra/fecho/cliente → acompanhamento);
 - prioridades do VROOM: entrega 100, as outras 1 (48 × 1 < 100: nenhuma soma
   de visitas vale uma entrega);
 - um dia anterior a hoje lê-se como `concluida` e não se escreve
@@ -130,11 +130,12 @@ def test_o_motivo_por_fase_e_o_do_desenho():
         "potencial": "angariacao",
         "contactada": "amostra",
         "amostra": "acompanhamento",
+        "fecho": "acompanhamento",
         "cliente": "acompanhamento",
     }
 
 
-def test_o_motivo_por_fase_cobre_as_cinco_fases_pela_ordem_do_funil():
+def test_o_motivo_por_fase_cobre_as_seis_fases_pela_ordem_do_funil():
     assert tuple(MOTIVO_POR_FASE) == ORDEM
     assert set(MOTIVO_POR_FASE.values()) <= set(MOTIVOS)
 
@@ -148,8 +149,8 @@ def test_o_motivo_por_fase_nao_se_altera_por_engano():
 @pytest.mark.parametrize(
     "fase, motivo",
     [("perdida", "angariacao"), ("potencial", "angariacao"), ("contactada", "amostra"),
-     ("amostra", "acompanhamento"), ("cliente", "acompanhamento")],
-    ids=["perdida", "potencial", "contactada", "amostra", "cliente"],
+     ("amostra", "acompanhamento"), ("fecho", "acompanhamento"), ("cliente", "acompanhamento")],
+    ids=["perdida", "potencial", "contactada", "amostra", "fecho", "cliente"],
 )
 def test_motivo_por_fase_pre_escolhe_o_motivo(fase, motivo):
     assert motivo_por_fase(fase) == motivo

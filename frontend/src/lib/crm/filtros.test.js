@@ -10,7 +10,7 @@
  *     autónomo convertia com `Number`);
  *   - **chave:** `crm.filtros` em vez de `phc.filtros`.
  *
- * Por omissão vêem-se as 5 fases, incluindo as perdidas (desenho original
+ * Por omissão vêem-se as 6 fases, incluindo as perdidas (desenho original
  * §4.1/§6.1). As fases guardam-se pela `ORDEM`; o ecrã mostra as caixas pela
  * ordem do `FUNIL` (fases.js).
  *
@@ -34,7 +34,7 @@ import {
   filtrosAtivos,
 } from './filtros';
 
-const TODAS_AS_FASES = ['perdida', 'potencial', 'contactada', 'amostra', 'cliente'];
+const TODAS_AS_FASES = ['perdida', 'potencial', 'contactada', 'amostra', 'fecho', 'cliente'];
 
 // uuid4 em texto, como o `str(uuid.uuid4())` do servidor.
 const LISBOA = '3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
@@ -48,9 +48,10 @@ const LOJAS = Object.freeze([
   { id: 'l3', nome: 'Potencial sem região', fase: 'potencial', regiao_id: null },
   { id: 'l4', nome: 'Contactada Porto', fase: 'contactada', regiao_id: PORTO },
   { id: 'l5', nome: 'Amostra Porto', fase: 'amostra', regiao_id: PORTO },
+  { id: 'l6', nome: 'Fecho Lisboa', fase: 'fecho', regiao_id: LISBOA },
 ]);
 
-const TODAS_AS_LOJAS = ['l1', 'l2', 'l3', 'l4', 'l5'];
+const TODAS_AS_LOJAS = ['l1', 'l2', 'l3', 'l4', 'l5', 'l6'];
 
 const ids = (lojas) => lojas.map((l) => l.id);
 
@@ -73,7 +74,7 @@ test('a chave do localStorage é crm.filtros', () => {
   expect(CHAVE_FILTROS).toBe('crm.filtros');
 });
 
-test('filtrosPadrao: todas as 5 fases (incluindo perdida) e todas as regiões', () => {
+test('filtrosPadrao: todas as 6 fases (incluindo perdida) e todas as regiões', () => {
   const f = filtrosPadrao();
   expect(f.fases).toBeInstanceOf(Set);
   expect([...f.fases]).toEqual(TODAS_AS_FASES);
@@ -94,8 +95,9 @@ test('aplicarFiltros: por defeito mostra tudo, incluindo as perdidas', () => {
 });
 
 test('aplicarFiltros: só as fases escolhidas', () => {
-  const semPerdida = new Set(['potencial', 'contactada', 'amostra', 'cliente']);
-  expect(ids(aplicarFiltros(LOJAS, { fases: semPerdida, regiao: 'todas' }))).toEqual(['l1', 'l3', 'l4', 'l5']);
+  const semPerdidaNemFecho = new Set(['potencial', 'contactada', 'amostra', 'cliente']);
+  expect(ids(aplicarFiltros(LOJAS, { fases: semPerdidaNemFecho, regiao: 'todas' }))).toEqual(['l1', 'l3', 'l4', 'l5']);
+  expect(ids(aplicarFiltros(LOJAS, { fases: new Set(['fecho']), regiao: 'todas' }))).toEqual(['l6']);
   expect(ids(aplicarFiltros(LOJAS, { fases: new Set(), regiao: 'todas' }))).toEqual([]);
 });
 
@@ -105,7 +107,7 @@ test("aplicarFiltros: 'sem' mostra só as lojas com regiao_id null", () => {
 
 test('aplicarFiltros: por uuid de região (o texto do value de um <select>)', () => {
   const fases = new Set(TODAS_AS_FASES);
-  expect(ids(aplicarFiltros(LOJAS, { fases, regiao: LISBOA }))).toEqual(['l1', 'l2']);
+  expect(ids(aplicarFiltros(LOJAS, { fases, regiao: LISBOA }))).toEqual(['l1', 'l2', 'l6']);
   expect(ids(aplicarFiltros(LOJAS, { fases, regiao: PORTO }))).toEqual(['l4', 'l5']);
   expect(ids(aplicarFiltros(LOJAS, { fases, regiao: APAGADA }))).toEqual([]);
 });
@@ -438,7 +440,9 @@ test('filtrosAtivos: true quando o mapa não está a mostrar todas as lojas', ()
   expect(filtrosAtivos(filtrosPadrao())).toBe(false);
   expect(filtrosAtivos({ fases: TODAS_AS_FASES, regiao: 'todas' })).toBe(false);
   expect(filtrosAtivos(null)).toBe(false);
-  expect(filtrosAtivos({ fases: ['potencial', 'contactada', 'amostra', 'cliente'], regiao: 'todas' })).toBe(true);
+  expect(filtrosAtivos({ fases: ['potencial', 'contactada', 'amostra', 'fecho', 'cliente'], regiao: 'todas' })).toBe(true);
+  // As cinco de antes da fecho (2026-11-09) já não são todas.
+  expect(filtrosAtivos({ fases: ['perdida', 'potencial', 'contactada', 'amostra', 'cliente'], regiao: 'todas' })).toBe(true);
   expect(filtrosAtivos({ fases: [], regiao: 'todas' })).toBe(true);
   expect(filtrosAtivos({ fases: new Set(['cliente']), regiao: 'todas' })).toBe(true);
   expect(filtrosAtivos({ fases: TODAS_AS_FASES, regiao: 'sem' })).toBe(true);

@@ -215,6 +215,7 @@ describe('pastilhasDeFase', () => {
       { valor: 'potencial', rotulo: 'Potencial', classeCor: 'crm-amostra-fase pino--potencial', numero: 1, escolhida: false },
       { valor: 'contactada', rotulo: 'A aguardar amostra', classeCor: 'crm-amostra-fase pino--contactada', numero: 0, escolhida: false },
       { valor: 'amostra', rotulo: 'Amostra recebida', classeCor: 'crm-amostra-fase pino--amostra', numero: 0, escolhida: false },
+      { valor: 'fecho', rotulo: 'A aguardar fecho', classeCor: 'crm-amostra-fase pino--fecho', numero: 0, escolhida: false },
       { valor: 'cliente', rotulo: 'Cliente', classeCor: 'crm-amostra-fase pino--cliente', numero: 2, escolhida: false },
       { valor: 'perdida', rotulo: 'Perdida', classeCor: 'crm-amostra-fase pino--perdida', numero: 1, escolhida: false },
     ]);
@@ -227,7 +228,7 @@ describe('pastilhasDeFase', () => {
 
   test('uma fase desconhecida só conta em "Todas"', () => {
     const pastilhas = pastilhasDeFase([resumo({ fase: 'estranha' })], FASE_TODAS);
-    expect(pastilhas.map((pastilha) => pastilha.numero)).toEqual([1, 0, 0, 0, 0, 0]);
+    expect(pastilhas.map((pastilha) => pastilha.numero)).toEqual([1, 0, 0, 0, 0, 0, 0]);
   });
 });
 
@@ -373,7 +374,7 @@ describe('a pesquisa e a fase na sessão', () => {
     expect(carregarFiltrosClientes(storage)).toEqual({ pesquisa: 'café', fase: 'perdida' });
     expect(carregarFiltrosClientes(armazenamentoFalso({ [CHAVE_FILTROS]: '{"fase":"cliente","pesquisa":"x"}' })))
       .toEqual({ pesquisa: '', fase: 'todas' });
-    expect(filtrosPadrao().fases.size).toBe(5);
+    expect(filtrosPadrao().fases.size).toBe(6);
   });
 });
 
@@ -455,7 +456,7 @@ describe('criarListaClientes', () => {
     expect(m.vista().estado).toBe('pronto');
     expect(nomesDaVista(m)).toEqual(['Tasca Antiga', 'Café Central', 'Mercearia da Baixa', 'Quiosque Novo']);
     expect(numeros(m)).toEqual({
-      todas: 4, potencial: 1, contactada: 0, amostra: 0, cliente: 2, perdida: 1,
+      todas: 4, potencial: 1, contactada: 0, amostra: 0, fecho: 0, cliente: 2, perdida: 1,
     });
     expect(m.vista().semResultados).toBe(null);
   });
@@ -483,7 +484,7 @@ describe('criarListaClientes', () => {
     m.ecra.escolherFase('perdida');
     m.ecra.mudarPesquisa('lisboa');
     expect(numeros(m)).toEqual({
-      todas: 1, potencial: 0, contactada: 0, amostra: 0, cliente: 1, perdida: 0,
+      todas: 1, potencial: 0, contactada: 0, amostra: 0, fecho: 0, cliente: 1, perdida: 0,
     });
     expect(m.vista().linhas).toEqual([]);
   });
@@ -503,7 +504,7 @@ describe('criarListaClientes', () => {
     m.ecra.escolherFase('cliente');
     m.ecra.mudarPesquisa('não existe');
     expect(m.vista().semResultados).toEqual({ texto: TEXTO_SEM_RESULTADOS, limpar: true });
-    expect(m.vista().pastilhas).toHaveLength(6); // as pastilhas continuam visíveis
+    expect(m.vista().pastilhas).toHaveLength(7); // as pastilhas continuam visíveis ("Todas" e as seis fases)
     m.ecra.limparPesquisa();
     expect(m.vista()).toMatchObject({ pesquisa: '', fase: 'cliente', semResultados: null });
     expect(nomesDaVista(m)).toEqual(['Café Central', 'Mercearia da Baixa']);
@@ -513,7 +514,7 @@ describe('criarListaClientes', () => {
     const m = await carregada();
     m.ecra.escolherFase('amostra');
     expect(m.vista().semResultados).toEqual({ texto: 'Sem lojas nesta fase.', limpar: false });
-    expect(m.vista().pastilhas).toHaveLength(6);
+    expect(m.vista().pastilhas).toHaveLength(7);
     m.ecra.mudarPesquisa('   ');
     expect(m.vista().semResultados).toEqual({ texto: 'Sem lojas nesta fase.', limpar: false });
   });

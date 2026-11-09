@@ -161,6 +161,7 @@ test('MOTIVOS, MOTIVO_POR_FASE e LIMITE_PARAGENS (plano F3 §1)', () => {
     potencial: 'angariacao',
     contactada: 'amostra',
     amostra: 'acompanhamento',
+    fecho: 'acompanhamento',
     cliente: 'acompanhamento',
   });
   expect(Object.keys(MOTIVO_POR_FASE)).toEqual([...ORDEM]);
@@ -198,7 +199,7 @@ describe('igual ao backend/crm/dominio/rotas.py, lido do próprio ficheiro', () 
     const linhas = [...python().matchAll(/^MOTIVO_POR_FASE = MappingProxyType\(\{([^}\n]*)\}\)$/gm)];
     expect(linhas).toHaveLength(1);
     const pares = [...linhas[0][1].matchAll(/"([a-z_]+)": "([a-z_]+)"/g)].map((m) => [m[1], m[2]]);
-    expect(pares).toHaveLength(5);
+    expect(pares).toHaveLength(6);
     expect(Object.entries(MOTIVO_POR_FASE)).toEqual(pares);
   });
 
@@ -284,6 +285,7 @@ test.each([
   ['potencial', 'angariacao'],
   ['contactada', 'amostra'],
   ['amostra', 'acompanhamento'],
+  ['fecho', 'acompanhamento'],
   ['cliente', 'acompanhamento'],
   ['xpto', 'angariacao'],
   ['Cliente', 'angariacao'],

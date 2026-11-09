@@ -4,7 +4,7 @@ Plano F3 §1 ("Sugestões"): calculadas no servidor, em dois grupos, **contactad
 e depois **potencial**. Entram as lojas a ≤ 5 km em linha reta de qualquer
 paragem ativa (`geo.distancia_metros`) e, com `calculo.atual`, também as que
 estão a ≤ 3 km da linha desenhada (o corredor, a polyline descodificada). Ficam
-de fora a perdida, a amostra e o cliente, as lojas fechadas nesse dia da semana,
+de fora a perdida, a amostra, a fecho e o cliente, as lojas fechadas nesse dia da semana,
 as que já estão na rota e as que não têm coordenadas. Cada grupo mostra no
 máximo 30, com `mais = N − 30`.
 
@@ -295,14 +295,21 @@ def test_distancia_m_e_um_inteiro():
 # --- Excluídas ------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("fase", ["perdida", "amostra", "cliente", None, "", "Contactada", " potencial", "outra", 1])
+@pytest.mark.parametrize(
+    "fase", ["perdida", "amostra", "fecho", "cliente", None, "", "Contactada", " potencial", "outra", 1]
+)
 def test_so_as_contactadas_e_as_potenciais_entram(fase):
     resultado = _sugerir([_loja("x", "X", fase, _deslocar(A, 100))])
     assert resultado["grupos"] == [GRUPO_VAZIO_CONTACTADA, GRUPO_VAZIO_POTENCIAL]
 
 
-def test_a_amostra_e_o_cliente_ficam_de_fora_mesmo_ao_lado_das_paragens():
-    lojas = [_loja("am", "Amostra", "amostra", _deslocar(A, 10)), _loja("cl", "Cliente", "cliente", _deslocar(B, 10))]
+def test_a_amostra_a_fecho_e_o_cliente_ficam_de_fora_mesmo_ao_lado_das_paragens():
+    # A fecho (2026-11-09) fica de fora como a amostra e o cliente: já tem a amostra e o contacto.
+    lojas = [
+        _loja("am", "Amostra", "amostra", _deslocar(A, 10)),
+        _loja("fe", "Fecho", "fecho", _deslocar(A, 20)),
+        _loja("cl", "Cliente", "cliente", _deslocar(B, 10)),
+    ]
     assert _sugerir(lojas)["grupos"] == [GRUPO_VAZIO_CONTACTADA, GRUPO_VAZIO_POTENCIAL]
 
 
@@ -484,6 +491,7 @@ def test_as_excluidas_tambem_ficam_de_fora_do_corredor():
     lojas = [
         _loja("perdida", "Perdida", "perdida", _deslocar(A, 100, 10_000)),
         _loja("amostra", "Amostra", "amostra", _deslocar(A, 100, 10_000)),
+        _loja("fecho", "Fecho", "fecho", _deslocar(A, 100, 10_000)),
         _loja("fechada", "Fechada", "contactada", _deslocar(A, 100, 10_000), dias_fechada=["seg"]),
         _loja("p-a", "Paragem A", "contactada", _deslocar(A, 100, 10_000)),
     ]

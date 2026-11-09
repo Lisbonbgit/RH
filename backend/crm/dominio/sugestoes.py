@@ -14,8 +14,8 @@ em dois grupos pela ordem em que se mostram: **contactada** e depois
   `no_caminho: True` e a distância à linha. Uma loja perto pelos dois lados
   fica com a menor das duas distâncias e `no_caminho: False`; perto de uma
   paragem mas longe da linha, com a distância à paragem.
-- Ficam de fora a perdida, a amostra e o cliente (qualquer fase que não seja
-  uma das duas), as lojas fechadas nesse dia da semana
+- Ficam de fora a perdida, a amostra, a fecho e o cliente (qualquer fase que
+  não seja uma das duas), as lojas fechadas nesse dia da semana
   (`rotas.fechada_neste_dia`), as que já estão na rota (`ids_na_rota`: quem
   chama diz quais, também as das paragens sem loja) e as sem coordenadas.
 - Cada grupo vem pelos metros mostrados, depois pelo nome sem acentos nem
